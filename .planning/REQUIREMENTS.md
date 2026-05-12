@@ -12,13 +12,13 @@ Requirements for full platform delivery (M1–M10). M1–M4 is the first hireabl
 ### Control Plane (M1)
 
 - [ ] **CTL-01**: `POST /agents` returns `202 Accepted` with `job_id`, creates tenant/agent/job rows in control DB
-- [ ] **CTL-02**: Celery chain (`provision_neon` → `apply_migrations`) runs idempotently with `acks_late=True`
-- [ ] **CTL-03**: `provision_neon` task calls Neon API, polls until ready, encrypts connection string with Fernet, stores on agent row
-- [ ] **CTL-04**: `apply_migrations` task runs per-tenant Alembic migration against new Neon project (v1 schema: documents, chunks, embeddings, chunk_metadata, conversations, messages, tool_calls, eval_runs, eval_results, red_team_runs)
+- [x] **CTL-02**: Celery chain (`provision_neon` → `apply_migrations`) runs idempotently with `acks_late=True`
+- [x] **CTL-03**: `provision_neon` task calls Neon API, polls until ready, encrypts connection string with Fernet, stores on agent row
+- [x] **CTL-04**: `apply_migrations` task runs per-tenant Alembic migration against new Neon project (v1 schema: documents, chunks, embeddings, chunk_metadata, conversations, messages, tool_calls, eval_runs, eval_results, red_team_runs)
 - [ ] **CTL-05**: `GET /jobs/{id}/events` returns live SSE stream that replays prior events on connect, then forwards new events from Redis pub/sub in real time
-- [ ] **CTL-06**: SSE stream emits all six required events in order: `job.started` → `neon.project.creating` → `neon.project.ready` → `migrations.running` → `migrations.complete` → `job.complete`
-- [ ] **CTL-07**: Worker kill-9 between any two tasks results in retry and successful completion — tenant DB is never left in a half-migrated state
-- [ ] **CTL-08**: Connection strings are never passed as Celery task arguments; tasks fetch and decrypt from control DB at execution time
+- [x] **CTL-06**: SSE stream emits all six required events in order: `job.started` → `neon.project.creating` → `neon.project.ready` → `migrations.running` → `migrations.complete` → `job.complete`
+- [x] **CTL-07**: Worker kill-9 between any two tasks results in retry and successful completion — tenant DB is never left in a half-migrated state
+- [x] **CTL-08**: Connection strings are never passed as Celery task arguments; tasks fetch and decrypt from control DB at execution time
 - [ ] **CTL-09**: API key auth (`X-API-Key`), keys stored hashed (argon2), never logged
 - [ ] **CTL-10**: `GET /health` returns `200` with redis and DB status
 - [ ] **CTL-11**: `docker-compose up` starts all six services (postgres, redis, api, worker_pipeline, worker_runtime, beat)
@@ -190,13 +190,13 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 | Requirement | Phase | Milestone | Status |
 |-------------|-------|-----------|--------|
 | CTL-01 | Phase 1 | M1 — Control Plane Skeleton | Pending |
-| CTL-02 | Phase 1 | M1 — Control Plane Skeleton | Pending |
-| CTL-03 | Phase 1 | M1 — Control Plane Skeleton | Pending |
-| CTL-04 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-02 | Phase 1 | M1 — Control Plane Skeleton | Complete (01-03) |
+| CTL-03 | Phase 1 | M1 — Control Plane Skeleton | Complete (01-03) |
+| CTL-04 | Phase 1 | M1 — Control Plane Skeleton | Complete (01-03) |
 | CTL-05 | Phase 1 | M1 — Control Plane Skeleton | Pending |
-| CTL-06 | Phase 1 | M1 — Control Plane Skeleton | Pending |
-| CTL-07 | Phase 1 | M1 — Control Plane Skeleton | Pending |
-| CTL-08 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-06 | Phase 1 | M1 — Control Plane Skeleton | Complete (01-03) |
+| CTL-07 | Phase 1 | M1 — Control Plane Skeleton | Complete (01-03) |
+| CTL-08 | Phase 1 | M1 — Control Plane Skeleton | Complete (01-03) |
 | CTL-09 | Phase 1 | M1 — Control Plane Skeleton | Pending |
 | CTL-10 | Phase 1 | M1 — Control Plane Skeleton | Pending |
 | CTL-11 | Phase 1 | M1 — Control Plane Skeleton | Pending |
@@ -283,4 +283,4 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 
 ---
 *Requirements defined: 2026-05-12*
-*Last updated: 2026-05-12 after roadmap creation — traceability expanded to individual requirement rows*
+*Last updated: 2026-05-12 after 01-03 — CTL-02, CTL-03, CTL-04, CTL-06, CTL-07, CTL-08 marked complete*
