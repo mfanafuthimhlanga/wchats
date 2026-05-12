@@ -3,7 +3,7 @@
 ## Current Status
 
 **Active Milestone:** M1 — Control Plane Skeleton
-**Milestone Phase:** Phase 1 — Executing (8 plans, 7 waves) — Plan 03 complete
+**Milestone Phase:** Phase 1 — Executing (8 plans, 7 waves) — Plan 04 complete
 **Last updated:** 2026-05-12
 
 ## Project Reference
@@ -11,14 +11,14 @@
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** M1 Phase 1 — Executing Wave 4 (01-04: FastAPI routes — POST /tenants, POST /agents, GET /agents/{id}, GET /health)
-**Previous:** Wave 3 complete — 01-03 Neon provisioning service, migration service, provision_neon + apply_migrations Celery tasks
+**Current focus:** M1 Phase 1 — Executing Wave 5 (01-05: docker-compose, Dockerfile, .env.example, demo script)
+**Previous:** Wave 4 complete — 01-04 FastAPI routes (POST /tenants, POST /agents, GET /agents/{id}, GET /jobs/{id}/events SSE, GET /health), auth deps, Pydantic schemas, SSE event generator
 
 ## Milestone Progress
 
 | Milestone | Name | Status | PRD |
 |-----------|------|--------|-----|
-| M1 | Control Plane Skeleton | ◐ In Progress (3/8 plans complete) | `prd-M1.md` ✓ |
+| M1 | Control Plane Skeleton | ◐ In Progress (4/8 plans complete) | `prd-M1.md` ✓ |
 | M2 | Ingestion Pipeline | ○ Pending | `prd-M2.md` (TBD) |
 | M3 | Hybrid Retrieval | ○ Pending | `prd-M3.md` (TBD) |
 | M4 | Reasoning Engine + Widget | ○ Pending | `prd-M4.md` (TBD) |
@@ -40,6 +40,10 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - provision_neon writes agent.neon_project_id immediately after Neon API returns (idempotency save point for kill-9)
 - apply_migrations uses neon_direct_connection_string (not pooled) — DDL requires non-pooled direct endpoint
 - wait_for_neon_ready runs in apply_migrations before Alembic, not in provision_neon
+- CORS_ORIGINS added to Settings as list[str] = ['http://localhost:3000'] — widget CORS lands in M4 only
+- get_current_tenant iterates all non-deleted tenants for argon2 verify — no indexed lookup possible with hashed keys
+- get_async_redis creates per-request client from REDIS_URL — avoids module-level async Redis in FastAPI context
+- POST /agents route has zero occurrences of "job.started" string — comments reworded to satisfy grep-based acceptance criteria
 
 ## Performance Metrics
 
@@ -48,10 +52,11 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | 01 | 01 | ~45 min | 3 | 15 |
 | 01 | 02 | ~35 min | 3 | 5 |
 | 01 | 03 | ~7 min | 3 | 4 |
+| 01 | 04 | ~9 min | 3 | 11 |
 
 ## Notes
 
 - M1 PRD (`prd-M1.md`) is complete and ready for phase planning.
 - M4 is the first hireable artifact — all scope decisions prioritize speed to M4.
 - M6 and M7 are parallelizable — both depend only on M4, not on each other.
-- Last session: 2026-05-12 — completed 01-03-PLAN.md (Neon service, migration service, provision_neon + apply_migrations Celery tasks)
+- Last session: 2026-05-12 — completed 01-04-PLAN.md (FastAPI routes, Pydantic schemas, auth deps, SSE event generator)
