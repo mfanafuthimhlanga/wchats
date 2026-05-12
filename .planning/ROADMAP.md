@@ -15,7 +15,7 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 
 | # | Milestone | Goal (short) | Requirements | PRD | Status |
 |---|-----------|--------------|:------------:|-----|--------|
-| M1 | Control Plane Skeleton | FastAPI + Celery + Neon provisioning + SSE | 15 | `prd-M1.md` | ◐ In Progress (5/8) |
+| M1 | Control Plane Skeleton | FastAPI + Celery + Neon provisioning + SSE | 15 | `prd-M1.md` | ◐ In Progress (6/8) |
 | M2 | Ingestion Pipeline | Docling + Chonkie + metadata + Voyage embedding | 10 | `prd-M2.md` | ○ Pending |
 | M3 | Hybrid Retrieval | pgvector + BM25 + RRF + Voyage rerank | 8 | `prd-M3.md` | ○ Pending |
 | M4 | Reasoning Engine + Widget v0 | Claude agent + Preact widget + public demo **[HIREABLE ARTIFACT]** | 11 | `prd-M4.md` | ○ Pending |
@@ -47,7 +47,8 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 | Wave 3 | 01-03 | Neon service, migration service, provision_neon + apply_migrations tasks | ✓ Complete |
 | Wave 4 | 01-04 | FastAPI routes, auth dependency, SSE endpoint | ✓ Complete |
 | Wave 5 | 01-05 | docker-compose, Dockerfile, .env.example, demo script | ✓ Complete |
-| Wave 6 *(parallel)* | 01-06, 01-07 | Unit tests, integration tests | ○ Pending |
+| Wave 6 *(parallel)* | 01-06 | Unit tests (100 tests, 80.41% coverage) | ✓ Complete |
+| Wave 6 *(parallel)* | 01-07 | Integration tests | ○ Pending |
 | Wave 7 *(blocked on Wave 6 completion)* | 01-08 | GitHub Actions CI + nightly E2E + README | ○ Pending |
 
 **Cross-cutting constraints:**

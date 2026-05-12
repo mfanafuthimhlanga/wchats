@@ -3,22 +3,22 @@
 ## Current Status
 
 **Active Milestone:** M1 — Control Plane Skeleton
-**Milestone Phase:** Phase 1 — Executing (8 plans, 7 waves) — Plan 05 complete
-**Last updated:** 2026-05-12
+**Milestone Phase:** Phase 1 — Executing (8 plans, 7 waves) — Plan 06 complete
+**Last updated:** 2026-05-13
 
 ## Project Reference
 
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** M1 Phase 1 — Executing Wave 6 (01-06: GitHub Actions CI, unit tests)
-**Previous:** Wave 5 complete — 01-05 docker-compose (6 services, healthchecks), Dockerfile (python:3.12-slim, non-root user), .env.example, Makefile, scripts/demo_m1.sh, demo_agent.json
+**Current focus:** M1 Phase 1 — Executing Wave 6 (01-07: integration tests)
+**Previous:** Wave 6 unit tests complete — 01-06 unit test suite (100 tests, 80.41% coverage), conftest.py, test_security/emit/schemas/task_args/health/auth/routes/services/sse
 
 ## Milestone Progress
 
 | Milestone | Name | Status | PRD |
 |-----------|------|--------|-----|
-| M1 | Control Plane Skeleton | ◐ In Progress (5/8 plans complete) | `prd-M1.md` ✓ |
+| M1 | Control Plane Skeleton | ◐ In Progress (6/8 plans complete) | `prd-M1.md` ✓ |
 | M2 | Ingestion Pipeline | ○ Pending | `prd-M2.md` (TBD) |
 | M3 | Hybrid Retrieval | ○ Pending | `prd-M3.md` (TBD) |
 | M4 | Reasoning Engine + Widget | ○ Pending | `prd-M4.md` (TBD) |
@@ -44,6 +44,11 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - get_current_tenant iterates all non-deleted tenants for argon2 verify — no indexed lookup possible with hashed keys
 - get_async_redis creates per-request client from REDIS_URL — avoids module-level async Redis in FastAPI context
 - POST /agents route has zero occurrences of "job.started" string — comments reworded to satisfy grep-based acceptance criteria
+- conftest.py sets env vars at module level before any app import — prevents pydantic-settings validation errors in test discovery
+- FastAPI APIKeyHeader with auto_error=True returns 401 "Not authenticated" (not 403) when X-API-Key header is absent
+- inspect.signature(task.run) not inspect.signature(task) — Celery wraps the function; .run accesses the original underlying function
+- ASGITransport(app=app) used for AsyncClient — ASGI-native route testing without live HTTP server
+- Mock DB refresh() side_effect must inject uuid4() into Agent/Job objects — server_default="gen_random_uuid()" requires DB to set IDs
 - docker-compose env_file + environment override pattern: .env provides defaults; environment block overrides DB/Redis URLs to internal service hostnames
 - demo_m1.sh uses ${EVENTS_SEEN[*]:-} with default to avoid unbound variable on empty array under bash strict mode (set -euo pipefail)
 - Dockerfile: COPY . /app after pip install to maximise Docker layer cache reuse on source changes
@@ -57,11 +62,15 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | 01 | 03 | ~7 min | 3 | 4 |
 | 01 | 04 | ~9 min | 3 | 11 |
 | 01 | 05 | ~7 min | 2 | 6 |
+| 01 | 06 | ~25 min | 2 | 11 |
 
 ## Notes
 
 - M1 PRD (`prd-M1.md`) is complete and ready for phase planning.
 - M4 is the first hireable artifact — all scope decisions prioritize speed to M4.
 - M6 and M7 are parallelizable — both depend only on M4, not on each other.
-- Last session: 2026-05-12 — completed 01-05-PLAN.md (docker-compose 6 services, Dockerfile python:3.12-slim non-root, .env.example, Makefile, scripts/demo_m1.sh, demo_agent.json)
-- CTL-11 (docker-compose up → 6 services) satisfied; CTL-12 (demo_m1.sh) ready for runtime verification
+- Last session: 2026-05-13 — completed 01-06-PLAN.md (unit test suite: 100 tests, 80.41% coverage on app/ package, CTL-08 verified via inspect.signature)
+- CTL-09 (acks_late=True) verified by test_task_args.py assertions on provision_neon and apply_migrations
+- CTL-13 (unit coverage >80%) satisfied: 80.41% achieved with 100 tests passing
+- conftest.py sets CELERY_TASK_ALWAYS_EAGER=True and all required env vars before app import
+- FastAPI dependency_overrides pattern used for all route tests (no real DB or Redis needed)

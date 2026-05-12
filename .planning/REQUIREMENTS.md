@@ -23,7 +23,7 @@ Requirements for full platform delivery (M1–M10). M1–M4 is the first hireabl
 - [x] **CTL-10**: `GET /health` returns `200` with redis and DB status
 - [x] **CTL-11**: `docker-compose up` starts all six services (postgres, redis, api, worker_pipeline, worker_runtime, beat)
 - [x] **CTL-12**: `scripts/demo_m1.sh` runs clean from scratch, prints tenant ID, agent ID, and Neon project ID on completion
-- [ ] **CTL-13**: Unit test coverage on orchestration logic above 80%; integration test exercises full chain
+- [x] **CTL-13**: Unit test coverage on orchestration logic above 80%; integration test exercises full chain
 - [ ] **CTL-14**: Nightly CI E2E test against real Neon test account (creates project, asserts schema, deletes at teardown)
 - [ ] **CTL-15**: README includes architecture diagram and recorded demo (asciinema or video)
 
@@ -201,7 +201,7 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 | CTL-10 | Phase 1 | M1 — Control Plane Skeleton | Complete (01-04) |
 | CTL-11 | Phase 1 | M1 — Control Plane Skeleton | Pending |
 | CTL-12 | Phase 1 | M1 — Control Plane Skeleton | Pending |
-| CTL-13 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-13 | Phase 1 | M1 — Control Plane Skeleton | Complete (01-06) |
 | CTL-14 | Phase 1 | M1 — Control Plane Skeleton | Pending |
 | CTL-15 | Phase 1 | M1 — Control Plane Skeleton | Pending |
 | ING-01 | Phase 2 | M2 — Ingestion Pipeline | Pending |
@@ -284,3 +284,4 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 ---
 *Requirements defined: 2026-05-12*
 *Last updated: 2026-05-12 after 01-04 — CTL-01, CTL-05, CTL-09, CTL-10 marked complete*
+*Last updated: 2026-05-13 after 01-06 — CTL-13 marked complete (80.41% unit test coverage)*
