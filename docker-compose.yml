@@ -1,0 +1,110 @@
+version: "3.9"
+
+services:
+  # ---------------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: veridian
+      POSTGRES_PASSWORD: veridian
+      POSTGRES_DB: veridian_control
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U veridian -d veridian_control"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Application services — all built from apps/api/Dockerfile
+  # ---------------------------------------------------------------------------
+  api:
+    build: apps/api
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      # Override local .env values to point at internal service hostnames
+      CONTROL_DB_URL: postgresql+asyncpg://veridian:veridian@postgres:5432/veridian_control
+      CONTROL_DB_SYNC_URL: postgresql://veridian:veridian@postgres:5432/veridian_control
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      # Mount source for live reload (--reload flag on uvicorn)
+      - ./apps/api:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker_pipeline:
+    build: apps/api
+    command: >
+      celery -A app.worker.celery_app worker
+      --queues=pipeline
+      --hostname=pipeline@%h
+      --loglevel=info
+    env_file: .env
+    environment:
+      CONTROL_DB_URL: postgresql+asyncpg://veridian:veridian@postgres:5432/veridian_control
+      CONTROL_DB_SYNC_URL: postgresql://veridian:veridian@postgres:5432/veridian_control
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./apps/api:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker_runtime:
+    build: apps/api
+    command: >
+      celery -A app.worker.celery_app worker
+      --queues=runtime
+      --hostname=runtime@%h
+      --loglevel=info
+    env_file: .env
+    environment:
+      CONTROL_DB_URL: postgresql+asyncpg://veridian:veridian@postgres:5432/veridian_control
+      CONTROL_DB_SYNC_URL: postgresql://veridian:veridian@postgres:5432/veridian_control
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./apps/api:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: apps/api
+    command: celery -A app.worker.celery_app beat --loglevel=info
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./apps/api:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+
+# ---------------------------------------------------------------------------
+# Volumes
+# ---------------------------------------------------------------------------
+volumes:
+  postgres_data:
