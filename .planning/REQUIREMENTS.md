@@ -187,24 +187,100 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 
 ## Traceability
 
-| Requirement | Phase | Status |
-|-------------|-------|--------|
-| CTL-01 to CTL-15 | Phase 1 (M1) | Pending |
-| ING-01 to ING-10 | Phase 2 (M2) | Pending |
-| RET-01 to RET-08 | Phase 3 (M3) | Pending |
-| AGT-01 to AGT-11 | Phase 4 (M4) | Pending |
-| VAL-01 to VAL-07 | Phase 5 (M5) | Pending |
-| EVL-01 to EVL-08 | Phase 6 (M6) | Pending |
-| RED-01 to RED-08 | Phase 7 (M7) | Pending |
-| DEP-01 to DEP-08 | Phase 8 (M8) | Pending |
-| STR-01 to STR-03 | Phase 9 (M9) | Pending |
-| OPS-01 to OPS-06 | Phase 10 (M10) | Pending |
+| Requirement | Phase | Milestone | Status |
+|-------------|-------|-----------|--------|
+| CTL-01 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-02 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-03 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-04 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-05 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-06 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-07 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-08 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-09 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-10 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-11 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-12 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-13 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-14 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| CTL-15 | Phase 1 | M1 — Control Plane Skeleton | Pending |
+| ING-01 | Phase 2 | M2 — Ingestion Pipeline | Pending |
+| ING-02 | Phase 2 | M2 — Ingestion Pipeline | Pending |
+| ING-03 | Phase 2 | M2 — Ingestion Pipeline | Pending |
+| ING-04 | Phase 2 | M2 — Ingestion Pipeline | Pending |
+| ING-05 | Phase 2 | M2 — Ingestion Pipeline | Pending |
+| ING-06 | Phase 2 | M2 — Ingestion Pipeline | Pending |
+| ING-07 | Phase 2 | M2 — Ingestion Pipeline | Pending |
+| ING-08 | Phase 2 | M2 — Ingestion Pipeline | Pending |
+| ING-09 | Phase 2 | M2 — Ingestion Pipeline | Pending |
+| ING-10 | Phase 2 | M2 — Ingestion Pipeline | Pending |
+| RET-01 | Phase 3 | M3 — Hybrid Retrieval | Pending |
+| RET-02 | Phase 3 | M3 — Hybrid Retrieval | Pending |
+| RET-03 | Phase 3 | M3 — Hybrid Retrieval | Pending |
+| RET-04 | Phase 3 | M3 — Hybrid Retrieval | Pending |
+| RET-05 | Phase 3 | M3 — Hybrid Retrieval | Pending |
+| RET-06 | Phase 3 | M3 — Hybrid Retrieval | Pending |
+| RET-07 | Phase 3 | M3 — Hybrid Retrieval | Pending |
+| RET-08 | Phase 3 | M3 — Hybrid Retrieval | Pending |
+| AGT-01 | Phase 4 | M4 — Reasoning Engine + Widget v0 [HIREABLE] | Pending |
+| AGT-02 | Phase 4 | M4 — Reasoning Engine + Widget v0 [HIREABLE] | Pending |
+| AGT-03 | Phase 4 | M4 — Reasoning Engine + Widget v0 [HIREABLE] | Pending |
+| AGT-04 | Phase 4 | M4 — Reasoning Engine + Widget v0 [HIREABLE] | Pending |
+| AGT-05 | Phase 4 | M4 — Reasoning Engine + Widget v0 [HIREABLE] | Pending |
+| AGT-06 | Phase 4 | M4 — Reasoning Engine + Widget v0 [HIREABLE] | Pending |
+| AGT-07 | Phase 4 | M4 — Reasoning Engine + Widget v0 [HIREABLE] | Pending |
+| AGT-08 | Phase 4 | M4 — Reasoning Engine + Widget v0 [HIREABLE] | Pending |
+| AGT-09 | Phase 4 | M4 — Reasoning Engine + Widget v0 [HIREABLE] | Pending |
+| AGT-10 | Phase 4 | M4 — Reasoning Engine + Widget v0 [HIREABLE] | Pending |
+| AGT-11 | Phase 4 | M4 — Reasoning Engine + Widget v0 [HIREABLE] | Pending |
+| VAL-01 | Phase 5 | M5 — Validation Chain | Pending |
+| VAL-02 | Phase 5 | M5 — Validation Chain | Pending |
+| VAL-03 | Phase 5 | M5 — Validation Chain | Pending |
+| VAL-04 | Phase 5 | M5 — Validation Chain | Pending |
+| VAL-05 | Phase 5 | M5 — Validation Chain | Pending |
+| VAL-06 | Phase 5 | M5 — Validation Chain | Pending |
+| VAL-07 | Phase 5 | M5 — Validation Chain | Pending |
+| EVL-01 | Phase 6 | M6 — Eval System | Pending |
+| EVL-02 | Phase 6 | M6 — Eval System | Pending |
+| EVL-03 | Phase 6 | M6 — Eval System | Pending |
+| EVL-04 | Phase 6 | M6 — Eval System | Pending |
+| EVL-05 | Phase 6 | M6 — Eval System | Pending |
+| EVL-06 | Phase 6 | M6 — Eval System | Pending |
+| EVL-07 | Phase 6 | M6 — Eval System | Pending |
+| EVL-08 | Phase 6 | M6 — Eval System | Pending |
+| RED-01 | Phase 7 | M7 — Red Team | Pending |
+| RED-02 | Phase 7 | M7 — Red Team | Pending |
+| RED-03 | Phase 7 | M7 — Red Team | Pending |
+| RED-04 | Phase 7 | M7 — Red Team | Pending |
+| RED-05 | Phase 7 | M7 — Red Team | Pending |
+| RED-06 | Phase 7 | M7 — Red Team | Pending |
+| RED-07 | Phase 7 | M7 — Red Team | Pending |
+| RED-08 | Phase 7 | M7 — Red Team | Pending |
+| DEP-01 | Phase 8 | M8 — Pre-deployment Checklist | Pending |
+| DEP-02 | Phase 8 | M8 — Pre-deployment Checklist | Pending |
+| DEP-03 | Phase 8 | M8 — Pre-deployment Checklist | Pending |
+| DEP-04 | Phase 8 | M8 — Pre-deployment Checklist | Pending |
+| DEP-05 | Phase 8 | M8 — Pre-deployment Checklist | Pending |
+| DEP-06 | Phase 8 | M8 — Pre-deployment Checklist | Pending |
+| DEP-07 | Phase 8 | M8 — Pre-deployment Checklist | Pending |
+| DEP-08 | Phase 8 | M8 — Pre-deployment Checklist | Pending |
+| STR-01 | Phase 9 | M9 — Retrieval Strategy Synthesis | Pending |
+| STR-02 | Phase 9 | M9 — Retrieval Strategy Synthesis | Pending |
+| STR-03 | Phase 9 | M9 — Retrieval Strategy Synthesis | Pending |
+| OPS-01 | Phase 10 | M10 — Maintenance + Observability | Pending |
+| OPS-02 | Phase 10 | M10 — Maintenance + Observability | Pending |
+| OPS-03 | Phase 10 | M10 — Maintenance + Observability | Pending |
+| OPS-04 | Phase 10 | M10 — Maintenance + Observability | Pending |
+| OPS-05 | Phase 10 | M10 — Maintenance + Observability | Pending |
+| OPS-06 | Phase 10 | M10 — Maintenance + Observability | Pending |
 
 **Coverage:**
-- v1 requirements: 82 total
-- Mapped to phases: 82
+- v1 requirements: 84 total
+- Mapped to phases: 84
 - Unmapped: 0 ✓
+
+**Note:** Original count stated 82; recount confirmed 84 (CTL: 15, ING: 10, RET: 8, AGT: 11, VAL: 7, EVL: 8, RED: 8, DEP: 8, STR: 3, OPS: 6 = 84).
 
 ---
 *Requirements defined: 2026-05-12*
-*Last updated: 2026-05-12 after initial definition*
+*Last updated: 2026-05-12 after roadmap creation — traceability expanded to individual requirement rows*
