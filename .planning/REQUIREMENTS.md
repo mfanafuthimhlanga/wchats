@@ -21,8 +21,8 @@ Requirements for full platform delivery (M1–M10). M1–M4 is the first hireabl
 - [x] **CTL-08**: Connection strings are never passed as Celery task arguments; tasks fetch and decrypt from control DB at execution time
 - [x] **CTL-09**: API key auth (`X-API-Key`), keys stored hashed (argon2), never logged
 - [x] **CTL-10**: `GET /health` returns `200` with redis and DB status
-- [ ] **CTL-11**: `docker-compose up` starts all six services (postgres, redis, api, worker_pipeline, worker_runtime, beat)
-- [ ] **CTL-12**: `scripts/demo_m1.sh` runs clean from scratch, prints tenant ID, agent ID, and Neon project ID on completion
+- [x] **CTL-11**: `docker-compose up` starts all six services (postgres, redis, api, worker_pipeline, worker_runtime, beat)
+- [x] **CTL-12**: `scripts/demo_m1.sh` runs clean from scratch, prints tenant ID, agent ID, and Neon project ID on completion
 - [ ] **CTL-13**: Unit test coverage on orchestration logic above 80%; integration test exercises full chain
 - [ ] **CTL-14**: Nightly CI E2E test against real Neon test account (creates project, asserts schema, deletes at teardown)
 - [ ] **CTL-15**: README includes architecture diagram and recorded demo (asciinema or video)

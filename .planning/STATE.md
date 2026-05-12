@@ -3,7 +3,7 @@
 ## Current Status
 
 **Active Milestone:** M1 — Control Plane Skeleton
-**Milestone Phase:** Phase 1 — Executing (8 plans, 7 waves) — Plan 04 complete
+**Milestone Phase:** Phase 1 — Executing (8 plans, 7 waves) — Plan 05 complete
 **Last updated:** 2026-05-12
 
 ## Project Reference
@@ -11,14 +11,14 @@
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** M1 Phase 1 — Executing Wave 5 (01-05: docker-compose, Dockerfile, .env.example, demo script)
-**Previous:** Wave 4 complete — 01-04 FastAPI routes (POST /tenants, POST /agents, GET /agents/{id}, GET /jobs/{id}/events SSE, GET /health), auth deps, Pydantic schemas, SSE event generator
+**Current focus:** M1 Phase 1 — Executing Wave 6 (01-06: GitHub Actions CI, unit tests)
+**Previous:** Wave 5 complete — 01-05 docker-compose (6 services, healthchecks), Dockerfile (python:3.12-slim, non-root user), .env.example, Makefile, scripts/demo_m1.sh, demo_agent.json
 
 ## Milestone Progress
 
 | Milestone | Name | Status | PRD |
 |-----------|------|--------|-----|
-| M1 | Control Plane Skeleton | ◐ In Progress (4/8 plans complete) | `prd-M1.md` ✓ |
+| M1 | Control Plane Skeleton | ◐ In Progress (5/8 plans complete) | `prd-M1.md` ✓ |
 | M2 | Ingestion Pipeline | ○ Pending | `prd-M2.md` (TBD) |
 | M3 | Hybrid Retrieval | ○ Pending | `prd-M3.md` (TBD) |
 | M4 | Reasoning Engine + Widget | ○ Pending | `prd-M4.md` (TBD) |
@@ -44,6 +44,9 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - get_current_tenant iterates all non-deleted tenants for argon2 verify — no indexed lookup possible with hashed keys
 - get_async_redis creates per-request client from REDIS_URL — avoids module-level async Redis in FastAPI context
 - POST /agents route has zero occurrences of "job.started" string — comments reworded to satisfy grep-based acceptance criteria
+- docker-compose env_file + environment override pattern: .env provides defaults; environment block overrides DB/Redis URLs to internal service hostnames
+- demo_m1.sh uses ${EVENTS_SEEN[*]:-} with default to avoid unbound variable on empty array under bash strict mode (set -euo pipefail)
+- Dockerfile: COPY . /app after pip install to maximise Docker layer cache reuse on source changes
 
 ## Performance Metrics
 
@@ -53,10 +56,12 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | 01 | 02 | ~35 min | 3 | 5 |
 | 01 | 03 | ~7 min | 3 | 4 |
 | 01 | 04 | ~9 min | 3 | 11 |
+| 01 | 05 | ~7 min | 2 | 6 |
 
 ## Notes
 
 - M1 PRD (`prd-M1.md`) is complete and ready for phase planning.
 - M4 is the first hireable artifact — all scope decisions prioritize speed to M4.
 - M6 and M7 are parallelizable — both depend only on M4, not on each other.
-- Last session: 2026-05-12 — completed 01-04-PLAN.md (FastAPI routes, Pydantic schemas, auth deps, SSE event generator)
+- Last session: 2026-05-12 — completed 01-05-PLAN.md (docker-compose 6 services, Dockerfile python:3.12-slim non-root, .env.example, Makefile, scripts/demo_m1.sh, demo_agent.json)
+- CTL-11 (docker-compose up → 6 services) satisfied; CTL-12 (demo_m1.sh) ready for runtime verification
