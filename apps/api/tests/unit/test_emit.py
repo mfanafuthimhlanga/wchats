@@ -18,8 +18,11 @@ from uuid import uuid4
 
 import pytest
 
-# Set minimal env so settings module can load
-os.environ.setdefault("NEON_ENCRYPTION_KEY", "Y29tcGxldGVseTMyYnl0ZXNsb25na2V5YWFh" + "=")
+# Set minimal env so settings module can load.
+# Generate a valid Fernet key (URL-safe base64-encoded 32 bytes).
+import base64
+_TEST_KEY = base64.urlsafe_b64encode(os.urandom(32)).decode()
+os.environ.setdefault("NEON_ENCRYPTION_KEY", _TEST_KEY)
 os.environ.setdefault("NEON_API_KEY", "test_neon")
 os.environ.setdefault("CONTROL_DB_URL", "postgresql+asyncpg://user:pass@localhost/testdb")
 os.environ.setdefault("CONTROL_DB_SYNC_URL", "postgresql://user:pass@localhost/testdb")
