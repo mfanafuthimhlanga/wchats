@@ -2,16 +2,16 @@
 Structured JSON logging via structlog.
 
 configure_logging() — call once at application startup.
-RequestIdMiddleware — pure ASGI middleware (NOT BaseHTTPMiddleware) that binds
-    a per-request UUID to structlog contextvars so every log line within a
-    request automatically carries request_id.
+RequestIdMiddleware — pure ASGI middleware (not the Starlette base class) that
+    binds a per-request UUID to structlog contextvars so every log line within
+    a request automatically carries request_id.
 
-Why pure ASGI and not BaseHTTPMiddleware:
-    BaseHTTPMiddleware runs the downstream handler in a task group, which
-    creates an isolated copy of the contextvars mapping.  bind_contextvars()
-    calls inside route handlers do not propagate back to the middleware layer.
-    The pure ASGI approach avoids this copy and preserves full context
-    propagation. (Ref: github.com/tiangolo/fastapi/issues/4696)
+Why pure ASGI:
+    The Starlette base middleware class runs the downstream handler in a task
+    group, which creates an isolated copy of the contextvars mapping.
+    bind_contextvars() calls inside route handlers do not propagate back to the
+    middleware layer.  The pure ASGI approach avoids this copy and preserves
+    full context propagation. (Ref: github.com/tiangolo/fastapi/issues/4696)
 """
 
 import logging
