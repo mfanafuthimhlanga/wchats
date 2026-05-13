@@ -138,11 +138,10 @@ def wait_for_neon_ready(conn_string: str, max_attempts: int = 10) -> None:
         RuntimeError: After max_attempts consecutive failures.
     """
     for attempt in range(max_attempts):
+        engine = create_engine(conn_string, poolclass=pool.NullPool)
         try:
-            engine = create_engine(conn_string, poolclass=pool.NullPool)
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
-            engine.dispose()
             log.info("neon.compute_ready", attempt=attempt)
             return
         except Exception:  # noqa: BLE001 — broad catch is intentional for probe loop
@@ -153,3 +152,7 @@ def wait_for_neon_ready(conn_string: str, max_attempts: int = 10) -> None:
             backoff = 2**attempt
             log.debug("neon.compute_probe_waiting", attempt=attempt, backoff_s=backoff)
             time.sleep(backoff)
+        finally:
+            # Always dispose — NullPool means each engine holds its own connection;
+            # without this, failed attempts leak file descriptors and TCP connections.
+            engine.dispose()
