@@ -3,7 +3,7 @@
 ## Current Status
 
 **Active Milestone:** M1 — Control Plane Skeleton
-**Milestone Phase:** Phase 1 — Executing (8 plans, 7 waves) — Plan 06 complete
+**Milestone Phase:** Phase 1 — Executing (8 plans, 7 waves) — Plan 07 complete
 **Last updated:** 2026-05-13
 
 ## Project Reference
@@ -18,7 +18,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 | Milestone | Name | Status | PRD |
 |-----------|------|--------|-----|
-| M1 | Control Plane Skeleton | ◐ In Progress (6/8 plans complete) | `prd-M1.md` ✓ |
+| M1 | Control Plane Skeleton | ◐ In Progress (7/8 plans complete) | `prd-M1.md` ✓ |
 | M2 | Ingestion Pipeline | ○ Pending | `prd-M2.md` (TBD) |
 | M3 | Hybrid Retrieval | ○ Pending | `prd-M3.md` (TBD) |
 | M4 | Reasoning Engine + Widget | ○ Pending | `prd-M4.md` (TBD) |
@@ -51,6 +51,9 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Mock DB refresh() side_effect must inject uuid4() into Agent/Job objects — server_default="gen_random_uuid()" requires DB to set IDs
 - docker-compose env_file + environment override pattern: .env provides defaults; environment block overrides DB/Redis URLs to internal service hostnames
 - demo_m1.sh uses ${EVENTS_SEEN[*]:-} with default to avoid unbound variable on empty array under bash strict mode (set -euo pipefail)
+- test_worker_kill_9_chain_completes skipped by default (INTEGRATION_TESTS_ENABLED=1 required) — spawns/kills/restarts Celery workers, takes ~70s
+- SSE tests use ASGITransport with dependency_overrides for real local Postgres/Redis — no mock DB needed for SSE behaviour isolation
+- Windows SIGKILL fallback (proc.kill()) added to test_worker_kill.py — SIGKILL not available on Windows; proc.kill() uses TerminateProcess equivalent
 - Dockerfile: COPY . /app after pip install to maximise Docker layer cache reuse on source changes
 
 ## Performance Metrics
@@ -63,13 +66,14 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | 01 | 04 | ~9 min | 3 | 11 |
 | 01 | 05 | ~7 min | 2 | 6 |
 | 01 | 06 | ~25 min | 2 | 11 |
+| 01 | 07 | ~20 min | 2 | 6 |
 
 ## Notes
 
 - M1 PRD (`prd-M1.md`) is complete and ready for phase planning.
 - M4 is the first hireable artifact — all scope decisions prioritize speed to M4.
 - M6 and M7 are parallelizable — both depend only on M4, not on each other.
-- Last session: 2026-05-13 — completed 01-06-PLAN.md (unit test suite: 100 tests, 80.41% coverage on app/ package, CTL-08 verified via inspect.signature)
+- Last session: 2026-05-13 — completed 01-07-PLAN.md (integration tests: 10 tests, full chain + provision + migrations + SSE late-join + worker kill-9)
 - CTL-09 (acks_late=True) verified by test_task_args.py assertions on provision_neon and apply_migrations
 - CTL-13 (unit coverage >80%) satisfied: 80.41% achieved with 100 tests passing
 - conftest.py sets CELERY_TASK_ALWAYS_EAGER=True and all required env vars before app import
