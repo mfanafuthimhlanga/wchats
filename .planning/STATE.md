@@ -3,7 +3,7 @@
 ## Current Status
 
 **Active Milestone:** M2 — Ingestion Pipeline
-**Milestone Phase:** Phase 2 — Executing (Wave 5 of 7 in progress, 4/7 plans done)
+**Milestone Phase:** Phase 2 — Executing (Wave 6 of 7 in progress, 5/7 plans done)
 **Last updated:** 2026-05-13
 
 ## Project Reference
@@ -11,8 +11,8 @@
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** Phase 2 Wave 5 — 02-05 Voyage embed + HNSW reindex (ING-07, ING-09)
-**Previous:** Wave 4 complete — 02-04 generate_metadata task (Haiku structured output, entity upsert, Layer 3 idempotency) ✓
+**Current focus:** Phase 2 Wave 6 — 02-06 Upload route + integration test (ING-01, ING-08, ING-09)
+**Previous:** Wave 5 complete — 02-05 embed_and_migrate task (Voyage voyage-3, HNSW reindex, Layer 4 idempotency) ✓
 
 ## Milestone Progress
 
