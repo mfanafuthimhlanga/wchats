@@ -3,7 +3,7 @@
 ## Current Status
 
 **Active Milestone:** M2 — Ingestion Pipeline
-**Milestone Phase:** Phase 2 — Executing (Wave 6 of 7 in progress, 5/7 plans done)
+**Milestone Phase:** Phase 2 — Executing (Wave 7 of 7 in progress, 6/7 plans done)
 **Last updated:** 2026-05-13
 
 ## Project Reference
@@ -11,8 +11,8 @@
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** Phase 2 Wave 6 — 02-06 Upload route + integration test (ING-01, ING-08, ING-09)
-**Previous:** Wave 5 complete — 02-05 embed_and_migrate task (Voyage voyage-3, HNSW reindex, Layer 4 idempotency) ✓
+**Current focus:** Phase 2 Wave 7 — 02-07 E2E demo script + human checkpoint (ING-01–ING-10)
+**Previous:** Wave 6 complete — 02-06 document upload route + full chain dispatch + 169 unit tests pass ✓
 
 ## Milestone Progress
 
