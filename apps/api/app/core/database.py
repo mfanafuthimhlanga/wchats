@@ -9,6 +9,7 @@ T-01-04: pool_pre_ping=True on both engines so stale connections are detected
 """
 
 from collections.abc import AsyncGenerator, Generator
+from contextlib import contextmanager
 
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -52,6 +53,7 @@ SyncSessionFactory: sessionmaker[Session] = sessionmaker(
 )
 
 
+@contextmanager
 def get_sync_db() -> Generator[Session, None, None]:
     """Celery task helper: yields a sync SQLAlchemy session."""
     with SyncSessionFactory() as session:
