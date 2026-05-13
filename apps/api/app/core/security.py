@@ -19,7 +19,7 @@ Use Fernet + argon2-cffi only. Do not bring in standard-library key-derivation m
 import secrets
 
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from cryptography.fernet import Fernet
 
 from app.core.config import settings
@@ -82,16 +82,21 @@ def hash_api_key(raw_key: str) -> str:
 def verify_api_key(stored_hash: str, raw_key: str) -> bool:
     """Verify *raw_key* against *stored_hash*.
 
-    Returns True on match, False on mismatch.  Never raises VerifyMismatchError —
-    always returns a bool so callers can write ``if verify_api_key(...)`` without
-    try/except (T-02-02).
+    Returns True on match, False on mismatch.  Never raises on any argon2
+    exception — always returns a bool so callers can write
+    ``if verify_api_key(...)`` without try/except (T-02-02).
+
+    Catches all three argon2 exception types:
+        VerifyMismatchError — wrong key (expected case)
+        VerificationError   — hash computation failed (corrupted params)
+        InvalidHashError    — stored value is not a valid argon2 hash
 
     The comparison is timing-safe (argon2-cffi uses a constant-time comparison
     internally, providing resistance against timing-based side-channel attacks).
     """
     try:
         return _ph.verify(stored_hash, raw_key)
-    except VerifyMismatchError:
+    except (VerifyMismatchError, VerificationError, InvalidHashError):
         return False
 
 
