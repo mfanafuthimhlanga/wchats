@@ -3,7 +3,7 @@
 ## Current Status
 
 **Active Milestone:** M2 — Ingestion Pipeline
-**Milestone Phase:** Phase 2 — Ready to execute (7 plans, 7 waves)
+**Milestone Phase:** Phase 2 — Executing (Wave 1 of 7 in progress)
 **Last updated:** 2026-05-13
 
 ## Project Reference
@@ -11,8 +11,8 @@
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** M1 Phase 1 — All 8 plans complete; ready for /gsd-verify-work 1
-**Previous:** Wave 7 complete — 01-08 GitHub Actions CI (ruff, mypy, unit, integration), nightly E2E with real Neon teardown, README with architecture diagram + quick-start
+**Current focus:** Phase 2 Wave 1 — 02-01 Foundation (deps, settings, 0002 migration, chunk_id + sanitize utils)
+**Previous:** M1 Phase 1 all 8 plans complete (verified)
 
 ## Milestone Progress
 
