@@ -20,6 +20,12 @@ dependencies = [
     "sentry-sdk==2.59.0",
     "httpx==0.28.1",
     "neon-api==0.3.0",
+    "docling==2.93.0",
+    "chonkie==1.6.5",
+    "voyageai==0.3.7",
+    "anthropic==0.101.0",
+    "python-multipart==0.0.20",
+    "tenacity==9.1.2",
 ]
 
 [project.optional-dependencies]

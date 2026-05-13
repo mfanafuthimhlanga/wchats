@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     # Deployment environment — "production" disables OpenAPI docs (WR-04)
     ENVIRONMENT: str = "development"
 
+    # Ingestion pipeline — M2 additions (T-02-01-01: keys suppressed by __repr__)
+    ANTHROPIC_API_KEY: str
+    VOYAGE_API_KEY: str
+    MAX_UPLOAD_SIZE_MB: int = 50
+
     def __repr__(self) -> str:  # T-01-01, T-01-02: never leak field values
         return f"Settings(LOG_LEVEL={self.LOG_LEVEL!r})"
 
