@@ -3,7 +3,7 @@
 ## Current Status
 
 **Active Milestone:** M2 — Ingestion Pipeline
-**Milestone Phase:** Phase 2 — Executing (Wave 7 of 7 in progress, 6/7 plans done)
+**Milestone Phase:** Phase 2 — Awaiting human checkpoint (7/7 plans built, Wave 7 checkpoint pending)
 **Last updated:** 2026-05-13
 
 ## Project Reference
@@ -11,8 +11,8 @@
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** Phase 2 Wave 7 — 02-07 E2E demo script + human checkpoint (ING-01–ING-10)
-**Previous:** Wave 6 complete — 02-06 document upload route + full chain dispatch + 169 unit tests pass ✓
+**Current focus:** Phase 2 checkpoint — run scripts/demo_m2.sh against live docker-compose + verify 11 SSE events + approve
+**Previous:** Wave 7 built — demo_m2.sh + test_ingestion_e2e.py + demo_business.pdf committed ✓
 
 ## Milestone Progress
 
