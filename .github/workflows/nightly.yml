@@ -1,0 +1,80 @@
+name: Nightly E2E
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  e2e-neon:
+    name: E2E — real Neon provisioning
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: veridian
+          POSTGRES_PASSWORD: veridian
+          POSTGRES_DB: veridian_control
+        options: >-
+          --health-cmd "pg_isready -U veridian -d veridian_control"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    env:
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY_TEST }}
+      NEON_ENCRYPTION_KEY: ${{ secrets.NEON_ENCRYPTION_KEY }}
+      CONTROL_DB_URL: postgresql+asyncpg://veridian:veridian@localhost:5432/veridian_control
+      CONTROL_DB_SYNC_URL: postgresql://veridian:veridian@localhost:5432/veridian_control
+      REDIS_URL: redis://localhost:6379/0
+      ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
+      NEON_REGION: aws-us-east-1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e "apps/api[dev]"
+
+      - name: Run control DB migration
+        working-directory: apps/api
+        run: alembic -c alembic.ini upgrade head
+
+      - name: Run E2E tests against real Neon
+        working-directory: apps/api
+        run: python -m pytest tests/e2e/test_neon_e2e.py -x --tb=short -m e2e
+
+      - name: Teardown — delete orphaned Neon test projects
+        if: always()
+        working-directory: apps/api
+        run: |
+          python -c "
+          import os
+          from neon_api import NeonAPI
+          client = NeonAPI(api_key=os.environ['NEON_API_KEY'])
+          projects = client.projects()
+          for p in projects.projects:
+              if p.name.startswith('vrd-') and 'e2e' in p.name.lower():
+                  print(f'Deleting orphaned test project: {p.name} ({p.id})')
+                  try:
+                      client.project_delete(p.id)
+                  except Exception as exc:
+                      print(f'  Warning: could not delete {p.id}: {exc}')
+          print('Teardown complete')
+          " || echo "Teardown script failed — check Neon console for orphaned projects"

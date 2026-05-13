@@ -34,6 +34,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "integration: Integration tests requiring real local Postgres and Redis (use -m integration to run)",
+    "e2e: Nightly E2E tests requiring a real Neon API key (use -m e2e to run)",
 ]
 
 [build-system]
@@ -42,3 +43,14 @@ build-backend = "setuptools.backends.legacy:build"
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true
