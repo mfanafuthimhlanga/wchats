@@ -2,10 +2,10 @@
 Event emission helper for Veridian Celery tasks.
 
 emit() is the single function called at every Celery task checkpoint.
-It atomically:
-  1. Inserts a row into the job_events table (durable replay log)
-  2. Publishes a JSON message to the Redis pub/sub channel job_events:{job_id}
-     (live SSE stream delivery)
+Order (WR-05: publish before commit to prevent duplicate-event retries):
+  1. Publishes a JSON message to the Redis pub/sub channel job_events:{job_id}
+     (best-effort live SSE delivery — lossy but idempotent on retry)
+  2. Inserts a row into the job_events table and commits (durable replay log)
 
 Design decisions:
   - Accepts db (Session) and redis (SyncRedis) as arguments — callers own the
@@ -54,8 +54,8 @@ def emit(
         None
 
     Side-effects:
-        - Inserts one row into job_events and commits.
-        - Publishes one message to channel "job_events:{job_id}".
+        - Publishes one message to channel "job_events:{job_id}" (best-effort).
+        - Inserts one row into job_events and commits (durable).
         - Adds "at" (UTC ISO 8601 string) to the payload copy before persist/publish.
     """
     # 1. Copy payload to avoid mutating the caller's dict; normalise None → {}
@@ -64,7 +64,17 @@ def emit(
     # 2. Inject UTC ISO timestamp — required by every downstream consumer
     event_payload["at"] = datetime.now(timezone.utc).isoformat()
 
-    # 3. Persist to job_events (durable replay log for late-join SSE clients)
+    # 3. Build the serialised message used by both Redis and the DB row
+    message = json.dumps({"event_type": event_type, "payload": event_payload})
+
+    # 4. Publish to Redis FIRST (best-effort live delivery) — before the DB commit.
+    #    If Redis publish raises here, no DB commit has happened yet, so retrying
+    #    the task won't produce a duplicate job_events row.  A Redis failure loses
+    #    only the live broadcast; the DB commit below still creates the durable record
+    #    so late-join clients will receive the event via replay.  (WR-05)
+    redis.publish(f"job_events:{job_id}", message)
+
+    # 5. Persist to job_events (durable replay log for late-join SSE clients)
     event = JobEvent(
         job_id=job_id,
         event_type=event_type,
@@ -72,7 +82,3 @@ def emit(
     )
     db.add(event)
     db.commit()
-
-    # 4. Publish to Redis pub/sub channel (live stream for connected SSE clients)
-    message = json.dumps({"event_type": event_type, "payload": event_payload})
-    redis.publish(f"job_events:{job_id}", message)
