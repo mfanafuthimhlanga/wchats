@@ -16,6 +16,8 @@ Threat mitigations:
 Use Fernet + argon2-cffi only. Do not bring in standard-library key-derivation modules.
 """
 
+import hashlib
+import hmac
 import secrets
 
 from argon2 import PasswordHasher
@@ -98,6 +100,30 @@ def verify_api_key(stored_hash: str, raw_key: str) -> bool:
         return _ph.verify(stored_hash, raw_key)
     except (VerifyMismatchError, VerificationError, InvalidHashError):
         return False
+
+
+# ---------------------------------------------------------------------------
+# HMAC key prefix — for O(1) indexed lookup (WR-01)
+# ---------------------------------------------------------------------------
+
+
+def hmac_key_prefix(raw_key: str) -> str:
+    """Return the first 16 hex chars of HMAC-SHA256(raw_key, ADMIN_KEY).
+
+    The prefix is deterministic for a given raw_key and is stored in the
+    ``api_key_prefix`` column of the tenants table with a DB index.
+    get_current_tenant filters by this prefix first, then runs a single
+    argon2 verify() — reducing auth cost from O(N) to O(1).
+
+    The prefix is NOT secret by itself (it does not allow key recovery),
+    but it is keyed with ADMIN_KEY so that an attacker with only read-DB
+    access cannot precompute a rainbow table without also knowing ADMIN_KEY.
+    """
+    return hmac.new(
+        settings.ADMIN_KEY.encode(),
+        raw_key.encode(),
+        hashlib.sha256,
+    ).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------

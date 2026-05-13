@@ -28,6 +28,12 @@ class Tenant(Base):
     api_key_hash: Mapped[str] = mapped_column(
         "api_key", Text, unique=True, nullable=False
     )
+    # First 16 hex chars of HMAC-SHA256(raw_key, ADMIN_KEY) — not secret,
+    # used for O(1) indexed lookup before argon2 verify().
+    # See apps/api/app/core/security.py hmac_key_prefix() / WR-01 fix.
+    api_key_prefix: Mapped[str | None] = mapped_column(
+        Text, nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_admin
 from app.core.database import get_async_db
-from app.core.security import generate_api_key, hash_api_key
+from app.core.security import generate_api_key, hash_api_key, hmac_key_prefix
 from app.models.tenant import Tenant
 from app.schemas.tenant import TenantCreate, TenantResponse
 
@@ -37,6 +37,7 @@ async def create_tenant(
     tenant = Tenant(
         name=body.name,
         api_key_hash=hash_api_key(raw_key),
+        api_key_prefix=hmac_key_prefix(raw_key),
     )
     db.add(tenant)
     await db.commit()

@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_async_db
-from app.core.security import verify_api_key
+from app.core.security import hmac_key_prefix, verify_api_key
 from app.models.tenant import Tenant
 
 # ---------------------------------------------------------------------------
@@ -43,14 +43,39 @@ async def get_current_tenant(
 ) -> Tenant:
     """Validate X-API-Key and return the matching Tenant.
 
-    Iterates over all non-deleted tenants and runs argon2 verify() against
-    each stored hash.  Returns on first match.
+    Uses a two-step lookup to avoid O(N) argon2 hashes per request (WR-01):
+      1. Compute the HMAC-SHA256 prefix of the raw key and filter by the
+         indexed api_key_prefix column — O(1) DB lookup.
+      2. Run a single argon2 verify() against the matched tenant row.
+
+    For tenants created before api_key_prefix was added (prefix IS NULL),
+    the WHERE clause falls back to the old O(N) scan so existing rows remain
+    authenticated until they are re-issued a key.
 
     SECURITY: api_key is NEVER logged or bound to structlog context.
               Only raises HTTP 401 on mismatch — no detail that hints at
               which part of validation failed (T-04-03).
     """
-    result = await db.execute(select(Tenant).where(Tenant.deleted_at.is_(None)))
+    prefix = hmac_key_prefix(api_key)
+
+    # Primary path: O(1) indexed lookup by HMAC prefix
+    result = await db.execute(
+        select(Tenant).where(
+            Tenant.deleted_at.is_(None),
+            Tenant.api_key_prefix == prefix,
+        )
+    )
+    tenant = result.scalars().first()
+    if tenant and verify_api_key(tenant.api_key_hash, api_key):
+        return tenant
+
+    # Fallback path: scan rows where prefix is NULL (legacy rows without prefix)
+    result = await db.execute(
+        select(Tenant).where(
+            Tenant.deleted_at.is_(None),
+            Tenant.api_key_prefix.is_(None),
+        )
+    )
     for tenant in result.scalars():
         # verify_api_key always returns bool; never raises on mismatch (01-02 decision)
         if verify_api_key(tenant.api_key_hash, api_key):
