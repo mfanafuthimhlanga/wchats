@@ -157,7 +157,9 @@ def provision_neon(self, tenant_id: str, agent_id: str) -> dict:
                     db,
                     _redis,
                 )
-                return None
+                # Raise a non-retriable exception to abort the chain and
+                # prevent apply_migrations from receiving None and crashing.
+                raise Exception(f"Neon API fatal {status_code} — chain aborted")
 
             # Retriable: 5xx or timeout — exponential backoff
             raise self.retry(exc=exc, countdown=2**self.request.retries)
