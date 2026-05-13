@@ -114,9 +114,12 @@ def on_task_prerun(sender, task_id, task, args, kwargs, **_):
     the task automatically include task_id, task_name, and request_id.
     """
     structlog.contextvars.clear_contextvars()
+    # task.request is None in CELERY_TASK_ALWAYS_EAGER mode (no message envelope).
+    # Guard against AttributeError when running integration tests in eager mode.
+    _request = task.request or {}
     structlog.contextvars.bind_contextvars(
         task_id=task_id,
         task_name=task.name,
         # request_id is propagated from FastAPI via Celery task headers
-        request_id=task.request.get("headers", {}).get("request_id", ""),
+        request_id=(_request.get("headers", {}) or {}).get("request_id", ""),
     )
