@@ -3,7 +3,7 @@ embedding_service — Voyage AI batch embedding with pinned voyage-3 model.
 
 Model pinning decision:
     EMBEDDING_MODEL = "voyage-3" is pinned permanently. DO NOT change to
-    "voyage-latest" or any other alias (PITFALLS.md §3). The tenant DB schema
+    any floating alias (PITFALLS.md §3). The tenant DB schema
     stores embeddings in a VECTOR(1024) column — voyage-3 produces exactly
     1024-dimensional vectors. If the model were changed to a different dimension,
     all existing embeddings would become incompatible and retrieval would silently
