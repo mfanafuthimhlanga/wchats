@@ -16,7 +16,7 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 | # | Milestone | Goal (short) | Requirements | PRD | Status |
 |---|-----------|--------------|:------------:|-----|--------|
 | M1 | Control Plane Skeleton | FastAPI + Celery + Neon provisioning + SSE | 15 | `prd-M1.md` | ✓ Complete (8/8) |
-| M2 | Ingestion Pipeline | Docling + Chonkie + metadata + Voyage embedding | 10 | `prd-M2.md` | ○ Pending |
+| M2 | Ingestion Pipeline | Docling + Chonkie + metadata + Voyage embedding | 10 | `prd-M2.md` | ◐ Planned (7 plans, 7 waves) |
 | M3 | Hybrid Retrieval | pgvector + BM25 + RRF + Voyage rerank | 8 | `prd-M3.md` | ○ Pending |
 | M4 | Reasoning Engine + Widget v0 | Claude agent + Preact widget + public demo **[HIREABLE ARTIFACT]** | 11 | `prd-M4.md` | ○ Pending |
 | M5 | Validation Chain | Async Gatekeeper + Auditor + Strategist on every response | 7 | `prd-M5.md` | ○ Pending |
@@ -74,7 +74,25 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 **PRD:** `prd-M2.md` (TBD — write before starting M2)
 **Requirements:** ING-01 through ING-10
 **Depends on:** M1
-**Phases:** Defined when M2 becomes active
+**Phases:** Planned — 7 plans, 7 waves
+
+| Wave | Plan | Objective | Status |
+|------|------|-----------|--------|
+| Wave 1 | 02-01 | Foundation: deps, Settings, 0002 migration (entities + chunk_entities), chunk_id + sanitize utils | ○ Pending |
+| Wave 2 | 02-02 | parse_documents Celery task + docling_service wrapper (Layer 1 source_hash idempotency) | ○ Pending |
+| Wave 3 | 02-03 | chunk_documents task + two-path chunking_service (text + Markdown table; Layer 2 uuid5+ON CONFLICT) | ○ Pending |
+| Wave 4 | 02-04 | generate_metadata task + Haiku metadata_service (single call: summary+keywords+questions+entities; Layer 3 skip) | ○ Pending |
+| Wave 5 | 02-05 | embed_and_migrate task + Voyage embedding_service (voyage-3 pinned, 128-batch, REINDEX CONCURRENTLY; Layer 4 ON CONFLICT) | ○ Pending |
+| Wave 6 | 02-06 | POST/GET /agents/{id}/documents routes + chain dispatch + full-chain integration tests (idempotency proof) | ○ Pending |
+| Wave 7 | 02-07 | Demo PDF fixture + scripts/demo_m2.sh + INGESTION_E2E_ENABLED test (ING-10 close) | ○ Pending (1 human checkpoint) |
+
+**Cross-cutting constraints:**
+- `acks_late=True` AND idempotency guard on every Celery task (4-layer end-to-end)
+- Connection strings never in Celery task args; tasks fetch by agent_id from control DB
+- Tables NEVER fed to HybridChunker (PITFALLS.md §2 — table.export_to_markdown dedicated path)
+- voyage-3 PINNED — never voyage-latest (PITFALLS.md §3)
+- Entity extraction in SAME Haiku call as metadata (single structured output)
+- Chunk text sanitized (sanitize_chunk_text) before DB write (PITFALLS.md §11)
 
 **Success Criteria:**
 1. Upload real business PDF → `chunks` and `chunk_metadata` tables populate with summaries, keywords, and hypothetical questions on every chunk.

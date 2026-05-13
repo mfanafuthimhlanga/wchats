@@ -2,8 +2,8 @@
 
 ## Current Status
 
-**Active Milestone:** M1 — Control Plane Skeleton
-**Milestone Phase:** Phase 1 — Complete (8 plans, 7 waves) — All plans complete
+**Active Milestone:** M2 — Ingestion Pipeline
+**Milestone Phase:** Phase 2 — Ready to execute (7 plans, 7 waves)
 **Last updated:** 2026-05-13
 
 ## Project Reference
@@ -71,6 +71,8 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Notes
 
+- Phase 2 planned 2026-05-13 — 7 plans, 7 waves, all ING-01–ING-10 covered, verification passed.
+- Wave 7 (02-07) marked autonomous: false — two human checkpoints: source demo_business.pdf + visual SSE verify.
 - M1 PRD (`prd-M1.md`) is complete and ready for phase planning.
 - M4 is the first hireable artifact — all scope decisions prioritize speed to M4.
 - M6 and M7 are parallelizable — both depend only on M4, not on each other.
