@@ -32,6 +32,9 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: Integration tests requiring real local Postgres and Redis (use -m integration to run)",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
