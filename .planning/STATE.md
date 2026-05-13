@@ -3,7 +3,7 @@
 ## Current Status
 
 **Active Milestone:** M2 — Ingestion Pipeline
-**Milestone Phase:** Phase 2 — Executing (Wave 2 of 7 in progress, 1/7 plans done)
+**Milestone Phase:** Phase 2 — Executing (Wave 3 of 7 in progress, 2/7 plans done)
 **Last updated:** 2026-05-13
 
 ## Project Reference
@@ -11,8 +11,8 @@
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** Phase 2 Wave 2 — 02-02 Docling parse task (ING-01, ING-02)
-**Previous:** Wave 1 complete — 02-01 Foundation (deps, settings, 0002 migration, chunk_id + sanitize utils) ✓
+**Current focus:** Phase 2 Wave 3 — 02-03 Chonkie chunk task (ING-03, ING-04, ING-05)
+**Previous:** Wave 2 complete — 02-02 Docling parse task (acks_late, source_hash idempotency, 3 SSE events) ✓
 
 ## Milestone Progress
 
