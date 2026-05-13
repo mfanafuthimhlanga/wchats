@@ -97,7 +97,7 @@ created: 2026-05-13
 
 | ID | Threat Ref | Recommendation | Priority |
 |----|------------|----------------|----------|
-| REC-01 | T-05-04 | Add `apps/api/.dockerignore` with `.env` entry for defense-in-depth against accidental secret baking if `apps/api/.env` is ever created locally | Low |
+| REC-01 | T-05-04 | ~~Add `apps/api/.dockerignore` with `.env` entry for defense-in-depth against accidental secret baking if `apps/api/.env` is ever created locally~~ **IMPLEMENTED** — `apps/api/.dockerignore` added (commit follows) | Low |
 
 ---
 
