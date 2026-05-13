@@ -90,6 +90,13 @@ def apply_migrations(self, result: dict) -> None:
         agent = db.get(Agent, agent_id)
 
         # ------------------------------------------------------------------
+        # Null check — agent may have been deleted between dispatch and execution
+        # ------------------------------------------------------------------
+        if agent is None:
+            log.error("apply_migrations.agent_not_found", agent_id=agent_id)
+            return  # Nothing to do; idempotent exit
+
+        # ------------------------------------------------------------------
         # Idempotency guard — if agent is already ready, skip entirely
         # (handles retry after a prior successful apply_migrations run)
         # ------------------------------------------------------------------
