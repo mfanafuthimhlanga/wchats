@@ -3,7 +3,7 @@
 ## Current Status
 
 **Active Milestone:** M1 — Control Plane Skeleton
-**Milestone Phase:** Phase 1 — Executing (8 plans, 7 waves) — Plan 07 complete
+**Milestone Phase:** Phase 1 — Complete (8 plans, 7 waves) — All plans complete
 **Last updated:** 2026-05-13
 
 ## Project Reference
@@ -11,14 +11,14 @@
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** M1 Phase 1 — Executing Wave 6 (01-07: integration tests)
-**Previous:** Wave 6 unit tests complete — 01-06 unit test suite (100 tests, 80.41% coverage), conftest.py, test_security/emit/schemas/task_args/health/auth/routes/services/sse
+**Current focus:** M1 Phase 1 — All 8 plans complete; ready for /gsd-verify-work 1
+**Previous:** Wave 7 complete — 01-08 GitHub Actions CI (ruff, mypy, unit, integration), nightly E2E with real Neon teardown, README with architecture diagram + quick-start
 
 ## Milestone Progress
 
 | Milestone | Name | Status | PRD |
 |-----------|------|--------|-----|
-| M1 | Control Plane Skeleton | ◐ In Progress (7/8 plans complete) | `prd-M1.md` ✓ |
+| M1 | Control Plane Skeleton | ✓ Complete (8/8 plans complete) | `prd-M1.md` ✓ |
 | M2 | Ingestion Pipeline | ○ Pending | `prd-M2.md` (TBD) |
 | M3 | Hybrid Retrieval | ○ Pending | `prd-M3.md` (TBD) |
 | M4 | Reasoning Engine + Widget | ○ Pending | `prd-M4.md` (TBD) |
@@ -67,14 +67,18 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | 01 | 05 | ~7 min | 2 | 6 |
 | 01 | 06 | ~25 min | 2 | 11 |
 | 01 | 07 | ~20 min | 2 | 6 |
+| 01 | 08 | ~5 min | 2 | 6 |
 
 ## Notes
 
 - M1 PRD (`prd-M1.md`) is complete and ready for phase planning.
 - M4 is the first hireable artifact — all scope decisions prioritize speed to M4.
 - M6 and M7 are parallelizable — both depend only on M4, not on each other.
-- Last session: 2026-05-13 — completed 01-07-PLAN.md (integration tests: 10 tests, full chain + provision + migrations + SSE late-join + worker kill-9)
+- Last session: 2026-05-13 — completed 01-08-PLAN.md (GitHub Actions CI, nightly E2E, README) — M1 Phase 1 all 8 plans complete
 - CTL-09 (acks_late=True) verified by test_task_args.py assertions on provision_neon and apply_migrations
 - CTL-13 (unit coverage >80%) satisfied: 80.41% achieved with 100 tests passing
+- CTL-14 (GitHub Actions CI) satisfied: ci.yml covers lint (ruff), typecheck (mypy), unit tests (>80% cov), integration tests with real Postgres/Redis services
+- CTL-15 (nightly E2E) satisfied: nightly.yml uses NEON_API_KEY_TEST secret, creates real Neon project, verifies 10-table schema, double-teardown (pytest finally + if:always() step)
 - conftest.py sets CELERY_TASK_ALWAYS_EAGER=True and all required env vars before app import
 - FastAPI dependency_overrides pattern used for all route tests (no real DB or Redis needed)
+- ruff config: line-length=120, select E/F/I, ignore E501; mypy: strict=false, ignore_missing_imports=true
