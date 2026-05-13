@@ -108,8 +108,17 @@ def provision_neon(self, tenant_id: str, agent_id: str) -> dict:
             .first()
         )
         if not job:
-            # Job was already marked complete on a prior attempt — nothing to do.
-            return {"agent_id": agent_id, "project_id": agent.neon_project_id}
+            # No active job found but agent is not yet provisioned — contradictory
+            # state (idempotency guard passed, meaning neon_project_id is still None).
+            # apply_migrations cannot proceed without a connection string; raise to
+            # abort the chain rather than passing project_id: None downstream.
+            log.error(
+                "provision_neon.no_job_found_for_unprovisioned_agent",
+                agent_id=agent_id,
+            )
+            raise ValueError(
+                f"No active job found for unprovisioned agent {agent_id}"
+            )
 
         job.status = "running"
         job.started_at = datetime.now(timezone.utc)
