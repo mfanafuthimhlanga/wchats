@@ -46,6 +46,11 @@ os.environ.setdefault(
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/1")
 os.environ.setdefault("ADMIN_KEY", "vrd_admin_test_key_for_tests_only")
 
+# M2 ingestion pipeline keys — must be set before any app import (pydantic-settings)
+os.environ.setdefault("ANTHROPIC_API_KEY", "test_anthropic_key")
+os.environ.setdefault("VOYAGE_API_KEY", "test_voyage_key")
+os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
+
 # Celery eager mode — tasks run synchronously in the test process,
 # no running worker required (unit tests only; integration tests override this).
 os.environ.setdefault("CELERY_TASK_ALWAYS_EAGER", "True")
