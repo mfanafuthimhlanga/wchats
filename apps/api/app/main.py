@@ -102,9 +102,10 @@ async def add_cache_control(request: Request, call_next):
 # Routers
 # ---------------------------------------------------------------------------
 
-from app.api.v1 import agents, health, jobs, tenants  # noqa: E402
+from app.api.v1 import agents, documents, health, jobs, tenants  # noqa: E402
 
 app.include_router(tenants.router)
 app.include_router(agents.router)
+app.include_router(documents.router)
 app.include_router(jobs.router)
 app.include_router(health.router)

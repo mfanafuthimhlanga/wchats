@@ -290,12 +290,35 @@ def embed_and_migrate(self, result: dict) -> dict:
             # A separate connection with ISOLATION_LEVEL_AUTOCOMMIT is opened
             # solely for this statement to avoid affecting the DML connection.
             # ------------------------------------------------------------------
-            with psycopg2.connect(conn_str) as reindex_conn:
+            # IMPORTANT: Do NOT use `with psycopg2.connect(...) as conn:` here.
+            # When a psycopg2 Connection is used as a context manager it implicitly
+            # starts a transaction context. set_isolation_level() cannot switch to
+            # AUTOCOMMIT while inside an active transaction block — Postgres raises
+            # "REINDEX CONCURRENTLY cannot run inside a transaction block".
+            # Instead: create the connection without context manager, set autocommit
+            # BEFORE any statement, then close explicitly in a finally block.
+            reindex_conn = psycopg2.connect(conn_str)
+            try:
                 reindex_conn.set_isolation_level(
                     psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT
                 )
                 with reindex_conn.cursor() as cur:
                     cur.execute("REINDEX INDEX CONCURRENTLY embeddings_vector_hnsw_idx")
+            except Exception as reindex_exc:
+                # Best-effort REINDEX: log but do NOT fail the chain.
+                # REINDEX is a performance optimization (prevents HNSW bloat);
+                # the data is already committed. A failed REINDEX never loses data.
+                # Common reasons for failure:
+                #   - Index does not exist yet (first ingestion before HNSW created)
+                #   - pgvector extension not installed (test environments without pgvector)
+                #   - Transient Postgres error (retries will attempt REINDEX again)
+                log.warning(
+                    "embed_and_migrate.reindex_skipped",
+                    reason=type(reindex_exc).__name__,
+                    error=str(reindex_exc),
+                )
+            finally:
+                reindex_conn.close()
 
             log.info(
                 "embed_and_migrate.reindex_complete",

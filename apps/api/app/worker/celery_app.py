@@ -39,6 +39,18 @@ celery_app.conf.update(
     broker_url=settings.REDIS_URL,
     result_backend=settings.REDIS_URL,
 
+    # --- Task autodiscovery -----------------------------------------------
+    # Worker discovers tasks by importing these modules on startup.
+    # M1 entries (provision, migrations) listed first; M2 entries appended.
+    include=[
+        "app.worker.tasks.pipeline.provision",
+        "app.worker.tasks.pipeline.migrations",
+        "app.worker.tasks.pipeline.parse",
+        "app.worker.tasks.pipeline.chunk",
+        "app.worker.tasks.pipeline.metadata",
+        "app.worker.tasks.pipeline.embed",
+    ],
+
     # --- Queue topology -------------------------------------------------
     # Two named queues with matching exchanges and routing keys.
     # Direct exchange: routing_key must match the queue name exactly.
@@ -102,9 +114,12 @@ def on_task_prerun(sender, task_id, task, args, kwargs, **_):
     the task automatically include task_id, task_name, and request_id.
     """
     structlog.contextvars.clear_contextvars()
+    # task.request is None in CELERY_TASK_ALWAYS_EAGER mode (no message envelope).
+    # Guard against AttributeError when running integration tests in eager mode.
+    _request = task.request or {}
     structlog.contextvars.bind_contextvars(
         task_id=task_id,
         task_name=task.name,
         # request_id is propagated from FastAPI via Celery task headers
-        request_id=task.request.get("headers", {}).get("request_id", ""),
+        request_id=(_request.get("headers", {}) or {}).get("request_id", ""),
     )
