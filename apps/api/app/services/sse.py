@@ -54,31 +54,41 @@ async def event_generator(
         The id= field is set in the DB replay phase for cache recovery.
     """
     # ------------------------------------------------------------------
-    # Phase 1: DB replay — backfill for late-joining clients
-    # ------------------------------------------------------------------
-    past = await db.execute(
-        select(JobEvent)
-        .where(JobEvent.job_id == job_id)
-        .order_by(JobEvent.created_at)
-    )
-    for evt in past.scalars():
-        if await request.is_disconnected():
-            return
-        yield ServerSentEvent(
-            data=json.dumps(evt.payload),
-            event=evt.event_type,
-            id=str(evt.id),
-        )
-        # RESEARCH.md Pitfall 4: return immediately if terminal event is in DB.
-        # Do NOT enter the Redis subscribe phase for an already-completed job.
-        if evt.event_type in TERMINAL_EVENTS:
-            return
-
-    # ------------------------------------------------------------------
-    # Phase 2: Redis pub/sub — live stream
+    # Subscribe to Redis FIRST to eliminate the gap between DB replay end
+    # and live stream start.  Events published between the two phases would
+    # be permanently lost under the old ordering (pub/sub, not a queue).
+    # Subscribing first means we may receive duplicate events already in the
+    # DB replay — duplicates are harmless as the client deduplicates by SSE id.
     # ------------------------------------------------------------------
     async with redis_client.pubsub() as pubsub:
         await pubsub.subscribe(f"job_events:{job_id}")
+
+        # ------------------------------------------------------------------
+        # Phase 1: DB replay — backfill for late-joining clients
+        # (subscribe already established above; no gap possible)
+        # ------------------------------------------------------------------
+        past = await db.execute(
+            select(JobEvent)
+            .where(JobEvent.job_id == job_id)
+            .order_by(JobEvent.created_at)
+        )
+        for evt in past.scalars():
+            if await request.is_disconnected():
+                return
+            yield ServerSentEvent(
+                data=json.dumps(evt.payload),
+                event=evt.event_type,
+                id=str(evt.id),
+            )
+            # RESEARCH.md Pitfall 4: return immediately if terminal event is in DB.
+            # Do NOT enter the Redis listen phase for an already-completed job.
+            if evt.event_type in TERMINAL_EVENTS:
+                return
+
+        # ------------------------------------------------------------------
+        # Phase 2: Redis pub/sub — live stream
+        # (subscription was opened before the DB query above)
+        # ------------------------------------------------------------------
         async for message in pubsub.listen():
             if await request.is_disconnected():
                 break
