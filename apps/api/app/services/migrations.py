@@ -64,7 +64,9 @@ def run_tenant_migrations(conn_string: str) -> None:
     """
     alembic_cfg = Config()
     alembic_cfg.set_main_option("script_location", str(_ALEMBIC_TENANT_DIR))
-    alembic_cfg.set_main_option("sqlalchemy.url", conn_string)
+    # Do NOT set sqlalchemy.url — connection is injected via attributes["connection"]
+    # below. Setting sqlalchemy.url stores the plaintext credential in the Config
+    # object where Alembic debug logging can expose it (T-03-02).
 
     # NullPool: short-lived migration connection; no pooling overhead.
     engine = create_engine(conn_string, poolclass=pool.NullPool)
