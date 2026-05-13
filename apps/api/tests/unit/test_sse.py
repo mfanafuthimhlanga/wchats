@@ -105,7 +105,13 @@ class TestEventGeneratorDbReplay:
         assert events[1].event == "neon.project.ready"
 
     async def test_returns_immediately_on_terminal_event_in_db(self):
-        """event_generator does not enter Redis phase if terminal event is in DB."""
+        """event_generator does not enter Redis listen phase if terminal event is in DB.
+
+        After the CR-06 fix, pubsub is subscribed BEFORE the DB replay (to close the
+        event-loss gap). So pubsub is always entered. What we verify here is that
+        pubsub.listen() is NOT called — the generator returns early after the terminal
+        event without entering the live-stream phase.
+        """
         from app.services.sse import event_generator
 
         job_id = uuid4()
@@ -128,19 +134,27 @@ class TestEventGeneratorDbReplay:
         mock_request = AsyncMock()
         mock_request.is_disconnected = AsyncMock(return_value=False)
 
+        # Set up pubsub as async context manager (required by CR-06 subscribe-first ordering)
+        pubsub = AsyncMock()
+        pubsub.__aenter__ = AsyncMock(return_value=pubsub)
+        pubsub.__aexit__ = AsyncMock(return_value=None)
+        pubsub.subscribe = AsyncMock()
+        pubsub.listen = AsyncMock()  # Must NOT be called
+
         mock_redis = AsyncMock()
-        mock_redis.pubsub = MagicMock()  # Should not be called
+        mock_redis.pubsub = MagicMock(return_value=pubsub)
 
         gen = event_generator(mock_request, job_id, mock_db, mock_redis)
         events = []
         async for sse_event in gen:
             events.append(sse_event)
 
-        # Generator should return after yielding the terminal event
+        # Generator should yield the terminal event then return
         assert len(events) == 1
         assert events[0].event == "job.complete"
-        # Redis pubsub should NOT have been entered
-        mock_redis.pubsub.assert_not_called()
+        # pubsub IS entered (subscribe-before-replay), but listen() must NOT be called
+        mock_redis.pubsub.assert_called_once()
+        pubsub.listen.assert_not_called()
 
     async def test_returns_immediately_on_client_disconnect(self):
         """event_generator stops if client disconnects during DB replay."""
@@ -166,7 +180,15 @@ class TestEventGeneratorDbReplay:
         mock_request = AsyncMock()
         mock_request.is_disconnected = AsyncMock(return_value=True)
 
+        # Pubsub must be async context manager (subscribe-before-replay, CR-06)
+        pubsub = AsyncMock()
+        pubsub.__aenter__ = AsyncMock(return_value=pubsub)
+        pubsub.__aexit__ = AsyncMock(return_value=None)
+        pubsub.subscribe = AsyncMock()
+        pubsub.listen = AsyncMock()
+
         mock_redis = AsyncMock()
+        mock_redis.pubsub = MagicMock(return_value=pubsub)
 
         gen = event_generator(mock_request, job_id, mock_db, mock_redis)
         events = []
@@ -175,6 +197,7 @@ class TestEventGeneratorDbReplay:
 
         # Generator returned before yielding because is_disconnected() returned True
         assert len(events) == 0
+        pubsub.listen.assert_not_called()
 
 
 def aiter_from(lst):

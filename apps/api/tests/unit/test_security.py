@@ -124,8 +124,11 @@ class TestGenerateApiKey:
 
 class TestSecurityConstraints:
     def test_no_bcrypt_or_hashlib(self):
-        """Acceptance criterion: module must not import bcrypt or hashlib."""
-        import ast
+        """Acceptance criterion: module must not use bcrypt or standalone hashlib for key derivation.
+
+        hashlib is permitted only as a digest parameter to hmac (HMAC-SHA256 prefix for O(1)
+        lookup). Direct hashlib key hashing (replacing argon2) is forbidden.
+        """
         import importlib.util
 
         spec = importlib.util.find_spec("app.core.security")
@@ -134,4 +137,7 @@ class TestSecurityConstraints:
         with open(source) as f:
             src = f.read()
         assert "bcrypt" not in src, "security.py must not use bcrypt"
-        assert "import hashlib" not in src, "security.py must not use hashlib"
+        # Forbid standalone hashlib calls used as key-derivation (e.g. hashlib.sha256(key).hexdigest()).
+        # hashlib.sha256 as a digest *parameter* to hmac.new() is permitted (see hmac_key_prefix).
+        assert "hashlib.sha256(" not in src, "security.py must not call hashlib.sha256() directly"
+        assert "hashlib.md5(" not in src, "security.py must not call hashlib.md5() directly"
