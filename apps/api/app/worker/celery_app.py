@@ -39,6 +39,18 @@ celery_app.conf.update(
     broker_url=settings.REDIS_URL,
     result_backend=settings.REDIS_URL,
 
+    # --- Task autodiscovery -----------------------------------------------
+    # Worker discovers tasks by importing these modules on startup.
+    # M1 entries (provision, migrations) listed first; M2 entries appended.
+    include=[
+        "app.worker.tasks.pipeline.provision",
+        "app.worker.tasks.pipeline.migrations",
+        "app.worker.tasks.pipeline.parse",
+        "app.worker.tasks.pipeline.chunk",
+        "app.worker.tasks.pipeline.metadata",
+        "app.worker.tasks.pipeline.embed",
+    ],
+
     # --- Queue topology -------------------------------------------------
     # Two named queues with matching exchanges and routing keys.
     # Direct exchange: routing_key must match the queue name exactly.
