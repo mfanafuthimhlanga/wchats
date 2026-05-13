@@ -52,11 +52,15 @@ async def lifespan(app: FastAPI):
 # Application instance
 # ---------------------------------------------------------------------------
 
+_is_production = settings.ENVIRONMENT == "production"
+
 app = FastAPI(
     title="Veridian Control Plane",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    # Disable interactive API docs in production to reduce attack surface (WR-04).
+    # Set ENVIRONMENT=production in the deployment environment to suppress /docs and /redoc.
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
     lifespan=lifespan,
 )
 

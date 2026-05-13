@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # CORS — locked to known origins; widget CORS added in M4 only (T-04-06)
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
+    # Deployment environment — "production" disables OpenAPI docs (WR-04)
+    ENVIRONMENT: str = "development"
+
     def __repr__(self) -> str:  # T-01-01, T-01-02: never leak field values
         return f"Settings(LOG_LEVEL={self.LOG_LEVEL!r})"
 
