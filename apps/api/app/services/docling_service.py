@@ -25,17 +25,19 @@ import structlog
 from io import BytesIO
 from pathlib import Path
 
-from docling.document_converter import DocumentConverter
-from docling.datamodel.base_models import DocumentStream, ConversionStatus
-
 log = structlog.get_logger(__name__)
 
-# Module-level init — DocumentConverter loads DocLayNet + TableFormer ML models
-# (~1-2GB RAM). Must be initialized ONCE per worker process, not inside the task
-# function. Mirrors the _redis = redis_lib.from_url(...) pattern from provision.py:
-# each Celery worker process creates exactly one converter; no cross-process sharing.
-# Initialising inside the task would pay a ~10-15s load penalty on every task call.
-_converter = DocumentConverter()
+# Lazy init — docling only available in the pipeline worker image.
+# _get_converter() initialises DocumentConverter once per process on first call.
+_converter = None
+
+
+def _get_converter():
+    global _converter
+    if _converter is None:
+        from docling.document_converter import DocumentConverter  # noqa: PLC0415
+        _converter = DocumentConverter()
+    return _converter
 
 
 def parse_document(file_path: Path) -> object:
@@ -52,7 +54,8 @@ def parse_document(file_path: Path) -> object:
         RuntimeError: If Docling reports ConversionStatus != SUCCESS. The error
             message includes all conversion errors from result.errors.
     """
-    result = _converter.convert(str(file_path), raises_on_error=False)
+    from docling.datamodel.base_models import ConversionStatus  # noqa: PLC0415
+    result = _get_converter().convert(str(file_path), raises_on_error=False)
     if result.status != ConversionStatus.SUCCESS:
         messages = []
         for err in result.errors:
@@ -81,8 +84,9 @@ def parse_document_from_bytes(content: bytes, filename: str) -> object:
     Raises:
         RuntimeError: If Docling reports ConversionStatus != SUCCESS.
     """
+    from docling.datamodel.base_models import DocumentStream, ConversionStatus  # noqa: PLC0415
     stream = DocumentStream(name=filename, stream=BytesIO(content))
-    result = _converter.convert(stream, raises_on_error=False)
+    result = _get_converter().convert(stream, raises_on_error=False)
     if result.status != ConversionStatus.SUCCESS:
         messages = []
         for err in result.errors:

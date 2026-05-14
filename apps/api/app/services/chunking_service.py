@@ -21,8 +21,6 @@ Each dict has keys: id, text, ordinal, is_table, token_count.
 """
 
 import structlog
-from docling.chunking import HybridChunker
-from docling_core.types.doc import TableItem
 
 from app.utils.chunk_id import deterministic_chunk_id
 from app.utils.sanitize import sanitize_chunk_text
@@ -63,6 +61,8 @@ def chunk_document(doc, document_id: str) -> list[dict]:
             token_count — int (approximation: len(text.split()); replace with
                           proper tokenizer in M3 if token budget matters)
     """
+    from docling.chunking import HybridChunker  # lazy — only available in pipeline worker
+    from docling_core.types.doc import TableItem  # noqa: F811
     chunker = HybridChunker(max_tokens=512, merge_peers=True)
     chunks: list[dict] = []
     ordinal = 0

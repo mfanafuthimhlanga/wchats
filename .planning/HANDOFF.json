@@ -1,0 +1,49 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-05-14T11:00:00Z",
+  "phase": "02",
+  "phase_name": "ingestion-pipeline",
+  "phase_dir": ".planning/phases/02-ingestion-pipeline",
+  "plan": "07",
+  "task": 4,
+  "total_tasks": 4,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": 1, "name": "Create .env from .env.local keys", "status": "done"},
+    {"id": 2, "name": "Fix Dockerfile build-backend + add uvicorn + split torch/no-torch images", "status": "done"},
+    {"id": 3, "name": "Make docling imports lazy in chunking_service + docling_service", "status": "done"},
+    {"id": 4, "name": "Run demo_m2.sh human checkpoint", "status": "in_progress", "progress": "Stack up, API running, blocked on alembic upgrade head failing in CLI mode"}
+  ],
+  "remaining_tasks": [
+    {"id": 5, "name": "Fix alembic upgrade head CLI failure (KeyError: url in env.py)", "status": "not_started"},
+    {"id": 6, "name": "Run alembic upgrade head successfully", "status": "not_started"},
+    {"id": 7, "name": "Run demo_m2.sh and verify all 11 SSE events", "status": "not_started"},
+    {"id": 8, "name": "Commit Dockerfile/pyproject changes + close M2 checkpoint", "status": "not_started"}
+  ],
+  "blockers": [
+    {
+      "description": "alembic upgrade head fails with KeyError: url — engine_from_config in alembic/env.py does not wire CONTROL_DB_SYNC_URL from settings into the CLI code path",
+      "type": "technical",
+      "workaround": "Investigate alembic/env.py run_migrations_online() — check how it reads the URL for sync engine. May need to set sqlalchemy.url in alembic.ini or fix env.py to use os.environ directly."
+    }
+  ],
+  "human_actions_pending": [],
+  "decisions": [
+    {"decision": "Split Dockerfile into Dockerfile (light) and Dockerfile.pipeline (torch+docling)", "rationale": "4GB RAM machine — all 4 services carrying torch caused OOM crashes during Docker builds", "phase": "02"},
+    {"decision": "Moved docling to [project.optional-dependencies] pipeline group", "rationale": "API, beat, runtime worker never call docling — only pipeline worker needs it", "phase": "02"},
+    {"decision": "Made docling imports lazy (inside function body) in chunking_service and docling_service", "rationale": "API imports Celery task modules at startup which chain-import services that import docling at module level — lazy imports fix startup crash on non-pipeline images", "phase": "02"},
+    {"decision": "Changed build-backend from setuptools.backends.legacy:build to setuptools.build_meta", "rationale": "setuptools.backends.legacy:build broke with newer pip/setuptools combinations in Docker", "phase": "02"},
+    {"decision": "Added uvicorn[standard]==0.34.3 to pyproject.toml dependencies", "rationale": "fastapi 0.136 does not auto-pull uvicorn; was missing from deps causing executable not found in container", "phase": "02"}
+  ],
+  "uncommitted_files": [
+    "apps/api/Dockerfile",
+    "apps/api/Dockerfile.pipeline",
+    "apps/api/pyproject.toml",
+    "apps/api/app/services/chunking_service.py",
+    "apps/api/app/services/docling_service.py",
+    "docker-compose.yml",
+    ".planning/STATE.md"
+  ],
+  "next_action": "Read apps/api/alembic/env.py to understand how CONTROL_DB_SYNC_URL is wired for CLI mode. Fix the KeyError: url issue, run alembic upgrade head inside the api container, then re-run demo_m2.sh.",
+  "context_notes": "Docker stack is fully up (6 containers healthy). API starts cleanly with lazy docling imports. The only remaining blocker is the alembic migration — without it POST /tenants returns 500 because the control DB schema is empty."
+}
