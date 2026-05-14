@@ -34,6 +34,12 @@ from app.models import Base  # noqa: E402
 config = context.config
 target_metadata = Base.metadata
 
+# Wire CONTROL_DB_SYNC_URL into alembic config for CLI mode.
+# alembic.ini intentionally has no sqlalchemy.url; the URL comes from
+# the environment so the same ini works across local, Docker, and CI.
+if "CONTROL_DB_SYNC_URL" in os.environ:
+    config.set_main_option("sqlalchemy.url", os.environ["CONTROL_DB_SYNC_URL"])
+
 # Wire up Python logging from alembic.ini
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
