@@ -64,7 +64,7 @@ if [[ -z "${AGENT_ID:-}" ]] || [[ -z "${API_KEY:-}" ]]; then
     AGENT_RESP=$(curl -s -w "\n%{http_code}" -X POST "$API/agents" \
       -H "Content-Type: application/json" \
       -H "X-API-Key: $API_KEY" \
-      -d '{"name": "Demo Coffee Agent", "soul": {"tone": "friendly", "language": "en"}, "role": "support"}')
+      -d '{"name": "Demo Coffee Agent", "soul": {"voice": "friendly and helpful", "do": ["answer questions about products", "escalate complex issues"], "do_not": ["discuss competitors", "make pricing promises"]}, "role": "support"}')
     HTTP_CODE=$(echo "$AGENT_RESP" | tail -1)
     AGENT_BODY=$(echo "$AGENT_RESP" | head -1)
     [[ "$HTTP_CODE" == "202" ]] || { echo "ERROR: POST /agents returned $HTTP_CODE: $AGENT_BODY"; exit 1; }
@@ -80,11 +80,11 @@ if [[ -z "${AGENT_ID:-}" ]] || [[ -z "${API_KEY:-}" ]]; then
     WAIT_START=$(date +%s)
     AGENT_STATUS="pending"
     while [[ "$AGENT_STATUS" != "ready" ]] && [[ "$AGENT_STATUS" != "failed" ]]; do
-        sleep 2
+        sleep 5
         NOW=$(date +%s)
         ELAPSED=$(( NOW - WAIT_START ))
-        if [[ "$ELAPSED" -gt 120 ]]; then
-            echo "ERROR: Agent did not become ready within 120s (status=$AGENT_STATUS)"
+        if [[ "$ELAPSED" -gt 360 ]]; then
+            echo "ERROR: Agent did not become ready within 360s (status=$AGENT_STATUS)"
             exit 1
         fi
         AGENT_RESP=$(curl -s -H "X-API-Key: $API_KEY" "$API/agents/$AGENT_ID")
