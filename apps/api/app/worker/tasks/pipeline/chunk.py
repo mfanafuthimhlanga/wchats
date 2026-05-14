@@ -43,7 +43,6 @@ Threat mitigations:
 """
 
 import structlog
-import tempfile
 from pathlib import Path
 
 import httpx
@@ -78,10 +77,10 @@ def _resolve_local_path(agent_id: str, doc_id: str, source_uri: str) -> Path:
         source_uri: Original source URI — used to extract the file extension.
 
     Returns:
-        Path: platform-portable temp path at gettempdir()/vrd-uploads/{agent_id}/{doc_id}{ext}
+        Path: absolute path at /vrd-uploads/{agent_id}/{doc_id}{ext} (Docker volume mount)
     """
     ext = Path(source_uri).suffix or ".bin"
-    return Path(tempfile.gettempdir()) / "vrd-uploads" / agent_id / f"{doc_id}{ext}"
+    return Path("/vrd-uploads") / agent_id / f"{doc_id}{ext}"
 
 
 @celery_app.task(
@@ -193,6 +192,13 @@ def chunk_documents(self, result: dict) -> dict:
                     _redis,
                 )
 
+                # Release the Neon connection before the long Docling re-parse.
+                # Re-parsing loads ML models on first call (~2 min) and runs
+                # inference (~15 min on CPU); holding an idle Neon serverless
+                # connection that long triggers the serverless idle timeout.
+                tenant_conn.close()
+                tenant_conn = None
+
                 # --------------------------------------------------------------
                 # Re-parse document via Docling
                 # DoclingDocument is not serialised between tasks (T-02-03-05 accepted).
@@ -215,6 +221,8 @@ def chunk_documents(self, result: dict) -> dict:
                         document_id=doc_id,
                         error=str(exc),
                     )
+                    # Reopen connection to continue with next document
+                    tenant_conn = psycopg2.connect(conn_str)
                     continue
 
                 except Exception as exc:
@@ -225,6 +233,9 @@ def chunk_documents(self, result: dict) -> dict:
                         error_type=type(exc).__name__,
                     )
                     raise self.retry(exc=exc, countdown=2**self.request.retries)
+
+                # Reopen connection for post-parse writes (released before re-parse)
+                tenant_conn = psycopg2.connect(conn_str)
 
                 # --------------------------------------------------------------
                 # Chunk the document using two-path strategy
@@ -281,7 +292,8 @@ def chunk_documents(self, result: dict) -> dict:
         except Exception as exc:
             # Best-effort rollback on unexpected error
             try:
-                tenant_conn.rollback()
+                if tenant_conn is not None:
+                    tenant_conn.rollback()
             except Exception:
                 pass
             log.error(
@@ -291,7 +303,8 @@ def chunk_documents(self, result: dict) -> dict:
             )
             raise self.retry(exc=exc, countdown=2**self.request.retries)
         finally:
-            tenant_conn.close()
+            if tenant_conn is not None:
+                tenant_conn.close()
 
     # T-02-03-04: Return only chain-forwarding keys — no connection string
     return {

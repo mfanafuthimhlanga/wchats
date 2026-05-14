@@ -38,7 +38,8 @@ services:
   api:
     build: apps/api
     init: true
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    user: "0:0"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     env_file: .env
@@ -50,6 +51,8 @@ services:
     volumes:
       # Mount source for live reload (--reload flag on uvicorn)
       - ./apps/api:/app
+      # Shared upload staging area — worker_pipeline reads files written here by the API
+      - vrd_uploads:/vrd-uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -60,6 +63,7 @@ services:
     build:
       context: apps/api
       dockerfile: Dockerfile.pipeline
+    user: "0:0"
     command: >
       celery -A app.worker.celery_app worker
       --queues=pipeline
@@ -72,6 +76,8 @@ services:
       REDIS_URL: redis://redis:6379/0
     volumes:
       - ./apps/api:/app
+      # Shared upload staging area — reads files written by the API container
+      - vrd_uploads:/vrd-uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -113,3 +119,4 @@ services:
 # ---------------------------------------------------------------------------
 volumes:
   postgres_data:
+  vrd_uploads:

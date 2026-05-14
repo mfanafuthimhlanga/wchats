@@ -20,6 +20,8 @@ set -euo pipefail
 API="${API_BASE:-http://localhost:8000}"
 ADMIN_KEY="${ADMIN_KEY:?ADMIN_KEY env var required — see .env.example}"
 PDF_PATH="${PDF_PATH:-apps/api/tests/fixtures/demo_business.pdf}"
+# SSE_TIMEOUT: allow override via env var; default 3600s (1 hour) for slow CPU / first run
+SSE_TIMEOUT="${SSE_TIMEOUT:-3600}"
 
 echo "=== Veridian M2 Ingestion Demo ==="
 echo "API: $API"
@@ -113,14 +115,14 @@ echo "M2 ingestion demo — uploading $PDF_PATH to agent $AGENT_ID"
 # ------------------------------------------------------------------------------
 echo ""
 echo "[3/4] Uploading PDF..."
-UPLOAD_RESP=$(curl -s -w "\n%{http_code}" -X POST "$API/api/v1/agents/$AGENT_ID/documents" \
+UPLOAD_RESP=$(curl -s -w "\n%{http_code}" -X POST "$API/agents/$AGENT_ID/documents" \
     -H "X-API-Key: $API_KEY" \
     -F "files=@$PDF_PATH")
 HTTP_CODE=$(echo "$UPLOAD_RESP" | tail -1)
 BODY=$(echo "$UPLOAD_RESP" | head -1)
 
 if [[ "$HTTP_CODE" != "202" ]]; then
-    echo "ERROR: POST /api/v1/agents/$AGENT_ID/documents returned $HTTP_CODE"
+    echo "ERROR: POST /agents/$AGENT_ID/documents returned $HTTP_CODE"
     echo "$BODY"
     exit 1
 fi
@@ -138,7 +140,8 @@ echo "  events_url:  $EVENTS_URL"
 # ------------------------------------------------------------------------------
 echo ""
 echo "[4/4] Streaming SSE events from $EVENTS_URL ..."
-echo "  (waiting up to 600s for ingestion chain to complete)"
+echo "  (waiting up to ${SSE_TIMEOUT}s for ingestion chain to complete)"
+echo "  NOTE: first run on cold ML models can take 20-30 min on CPU-only Docker"
 
 EVENTS_SEEN=()
 EXPECTED_EVENTS=(
@@ -165,7 +168,7 @@ while IFS= read -r line; do
        [[ "${EVENTS_SEEN[*]:-}" == *"job.failed"* ]]; then
         break
     fi
-done < <(timeout 600 curl -N -s -H "X-API-Key: $API_KEY" "$API$EVENTS_URL" 2>&1 || true)
+done < <(timeout "$SSE_TIMEOUT" curl -N -s -H "X-API-Key: $API_KEY" "$API$EVENTS_URL" 2>&1 || true)
 
 # Soft assertion: confirm all 11 expected events appeared
 MISSING=()

@@ -162,7 +162,7 @@ async def upload_documents(
     #    psycopg2.connect(connect_timeout=5) bounds blocking on the async
     #    event loop thread to 5 seconds (T-02-06-09).
     # ------------------------------------------------------------------
-    upload_dir = Path(tempfile.gettempdir()) / "vrd-uploads" / str(agent.id)
+    upload_dir = Path("/vrd-uploads") / str(agent.id)
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     document_ids: list[str] = []

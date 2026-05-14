@@ -28,10 +28,20 @@ Tenacity retry:
     to retry on any Exception. Authentication errors will burn 5 retries and then
     fail the task — this is acceptable for M2 since misconfiguration should be
     loud. M3 may narrow to specific transient errors.
+
+Lazy import rationale:
+    voyageai.__init__ conditionally runs `import aiohttp` when pkg_resources is
+    absent from sys.modules (a gunicorn workaround). In python:3.12-slim without
+    setuptools, aiohttp hangs indefinitely in a multiprocessing-spawned subprocess
+    (uvicorn --reload worker). Moving the import inside _get_vo() means the API
+    container never triggers that path. The guard below ensures pkg_resources is
+    in sys.modules before voyageai is imported, so the aiohttp path is skipped
+    regardless of the calling environment.
 """
 
+import sys
+
 import structlog
-import voyageai
 from tenacity import retry, wait_exponential, stop_after_attempt
 
 log = structlog.get_logger(__name__)
@@ -44,9 +54,32 @@ BATCH_SIZE = 128
 # Changing this constant requires a schema migration and full re-embedding.
 EMBEDDING_MODEL = "voyage-3"
 
-# Module-level client — reads VOYAGE_API_KEY from env at import time.
-# Fail-fast at import: misconfigured workers crash at startup, not on first task.
-_vo = voyageai.Client()
+# Lazily initialized — see _get_vo() below.
+_vo = None
+
+
+def _get_vo():
+    """Return the module-level voyageai client, initializing on first call.
+
+    Lazy init avoids importing voyageai at module level. voyageai.__init__ runs
+    `import aiohttp` when pkg_resources is absent from sys.modules; aiohttp hangs
+    indefinitely in a spawned subprocess (uvicorn --reload) on python:3.12-slim.
+    Pre-loading pkg_resources prevents that code path.
+    """
+    global _vo
+    if _vo is None:
+        # Ensure pkg_resources is present so voyageai.__init__ skips the
+        # `import aiohttp` fallback (https://github.com/benoitc/gunicorn/pull/2539).
+        if "pkg_resources" not in sys.modules:
+            try:
+                import pkg_resources  # noqa: F401
+            except ImportError:
+                # python:3.12-slim may not have setuptools; inject a stub that
+                # satisfies the isinstance check voyageai performs.
+                sys.modules["pkg_resources"] = type(sys)("pkg_resources")  # type: ignore[assignment]
+        import voyageai as _voyageai  # noqa: PLC0415
+        _vo = _voyageai.Client()
+    return _vo
 
 
 @retry(
@@ -68,7 +101,7 @@ def _embed_batch(texts: list[str]) -> list[list[float]]:
     Returns:
         List of 1024-dimensional float vectors, one per input text.
     """
-    result = _vo.embed(texts, model=EMBEDDING_MODEL, input_type="document")
+    result = _get_vo().embed(texts, model=EMBEDDING_MODEL, input_type="document")
     return result.embeddings
 
 

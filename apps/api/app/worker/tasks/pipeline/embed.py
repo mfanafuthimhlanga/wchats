@@ -53,7 +53,6 @@ Threat mitigations (T-02-05):
 """
 
 import structlog
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -264,8 +263,7 @@ def embed_and_migrate(self, result: dict) -> dict:
                         source_uri = row[0]
                         ext = Path(source_uri).suffix if source_uri else ""
                         temp_path = (
-                            Path(tempfile.gettempdir())
-                            / "vrd-uploads"
+                            Path("/vrd-uploads")
                             / agent_id
                             / f"{doc_id}{ext}"
                         )

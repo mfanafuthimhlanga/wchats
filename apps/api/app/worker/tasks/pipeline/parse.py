@@ -208,6 +208,13 @@ def parse_documents(
                 )
                 tenant_conn.commit()
 
+                # Release the Neon connection before the long Docling parse.
+                # Docling loads ML models on first call (~2 min); holding an idle
+                # Neon connection that long triggers the serverless idle timeout.
+                tenant_conn.close()
+                tenant_conn = None
+                cursor = None
+
                 # --------------------------------------------------------------
                 # Resolve file path or fetch URL bytes
                 # --------------------------------------------------------------
@@ -226,8 +233,7 @@ def parse_documents(
                         # Determine extension from source_uri filename
                         ext = Path(source_uri).suffix or f".{source_type}"
                         file_path = (
-                            Path(tempfile.gettempdir())
-                            / "vrd-uploads"
+                            Path("/vrd-uploads")
                             / agent_id
                             / f"{doc_id}{ext}"
                         )
@@ -242,6 +248,8 @@ def parse_documents(
                         document_id=doc_id,
                         error=str(exc),
                     )
+                    tenant_conn = psycopg2.connect(tenant_conn_str)
+                    cursor = tenant_conn.cursor()
                     cursor.execute(
                         "UPDATE documents SET parse_status = 'failed' WHERE id = %s",
                         (doc_id,),
@@ -256,12 +264,18 @@ def parse_documents(
                         document_id=doc_id,
                         error_type=type(exc).__name__,
                     )
+                    tenant_conn = psycopg2.connect(tenant_conn_str)
+                    cursor = tenant_conn.cursor()
                     cursor.execute(
                         "UPDATE documents SET parse_status = 'failed' WHERE id = %s",
                         (doc_id,),
                     )
                     tenant_conn.commit()
                     raise self.retry(exc=exc, countdown=2**self.request.retries)
+
+                # Reopen connection for post-parse writes (released before parse call)
+                tenant_conn = psycopg2.connect(tenant_conn_str)
+                cursor = tenant_conn.cursor()
 
                 # --------------------------------------------------------------
                 # Determine page_count from DoclingDocument
@@ -294,7 +308,8 @@ def parse_documents(
                 )
 
         finally:
-            tenant_conn.close()
+            if tenant_conn is not None:
+                tenant_conn.close()
 
     # T-02-02-01: Return only chain-forwarding keys — no connection string
     return {
