@@ -5,20 +5,23 @@ This is the first task in the M1 Celery chain:
     chain(provision_neon.s(tenant_id, agent_id), apply_migrations.s())
 
 Idempotency contract (RESEARCH.md Pitfall 2 — CRITICAL):
-    1. Check agent.neon_project_id BEFORE calling the Neon API.
-       If it is already set, return early — the project was created on a prior attempt.
-    2. Write agent.neon_project_id to the DB and commit IMMEDIATELY after the Neon
-       API returns the project ID — before polling, before encryption, before any other
-       work. This is the safety window: if the worker is kill-9'd after this commit,
-       the next attempt will hit the idempotency guard and not create a duplicate project.
+    1. Check agent.neon_project_id AND agent.neon_connection_string BEFORE calling Neon.
+       A) Both set → fully done, return early.
+       B) project_id set but no URIs → project created but URI fetch failed on prior
+          attempt; skip project creation, retry URI fetch only.
+       C) Neither set → fresh start.
+    2. Write agent.neon_project_id to the DB IMMEDIATELY after the Neon
+       API returns the project ID — before URI fetch, before encryption.
+       This is the safety window: if the worker is kill-9'd after this commit,
+       the next attempt hits the idempotency guard and skips project creation.
     3. Encryption/storage of the connection strings can be re-run safely on retry
        (Fernet produces a new ciphertext each call, but the stored value is always
        correct once written).
 
 Event emission order (CONTEXT.md §Event Emission Pattern):
-    job.started         ← emitted FIRST, after idempotency guard passes
-    neon.project.creating ← emitted before Neon API call
-    neon.project.ready  ← emitted after connection strings stored
+    job.started              ← emitted FIRST, after idempotency guard passes
+    neon.project.creating    ← emitted before Neon API call
+    neon.project.ready       ← emitted after connection strings stored
 
 Return value:
     {"agent_id": str, "project_id": str}
@@ -50,7 +53,7 @@ from app.core.security import fernet_encrypt
 from app.models.agent import Agent
 from app.models.job import Job
 from app.services.events import emit
-from app.services.neon import create_neon_project_request, poll_neon_project_ready
+from app.services.neon import create_neon_project
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
@@ -88,8 +91,8 @@ def provision_neon(self, tenant_id: str, agent_id: str) -> dict:
         # ------------------------------------------------------------------
         # Idempotency guard — three states:
         #   A) neon_project_id + neon_connection_string both set → fully done
-        #   B) neon_project_id set but no URIs → created but polling timed out;
-        #      skip project creation, resume at polling
+        #   B) neon_project_id set but no URIs → project created but URI fetch
+        #      failed; skip project creation, retry URI fetch + encrypt + store
         #   C) neither set → fresh start
         # ------------------------------------------------------------------
         if agent.neon_project_id and agent.neon_connection_string:
@@ -127,17 +130,45 @@ def provision_neon(self, tenant_id: str, agent_id: str) -> dict:
         emit(job.id, "neon.project.creating", {"agent_id": agent_id}, db, _redis)
 
         # ------------------------------------------------------------------
-        # Step 1: Call Neon API — create the project (no polling yet).
-        # Skipped if neon_project_id already set (retry after polling timeout).
-        # T-03-06: log only status_code, not the raw exception string.
+        # State B: project_id saved but URIs not stored → skip API call,
+        # jump directly to URI fetch (create_neon_project handles both).
+        # State C: call Neon API to create the project.
         # ------------------------------------------------------------------
         if agent.neon_project_id:
-            # Resuming from a retry that timed out during polling — project exists
+            # Resuming from a prior attempt that saved project_id but failed
+            # before storing URIs. Re-fetch URIs using the existing project_id.
             project_id = agent.neon_project_id
-            log.info("provision_neon.resuming_poll", agent_id=agent_id, project_id=project_id)
-        else:
+            log.info("provision_neon.resuming_uri_fetch", agent_id=agent_id, project_id=project_id)
             try:
-                project_id = create_neon_project_request(agent_id)
+                from neon_api import NeonAPI
+                client = NeonAPI(api_key=settings.NEON_API_KEY)
+                pooled_response = client.connection_uri(
+                    project_id=project_id,
+                    database_name="neondb",
+                    role_name="neondb_owner",
+                    pooled=True,
+                )
+                direct_response = client.connection_uri(
+                    project_id=project_id,
+                    database_name="neondb",
+                    role_name="neondb_owner",
+                    pooled=False,
+                )
+                result = {
+                    "id": project_id,
+                    "pooled_uri": pooled_response.uri,
+                    "direct_uri": direct_response.uri,
+                }
+            except Exception as exc:
+                log.warning("provision_neon.uri_fetch_error", agent_id=agent_id, project_id=project_id)
+                raise self.retry(exc=exc, countdown=2**self.request.retries)
+        else:
+            # ------------------------------------------------------------------
+            # Fresh start: Call Neon API to create the project + fetch URIs
+            # T-03-06: log only status_code, not the raw exception string.
+            # ------------------------------------------------------------------
+            try:
+                result = create_neon_project(agent_id)
             except Exception as exc:
                 status_code = getattr(exc, "status_code", None) or getattr(
                     getattr(exc, "response", None), "status_code", None
@@ -157,30 +188,29 @@ def provision_neon(self, tenant_id: str, agent_id: str) -> dict:
                     raise Exception(f"Neon API fatal {status_code} — chain aborted")
                 raise self.retry(exc=exc, countdown=2**self.request.retries)
 
-            # CRITICAL: Write project_id BEFORE polling — idempotency save point.
-            # If the worker is killed during polling, the next retry sees
-            # neon_project_id set and skips directly to the polling phase.
+            project_id = result["id"]
+
+            # ------------------------------------------------------------------
+            # CRITICAL: Write project_id IMMEDIATELY after API returns
+            # (before URI storage — this is the idempotency save point)
+            # If the worker is killed here, the next retry hits state B above.
+            # ------------------------------------------------------------------
             agent.neon_project_id = project_id
             db.commit()
-            log.info("provision_neon.project_id_saved", agent_id=agent_id, project_id=project_id)
 
-        # ------------------------------------------------------------------
-        # Step 2: Poll until operations settle, then fetch connection URIs.
-        # On timeout, retry — the idempotency guard above will resume here.
-        # ------------------------------------------------------------------
-        try:
-            uris = poll_neon_project_ready(project_id)
-        except Exception as exc:
-            log.warning("provision_neon.poll_error", agent_id=agent_id, project_id=project_id)
-            raise self.retry(exc=exc, countdown=2**self.request.retries)
+            log.info(
+                "provision_neon.project_id_saved",
+                agent_id=agent_id,
+                project_id=project_id,
+            )
 
         # ------------------------------------------------------------------
         # Encrypt and store both connection strings as BYTEA
         # pooled URI  → neon_connection_string (application traffic)
         # direct URI  → neon_direct_connection_string (Alembic migrations only)
         # ------------------------------------------------------------------
-        pooled_encrypted = fernet_encrypt(uris["pooled_uri"])
-        direct_encrypted = fernet_encrypt(uris["direct_uri"])
+        pooled_encrypted = fernet_encrypt(result["pooled_uri"])
+        direct_encrypted = fernet_encrypt(result["direct_uri"])
         agent.neon_connection_string = pooled_encrypted
         agent.neon_direct_connection_string = direct_encrypted
         db.commit()

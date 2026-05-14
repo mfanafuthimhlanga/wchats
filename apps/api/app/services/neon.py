@@ -2,25 +2,20 @@
 Neon API service helpers for Veridian.
 
 Provides:
-    create_neon_project  — create a Neon project, poll until operations finish,
-                           return both pooled and direct connection URIs.
+    create_neon_project  — create a Neon project and return project_id + connection URIs.
+                           Does NOT poll operations (unreliable on free tier).
     wait_for_neon_ready  — probe a Neon compute endpoint until it accepts queries.
 
 Threat context:
     T-03-02: Log only project_id from Neon responses; never log connection URIs
              or the raw API response object which may embed credentials.
-    T-03-04: 90s operation-polling deadline is bounded; worker thread is blocked
-             for at most 90s (accepted: each pipeline task runs on its own thread).
 
-Neon operation status lifecycle:
-    scheduling → running → finished (terminal, success)
-                         → failed / cancelled / skipped (terminal, non-success)
-
-The polling loop exits when no pending (non-terminal) operations remain.
-A TimeoutError is raised if the deadline passes before all operations settle.
+Design note: Neon operations polling was removed. The operations list reflects
+Neon's internal work queue and can stay non-terminal indefinitely on free tier.
+Connection URIs are available immediately after project creation; actual compute
+readiness is verified via wait_for_neon_ready() (probe loop in apply_migrations).
 """
 
-import logging
 import time
 
 import structlog
@@ -31,27 +26,28 @@ from app.core.config import settings
 
 log = structlog.get_logger(__name__)
 
-# Operation statuses that are considered "done" — no further work expected
-_TERMINAL_STATUSES = frozenset({"finished", "skipped", "cancelled", "failed"})
 
+def create_neon_project(agent_id: str) -> dict:
+    """Create a Neon project for the given agent and return project_id + URIs.
 
-def create_neon_project_request(agent_id: str) -> str:
-    """Call the Neon API to create a project and return its project_id immediately.
-
-    Does NOT poll for readiness — the caller must save this project_id to the
-    DB before polling so the idempotency guard can prevent duplicate projects
-    if the worker is killed during the polling phase.
+    Fetches connection URIs immediately after project creation — does NOT wait
+    for Neon operations to settle. Actual compute readiness is probed by
+    wait_for_neon_ready() in apply_migrations.
 
     Args:
         agent_id: The agent's UUID string, used for project naming.
 
     Returns:
-        project_id (str) — Neon project ID, ready to be persisted.
+        dict with keys:
+            "id"          — Neon project ID (str)
+            "pooled_uri"  — PgBouncer-pooled connection URI (str)
+            "direct_uri"  — Direct (non-pooled) connection URI (str)
 
     Raises:
         Any NeonAPI exception on non-2xx responses (caller handles 4xx/5xx split).
     """
     client = NeonAPI(api_key=settings.NEON_API_KEY)
+
     response = client.project_create(
         project={
             "name": f"vrd-{agent_id}",
@@ -61,46 +57,10 @@ def create_neon_project_request(agent_id: str) -> str:
     )
     project_id = response.project.id
     log.debug("neon.project_created", project_id=project_id, agent_id=agent_id)
-    return project_id
 
-
-def poll_neon_project_ready(project_id: str, timeout: int = 300) -> dict:
-    """Poll Neon operations until all settle, then fetch and return connection URIs.
-
-    Args:
-        project_id: The Neon project ID returned by create_neon_project_request.
-        timeout:    Max seconds to wait for all operations to reach a terminal
-                    status. Default 300s — Neon cold starts can exceed 90s on
-                    free tier when provisioning a fresh compute endpoint.
-
-    Returns:
-        dict with keys:
-            "pooled_uri"  — PgBouncer-pooled connection URI (str)
-            "direct_uri"  — Direct (non-pooled) connection URI (str)
-
-    Raises:
-        TimeoutError: If operations do not finish within `timeout` seconds.
-    """
-    client = NeonAPI(api_key=settings.NEON_API_KEY)
-
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        ops = client.operations(project_id)
-        pending = [
-            op
-            for op in ops.operations
-            if op.status not in _TERMINAL_STATUSES
-        ]
-        if not pending:
-            break
-        time.sleep(2)
-    else:
-        raise TimeoutError(
-            f"Neon project {project_id} did not become ready in {timeout}s"
-        )
-
-    log.info("neon.operations_finished", project_id=project_id)
-
+    # Fetch connection URIs immediately — available as soon as the project exists.
+    # pooled=True  — PgBouncer endpoint, used for application-layer queries
+    # pooled=False — Direct endpoint, used by Alembic (DDL requires session mode)
     pooled_response = client.connection_uri(
         project_id=project_id,
         database_name="neondb",
@@ -114,26 +74,27 @@ def poll_neon_project_ready(project_id: str, timeout: int = 300) -> dict:
         pooled=False,
     )
 
+    # T-03-02: return URIs to caller but do not log them here
     return {
+        "id": project_id,
         "pooled_uri": pooled_response.uri,
         "direct_uri": direct_response.uri,
     }
 
 
-def wait_for_neon_ready(conn_string: str, max_attempts: int = 10) -> None:
+def wait_for_neon_ready(conn_string: str, max_attempts: int = 15) -> None:
     """Probe a Neon compute endpoint until it accepts a simple SELECT query.
 
-    Neon marks operations as "finished" before the compute endpoint is
-    fully warm and accepting connections (RESEARCH.md Pitfall 3). This
-    probe loop adds a safety buffer so that apply_migrations does not fail
-    with "connection refused" immediately after provision_neon completes.
+    Neon compute endpoints warm up asynchronously after project creation.
+    This probe loop retries with exponential backoff so apply_migrations
+    does not fail with "connection refused" on a cold compute.
 
     Args:
         conn_string:  Direct (non-pooled) connection URI for the tenant DB.
                       Pass the decrypted direct URI — do NOT use the pooled URI.
         max_attempts: Number of probe attempts before giving up.
-                      Default 10 (2^0 + 2^1 + ... + 2^9 ≈ 17 min absolute max,
-                      but practically ready in 1–3 attempts ~10s total).
+                      Default 15 (2^0 + ... + 2^14 ≈ 9h max, typically 1–4
+                      attempts ~30s total on a cold Neon free-tier project).
 
     Raises:
         RuntimeError: After max_attempts consecutive failures.
@@ -150,7 +111,7 @@ def wait_for_neon_ready(conn_string: str, max_attempts: int = 10) -> None:
                 raise RuntimeError(
                     f"Neon project not query-ready after {max_attempts} probe attempts"
                 )
-            backoff = 2**attempt
+            backoff = min(2**attempt, 60)  # cap individual sleep at 60s
             log.debug("neon.compute_probe_waiting", attempt=attempt, backoff_s=backoff)
             time.sleep(backoff)
         finally:
