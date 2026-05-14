@@ -35,31 +35,23 @@ log = structlog.get_logger(__name__)
 _TERMINAL_STATUSES = frozenset({"finished", "skipped", "cancelled", "failed"})
 
 
-def create_neon_project(agent_id: str) -> dict:
-    """Create a Neon project for the given agent and wait until it is ready.
+def create_neon_project_request(agent_id: str) -> str:
+    """Call the Neon API to create a project and return its project_id immediately.
 
-    Steps:
-        1. Create the project via Neon API.
-        2. Write the project_id to the log for verification (no URI logged).
-        3. Poll project operations until all are in a terminal status or 90s pass.
-        4. Fetch both pooled (application traffic) and direct (Alembic) URIs.
+    Does NOT poll for readiness — the caller must save this project_id to the
+    DB before polling so the idempotency guard can prevent duplicate projects
+    if the worker is killed during the polling phase.
 
     Args:
         agent_id: The agent's UUID string, used for project naming.
 
     Returns:
-        dict with keys:
-            "id"          — Neon project ID (str)
-            "pooled_uri"  — PgBouncer-pooled connection URI (str)
-            "direct_uri"  — Direct (non-pooled) connection URI (str)
+        project_id (str) — Neon project ID, ready to be persisted.
 
     Raises:
-        TimeoutError: If operations do not finish within 90 seconds.
         Any NeonAPI exception on non-2xx responses (caller handles 4xx/5xx split).
     """
     client = NeonAPI(api_key=settings.NEON_API_KEY)
-
-    # Step 1 — Create the project
     response = client.project_create(
         project={
             "name": f"vrd-{agent_id}",
@@ -68,16 +60,30 @@ def create_neon_project(agent_id: str) -> dict:
         }
     )
     project_id = response.project.id
+    log.debug("neon.project_created", project_id=project_id, agent_id=agent_id)
+    return project_id
 
-    # Step 2 — Log project_id only (T-03-02: never log URIs or raw response)
-    log.debug(
-        "neon.project_created",
-        project_id=project_id,
-        agent_id=agent_id,
-    )
 
-    # Step 3 — Poll operations until all are terminal or deadline passes
-    deadline = time.time() + 90
+def poll_neon_project_ready(project_id: str, timeout: int = 300) -> dict:
+    """Poll Neon operations until all settle, then fetch and return connection URIs.
+
+    Args:
+        project_id: The Neon project ID returned by create_neon_project_request.
+        timeout:    Max seconds to wait for all operations to reach a terminal
+                    status. Default 300s — Neon cold starts can exceed 90s on
+                    free tier when provisioning a fresh compute endpoint.
+
+    Returns:
+        dict with keys:
+            "pooled_uri"  — PgBouncer-pooled connection URI (str)
+            "direct_uri"  — Direct (non-pooled) connection URI (str)
+
+    Raises:
+        TimeoutError: If operations do not finish within `timeout` seconds.
+    """
+    client = NeonAPI(api_key=settings.NEON_API_KEY)
+
+    deadline = time.time() + timeout
     while time.time() < deadline:
         ops = client.operations(project_id)
         pending = [
@@ -90,14 +96,11 @@ def create_neon_project(agent_id: str) -> dict:
         time.sleep(2)
     else:
         raise TimeoutError(
-            f"Neon project {project_id} did not become ready in 90s"
+            f"Neon project {project_id} did not become ready in {timeout}s"
         )
 
     log.info("neon.operations_finished", project_id=project_id)
 
-    # Step 4 — Fetch both URIs
-    # pooled=True  — PgBouncer endpoint, used for application-layer queries
-    # pooled=False — Direct endpoint, used by Alembic (DDL requires session mode)
     pooled_response = client.connection_uri(
         project_id=project_id,
         database_name="neondb",
@@ -111,9 +114,7 @@ def create_neon_project(agent_id: str) -> dict:
         pooled=False,
     )
 
-    # T-03-02: return URIs to caller but do not log them here
     return {
-        "id": project_id,
         "pooled_uri": pooled_response.uri,
         "direct_uri": direct_response.uri,
     }
