@@ -31,6 +31,7 @@ Return value:
 Failure modes (prd-M1.md §7.1):
     4xx  → fatal: sets agent.status="failed", job.status="failed", emits job.failed; no retry
     5xx / timeout → exponential backoff via self.retry(countdown=2**retries), max 3x
+    MaxRetriesExceededError → caught explicitly; sets agent.status="failed", job.status="failed"
 
 Threat mitigations:
     T-03-01: Return value contains only agent_id and project_id — no connection URI.
@@ -39,13 +40,24 @@ Threat mitigations:
     T-03-05: tenant_id and agent_id originate from FastAPI route which validates them
              against the control DB before dispatching the chain. Accepted for M1.
     T-03-06: Neon API exceptions are caught; only status_code and a sanitised message
-             are logged — exc.__str__() might embed the API key in some SDK versions.
+             are logged — NeonHTTPError.message is already truncated to 200 chars in
+             neon.py before it reaches this handler.
+
+SDK note (2026-05-15):
+    The neon_api SDK raises NeonAPIError(r.text) without preserving the HTTP response
+    object, so exc.status_code / exc.response are always None. create_neon_project now
+    uses requests directly and raises NeonHTTPError which carries .status_code.
+    The SDK is still imported for the State-B URI re-fetch path (using an existing
+    project_id) — that path's exception is also handled via the NeonHTTPError approach
+    by wrapping with requests directly.
 """
 
+import ssl
 import structlog
 from datetime import datetime, timezone
 
 import redis as redis_lib
+import requests as req_lib
 
 from app.core.config import settings
 from app.core.database import get_sync_db
@@ -53,15 +65,31 @@ from app.core.security import fernet_encrypt
 from app.models.agent import Agent
 from app.models.job import Job
 from app.services.events import emit
-from app.services.neon import create_neon_project
+from app.services.neon import NeonHTTPError, create_neon_project, _NEON_API_BASE, _neon_headers
 from app.worker.celery_app import celery_app
+from celery.exceptions import MaxRetriesExceededError
 
 log = structlog.get_logger(__name__)
 
-# Module-level sync Redis client — shared across task invocations in the same
-# worker process (RESEARCH.md §Open Questions (RESOLVED) Q3).
-# Each Celery worker process creates exactly one client; no cross-process sharing.
-_redis = redis_lib.from_url(settings.REDIS_URL)
+# Module-level sync Redis client — strip query params and pass ssl_cert_reqs as
+# a Python constant; redis-py does not parse ssl_cert_reqs=CERT_NONE from URLs.
+_url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
+_ssl_opts: dict = {"ssl_cert_reqs": ssl.CERT_NONE} if _url_clean.startswith("rediss://") else {}
+_redis = redis_lib.from_url(_url_clean, **_ssl_opts)
+
+
+def _mark_failed(agent: Agent, job: Job, db, reason: str) -> None:
+    """Set agent and job to failed and emit job.failed event.
+
+    Extracted to a helper so the same cleanup runs from both the 4xx fatal
+    path and the MaxRetriesExceededError path.
+    """
+    agent.status = "failed"
+    job.status = "failed"
+    job.error = reason
+    job.finished_at = datetime.now(timezone.utc)
+    db.commit()
+    emit(job.id, "job.failed", {"error": reason}, db, _redis)
 
 
 @celery_app.task(
@@ -131,7 +159,7 @@ def provision_neon(self, tenant_id: str, agent_id: str) -> dict:
 
         # ------------------------------------------------------------------
         # State B: project_id saved but URIs not stored → skip API call,
-        # jump directly to URI fetch (create_neon_project handles both).
+        # jump directly to URI fetch.
         # State C: call Neon API to create the project.
         # ------------------------------------------------------------------
         if agent.neon_project_id:
@@ -140,28 +168,51 @@ def provision_neon(self, tenant_id: str, agent_id: str) -> dict:
             project_id = agent.neon_project_id
             log.info("provision_neon.resuming_uri_fetch", agent_id=agent_id, project_id=project_id)
             try:
-                from neon_api import NeonAPI
-                client = NeonAPI(api_key=settings.NEON_API_KEY)
-                pooled_response = client.connection_uri(
-                    project_id=project_id,
-                    database_name="neondb",
-                    role_name="neondb_owner",
-                    pooled=True,
+                r_pooled = req_lib.get(
+                    f"{_NEON_API_BASE}/projects/{project_id}/connection_uri",
+                    headers=_neon_headers(),
+                    params={"database_name": "neondb", "role_name": "neondb_owner", "pooled": "true"},
+                    timeout=15,
                 )
-                direct_response = client.connection_uri(
-                    project_id=project_id,
-                    database_name="neondb",
-                    role_name="neondb_owner",
-                    pooled=False,
+                if not r_pooled.ok:
+                    raise NeonHTTPError(r_pooled.status_code, r_pooled.text[:200])
+
+                r_direct = req_lib.get(
+                    f"{_NEON_API_BASE}/projects/{project_id}/connection_uri",
+                    headers=_neon_headers(),
+                    params={"database_name": "neondb", "role_name": "neondb_owner", "pooled": "false"},
+                    timeout=15,
                 )
+                if not r_direct.ok:
+                    raise NeonHTTPError(r_direct.status_code, r_direct.text[:200])
+
                 result = {
                     "id": project_id,
-                    "pooled_uri": pooled_response.uri,
-                    "direct_uri": direct_response.uri,
+                    "pooled_uri": r_pooled.json()["uri"],
+                    "direct_uri": r_direct.json()["uri"],
                 }
+            except NeonHTTPError as exc:
+                log.warning(
+                    "provision_neon.uri_fetch_error",
+                    agent_id=agent_id,
+                    project_id=project_id,
+                    status_code=exc.status_code,
+                )
+                if 400 <= exc.status_code < 500:
+                    _mark_failed(agent, job, db, f"Neon API {exc.status_code} on URI fetch")
+                    raise Exception(f"Neon API fatal {exc.status_code} on URI fetch — chain aborted") from exc
+                try:
+                    raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+                except MaxRetriesExceededError:
+                    _mark_failed(agent, job, db, f"Neon URI fetch failed after {self.max_retries} retries")
+                    raise
             except Exception as exc:
-                log.warning("provision_neon.uri_fetch_error", agent_id=agent_id, project_id=project_id)
-                raise self.retry(exc=exc, countdown=2**self.request.retries)
+                log.warning("provision_neon.uri_fetch_unexpected_error", agent_id=agent_id, project_id=project_id)
+                try:
+                    raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+                except MaxRetriesExceededError:
+                    _mark_failed(agent, job, db, f"Neon URI fetch failed after {self.max_retries} retries (unexpected error)")
+                    raise
         else:
             # ------------------------------------------------------------------
             # Fresh start: Call Neon API to create the project + fetch URIs
@@ -169,24 +220,30 @@ def provision_neon(self, tenant_id: str, agent_id: str) -> dict:
             # ------------------------------------------------------------------
             try:
                 result = create_neon_project(agent_id)
-            except Exception as exc:
-                status_code = getattr(exc, "status_code", None) or getattr(
-                    getattr(exc, "response", None), "status_code", None
-                )
+            except NeonHTTPError as exc:
                 log.warning(
                     "provision_neon.neon_api_error",
                     agent_id=agent_id,
-                    status_code=status_code,
+                    status_code=exc.status_code,
+                    # T-03-06: exc.message is already truncated to 200 chars in neon.py
+                    detail=exc.message,
                 )
-                if status_code and 400 <= status_code < 500:
-                    agent.status = "failed"
-                    job.status = "failed"
-                    job.error = f"Neon API {status_code} error"
-                    job.finished_at = datetime.now(timezone.utc)
-                    db.commit()
-                    emit(job.id, "job.failed", {"error": f"Neon API {status_code} error"}, db, _redis)
-                    raise Exception(f"Neon API fatal {status_code} — chain aborted")
-                raise self.retry(exc=exc, countdown=2**self.request.retries)
+                if 400 <= exc.status_code < 500:
+                    _mark_failed(agent, job, db, f"Neon API {exc.status_code} error")
+                    raise Exception(f"Neon API fatal {exc.status_code} — chain aborted") from exc
+                try:
+                    raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+                except MaxRetriesExceededError:
+                    _mark_failed(agent, job, db, f"Neon project creation failed after {self.max_retries} retries")
+                    raise
+            except Exception as exc:
+                # Network error, timeout, etc. — not a Neon HTTP error.
+                log.warning("provision_neon.unexpected_error", agent_id=agent_id)
+                try:
+                    raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+                except MaxRetriesExceededError:
+                    _mark_failed(agent, job, db, f"Neon project creation failed after {self.max_retries} retries (network error)")
+                    raise
 
             project_id = result["id"]
 

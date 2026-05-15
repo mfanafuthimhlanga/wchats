@@ -2,6 +2,8 @@
 Neon API service helpers for Veridian.
 
 Provides:
+    NeonHTTPError        — raised by create_neon_project when the Neon API
+                           returns a non-2xx response; carries .status_code.
     create_neon_project  — create a Neon project and return project_id + connection URIs.
                            Does NOT poll operations (unreliable on free tier).
     wait_for_neon_ready  — probe a Neon compute endpoint until it accepts queries.
@@ -14,17 +16,51 @@ Design note: Neon operations polling was removed. The operations list reflects
 Neon's internal work queue and can stay non-terminal indefinitely on free tier.
 Connection URIs are available immediately after project creation; actual compute
 readiness is verified via wait_for_neon_ready() (probe loop in apply_migrations).
+
+SDK limitation (bug fix — 2026-05-15):
+    The neon_api SDK raises NeonAPIError(r.text) without passing response=r,
+    so exc.response is always None and exc.status_code does not exist.
+    To preserve the HTTP status code for correct 4xx/5xx triage in the Celery
+    task, create_neon_project calls the Neon API via requests directly and
+    raises NeonHTTPError which carries .status_code explicitly.
 """
 
+import json
 import time
 
+import requests
 import structlog
-from neon_api import NeonAPI
 from sqlalchemy import create_engine, pool, text
 
 from app.core.config import settings
 
 log = structlog.get_logger(__name__)
+
+
+class NeonHTTPError(Exception):
+    """Raised when the Neon API returns a non-2xx response.
+
+    Attributes:
+        status_code (int): The HTTP status code from the Neon API response.
+        message (str): Sanitised error message (body text, credentials scrubbed).
+    """
+
+    def __init__(self, status_code: int, message: str) -> None:
+        self.status_code = status_code
+        self.message = message
+        super().__init__(f"Neon API {status_code}: {message}")
+
+
+_NEON_API_BASE = "https://console.neon.tech/api/v2"
+
+
+def _neon_headers() -> dict:
+    """Return Neon API request headers. Key is never logged."""
+    return {
+        "Authorization": f"Bearer {settings.NEON_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
 
 
 def create_neon_project(agent_id: str) -> dict:
@@ -33,6 +69,9 @@ def create_neon_project(agent_id: str) -> dict:
     Fetches connection URIs immediately after project creation — does NOT wait
     for Neon operations to settle. Actual compute readiness is probed by
     wait_for_neon_ready() in apply_migrations.
+
+    Uses requests directly (not the neon_api SDK) to preserve the HTTP status
+    code on error responses — the SDK drops it when raising NeonAPIError.
 
     Args:
         agent_id: The agent's UUID string, used for project naming.
@@ -44,41 +83,58 @@ def create_neon_project(agent_id: str) -> dict:
             "direct_uri"  — Direct (non-pooled) connection URI (str)
 
     Raises:
-        Any NeonAPI exception on non-2xx responses (caller handles 4xx/5xx split).
+        NeonHTTPError: On any non-2xx response from the Neon API. Caller uses
+                       .status_code to distinguish fatal 4xx from retryable 5xx.
     """
-    client = NeonAPI(api_key=settings.NEON_API_KEY)
-
-    response = client.project_create(
-        project={
-            "name": f"vrd-{agent_id}",
-            "region_id": settings.NEON_REGION,
-            "pg_version": 17,
-        }
+    # --- Create project ---------------------------------------------------
+    r = requests.post(
+        f"{_NEON_API_BASE}/projects",
+        headers=_neon_headers(),
+        json={
+            "project": {
+                "name": f"vrd-{agent_id}",
+                "region_id": settings.NEON_REGION,
+                "pg_version": 17,
+            }
+        },
+        timeout=30,
     )
-    project_id = response.project.id
+    if not r.ok:
+        # T-03-06: never embed full response body in logs — it may contain
+        # credentials or quota detail that should not appear in Celery logs.
+        # Truncate to 200 chars for structured log field.
+        body_snippet = r.text[:200] if r.text else ""
+        raise NeonHTTPError(r.status_code, body_snippet)
+
+    data = r.json()
+    project_id = data["project"]["id"]
     log.debug("neon.project_created", project_id=project_id, agent_id=agent_id)
 
-    # Fetch connection URIs immediately — available as soon as the project exists.
-    # pooled=True  — PgBouncer endpoint, used for application-layer queries
-    # pooled=False — Direct endpoint, used by Alembic (DDL requires session mode)
-    pooled_response = client.connection_uri(
-        project_id=project_id,
-        database_name="neondb",
-        role_name="neondb_owner",
-        pooled=True,
+    # --- Fetch pooled connection URI --------------------------------------
+    r_pooled = requests.get(
+        f"{_NEON_API_BASE}/projects/{project_id}/connection_uri",
+        headers=_neon_headers(),
+        params={"database_name": "neondb", "role_name": "neondb_owner", "pooled": "true"},
+        timeout=15,
     )
-    direct_response = client.connection_uri(
-        project_id=project_id,
-        database_name="neondb",
-        role_name="neondb_owner",
-        pooled=False,
+    if not r_pooled.ok:
+        raise NeonHTTPError(r_pooled.status_code, r_pooled.text[:200])
+
+    # --- Fetch direct (non-pooled) connection URI -------------------------
+    r_direct = requests.get(
+        f"{_NEON_API_BASE}/projects/{project_id}/connection_uri",
+        headers=_neon_headers(),
+        params={"database_name": "neondb", "role_name": "neondb_owner", "pooled": "false"},
+        timeout=15,
     )
+    if not r_direct.ok:
+        raise NeonHTTPError(r_direct.status_code, r_direct.text[:200])
 
     # T-03-02: return URIs to caller but do not log them here
     return {
         "id": project_id,
-        "pooled_uri": pooled_response.uri,
-        "direct_uri": direct_response.uri,
+        "pooled_uri": r_pooled.json()["uri"],
+        "direct_uri": r_direct.json()["uri"],
     }
 
 
