@@ -6,7 +6,7 @@ See `.planning/PROJECT.md` for full context, requirements, and key decisions.
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
 
-**Current milestone:** M1 — Control Plane Skeleton  
+**Current milestone:** M3 — Hybrid Retrieval (M1 ✓, M2 ✓)
 **State:** `.planning/STATE.md`  
 **Roadmap:** `.planning/ROADMAP.md`
 
@@ -25,7 +25,7 @@ This project uses the GSD (Get Shit Done) planning discipline.
 
 ### Rules
 
-1. **Never skip phases.** M2 does not start until M1's success criteria are verified.
+1. **Never skip milestones.** Each milestone's success criteria must be verified before the next begins. See `.planning/ROADMAP.md` for the current active milestone.
 2. **No work outside the active phase.** If a future concern is discovered, log it in `.planning/STATE.md` and stay in the current phase.
 3. **Atomic commits.** Every plan step commits its own artifact. Never batch multiple steps into one commit.
 4. **Connection strings never in Celery task args.** Tasks receive `tenant_id`; they fetch and decrypt from the control DB at runtime.

@@ -16,24 +16,24 @@ progress:
 
 ## Current Status
 
-**Active Milestone:** M2 — Ingestion Pipeline
-**Milestone Phase:** Phase 2 — Awaiting human checkpoint (7/7 plans built, Wave 7 checkpoint pending)
-**Last updated:** 2026-05-13
+**Active Milestone:** M3 — Hybrid Retrieval
+**Milestone Phase:** Not started
+**Last updated:** 2026-05-15
 
 ## Project Reference
 
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** Phase 2 checkpoint — run scripts/demo_m2.sh against live docker-compose + verify 11 SSE events + approve
-**Previous:** Wave 7 built — demo_m2.sh + test_ingestion_e2e.py + demo_business.pdf committed ✓
+**Current focus:** Start M3 — pgvector + BM25 + RRF + Voyage rerank
+**Previous:** M2 (Ingestion Pipeline) ✓ Complete — demo_m2.sh passed: all 11 SSE events observed, 8 chunks/embeddings, 25 entities, Markdown table chunk verified (2026-05-15)
 
 ## Milestone Progress
 
 | Milestone | Name | Status | PRD |
 |-----------|------|--------|-----|
 | M1 | Control Plane Skeleton | ✓ Complete (8/8 plans complete) | `prd-M1.md` ✓ |
-| M2 | Ingestion Pipeline | ○ Pending | `prd-M2.md` (TBD) |
+| M2 | Ingestion Pipeline | ✓ Complete (7/7 plans) | `prd-M2.md` ✓ |
 | M3 | Hybrid Retrieval | ○ Pending | `prd-M3.md` (TBD) |
 | M4 | Reasoning Engine + Widget | ○ Pending | `prd-M4.md` (TBD) |
 | M5 | Validation Chain | ○ Pending | `prd-M5.md` (TBD) |
