@@ -22,6 +22,8 @@ structlog integration (RESEARCH.md §Pattern 10, Pitfall 6):
     request_id cannot bleed into the next task's log lines.
 """
 
+import ssl
+
 import structlog
 from celery import Celery, signals
 from kombu import Exchange, Queue
@@ -34,10 +36,19 @@ from app.core.config import settings
 
 celery_app = Celery("veridian")
 
+_redis_url = settings.REDIS_URL
+# Strip ssl_cert_reqs from URL — configured explicitly via broker_use_ssl /
+# redis_backend_use_ssl so Celery 5.x receives the Python ssl constant, not a string.
+_redis_url_clean = _redis_url.split("?")[0] if "?" in _redis_url else _redis_url
+_ssl_opts = (
+    {"ssl_cert_reqs": ssl.CERT_NONE} if _redis_url_clean.startswith("rediss://") else None
+)
+
 celery_app.conf.update(
     # Broker and result backend — both point to Redis
-    broker_url=settings.REDIS_URL,
-    result_backend=settings.REDIS_URL,
+    broker_url=_redis_url_clean,
+    result_backend=_redis_url_clean,
+    **({"broker_use_ssl": _ssl_opts, "redis_backend_use_ssl": _ssl_opts} if _ssl_opts else {}),
 
     # --- Task autodiscovery -----------------------------------------------
     # Worker discovers tasks by importing these modules on startup.

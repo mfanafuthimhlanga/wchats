@@ -6,11 +6,23 @@ T-01-01: NEON_ENCRYPTION_KEY read from env only; Settings.__repr__ is suppressed
 T-01-02: CONTROL_DB_SYNC_URL read from env only; same repr suppression applies.
 """
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Walk up from this file to find .env — works whether CWD is the project root,
+# apps/api/, or anywhere else. Stops at the first .env found.
+def _find_env_file() -> str | None:
+    here = Path(__file__).resolve().parent
+    for parent in [here, *here.parents]:
+        candidate = parent / ".env"
+        if candidate.exists():
+            return str(candidate)
+    return None
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_find_env_file(), extra="ignore")
 
     # Neon
     NEON_API_KEY: str
@@ -39,6 +51,11 @@ class Settings(BaseSettings):
 
     # Deployment environment — "production" disables OpenAPI docs (WR-04)
     ENVIRONMENT: str = "development"
+
+    # Upload staging directory — shared between API and pipeline worker
+    # Override via UPLOADS_DIR env var; default works for both Linux containers
+    # (/vrd-uploads) and Windows native runs (C:/vrd-uploads or any writable path)
+    UPLOADS_DIR: str = "/vrd-uploads"
 
     # Ingestion pipeline — M2 additions (T-02-01-01: keys suppressed by __repr__)
     ANTHROPIC_API_KEY: str

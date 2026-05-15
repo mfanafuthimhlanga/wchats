@@ -158,13 +158,16 @@ def parse_documents(
                     "document_ids": document_ids,
                 }
 
-            emit(
-                job_id,
-                "ingestion.started",
-                {"document_count": len(document_ids)},
-                db,
-                _redis,
-            )
+            # Only emit ingestion.started on the first attempt — retries skip it
+            # to avoid duplicate events in the SSE stream (acks_late retries re-enter here).
+            if self.request.retries == 0:
+                emit(
+                    job_id,
+                    "ingestion.started",
+                    {"document_count": len(document_ids)},
+                    db,
+                    _redis,
+                )
 
             # ------------------------------------------------------------------
             # Per-document parse loop
@@ -198,21 +201,25 @@ def parse_documents(
                     )
                     continue
 
-                # Emit parsing.started before Docling parse begins
-                emit(
-                    job_id,
-                    "parsing.started",
-                    {"document_id": doc_id, "source_uri": source_uri},
-                    db,
-                    _redis,
-                )
+                # Emit parsing.started only on first attempt for this document.
+                # On retries the status is already 'parsing', so the event was
+                # already sent — skip to avoid duplicate SSE events.
+                is_retry_attempt = parse_status == "parsing"
+                if not is_retry_attempt:
+                    emit(
+                        job_id,
+                        "parsing.started",
+                        {"document_id": doc_id, "source_uri": source_uri},
+                        db,
+                        _redis,
+                    )
 
-                # Mark in-progress
-                cursor.execute(
-                    "UPDATE documents SET parse_status = 'parsing' WHERE id = %s",
-                    (doc_id,),
-                )
-                tenant_conn.commit()
+                    # Mark in-progress (only needed on first attempt)
+                    cursor.execute(
+                        "UPDATE documents SET parse_status = 'parsing' WHERE id = %s",
+                        (doc_id,),
+                    )
+                    tenant_conn.commit()
 
                 # Release the Neon connection before the long Docling parse.
                 # Docling loads ML models on first call (~2 min); holding an idle
@@ -239,7 +246,7 @@ def parse_documents(
                         # Determine extension from source_uri filename
                         ext = Path(source_uri).suffix or f".{source_type}"
                         file_path = (
-                            Path("/vrd-uploads")
+                            Path(settings.UPLOADS_DIR)
                             / agent_id
                             / f"{doc_id}{ext}"
                         )

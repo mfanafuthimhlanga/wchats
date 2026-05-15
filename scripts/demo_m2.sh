@@ -17,6 +17,24 @@
 
 set -euo pipefail
 
+# Load .env so NEON_ENCRYPTION_KEY and CONTROL_DB_* are available for the
+# tenant DB inspection step — docker-compose injects these automatically but
+# running the script directly requires explicit loading.
+# Parses KEY=VALUE lines safely (does NOT source/eval — avoids issues with
+# URLs or values containing shell metacharacters like --tls, $, quotes, etc.)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/../.env"
+if [[ -f "$ENV_FILE" ]]; then
+    while IFS= read -r _line || [[ -n "$_line" ]]; do
+        # Skip blank lines and comments
+        [[ -z "$_line" || "$_line" == \#* ]] && continue
+        # Only export lines that look like IDENTIFIER=value
+        if [[ "$_line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            export "$_line"
+        fi
+    done < "$ENV_FILE"
+fi
+
 API="${API_BASE:-http://localhost:8000}"
 ADMIN_KEY="${ADMIN_KEY:?ADMIN_KEY env var required — see .env.example}"
 PDF_PATH="${PDF_PATH:-apps/api/tests/fixtures/demo_business.pdf}"
@@ -197,10 +215,6 @@ echo "=== Tenant DB Inspection ==="
 INSPECT_SCRIPT='
 import os, sys
 sys.path.insert(0, "apps/api")
-# Ensure test env vars are set before Settings validates
-import os as _os
-for k in ("NEON_API_KEY", "NEON_ENCRYPTION_KEY", "ADMIN_KEY"):
-    _os.environ.setdefault(k, _os.environ.get(k, "demo-placeholder"))
 
 import psycopg2
 from app.core.config import settings
