@@ -1,11 +1,11 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-14T14:20:00Z",
+  "timestamp": "2026-05-15T11:35:00Z",
   "phase": "02",
   "phase_name": "ingestion-pipeline",
   "phase_dir": ".planning/phases/02-ingestion-pipeline",
   "plan": "07",
-  "task": 8,
+  "task": 9,
   "total_tasks": 9,
   "status": "paused",
   "completed_tasks": [
@@ -16,34 +16,38 @@
     {"id": 5, "name": "Fix provision_neon idempotency — save project_id before URI fetch", "status": "done", "commit": "9cbc75f"},
     {"id": 6, "name": "Drop Neon operations polling — fetch URIs immediately post-create", "status": "done", "commit": "2680d98"},
     {"id": 7, "name": "Increase demo_m2.sh agent readiness timeout 120s→360s", "status": "done", "commit": "db4adc8"},
-    {"id": 8, "name": "Add init:true to api service in docker-compose.yml (zombie prevention)", "status": "done"}
+    {"id": 8, "name": "Add init:true to api service in docker-compose.yml (zombie prevention)", "status": "done"},
+    {"id": 9, "name": "Fix parse retry + libxcb + xet download, run demo end-to-end, verify 11 SSE events", "status": "in_progress", "progress": "All code fixes committed. Demo running with fresh upload. Parse task 6ea12d9c received by new worker. Models downloading via HTTPS (not xet). Awaiting parsing.complete → full chain."}
   ],
   "remaining_tasks": [
-    {"id": 9, "name": "Run demo_m2.sh end-to-end and verify all 11 SSE events", "status": "not_started"}
+    {"id": 9, "name": "Wait for demo to complete 11 SSE events, inspect tenant DB, mark M2 Phase 2 complete", "status": "in_progress"}
   ],
-  "blockers": [
-    {
-      "description": "API container was zombie-killed (OOM on 4GB RAM machine). Fixed by adding init:true to docker-compose.yml. On resume: verify API is up with 'docker logs veridian-api-1' and look for 'Application startup complete'. If still stuck: docker rm -f veridian-api-1 && docker compose up -d api",
-      "type": "infrastructure",
-      "workaround": "If OOM recurs during demo: docker compose stop worker_pipeline before running demo (torch image frees ~1.5GB), then docker compose start worker_pipeline after provisioning completes."
-    }
-  ],
+  "blockers": [],
   "human_actions_pending": [
     {
       "action": "Delete 7 orphan Neon projects from Neon console",
-      "context": "Created during debugging of operations polling timeout. Free tier caps at 10 projects. Projects: divine-tree-29862994, polished-moon-08641126, nameless-star-31635763, gentle-credit-68388452, morning-mountain-73858584, raspy-base-59247089, misty-night-78536101",
+      "context": "Created during debugging of operations polling timeout. Free tier caps at 10. Projects: divine-tree-29862994, polished-moon-08641126, nameless-star-31635763, gentle-credit-68388452, morning-mountain-73858584, raspy-base-59247089, misty-night-78536101",
       "blocking": false
     }
   ],
   "decisions": [
-    {"decision": "Removed Neon operations polling entirely", "rationale": "ops.status stays non-terminal indefinitely on free tier; URIs available immediately after project_create; wait_for_neon_ready() in apply_migrations probes actual connectivity", "phase": "02"},
-    {"decision": "wait_for_neon_ready max_attempts 10→15, cap per-attempt at 60s", "rationale": "Neon free tier cold compute takes 2-5 min to accept connections", "phase": "02"},
-    {"decision": "Added init:true to api service in docker-compose.yml", "rationale": "uvicorn watchfiles reloader spawns child processes; without init, OOM-killed children become zombies that prevent container restart", "phase": "02"},
-    {"decision": "demo_m2.sh agent readiness timeout 120s→360s", "rationale": "Neon provisioning + compute warm-up can take up to 5 minutes on cold free tier", "phase": "02"}
+    {"decision": "parse_documents top-level psycopg2.connect() now retries on OperationalError with 30s*2^n backoff (max_retries=3)", "rationale": "Neon pooler DNS takes 30-60s to propagate after new project creation", "phase": "02", "commit": "5c8267e"},
+    {"decision": "Added LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu to worker_pipeline environment", "rationale": "libxcb.so.1 installed in container but not in ldconfig scan paths — linker couldn't find it", "phase": "02", "commit": "126d874"},
+    {"decision": "Added HF_HUB_DISABLE_XET_ENDPOINT=1 to worker_pipeline environment", "rationale": "xet CDN (transfer.xethub.hf.co, us.aws.cdn.hf.co) has intermittent DNS failures inside WSL2 Docker — xet stalls after all retries exhausted with 0-byte incomplete blobs. Regular HTTPS download is reliable.", "phase": "02", "commit": "126d874"},
+    {"decision": "Removed Neon operations polling entirely", "rationale": "ops.status stays non-terminal indefinitely on free tier; URIs available immediately after project_create", "phase": "02"},
+    {"decision": "Agent a3b560f3 (Neon project misty-flower-54727508) already provisioned and ready", "rationale": "Skip provisioning steps on next demo run using AGENT_ID + API_KEY env vars", "phase": "02"}
   ],
-  "uncommitted_files": [
-    "docker-compose.yml"
-  ],
-  "next_action": "1) Commit docker-compose.yml (init:true addition). 2) Verify API: docker logs veridian-api-1 | grep 'Application startup complete'. 3) Run: ADMIN_KEY=<redacted-admin-key> bash scripts/demo_m2.sh. 4) Verify all 11 SSE events appear. 5) Delete HANDOFF.json and update STATE.md to mark M2 Phase 2 complete.",
-  "context_notes": "All 4 code fixes committed on main. The Neon operations polling was the root cause of all timeouts — removing it entirely was the right call. The demo script is now correct. The only remaining work is running the demo. Docker stack should be up (postgres, redis, workers all healthy); only the API container needs a check."
+  "uncommitted_files": [],
+  "active_demo": {
+    "job_id": "PENDING — check demo output file",
+    "demo_task_id": "bfme5v3ma",
+    "demo_output": "C:\\Users\\Bantu\\AppData\\Local\\Temp\\claude\\C--Users-Bantu-mzansi-agentive-veridian\\4edd213c-fbee-46c0-9470-ef39974bf874\\tasks\\bfme5v3ma.output",
+    "parse_task_id": "6ea12d9c-037e-4e98-bdce-1af136556f86",
+    "worker_container": "dad87e13eaa7",
+    "agent_id": "a3b560f3-dde3-449b-ad3b-786124ad4294",
+    "api_key": "vrd_live_TxBzzLmezBrTBmtfDrBqOmGlmvw25CljlfpLJsvoxa0"
+  },
+  "next_action": "1) Monitor demo output: Read bfme5v3ma.output — wait for all 11 SSE events (ingestion.started → job.complete). 2) docker logs dad87e13eaa7 to watch Docling model download (HTTPS now, no xet). Models download in order: docling-layout-heron (~109MB) then docling-models/tableformer (~200MB). 3) When parsing.complete fires, chunk→metadata→embed chain runs automatically (~5 min each). 4) Verify all 11 events in demo output. 5) Run: docker exec <neon-container> psql <tenant_conn_str> -c 'SELECT COUNT(*) FROM chunks; SELECT COUNT(*) FROM embeddings;'. 6) Delete HANDOFF.json, update STATE.md, commit, mark M2 Phase 2 complete.",
+  "context_notes": "All code fixes are committed. The only remaining work is waiting for the running demo to complete. The parse task (6ea12d9c) was received by the new worker (dad87e13eaa7) which has HF_HUB_DISABLE_XET_ENDPOINT=1. Model downloads will take 15-25 minutes via HTTPS on first run. After parsing, each downstream stage (chunk, metadata, embed) takes ~5 min. Total expected wait: 30-45 min from when this handoff was written. The demo script streams SSE for 3600s so it will capture all events.",
+  "resume_command": "ADMIN_KEY=<redacted-admin-key> AGENT_ID=a3b560f3-dde3-449b-ad3b-786124ad4294 API_KEY=vrd_live_TxBzzLmezBrTBmtfDrBqOmGlmvw25CljlfpLJsvoxa0 bash scripts/demo_m2.sh"
 }
