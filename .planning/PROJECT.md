@@ -72,6 +72,7 @@ A non-technical business owner completes the full journey — signup → ingest 
 - **Timeline**: M4 is the milestone that matters for hiring. It must come fast.
 - **Polished UI required**: The admin UI is part of the demo; it needs to look production-ready, not scaffolding
 - **Open source**: Code is public from day one; architecture decisions are portfolio signals
+- **No Docker**: Development machine has 4 GB RAM — Docker requires 6 GB+ minimum and was abandoned during M2. All services run as local processes. Demo scripts and verification steps must target local runs only. Never generate `docker-compose` or container-based instructions.
 
 ## Key Decisions
 

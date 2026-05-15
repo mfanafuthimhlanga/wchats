@@ -3,9 +3,10 @@
 > **Working name:** TBD (placeholder: `rag-platform`)
 > **Author:** Mfanafuthi Mhlanga (Bantuson / Mzansi Agentive Pty Ltd)
 > **Status:** Draft v2
-> **Last updated:** 2026-05-13
+> **Last updated:** 2026-05-16
 >
 > *Changelog (v1 → v2):* Added Verified Knowledge Layer between data plane and retrieval engine (new Layer 4; subsequent layers renumbered). Added entity extraction to M2. Added Conversation-Insights Engine to M10. Added paragraph-level extensions to M5, M6, and M8 covering verified-knowledge promotion paths.
+> *Changelog (v2 → current):* Added Development Environment constraint (§ Dev Environment) — local-only runs, no Docker.
 
 ---
 
@@ -277,6 +278,29 @@ Observ:      Langfuse (traces, judge outputs, latency, cost)
 Admin UI:    Next.js
 Widget:      Preact (under 20kb gzipped target)
 ```
+
+## 7b. Development Environment
+
+**Constraint: local-only, no Docker.**
+
+The development machine has 4 GB RAM. Docker Compose with all services (Postgres, Redis, FastAPI, Celery worker, Celery beat) requires a minimum of 6 GB and was abandoned during M2 after two failed attempts. All builds from M3 onward target local process execution.
+
+**How services are started:**
+
+| Service | Local command |
+|---------|---------------|
+| Redis | `redis-server` |
+| PostgreSQL | local install, e.g. `pg_ctl start` |
+| FastAPI | `uvicorn app.main:app --reload --port 8000` (from `apps/api/`) |
+| Celery worker | `celery -A app.worker.celery_app worker -Q pipeline,runtime --loglevel=info` (from `apps/api/`) |
+| Celery beat | `celery -A app.worker.celery_app beat --loglevel=info` (M6+, from `apps/api/`) |
+
+**Implications for all phase plans:**
+- Demo scripts (`scripts/demo_*.sh`) use `BASE_URL=http://localhost:8000` as default — no Docker host aliases.
+- Alembic migrations run via `cd apps/api && alembic upgrade head` against a local Postgres URL.
+- No `docker-compose.yml` targets, no container health checks, no service hostname overrides.
+- Integration tests use `TEST_DATABASE_URL` pointing at a local Postgres database.
+- `.env` file lives at `apps/api/.env` and is auto-discovered by pydantic-settings.
 
 ## 8. User journey (canonical happy path)
 

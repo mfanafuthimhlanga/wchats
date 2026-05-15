@@ -33,6 +33,7 @@ This project uses the GSD (Get Shit Done) planning discipline.
 6. **Langfuse v4 API only.** Do not use pre-v4 Langfuse patterns — `start_span()`/`start_generation()` are gone.
 7. **Ragas 0.4.x API only.** Import paths and metric return types changed from 0.3.x — use `ragas.metrics.collections`, `MetricResult`, and `reference` (not `ground_truths`).
 8. **No pg_search / pgbm25.** Deprecated on Neon March 2026. BM25 uses native `tsvector` + `ts_rank_cd` only.
+9. **No Docker.** Development runs locally on a 4 GB RAM machine. Docker requires 6 GB+ minimum and was abandoned during M2. All demo scripts, verification steps, and run instructions target local processes: Redis (`redis-server`), PostgreSQL (local install), FastAPI (`uvicorn`), Celery worker (`celery -A app.worker.celery_app worker`). Never suggest `docker-compose up` or container-based workflows.
 
 ## Stack
 
