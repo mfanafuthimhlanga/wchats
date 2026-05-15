@@ -74,6 +74,8 @@ services:
       CONTROL_DB_URL: postgresql+asyncpg://veridian:veridian@postgres:5432/veridian_control
       CONTROL_DB_SYNC_URL: postgresql://veridian:veridian@postgres:5432/veridian_control
       REDIS_URL: redis://redis:6379/0
+      LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+      HF_HUB_DISABLE_XET_ENDPOINT: "1"
     volumes:
       - ./apps/api:/app
       # Shared upload staging area — reads files written by the API container
