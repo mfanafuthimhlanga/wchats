@@ -60,6 +60,8 @@ celery_app.conf.update(
         "app.worker.tasks.pipeline.chunk",
         "app.worker.tasks.pipeline.metadata",
         "app.worker.tasks.pipeline.embed",
+        # M3: hybrid retrieval task (runtime queue)
+        "app.worker.tasks.runtime.retrieve",
     ],
 
     # --- Queue topology -------------------------------------------------

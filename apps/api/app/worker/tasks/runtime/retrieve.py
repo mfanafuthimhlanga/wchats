@@ -1,0 +1,248 @@
+"""
+retrieve_and_rank — Celery task: Hybrid retrieval + rerank + SSE events.
+
+Position in M3 runtime flow:
+    API endpoint → dispatch retrieve_and_rank (runtime queue) → SSE stream back to client
+
+This task executes the full hybrid retrieval pipeline for a single query:
+  1. Embed the query with Voyage voyage-3 (input_type="query")
+  2. Run the RRF CTE (vector HNSW + BM25 tsvector → fused by RRF score)
+  3. Rerank the fused candidates with Voyage rerank-2 (Cohere fallback)
+  4. Build a retrieval trace with truncated candidate content (max 200 chars)
+  5. Emit 5 SSE events and mark the job complete
+
+Idempotency mechanism:
+    READ guard on job_events: if a "query.complete" row already exists for this
+    job_id, the task returns immediately with {} — safe to retry without
+    duplicate events or double-billing.
+
+Security constraints (CLAUDE.md non-negotiable rules):
+    - Task args: (job_id, agent_id, query) only — NO conn_str, NO API keys.
+    - conn_str fetched via fernet_decrypt(agent.neon_connection_string) at runtime.
+    - Query text is NEVER logged; only job_id, agent_id, and counts are logged.
+
+SSE event sequence:
+    query.started    ← task begins, agent confirmed present
+    query.embedding  ← query vector produced (voyage-3)
+    query.searching  ← RRF CTE executed, fused candidates counted
+    query.reranking  ← Voyage/Cohere rerank complete
+    query.complete   ← final payload with results + trace written to job_events
+
+Queue: runtime (CLAUDE.md non-negotiable: both Celery queues always present)
+"""
+
+import ssl
+import structlog
+from datetime import datetime, timezone
+
+import redis as redis_lib
+from sqlalchemy import text as sa_text
+
+from app.core.config import settings
+from app.core.database import get_sync_db
+from app.core.security import fernet_decrypt
+from app.models.agent import Agent
+from app.models.job import Job
+from app.services.events import emit
+from app.services.retrieval_service import (
+    RetrievalStrategy,
+    build_trace,
+    embed_query,
+    rerank,
+    rrf_fuse,
+)
+from app.worker.celery_app import celery_app
+
+log = structlog.get_logger(__name__)
+
+# Module-level sync Redis client — strip query params and pass ssl_cert_reqs as
+# a Python constant; redis-py does not parse ssl_cert_reqs=CERT_NONE from URLs.
+_url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
+_ssl_opts: dict = {"ssl_cert_reqs": ssl.CERT_NONE} if _url_clean.startswith("rediss://") else {}
+_redis = redis_lib.from_url(_url_clean, **_ssl_opts)
+
+
+@celery_app.task(
+    bind=True,
+    acks_late=True,
+    max_retries=3,
+    default_retry_delay=2,
+    queue="runtime",
+    name="retrieve_and_rank",
+)
+def retrieve_and_rank(self, job_id: str, agent_id: str, query: str) -> dict:
+    """Execute hybrid retrieval pipeline for a single query and emit SSE events.
+
+    Idempotent: returns {} immediately if a "query.complete" event row already
+    exists for this job_id (duplicate delivery / retry safety).
+
+    Args:
+        job_id:   UUID string of the runtime query job.
+        agent_id: UUID string of the agent whose retrieval_strategy config is used.
+        query:    Raw user query string. NEVER logged — security constraint.
+
+    Returns:
+        {} always. Never returns sensitive data (conn_str, query text, API keys).
+    """
+    with get_sync_db() as db:
+        # ------------------------------------------------------------------
+        # Idempotency guard — exit immediately if query.complete already exists
+        # for this job_id. Prevents duplicate events on Celery retry or
+        # at-least-once redelivery from Redis.
+        # ------------------------------------------------------------------
+        existing = db.execute(
+            sa_text(
+                "SELECT 1 FROM job_events"
+                " WHERE job_id = :jid AND event_type = 'query.complete' LIMIT 1"
+            ),
+            {"jid": job_id},
+        ).fetchone()
+        if existing:
+            log.info("retrieve_and_rank.idempotent_skip", job_id=job_id)
+            return {}
+
+        # ------------------------------------------------------------------
+        # Fetch agent from control DB — required for retrieval_strategy JSONB
+        # and the encrypted neon_connection_string.
+        # ------------------------------------------------------------------
+        agent = db.get(Agent, agent_id)
+        if agent is None:
+            log.error(
+                "retrieve_and_rank.agent_not_found",
+                job_id=job_id,
+                agent_id=agent_id,
+            )
+            return {}
+
+        # ------------------------------------------------------------------
+        # Fetch job from control DB — required to update status on completion.
+        # ------------------------------------------------------------------
+        job = db.get(Job, job_id)
+        if job is None:
+            log.error("retrieve_and_rank.job_not_found", job_id=job_id)
+            return {}
+
+        # ------------------------------------------------------------------
+        # Parse retrieval strategy from JSONB — all fields optional with
+        # defaults in RetrievalStrategy. Unknown keys silently ignored.
+        # ------------------------------------------------------------------
+        strategy = RetrievalStrategy.model_validate(agent.retrieval_strategy or {})
+
+        # ------------------------------------------------------------------
+        # Decrypt connection string at runtime — NEVER in task args.
+        # (T-02-05-01 / CLAUDE.md non-negotiable rule: conn_str at runtime only)
+        # conn_str is intentionally not logged.
+        # ------------------------------------------------------------------
+        conn_str = fernet_decrypt(agent.neon_connection_string)
+
+        try:
+            # --------------------------------------------------------------
+            # EVENT 1: query.started — confirm task is executing for this agent
+            # --------------------------------------------------------------
+            emit(job_id, "query.started", {"agent_id": agent_id}, db, _redis)
+
+            # --------------------------------------------------------------
+            # Embed query with Voyage voyage-3 (input_type="query")
+            # --------------------------------------------------------------
+            query_vector = embed_query(query)
+
+            # EVENT 2: query.embedding — vector produced
+            emit(job_id, "query.embedding", {"model": "voyage-3"}, db, _redis)
+
+            # --------------------------------------------------------------
+            # RRF fusion — single CTE returns fused + individual candidates
+            # rrf_fuse() returns dict: {"fused", "vector_candidates", "bm25_candidates"}
+            # --------------------------------------------------------------
+            rrf_result = rrf_fuse(conn_str, query_vector, query, strategy)
+            fused = rrf_result["fused"]
+            vector_cands = rrf_result["vector_candidates"]
+            bm25_cands = rrf_result["bm25_candidates"]
+
+            log.info(
+                "retrieve_and_rank.searching_complete",
+                job_id=job_id,
+                fused_count=len(fused),
+                vector_count=len(vector_cands),
+                bm25_count=len(bm25_cands),
+            )
+
+            # EVENT 3: query.searching — RRF results ready
+            emit(job_id, "query.searching", {"fused_count": len(fused)}, db, _redis)
+
+            # --------------------------------------------------------------
+            # Rerank — Voyage rerank-2 primary, Cohere rerank-english-v3.0 fallback
+            # --------------------------------------------------------------
+            reranked = rerank(query, fused, strategy)
+
+            log.info(
+                "retrieve_and_rank.reranking_complete",
+                job_id=job_id,
+                reranked_count=len(reranked),
+            )
+
+            # EVENT 4: query.reranking — reranked candidate count
+            emit(
+                job_id,
+                "query.reranking",
+                {"reranked_count": len(reranked)},
+                db,
+                _redis,
+            )
+
+            # --------------------------------------------------------------
+            # Build retrieval trace (truncated to 200 chars per candidate)
+            # --------------------------------------------------------------
+            trace = build_trace(vector_cands, bm25_cands, fused, reranked, max_content=200)
+
+            payload = {
+                "query": query,
+                "results": reranked,
+                "trace": trace,
+                "strategy_used": strategy.model_dump(),
+            }
+
+            # EVENT 5: query.complete — final payload persisted to job_events
+            emit(job_id, "query.complete", payload, db, _redis)
+
+            # Mark job complete
+            job.status = "complete"
+            job.finished_at = datetime.now(timezone.utc)
+            db.commit()
+
+            log.info(
+                "retrieve_and_rank.complete",
+                job_id=job_id,
+                agent_id=agent_id,
+                reranked_count=len(reranked),
+            )
+
+        except Exception as exc:
+            log.error(
+                "retrieve_and_rank.failed",
+                job_id=job_id,
+                agent_id=agent_id,
+                error=str(exc),
+            )
+
+            # On final retry exhaustion, mark job failed and emit failure event
+            if self.request.retries >= self.max_retries:
+                try:
+                    with get_sync_db() as db2:
+                        job2 = db2.get(Job, job_id)
+                        if job2:
+                            job2.status = "failed"
+                            job2.finished_at = datetime.now(timezone.utc)
+                            db2.commit()
+                            emit(
+                                job_id,
+                                "query.failed",
+                                {"error": str(exc)},
+                                db2,
+                                _redis,
+                            )
+                except Exception:
+                    pass
+            else:
+                raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+
+    return {}
