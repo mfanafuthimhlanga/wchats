@@ -126,8 +126,14 @@ def parse_documents(
         # ------------------------------------------------------------------
         # Emit ingestion.started ONCE — only if there are un-parsed documents.
         # If all docs are already parsed, skip the emit and return early.
+        # Retry on OperationalError: Neon pooler DNS can take 30-60s to
+        # propagate after a new project is created (transient "Name or
+        # service not known" on cold compute endpoint startup).
         # ------------------------------------------------------------------
-        tenant_conn = psycopg2.connect(tenant_conn_str)
+        try:
+            tenant_conn = psycopg2.connect(tenant_conn_str)
+        except psycopg2.OperationalError as exc:
+            raise self.retry(exc=exc, countdown=30 * (2 ** self.request.retries))
         try:
             cursor = tenant_conn.cursor()
 
