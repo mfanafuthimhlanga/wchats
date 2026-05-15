@@ -43,6 +43,10 @@ class Agent(Base):
     status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=text("'pending'")
     )
+    # M3: hybrid retrieval configuration — strategy, weights, rerank model, etc.
+    retrieval_strategy: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

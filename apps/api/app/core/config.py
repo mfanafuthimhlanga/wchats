@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     # Ingestion pipeline — M2 additions (T-02-01-01: keys suppressed by __repr__)
     ANTHROPIC_API_KEY: str
     VOYAGE_API_KEY: str
+    # M3: Cohere reranker fallback (RET-05); optional so existing envs are not broken
+    COHERE_API_KEY: str | None = None
     MAX_UPLOAD_SIZE_MB: int = 50
 
     def __repr__(self) -> str:  # T-01-01, T-01-02: never leak field values
