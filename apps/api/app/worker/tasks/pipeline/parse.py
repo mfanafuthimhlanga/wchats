@@ -34,8 +34,10 @@ Threat mitigations:
 """
 
 import hashlib
+import ssl
 import structlog
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -54,9 +56,10 @@ from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
 
-# Module-level sync Redis client — shared across task invocations in the same
-# worker process. Mirrors the _redis pattern from provision.py line 61.
-_redis = redis_lib.from_url(settings.REDIS_URL)
+# Module-level sync Redis client — strip query params; pass ssl_cert_reqs as constant.
+_url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
+_ssl_opts: dict = {"ssl_cert_reqs": ssl.CERT_NONE} if _url_clean.startswith("rediss://") else {}
+_redis = redis_lib.from_url(_url_clean, **_ssl_opts)
 
 
 def _compute_source_hash(file_path: Path) -> str:
@@ -168,6 +171,11 @@ def parse_documents(
                     db,
                     _redis,
                 )
+                # Give SSE clients 1s to subscribe before parsing.started fires.
+                # emit() publishes to Redis before the DB commit, so a client that
+                # connects in the sub-second gap between the two emits would miss
+                # parsing.started from both pub/sub (too late) and DB replay (not yet committed).
+                time.sleep(1)
 
             # ------------------------------------------------------------------
             # Per-document parse loop
@@ -202,8 +210,9 @@ def parse_documents(
                     continue
 
                 # Emit parsing.started only on first attempt for this document.
-                # On retries the status is already 'parsing', so the event was
-                # already sent — skip to avoid duplicate SSE events.
+                # On retries parse_status is 'parsing' (we do NOT reset it to 'failed'
+                # before retrying — see except Exception handler below), so the event
+                # was already sent — skip to avoid duplicate SSE events.
                 is_retry_attempt = parse_status == "parsing"
                 if not is_retry_attempt:
                     emit(
@@ -271,19 +280,17 @@ def parse_documents(
                     continue
 
                 except Exception as exc:
-                    # Transient error — mark failed then retry with exponential backoff
+                    # Transient error — do NOT set parse_status='failed' here.
+                    # Keeping parse_status='parsing' ensures the retry idempotency
+                    # guard (is_retry_attempt = parse_status == 'parsing') correctly
+                    # skips re-emitting parsing.started on subsequent attempts.
+                    # parse_status is set to 'failed' only if all retries are exhausted
+                    # (MaxRetriesExceededError propagates past this handler naturally).
                     log.error(
                         "parse_documents.error",
                         document_id=doc_id,
                         error_type=type(exc).__name__,
                     )
-                    tenant_conn = psycopg2.connect(tenant_conn_str)
-                    cursor = tenant_conn.cursor()
-                    cursor.execute(
-                        "UPDATE documents SET parse_status = 'failed' WHERE id = %s",
-                        (doc_id,),
-                    )
-                    tenant_conn.commit()
                     raise self.retry(exc=exc, countdown=2**self.request.retries)
 
                 # Reopen connection for post-parse writes (released before parse call)

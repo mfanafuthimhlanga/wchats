@@ -17,8 +17,10 @@ Design decisions:
 Threat context (T-02-02-02):
   Docling runs in the same worker process. A malicious PDF could in theory exploit
   the ML model pipeline. Risk accepted; future hardening (separate parser subprocess)
-  deferred. RuntimeError on ConversionStatus != SUCCESS prevents a single bad PDF
-  from breaking the chain.
+  deferred. RuntimeError on ConversionStatus.FAILURE prevents a single bad PDF
+  from breaking the chain. PARTIAL_SUCCESS is treated as success (with a warning
+  log) — pdfium bad_alloc on individual pages is a transient resource issue and
+  does not invalidate the extracted content.
 """
 
 import structlog
@@ -47,15 +49,23 @@ def parse_document(file_path: Path) -> object:
         file_path: Path to the document file (PDF, image).
 
     Returns:
-        DoclingDocument on success (typed as object to avoid importing
-        DoclingDocument at module level — runtime use only).
+        DoclingDocument on success or partial success (typed as object to avoid
+        importing DoclingDocument at module level — runtime use only).
 
     Raises:
-        RuntimeError: If Docling reports ConversionStatus != SUCCESS. The error
-            message includes all conversion errors from result.errors.
+        RuntimeError: If Docling reports ConversionStatus.FAILURE (hard failure).
+            PARTIAL_SUCCESS is accepted with a warning — pdfium bad_alloc on
+            individual pages is a transient resource issue, not a fatal error.
     """
     from docling.datamodel.base_models import ConversionStatus  # noqa: PLC0415
     result = _get_converter().convert(str(file_path), raises_on_error=False)
+    if result.status == ConversionStatus.PARTIAL_SUCCESS:
+        log.warning(
+            "docling.partial_success",
+            file_path=str(file_path),
+            error_count=len(result.errors),
+        )
+        return result.document
     if result.status != ConversionStatus.SUCCESS:
         messages = []
         for err in result.errors:
@@ -79,14 +89,22 @@ def parse_document_from_bytes(content: bytes, filename: str) -> object:
                   source URL path or a filename with extension).
 
     Returns:
-        DoclingDocument on success (typed as object — runtime use only).
+        DoclingDocument on success or partial success (typed as object — runtime use only).
 
     Raises:
-        RuntimeError: If Docling reports ConversionStatus != SUCCESS.
+        RuntimeError: If Docling reports ConversionStatus.FAILURE (hard failure).
+            PARTIAL_SUCCESS is accepted with a warning.
     """
     from docling.datamodel.base_models import DocumentStream, ConversionStatus  # noqa: PLC0415
     stream = DocumentStream(name=filename, stream=BytesIO(content))
     result = _get_converter().convert(stream, raises_on_error=False)
+    if result.status == ConversionStatus.PARTIAL_SUCCESS:
+        log.warning(
+            "docling.partial_success",
+            filename=filename,
+            error_count=len(result.errors),
+        )
+        return result.document
     if result.status != ConversionStatus.SUCCESS:
         messages = []
         for err in result.errors:
