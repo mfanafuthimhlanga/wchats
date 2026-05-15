@@ -10,6 +10,11 @@
 # Usage:
 #   .\scripts\start_native.ps1
 #   Stop with Ctrl+C in each terminal, or close the windows.
+#
+# Windows note: Celery workers use --pool=solo to avoid a billiard Windows bug
+# where the prefork pool may spawn two child processes sharing the same pipe_handle,
+# causing tasks to fail with "not enough values to unpack (expected 3, got 0)".
+# solo pool runs tasks in the worker's main process (no subprocess spawning).
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path $PSScriptRoot -Parent
@@ -47,10 +52,10 @@ Write-Host ""
 Start-Service "API" "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 Start-Sleep -Seconds 2
 
-Start-Service "Worker: pipeline" "celery -A app.worker.celery_app worker --queues=pipeline --hostname=pipeline@%h --loglevel=info"
+Start-Service "Worker: pipeline" "celery -A app.worker.celery_app worker --queues=pipeline --hostname=pipeline@%h --loglevel=info --pool=solo"
 Start-Sleep -Seconds 1
 
-Start-Service "Worker: runtime" "celery -A app.worker.celery_app worker --queues=runtime --hostname=runtime@%h --loglevel=info"
+Start-Service "Worker: runtime" "celery -A app.worker.celery_app worker --queues=runtime --hostname=runtime@%h --loglevel=info --pool=solo"
 Start-Sleep -Seconds 1
 
 Start-Service "Beat" "celery -A app.worker.celery_app beat --loglevel=info"

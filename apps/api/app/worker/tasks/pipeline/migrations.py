@@ -45,6 +45,7 @@ Threat mitigations:
     T-03-01/02: Connection string never appears in log calls, task args, or return values.
 """
 
+import ssl
 import structlog
 from datetime import datetime, timezone
 
@@ -62,9 +63,10 @@ from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
 
-# Module-level sync Redis client — shared across task invocations in the same
-# worker process (RESEARCH.md §Open Questions (RESOLVED) Q3).
-_redis = redis_lib.from_url(settings.REDIS_URL)
+# Module-level sync Redis client — strip query params; pass ssl_cert_reqs as constant.
+_url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
+_ssl_opts: dict = {"ssl_cert_reqs": ssl.CERT_NONE} if _url_clean.startswith("rediss://") else {}
+_redis = redis_lib.from_url(_url_clean, **_ssl_opts)
 
 
 @celery_app.task(

@@ -13,6 +13,7 @@ Threat mitigations:
 """
 
 import secrets
+import ssl
 
 import redis.asyncio as aioredis
 from fastapi import Depends, HTTPException, Security
@@ -116,7 +117,13 @@ async def get_async_redis():
     Creates a connection from REDIS_URL for each request and closes it
     in the finally block to ensure proper cleanup.
     """
-    client = aioredis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    # Strip query params — ssl_cert_reqs=CERT_NONE is not parsed by redis-py from URL;
+    # must be passed as a Python ssl constant kwarg (same pattern as celery_app.py).
+    _url = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
+    _kwargs: dict = {"decode_responses": True}
+    if _url.startswith("rediss://"):
+        _kwargs["ssl_cert_reqs"] = ssl.CERT_NONE
+    client = aioredis.Redis.from_url(_url, **_kwargs)
     try:
         yield client
     finally:
