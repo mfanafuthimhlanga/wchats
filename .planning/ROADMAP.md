@@ -4,7 +4,7 @@
 **Mode:** Vertical MVP (per milestone)
 **Structure:** 10 milestones → each milestone broken into GSD phases when it becomes active
 **Coverage:** 84/84 v1 requirements mapped
-**Last updated:** 2026-05-12
+**Last updated:** 2026-05-16
 
 ---
 
@@ -17,7 +17,7 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 |---|-----------|--------------|:------------:|-----|--------|
 | M1 | Control Plane Skeleton | FastAPI + Celery + Neon provisioning + SSE | 15 | `prd-M1.md` | ✓ Complete (8/8) |
 | M2 | Ingestion Pipeline | Docling + Chonkie + metadata + Voyage embedding | 10 | `prd-M2.md` | ◐ Planned (7 plans, 7 waves) |
-| M3 | Hybrid Retrieval | pgvector + BM25 + RRF + Voyage rerank | 8 | `prd-M3.md` | ○ Pending |
+| M3 | Hybrid Retrieval | pgvector + BM25 + RRF + Voyage rerank | 8 | `prd-M3.md` | ◐ Planned (7 plans, 7 waves) |
 | M4 | Reasoning Engine + Widget v0 | Claude agent + Preact widget + public demo **[HIREABLE ARTIFACT]** | 11 | `prd-M4.md` | ○ Pending |
 | M5 | Validation Chain | Async Gatekeeper + Auditor + Strategist on every response | 7 | `prd-M5.md` | ○ Pending |
 | M6 | Eval System | Ragas nightly evals + scenario mining + eval dashboard | 8 | `prd-M6.md` | ○ Pending |
@@ -111,7 +111,26 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 **PRD:** `prd-M3.md` (TBD)
 **Requirements:** RET-01 through RET-08
 **Depends on:** M2
-**Phases:** Defined when M3 becomes active
+**Phases:** Planned — 7 plans, 7 waves
+
+| Wave | Plan | Objective | Status |
+|------|------|-----------|--------|
+| Wave 1 | 03-01 | Alembic 0003 migration (retrieval_strategy JSONB) + COHERE_API_KEY in Settings + Agent ORM + Wave 0 test stubs | ○ Pending |
+| Wave 2 | 03-02 | retrieval_service.py — RetrievalStrategy + vector_search + bm25_search + rrf_fuse + rerank + build_trace | ○ Pending |
+| Wave 3 | 03-03 | retrieve_and_rank Celery task (runtime queue) + celery_app include update | ○ Pending |
+| Wave 4 | 03-04 | FastAPI query router (POST /agents/{id}/query, GET /agents/{id}/queries) + schemas + main.py registration | ○ Pending |
+| Wave 5 | 03-05 | Full unit tests (retrieval_service + retrieve_and_rank — replace xfail stubs) | ○ Pending |
+| Wave 6 | 03-06 | Integration test (test_query_route.py — replace stub) + guarded E2E test | ○ Pending |
+| Wave 7 | 03-07 | Demo notebook (notebooks/demo_m3.ipynb) + scripts/demo_m3.sh (1 human checkpoint) | ○ Pending |
+
+**Cross-cutting constraints:**
+- `acks_late=True` AND idempotency guard on retrieve_and_rank task
+- Connection strings never in Celery task args — fetched from control DB by agent_id
+- FastAPI never does work inline — POST /agents/{id}/query dispatches to runtime queue
+- voyage-3 PINNED with input_type="query" (different from ingestion input_type="document")
+- BM25 via native tsvector + ts_rank_cd ONLY — no pg_search, no pgbm25 (deprecated Neon March 2026)
+- RRF constant k=60 hardcoded (not parameterized)
+- psycopg2 vector cast: %(query_vector)s::vector with str(query_vector) as parameter
 
 **Success Criteria:**
 1. Query returns ranked chunks with full trace: which path matched, fusion scores, rerank deltas.
@@ -285,3 +304,4 @@ When starting a new milestone: write `prd-MN.md` first, then run `/gsd-discuss-p
 ---
 
 *Roadmap created: 2026-05-12*
+*Last updated: 2026-05-16 — M3 phase planned (7 plans, 7 waves, RET-01 through RET-08)*
