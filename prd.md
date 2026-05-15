@@ -2,8 +2,10 @@
 
 > **Working name:** TBD (placeholder: `rag-platform`)
 > **Author:** Mfanafuthi Mhlanga (Bantuson / Mzansi Agentive Pty Ltd)
-> **Status:** Draft v1
-> **Last updated:** 2026-05-12
+> **Status:** Draft v2
+> **Last updated:** 2026-05-13
+>
+> *Changelog (v1 → v2):* Added Verified Knowledge Layer between data plane and retrieval engine (new Layer 4; subsequent layers renumbered). Added entity extraction to M2. Added Conversation-Insights Engine to M10. Added paragraph-level extensions to M5, M6, and M8 covering verified-knowledge promotion paths.
 
 ---
 
@@ -70,11 +72,12 @@ Every long-running operation is a Celery chain. The canonical agent-creation cha
 provision_neon
   → parse_documents
   → chunk_documents
-  → generate_metadata
+  → generate_metadata          (summaries, keywords, questions, entities)
   → embed_and_migrate
   → synthesize_retrieval_strategy
   → build_reasoning_engine
   → generate_eval_suite
+  → run_sandbox_evals           (seeds verified_qa from passing scenarios)
   → generate_red_team_suite
   → run_pre_deployment_checklist
   → await_human_validation
@@ -93,9 +96,11 @@ Queue separation prevents a nightly red team run from starving a customer onboar
 
 One Neon project per business. Within each tenant DB:
 
-- `documents`, `chunks`, `embeddings` (pgvector), `chunk_metadata`
+- `documents`, `chunks`, `embeddings` (pgvector), `chunk_metadata`, `entities`, `chunk_entities`
+- `verified_qa` (verified knowledge layer — see Layer 4)
 - `conversations`, `messages`, `tool_calls`
 - `eval_runs`, `eval_results`, `red_team_runs`
+- `conversation_insights` (graph artifacts produced by the monthly Conversation-Insights Engine — see M10)
 
 A global control DB (also Neon, shared) holds tenants, agents, jobs, billing, and cross-tenant eval aggregates.
 
@@ -108,17 +113,58 @@ Provisioning flow:
 
 **Neon branching for eval isolation.** Nightly evals run against a branch of the tenant's DB so production traffic is never affected. This is a genuine differentiator and a defensible architectural choice.
 
-### Layer 4 — Retrieval engine (programmatic)
+### Layer 4 — Verified Knowledge Layer (per-tenant, compounding)
+
+The platform's answer to the "knowledge layer" pattern Pinecone formalised in Nexus, implemented natively in each tenant's Neon DB. The goal is the same — push reasoning upstream, serve trusted answers without re-deriving them at inference — but the implementation is open Postgres, owned by the tenant, and fed by the platform's own evaluation harness and validation chain rather than a separate vendor product.
+
+Structure: a `verified_qa` table on each tenant DB, holding question/answer pairs that have been graded as faithful and grounded by the platform's own judges. Each row carries the original question embedding (for semantic match), the cited answer, the eval scores that earned it promotion, the source of promotion (`sandbox_test`, `production_promotion`, `human_authored`), and an invalidation timestamp tied to source-document lifecycle.
+
+```sql
+CREATE TABLE verified_qa (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    question         TEXT NOT NULL,
+    question_vector  VECTOR(1024) NOT NULL,
+    answer           TEXT NOT NULL,
+    citations        JSONB NOT NULL,
+    source           TEXT NOT NULL,        -- 'sandbox_test' | 'production_promotion' | 'human_authored'
+    faithfulness     NUMERIC,
+    relevance        NUMERIC,
+    promoted_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    promoted_by      TEXT,                 -- 'system' | tenant_user_id
+    last_used_at     TIMESTAMPTZ,
+    use_count        INT DEFAULT 0,
+    invalidated_at   TIMESTAMPTZ
+);
+CREATE INDEX verified_qa_vector_idx ON verified_qa
+    USING hnsw (question_vector vector_cosine_ops);
+```
+
+**Promotion paths:**
+
+1. **Sandbox-tested answers** (M6). When the eval harness runs scenario-generator questions against the agent and the judges return high faithfulness *and* high answer relevance, the question/answer pair is written to `verified_qa` with `source = 'sandbox_test'`. This means every passing pre-deployment test compounds into the agent's permanent knowledge — agents arrive at deployment having already answered their hardest test questions correctly, and those answers are served from cache.
+2. **Production promotions** (M5 + M8). When the Auditor classifies a production response as `grounded` with high confidence, the response becomes a *candidate* for promotion, surfaced in the owner's weekly digest. Owner approves with one click; row lands in `verified_qa` with `source = 'production_promotion'`.
+3. **Human-authored entries.** Owner can write canonical Q&A pairs directly through the admin UI (rare in v1, but the schema supports it).
+
+**Retrieval-time consultation.** Layer 5 (retrieval engine) consults `verified_qa` first, before hybrid search. On semantic similarity above a tenant-configurable threshold (default 0.93 cosine), the cached answer is returned with its original citations and `last_used_at` / `use_count` updated. On miss, retrieval falls through to the standard hybrid path. The threshold is high by design — false hits on verified Q&A are worse than cache misses.
+
+**Invalidation.** When a source document is re-ingested or deleted, any `verified_qa` row whose `citations` reference the affected document is marked `invalidated_at` and stops being served. This handles the staleness problem that kills naive semantic caches. Invalidated rows are not deleted — they are kept for audit and for re-promotion if the new ingestion produces a still-correct answer.
+
+**Why this matters for the architecture story.** The verified knowledge layer is not a separate product bolted on; it is the natural output of running evals and validation in production. Every test cycle, every red-team probe the agent survives, every production conversation that passed scrutiny — all of it compounds into a per-tenant knowledge asset that makes the agent faster and cheaper over time without any operator intervention. This is the same insight Nexus is built around, served from open Postgres on infrastructure the tenant already owns.
+
+### Layer 5 — Retrieval engine (programmatic)
 
 Per-tenant strategy, deterministic execution:
 
 ```
 query
-  → query_expansion (optional, LLM)
-  → parallel(vector_search, bm25_search)
-  → RRF_fusion
-  → cross_encoder_rerank
-  → return top_k
+  → embed_query
+  → verified_qa_lookup (cosine ≥ threshold → return cached answer + citations)
+  → on miss:
+      query_expansion (optional, LLM)
+      → parallel(vector_search, bm25_search)
+      → RRF_fusion
+      → cross_encoder_rerank
+      → return top_k
 ```
 
 Components:
@@ -130,18 +176,18 @@ Components:
 
 The retrieval *strategy* — k values, rerank thresholds, expansion on/off, metadata filters — is generated once at build time by a strategist agent looking at the tenant's data shape, then stored as JSON config. Runtime is pure code reading that config.
 
-### Layer 5 — Reasoning engine (Claude Agent SDK)
+### Layer 6 — Reasoning engine (Claude Agent SDK)
 
 The customer service agent itself, one instance per tenant. Tools exposed:
 
-- `retrieve(query, filters)` — calls Layer 4.
+- `retrieve(query, filters)` — calls Layer 5.
 - `lookup_structured(table, filters)` — direct Postgres for things like order status, account info.
 - `escalate_to_human(reason, context)` — safety valve.
 - `clarify(question)` — when the planner determines more info is needed.
 
 The planner is implicit in the SDK's tool-execution loop. The agent's "soul" (name, identity, role) becomes the system prompt. Role-specific tool subsets differentiate one agent from another.
 
-### Layer 6 — Validation chain (single-shot Claude API)
+### Layer 7 — Validation chain (single-shot Claude API)
 
 Three sequential Claude calls wrapping every agent response. All Haiku-tier for cost.
 
@@ -149,9 +195,9 @@ Three sequential Claude calls wrapping every agent response. All Haiku-tier for 
 - **Auditor** — "Is every factual claim in this response supported by the retrieved context?" → `grounded | ungrounded | partial` with citation spans.
 - **Strategist** — "Is this response coherent, on-brand, and aligned with the agent's role?" → `ship | revise | escalate`.
 
-Outputs are structured (Pydantic-validated), logged to Langfuse, and feed back into the eval system as production telemetry. Persistent Auditor failures on a given retrieval pattern trigger a strategy re-synthesis flag.
+Outputs are structured (Pydantic-validated), logged to Langfuse, and feed back into the eval system as production telemetry. Persistent Auditor failures on a given retrieval pattern trigger a strategy re-synthesis flag. **Auditor `grounded` responses with confidence above the per-tenant promotion threshold also become verified-knowledge candidates** — queued for owner approval in the weekly digest. This is the production-to-knowledge-layer flywheel: every conversation the agent gets right under scrutiny is a candidate to become canonical.
 
-### Layer 7 — Eval system (programmatic harness, agentic judges)
+### Layer 8 — Eval system (programmatic harness, agentic judges)
 
 The harness is code. Celery beat schedules runs; the harness executes test scenarios against the deployed agent and captures full traces.
 
@@ -171,7 +217,9 @@ Plus latency and cost from Langfuse trace data.
 
 This is the flywheel: production traffic improves the eval suite, which improves the next deployment.
 
-### Layer 8 — Red team (Claude Agent SDK)
+**Verified-knowledge promotion side-effect.** The harness has a second, equally important output: every scenario that scores above the promotion thresholds (faithfulness ≥ 0.90, answer relevance ≥ 0.90 by default; both tunable per tenant) is written to the tenant's `verified_qa` table with `source = 'sandbox_test'`. The eval system is therefore not just a quality gate — it is the primary builder of the verified knowledge layer. By the time an agent reaches pre-deployment, its hardest scenario questions are already answered from cache.
+
+### Layer 9 — Red team (Claude Agent SDK)
 
 Three red team agents, each with tools to probe the deployed customer service agent:
 
@@ -188,7 +236,7 @@ Runs:
 
 Built on PyRIT scaffolding where it adds value; custom Claude-driven probes where PyRIT does not cover the domain (Claude-specific jailbreak surfaces, business-context attacks).
 
-### Layer 9 — Pre-deployment checklist (orchestrator agent)
+### Layer 10 — Pre-deployment checklist (orchestrator agent)
 
 The human-validated gate. A strategist-tier agent (Agent SDK, Sonnet) reads:
 
@@ -196,6 +244,7 @@ The human-validated gate. A strategist-tier agent (Agent SDK, Sonnet) reads:
 - Red team results — severity-classified findings.
 - Cost and latency — p50, p95, p99.
 - Coverage analysis — which parts of the ingested corpus are reachable via the current retrieval strategy.
+- **Verified knowledge depth** — how many `verified_qa` rows the agent enters deployment with, what fraction of the eval scenarios are now cached, expected post-deployment cache-hit rate based on production-trace mining if available.
 
 It writes a structured deployment report with a recommendation:
 
@@ -205,7 +254,7 @@ It writes a structured deployment report with a recommendation:
 
 The owner sees a plain-language summary with expandable details. On approval, the iframe widget goes live.
 
-### Layer 10 — Widget delivery
+### Layer 11 — Widget delivery
 
 Static JS bundle on a CDN. The iframe loads, calls `/widget/{agent_id}/config`, receives theming, agent ID, and a short-lived JWT. All chat traffic flows back through FastAPI → Celery `runtime` queue → Agent SDK.
 
@@ -217,11 +266,13 @@ Bundle target: under 20kb gzipped. SMB websites are already bloated; widget weig
 Backend:     FastAPI, Pydantic, Celery, Redis, Alembic
 Data:        Postgres (control DB on Neon), Neon (per-tenant), pgvector
 Agents:      Claude Agent SDK (customer agents, strategists, red teamers)
-             Claude API direct (judges, Gatekeeper, Auditor, Strategist)
+             Claude API direct (judges, Gatekeeper, Auditor, Strategist,
+                                metadata enrichment, entity extraction)
 Ingestion:   Docling (layout-aware parsing), Chonkie (structure-aware chunking)
 Embeddings:  Voyage (embed + rerank), Cohere Rerank fallback
 Evals:       Ragas metrics framework, custom harness on top
 Red team:    PyRIT scaffolding, custom Claude probes
+Insights:    microsoft/graphrag library (monthly conversation-graph builds)
 Observ:      Langfuse (traces, judge outputs, latency, cost)
 Admin UI:    Next.js
 Widget:      Preact (under 20kb gzipped target)
@@ -254,11 +305,13 @@ FastAPI app, auth, tenant model, Neon provisioning task, control DB schema, SSE 
 
 ### M2 — Ingestion pipeline
 
-Docling parsing for documents, image, URL ingestion paths. Structure-aware chunking via Chonkie. HyDE-style metadata generation (summary, keywords, hypothetical questions) per chunk via Claude API. Embedding via Voyage. Migration into tenant Neon DB.
+Docling parsing for documents, image, URL ingestion paths. Structure-aware chunking via Chonkie. HyDE-style metadata generation (summary, keywords, hypothetical questions) per chunk via Claude API. **Entity extraction** alongside metadata generation: each chunk gets a list of named entities (products, people, places, policies, named processes) extracted in the same Claude call, written to an `entities` table and joined to chunks via `chunk_entities`. Embedding via Voyage. Migration into tenant Neon DB.
 
-**End state:** Drop in a PDF, watch it become queryable chunks in the tenant DB with summaries, keywords, and questions attached.
+The entity layer is cheap (a few cents per document, runs in the same Claude call as summary/keyword extraction) and unlocks metadata-filtered retrieval at runtime ("return chunks that mention the entity `Returns Policy`"). It is also the substrate the Conversation-Insights Engine (M10) reuses when it builds graphs over conversation logs.
 
-**Demo:** Upload a real business PDF, inspect the resulting `chunks` and `chunk_metadata` tables.
+**End state:** Drop in a PDF, watch it become queryable chunks in the tenant DB with summaries, keywords, questions, and entity tags attached. The `entities` table has a clean entity vocabulary for the tenant's domain.
+
+**Demo:** Upload a real business PDF, inspect the resulting `chunks`, `chunk_metadata`, and `entities` tables.
 
 ### M3 — Hybrid retrieval
 
@@ -282,17 +335,23 @@ Agent SDK integration, tool definitions, system prompt assembled from agent soul
 
 Gatekeeper, Auditor, Strategist wrapping every response. Langfuse integration. Structured outputs captured.
 
-**End state:** Every production response has three structured judgments attached, visible in Langfuse and in the admin UI.
+**Verified-knowledge promotion path.** When the Auditor returns `grounded` with confidence above the per-tenant promotion threshold (default 0.90), the response is marked as a verified-knowledge candidate and queued for owner approval in the weekly digest. This is where the production flywheel begins: every conversation the agent gets right under scrutiny becomes a candidate to become canonical. M5 ships the candidate-marking and queueing; the approval UI lands in M8 alongside the rest of the owner-facing dashboard.
 
-**Demo:** Adversarial query in the widget, walk through how each validator scored the response.
+**End state:** Every production response has three structured judgments attached, visible in Langfuse and in the admin UI. Promotion candidates are queued in a `verified_qa_candidates` staging table for later owner approval.
+
+**Demo:** Adversarial query in the widget, walk through how each validator scored the response. Show a grounded response landing in the candidate queue.
 
 ### M6 — Eval system
 
 Ragas metrics, scenario generation agent, Celery beat schedule, eval dashboard in admin UI, production-trace mining.
 
-**End state:** Nightly evals run automatically. Failing scenarios are mined from production. Owner sees pass rates over time.
+**Verified-knowledge seeding.** The eval harness gains a side-effect: every scenario that scores above the promotion thresholds (faithfulness ≥ 0.90 *and* answer relevance ≥ 0.90 by default) is written to the tenant's `verified_qa` table with `source = 'sandbox_test'`. This means M6 is not only the quality gate — it is the primary builder of the verified knowledge layer. By the time an agent reaches the pre-deployment checklist in M8, its hardest scenario questions are already cached as canonical answers, served from `verified_qa` rather than re-derived from the corpus on every customer query.
 
-**Demo:** Eval dashboard showing a real run, including scenarios mined from synthetic production traffic.
+The retrieval engine (Layer 5) already consults `verified_qa` first; M6 is what makes that cache non-empty at deployment time.
+
+**End state:** Nightly evals run automatically. Failing scenarios are mined from production. Owner sees pass rates over time. Passing scenarios visibly populate the `verified_qa` table; the dashboard shows the cache filling.
+
+**Demo:** Eval dashboard showing a real run with the resulting verified_qa entries highlighted. Run a query in the widget that hits a cached answer; show the trace skipping vector search entirely.
 
 ### M7 — Red team
 
@@ -306,9 +365,13 @@ Three red team agents (Agent SDK). Severity classification (low/medium/high/crit
 
 Orchestrator agent reads all signals, generates deployment recommendation. Business owner approves through dashboard. Full user journey works start to finish for a non-technical user.
 
-**End state:** A non-technical tester completes the canonical happy path unassisted.
+**Verified-knowledge depth as a checklist gate.** The orchestrator agent now reads `verified_qa` row count and eval-scenario coverage as a first-class signal. An agent shipping with zero verified Q&A pairs is technically allowed but flagged in the deployment report — it means the eval suite was thin or the scenarios all failed. The owner sees this as plain-language guidance ("Your agent will be answering every customer question from scratch on day one. We recommend at least N verified answers before going live.") rather than as a hard block.
 
-**Demo:** Recorded video of a non-developer going from signup to deployed widget.
+**Verified-knowledge candidate review.** M8 ships the owner-facing UI for the candidate queue M5 began populating. The weekly digest (and a dashboard tab) surfaces grounded production responses awaiting approval. Owner sees the question, the agent's answer, the cited sources, and the Auditor's confidence — clicks Approve (lands in `verified_qa` with `source = 'production_promotion'`), Reject (discarded with a recorded reason), or Edit (owner rewrites the canonical answer, lands with `source = 'human_authored'`). This is where the verified knowledge layer becomes a thing the owner consciously curates rather than something the system silently accumulates.
+
+**End state:** A non-technical tester completes the canonical happy path unassisted, including the first weekly digest cycle where they approve a handful of verified-knowledge candidates.
+
+**Demo:** Recorded video of a non-developer going from signup to deployed widget, then returning a week later to review and approve their first batch of verified answers.
 
 ### M9 — Retrieval strategy synthesis
 
@@ -322,9 +385,18 @@ Strategist agent generates per-tenant retrieval config from data shape analysis 
 
 Weekly red team, monthly eval drift detection, Langfuse dashboards, owner-facing weekly digest email, alerting on metric regressions.
 
-**End state:** Deployed agents are continuously monitored without operator intervention. Owners receive digests and alerts.
+**Conversation-Insights Engine.** A monthly Celery beat job per tenant that runs Microsoft's open-source `graphrag` library over the tenant's `messages` table (not the source corpus). Output is a community-detected, summarised knowledge graph stored in `conversation_insights`, surfaced in the admin dashboard as a tab the owner reads like a monthly support-team meeting brief:
 
-**Demo:** Live dashboard plus an example digest email.
+- Recurring topics and how they cluster.
+- The most common questions the agent could not answer well (low Auditor confidence, frequent escalations).
+- Entity-level analysis: which products, policies, or processes drive the most confusion.
+- Sentiment trends and escalation hotspots.
+
+This is the analytical surface where GraphRAG-style community summarisation genuinely earns its cost. It does not run at query time. It is not part of the customer-facing retrieval path. It is the owner's monthly business-intelligence digest, generated from the agent's own conversation logs. Entities extracted in M2 are reused here as graph seeds, which makes the build cheaper and more accurate than starting from scratch.
+
+**End state:** Deployed agents are continuously monitored without operator intervention. Owners receive weekly operational digests and monthly conversation-insights briefs.
+
+**Demo:** Live dashboard plus an example weekly digest email plus a generated conversation-insights brief showing real clusters from simulated production traffic.
 
 ## 10. Success metrics
 
@@ -341,6 +413,13 @@ Weekly red team, monthly eval drift detection, Langfuse dashboards, owner-facing
 - Auditor `grounded` rate on production traffic: target above 0.90.
 - Critical red team findings on weekly cron: target zero.
 - p95 response latency: target under 4 seconds end-to-end.
+
+**Verified knowledge layer metrics**
+
+- `verified_qa` row count at deployment time: target above 50 per agent (driven by M6 eval coverage).
+- Cache-hit rate on production traffic (queries served from `verified_qa` vs hybrid retrieval): target above 30% by 4 weeks post-deployment.
+- Cost per resolved query at month 3 vs week 1: target reduction above 40% (compounding effect of the verified knowledge layer).
+- Owner approval rate on verified-knowledge candidates: tracked but not targeted; informs threshold tuning.
 
 **Portfolio metrics**
 
@@ -365,12 +444,23 @@ Mitigation: severity classification is conservative by design; only `critical` b
 **Pre-deployment checklist becoming a rubber stamp.**
 Mitigation: the orchestrator agent's report is structured and forces the owner to acknowledge each warning individually. Acknowledgments are logged. If an agent later fails in production on something acknowledged at deploy time, the digest surfaces that lineage.
 
+**Verified knowledge layer serving stale answers.**
+Mitigation: invalidation is tied to source-document lifecycle — re-ingesting or deleting a cited document marks all `verified_qa` rows referencing it as invalidated. Additionally, the cosine threshold for cache hits is deliberately high (0.93 default) so that paraphrases of genuinely different questions do not collide. The Auditor still runs on cache-served responses at a sampling rate, so a stale answer that escapes invalidation will eventually be flagged.
+
+**Verified knowledge layer entrenching early mistakes.**
+Mitigation: a single low-faithfulness production event tied to a `verified_qa` row marks that row for re-review in the next weekly digest. Owners can demote or edit any verified answer at any time. `use_count` makes the rows that matter most easy to identify and audit.
+
+**Conversation-Insights Engine cost.**
+Mitigation: monthly cadence, not weekly. Runs against `messages` not the source corpus (smaller, more focused). Entities extracted at M2 ingestion are reused as graph seeds, eliminating the most expensive part of GraphRAG indexing. Tenants with low conversation volume can be skipped automatically below a threshold.
+
 ## 12. Open questions
 
 - Pricing model. Per-agent flat fee, per-conversation, or per-tenant-month with conversation tiers. Defer until M8 demo data exists.
 - Whether to expose the Neon branch for eval as a feature ("test changes safely before they go live") or keep it as an internal implementation detail.
 - Whether structured data (CSV product catalogues, order exports) gets its own ingestion path or rides the document pipeline. Leaning toward separate path with a `lookup_structured` tool, but defer the decision to M2.
 - Owner-side data refresh. Manual re-upload, scheduled re-crawl of source URLs, or webhook-driven. Likely all three eventually; M10 candidate.
+- Optimal cache-hit similarity threshold for `verified_qa`. Default 0.93 is a starting guess; needs empirical tuning per tenant once M6 produces real data. Likely becomes an auto-tuned value in M9 alongside retrieval-strategy synthesis.
+- Storage shape for `conversation_insights`. Microsoft's graphrag library writes to parquet/JSON by default; whether to keep that or normalise into Postgres tables for queryability from the admin UI is a M10 build-time decision.
 
 ## 13. What this PRD is not
 

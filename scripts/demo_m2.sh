@@ -232,7 +232,7 @@ with get_sync_db() as db:
     if row is None:
         print(f"  ERROR: agent {agent_id} not found in control DB")
         sys.exit(1)
-    conn_str = fernet_decrypt(row[0])
+    conn_str = fernet_decrypt(bytes(row[0]) if isinstance(row[0], memoryview) else row[0])
 
 with psycopg2.connect(conn_str, connect_timeout=10) as conn:
     with conn.cursor() as cur:
