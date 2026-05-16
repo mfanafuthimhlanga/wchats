@@ -130,9 +130,9 @@ def provision_neon(self, tenant_id: str, agent_id: str) -> dict:
                 project_id=agent.neon_project_id,
             )
             _result = {"agent_id": agent_id, "project_id": agent.neon_project_id}
-            # Dispatch apply_migrations directly — see end-of-function comment.
+            # Run apply_migrations synchronously — see end-of-function comment.
             from app.worker.tasks.pipeline.migrations import apply_migrations as _am
-            _am.apply_async(args=[_result], queue="pipeline")
+            _am.apply(args=[_result])
             return _result
 
         # ------------------------------------------------------------------
@@ -295,16 +295,23 @@ def provision_neon(self, tenant_id: str, agent_id: str) -> dict:
 
         _result = {"agent_id": agent_id, "project_id": project_id}
 
-        # Dispatch apply_migrations directly instead of relying on the Celery chain
-        # callback mechanism. The chain callback fires AFTER this function returns and
-        # uses a broker connection from the pool that may have been idle for the full
-        # Neon provisioning duration (~20s). On Windows, kombu's reconnect path calls
-        # select.select() which returns [] instead of the expected (r, w, e) 3-tuple
-        # (billiard issue #299). worker_pool="solo" fixes task *execution* but not the
-        # chain callback's connection acquisition. Calling apply_async() here reuses the
-        # active broker connection established when this task was received, avoiding
-        # the stale-connection reconnect. T-03-01: _result contains no connection string.
+        # Run apply_migrations synchronously (Task.apply — eager call, no broker round-trip).
+        #
+        # Root cause of why async dispatch fails on Windows:
+        #   provision_neon blocks the consumer loop for ~21s while creating the Neon project.
+        #   During that time the Upstash Redis TCP connection goes idle; Upstash drops it
+        #   server-side without a FIN, leaving the consumer socket in a half-open state.
+        #   When the consumer tries to receive apply_migrations after provision_neon returns,
+        #   select.select() on the stale socket returns [] instead of (readable, …, …),
+        #   raising ValueError: not enough values to unpack (expected 3, got 0).
+        #   worker_pool="solo" fixed task execution but not the consumer receive path.
+        #
+        # Task.apply() runs the function directly in the current process:
+        #   - No broker publish, no consumer receive, no select() call.
+        #   - apply_migrations.retry() in eager mode retries immediately (no countdown).
+        #   - apply_migrations handles its own failure state; we ignore EagerResult.
+        #   - T-03-01: _result contains only agent_id and project_id, no connection string.
         from app.worker.tasks.pipeline.migrations import apply_migrations as _am
-        _am.apply_async(args=[_result], queue="pipeline")
+        _am.apply(args=[_result])
 
         return _result
