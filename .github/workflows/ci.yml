@@ -128,3 +128,31 @@ jobs:
       - name: Run integration tests
         working-directory: apps/api
         run: python -m pytest tests/integration -x --tb=short -m integration -k "not worker_kill"
+
+  eval-deterministic:
+    name: Eval (deterministic checks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install -e "apps/api[dev]"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build widget bundle
+        working-directory: apps/widget
+        run: npm ci && npm run build
+
+      - name: Run deterministic evals (D3, D5, D6, D7, G-06)
+        working-directory: apps/api
+        run: python -m pytest tests/evals/run_evals.py -k deterministic -v --tb=short
