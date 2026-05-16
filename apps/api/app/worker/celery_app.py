@@ -20,6 +20,18 @@ JSON serializer (Threat T-02-04):
 structlog integration (RESEARCH.md §Pattern 10, Pitfall 6):
     task_prerun signal clears contextvars before each task so a previous task's
     request_id cannot bleed into the next task's log lines.
+
+worker_pool = "solo" (Windows fix):
+    The billiard prefork pool (Celery's default) has a Windows bug where two
+    child processes share the same pipe_handle. When select.select() is called
+    on that handle, it returns an empty sequence instead of the expected
+    (readable, writable, exceptional) 3-tuple, raising:
+        ValueError: not enough values to unpack (expected 3, got 0)
+    This manifests as a FAILURE result with null traceback for any task
+    (including provision_neon) picked up from Redis. The solo pool runs tasks
+    in the worker's main process with no subprocess spawning, eliminating the
+    race condition. For local dev (one worker process per queue) there is no
+    concurrency loss.
 """
 
 import ssl
@@ -107,6 +119,17 @@ celery_app.conf.update(
     # --- Timezone -------------------------------------------------------
     timezone="UTC",
     enable_utc=True,
+
+    # --- Worker pool (Windows billiard fix) -----------------------------
+    # The billiard prefork pool raises "ValueError: not enough values to
+    # unpack (expected 3, got 0)" on Windows when two children share the
+    # same pipe_handle (billiard issue #299). The solo pool runs tasks in
+    # the worker main process — no subprocess spawning, no pipe race.
+    # For local dev this has no concurrency penalty (one worker per queue).
+    # CLI flag --pool=solo in start_native.ps1 is kept as an explicit
+    # override; this setting makes it the default so plain
+    # `celery -A app.worker.celery_app worker` also works on Windows.
+    worker_pool="solo",
 )
 
 
