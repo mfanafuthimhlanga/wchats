@@ -8,8 +8,8 @@ progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 30
-  completed_plans: 24
-  percent: 80
+  completed_plans: 25
+  percent: 83
 ---
 
 # Project State
@@ -61,6 +61,9 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [04-02] FEW_SHOT_SUFFIX is a module-level constant in agent_prompt.py — dynamic retrieval deferred post-M6
 - [04-02] Module-level globals for tool state injection in agent_tools.py — safe for worker_pool=solo; ContextVar upgrade deferred if concurrency > 1
 - [04-02] claude_agent_sdk monkeypatched via sys.modules in tests — SDK binary not required at unit test time
+- [04-03] asyncio.run(asyncio.wait_for(_run_sdk_turn(...), timeout=30)) — wall-clock guard inside asyncio.run, not outside
+- [04-03] sdk_session_id stored in conversations.metadata via jsonb_set UPDATE (parameterised); passed as resume= on subsequent turns
+- [04-03] Escalation detection from ToolUseBlock.name evidence only — never from parsed agent prose (T-04-03-03)
 - get_current_tenant iterates all non-deleted tenants for argon2 verify — no indexed lookup possible with hashed keys
 - get_async_redis creates per-request client from REDIS_URL — avoids module-level async Redis in FastAPI context
 - POST /agents route has zero occurrences of "job.started" string — comments reworded to satisfy grep-based acceptance criteria
@@ -80,6 +83,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|
+| 04 | 03 | ~24 min | 2 | 4 |
 | 04 | 02 | ~18 min | 2 | 4 |
 | 04 | 01 | ~15 min | 2 | 7 |
 | 01 | 01 | ~45 min | 3 | 15 |
@@ -108,3 +112,4 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - ruff config: line-length=120, select E/F/I, ignore E501; mypy: strict=false, ignore_missing_imports=true
 - Last session: 2026-05-16 — completed 04-01-PLAN.md (foundation migrations + settings) — 2 tasks, 533797b + 8f0eba7
 - Last session: 2026-05-16 — completed 04-02-PLAN.md (agent_prompt + agent_tools) — 2 tasks, fc9f454 + 5b1aabd
+- Last session: 2026-05-16 — completed 04-03-PLAN.md (escalation helper + run_agent_turn Celery task) — 3 commits, 477bfbf + 1e462c8 + 7c624da
