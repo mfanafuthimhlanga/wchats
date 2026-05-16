@@ -1,0 +1,23 @@
+{
+  "id": "S-003",
+  "category": "golden_path",
+  "description": "Customer asks about product availability — KB has the Product Catalog",
+  "tenant_fixture": "fixtures/demo_business_tenant.sql",
+  "turns": [
+    {
+      "role": "user",
+      "message": "Do you carry light roast coffee? What blends do you offer?"
+    }
+  ],
+  "expected_behavior": {
+    "retrieve_called": true,
+    "citation_present": true,
+    "escalated": false,
+    "knowledge_gap_acknowledged": false
+  },
+  "human_verdict": "PASS",
+  "human_label_notes": "KB has Product Catalog. Agent should mention Morning Mist (light roast) and other blends with citation.",
+  "deterministic_checks": {
+    "D5": {"regex": "CITATIONS:\\n- Document: .+ \\| Section: .+"}
+  }
+}

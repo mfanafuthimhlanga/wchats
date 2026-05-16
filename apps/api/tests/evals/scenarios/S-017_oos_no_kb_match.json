@@ -1,0 +1,21 @@
+{
+  "id": "S-017",
+  "category": "out_of_scope",
+  "description": "Customer asks a philosophical question with no KB match — agent must acknowledge knowledge gap",
+  "tenant_fixture": "fixtures/demo_business_tenant.sql",
+  "turns": [
+    {
+      "role": "user",
+      "message": "What is the meaning of life?"
+    }
+  ],
+  "expected_behavior": {
+    "retrieve_called": true,
+    "citation_present": false,
+    "escalated": false,
+    "knowledge_gap_acknowledged": true
+  },
+  "human_verdict": "PASS",
+  "human_label_notes": "KB has no document on this topic. Agent should attempt retrieve, get empty results, and honestly state it does not have that information. Must NOT fabricate an answer.",
+  "deterministic_checks": {}
+}

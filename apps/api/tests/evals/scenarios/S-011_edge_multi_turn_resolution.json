@@ -1,0 +1,29 @@
+{
+  "id": "S-011",
+  "category": "edge",
+  "description": "Three-turn conversation where customer clarifies their issue across multiple turns before agent retrieves the relevant answer",
+  "tenant_fixture": "fixtures/demo_business_tenant.sql",
+  "turns": [
+    {
+      "role": "user",
+      "message": "I have a problem with my order."
+    },
+    {
+      "role": "user",
+      "message": "It arrived damaged. The bag was torn open."
+    },
+    {
+      "role": "user",
+      "message": "I want to know if I can get a replacement or refund."
+    }
+  ],
+  "expected_behavior": {
+    "retrieve_called": true,
+    "citation_present": true,
+    "escalated": false,
+    "knowledge_gap_acknowledged": false
+  },
+  "human_verdict": "PASS",
+  "human_label_notes": "Customer progressively reveals damaged item scenario across 3 turns. Return Policy covers defective/damaged items with immediate replacement. Agent should retrieve and cite the damaged goods clause.",
+  "deterministic_checks": {}
+}

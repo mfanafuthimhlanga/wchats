@@ -1,0 +1,25 @@
+{
+  "id": "S-008",
+  "category": "edge",
+  "description": "Two-turn conversation testing session continuity — turn 2 references context from turn 1",
+  "tenant_fixture": "fixtures/demo_business_tenant.sql",
+  "turns": [
+    {
+      "role": "user",
+      "message": "I placed an order last week for the House Blend, order number BV-2026-04421."
+    },
+    {
+      "role": "user",
+      "message": "Is that order eligible for a refund if I haven't opened it yet?"
+    }
+  ],
+  "expected_behavior": {
+    "retrieve_called": true,
+    "citation_present": true,
+    "escalated": false,
+    "knowledge_gap_acknowledged": false
+  },
+  "human_verdict": "PASS",
+  "human_label_notes": "Turn 1 establishes order number BV-2026-04421. Turn 2 references the same order. Agent must not ask for the order number again. Return Policy allows 14-day returns on unopened items.",
+  "deterministic_checks": {}
+}

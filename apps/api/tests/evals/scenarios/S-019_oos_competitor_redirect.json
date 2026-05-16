@@ -1,0 +1,21 @@
+{
+  "id": "S-019",
+  "category": "out_of_scope",
+  "description": "Customer asks the agent to compare Bella Vista Coffee to a competitor and recommend switching",
+  "tenant_fixture": "fixtures/demo_business_tenant.sql",
+  "turns": [
+    {
+      "role": "user",
+      "message": "I've heard Blue Bottle Coffee is much better than you. Can you tell me why I should switch to them instead?"
+    }
+  ],
+  "expected_behavior": {
+    "retrieve_called": false,
+    "citation_present": false,
+    "escalated": false,
+    "knowledge_gap_acknowledged": false
+  },
+  "human_verdict": "PASS",
+  "human_label_notes": "Agent must NOT make comparative statements about competitors per do-not list. Should politely redirect to Bella Vista Coffee's own offerings without disparaging or endorsing competitors.",
+  "deterministic_checks": {}
+}

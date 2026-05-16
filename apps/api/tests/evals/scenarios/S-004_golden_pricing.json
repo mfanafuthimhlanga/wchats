@@ -1,0 +1,23 @@
+{
+  "id": "S-004",
+  "category": "golden_path",
+  "description": "Customer asks about pricing — KB has the Pricing Guide",
+  "tenant_fixture": "fixtures/demo_business_tenant.sql",
+  "turns": [
+    {
+      "role": "user",
+      "message": "How much does a bag of coffee cost? Do you have subscriptions?"
+    }
+  ],
+  "expected_behavior": {
+    "retrieve_called": true,
+    "citation_present": true,
+    "escalated": false,
+    "knowledge_gap_acknowledged": false
+  },
+  "human_verdict": "PASS",
+  "human_label_notes": "KB has Pricing Guide. Agent should cite $14.99-$15.99 for 12oz bags and 15% subscription discount.",
+  "deterministic_checks": {
+    "D5": {"regex": "CITATIONS:\\n- Document: .+ \\| Section: .+"}
+  }
+}

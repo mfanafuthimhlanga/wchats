@@ -1,0 +1,23 @@
+{
+  "id": "S-002",
+  "category": "golden_path",
+  "description": "Customer asks about business hours — KB has the answer",
+  "tenant_fixture": "fixtures/demo_business_tenant.sql",
+  "turns": [
+    {
+      "role": "user",
+      "message": "What are your business hours?"
+    }
+  ],
+  "expected_behavior": {
+    "retrieve_called": true,
+    "citation_present": true,
+    "escalated": false,
+    "knowledge_gap_acknowledged": false
+  },
+  "human_verdict": "PASS",
+  "human_label_notes": "KB has Business Hours doc. Agent should state Mon-Fri 7am-7pm, Sat 8am-6pm, Sun 9am-5pm.",
+  "deterministic_checks": {
+    "D5": {"regex": "CITATIONS:\\n- Document: .+ \\| Section: .+"}
+  }
+}

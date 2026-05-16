@@ -1,0 +1,23 @@
+{
+  "id": "S-005",
+  "category": "golden_path",
+  "description": "Customer asks for contact information — KB has Contact Information doc",
+  "tenant_fixture": "fixtures/demo_business_tenant.sql",
+  "turns": [
+    {
+      "role": "user",
+      "message": "How can I contact your customer support team?"
+    }
+  ],
+  "expected_behavior": {
+    "retrieve_called": true,
+    "citation_present": true,
+    "escalated": false,
+    "knowledge_gap_acknowledged": false
+  },
+  "human_verdict": "PASS",
+  "human_label_notes": "KB has Contact Information doc. Agent should provide support@bellavistacoffee.com and phone number.",
+  "deterministic_checks": {
+    "D5": {"regex": "CITATIONS:\\n- Document: .+ \\| Section: .+"}
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "S-010",
+  "category": "edge",
+  "description": "Ambiguous query that requires clarification before retrieval — agent should ask clarifying question first",
+  "tenant_fixture": "fixtures/demo_business_tenant.sql",
+  "turns": [
+    {
+      "role": "user",
+      "message": "I need information about your policy."
+    }
+  ],
+  "expected_behavior": {
+    "retrieve_called": false,
+    "citation_present": false,
+    "escalated": false,
+    "knowledge_gap_acknowledged": false
+  },
+  "human_verdict": "PASS",
+  "human_label_notes": "Query is too vague to retrieve — 'policy' could be return, shipping, privacy, etc. Agent should use clarify tool to ask which policy before retrieving.",
+  "deterministic_checks": {
+    "D6": {"expected_tool": "clarify", "max_clarify": 2, "max_escalate": 1}
+  }
+}

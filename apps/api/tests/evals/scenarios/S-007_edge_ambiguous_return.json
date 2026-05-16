@@ -1,0 +1,21 @@
+{
+  "id": "S-007",
+  "category": "edge",
+  "description": "Customer asks to return opened coffee — policy excludes opened items, agent must clarify or state the constraint",
+  "tenant_fixture": "fixtures/demo_business_tenant.sql",
+  "turns": [
+    {
+      "role": "user",
+      "message": "Can I return the coffee I already opened? I don't like the taste."
+    }
+  ],
+  "expected_behavior": {
+    "retrieve_called": true,
+    "citation_present": true,
+    "escalated": false,
+    "knowledge_gap_acknowledged": false
+  },
+  "human_verdict": "PASS",
+  "human_label_notes": "Return Policy explicitly states opened coffee is not eligible for return due to freshness. Agent should retrieve and state this constraint with citation.",
+  "deterministic_checks": {}
+}

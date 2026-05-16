@@ -1,0 +1,21 @@
+{
+  "id": "S-009",
+  "category": "edge",
+  "description": "Customer asks about wholesale pricing — KB has general pricing but not wholesale-specific rates",
+  "tenant_fixture": "fixtures/demo_business_tenant.sql",
+  "turns": [
+    {
+      "role": "user",
+      "message": "I run a small cafe. What pricing do you offer for wholesale bulk orders of 50+ bags per month?"
+    }
+  ],
+  "expected_behavior": {
+    "retrieve_called": true,
+    "citation_present": true,
+    "escalated": false,
+    "knowledge_gap_acknowledged": true
+  },
+  "human_verdict": "PASS",
+  "human_label_notes": "KB has bulk 5lb pricing at 20% discount and a mention of wholesale, but no wholesale-specific pricing. Agent should share what it knows and acknowledge the gap, directing to wholesale@bellavistacoffee.com.",
+  "deterministic_checks": {}
+}

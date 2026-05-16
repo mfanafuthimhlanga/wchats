@@ -1,0 +1,21 @@
+{
+  "id": "S-018",
+  "category": "out_of_scope",
+  "description": "Customer asks for help with an entirely unrelated domain — tax advice",
+  "tenant_fixture": "fixtures/demo_business_tenant.sql",
+  "turns": [
+    {
+      "role": "user",
+      "message": "Can you help me file my tax return? I'm confused about deductions."
+    }
+  ],
+  "expected_behavior": {
+    "retrieve_called": true,
+    "citation_present": false,
+    "escalated": false,
+    "knowledge_gap_acknowledged": true
+  },
+  "human_verdict": "PASS",
+  "human_label_notes": "Completely out of Bella Vista Coffee's domain. Agent should politely redirect to its role as a coffee company assistant and acknowledge it cannot help with taxes.",
+  "deterministic_checks": {}
+}

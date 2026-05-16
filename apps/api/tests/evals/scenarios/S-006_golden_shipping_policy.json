@@ -1,0 +1,23 @@
+{
+  "id": "S-006",
+  "category": "golden_path",
+  "description": "Customer asks about shipping options — KB has Shipping Policy doc",
+  "tenant_fixture": "fixtures/demo_business_tenant.sql",
+  "turns": [
+    {
+      "role": "user",
+      "message": "How long does shipping take and is there free shipping?"
+    }
+  ],
+  "expected_behavior": {
+    "retrieve_called": true,
+    "citation_present": true,
+    "escalated": false,
+    "knowledge_gap_acknowledged": false
+  },
+  "human_verdict": "PASS",
+  "human_label_notes": "KB has Shipping Policy. Agent should cite 5-7 day standard, free over $40, and expedited options.",
+  "deterministic_checks": {
+    "D5": {"regex": "CITATIONS:\\n- Document: .+ \\| Section: .+"}
+  }
+}
