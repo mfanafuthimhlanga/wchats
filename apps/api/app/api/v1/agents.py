@@ -19,7 +19,6 @@ Architecture:
 
 from uuid import UUID
 
-from celery import chain
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +30,6 @@ from app.models.agent import Agent
 from app.models.job import Job
 from app.models.tenant import Tenant
 from app.schemas.agent import AgentCreate, AgentCreateResponse, AgentResponse
-from app.worker.tasks.pipeline.migrations import apply_migrations
 from app.worker.tasks.pipeline.provision import provision_neon
 
 router = APIRouter(tags=["agents"])
@@ -74,11 +72,13 @@ async def create_agent(
 
     # Propagate request_id from FastAPI context into Celery task headers
     # (RESEARCH.md §Pattern 10 — structlog contextvars → Celery headers)
+    # Note: provision_neon dispatches apply_migrations directly inside the task
+    # body (see provision.py) — no Celery chain needed here. The chain callback
+    # mechanism triggers a broker reconnect on Windows that raises ValueError
+    # (billiard issue #299); direct dispatch inside the task avoids that path.
     ctx = get_contextvars()
-    chain(
-        provision_neon.s(str(tenant.id), str(agent.id)),
-        apply_migrations.s(),
-    ).apply_async(
+    provision_neon.apply_async(
+        args=[str(tenant.id), str(agent.id)],
         queue="pipeline",
         headers={"request_id": ctx.get("request_id", "")},
     )

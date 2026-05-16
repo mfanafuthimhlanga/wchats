@@ -1,12 +1,16 @@
 """
-Integration tests: Full Celery chain — provision_neon → apply_migrations.
+Integration tests: provision_neon → apply_migrations end-to-end flow.
 
 These tests use:
 - A REAL local Postgres DB (not mocked).
 - respx 0.23.1 to mock all Neon API HTTP calls.
 - A real Celery worker subprocess started by the celery_worker fixture.
 - .apply_async() dispatch (NEVER CELERY_TASK_ALWAYS_EAGER).
-- DB polling with a 30s timeout to detect chain completion.
+- DB polling with a 30s timeout to detect completion.
+
+Note: apply_migrations is dispatched by provision_neon directly inside the task
+body (not via Celery chain). This avoids the Windows billiard issue #299 where
+the chain callback mechanism triggers select.select() on a stale broker connection.
 
 Acceptance criteria:
 - test_full_chain_completes: agent.status == "ready", job.status == "complete"
@@ -165,17 +169,11 @@ def test_full_chain_completes(celery_worker, test_agent_and_job, db_session):
     with respx.mock(assert_all_called=False):
         _neon_mock_routes(fake_project_id, local_db_url)
 
-        # Dispatch the chain — provision_neon chains into apply_migrations automatically
-        # via Celery's chain() composition in the task module.
-        # We use .apply_async() directly here; apply_migrations is chained inside the task.
-        # For the full chain, use the chain pattern from the agents route:
-        from celery import chain
-        from app.worker.tasks.pipeline.migrations import apply_migrations
-
-        chain(
-            provision_neon.s(str(tenant_id), str(agent_id)),
-            apply_migrations.s(),
-        ).apply_async(queue="pipeline")
+        # provision_neon dispatches apply_migrations internally — just dispatch provision_neon.
+        provision_neon.apply_async(
+            args=[str(tenant_id), str(agent_id)],
+            queue="pipeline",
+        )
 
     # Poll DB for agent.status == "ready" (30s timeout)
     final_status = _poll_for_agent_status(db_session, agent_id, "ready", timeout=60)
@@ -210,8 +208,6 @@ def test_event_sequence_in_order(celery_worker, test_agent_and_job, db_session):
         migrations.running → migrations.complete → job.complete
     """
     from app.worker.tasks.pipeline.provision import provision_neon
-    from app.worker.tasks.pipeline.migrations import apply_migrations
-    from celery import chain
 
     tenant_id, agent_id, job_id = test_agent_and_job
 
@@ -225,10 +221,11 @@ def test_event_sequence_in_order(celery_worker, test_agent_and_job, db_session):
     with respx.mock(assert_all_called=False):
         _neon_mock_routes(fake_project_id, local_db_url)
 
-        chain(
-            provision_neon.s(str(tenant_id), str(agent_id)),
-            apply_migrations.s(),
-        ).apply_async(queue="pipeline")
+        # provision_neon dispatches apply_migrations internally — just dispatch provision_neon.
+        provision_neon.apply_async(
+            args=[str(tenant_id), str(agent_id)],
+            queue="pipeline",
+        )
 
     # Poll for completion
     _poll_for_agent_status(db_session, agent_id, "ready", timeout=60)

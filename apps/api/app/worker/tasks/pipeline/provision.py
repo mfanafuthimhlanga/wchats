@@ -129,7 +129,11 @@ def provision_neon(self, tenant_id: str, agent_id: str) -> dict:
                 agent_id=agent_id,
                 project_id=agent.neon_project_id,
             )
-            return {"agent_id": agent_id, "project_id": agent.neon_project_id}
+            _result = {"agent_id": agent_id, "project_id": agent.neon_project_id}
+            # Dispatch apply_migrations directly — see end-of-function comment.
+            from app.worker.tasks.pipeline.migrations import apply_migrations as _am
+            _am.apply_async(args=[_result], queue="pipeline")
+            return _result
 
         # ------------------------------------------------------------------
         # Mark agent as provisioning; find the pending job for this agent
@@ -289,5 +293,18 @@ def provision_neon(self, tenant_id: str, agent_id: str) -> dict:
             project_id=project_id,
         )
 
-        # T-03-01: Return only agent_id and project_id — no connection string
-        return {"agent_id": agent_id, "project_id": project_id}
+        _result = {"agent_id": agent_id, "project_id": project_id}
+
+        # Dispatch apply_migrations directly instead of relying on the Celery chain
+        # callback mechanism. The chain callback fires AFTER this function returns and
+        # uses a broker connection from the pool that may have been idle for the full
+        # Neon provisioning duration (~20s). On Windows, kombu's reconnect path calls
+        # select.select() which returns [] instead of the expected (r, w, e) 3-tuple
+        # (billiard issue #299). worker_pool="solo" fixes task *execution* but not the
+        # chain callback's connection acquisition. Calling apply_async() here reuses the
+        # active broker connection established when this task was received, avoiding
+        # the stale-connection reconnect. T-03-01: _result contains no connection string.
+        from app.worker.tasks.pipeline.migrations import apply_migrations as _am
+        _am.apply_async(args=[_result], queue="pipeline")
+
+        return _result
