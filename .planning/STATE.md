@@ -16,17 +16,17 @@ progress:
 
 ## Current Status
 
-**Active Milestone:** M3 — Hybrid Retrieval
+**Active Milestone:** M4 — Reasoning Engine + Widget v0 (FIRST HIREABLE ARTIFACT)
 **Milestone Phase:** Not started
-**Last updated:** 2026-05-15
+**Last updated:** 2026-05-16
 
 ## Project Reference
 
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** Start M3 — pgvector + BM25 + RRF + Voyage rerank
-**Previous:** M2 (Ingestion Pipeline) ✓ Complete — demo_m2.sh passed: all 11 SSE events observed, 8 chunks/embeddings, 25 entities, Markdown table chunk verified (2026-05-15)
+**Current focus:** Start M4 — Claude Agent SDK + Preact widget + public demo
+**Previous:** M3 (Hybrid Retrieval) ✓ Complete — demo_m3.sh passed, notebook 4 DataFrames verified, RET-01–RET-08 satisfied (2026-05-16)
 
 ## Milestone Progress
 
@@ -34,7 +34,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 |-----------|------|--------|-----|
 | M1 | Control Plane Skeleton | ✓ Complete (8/8 plans complete) | `prd-M1.md` ✓ |
 | M2 | Ingestion Pipeline | ✓ Complete (7/7 plans) | `prd-M2.md` ✓ |
-| M3 | Hybrid Retrieval | ○ Pending | `prd-M3.md` (TBD) |
+| M3 | Hybrid Retrieval | ✓ Complete (7/7 plans) | `prd-M3.md` ✓ |
 | M4 | Reasoning Engine + Widget | ○ Pending | `prd-M4.md` (TBD) |
 | M5 | Validation Chain | ○ Pending | `prd-M5.md` (TBD) |
 | M6 | Eval System | ○ Pending | `prd-M6.md` (TBD) |

@@ -31,29 +31,29 @@ Requirements for full platform delivery (M1–M10). M1–M4 is the first hireabl
 
 ### Ingestion Pipeline (M2)
 
-- [ ] **ING-01**: User can upload PDF, image, and URL list for ingestion
-- [ ] **ING-02**: Documents parsed with layout awareness (Docling) preserving headings, tables, lists
-- [ ] **ING-03**: Tables ingested via a dedicated table-aware path that preserves row/column relationships (not flattened to prose)
-- [ ] **ING-04**: Chunks generated with structure-awareness (Chonkie) — boundaries respect document structure, not arbitrary token counts
-- [ ] **ING-05**: Chunks have deterministic UUIDs (document_id + ordinal hash) to ensure upsert idempotency on retry
-- [ ] **ING-06**: Each chunk enriched with: summary, keywords list, and hypothetical questions list (via Claude API, Haiku)
-- [ ] **ING-07**: Chunks embedded via Voyage (`voyage-3` or current equivalent) and stored in tenant DB with HNSW index (`vector_cosine_ops`)
-- [ ] **ING-08**: Ingestion progress streamed to owner via SSE (parsing → chunking → metadata → embedding events)
-- [ ] **ING-09**: Full ingestion chain (`parse_documents` → `chunk_documents` → `generate_metadata` → `embed_and_migrate`) is idempotent end-to-end
-- [ ] **ING-10**: Demo: upload a real business PDF, inspect resulting `chunks` and `chunk_metadata` tables with summaries, keywords, and questions attached
+- [x] **ING-01**: User can upload PDF, image, and URL list for ingestion
+- [x] **ING-02**: Documents parsed with layout awareness (Docling) preserving headings, tables, lists
+- [x] **ING-03**: Tables ingested via a dedicated table-aware path that preserves row/column relationships (not flattened to prose)
+- [x] **ING-04**: Chunks generated with structure-awareness (Chonkie) — boundaries respect document structure, not arbitrary token counts
+- [x] **ING-05**: Chunks have deterministic UUIDs (document_id + ordinal hash) to ensure upsert idempotency on retry
+- [x] **ING-06**: Each chunk enriched with: summary, keywords list, and hypothetical questions list (via Claude API, Haiku)
+- [x] **ING-07**: Chunks embedded via Voyage (`voyage-3` or current equivalent) and stored in tenant DB with HNSW index (`vector_cosine_ops`)
+- [x] **ING-08**: Ingestion progress streamed to owner via SSE (parsing → chunking → metadata → embedding events)
+- [x] **ING-09**: Full ingestion chain (`parse_documents` → `chunk_documents` → `generate_metadata` → `embed_and_migrate`) is idempotent end-to-end
+- [x] **ING-10**: Demo: upload a real business PDF, inspect resulting `chunks` and `chunk_metadata` tables with summaries, keywords, and questions attached
 
 ---
 
 ### Hybrid Retrieval (M3)
 
-- [ ] **RET-01**: Query executes pgvector HNSW search against tenant embeddings
-- [ ] **RET-02**: Query executes BM25 keyword search via native Postgres `tsvector` + `ts_rank_cd` (no pg_search/pgbm25 — deprecated on Neon)
-- [ ] **RET-03**: Vector and keyword results fused via Reciprocal Rank Fusion in a single SQL CTE
-- [ ] **RET-04**: Fused results reranked via Voyage Rerank (Cohere Rerank as fallback)
-- [ ] **RET-05**: Retrieval strategy stored as per-tenant JSON config (k values, rerank threshold, expansion on/off, metadata filters)
-- [ ] **RET-06**: Full retrieval trace visible in response: which path matched, fusion scores, rerank deltas
-- [ ] **RET-07**: Strategies are hand-written per tenant at M3 (automated via M9)
-- [ ] **RET-08**: Demo: query notebook against M2 tenant DB showing candidate sets at each retrieval stage
+- [x] **RET-01**: Query executes pgvector HNSW search against tenant embeddings
+- [x] **RET-02**: Query executes BM25 keyword search via native Postgres `tsvector` + `ts_rank_cd` (no pg_search/pgbm25 — deprecated on Neon)
+- [x] **RET-03**: Vector and keyword results fused via Reciprocal Rank Fusion in a single SQL CTE
+- [x] **RET-04**: Fused results reranked via Voyage Rerank (Cohere Rerank as fallback)
+- [x] **RET-05**: Retrieval strategy stored as per-tenant JSON config (k values, rerank threshold, expansion on/off, metadata filters)
+- [x] **RET-06**: Full retrieval trace visible in response: which path matched, fusion scores, rerank deltas
+- [x] **RET-07**: Strategies are hand-written per tenant at M3 (automated via M9)
+- [x] **RET-08**: Demo: query notebook against M2 tenant DB showing candidate sets at each retrieval stage
 
 ---
 

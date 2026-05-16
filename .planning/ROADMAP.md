@@ -16,8 +16,8 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 | # | Milestone | Goal (short) | Requirements | PRD | Status |
 |---|-----------|--------------|:------------:|-----|--------|
 | M1 | Control Plane Skeleton | FastAPI + Celery + Neon provisioning + SSE | 15 | `prd-M1.md` | ✓ Complete (8/8) |
-| M2 | Ingestion Pipeline | Docling + Chonkie + metadata + Voyage embedding | 10 | `prd-M2.md` | ◐ Planned (7 plans, 7 waves) |
-| M3 | Hybrid Retrieval | pgvector + BM25 + RRF + Voyage rerank | 8 | `prd-M3.md` | ◐ Planned (7 plans, 7 waves) |
+| M2 | Ingestion Pipeline | Docling + Chonkie + metadata + Voyage embedding | 10 | `prd-M2.md` | ✓ Complete (7/7 plans) |
+| M3 | Hybrid Retrieval | pgvector + BM25 + RRF + Voyage rerank | 8 | `prd-M3.md` | ✓ Complete (7/7 plans) |
 | M4 | Reasoning Engine + Widget v0 | Claude agent + Preact widget + public demo **[HIREABLE ARTIFACT]** | 11 | `prd-M4.md` | ○ Pending |
 | M5 | Validation Chain | Async Gatekeeper + Auditor + Strategist on every response | 7 | `prd-M5.md` | ○ Pending |
 | M6 | Eval System | Ragas nightly evals + scenario mining + eval dashboard | 8 | `prd-M6.md` | ○ Pending |
@@ -74,17 +74,17 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 **PRD:** `prd-M2.md` (TBD — write before starting M2)
 **Requirements:** ING-01 through ING-10
 **Depends on:** M1
-**Phases:** Planned — 7 plans, 7 waves
+**Phases:** Complete — 7 plans, 7 waves
 
 | Wave | Plan | Objective | Status |
 |------|------|-----------|--------|
-| Wave 1 | 02-01 | Foundation: deps, Settings, 0002 migration (entities + chunk_entities), chunk_id + sanitize utils | ○ Pending |
-| Wave 2 | 02-02 | parse_documents Celery task + docling_service wrapper (Layer 1 source_hash idempotency) | ○ Pending |
-| Wave 3 | 02-03 | chunk_documents task + two-path chunking_service (text + Markdown table; Layer 2 uuid5+ON CONFLICT) | ○ Pending |
-| Wave 4 | 02-04 | generate_metadata task + Haiku metadata_service (single call: summary+keywords+questions+entities; Layer 3 skip) | ○ Pending |
-| Wave 5 | 02-05 | embed_and_migrate task + Voyage embedding_service (voyage-3 pinned, 128-batch, REINDEX CONCURRENTLY; Layer 4 ON CONFLICT) | ○ Pending |
-| Wave 6 | 02-06 | POST/GET /agents/{id}/documents routes + chain dispatch + full-chain integration tests (idempotency proof) | ○ Pending |
-| Wave 7 | 02-07 | Demo PDF fixture + scripts/demo_m2.sh + INGESTION_E2E_ENABLED test (ING-10 close) | ○ Pending (1 human checkpoint) |
+| Wave 1 | 02-01 | Foundation: deps, Settings, 0002 migration (entities + chunk_entities), chunk_id + sanitize utils | ✓ Complete |
+| Wave 2 | 02-02 | parse_documents Celery task + docling_service wrapper (Layer 1 source_hash idempotency) | ✓ Complete |
+| Wave 3 | 02-03 | chunk_documents task + two-path chunking_service (text + Markdown table; Layer 2 uuid5+ON CONFLICT) | ✓ Complete |
+| Wave 4 | 02-04 | generate_metadata task + Haiku metadata_service (single call: summary+keywords+questions+entities; Layer 3 skip) | ✓ Complete |
+| Wave 5 | 02-05 | embed_and_migrate task + Voyage embedding_service (voyage-3 pinned, 128-batch, REINDEX CONCURRENTLY; Layer 4 ON CONFLICT) | ✓ Complete |
+| Wave 6 | 02-06 | POST/GET /agents/{id}/documents routes + chain dispatch + full-chain integration tests (idempotency proof) | ✓ Complete |
+| Wave 7 | 02-07 | Demo PDF fixture + scripts/demo_m2.sh + INGESTION_E2E_ENABLED test (ING-10 close) | ✓ Complete |
 
 **Cross-cutting constraints:**
 - `acks_late=True` AND idempotency guard on every Celery task (4-layer end-to-end)
@@ -111,17 +111,17 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 **PRD:** `prd-M3.md` (TBD)
 **Requirements:** RET-01 through RET-08
 **Depends on:** M2
-**Phases:** Planned — 7 plans, 7 waves
+**Phases:** Complete — 7 plans, 7 waves
 
 | Wave | Plan | Objective | Status |
 |------|------|-----------|--------|
-| Wave 1 | 03-01 | Alembic 0003 migration (retrieval_strategy JSONB) + COHERE_API_KEY in Settings + Agent ORM + Wave 0 test stubs | ○ Pending |
-| Wave 2 | 03-02 | retrieval_service.py — RetrievalStrategy + vector_search + bm25_search + rrf_fuse + rerank + build_trace | ○ Pending |
-| Wave 3 | 03-03 | retrieve_and_rank Celery task (runtime queue) + celery_app include update | ○ Pending |
-| Wave 4 | 03-04 | FastAPI query router (POST /agents/{id}/query, GET /agents/{id}/queries) + schemas + main.py registration | ○ Pending |
-| Wave 5 | 03-05 | Full unit tests (retrieval_service + retrieve_and_rank — replace xfail stubs) | ○ Pending |
-| Wave 6 | 03-06 | Integration test (test_query_route.py — replace stub) + guarded E2E test | ○ Pending |
-| Wave 7 | 03-07 | Demo notebook (notebooks/demo_m3.ipynb) + scripts/demo_m3.sh (1 human checkpoint) | ○ Pending |
+| Wave 1 | 03-01 | Alembic 0003 migration (retrieval_strategy JSONB) + COHERE_API_KEY in Settings + Agent ORM + Wave 0 test stubs | ✓ Complete |
+| Wave 2 | 03-02 | retrieval_service.py — RetrievalStrategy + vector_search + bm25_search + rrf_fuse + rerank + build_trace | ✓ Complete |
+| Wave 3 | 03-03 | retrieve_and_rank Celery task (runtime queue) + celery_app include update | ✓ Complete |
+| Wave 4 | 03-04 | FastAPI query router (POST /agents/{id}/query, GET /agents/{id}/queries) + schemas + main.py registration | ✓ Complete |
+| Wave 5 | 03-05 | Full unit tests (retrieval_service + retrieve_and_rank — replace xfail stubs) | ✓ Complete |
+| Wave 6 | 03-06 | Integration test (test_query_route.py — replace stub) + guarded E2E test | ✓ Complete |
+| Wave 7 | 03-07 | Demo notebook (notebooks/demo_m3.ipynb) + scripts/demo_m3.sh (1 human checkpoint) | ✓ Complete |
 
 **Cross-cutting constraints:**
 - `acks_late=True` AND idempotency guard on retrieve_and_rank task
@@ -304,4 +304,4 @@ When starting a new milestone: write `prd-MN.md` first, then run `/gsd-discuss-p
 ---
 
 *Roadmap created: 2026-05-12*
-*Last updated: 2026-05-16 — M3 phase planned (7 plans, 7 waves, RET-01 through RET-08)*
+*Last updated: 2026-05-16 — M3 complete (7/7 plans, RET-01–RET-08 satisfied, human checkpoint passed)*
