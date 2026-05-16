@@ -59,7 +59,24 @@ function buildSystemPromptPreview(soul: SoulData): string {
 // Tab nav items
 // ---------------------------------------------------------------------------
 
-const TABS = ['Overview', 'Documents', 'Soul', 'Evals', 'Settings']
+const TABS = ['Overview', 'Soul', 'Conversations', 'Retrieval', 'Settings']
+
+const ROLE_OPTIONS = [
+  'Customer Support',
+  'Sales Qualification',
+  'Internal Helpdesk',
+  'Custom...',
+]
+
+const LABEL_STYLE: React.CSSProperties = {
+  display: 'block',
+  fontWeight: 600,
+  fontSize: '11px',
+  textTransform: 'uppercase' as const,
+  letterSpacing: '0.08em',
+  color: 'var(--text-3)',
+  marginBottom: '6px',
+}
 
 // ---------------------------------------------------------------------------
 // SoulEditorPage
@@ -89,6 +106,9 @@ export default function SoulEditorPage({
 
   // Save state machine
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
+
+  // Validation touch tracking — only show errors after blur or save attempt
+  const [nameTouched, setNameTouched] = useState(false)
 
   // Refs for auto-focus on newly added list rows
   const newDoRef = useRef<HTMLInputElement>(null)
@@ -210,6 +230,7 @@ export default function SoulEditorPage({
   // Derived state
   // ---------------------------------------------------------------------------
 
+  const nameInvalid = nameTouched && !name.trim()
   const canSave = name.trim().length > 0 && saveStatus !== 'saving'
   const voiceWarning = !soulVoice.trim()
 
@@ -267,19 +288,20 @@ export default function SoulEditorPage({
           return (
             <button
               key={tab}
-              onClick={undefined}
+              disabled={!isActive}
+              aria-disabled={!isActive}
+              tabIndex={isActive ? 0 : -1}
               style={{
                 padding: '12px 20px',
                 border: 'none',
-                borderBottom: isActive
-                  ? '2px solid var(--accent)'
-                  : '2px solid transparent',
+                borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
                 background: 'none',
-                cursor: isActive ? 'default' : 'pointer',
+                cursor: isActive ? 'default' : 'not-allowed',
                 color: isActive ? 'var(--accent)' : 'var(--text-3)',
                 fontWeight: isActive ? 600 : 400,
                 fontSize: '14px',
                 fontFamily: 'var(--font-sans)',
+                opacity: isActive ? 1 : 0.6,
               }}
             >
               {tab}
@@ -288,7 +310,7 @@ export default function SoulEditorPage({
         })}
       </div>
 
-      {/* Two-column body */}
+      {/* Two-column body — preview hidden below 1100px */}
       <div style={{ display: 'flex', minHeight: 'calc(100vh - 89px)' }}>
         {/* Form Panel */}
         <div style={{ flex: 1, padding: '32px', maxWidth: '600px', overflowY: 'auto' }}>
@@ -305,18 +327,7 @@ export default function SoulEditorPage({
 
           {/* API Key */}
           <div style={{ marginBottom: '20px' }}>
-            <label
-              htmlFor="apiKey"
-              style={{
-                display: 'block',
-                fontWeight: 600,
-                fontSize: '14px',
-                color: 'var(--text-2)',
-                marginBottom: '6px',
-              }}
-            >
-              API Key
-            </label>
+            <label htmlFor="apiKey" style={LABEL_STYLE}>API Key</label>
             <input
               id="apiKey"
               type="password"
@@ -343,16 +354,7 @@ export default function SoulEditorPage({
 
           {/* Agent Name */}
           <div style={{ marginBottom: '20px' }}>
-            <label
-              htmlFor="agentName"
-              style={{
-                display: 'block',
-                fontWeight: 600,
-                fontSize: '14px',
-                color: 'var(--text-2)',
-                marginBottom: '6px',
-              }}
-            >
+            <label htmlFor="agentName" style={LABEL_STYLE}>
               Agent Name <span style={{ color: 'var(--red)' }}>*</span>
             </label>
             <input
@@ -360,6 +362,7 @@ export default function SoulEditorPage({
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              onBlur={() => setNameTouched(true)}
               placeholder="e.g. SupportBot"
               maxLength={60}
               style={{
@@ -374,34 +377,20 @@ export default function SoulEditorPage({
                 outline: 'none',
               }}
             />
-            {!name.trim() && (
-              <p style={{ fontSize: '12px', color: 'var(--red)', marginTop: '4px' }}>
-                Name is required
+            {nameInvalid && (
+              <p role="alert" style={{ fontSize: '12px', color: 'var(--red)', marginTop: '4px' }}>
+                Agent name is required.
               </p>
             )}
           </div>
 
           {/* Role */}
           <div style={{ marginBottom: '20px' }}>
-            <label
-              htmlFor="soulRole"
-              style={{
-                display: 'block',
-                fontWeight: 600,
-                fontSize: '14px',
-                color: 'var(--text-2)',
-                marginBottom: '6px',
-              }}
-            >
-              Role
-            </label>
-            <input
+            <label htmlFor="soulRole" style={LABEL_STYLE}>Role</label>
+            <select
               id="soulRole"
-              type="text"
-              value={soulRole}
+              value={soulRole || ROLE_OPTIONS[0]}
               onChange={(e) => setSoulRole(e.target.value)}
-              placeholder="e.g. billing support specialist"
-              maxLength={120}
               style={{
                 width: '100%',
                 padding: '10px 12px',
@@ -412,24 +401,16 @@ export default function SoulEditorPage({
                 background: 'var(--surface-1)',
                 color: 'var(--text-1)',
                 outline: 'none',
+                cursor: 'pointer',
               }}
-            />
+            >
+              {ROLE_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
           </div>
 
           {/* Voice & Tone */}
           <div style={{ marginBottom: '20px' }}>
-            <label
-              htmlFor="soulVoice"
-              style={{
-                display: 'block',
-                fontWeight: 600,
-                fontSize: '14px',
-                color: 'var(--text-2)',
-                marginBottom: '6px',
-              }}
-            >
-              Voice &amp; Tone
-            </label>
+            <label htmlFor="soulVoice" style={LABEL_STYLE}>Voice &amp; Tone</label>
             <textarea
               id="soulVoice"
               value={soulVoice}
@@ -453,7 +434,7 @@ export default function SoulEditorPage({
             />
             {voiceWarning && (
               <p style={{ fontSize: '12px', color: 'var(--amber)', marginTop: '4px' }}>
-                Voice &amp; Tone is blank — a default will be used in the system prompt
+                A voice description improves agent consistency.
               </p>
             )}
           </div>
@@ -666,8 +647,9 @@ export default function SoulEditorPage({
           </div>
         </div>
 
-        {/* Live Preview Panel */}
+        {/* Live Preview Panel — hidden at <1100px via inline media-query equivalent */}
         <div
+          className="preview-panel"
           style={{
             width: '400px',
             padding: '32px',

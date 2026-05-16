@@ -63,3 +63,7 @@ body {
 * {
   box-sizing: border-box;
 }
+
+@media (max-width: 1099px) {
+  .preview-panel { display: none !important; }
+}
