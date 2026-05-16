@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy" content="frame-src 'self' http://localhost:8001;">
+  <title>Veridian — Reasoning Engine + Widget v0 Demo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #FDF9F5;
+      --surface-1: #FFFCF9;
+      --surface-2: #F7F0EA;
+      --surface-3: #EDE3D8;
+      --border: #D9CCBE;
+      --border-soft: #EDE3D8;
+      --accent: #7B1C3A;
+      --accent-hover: #5E1229;
+      --accent-dim: rgba(123,28,58,0.08);
+      --gold: #B8860B;
+      --text-1: #1A0A0F;
+      --text-2: #4A2030;
+      --text-3: #8A6060;
+      --radius-xs: 8px;
+      --radius-sm: 14px;
+      --radius-md: 20px;
+      --font-sans: 'Inter', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text-1);
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Nav */
+    .nav {
+      height: 60px;
+      background: var(--surface-2);
+      display: flex;
+      align-items: center;
+      padding: 0 48px;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+    }
+    .logo {
+      font-weight: 800;
+      font-size: 20px;
+      color: var(--text-1);
+      text-decoration: none;
+    }
+    .logo-accent { color: var(--accent); }
+    .nav-links {
+      display: flex;
+      gap: 32px;
+      align-items: center;
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .nav-links a {
+      color: var(--text-2);
+      text-decoration: none;
+      font-size: 14px;
+    }
+    .nav-links a:hover { color: var(--accent); }
+    .btn-github {
+      background: var(--accent);
+      color: #fff;
+      padding: 8px 16px;
+      border-radius: var(--radius-xs);
+      font-size: 14px;
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .btn-github:hover { background: var(--accent-hover); }
+
+    /* Hero */
+    .hero {
+      display: grid;
+      grid-template-columns: 1fr 420px;
+      gap: 56px;
+      padding: 72px 48px;
+      align-items: center;
+    }
+    .badge {
+      display: inline-block;
+      background: var(--accent-dim);
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 4px 10px;
+      border-radius: 99px;
+      margin-bottom: 24px;
+      border: 1px solid rgba(123,28,58,0.2);
+    }
+    h1 {
+      font-size: 48px;
+      font-weight: 800;
+      line-height: 1.1;
+      margin: 0 0 16px;
+    }
+    .subheadline {
+      font-size: 18px;
+      color: var(--text-2);
+      margin: 0 0 32px;
+      line-height: 1.6;
+    }
+    .cta-group {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .cta-primary {
+      background: var(--accent);
+      color: #fff;
+      padding: 14px 28px;
+      border-radius: var(--radius-sm);
+      font-weight: 700;
+      text-decoration: none;
+      font-size: 16px;
+    }
+    .cta-primary:hover { background: var(--accent-hover); }
+    .cta-secondary {
+      background: transparent;
+      color: var(--accent);
+      padding: 14px 28px;
+      border-radius: var(--radius-sm);
+      font-weight: 600;
+      text-decoration: none;
+      font-size: 16px;
+      border: 2px solid var(--accent);
+    }
+    .cta-secondary:hover { background: var(--accent-dim); }
+    .widget-card {
+      background: #fff;
+      border-radius: var(--radius-md);
+      box-shadow: 0 20px 60px rgba(0,0,0,0.12);
+      overflow: hidden;
+    }
+    .widget-card iframe { display: block; border: none; }
+
+    /* Metrics strip */
+    .metrics-strip {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .metric {
+      padding: 40px 48px;
+      text-align: center;
+      border-right: 1px solid var(--border);
+    }
+    .metric:last-child { border-right: none; }
+    .metric-value {
+      font-size: 40px;
+      font-weight: 800;
+      color: var(--accent);
+    }
+    .metric-label {
+      font-size: 14px;
+      color: var(--text-3);
+      margin-top: 8px;
+    }
+
+    /* Trust strip */
+    .trust-strip {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 0;
+      padding: 48px;
+      background: var(--surface-1);
+    }
+    .trust-card {
+      padding: 32px;
+      text-align: center;
+    }
+    .trust-icon {
+      width: 40px;
+      height: 40px;
+      background: var(--accent-dim);
+      border-radius: var(--radius-xs);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 16px;
+    }
+    .trust-title { font-weight: 700; margin-bottom: 8px; }
+    .trust-body {
+      font-size: 14px;
+      color: var(--text-3);
+      line-height: 1.5;
+    }
+
+    /* Footer */
+    .footer {
+      padding: 32px 48px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      color: var(--text-3);
+    }
+    .footer-links {
+      display: flex;
+      gap: 24px;
+    }
+    .footer-links a {
+      color: var(--text-3);
+      text-decoration: none;
+    }
+    .footer-links a:hover { color: var(--accent); }
+  </style>
+</head>
+<body>
+
+  <!-- Nav -->
+  <nav class="nav">
+    <a class="logo" href="#">Veri<span class="logo-accent">dian</span></a>
+    <ul class="nav-links">
+      <li><a href="#hero">Demo</a></li>
+      <li><a href="https://github.com/Bantuson/veridian" target="_blank" rel="noopener">Docs</a></li>
+      <li><a class="btn-github" href="https://github.com/Bantuson/veridian" target="_blank" rel="noopener">View on GitHub &#x2197;</a></li>
+    </ul>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero" id="hero">
+    <div class="hero-text">
+      <span class="badge">PORTFOLIO &#x2022; V0</span>
+      <h1>Ask anything about<br>Bella Vista Coffee</h1>
+      <p class="subheadline">Powered by Veridian &mdash; a grounded AI agent that cites its sources</p>
+      <div class="cta-group">
+        <a class="cta-primary" href="#hero">Try the demo &#x2192;</a>
+        <a class="cta-secondary" href="https://github.com/Bantuson/veridian" target="_blank" rel="noopener">View the code &#x2197;</a>
+      </div>
+    </div>
+    <div class="hero-widget">
+      <div class="widget-card">
+        <iframe
+          id="veridian-widget"
+          src="http://localhost:8001/index.html?agent_id=DEMO_AGENT_ID_PLACEHOLDER&api=http://localhost:8000"
+          width="380"
+          height="520"
+          frameborder="0"
+          title="Veridian Widget Demo"
+        ></iframe>
+      </div>
+    </div>
+  </section>
+
+  <!-- Metrics strip -->
+  <div class="metrics-strip">
+    <div class="metric">
+      <div class="metric-value">100%</div>
+      <div class="metric-label">Grounded</div>
+    </div>
+    <div class="metric">
+      <div class="metric-value">&lt;20kb</div>
+      <div class="metric-label">Bundle</div>
+    </div>
+    <div class="metric">
+      <div class="metric-value">SSE</div>
+      <div class="metric-label">Streaming</div>
+    </div>
+  </div>
+
+  <!-- Trust strip -->
+  <div class="trust-strip">
+    <div class="trust-card">
+      <div class="trust-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#7B1C3A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+      </div>
+      <div class="trust-title">Grounded answers</div>
+      <div class="trust-body">Answers grounded in your documents. No hallucinations, no guesswork.</div>
+    </div>
+    <div class="trust-card">
+      <div class="trust-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#7B1C3A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+          <polyline points="10 9 9 9 8 9"/>
+        </svg>
+      </div>
+      <div class="trust-title">Cited sources</div>
+      <div class="trust-body">Cites sources for every response so you can verify the answer.</div>
+    </div>
+    <div class="trust-card">
+      <div class="trust-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#7B1C3A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+          <circle cx="9" cy="7" r="4"/>
+          <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+          <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+        </svg>
+      </div>
+      <div class="trust-title">Human escalation</div>
+      <div class="trust-body">Escalates to a human when needed &mdash; never leaves a customer stranded.</div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <span>veridian/m4 &middot; portfolio demo &middot; Bantu Son</span>
+    <div class="footer-links">
+      <a href="https://github.com/Bantuson/veridian" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/Bantuson/veridian/blob/main/.planning/phases/04-reasoning-engine-widget/UI-SPEC.md" target="_blank" rel="noopener">UI-SPEC</a>
+      <a href="mailto:bantuson.enquiries@gmail.com">Contact</a>
+    </div>
+  </footer>
+
+</body>
+</html>
