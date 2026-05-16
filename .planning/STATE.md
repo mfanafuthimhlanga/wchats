@@ -101,6 +101,12 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | 01 | 07 | ~20 min | 2 | 6 |
 | 01 | 08 | ~5 min | 2 | 6 |
 
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260516-aaa | Fix eval harness blockers (capture pipeline, G-06 gate, CI, D3 regex) | 2026-05-16 | 2ab4245 | [260516-aaa-eval-blocker-fixes](.planning/quick/260516-aaa-eval-blocker-fixes/) |
+
 ## Notes
 
 - Phase 2 planned 2026-05-13 — 7 plans, 7 waves, all ING-01–ING-10 covered, verification passed.
