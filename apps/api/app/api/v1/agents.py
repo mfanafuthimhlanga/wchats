@@ -1,13 +1,15 @@
 """
 Agent routes.
 
-POST /agents  — create agent and dispatch Celery chain; returns 202 Accepted
-GET  /agents/{agent_id} — return current agent state
+POST   /agents                 — create agent and dispatch Celery chain; returns 202 Accepted
+GET    /agents/{agent_id}      — return current agent state
+PATCH  /agents/{agent_id}      — partial update of soul fields (AGT-11)
 
 Security:
     - Requires X-API-Key on all routes (get_current_tenant dependency).
     - tenant_id sourced from authenticated Tenant (not request body) — T-04-04.
     - GET /agents/{agent_id} filters by both agent.id AND tenant_id — T-04-05.
+    - PATCH /agents/{agent_id} enforces tenant ownership (T-04-06-03).
 
 Architecture:
     - POST /agents does NOT emit events inline — the "started" event is emitted
@@ -29,7 +31,13 @@ from app.core.database import get_async_db
 from app.models.agent import Agent
 from app.models.job import Job
 from app.models.tenant import Tenant
-from app.schemas.agent import AgentCreate, AgentCreateResponse, AgentResponse
+from app.schemas.agent import (
+    AgentCreate,
+    AgentCreateResponse,
+    AgentDetailResponse,
+    AgentResponse,
+    AgentSoulUpdate,
+)
 from app.worker.tasks.pipeline.provision import provision_neon
 
 router = APIRouter(tags=["agents"])
@@ -114,3 +122,59 @@ async def get_agent(
         raise HTTPException(status_code=404, detail="Agent not found")
 
     return AgentResponse.model_validate(agent)
+
+
+@router.patch("/agents/{agent_id}", response_model=AgentDetailResponse)
+async def patch_agent(
+    agent_id: UUID,
+    body: AgentSoulUpdate,
+    db: AsyncSession = Depends(get_async_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> AgentDetailResponse:
+    """Partially update soul fields on an agent (AGT-11).
+
+    Only fields present in the JSON body are updated; missing fields are
+    unchanged (model_dump(exclude_unset=True) semantics).
+
+    Security:
+        T-04-06-03: Agent ownership enforced via tenant_id filter.
+        T-04-06-01: Empty-string list items stripped server-side (defense in depth).
+
+    Returns 404 if agent does not exist or does not belong to authenticated tenant.
+    Returns 422 on Pydantic validation failures (e.g. name="").
+    """
+    # 1. Validate agent exists and belongs to this tenant
+    result = await db.execute(
+        select(Agent).where(
+            Agent.id == agent_id,
+            Agent.tenant_id == tenant.id,
+            Agent.deleted_at.is_(None),
+        )
+    )
+    agent = result.scalar_one_or_none()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # 2. Extract only the fields the caller provided
+    updates = body.model_dump(exclude_unset=True)
+
+    # 3. Strip blank / whitespace-only list items (T-04-06-01 defense in depth)
+    if "soul_do_list" in updates:
+        updates["soul_do_list"] = [
+            s.strip() for s in updates["soul_do_list"] if s and s.strip()
+        ]
+    if "soul_donot_list" in updates:
+        updates["soul_donot_list"] = [
+            s.strip() for s in updates["soul_donot_list"] if s and s.strip()
+        ]
+
+    # 4. Apply updates to the ORM row
+    for field, value in updates.items():
+        setattr(agent, field, value)
+
+    # 5. Persist
+    await db.commit()
+    await db.refresh(agent)
+
+    # 6. Return full agent representation
+    return AgentDetailResponse.model_validate(agent)

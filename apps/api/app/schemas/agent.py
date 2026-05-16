@@ -5,13 +5,15 @@ SoulSchema         — nested soul object (voice, do, do_not lists)
 AgentCreate        — request body for POST /agents
 AgentResponse      — response body for GET /agents/{id}
 AgentCreateResponse — response body for POST /agents (202 Accepted)
+AgentSoulUpdate    — request body for PATCH /agents/{id} (partial soul update)
+AgentDetailResponse — response body for PATCH /agents/{id}
 """
 
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SoulSchema(BaseModel):
@@ -44,3 +46,34 @@ class AgentCreateResponse(BaseModel):
     job_id: UUID
     status: str
     events_url: str
+
+
+class AgentSoulUpdate(BaseModel):
+    """Partial update schema for PATCH /agents/{id}.
+
+    All fields are optional — only fields present in the body are updated
+    (use model_dump(exclude_unset=True) in the route handler).
+
+    Threat mitigation T-04-06-01: Pydantic enforces size constraints server-side.
+    """
+
+    name: str | None = Field(None, min_length=1, max_length=60)
+    soul_role: str | None = Field(None, max_length=120)
+    soul_voice: str | None = Field(None, max_length=500)
+    soul_do_list: list[str] | None = Field(None)
+    soul_donot_list: list[str] | None = Field(None)
+
+
+class AgentDetailResponse(BaseModel):
+    """Response body for GET /agents/{id} and PATCH /agents/{id}."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    soul_role: str | None = None
+    soul_voice: str | None = None
+    soul_do_list: list = []
+    soul_donot_list: list = []
+    status: str
+    created_at: datetime
