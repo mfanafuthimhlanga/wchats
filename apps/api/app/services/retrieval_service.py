@@ -124,7 +124,7 @@ def vector_search(conn_str: str, query_vector: list[float], vector_k: int) -> li
             "chunk_id": str(row[0]),
             "content": row[1],
             "document_id": str(row[2]),
-            "cosine_score": row[3],
+            "cosine_score": float(row[3]) if row[3] is not None else None,
             "rank": row[4],
         }
         for row in rows
@@ -180,7 +180,7 @@ def bm25_search(conn_str: str, query_text: str, bm25_k: int) -> list[dict]:
             "chunk_id": str(row[0]),
             "content": row[1],
             "document_id": str(row[2]),
-            "bm25_score": row[3],
+            "bm25_score": float(row[3]) if row[3] is not None else None,
             "rank": row[4],
         }
         for row in rows
@@ -283,9 +283,9 @@ def rrf_fuse(
             "chunk_id": str(row[0]),
             "content": row[1],
             "document_id": str(row[2]),
-            "rrf_score": row[3],
-            "cosine_score": row[4],
-            "bm25_score": row[5],
+            "rrf_score": float(row[3]) if row[3] is not None else None,
+            "cosine_score": float(row[4]) if row[4] is not None else None,
+            "bm25_score": float(row[5]) if row[5] is not None else None,
             "vector_rank": row[6],
             "bm25_rank": row[7],
         }

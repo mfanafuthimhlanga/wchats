@@ -437,8 +437,12 @@ def main() -> None:
         wait_for_ready(agent_id, api_key, timeout=180)
         conn_str = _get_neon_conn_str(agent_id)
         seed_test_data(conn_str)
+        # Voyage free tier: 3 RPM. Seed step consumes 1 request; wait 25s so the
+        # query embedding + rerank requests don't collide in the same minute window.
+        print("  [wait] Pausing 25s for Voyage rate-limit window to reset...")
+        time.sleep(25)
         job_id = submit_query(agent_id, api_key)
-        payload = poll_until_complete(job_id, api_key, timeout=90)
+        payload = poll_until_complete(job_id, api_key, timeout=300)
         overall_pass = validate(payload)
 
     except KeyboardInterrupt:

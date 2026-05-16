@@ -243,6 +243,9 @@ def retrieve_and_rank(self, job_id: str, agent_id: str, query: str) -> dict:
                 except Exception:
                     pass
             else:
-                raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+                # Rate-limit errors need at least 30s; other errors use exponential backoff.
+                is_rate_limit = any(k in str(exc).lower() for k in ("rate limit", "rate_limit", "429", "rpm", "tpm"))
+                countdown = 30 if is_rate_limit else 2 ** self.request.retries
+                raise self.retry(exc=exc, countdown=countdown)
 
     return {}
