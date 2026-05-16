@@ -47,6 +47,15 @@ class Agent(Base):
     retrieval_strategy: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
+    # M4: structured soul fields (additive — legacy soul JSONB + role TEXT kept for M1 compat)
+    soul_voice: Mapped[str | None] = mapped_column(Text, nullable=True)
+    soul_do_list: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    soul_donot_list: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    soul_role: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
