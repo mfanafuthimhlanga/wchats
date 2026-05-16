@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: ready_to_execute
-last_updated: "2026-05-16T16:14:00.000Z"
+last_updated: "2026-05-16T17:24:18.000Z"
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 30
-  completed_plans: 26
-  percent: 87
+  completed_plans: 27
+  percent: 90
 ---
 
 # Project State
@@ -86,6 +86,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|
+| 04 | 06 | ~16 min | 2 | 14 |
 | 04 | 04 | ~14 min | 2 | 8 |
 | 04 | 03 | ~24 min | 2 | 4 |
 | 04 | 02 | ~18 min | 2 | 4 |
@@ -118,3 +119,6 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Last session: 2026-05-16 — completed 04-02-PLAN.md (agent_prompt + agent_tools) — 2 tasks, fc9f454 + 5b1aabd
 - Last session: 2026-05-16 — completed 04-03-PLAN.md (escalation helper + run_agent_turn Celery task) — 3 commits, 477bfbf + 1e462c8 + 7c624da
 - Last session: 2026-05-16 — completed 04-04-PLAN.md (agent_chat + widget FastAPI routes, JWT, rate-limit, CORS, 25 unit tests) — 2 commits, d5030f1 + 280de75
+- Last session: 2026-05-16 — completed 04-06-PLAN.md (PATCH /agents/{id} + AgentSoulUpdate + Next.js 16 admin Soul Editor) — 3 commits: 142550a + 432131c + 1634670
+- [04-06] @types/react-dom pinned to 19.2.3 (plan spec 19.2.5 does not exist on npm)
+- [04-06] missing API key → 403 (not 401) via FastAPI APIKeyHeader auto_error=True; tests use in (401,403)
