@@ -13,14 +13,60 @@ Tests validate:
 Mock strategy: patch asyncio.run at 'app.worker.tasks.runtime.agent.asyncio.run'
 with a canned dict return value. Do NOT use AsyncMock for SDK — the task uses
 asyncio.run() as the sync/async bridge; we mock that boundary only.
+
+IMPORTANT: claude_agent_sdk must be monkeypatched before any import of agent.py
+because agent.py imports it at module level (same pattern as test_agent_tools.py).
 """
 
 from __future__ import annotations
 
+import sys
+import types
 import uuid
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+
+
+# ---------------------------------------------------------------------------
+# Monkeypatch claude_agent_sdk BEFORE importing the agent task module.
+# agent.py uses `from claude_agent_sdk import ...` at module level.
+# The fake provides enough for the import to succeed; actual SDK calls are
+# mocked at the asyncio.run() boundary in each test.
+# ---------------------------------------------------------------------------
+
+def _make_fake_claude_agent_sdk() -> types.ModuleType:
+    """Minimal stub of claude_agent_sdk sufficient for module-level import."""
+    fake = types.ModuleType("claude_agent_sdk")
+
+    # Classes / types referenced in agent.py
+    fake.ClaudeSDKClient = MagicMock(name="ClaudeSDKClient")
+    fake.ClaudeAgentOptions = MagicMock(name="ClaudeAgentOptions")
+    fake.AssistantMessage = MagicMock(name="AssistantMessage")
+    fake.ResultMessage = MagicMock(name="ResultMessage")
+    fake.TextBlock = MagicMock(name="TextBlock")
+    fake.ToolUseBlock = MagicMock(name="ToolUseBlock")
+    fake.ToolResultBlock = MagicMock(name="ToolResultBlock")
+    fake.ClaudeSDKError = type("ClaudeSDKError", (Exception,), {})
+    fake.CLINotFoundError = type("CLINotFoundError", (Exception,), {})
+    fake.CLIConnectionError = type("CLIConnectionError", (Exception,), {})
+    fake.ProcessError = type("ProcessError", (Exception,), {})
+    fake.CLIJSONDecodeError = type("CLIJSONDecodeError", (Exception,), {})
+
+    # Also provide tool / create_sdk_mcp_server used by agent_tools (dependency)
+    def _tool_decorator(name, description, schema):
+        def wrapper(fn):
+            fn._tool_name = name
+            return fn
+        return wrapper
+    fake.tool = _tool_decorator
+    fake.create_sdk_mcp_server = MagicMock(return_value=MagicMock(name="mcp_server"))
+
+    return fake
+
+
+if "claude_agent_sdk" not in sys.modules:
+    sys.modules["claude_agent_sdk"] = _make_fake_claude_agent_sdk()
 
 
 # ---------------------------------------------------------------------------

@@ -74,6 +74,8 @@ celery_app.conf.update(
         "app.worker.tasks.pipeline.embed",
         # M3: hybrid retrieval task (runtime queue)
         "app.worker.tasks.runtime.retrieve",
+        # M4: agent turn task (runtime queue)
+        "app.worker.tasks.runtime.agent",
     ],
 
     # --- Queue topology -------------------------------------------------
