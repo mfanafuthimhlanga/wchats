@@ -151,7 +151,31 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 **PRD:** `prd-M4.md` (TBD)
 **Requirements:** AGT-01 through AGT-11
 **Depends on:** M3
-**Phases:** Defined when M4 becomes active
+**Phases:** Planned — 8 plans, 7 waves
+
+| Wave | Plan | Objective | Status |
+|------|------|-----------|--------|
+| Wave 1 | 04-01 | Schema foundation: control DB 0004 soul fields + tenant DB 0003 conversations (R-01 fix) + Settings JWT_SECRET/SMTP_* + pyproject pins (claude-agent-sdk, python-jose) | ○ Pending |
+| Wave 2 | 04-02 | Agent domain core: build_system_prompt assembler + four MCP tools (retrieve, lookup_structured allowlist, escalate_to_human, clarify) + build_tool_server factory + 11 unit tests | ○ Pending |
+| Wave 3 | 04-03 | run_agent_turn Celery task (asyncio.run bridge, R-02 sdk_session_id capture, idempotency, citation extraction, escalation routing) + escalation SMTP helper + celery_app include + 6 unit tests | ○ Pending |
+| Wave 4 | 04-04 | FastAPI routes: agent_chat (POST chat + GET conversations) + widget (config + chat + PUBLIC SSE per R-03) + JWT + rate limit + CORS + 21+ unit tests | ○ Pending |
+| Wave 5 *(parallel)* | 04-05 | Preact widget — apps/widget/ scaffold + components + Design G CSS + Vite IIFE build + zlib bundle-size gate ≤20kb | ○ Pending |
+| Wave 5 *(parallel)* | 04-06 | Next.js admin Soul Editor + PATCH /agents/{id} backend + AgentSoulUpdate schema + 6 unit tests | ○ Pending |
+| Wave 6 | 04-07 | Integration test (guarded) + eval harness (judge.py + run_evals.py covering D1-D8) + 20 scenario JSON files (6 golden/5 edge/5 adversarial/4 oos) + Bella Vista Coffee SQL fixture | ○ Pending |
+| Wave 7 *(blocked on 04-05, 04-06, 04-07)* | 04-08 | Static demo page + Bash & PowerShell orchestrator scripts + guarded E2E test + HUMAN CHECKPOINT (visual demo verification) | ○ Pending |
+
+**Cross-cutting constraints:**
+- claude-agent-sdk==0.1.81 PINNED (do not upgrade — 0.2.82 is forbidden per CLAUDE.md)
+- asyncio.run() inside Celery task (NEVER loop.run_until_complete — broken in Python 3.12)
+- acks_late=True AND idempotency guard on run_agent_turn
+- Connection strings never in Celery task args — fetched from control DB by agent_id
+- FastAPI never does work inline — POST chat dispatches to runtime queue
+- Widget bundle ≤20480 bytes gzipped (G-01 hard CI gate)
+- ALLOWED_LOOKUP_TABLES frozenset enforced in lookup_structured (G-04 hard block)
+- R-01 BLOCKING: tenant DB migration 0003 fixes conversations schema gap (agent_id + metadata)
+- R-02: SDK session_id captured from ResultMessage and stored in conversations.metadata
+- R-03: GET /widget/jobs/{job_id}/events is PUBLIC (EventSource cannot send X-API-Key header)
+- Design G (Parchment & Wine) palette locked — widget + admin + demo all use it
 
 **Success Criteria:**
 1. Public test site visitor asks a question → grounded answer with source citation footer from real ingested data.
