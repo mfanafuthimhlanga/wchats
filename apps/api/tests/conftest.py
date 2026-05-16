@@ -50,6 +50,7 @@ os.environ.setdefault("ADMIN_KEY", "vrd_admin_test_key_for_tests_only")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test_anthropic_key")
 os.environ.setdefault("VOYAGE_API_KEY", "test_voyage_key")
 os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-for-tests-only")
 
 # Celery eager mode — tasks run synchronously in the test process,
 # no running worker required (unit tests only; integration tests override this).

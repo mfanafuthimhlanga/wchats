@@ -62,6 +62,16 @@ class Settings(BaseSettings):
     VOYAGE_API_KEY: str
     # M3: Cohere reranker fallback (RET-05); optional so existing envs are not broken
     COHERE_API_KEY: str | None = None
+
+    # M4: Widget JWT auth
+    JWT_SECRET: str = "dev-secret-change-in-production"
+
+    # M4: Escalation email (all optional — fallback to structlog WARNING when unset)
+    SMTP_HOST: str | None = None
+    SMTP_PORT: int = 587
+    SMTP_FROM: str | None = None
+    OWNER_EMAIL: str | None = None
+
     MAX_UPLOAD_SIZE_MB: int = 50
 
     def __repr__(self) -> str:  # T-01-01, T-01-02: never leak field values

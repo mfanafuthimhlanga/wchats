@@ -26,6 +26,8 @@ dependencies = [
     "anthropic==0.101.0",
     "python-multipart==0.0.20",
     "tenacity==9.1.2",
+    "claude-agent-sdk==0.1.81",
+    "python-jose[cryptography]==3.5.0",
 ]
 
 [project.optional-dependencies]
