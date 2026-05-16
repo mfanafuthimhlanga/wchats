@@ -158,7 +158,7 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 | Wave 1 | 04-01 | Schema foundation: control DB 0004 soul fields + tenant DB 0003 conversations (R-01 fix) + Settings JWT_SECRET/SMTP_* + pyproject pins (claude-agent-sdk, python-jose) | ○ Pending |
 | Wave 2 | 04-02 | Agent domain core: build_system_prompt assembler + four MCP tools (retrieve, lookup_structured allowlist, escalate_to_human, clarify) + build_tool_server factory + 11 unit tests | ○ Pending |
 | Wave 3 | 04-03 | run_agent_turn Celery task (asyncio.run bridge, R-02 sdk_session_id capture, idempotency, citation extraction, escalation routing) + escalation SMTP helper + celery_app include + 6 unit tests | ○ Pending |
-| Wave 4 | 04-04 | FastAPI routes: agent_chat (POST chat + GET conversations) + widget (config + chat + PUBLIC SSE per R-03) + JWT + rate limit + CORS + 21+ unit tests | ○ Pending |
+| Wave 4 | 04-04 | FastAPI routes: agent_chat (POST chat + GET conversations) + widget (config + chat + PUBLIC SSE per R-03) + JWT + rate limit + CORS + 25 unit tests | ✓ Complete |
 | Wave 5 *(parallel)* | 04-05 | Preact widget — apps/widget/ scaffold + components + Design G CSS + Vite IIFE build + zlib bundle-size gate ≤20kb | ○ Pending |
 | Wave 5 *(parallel)* | 04-06 | Next.js admin Soul Editor + PATCH /agents/{id} backend + AgentSoulUpdate schema + 6 unit tests | ○ Pending |
 | Wave 6 | 04-07 | Integration test (guarded) + eval harness (judge.py + run_evals.py covering D1-D8) + 20 scenario JSON files (6 golden/5 edge/5 adversarial/4 oos) + Bella Vista Coffee SQL fixture | ○ Pending |
