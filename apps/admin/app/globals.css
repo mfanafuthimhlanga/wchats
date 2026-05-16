@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+:root {
+  /* Backgrounds */
+  --bg: #FDF9F5;
+  --surface-1: #FFFCF9;
+  --surface-2: #F7F0EA;
+  --surface-3: #EDE3D8;
+
+  /* Borders */
+  --border: #D9CCBE;
+  --border-soft: #EDE3D8;
+  --border-hard: #B8906A;
+
+  /* Accent — Wine */
+  --accent: #7B1C3A;
+  --accent-hover: #5E1229;
+  --accent-deep: #3D0B1F;
+  --accent-dim: rgba(123, 28, 58, 0.08);
+
+  /* Gold */
+  --gold: #B8860B;
+  --gold-light: #FEF9E7;
+  --gold-soft: #E8D8A6;
+
+  /* Text */
+  --text-1: #1A0A0F;
+  --text-2: #4A2030;
+  --text-3: #8A6060;
+  --text-4: #C4A0A0;
+
+  /* Radii */
+  --radius-xs: 8px;
+  --radius-sm: 14px;
+  --radius-md: 20px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 3px rgba(26, 10, 15, 0.08);
+  --shadow-md: 0 4px 16px rgba(26, 10, 15, 0.12);
+  --shadow-lg: 0 8px 32px rgba(26, 10, 15, 0.16);
+
+  /* Status */
+  --red: #C0392B;
+  --red-bg: rgba(192, 57, 43, 0.08);
+  --green: #27AE60;
+  --green-bg: rgba(39, 174, 96, 0.08);
+  --amber: #F39C12;
+  --amber-bg: rgba(243, 156, 18, 0.08);
+
+  /* Typography */
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text-1);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
