@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: unknown
-last_updated: "2026-05-16T07:07:39.421Z"
+status: ready_to_execute
+last_updated: "2026-05-16T16:00:00.000Z"
 progress:
-  total_phases: 3
+  total_phases: 4
   completed_phases: 3
-  total_plans: 22
-  completed_plans: 22
-  percent: 100
+  total_plans: 30
+  completed_plans: 23
+  percent: 77
 ---
 
 # Project State
@@ -17,7 +17,7 @@ progress:
 ## Current Status
 
 **Active Milestone:** M4 — Reasoning Engine + Widget v0 (FIRST HIREABLE ARTIFACT)
-**Milestone Phase:** Not started
+**Milestone Phase:** Phase 4 planned — 8 plans, 7 waves — Ready to execute
 **Last updated:** 2026-05-16
 
 ## Project Reference
@@ -45,6 +45,9 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Key Decisions
 
+- [04-01] Legacy soul JSONB + role TEXT preserved; new soul_voice/soul_do_list/soul_donot_list/soul_role are additive (D-Schema decision from CONTEXT.md)
+- [04-01] JWT_SECRET default is intentionally insecure 'dev-secret-change-in-production' — T-04-01-04 accept disposition; operator must override in production
+- [04-01] SMTP_* fields all optional (None default) so SMTP_HOST stays unset in tests, exercising fallback-to-structlog code paths
 - redis==6.4.0 (not 7.4.0): celery[redis]==5.6.3 requires kombu 5.6.x which constrains redis<6.5; redis 7.4.0 is incompatible
 - Tenant ORM attribute api_key_hash (DB column: api_key) prevents plaintext confusion in code
 - target_metadata=None in alembic_tenant/env.py: no ORM models for tenant schema in M1; all DDL via raw SQL
@@ -74,6 +77,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|
+| 04 | 01 | ~15 min | 2 | 7 |
 | 01 | 01 | ~45 min | 3 | 15 |
 | 01 | 02 | ~35 min | 3 | 5 |
 | 01 | 03 | ~7 min | 3 | 4 |
@@ -98,3 +102,4 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - conftest.py sets CELERY_TASK_ALWAYS_EAGER=True and all required env vars before app import
 - FastAPI dependency_overrides pattern used for all route tests (no real DB or Redis needed)
 - ruff config: line-length=120, select E/F/I, ignore E501; mypy: strict=false, ignore_missing_imports=true
+- Last session: 2026-05-16 — completed 04-01-PLAN.md (foundation migrations + settings) — 2 tasks, 533797b + 8f0eba7
