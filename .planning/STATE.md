@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: ready_to_execute
-last_updated: "2026-05-16T16:00:00.000Z"
+last_updated: "2026-05-16T16:14:00.000Z"
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 30
-  completed_plans: 23
-  percent: 77
+  completed_plans: 24
+  percent: 80
 ---
 
 # Project State
@@ -58,6 +58,9 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - apply_migrations uses neon_direct_connection_string (not pooled) — DDL requires non-pooled direct endpoint
 - wait_for_neon_ready runs in apply_migrations before Alembic, not in provision_neon
 - CORS_ORIGINS added to Settings as list[str] = ['http://localhost:3000'] — widget CORS lands in M4 only
+- [04-02] FEW_SHOT_SUFFIX is a module-level constant in agent_prompt.py — dynamic retrieval deferred post-M6
+- [04-02] Module-level globals for tool state injection in agent_tools.py — safe for worker_pool=solo; ContextVar upgrade deferred if concurrency > 1
+- [04-02] claude_agent_sdk monkeypatched via sys.modules in tests — SDK binary not required at unit test time
 - get_current_tenant iterates all non-deleted tenants for argon2 verify — no indexed lookup possible with hashed keys
 - get_async_redis creates per-request client from REDIS_URL — avoids module-level async Redis in FastAPI context
 - POST /agents route has zero occurrences of "job.started" string — comments reworded to satisfy grep-based acceptance criteria
@@ -77,6 +80,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|
+| 04 | 02 | ~18 min | 2 | 4 |
 | 04 | 01 | ~15 min | 2 | 7 |
 | 01 | 01 | ~45 min | 3 | 15 |
 | 01 | 02 | ~35 min | 3 | 5 |
@@ -103,3 +107,4 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - FastAPI dependency_overrides pattern used for all route tests (no real DB or Redis needed)
 - ruff config: line-length=120, select E/F/I, ignore E501; mypy: strict=false, ignore_missing_imports=true
 - Last session: 2026-05-16 — completed 04-01-PLAN.md (foundation migrations + settings) — 2 tasks, 533797b + 8f0eba7
+- Last session: 2026-05-16 — completed 04-02-PLAN.md (agent_prompt + agent_tools) — 2 tasks, fc9f454 + 5b1aabd
