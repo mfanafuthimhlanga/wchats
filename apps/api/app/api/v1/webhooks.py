@@ -193,8 +193,13 @@ async def provision_me(
             )
         )
         existing = re_result.scalars().first()
+        if existing is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Tenant not found after concurrent INSERT. Please retry.",
+            )
         response.status_code = status.HTTP_200_OK
-        return {"status": "exists", "tenant_id": str(existing.id) if existing else "unknown"}
+        return {"status": "exists", "tenant_id": str(existing.id)}
 
     new_id = row[0]
     log.info("tenant.self_provisioned", clerk_user_id=clerk_user_id)
