@@ -68,7 +68,7 @@ class Settings(BaseSettings):
 
     # M4.1: Clerk authentication
     CLERK_JWKS_URL: str = "https://api.clerk.com/v1/jwks"
-    CLERK_WEBHOOK_SIGNING_SECRET: str = ""
+    CLERK_WEBHOOK_SIGNING_SECRET: str  # required — must be set from Clerk dashboard
 
     # M4: Escalation email (all optional — fallback to structlog WARNING when unset)
     SMTP_HOST: str | None = None

@@ -51,6 +51,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test_anthropic_key")
 os.environ.setdefault("VOYAGE_API_KEY", "test_voyage_key")
 os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret-for-tests-only")
+os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "whsec_test123456789abcdefghijklmnop")
 
 # Celery eager mode — tasks run synchronously in the test process,
 # no running worker required (unit tests only; integration tests override this).
