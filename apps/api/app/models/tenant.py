@@ -22,11 +22,10 @@ class Tenant(Base):
         server_default=text("gen_random_uuid()"),
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    # Column name in DB is "api_key"; stores the argon2 hash.
-    # ORM attribute is api_key_hash to make intent explicit and prevent
-    # accidental logging of the raw DB value as if it were the plaintext key.
+    # Stores the argon2id hash of the raw API key.
+    # Column name in DB is now 'api_key_hash' (renamed from 'api_key' in migration 0006).
     api_key_hash: Mapped[str] = mapped_column(
-        "api_key", Text, unique=True, nullable=False
+        Text, unique=True, nullable=False
     )
     # First 16 hex chars of HMAC-SHA256(raw_key, ADMIN_KEY) — not secret,
     # used for O(1) indexed lookup before argon2 verify().

@@ -88,13 +88,13 @@ async def clerk_webhook(
         # Idempotent INSERT — Clerk may retry webhooks; ON CONFLICT is the idempotency gate
         await db.execute(
             text(
-                "INSERT INTO tenants (name, api_key, api_key_prefix, clerk_user_id) "
-                "VALUES (:name, :api_key, :api_key_prefix, :clerk_user_id) "
+                "INSERT INTO tenants (name, api_key_hash, api_key_prefix, clerk_user_id) "
+                "VALUES (:name, :api_key_hash, :api_key_prefix, :clerk_user_id) "
                 "ON CONFLICT (clerk_user_id) DO NOTHING"
             ),
             {
                 "name": display_name,
-                "api_key": key_hash,
+                "api_key_hash": key_hash,
                 "api_key_prefix": key_prefix,
                 "clerk_user_id": clerk_user_id,
             },
@@ -169,14 +169,14 @@ async def provision_me(
 
     result = await db.execute(
         text(
-            "INSERT INTO tenants (name, api_key, api_key_prefix, clerk_user_id) "
-            "VALUES (:name, :api_key, :api_key_prefix, :clerk_user_id) "
+            "INSERT INTO tenants (name, api_key_hash, api_key_prefix, clerk_user_id) "
+            "VALUES (:name, :api_key_hash, :api_key_prefix, :clerk_user_id) "
             "ON CONFLICT (clerk_user_id) DO NOTHING "
             "RETURNING id"
         ),
         {
             "name": display_name,
-            "api_key": key_hash,
+            "api_key_hash": key_hash,
             "api_key_prefix": key_prefix,
             "clerk_user_id": clerk_user_id,
         },
