@@ -433,6 +433,18 @@ def test_llm_judged_dimensions_d1_d2_d3_d4_d8():
             failed_scenarios = [r["scenario_id"] for r in dim_results if r["verdict"] == "FAIL"]
             failures.append(f"{dim}: {fails}/{total} FAIL — {failed_scenarios}")
 
+    # S-06: Flag borderline score=3 verdicts (AI-SPEC.md §5.2 + §6.2 soft stop)
+    borderline_count = sum(
+        1 for dim_results_list in results.values()
+        for r in dim_results_list if r["score"] == 3
+    )
+    if borderline_count > 3:
+        log.warning(
+            "llm_judge.borderline_flag",
+            count=borderline_count,
+            note="Manual review required — AI-SPEC §5.2 S-06 soft stop (>3/20 borderline)",
+        )
+
     # G-06: Aggregate escalation rate gate (AI-SPEC.md §6.1 P0 hard block)
     gate_passed, gate_reason = _check_escalation_rate_gate(scenarios)
     log.info("G06.escalation_rate_gate", passed=gate_passed, reason=gate_reason)
