@@ -72,12 +72,14 @@ app = FastAPI(
 app.add_middleware(RequestIdMiddleware)
 
 # CORS — locked to known origins; never wildcard (T-04-06)
+# Authorization added for browser Clerk JWT calls from admin UI (M4.1 — T-04-10-08)
+# PATCH added for soul editor PATCH /agents/{id} calls
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["X-API-Key", "X-Admin-Key", "Content-Type"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["X-API-Key", "X-Admin-Key", "Content-Type", "Authorization"],
 )
 
 
@@ -102,8 +104,11 @@ async def add_cache_control(request: Request, call_next):
 # Routers
 # ---------------------------------------------------------------------------
 
-from app.api.v1 import agents, documents, health, jobs, tenants, query, agent_chat, widget  # noqa: E402
+from app.api.v1 import agents, documents, health, jobs, tenants, query, agent_chat, widget, webhooks  # noqa: E402
 
+# webhooks router registered FIRST — ensures /webhooks/clerk and /me/provision are matched
+# before any wildcard route patterns
+app.include_router(webhooks.router)
 app.include_router(tenants.router)
 app.include_router(agents.router)
 app.include_router(documents.router)

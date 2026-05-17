@@ -64,7 +64,6 @@ def test_bad_signature():
 async def test_get_current_tenant_jwt_path():
     """CLERK-03: get_current_tenant returns Tenant when Clerk JWT is valid and tenant exists."""
     from app.main import app
-    from app.api.deps import get_current_tenant
     from app.core.database import get_async_db
 
     tenant_id = uuid4()
@@ -86,12 +85,13 @@ async def test_get_current_tenant_jwt_path():
         app.dependency_overrides[get_async_db] = override_db
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.get(
-                    f"/api/v1/agents",
+                resp = await client.post(
+                    "/agents",  # Routes are at /agents, not /api/v1/agents
                     headers={"Authorization": "Bearer fake.clerk.token"},
+                    json={"name": "Test Agent"},
                 )
-            # 200 or 404 (no agents) — either way, auth succeeded (not 401)
-            assert resp.status_code != 401, f"Expected auth to succeed, got {resp.status_code}"
+            # Auth succeeded — not 401. May be 400/422 due to missing fields, but not 401
+            assert resp.status_code != 401, f"Expected auth to succeed, got {resp.status_code}: {resp.text}"
         finally:
             app.dependency_overrides.pop(get_async_db, None)
 
@@ -130,9 +130,10 @@ async def test_get_current_tenant_apikey_fallback():
     app.dependency_overrides[get_async_db] = override_db
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.get(
-                "/api/v1/agents",
+            resp = await client.post(
+                "/agents",  # Routes are at /agents, not /api/v1/agents
                 headers={"X-API-Key": raw_key},
+                json={"name": "Test Agent"},
             )
         # Auth should succeed (not 401)
         assert resp.status_code != 401, f"Expected auth to succeed, got {resp.status_code}"
@@ -169,7 +170,10 @@ async def test_webhook_user_created_provisions_tenant():
 
     app.dependency_overrides[get_async_db] = override_db
     try:
-        with patch("svix.webhooks.Webhook.verify", return_value=webhook_payload):
+        # Patch the entire Webhook class — constructor raises RuntimeError on empty secret
+        mock_wh_instance = MagicMock()
+        mock_wh_instance.verify.return_value = webhook_payload
+        with patch("app.api.v1.webhooks.Webhook", return_value=mock_wh_instance):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.post(
                     "/webhooks/clerk",
@@ -199,7 +203,10 @@ async def test_webhook_invalid_signature_returns_400():
     from app.main import app
     from svix.webhooks import WebhookVerificationError
 
-    with patch("svix.webhooks.Webhook.verify", side_effect=WebhookVerificationError):
+    # Patch the entire Webhook class — constructor raises RuntimeError on empty secret
+    mock_wh_instance = MagicMock()
+    mock_wh_instance.verify.side_effect = WebhookVerificationError
+    with patch("app.api.v1.webhooks.Webhook", return_value=mock_wh_instance):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post(
                 "/webhooks/clerk",
@@ -224,6 +231,7 @@ async def test_no_credentials_returns_401():
     from app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/api/v1/agents")
+        # POST /agents requires get_current_tenant which requires auth
+        resp = await client.post("/agents", json={"name": "Test"})
 
     assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
