@@ -78,3 +78,95 @@ jobs:
                       print(f'  Warning: could not delete {p.id}: {exc}')
           print('Teardown complete')
           " || echo "Teardown script failed — check Neon console for orphaned projects"
+
+  eval-full:
+    name: Eval Full — LLM-judged D1/D2/D3/D4/D8
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: veridian
+          POSTGRES_PASSWORD: veridian
+          POSTGRES_DB: veridian_control
+        options: >-
+          --health-cmd "pg_isready -U veridian -d veridian_control"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    env:
+      CONTROL_DB_URL: postgresql+asyncpg://veridian:veridian@localhost:5432/veridian_control
+      CONTROL_DB_SYNC_URL: postgresql://veridian:veridian@localhost:5432/veridian_control
+      REDIS_URL: redis://localhost:6379/0
+      ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY_TEST }}
+      NEON_ENCRYPTION_KEY: ${{ secrets.NEON_ENCRYPTION_KEY }}
+      NEON_REGION: aws-us-east-1
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+      AGENT_E2E_ENABLED: "1"
+      AGENT_ID: ${{ secrets.EVAL_DEMO_AGENT_ID }}
+      API_KEY: ${{ secrets.EVAL_DEMO_API_KEY }}
+      AGENT_BASE_URL: http://localhost:8000
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
+        run: pip install -e "apps/api[dev]"
+
+      - name: Build widget (required for D7)
+        working-directory: apps/widget
+        run: npm ci && npm run build
+
+      - name: Run control DB migration
+        working-directory: apps/api
+        run: alembic -c alembic.ini upgrade head
+
+      - name: Start API server
+        working-directory: apps/api
+        run: uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+
+      - name: Start Celery worker
+        working-directory: apps/api
+        run: celery -A app.worker.celery_app worker -Q pipeline,runtime --pool=solo --loglevel=warning &
+
+      - name: Wait for API to be ready
+        run: |
+          for i in $(seq 1 20); do
+            if curl -sf http://localhost:8000/health; then
+              echo "API ready after ${i} attempts"
+              break
+            fi
+            echo "Waiting for API... ($i/20)"
+            sleep 3
+          done
+
+      - name: Capture eval responses
+        working-directory: apps/api
+        run: python tests/evals/capture_responses.py --overwrite
+
+      - name: Run full eval suite (LLM-judged D1/D2/D3/D4/D8 + deterministic)
+        working-directory: apps/api
+        run: pytest tests/evals/run_evals.py -v --tb=short
