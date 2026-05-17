@@ -24,6 +24,11 @@ def _get_jwks_client() -> PyJWKClient:
     return PyJWKClient(settings.CLERK_JWKS_URL, cache_keys=True, lifespan=3600)
 
 
+def _clear_jwks_cache() -> None:
+    """Clear the JWKS client singleton. Test use only."""
+    _get_jwks_client.cache_clear()
+
+
 def verify_clerk_jwt(token: str) -> dict[str, Any]:
     """Verify a Clerk session JWT.
 
