@@ -28,6 +28,8 @@ dependencies = [
     "tenacity==9.1.2",
     "claude-agent-sdk==0.1.81",
     "python-jose[cryptography]==3.5.0",
+    "PyJWT[cryptography]==2.12.1",
+    "svix==1.93.0",
 ]
 
 [project.optional-dependencies]
