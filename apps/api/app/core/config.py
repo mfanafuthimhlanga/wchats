@@ -63,8 +63,8 @@ class Settings(BaseSettings):
     # M3: Cohere reranker fallback (RET-05); optional so existing envs are not broken
     COHERE_API_KEY: str | None = None
 
-    # M4: Widget JWT auth
-    JWT_SECRET: str = "dev-secret-change-in-production"
+    # M4: Widget JWT auth — required; no default; must be set in every deployment environment
+    JWT_SECRET: str
 
     # M4.1: Clerk authentication
     CLERK_JWKS_URL: str = "https://api.clerk.com/v1/jwks"
