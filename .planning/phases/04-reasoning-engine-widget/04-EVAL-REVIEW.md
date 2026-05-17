@@ -1,6 +1,6 @@
 # EVAL-REVIEW — Phase 04: Reasoning Engine + Widget v0
 
-**Audit Date:** 2026-05-17 (third audit — WARNING resolution confirmation)
+**Audit Date:** 2026-05-17 (updated after calibration infrastructure added)
 **Supersedes:** Second audit (2026-05-17, "NEEDS WORK — both WARNING gaps unresolved, score 78/100")
 **AI-SPEC Present:** Yes — `.planning/phases/04-reasoning-engine-widget/AI-SPEC.md`
 **Overall Score:** 90/100
@@ -123,16 +123,18 @@ These items are not release blockers. A conscious decision to ship is not requir
 
 ### Judge Calibration — AI-SPEC §5.2 Advisory
 
-**Status:** Not implemented. No `apps/api/tests/evals/calibration/` directory exists.
+**Status:** Infrastructure complete — pending first eval-full run.
+
+`apps/api/tests/evals/calibration/` directory added with:
+- `human_scores.csv` — 10-row template covering all 5 LLM-judged dimensions (grounding × 3, escalation × 2, injection resistance × 2, session continuity × 1, knowledge gap honesty × 2). `human_score` column is blank; fill after the first nightly run.
+- `compute_correlation.py` — reads `human_scores.csv`, calls `judge.py` on each recorded response, computes Spearman ρ (stdlib, no scipy), exits 0 when ρ ≥ 0.75, exits 1 when below threshold.
 
 **AI-SPEC §5.2 wording:** "Target >= 0.75 Spearman correlation between judge scores and human scores on the calibration set (10 scenarios reviewed by the implementer before trusting automated results)."
 
-**Impact:** The automated LLM judge is running without calibration evidence. The judge rubrics match the AI-SPEC specification exactly, and the judge model (Sonnet) is stronger than the agent model (Haiku), which reduces self-evaluation bias. However, without a calibration pass, there is no measured confidence in judge accuracy.
-
-**Remediation:** After the first nightly eval-full run completes:
-1. Manually review judge verdicts on 10 scenarios; record human verdicts and scores in `apps/api/tests/evals/calibration/human_scores.csv`
-2. Add `compute_correlation.py` that computes Spearman r between judge scores and human scores
-3. Target >= 0.75 before treating automated judge results as authoritative
+**Remaining action (one-time, after first nightly eval-full run):**
+1. Review the 10 calibration scenarios in `responses/`; record your scores (1–5) in `human_scores.csv`
+2. Run `python apps/api/tests/evals/calibration/compute_correlation.py`
+3. If ρ ≥ 0.75 → judge is calibrated; if below → adjust rubrics in `judge.py` and re-run
 
 ### Deferred Items (by Design)
 
@@ -153,4 +155,5 @@ These items are not release blockers. A conscious decision to ship is not requir
 | `apps/api/tests/evals/capture_responses.py` | Unchanged — present | Called by eval-full job with --overwrite flag |
 | All 20 scenario JSON files | Unchanged — present | S-001 through S-020 confirmed in previous audits |
 | `apps/api/tests/evals/fixtures/demo_business_tenant.sql` | Unchanged — present | Confirmed in previous audits |
-| `apps/api/tests/evals/calibration/` | Does not exist | Advisory item — not a release blocker |
+| `apps/api/tests/evals/calibration/human_scores.csv` | Added — template | 10 rows across 5 LLM-judged dimensions; `human_score` column blank pending first nightly run |
+| `apps/api/tests/evals/calibration/compute_correlation.py` | Added — ready | Reads CSV, calls judge, computes Spearman ρ; exits 0 when ρ ≥ 0.75 |
