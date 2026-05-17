@@ -10,7 +10,7 @@ AgentDetailResponse — response body for PATCH /agents/{id}
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -60,8 +60,8 @@ class AgentSoulUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=60)
     soul_role: str | None = Field(None, max_length=120)
     soul_voice: str | None = Field(None, max_length=500)
-    soul_do_list: list[str] | None = Field(None)
-    soul_donot_list: list[str] | None = Field(None)
+    soul_do_list: list[Annotated[str, Field(min_length=1, max_length=200)]] | None = None
+    soul_donot_list: list[Annotated[str, Field(min_length=1, max_length=200)]] | None = None
 
 
 class AgentDetailResponse(BaseModel):
