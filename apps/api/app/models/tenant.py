@@ -35,8 +35,11 @@ class Tenant(Base):
     )
     # Clerk user ID (user_xxx format) — added in migration 0005 (M4.1 Clerk auth).
     # Nullable so existing tenants (X-API-Key only) keep working without a Clerk ID.
+    # Uniqueness is enforced by a partial DB index (migration 0007):
+    #   UNIQUE WHERE deleted_at IS NULL AND clerk_user_id IS NOT NULL
+    # This allows a soft-deleted user to re-register via Clerk.
     clerk_user_id: Mapped[str | None] = mapped_column(
-        Text, unique=True, nullable=True, index=True
+        Text, nullable=True, index=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
