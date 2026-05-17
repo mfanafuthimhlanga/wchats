@@ -65,8 +65,8 @@ async def clerk_webhook(
     try:
         wh = Webhook(settings.CLERK_WEBHOOK_SIGNING_SECRET)
         evt = wh.verify(payload, headers)
-    except WebhookVerificationError:
-        log.warning("clerk_webhook.signature_invalid")
+    except (WebhookVerificationError, RuntimeError) as exc:
+        log.warning("clerk_webhook.verification_failed", error=type(exc).__name__)
         response.status_code = status.HTTP_400_BAD_REQUEST
         return
 
