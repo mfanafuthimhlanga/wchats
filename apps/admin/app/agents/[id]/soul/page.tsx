@@ -101,6 +101,9 @@ export default function SoulEditorPage({
   // Save state machine
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
 
+  // Load error — set when the initial agent fetch fails or auth is missing
+  const [loadError, setLoadError] = useState<string | null>(null)
+
   // Validation touch tracking — only show errors after blur or save attempt
   const [nameTouched, setNameTouched] = useState(false)
 
@@ -118,30 +121,34 @@ export default function SoulEditorPage({
 
   useEffect(() => {
     const loadAgent = async () => {
-      const token = await getToken()
-      fetch(`${apiBase}/api/v1/agents/${id}`, {
-        headers: { 'Authorization': `Bearer ${token}` },
-      })
-        .then((r) => {
-          if (!r.ok) throw new Error(`HTTP ${r.status}`)
-          return r.json()
+      try {
+        const token = await getToken()
+        if (!token) {
+          setLoadError('Not authenticated. Please sign in.')
+          return
+        }
+        const r = await fetch(`${apiBase}/api/v1/agents/${id}`, {
+          headers: { Authorization: `Bearer ${token}` },
         })
-        .then((data: SoulData & { status?: string }) => {
-          setName(data.name || '')
-          setSoulRole(data.soul_role || '')
-          setSoulVoice(data.soul_voice || '')
-          setSoulDoList(
-            data.soul_do_list && data.soul_do_list.length > 0
-              ? data.soul_do_list
-              : ['']
-          )
-          setSoulDonotList(
-            data.soul_donot_list && data.soul_donot_list.length > 0
-              ? data.soul_donot_list
-              : ['']
-          )
-        })
-        .catch(console.error)
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        const data: SoulData & { status?: string } = await r.json()
+        setName(data.name || '')
+        setSoulRole(data.soul_role || '')
+        setSoulVoice(data.soul_voice || '')
+        setSoulDoList(
+          data.soul_do_list && data.soul_do_list.length > 0
+            ? data.soul_do_list
+            : ['']
+        )
+        setSoulDonotList(
+          data.soul_donot_list && data.soul_donot_list.length > 0
+            ? data.soul_donot_list
+            : ['']
+        )
+      } catch (err) {
+        console.error(err)
+        setLoadError('Failed to load agent. Please refresh.')
+      }
     }
     loadAgent()
   }, [id, apiBase])
@@ -322,6 +329,23 @@ export default function SoulEditorPage({
           >
             Agent Soul
           </h1>
+
+          {loadError && (
+            <div
+              role="alert"
+              style={{
+                padding: '12px 16px',
+                marginBottom: '20px',
+                background: 'var(--red-bg)',
+                border: '1px solid rgba(192,57,43,0.3)',
+                borderRadius: 'var(--radius-xs)',
+                fontSize: '14px',
+                color: 'var(--red)',
+              }}
+            >
+              {loadError}
+            </div>
+          )}
 
           {/* Agent Name */}
           <div style={{ marginBottom: '20px' }}>
