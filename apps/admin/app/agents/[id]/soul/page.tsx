@@ -199,6 +199,10 @@ export default function SoulEditorPage({
     }
     try {
       const token = await getToken()
+      if (!token) {
+        setSaveStatus('error')
+        return
+      }
       const res = await fetch(`${apiBase}/api/v1/agents/${id}`, {
         method: 'PATCH',
         headers: {
