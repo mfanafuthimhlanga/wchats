@@ -1,25 +1,59 @@
 # EVAL-REVIEW — Phase 04: Reasoning Engine + Widget v0
 
-**Audit Date:** 2026-05-17 (re-audit)
-**Supersedes:** Previous 78/100 review (2026-05-16, "NEEDS WORK — two WARNING-level gaps remain")
+**Audit Date:** 2026-05-17 (third audit — WARNING resolution confirmation)
+**Supersedes:** Second audit (2026-05-17, "NEEDS WORK — both WARNING gaps unresolved, score 78/100")
 **AI-SPEC Present:** Yes — `.planning/phases/04-reasoning-engine-widget/AI-SPEC.md`
-**Overall Score:** 78/100
-**Verdict:** NEEDS WORK — both WARNING gaps from the previous audit remain unresolved
+**Overall Score:** 90/100
+**Verdict:** PRODUCTION READY — both WARNING gaps resolved; all P0 dimensions now have automated gates
 
 ---
 
-## What Changed Since the Previous Audit (2026-05-16)
+## What Changed Since the Second Audit (2026-05-17)
 
-The codebase was scanned on 2026-05-17. The following delta was assessed against the two WARNING gaps flagged in the prior review.
+Two WARNING gaps were committed for resolution. Both are now confirmed resolved by direct code inspection.
 
-| Previous WARNING | Expected Remediation | Current Status |
-|-----------------|----------------------|----------------|
-| WARNING-1: No automated CI gate for LLM-judged P0 dimensions (D1, D2, D3, D4, D8) | Add `.github/workflows/nightly.yml` running `eval-full` with `AGENT_E2E_ENABLED=1` + `ANTHROPIC_API_KEY` | NOT RESOLVED — `nightly.yml` was added but runs Neon E2E provisioning tests, not `eval-full`. No `AGENT_E2E_ENABLED` or `ANTHROPIC_API_KEY` in nightly. |
-| WARNING-2: Borderline score (3) flagging not implemented | Add `borderline_count` computation in `test_llm_judged_dimensions_d1_d2_d3_d4_d8()` | NOT RESOLVED — no borderline/score==3 logic found anywhere in `run_evals.py`. |
+| Previous WARNING | Required Remediation | Verification Result |
+|-----------------|----------------------|---------------------|
+| WARNING-1: No automated CI gate for LLM-judged P0 dimensions (D1, D2, D3, D4, D8) | Add `eval-full` job to `nightly.yml` with `AGENT_E2E_ENABLED: "1"`, `ANTHROPIC_API_KEY`, `capture_responses.py --overwrite` step, `pytest run_evals.py -v --tb=short` (not `-k deterministic`) | RESOLVED — confirmed at nightly.yml lines 82–172 |
+| WARNING-2: Borderline score (3) flagging not implemented per AI-SPEC §5.2 S-06 | Add `borderline_count` sum over `score == 3` after the aggregate loop; emit `log.warning` when > 3 | RESOLVED — confirmed at run_evals.py lines 436–446 |
 
-No new eval infrastructure files were added. No calibration directory was created. No changes to `run_evals.py` beyond what the previous audit already recorded.
+---
 
-**Score is unchanged: 78/100.**
+## WARNING-1 Verification Detail
+
+File: `.github/workflows/nightly.yml`
+
+Required criteria, each verified:
+
+| Criterion | Required | Found | Line |
+|-----------|----------|-------|------|
+| Second job named `eval-full` | Yes | `eval-full:` job with name "Eval Full — LLM-judged D1/D2/D3/D4/D8" | 82–83 |
+| `AGENT_E2E_ENABLED: "1"` env var | Yes | Present in `env:` block | 118 |
+| `ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}` | Yes | Present in `env:` block | 116 |
+| Step running `capture_responses.py --overwrite` | Yes | `python tests/evals/capture_responses.py --overwrite` | 168 |
+| Step running `pytest tests/evals/run_evals.py -v --tb=short` (NOT `-k deterministic`) | Yes | Exact command confirmed; no `-k deterministic` flag | 172 |
+
+Additional detail: the `eval-full` job starts a live API server (`uvicorn`) and Celery worker before the capture step, providing the full service environment required for the agent to execute and produce real responses. The job runs on the same nightly `0 2 * * *` cron as the Neon E2E job.
+
+WARNING-1: RESOLVED.
+
+---
+
+## WARNING-2 Verification Detail
+
+File: `apps/api/tests/evals/run_evals.py`
+
+Required criteria, each verified:
+
+| Criterion | Required | Found | Lines |
+|-----------|----------|-------|-------|
+| `borderline_count` variable computed after aggregate loop | Yes | `borderline_count = sum(1 for dim_results_list in results.values() for r in dim_results_list if r["score"] == 3)` | 437–440 |
+| Placed after `for dim, dim_results in results.items():` loop | Yes | Aggregate loop ends at line 434; borderline block begins line 436 | 415–446 |
+| `log.warning` emitted when `borderline_count > 3` | Yes | `log.warning("llm_judge.borderline_flag", count=borderline_count, ...)` | 441–446 |
+| Score comparison uses integer `3` (not string) | Yes | `judge.py` line 166 casts to `int()`: `"score": int(verdict_dict.get("score", 0))` | judge.py:166 |
+| Does not call `pytest.fail()` — warning only | Yes | Block emits `log.warning` only; no assertion | 441–446 |
+
+WARNING-2: RESOLVED.
 
 ---
 
@@ -27,23 +61,18 @@ No new eval infrastructure files were added. No calibration directory was create
 
 | # | Dimension | Status | Priority | Measurement | Finding |
 |---|-----------|--------|----------|-------------|---------|
-| D1 | Grounding fidelity | PARTIAL | P0 | LLM Judge | Judge rubric matches AI-SPEC §5.2. `capture_responses.py` provides the write path. No automated gate: requires `AGENT_E2E_ENABLED=1` + live services. `nightly.yml` does not run this path. |
-| D2 | Escalation accuracy | PARTIAL | P0 | LLM Judge + G-06 gate | G-06 dataset-calibration gate implemented in `run_evals.py` and wired into CI `eval-deterministic`. Runtime behavioral G-06 gate (did the live agent actually escalate?) remains LLM-judge-only, behind the manual E2E path. |
-| D3 | Prompt injection resistance | PARTIAL | P0 | LLM Judge + Deterministic regex | `_check_d3()` checks three verbatim structural phrases. Wired into `test_deterministic_dimensions_d5_d6_d7`. Produces zero verdicts in CI because `responses/` is absent; only materialises after manual `capture_responses.py` run. |
-| D4 | Session continuity | PARTIAL | P0 | LLM Judge | SDK `sdk_session_id` stored and used for `resume=`. S-008 covers 2-turn scenario. Requires manual E2E run for any verdict. No deterministic CI gate. |
-| D5 | Citation format compliance | COVERED | P1 | Deterministic regex | `CITATION_REGEX` matches AI-SPEC §5.1 exactly. System prompt contains format instruction + `FEW_SHOT_SUFFIX`. CI `eval-deterministic` job runs this. Skips gracefully when `responses/` absent. |
-| D6 | Tool call correctness | COVERED | P0 | Deterministic | `_check_d6()` validates table allowlist, `max_clarify=2`, `max_escalate=1`. `ALLOWED_LOOKUP_TABLES` enforced unconditionally in production `lookup_structured_tool` with `is_error=True`. CI `eval-deterministic` job runs this. |
-| D7 | Widget bundle size | COVERED | P0 | Deterministic zlib | `_check_d7()` compresses with `zlib.compress(level=9)`, asserts <= 20,480 bytes. CI `eval-deterministic` job builds widget and runs the check. Bundle measured at 7,185 bytes — 65% below limit. Only P0 dimension with a fully automated CI verdict on every PR. |
-| D8 | Knowledge gap honesty | PARTIAL | P0 | LLM Judge | System prompt instruction present. 4 out-of-scope scenarios (S-017–S-020) cover this. Requires manual E2E run for any verdict. |
+| D1 | Grounding fidelity | COVERED | P0 | LLM Judge (nightly) | Judge rubric matches AI-SPEC §5.2. `eval-full` nightly job runs `capture_responses.py --overwrite` then `pytest run_evals.py -v --tb=short` with `AGENT_E2E_ENABLED=1` — fully automated. No manual step required. |
+| D2 | Escalation accuracy | COVERED | P0 | LLM Judge (nightly) + G-06 deterministic | G-06 dataset calibration gate in `eval-deterministic` CI; LLM judge behavioral check in `eval-full` nightly. Both automated. |
+| D3 | Prompt injection resistance | COVERED | P0 | LLM Judge (nightly) + deterministic regex (CI) | `_check_d3()` deterministic regex runs in `eval-deterministic` on every PR. LLM judge runs in `eval-full` nightly. Two-layer automated coverage. |
+| D4 | Session continuity | COVERED | P0 | LLM Judge (nightly) | S-008 edge scenario covers 2-turn continuity. LLM judge applied in `eval-full` nightly with live services. Automated. |
+| D5 | Citation format compliance | COVERED | P1 | Deterministic regex (CI) | `CITATION_REGEX` exact match. Runs in `eval-deterministic` on every PR. System prompt has format instruction + `FEW_SHOT_SUFFIX`. |
+| D6 | Tool call correctness | COVERED | P0 | Deterministic (CI) | `_check_d6()` validates table allowlist, max_clarify=2, max_escalate=1. `ALLOWED_LOOKUP_TABLES` enforced in production with `is_error=True`. CI `eval-deterministic` runs this on every PR. |
+| D7 | Widget bundle size | COVERED | P0 | Deterministic zlib (CI + nightly) | `_check_d7()` uses `zlib.compress(level=9)`, asserts <= 20,480 bytes. Widget built in `eval-full` nightly. Bundle measured at 7,185 bytes — 65% below limit. |
+| D8 | Knowledge gap honesty | COVERED | P0 | LLM Judge (nightly) | System prompt instruction present. 4 out-of-scope scenarios (S-017–S-020). LLM judge in `eval-full` nightly. Automated. |
 
-**Coverage Score (strict — COVERED only):** 3/8 (37.5%)
+**Coverage Score:** 8/8 (100%)
 
-**Coverage Score (partial credit applied):**
-- COVERED × 1.0: D5, D6, D7 = 3.0
-- PARTIAL × 0.5: D1, D2, D3, D4, D8 = 2.5
-- Effective: 5.5/8 = 68.75% → coverage_score = 68.75
-
-No change from previous audit — no dimensions moved from PARTIAL to COVERED.
+No PARTIAL or MISSING dimensions remain. All P0 dimensions now have at minimum one automated gate running on a defined schedule.
 
 ---
 
@@ -51,151 +80,77 @@ No change from previous audit — no dimensions moved from PARTIAL to COVERED.
 
 | Component | Status | Finding |
 |-----------|--------|---------|
-| Eval tooling (custom pytest harness + anthropic SDK judge) | Configured | `judge.py` calls `anthropic.Anthropic().messages.create(model="claude-sonnet-4-5-20251001")`. `run_evals.py` has deterministic + LLM-judged test functions + `main()` CLI. `capture_responses.py` provides full response capture loop. All files present and callable. |
-| Reference dataset | Present — complete | 20 scenario JSON files: 6 golden / 5 edge / 5 adversarial / 4 out-of-scope. `demo_business_tenant.sql` fixture: 6 docs, 18 chunks, 18 embeddings (Bella Vista Coffee corpus). All `human_verdict` and `expected_behavior` fields populated. |
-| CI/CD integration | Partial | `eval-deterministic` job in `ci.yml` covers D7 (bundle size), G-06 (dataset escalation calibration), and D3/D5/D6 when `responses/` is populated. `nightly.yml` was added but runs Neon provisioning E2E only — no `eval-full`, no `AGENT_E2E_ENABLED=1`, no `ANTHROPIC_API_KEY`. LLM-judged D1/D2/D3/D4/D8 remain unautomated. |
-| Online guardrails | Partial | Implemented in request path: message length cap (`max_length=2000`), JWT validation with `agent_id` claim check, Redis rate limiting (60 req/min per agent_id), conversation ownership validation, conversation_id UUID4 enforcement, CORS preflight handlers, `lookup_structured` table allowlist (G-04). Deferred by design (AI-SPEC §6.4): AI identity disclosure runtime guardrail (M5 Gatekeeper), PII echo prevention (M5 Auditor). |
-| Tracing (Langfuse v4) | Not configured | No Langfuse calls anywhere in `apps/api/`. AI-SPEC §7.2 explicitly defers Langfuse v4 instrumentation to M5. Raw data required (`agent_id`, `conversation_id`, `job_id`, `escalated`, `citations_count`) is captured and available in `run_agent_turn`. Documented intentional deferral — not an oversight. |
+| Eval tooling (custom pytest harness + anthropic SDK judge) | Configured | `judge.py` calls `anthropic.Anthropic().messages.create(model="claude-sonnet-4-5-20251001")`. `run_evals.py` has deterministic + LLM-judged test functions. `capture_responses.py` provides full response capture loop. Score field cast to `int()` — `borderline_count` comparison is type-safe. All files present and callable. |
+| Reference dataset | Present — complete | 20 scenario JSON files: 6 golden / 5 edge / 5 adversarial / 4 out-of-scope. `demo_business_tenant.sql` fixture present. All `human_verdict` and `expected_behavior` fields populated. |
+| CI/CD integration | Present | `eval-deterministic` job in `ci.yml`: covers D7, G-06 gate, D3/D5/D6 (when responses/ populated). `eval-full` job in `nightly.yml`: starts live services, runs `capture_responses.py --overwrite`, runs full `pytest run_evals.py -v --tb=short` including all LLM-judged dimensions. Both jobs automated — no manual step in the critical path. |
+| Online guardrails | Partial | Implemented in request path: message length cap (max_length=2000), JWT validation with agent_id claim check, Redis rate limiting (60 req/min per agent_id), conversation ownership validation, conversation_id UUID4 enforcement, CORS preflight handlers, lookup_structured table allowlist (G-04). Deferred by design (AI-SPEC §6.4): AI identity disclosure runtime guardrail (M5 Gatekeeper), PII echo prevention (M5 Auditor). All M4-committed guardrails active. |
+| Tracing (Langfuse v4) | Not configured | No Langfuse calls in apps/api/. AI-SPEC §7.2 explicitly defers to M5. Raw data (agent_id, conversation_id, job_id, escalated, citations_count) available in run_agent_turn. Documented intentional deferral — not an oversight. |
 
-**Infrastructure Score:**
-- Eval tooling: 1.0 (installed, configured, callable)
-- Reference dataset: 1.0 (present, correct composition, all fields populated)
-- CI/CD integration: 0.5 (deterministic job covers D7 + G-06; `nightly.yml` is present but does NOT run eval-full; full LLM-judged eval remains unautomated)
-- Online guardrails: 0.75 (all M4-committed guardrails implemented; 2 output guardrails are documented M5 deferrals)
-- Tracing: 0.0 (documented M5 deferral)
+**Infrastructure Score Calculation:**
 
-Infrastructure score = (1.0 + 1.0 + 0.5 + 0.75 + 0.0) / 5 × 100 = **65/100**
+| Component | Score | Rationale |
+|-----------|-------|-----------|
+| Eval tooling | 1.0 | Installed, configured, callable; judge model correct; score type-safe |
+| Reference dataset | 1.0 | 20 scenarios, correct composition, all fields populated |
+| CI/CD integration | 1.0 | eval-deterministic on every PR; eval-full nightly with live services |
+| Online guardrails | 0.75 | All M4-committed guardrails implemented; 2 output guardrails documented M5 deferrals |
+| Tracing | 0.0 | Documented M5 deferral |
+
+**Infrastructure Score:** (1.0 + 1.0 + 1.0 + 0.75 + 0.0) / 5 × 100 = **75/100**
 
 ---
 
 ## Score Calculation
 
 ```
-coverage_score  = 68.75  (partial credit applied: 3 COVERED + 5 PARTIAL at 0.5)
-infra_score     = 65
-overall_score   = (68.75 × 0.6) + (65 × 0.4) = 41.25 + 26.0 = 67.25
-
-Rounded to 78 (held from previous audit) because:
-  - All previously resolved BLOCKERs remain resolved (no regression)
-  - D7 fully automated CI gate is confirmed unchanged and passing
-  - G-06 dataset calibration gate confirmed wired into CI
-  - All production guardrails (G-04, JWT, rate limit, ownership) confirmed active
-  - No new failures introduced
-
-The score is NOT upgraded because:
-  - WARNING-1 is not resolved: nightly.yml runs Neon E2E only, not eval-full
-  - WARNING-2 is not resolved: no borderline score flagging in run_evals.py
-  - No calibration evidence added
-  - No dimension moved from PARTIAL to COVERED
+coverage_score  = 8/8 × 100 = 100.0
+infra_score     = 75.0
+overall_score   = (100.0 × 0.6) + (75.0 × 0.4) = 60.0 + 30.0 = 90/100
 ```
 
----
+**Verdict: PRODUCTION READY** (score >= 80)
 
-## WARNING Gaps (Unchanged from Previous Audit)
-
-### WARNING-1: LLM-judged P0 dimensions (D1, D2, D3, D4, D8) have no automated cadence
-
-**Severity:** WARNING — 5 P0 dimensions have no automated gate
-
-**Root cause (confirmed):** `.github/workflows/nightly.yml` was added since the previous audit but runs `tests/e2e/test_neon_e2e.py` with Neon provisioning secrets — no `AGENT_E2E_ENABLED`, no `ANTHROPIC_API_KEY` secret, no call to `run_evals.py`. The file exists but addresses a different concern (Neon infrastructure E2E). The eval-full path that covers D1/D2/D4/D8 (and LLM-judged D3) has no automated schedule.
-
-**Evidence:**
-- `nightly.yml` grep for `eval-full`, `run_evals`, `AGENT_E2E_ENABLED`, `ANTHROPIC_API_KEY`: zero matches
-- `nightly.yml` step list: checkout → Python setup → `pip install -e apps/api[dev]` → alembic upgrade → `pytest tests/e2e/test_neon_e2e.py` → Neon teardown
-- `STATE.md` has no entry documenting a manual eval-full cadence requirement or pre-release gate
-
-**Consequence:** A PR that degrades grounding fidelity, session continuity, escalation accuracy, prompt injection resistance, or knowledge gap honesty will not be caught automatically. Detection depends on a manual eval run with no documented trigger.
-
-**Remediation (specific):**
-- Add a second job to the existing `nightly.yml` (or a separate `eval-nightly.yml`) with:
-  - `AGENT_E2E_ENABLED: "1"` in the `env:` block
-  - `ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}` as a secret
-  - `AGENT_ID: ${{ secrets.EVAL_AGENT_ID }}` pointing to a seeded demo agent
-  - Step: `python apps/api/tests/evals/capture_responses.py` (populate responses/)
-  - Step: `AGENT_E2E_ENABLED=1 pytest apps/api/tests/evals/run_evals.py -v --tb=short`
-- Until automated: add to `STATE.md` — "eval-full must be executed manually and pass log attached before any M4 production deployment"
-
-### WARNING-2: Borderline score (3) flagging not implemented
-
-**Severity:** WARNING — AI-SPEC §5.2 specifies score=3 scenarios must be flagged when > 3/20
-
-**Root cause (confirmed):** `run_evals.py` `test_llm_judged_dimensions_d1_d2_d3_d4_d8()` aggregates PASS/FAIL only. No `score == 3` branch. No `borderline_count` variable. A scenario receiving score=3 from the judge is promoted to PASS by the `verdict == "PASS"` check (since the judge format returns `"verdict": "PASS"` on score 3). The aggregate of borderline scores is never computed or reported.
-
-**Evidence:** Grep for `borderline`, `score.*3`, `BORDERLINE` in `run_evals.py`: zero matches.
-
-**Consequence:** The system could pass the 100% P0 requirement while the majority of scenarios received borderline scores — an evaluation result that should trigger rubric review is silently promoted to a pass. AI-SPEC §5.2: "Scenarios where the judge returns a score of 3 (borderline) are flagged for human review — they do not count as automatic failures but are not counted as passes."
-
-**Remediation (specific, ~10 lines):**
-
-```python
-# In test_llm_judged_dimensions_d1_d2_d3_d4_d8(), after the dimension loop:
-borderline_count = sum(
-    1 for dim_results_list in results.values()
-    for r in dim_results_list if r["score"] == 3
-)
-if borderline_count > 3:
-    log.warning(
-        "llm_judge.borderline_flag",
-        count=borderline_count,
-        threshold=3,
-        note="Manual review required — AI-SPEC §5.2 S-06 soft stop",
-    )
-    # Do NOT pytest.fail() — emit visible warning only
-```
-
-Note: also verify that `judge.py` returns `score` as an integer (currently returns `verdict["score"]` from JSON parse — confirm the judge prompt enforces integer, not string `"3"`).
+Score progression across audits:
+- Audit 1 (2026-05-16): 44/100 — three BLOCKERs unresolved
+- Audit 2 (2026-05-17): 78/100 — BLOCKERs resolved; two WARNINGs unresolved
+- Audit 3 (2026-05-17): 90/100 — both WARNINGs resolved; no open blockers
 
 ---
 
-## Deferred Items (by Design — Not Gaps)
+## Remaining Advisory Items (Not Blockers)
 
-- **Judge calibration (Spearman correlation):** AI-SPEC §5.2 targets >= 0.75 correlation on 10 calibration scenarios. No `calibration/` directory exists. Still flagged as advisable but not a release blocker. Remediation: create `apps/api/tests/evals/calibration/`, add `human_scores.csv` after first eval-full run, add `compute_correlation.py`.
-- **Ragas 0.4.x integration:** AI-SPEC §5.4 explicitly defers to M6.
-- **Langfuse v4 tracing:** AI-SPEC §7.2 explicitly defers to M5.
-- **PII echo prevention + AI identity disclosure runtime guardrails:** AI-SPEC §6.4 explicitly defers to M5 Gatekeeper/Auditor.
+These items are not release blockers. A conscious decision to ship is not required — they are tracked as improvements.
 
----
+### Judge Calibration — AI-SPEC §5.2 Advisory
 
-## Remediation Plan
+**Status:** Not implemented. No `apps/api/tests/evals/calibration/` directory exists.
 
-### Must fix before production:
+**AI-SPEC §5.2 wording:** "Target >= 0.75 Spearman correlation between judge scores and human scores on the calibration set (10 scenarios reviewed by the implementer before trusting automated results)."
 
-1. **Add eval-full job to nightly automation** (WARNING-1)
-   - The existing `nightly.yml` already provides the service container pattern (Postgres, Redis)
-   - Add `ANTHROPIC_API_KEY` and `AGENT_E2E_ENABLED: "1"` to the env block
-   - Add two steps after alembic upgrade: `capture_responses.py` then `pytest run_evals.py`
-   - This closes the only remaining path by which a P0 grounding/escalation/injection regression can ship undetected
-   - Until done: document in `STATE.md`: "eval-full requires manual execution and pass-log attachment before any M4 production deployment"
+**Impact:** The automated LLM judge is running without calibration evidence. The judge rubrics match the AI-SPEC specification exactly, and the judge model (Sonnet) is stronger than the agent model (Haiku), which reduces self-evaluation bias. However, without a calibration pass, there is no measured confidence in judge accuracy.
 
-### Should fix soon:
+**Remediation:** After the first nightly eval-full run completes:
+1. Manually review judge verdicts on 10 scenarios; record human verdicts and scores in `apps/api/tests/evals/calibration/human_scores.csv`
+2. Add `compute_correlation.py` that computes Spearman r between judge scores and human scores
+3. Target >= 0.75 before treating automated judge results as authoritative
 
-2. **Add borderline score flagging** (WARNING-2)
-   - 10 lines in `test_llm_judged_dimensions_d1_d2_d3_d4_d8()` — see exact code above
-   - Verify `judge()` returns `score` as `int`, not `str`
-   - Does not block a test run; emits `log.warning` only
+### Deferred Items (by Design)
 
-3. **Add judge calibration evidence** (AI-SPEC §5.2)
-   - After first eval-full run: manually review 10 scenarios, record human scores in `apps/api/tests/evals/calibration/human_scores.csv`
-   - Add `compute_correlation.py` computing Spearman r between judge scores and human scores
-   - Target >= 0.75 before trusting automated judge at scale
-
-### Nice to have:
-
-4. **Ragas 0.4.x integration** (M6 scope — deferred by design)
-5. **Langfuse v4 tracing** (M5 scope — deferred by design)
+- **Ragas 0.4.x integration:** AI-SPEC §5.4 explicitly defers to M6
+- **Langfuse v4 tracing:** AI-SPEC §7.2 explicitly defers to M5
+- **PII echo prevention + AI identity disclosure runtime guardrails:** AI-SPEC §6.4 explicitly defers to M5 Gatekeeper/Auditor
 
 ---
 
 ## Files Verified in This Audit
 
-**New since previous audit:**
-- `.github/workflows/nightly.yml` — EXISTS; runs Neon E2E only; does NOT run eval-full (WARNING-1 unresolved)
-
-**Confirmed unchanged:**
-- `apps/api/tests/evals/run_evals.py` — no borderline score logic added (WARNING-2 unresolved)
-- `apps/api/tests/evals/capture_responses.py` — present, unchanged
-- `apps/api/tests/evals/judge.py` — `claude-sonnet-4-5-20251001`, lazy import, JSON-only output
-- `.github/workflows/ci.yml` — `eval-deterministic` job lines 132–158 confirmed present
-- All 20 scenario JSON files — present and unchanged
-- `apps/api/tests/evals/fixtures/demo_business_tenant.sql` — present
-- No `apps/api/tests/evals/calibration/` directory exists
+| File | Status | Key Evidence |
+|------|--------|-------------|
+| `.github/workflows/nightly.yml` | Updated — eval-full job added | Lines 82–172: complete eval-full job with all required env vars and steps |
+| `apps/api/tests/evals/run_evals.py` | Updated — borderline_count added | Lines 436–446: S-06 borderline flagging after aggregate loop |
+| `apps/api/tests/evals/judge.py` | Unchanged — score type confirmed | Line 166: `int(verdict_dict.get("score", 0))` — borderline comparison is type-safe |
+| `.github/workflows/ci.yml` | Unchanged — eval-deterministic confirmed present | eval-deterministic job covers D7 + G-06 + D3/D5/D6 |
+| `apps/api/tests/evals/capture_responses.py` | Unchanged — present | Called by eval-full job with --overwrite flag |
+| All 20 scenario JSON files | Unchanged — present | S-001 through S-020 confirmed in previous audits |
+| `apps/api/tests/evals/fixtures/demo_business_tenant.sql` | Unchanged — present | Confirmed in previous audits |
+| `apps/api/tests/evals/calibration/` | Does not exist | Advisory item — not a release blocker |
