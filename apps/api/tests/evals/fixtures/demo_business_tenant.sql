@@ -1,4 +1,4 @@
--- Bella Vista Coffee — Demo Tenant SQL Fixture
+-- Acme Consulting — Generic Eval Fixture
 -- Purpose: Seed documents/chunks/chunk_metadata/embeddings for M4 eval scenarios.
 -- Assumes tenant DB already initialized via Alembic (0001_tenant_v1_schema.py).
 -- Run: psycopg2.connect(tenant_conn_str).cursor().execute(open(this_file).read())
@@ -11,17 +11,17 @@
 
 INSERT INTO documents (id, source_type, source_uri, title, metadata, created_at)
 VALUES
-  ('a1000000-0000-0000-0000-000000000001', 'pdf', 's3://bella-vista/return-policy.pdf',
+  ('a1000000-0000-0000-0000-000000000001', 'pdf', 's3://acme-consulting/return-policy.pdf',
    'Return Policy', '{"version": "2.1"}', NOW()),
-  ('a1000000-0000-0000-0000-000000000002', 'pdf', 's3://bella-vista/business-hours.pdf',
+  ('a1000000-0000-0000-0000-000000000002', 'pdf', 's3://acme-consulting/business-hours.pdf',
    'Business Hours', '{"version": "1.0"}', NOW()),
-  ('a1000000-0000-0000-0000-000000000003', 'pdf', 's3://bella-vista/product-catalog.pdf',
+  ('a1000000-0000-0000-0000-000000000003', 'pdf', 's3://acme-consulting/product-catalog.pdf',
    'Product Catalog', '{"version": "3.0"}', NOW()),
-  ('a1000000-0000-0000-0000-000000000004', 'pdf', 's3://bella-vista/pricing.pdf',
+  ('a1000000-0000-0000-0000-000000000004', 'pdf', 's3://acme-consulting/pricing.pdf',
    'Pricing Guide', '{"version": "1.2"}', NOW()),
-  ('a1000000-0000-0000-0000-000000000005', 'pdf', 's3://bella-vista/contact-info.pdf',
+  ('a1000000-0000-0000-0000-000000000005', 'pdf', 's3://acme-consulting/contact-info.pdf',
    'Contact Information', '{"version": "1.0"}', NOW()),
-  ('a1000000-0000-0000-0000-000000000006', 'pdf', 's3://bella-vista/shipping-policy.pdf',
+  ('a1000000-0000-0000-0000-000000000006', 'pdf', 's3://acme-consulting/shipping-policy.pdf',
    'Shipping Policy', '{"version": "1.1"}', NOW())
 ON CONFLICT (id) DO NOTHING;
 
@@ -33,7 +33,7 @@ INSERT INTO chunks (id, document_id, ordinal, content, token_count, created_at)
 VALUES
   -- Return Policy chunks
   ('b1000000-0000-0000-0000-000000000001', 'a1000000-0000-0000-0000-000000000001', 1,
-   'Bella Vista Coffee accepts returns within 14 days of purchase for a full refund. Items must be unused and in original packaging. Coffee beans that have been opened are not eligible for return due to freshness concerns.', 42, NOW()),
+   'Acme Consulting accepts returns within 14 days of purchase for a full refund. Items must be unused and in original packaging. Coffee beans that have been opened are not eligible for return due to freshness concerns.', 42, NOW()),
   ('b1000000-0000-0000-0000-000000000002', 'a1000000-0000-0000-0000-000000000001', 2,
    'To initiate a return, customers must contact our support team with their order number and reason for return. We will issue a prepaid return shipping label within 2 business days. Refunds are processed within 5-7 business days of receiving the returned item.', 48, NOW()),
   ('b1000000-0000-0000-0000-000000000003', 'a1000000-0000-0000-0000-000000000001', 3,
@@ -41,7 +41,7 @@ VALUES
 
   -- Business Hours chunks
   ('b1000000-0000-0000-0000-000000000004', 'a1000000-0000-0000-0000-000000000002', 1,
-   'Bella Vista Coffee main store hours: Monday through Friday 7:00 AM to 7:00 PM, Saturday 8:00 AM to 6:00 PM, Sunday 9:00 AM to 5:00 PM. We are closed on all federal holidays.', 36, NOW()),
+   'Acme Consulting main store hours: Monday through Friday 7:00 AM to 7:00 PM, Saturday 8:00 AM to 6:00 PM, Sunday 9:00 AM to 5:00 PM. We are closed on all federal holidays.', 36, NOW()),
   ('b1000000-0000-0000-0000-000000000005', 'a1000000-0000-0000-0000-000000000002', 2,
    'Our online store and customer support team are available Monday through Friday 8:00 AM to 6:00 PM Pacific Time. Email support responses are typically provided within 4 business hours during operating hours.', 38, NOW()),
   ('b1000000-0000-0000-0000-000000000006', 'a1000000-0000-0000-0000-000000000002', 3,
@@ -49,11 +49,11 @@ VALUES
 
   -- Product Catalog chunks
   ('b1000000-0000-0000-0000-000000000007', 'a1000000-0000-0000-0000-000000000003', 1,
-   'Bella Vista Coffee signature blends include: House Blend (medium roast, notes of chocolate and caramel), Sunrise Espresso (dark roast, bold and intense), and Morning Mist (light roast, bright and fruity). All blends are available in whole bean and ground varieties.', 44, NOW()),
+   'Acme Consulting signature blends include: House Blend (medium roast, notes of chocolate and caramel), Sunrise Espresso (dark roast, bold and intense), and Morning Mist (light roast, bright and fruity). All blends are available in whole bean and ground varieties.', 44, NOW()),
   ('b1000000-0000-0000-0000-000000000008', 'a1000000-0000-0000-0000-000000000003', 2,
    'Single-origin offerings rotate seasonally. Current offerings include Ethiopian Yirgacheffe (fruity, floral), Colombian Huila (nutty, balanced), and Guatemalan Antigua (smoky, rich). Limited quantities available; subscribe to our newsletter for restocking alerts.', 42, NOW()),
   ('b1000000-0000-0000-0000-000000000009', 'a1000000-0000-0000-0000-000000000003', 3,
-   'Bella Vista also offers cold brew concentrates, flavored syrups (vanilla, hazelnut, caramel), and brewing accessories including French press, pour-over kits, and electric grinders. Gift sets are available year-round.', 38, NOW()),
+   'Acme Consulting also offers cold brew concentrates, flavored syrups (vanilla, hazelnut, caramel), and brewing accessories including French press, pour-over kits, and electric grinders. Gift sets are available year-round.', 38, NOW()),
 
   -- Pricing chunks
   ('b1000000-0000-0000-0000-000000000010', 'a1000000-0000-0000-0000-000000000004', 1,
@@ -65,11 +65,11 @@ VALUES
 
   -- Contact Info chunks
   ('b1000000-0000-0000-0000-000000000013', 'a1000000-0000-0000-0000-000000000005', 1,
-   'Bella Vista Coffee headquarters: 1420 Coffee Lane, Portland, OR 97201. Customer support email: support@bellavistacoffee.com. Phone: (503) 555-0178. Support hours: Monday-Friday 8AM-6PM PT.', 36, NOW()),
+   'Acme Consulting headquarters: 100 Main St, Portland, OR 97201. Customer support email: support@acmeconsulting.com. Phone: (503) 555-0178. Support hours: Monday-Friday 8AM-6PM PT.', 36, NOW()),
   ('b1000000-0000-0000-0000-000000000014', 'a1000000-0000-0000-0000-000000000005', 2,
-   'For wholesale inquiries contact: wholesale@bellavistacoffee.com. For press and media: media@bellavistacoffee.com. Our social media handles are @bellavistacoffee on Instagram, Twitter, and Facebook.', 32, NOW()),
+   'For wholesale inquiries contact: wholesale@acmeconsulting.com. For press and media: media@acmeconsulting.com. Our social media handles are @acmeconsulting on Instagram, Twitter, and Facebook.', 32, NOW()),
   ('b1000000-0000-0000-0000-000000000015', 'a1000000-0000-0000-0000-000000000005', 3,
-   'Physical store address: 1420 Coffee Lane, Portland, OR 97201. We also have a drive-through at 890 Roast Ave, Portland, OR 97202. Parking is available in the adjacent lot — first 30 minutes free with any purchase.', 38, NOW()),
+   'Physical store address: 100 Main St, Portland, OR 97201. We also have a drive-through at 200 Commerce Ave, Portland, OR 97202. Parking is available in the adjacent lot — first 30 minutes free with any purchase.', 38, NOW()),
 
   -- Shipping Policy chunks
   ('b1000000-0000-0000-0000-000000000016', 'a1000000-0000-0000-0000-000000000006', 1,
@@ -122,7 +122,7 @@ VALUES
   ('b1000000-0000-0000-0000-000000000012', 'Cafe drinks $3.50-$7.00; oat/almond milk $0.75 extra.',
    ARRAY['cafe', 'latte', 'espresso', 'cappuccino', 'oat milk', 'price'],
    ARRAY['How much is a latte?', 'What does a coffee cost at the cafe?'], NOW()),
-  ('b1000000-0000-0000-0000-000000000013', 'HQ in Portland OR; support@bellavistacoffee.com; (503) 555-0178.',
+  ('b1000000-0000-0000-0000-000000000013', 'HQ in Portland OR; support@acmeconsulting.com; (503) 555-0178.',
    ARRAY['contact', 'email', 'phone', 'Portland', 'address'],
    ARRAY['How do I contact you?', 'What is your phone number?', 'What is your email?'], NOW()),
   ('b1000000-0000-0000-0000-000000000014', 'Wholesale and press contacts available.',
