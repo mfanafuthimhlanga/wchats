@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect, useRef, use } from 'react'
+import { useAuth } from '@clerk/nextjs'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -88,14 +89,7 @@ export default function SoulEditorPage({
   params: Promise<{ id: string }>
 }) {
   const { id } = use(params)
-
-  // API Key — stored in sessionStorage (admin only, not embedded; T-04-06-02)
-  const [apiKey, setApiKey] = useState<string>(() => {
-    if (typeof window !== 'undefined') {
-      return sessionStorage.getItem('apiKey') || ''
-    }
-    return ''
-  })
+  const { getToken } = useAuth()
 
   // Soul fields
   const [name, setName] = useState('')
@@ -123,31 +117,34 @@ export default function SoulEditorPage({
   // ---------------------------------------------------------------------------
 
   useEffect(() => {
-    if (!apiKey) return
-    fetch(`${apiBase}/api/v1/agents/${id}`, {
-      headers: { 'X-API-Key': apiKey },
-    })
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
-        return r.json()
+    const loadAgent = async () => {
+      const token = await getToken()
+      fetch(`${apiBase}/api/v1/agents/${id}`, {
+        headers: { 'Authorization': `Bearer ${token}` },
       })
-      .then((data: SoulData & { status?: string }) => {
-        setName(data.name || '')
-        setSoulRole(data.soul_role || '')
-        setSoulVoice(data.soul_voice || '')
-        setSoulDoList(
-          data.soul_do_list && data.soul_do_list.length > 0
-            ? data.soul_do_list
-            : ['']
-        )
-        setSoulDonotList(
-          data.soul_donot_list && data.soul_donot_list.length > 0
-            ? data.soul_donot_list
-            : ['']
-        )
-      })
-      .catch(console.error)
-  }, [id, apiKey, apiBase])
+        .then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`)
+          return r.json()
+        })
+        .then((data: SoulData & { status?: string }) => {
+          setName(data.name || '')
+          setSoulRole(data.soul_role || '')
+          setSoulVoice(data.soul_voice || '')
+          setSoulDoList(
+            data.soul_do_list && data.soul_do_list.length > 0
+              ? data.soul_do_list
+              : ['']
+          )
+          setSoulDonotList(
+            data.soul_donot_list && data.soul_donot_list.length > 0
+              ? data.soul_donot_list
+              : ['']
+          )
+        })
+        .catch(console.error)
+    }
+    loadAgent()
+  }, [id, apiBase])
 
   // ---------------------------------------------------------------------------
   // Auto-focus newly added list rows
@@ -194,10 +191,11 @@ export default function SoulEditorPage({
       soul_donot_list: soulDonotList.filter((s) => s.trim().length > 0),
     }
     try {
+      const token = await getToken()
       const res = await fetch(`${apiBase}/api/v1/agents/${id}`, {
         method: 'PATCH',
         headers: {
-          'X-API-Key': apiKey,
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
@@ -324,33 +322,6 @@ export default function SoulEditorPage({
           >
             Agent Soul
           </h1>
-
-          {/* API Key */}
-          <div style={{ marginBottom: '20px' }}>
-            <label htmlFor="apiKey" style={LABEL_STYLE}>API Key</label>
-            <input
-              id="apiKey"
-              type="password"
-              value={apiKey}
-              onChange={(e) => {
-                const v = e.target.value
-                setApiKey(v)
-                sessionStorage.setItem('apiKey', v)
-              }}
-              placeholder="Your X-API-Key"
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-xs)',
-                fontSize: '14px',
-                fontFamily: 'var(--font-sans)',
-                background: 'var(--surface-1)',
-                color: 'var(--text-1)',
-                outline: 'none',
-              }}
-            />
-          </div>
 
           {/* Agent Name */}
           <div style={{ marginBottom: '20px' }}>
