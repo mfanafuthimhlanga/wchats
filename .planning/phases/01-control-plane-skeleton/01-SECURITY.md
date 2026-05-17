@@ -106,6 +106,7 @@ created: 2026-05-13
 | Audit Date | Threats Total | Closed | Open | Run By |
 |------------|---------------|--------|------|--------|
 | 2026-05-13 | 30 | 30 | 0 | gsd-security-auditor (automated — State B, register_authored_at_plan_time: true) |
+| 2026-05-17 | 30 | 30 | 0 | gsd-security-auditor (re-audit — State A, short-circuit: threats_open=0 + register_authored_at_plan_time=true; no phase 01 impl changes since prior audit; WR-01 api_key_hash rename is phase 04 scope only) |
 
 ---
 
