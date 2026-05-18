@@ -224,7 +224,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
       }
     }
     loadConfig()
-  }, [id, apiBase]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [id, apiBase, getToken])
 
   // ---------------------------------------------------------------------------
   // Handlers

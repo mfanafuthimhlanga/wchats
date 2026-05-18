@@ -94,7 +94,7 @@ export default function AgentJourneyPage({
       }
     }
     loadAgent()
-  }, [id, apiBase])
+  }, [id, apiBase, getToken])
 
   // Build step definitions
   const steps: JourneyStep[] = [
