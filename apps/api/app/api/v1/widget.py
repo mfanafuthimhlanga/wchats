@@ -445,14 +445,53 @@ async def widget_job_events(
     Security: job_id is a server-generated UUID4 (~122 bits entropy) —
     cannot be guessed; short-lived (terminal event closes stream within seconds).
 
+    F8 controls (T-04.1-02-02, T-04.1-02-03):
+        - Per-agent_id concurrent SSE connection cap (_MAX_CONCURRENT_SSE_PER_AGENT=50)
+        - asyncio.timeout(120) hard cap on the SSE generator loop
+
     Headers:
         X-Accel-Buffering: no          — prevents nginx buffering
         Cache-Control: no-store        — explicit belt-and-suspenders
         Access-Control-Allow-Origin: * — required for cross-origin widget
     """
-    sse_response = EventSourceResponse(
-        event_generator(request, job_id, db, redis_client)
+    # ------------------------------------------------------------------
+    # 1. Resolve agent_id from Job row (needed for per-agent slot key)
+    # ------------------------------------------------------------------
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job_row = result.scalar_one_or_none()
+    if job_row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    agent_id_for_job = job_row.agent_id
+
+    # ------------------------------------------------------------------
+    # 2. Acquire SSE slot — returns 503 if agent at connection capacity
+    # ------------------------------------------------------------------
+    slot_ok = await _acquire_sse_slot(
+        str(agent_id_for_job), str(job_id), redis_client
     )
+    if not slot_ok:
+        raise HTTPException(
+            status_code=503,
+            detail="Too many concurrent connections for this agent",
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Wrapped generator: asyncio.timeout(120) + slot release in finally
+    # ------------------------------------------------------------------
+    async def _wrapped_generator():
+        try:
+            async with asyncio.timeout(120):
+                async for event in event_generator(request, job_id, db, redis_client):
+                    yield event
+        except asyncio.TimeoutError:
+            yield "event: timeout\ndata: {}\n\n"
+        finally:
+            await _release_sse_slot(
+                str(agent_id_for_job), str(job_id), redis_client
+            )
+
+    sse_response = EventSourceResponse(_wrapped_generator())
     sse_response.headers["X-Accel-Buffering"] = "no"
     sse_response.headers["Cache-Control"] = "no-store"
     sse_response.headers["Access-Control-Allow-Origin"] = _CORS_ALLOW_ORIGIN

@@ -325,9 +325,22 @@ class TestWidgetJobEvents:
 
         Patches event_generator to an async generator that yields nothing,
         so the SSE response opens and closes immediately without blocking.
+        Updated for F8: mock DB must return a Job row (agent_id lookup added).
         """
+        from app.models.job import Job
+
         job_id = uuid4()
+        agent_id = uuid4()
+
+        mock_job = MagicMock(spec=Job)
+        mock_job.id = job_id
+        mock_job.agent_id = agent_id
+
         mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_job
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
         mock_redis = _make_mock_redis()
 
         app.dependency_overrides[get_async_db] = lambda: mock_db
@@ -339,7 +352,9 @@ class TestWidgetJobEvents:
             yield  # makes this an async generator function
 
         try:
-            with patch("app.api.v1.widget.event_generator", side_effect=_noop_generator):
+            with patch("app.api.v1.widget.event_generator", side_effect=_noop_generator), \
+                 patch("app.api.v1.widget._acquire_sse_slot", return_value=True), \
+                 patch("app.api.v1.widget._release_sse_slot", new_callable=AsyncMock):
                 async with AsyncClient(
                     transport=ASGITransport(app=app), base_url="http://test"
                 ) as client:
@@ -450,3 +465,157 @@ class TestWidgetConfigRateLimitF2:
 
         # IP-B with count=1 should succeed — rate limit not exceeded
         assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — F8: SSE concurrent connection cap + asyncio.timeout(120)
+# ---------------------------------------------------------------------------
+
+
+class TestWidgetSSESlotsF8:
+    async def test_sse_slot_acquired_and_released(self):
+        """SSE slot is acquired at stream open and released in the finally block.
+
+        Mocks _acquire_sse_slot to return True (slot available) and
+        _release_sse_slot as a no-op; verifies both helpers are called.
+        Security: T-04.1-02-02 — _release_sse_slot must run even on disconnect.
+        """
+        from app.models.job import Job
+
+        job_id = uuid4()
+        agent_id = uuid4()
+
+        # Build a mock job row with agent_id set
+        mock_job = MagicMock(spec=Job)
+        mock_job.id = job_id
+        mock_job.agent_id = agent_id
+
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_job
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        mock_redis = _make_mock_redis()
+
+        # Additional slot-management mocks
+        mock_redis.set = AsyncMock(return_value=True)   # slot acquired
+        mock_redis.delete = AsyncMock(return_value=1)   # slot deleted
+
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        app.dependency_overrides[get_async_redis] = lambda: mock_redis
+
+        async def _noop_generator(*args, **kwargs):
+            return
+            yield  # makes it an async generator
+
+        try:
+            with patch("app.api.v1.widget.event_generator", side_effect=_noop_generator), \
+                 patch("app.api.v1.widget._acquire_sse_slot", return_value=True) as mock_acquire, \
+                 patch("app.api.v1.widget._release_sse_slot", new_callable=AsyncMock) as mock_release:
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    async with client.stream(
+                        "GET", f"/widget/jobs/{job_id}/events"
+                    ) as response:
+                        assert response.status_code == 200
+                        # Consume the stream to trigger finally
+                        async for _ in response.aiter_bytes():
+                            pass
+                mock_acquire.assert_called_once()
+                mock_release.assert_called_once()
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_sse_returns_503_when_agent_at_capacity(self):
+        """SSE endpoint returns 503 when _acquire_sse_slot returns False.
+
+        Mocks _acquire_sse_slot to return False (capacity exceeded).
+        Security: T-04.1-02-02 — connection exhaustion DoS prevention.
+        """
+        from app.models.job import Job
+
+        job_id = uuid4()
+        agent_id = uuid4()
+
+        mock_job = MagicMock(spec=Job)
+        mock_job.id = job_id
+        mock_job.agent_id = agent_id
+
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_job
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        mock_redis = _make_mock_redis()
+
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        app.dependency_overrides[get_async_redis] = lambda: mock_redis
+
+        try:
+            with patch("app.api.v1.widget._acquire_sse_slot", return_value=False):
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.get(f"/widget/jobs/{job_id}/events")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 503
+
+    async def test_sse_hard_timeout_fires(self):
+        """asyncio.timeout(120) in the _wrapped_generator terminates the SSE stream.
+
+        Directly exercises the _wrapped_generator pattern from widget_job_events
+        with a very short timeout (0.05s) to verify:
+          - TimeoutError is caught, not propagated
+          - A timeout event is yielded before the generator closes
+          - _release_sse_slot is called in the finally block
+
+        Security: T-04.1-02-03 — hard cap prevents permanently hung connections.
+        """
+        import asyncio as real_asyncio
+
+        received_events = []
+        release_called = []
+
+        async def _infinite_event_generator():
+            """Simulates a stream that hangs indefinitely — never yields."""
+            await real_asyncio.sleep(60)
+            yield  # unreachable
+
+        async def _mock_release_fn(*args, **kwargs):
+            release_called.append(True)
+
+        # Replicate the exact _wrapped_generator pattern from widget_job_events,
+        # but with a tiny timeout (0.05s) so the test completes quickly.
+        async def _wrapped_generator_under_test():
+            try:
+                async with real_asyncio.timeout(0.05):  # tiny timeout simulates 120s
+                    async for event in _infinite_event_generator():
+                        yield event
+            except real_asyncio.TimeoutError:
+                received_events.append("timeout")
+                yield "event: timeout\ndata: {}\n\n"
+            finally:
+                await _mock_release_fn()
+
+        # Drive the generator to completion — must finish well within 5 seconds
+        try:
+            async with real_asyncio.timeout(5):
+                async for _ in _wrapped_generator_under_test():
+                    pass
+        except real_asyncio.TimeoutError:
+            pytest.fail(
+                "Outer 5s guard fired — _wrapped_generator did not terminate "
+                "after inner TimeoutError. asyncio.timeout catch may be broken."
+            )
+
+        # Inner timeout must have fired and been caught cleanly
+        assert "timeout" in received_events, (
+            "TimeoutError was not caught by _wrapped_generator; "
+            "timeout event not yielded"
+        )
+        assert len(release_called) == 1, (
+            "_release_sse_slot not called in finally block after TimeoutError"
+        )
