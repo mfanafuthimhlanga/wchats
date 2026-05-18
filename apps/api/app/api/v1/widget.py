@@ -21,6 +21,7 @@ Security:
 Queue: runtime (CLAUDE.md: both Celery queues always present).
 """
 
+import asyncio
 import time
 import structlog
 import psycopg2
@@ -34,6 +35,8 @@ from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
+
+from redis.asyncio import Redis
 
 from app.api.deps import get_async_db, get_async_redis
 from app.core.config import settings
@@ -60,6 +63,75 @@ _CORS_ALLOW_ORIGIN = "*"
 _CORS_ALLOW_METHODS = "GET, POST, OPTIONS"
 _CORS_ALLOW_HEADERS = "Content-Type, Authorization"
 _CORS_MAX_AGE = "3600"
+
+# ---------------------------------------------------------------------------
+# SSE slot cap constant (F8 — T-04.1-02-02)
+# ---------------------------------------------------------------------------
+_MAX_CONCURRENT_SSE_PER_AGENT = 50
+
+
+# ---------------------------------------------------------------------------
+# F2: Per-IP rate limit helper for GET /widget/{agent_id}/config
+# ---------------------------------------------------------------------------
+
+
+async def _check_config_rate_limit(agent_id: str, client_ip: str, redis: Redis) -> None:
+    """Enforce 10 req/min per client IP on the config (JWT mint) endpoint.
+
+    Key: rate:config:{client_ip}:{bucket}  (bucket = 60-second window)
+    TTL: 120 seconds (two windows — belt-and-suspenders against clock drift)
+    Ceiling: 10 requests per 60-second window.
+
+    Raises:
+        HTTPException 429 with Retry-After: 60 if ceiling exceeded.
+    """
+    bucket = int(time.time()) // 60
+    key = f"rate:config:{client_ip}:{bucket}"
+    count = await redis.incr(key)
+    if count == 1:
+        await redis.expire(key, 120)
+    if count > 10:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many config requests",
+            headers={"Retry-After": "60"},
+        )
+
+
+# ---------------------------------------------------------------------------
+# F8: SSE concurrent slot management helpers
+# ---------------------------------------------------------------------------
+
+
+async def _acquire_sse_slot(agent_id: str, job_id: str, redis: Redis) -> bool:
+    """Acquire a per-agent SSE slot.  Returns True if slot acquired, False if at capacity.
+
+    Uses Redis SETNX to claim a unique slot per job_id, then INCR to track count.
+    If count exceeds _MAX_CONCURRENT_SSE_PER_AGENT, the slot is released immediately.
+    """
+    count_key = f"sse:count:{agent_id}"
+    slot_key = f"sse:slot:{agent_id}:{job_id}"
+    # Atomic slot claim with 150s TTL (> 120s hard timeout + buffer)
+    acquired = await redis.set(slot_key, "1", nx=True, ex=150)
+    if not acquired:
+        return False  # duplicate job_id connection attempt
+    count = await redis.incr(count_key)
+    if count == 1:
+        await redis.expire(count_key, 3600)
+    if count > _MAX_CONCURRENT_SSE_PER_AGENT:
+        # Over limit — release slot immediately
+        await redis.delete(slot_key)
+        await redis.decr(count_key)
+        return False
+    return True
+
+
+async def _release_sse_slot(agent_id: str, job_id: str, redis: Redis) -> None:
+    """Release a previously acquired SSE slot.  Safe to call even if slot expired."""
+    slot_key = f"sse:slot:{agent_id}:{job_id}"
+    deleted = await redis.delete(slot_key)
+    if deleted:
+        await redis.decr(f"sse:count:{agent_id}")
 
 
 # ---------------------------------------------------------------------------
@@ -154,20 +226,34 @@ def _validate_conv_owner(
 async def get_widget_config(
     agent_id: UUID,
     response: Response,
+    request: Request,
     db: AsyncSession = Depends(get_async_db),
+    redis_client=Depends(get_async_redis),
 ) -> WidgetConfigResponse:
     """Return widget configuration including a short-lived JWT.
 
     No authentication required — agent_id + status guard prevents leaking
     configuration for non-ready or deleted agents.
 
+    Rate limited: 10 req/min per client IP (F2 — T-04.1-02-01).
+    X-Forwarded-For is logged but NOT trusted in M4.1 (proxy hardening is M8 scope).
+
     Returns:
         WidgetConfigResponse with Access-Control-Allow-Origin: * header.
 
     Raises:
+        429 if per-IP rate limit exceeded (10/min).
         404 if agent not found or deleted.
         409 if agent is not in status == 'ready'.
     """
+    # F2: Per-IP rate limit — enforce before any DB access or JWT mint
+    if request.headers.get("X-Forwarded-For"):
+        log.debug(
+            "config_rate_limit.x_forwarded_for_present",
+            note="trusting request.client.host in M4.1; production should configure proxy",
+        )
+    await _check_config_rate_limit(str(agent_id), request.client.host, redis_client)
+
     result = await db.execute(
         select(Agent).where(
             Agent.id == agent_id,

@@ -97,8 +97,10 @@ class TestWidgetConfig200:
         """GET /widget/{id}/config → 200 with theming dict, valid JWT, and CORS header."""
         agent = _make_ready_agent()
         mock_db, _ = _make_mock_db_with_agent(agent)
+        mock_redis = _make_mock_redis(incr_return_value=1)  # within rate limit
 
         app.dependency_overrides[get_async_db] = lambda: mock_db
+        app.dependency_overrides[get_async_redis] = lambda: mock_redis
 
         try:
             async with AsyncClient(
@@ -136,7 +138,9 @@ class TestWidgetConfig404:
     async def test_get_config_returns_404_for_unknown_agent(self):
         """GET /widget/{id}/config with nonexistent agent → 404."""
         mock_db = _make_mock_db_no_agent()
+        mock_redis = _make_mock_redis(incr_return_value=1)  # within rate limit
         app.dependency_overrides[get_async_db] = lambda: mock_db
+        app.dependency_overrides[get_async_redis] = lambda: mock_redis
 
         try:
             async with AsyncClient(
@@ -389,3 +393,60 @@ class TestWidgetOptionsPreflight:
 
         assert response.status_code == 204
         assert response.headers.get("access-control-allow-origin") == "*"
+
+
+# ---------------------------------------------------------------------------
+# Task 1 — F2: Per-IP rate limit on GET /widget/{agent_id}/config
+# ---------------------------------------------------------------------------
+
+
+class TestWidgetConfigRateLimitF2:
+    async def test_widget_config_rate_limited_by_ip(self):
+        """11th config request from same IP → 429 with Retry-After: 60 header.
+
+        Mocks redis.incr to return 11 (over the 10/min ceiling).
+        Security: T-04.1-02-01 — prevents unlimited JWT harvest from single IP.
+        """
+        agent = _make_ready_agent()
+        mock_db, _ = _make_mock_db_with_agent(agent)
+        mock_redis = _make_mock_redis(incr_return_value=11)  # 11th request > 10 ceiling
+
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        app.dependency_overrides[get_async_redis] = lambda: mock_redis
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get(f"/widget/{agent.id}/config")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 429
+        assert response.headers.get("retry-after") == "60"
+
+    async def test_widget_config_different_ips_not_affected(self):
+        """10 requests from IP-A do not affect a request from IP-B.
+
+        Mocks redis.incr to return 10 for IP-A and 1 for IP-B; IP-B request
+        should return 200 (not 429).
+        Security: rate limit is keyed on client IP only — independent per IP.
+        """
+        agent = _make_ready_agent()
+        mock_db_b, _ = _make_mock_db_with_agent(agent)
+        # IP-B is the 1st request (count=1) — well within limit
+        mock_redis_b = _make_mock_redis(incr_return_value=1)
+
+        app.dependency_overrides[get_async_db] = lambda: mock_db_b
+        app.dependency_overrides[get_async_redis] = lambda: mock_redis_b
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get(f"/widget/{agent.id}/config")
+        finally:
+            app.dependency_overrides.clear()
+
+        # IP-B with count=1 should succeed — rate limit not exceeded
+        assert response.status_code == 200
