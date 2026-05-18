@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: ready_to_execute
-last_updated: "2026-05-16T19:10:00.000Z"
+last_updated: "2026-05-17T00:00:00.000Z"
 progress:
   total_phases: 4
   completed_phases: 3
-  total_plans: 30
-  completed_plans: 28
-  percent: 93
+  total_plans: 32
+  completed_plans: 29
+  percent: 69
 ---
 
 # Project State
@@ -17,8 +17,8 @@ progress:
 ## Current Status
 
 **Active Milestone:** M4 — Reasoning Engine + Widget v0 (FIRST HIREABLE ARTIFACT)
-**Milestone Phase:** Phase 4 planned — 8 plans, 7 waves — Ready to execute
-**Last updated:** 2026-05-16
+**Milestone Phase:** Phase 4.1 planned — 10 plans, 9 waves — Ready to execute (04-09, 04-10 added 2026-05-17)
+**Last updated:** 2026-05-17
 
 ## Project Reference
 
@@ -86,6 +86,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|
+| 04.1 | 03 | ~7 min | 2 | 6 |
 | 04 | 07 | ~22 min | 2 | 25 |
 | 04 | 06 | ~16 min | 2 | 14 |
 | 04 | 04 | ~14 min | 2 | 8 |
@@ -133,3 +134,8 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [04-07] demo_business_tenant.sql uses zero vector(1024) — eval scenarios mock retrieval not real Voyage calls
 - [04-06] @types/react-dom pinned to 19.2.3 (plan spec 19.2.5 does not exist on npm)
 - [04-06] missing API key → 403 (not 401) via FastAPI APIKeyHeader auto_error=True; tests use in (401,403)
+- [04-08] SUPERSEDED — demo page no longer needed (production system, no demo); replaced by 04-09 (cleanup) + 04-10 (Clerk auth)
+- [04-09] Bella Vista Coffee eval fixture renamed to Acme Consulting; apps/demo/ replaced with sign-in redirect; demo_m4 scripts replaced by generic provision_agent scripts; guarded E2E test (AGENT_E2E_ENABLED) added
+- [04-10] Clerk full platform auth: PyJWT+PyJWKClient JWKS verification; dual-auth (Bearer first, X-API-Key fallback); svix webhook provisioning; /me/provision self-heal; @clerk/nextjs admin UI; CORS Authorization+PATCH added
+- [04.1-03] F4 per-tenant daily budget ceiling: TENANT_DAILY_BUDGET_USD=5.0 global default; Redis INCRBYFLOAT with 86400s TTL; POST /chat returns 429+Retry-After:3600 when exhausted; migration 0008 adds tenants.daily_budget_usd; 20/20 tests pass
+- Last session: 2026-05-18 — completed 04.1-03-PLAN.md (F4 budget guard) — 3 commits: a018708 + 9b109b7 + 503e084
