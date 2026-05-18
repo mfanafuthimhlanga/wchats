@@ -2,7 +2,7 @@
 
 :root {
   /* Backgrounds */
-  --bg: #FDF9F5;
+  --bg: #F0E8E0;
   --surface-1: #FFFCF9;
   --surface-2: #F7F0EA;
   --surface-3: #EDE3D8;
@@ -38,14 +38,17 @@
   --shadow-sm: 0 1px 3px rgba(26, 10, 15, 0.08);
   --shadow-md: 0 4px 16px rgba(26, 10, 15, 0.12);
   --shadow-lg: 0 8px 32px rgba(26, 10, 15, 0.16);
+  --shadow-card: 0 1px 2px rgba(74,32,48,0.04), 0 4px 12px rgba(74,32,48,0.06);
+  --shadow-lift: 0 4px 8px rgba(74,32,48,0.04), 0 16px 32px rgba(74,32,48,0.08);
+  --shadow-focus: 0 0 0 3px rgba(123,28,58,0.18);
 
   /* Status */
-  --red: #C0392B;
-  --red-bg: rgba(192, 57, 43, 0.08);
-  --green: #27AE60;
-  --green-bg: rgba(39, 174, 96, 0.08);
-  --amber: #F39C12;
-  --amber-bg: rgba(243, 156, 18, 0.08);
+  --red: #B91C1C;
+  --red-bg: #FEF2F2;
+  --green: #166534;
+  --green-bg: #F0FDF4;
+  --amber: #92400E;
+  --amber-bg: #FEF3C7;
 
   /* Typography */
   --font-sans: 'Inter', system-ui, sans-serif;
