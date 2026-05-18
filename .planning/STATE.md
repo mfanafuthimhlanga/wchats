@@ -8,8 +8,8 @@ progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 32
-  completed_plans: 29
-  percent: 69
+  completed_plans: 30
+  percent: 72
 ---
 
 # Project State
@@ -86,6 +86,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|
+| 04.1 | 04 | ~12 min | 2 | 3 |
 | 04.1 | 03 | ~7 min | 2 | 6 |
 | 04 | 07 | ~22 min | 2 | 25 |
 | 04 | 06 | ~16 min | 2 | 14 |
@@ -139,3 +140,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [04-10] Clerk full platform auth: PyJWT+PyJWKClient JWKS verification; dual-auth (Bearer first, X-API-Key fallback); svix webhook provisioning; /me/provision self-heal; @clerk/nextjs admin UI; CORS Authorization+PATCH added
 - [04.1-03] F4 per-tenant daily budget ceiling: TENANT_DAILY_BUDGET_USD=5.0 global default; Redis INCRBYFLOAT with 86400s TTL; POST /chat returns 429+Retry-After:3600 when exhausted; migration 0008 adds tenants.daily_budget_usd; 20/20 tests pass
 - Last session: 2026-05-18 — completed 04.1-03-PLAN.md (F4 budget guard) — 3 commits: a018708 + 9b109b7 + 503e084
+- [04.1-04] F5 result_expires=300 purges Redis task results after 5 min; LOCAL-DEV-REDIS.md documents redis-server --save for local dev
+- [04.1-04] F6 AgentSoulUpdate field validators strip injection markers from soul_voice, soul_role, soul_do_list, soul_donot_list at admit-time via sanitize_chunk_text
+- [04.1-04] TDD: 2 RED tests failed; GREEN passed all 19; no REFACTOR needed
+- Last session: 2026-05-18 — completed 04.1-04-PLAN.md (F5+F6 config/schema hardening) — 3 commits: 4db7220 + 4b0e73d + 281b8fb
