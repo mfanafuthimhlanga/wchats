@@ -88,6 +88,13 @@ created: 2026-05-17
 | AR-03-09 | T-03-20 | Test data is synthetic; no real PII or tenant data enters test fixtures | project-owner | 2026-05-17 |
 | AR-03-10 | T-03-21 | Integration test query is a generic placeholder; real tenant data never used in test suite | project-owner | 2026-05-17 |
 
+### AR-03-07 UPDATE (2026-05-18, Phase 4.1)
+
+filters field remains no-op as of M4. M4 did not add enforcement (TODO-RET-01).
+M5 MUST add an allowlisted-column enforcement layer before activating filters.
+Until then, retrieve_tool logs a WARNING for any LLM-supplied filter value.
+Phase 4.1 added the runtime log warning to prevent silent regression.
+
 ---
 
 ## Security Audit Trail

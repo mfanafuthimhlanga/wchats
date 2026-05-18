@@ -91,6 +91,23 @@ created: 2026-05-13
 | AR-11 | T-07-02 | Worker kill test uses local Postgres credentials; Neon API intercepted by respx in test | Bantuson | 2026-05-13 |
 | AR-12 | T-08-03 | README describes defenses (argon2, Fernet) at a conceptual level; exposes no key material or implementation secrets | Bantuson | 2026-05-13 |
 
+### AR-02 UPDATE (2026-05-18, Phase 4.1)
+
+Phase 04 SSE now streams agent response text through Redis pub/sub (not just job metadata).
+Agent responses may contain customer-query context (PII risk). The original premise
+"M1 emit() payloads contain job metadata only — no PII" is no longer universally true.
+Revised acceptance: Redis pub/sub carries agent responses in prod; mTLS deferred to M10.
+Mitigating control: Redis RDB disabled on broker (Phase 4.1); result_expires=300.
+
+### AR-06 UPDATE (2026-05-18, Phase 4.1)
+
+Phase 04 changed the content traversing the Redis broker. Task args now include
+body.message (customer-supplied text, up to 2000 chars) from anonymous widget callers.
+The original premise "Redis carries UUID identifiers only, no PII" no longer holds.
+Revised acceptance: mTLS deferred to M10 production hardening; mitigating controls
+added — (a) Celery result_expires=300 (5 min), (b) Redis RDB disabled on broker,
+(c) body.message documented as sensitive in Phase 04 trust boundary table.
+
 ---
 
 ## Recommendations (Non-Blocking)
