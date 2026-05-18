@@ -13,7 +13,9 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.utils.sanitize import sanitize_chunk_text
 
 
 class SoulSchema(BaseModel):
@@ -62,6 +64,18 @@ class AgentSoulUpdate(BaseModel):
     soul_voice: str | None = Field(None, max_length=500)
     soul_do_list: list[Annotated[str, Field(min_length=1, max_length=200)]] | None = None
     soul_donot_list: list[Annotated[str, Field(min_length=1, max_length=200)]] | None = None
+
+    @field_validator("soul_voice", "soul_role", mode="before")
+    @classmethod
+    def sanitise_text_field(cls, v: str | None) -> str | None:
+        return sanitize_chunk_text(v) if v is not None else None
+
+    @field_validator("soul_do_list", "soul_donot_list", mode="before")
+    @classmethod
+    def sanitise_list_field(cls, v: list | None) -> list | None:
+        if v is None:
+            return None
+        return [sanitize_chunk_text(item) for item in v]
 
 
 class AgentDetailResponse(BaseModel):
