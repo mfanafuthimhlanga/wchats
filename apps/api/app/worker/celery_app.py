@@ -112,6 +112,8 @@ celery_app.conf.update(
     # the unacknowledged message is sent back to the queue rather than silently
     # dropped into the "unacked" state forever.
     task_reject_on_worker_lost=True,
+    # Result expiry (F5: broker now carries PII — purge results after 5 min)
+    result_expires=300,
 
     # --- Serialization (T-02-04: no pickle) ----------------------------
     task_serializer="json",
