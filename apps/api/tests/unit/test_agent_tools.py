@@ -44,10 +44,25 @@ def _make_passthrough_tool_decorator():
 
 
 def _make_fake_sdk():
-    """Build a minimal fake claude_agent_sdk module."""
+    """Build a fake claude_agent_sdk module with all attrs needed by agent_tools and agent.py."""
     fake = types.ModuleType("claude_agent_sdk")
     fake.tool = _make_passthrough_tool_decorator()
     fake.create_sdk_mcp_server = MagicMock(return_value=MagicMock(name="mcp_server"))
+    # Attributes required by app.worker.tasks.runtime.agent at module import time.
+    # Without these, any test that indirectly imports agent.py after this fake is
+    # installed will fail with ImportError: cannot import name 'ClaudeAgentOptions'.
+    fake.ClaudeAgentOptions = MagicMock(name="ClaudeAgentOptions")
+    fake.ClaudeSDKClient = MagicMock(name="ClaudeSDKClient")
+    fake.AssistantMessage = MagicMock(name="AssistantMessage")
+    fake.ResultMessage = MagicMock(name="ResultMessage")
+    fake.TextBlock = MagicMock(name="TextBlock")
+    fake.ToolUseBlock = MagicMock(name="ToolUseBlock")
+    fake.ToolResultBlock = MagicMock(name="ToolResultBlock")
+    fake.ClaudeSDKError = type("ClaudeSDKError", (Exception,), {})
+    fake.CLINotFoundError = type("CLINotFoundError", (Exception,), {})
+    fake.CLIConnectionError = type("CLIConnectionError", (Exception,), {})
+    fake.ProcessError = type("ProcessError", (Exception,), {})
+    fake.CLIJSONDecodeError = type("CLIJSONDecodeError", (Exception,), {})
     return fake
 
 
