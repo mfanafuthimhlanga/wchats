@@ -59,6 +59,9 @@ export default function AgentsDashboardPage() {
         })
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         const data = await r.json()
+        if (!Array.isArray(data?.agents)) {
+          throw new Error('Unexpected response shape from /api/v1/agents')
+        }
         setAgents(data.agents)
       } catch (err) {
         console.error(err)
