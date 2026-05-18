@@ -37,7 +37,6 @@ function deriveStepState(
     agent.status === 'provisioning_complete' ||
     agent.neon_project_id !== null
 
-  const step2Done = step1Done // Configure done once Provision done (soul editor fills in fields)
   const step3Done = false     // Test: not done until M6 eval harness wires up
   const step4Done = false     // Deploy: not done until widget deployed
 
@@ -45,10 +44,9 @@ function deriveStepState(
     case 1:
       return step1Done ? 'done' : 'active'
     case 2:
-      if (!step1Done) return 'locked'
       return step1Done ? 'active' : 'locked'
     case 3:
-      if (!step2Done) return 'locked'
+      if (!step1Done) return 'locked'
       return step3Done ? 'done' : 'active'
     case 4:
       if (!step3Done) return 'locked'
