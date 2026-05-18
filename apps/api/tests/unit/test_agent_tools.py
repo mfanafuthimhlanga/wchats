@@ -251,3 +251,93 @@ def test_allowed_lookup_tables_is_frozenset():
     """ALLOWED_LOOKUP_TABLES must be a frozenset with exactly the three allowed tables."""
     assert isinstance(ALLOWED_LOOKUP_TABLES, frozenset)
     assert ALLOWED_LOOKUP_TABLES == frozenset({"chunks", "documents", "chunk_metadata"})
+
+
+# ---------------------------------------------------------------------------
+# Test 8: F1 — lookup_structured rejects unknown column (SQL injection block)
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_structured_rejects_unknown_column():
+    """Unknown/injected column names must return is_error=True with no DB call."""
+    with patch("psycopg2.connect") as mock_connect:
+        result = _run(
+            agent_tools.lookup_structured_tool(
+                {"table": "chunks", "filters": {"evil_col; DROP TABLE": "x"}}
+            )
+        )
+
+    assert result.get("is_error") is True
+    content_text = result["content"][0]["text"]
+    assert "not allowed" in content_text.lower()
+    mock_connect.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test 9: F1 — lookup_structured allows known columns
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_structured_allows_known_columns():
+    """Filters with known column names must reach the DB (no is_error)."""
+    agent_tools._conn_str = "postgresql://test:test@localhost/testdb"
+
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_cursor.fetchall.return_value = [("row1",)]
+    mock_conn.cursor.return_value = mock_cursor
+
+    with patch("psycopg2.connect", return_value=mock_conn) as mock_connect:
+        result = _run(
+            agent_tools.lookup_structured_tool(
+                {"table": "chunks", "filters": {"id": "abc"}}
+            )
+        )
+
+    mock_connect.assert_called_once()
+    assert result.get("is_error") is not True
+
+
+# ---------------------------------------------------------------------------
+# Test 10: F1 — lookup_structured uses psycopg2.sql.Identifier for quoting
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_structured_sql_identifier_quoting():
+    """Allowed columns must be quoted via pgsql.Identifier, not f-string interpolation."""
+    from psycopg2 import sql as pgsql
+
+    agent_tools._conn_str = "postgresql://test:test@localhost/testdb"
+
+    # Track the sql arg passed to cur.execute
+    executed_sqls = []
+
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_cursor.fetchall.return_value = []
+
+    def capture_execute(sql, params=None):
+        executed_sqls.append(sql)
+
+    mock_cursor.execute.side_effect = capture_execute
+    mock_conn.cursor.return_value = mock_cursor
+
+    with patch("psycopg2.connect", return_value=mock_conn):
+        result = _run(
+            agent_tools.lookup_structured_tool(
+                {"table": "documents", "filters": {"name": "test"}}
+            )
+        )
+
+    assert result.get("is_error") is not True
+    assert len(executed_sqls) > 0, "cur.execute was never called"
+    # The WHERE clause must include at least one pgsql.Composed or pgsql.SQL object,
+    # i.e. not a plain raw f-string with the column name embedded literally.
+    sql_arg = executed_sqls[0]
+    assert isinstance(sql_arg, (pgsql.Composed, pgsql.SQL)), (
+        f"Expected psycopg2.sql.Composed or SQL, got {type(sql_arg)}: {sql_arg!r}"
+    )

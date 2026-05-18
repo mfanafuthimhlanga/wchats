@@ -28,6 +28,7 @@ Design decisions:
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 import psycopg2
@@ -49,6 +50,20 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 ALLOWED_LOOKUP_TABLES: frozenset[str] = frozenset({"chunks", "documents", "chunk_metadata"})
+
+_ALLOWED_FILTER_COLUMNS: dict[str, frozenset[str]] = {
+    "chunks":         frozenset({"id", "document_id", "section", "chunk_order"}),
+    "documents":      frozenset({"id", "name", "parse_status", "source_uri"}),
+    "chunk_metadata": frozenset({"chunk_id", "entity_type", "entity_value"}),
+}
+
+
+def _validate_filter_columns(table: str, filters: dict) -> list[str]:
+    """Returns list of rejected column names. Empty = all OK."""
+    allowed = _ALLOWED_FILTER_COLUMNS.get(table, frozenset())
+    return [col for col in filters if col not in allowed]
+
+
 MAX_CHUNKS: int = 5
 MAX_CHUNK_TOKENS: int = 500  # approximate; character proxy = MAX_CHUNK_TOKENS * 4 = 2000
 
@@ -218,15 +233,28 @@ async def lookup_structured_tool(args: dict[str, Any]) -> dict[str, Any]:
         }
 
     # Table name validated — safe to embed in SQL (table name from allowlist, not user input).
-    # Filter values are passed via parameterised %s placeholders.
-    where_clauses: list[str] = []
+    # Column names validated against per-table allowlist; quoted with pgsql.Identifier.
+    rejected = _validate_filter_columns(table, filters)
+    if rejected:
+        log.warning("lookup_structured.column_rejected", table=table, rejected=rejected)
+        return {
+            "content": [{"type": "text", "text": f"Column(s) {rejected!r} are not allowed for table '{table}'."}],
+            "is_error": True,
+        }
+
+    from psycopg2 import sql as pgsql
+
+    where_clauses: list = []
     params: list[Any] = []
     for col, val in filters.items():
-        where_clauses.append(f"{col} = %s")
+        where_clauses.append(pgsql.SQL("{} = %s").format(pgsql.Identifier(col)))
         params.append(val)
 
-    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-    sql = f"SELECT * FROM {table} {where_sql} LIMIT 100"  # noqa: S608 — table from allowlist
+    if where_clauses:
+        where_sql = pgsql.SQL("WHERE ") + pgsql.SQL(" AND ").join(where_clauses)
+        sql = pgsql.SQL("SELECT * FROM {} ").format(pgsql.Identifier(table)) + where_sql + pgsql.SQL(" LIMIT 100")
+    else:
+        sql = pgsql.SQL("SELECT * FROM {} LIMIT 100").format(pgsql.Identifier(table))  # noqa: S608 — table from allowlist
 
     log.debug("lookup_structured.query", table=table, filter_count=len(filters))
 
