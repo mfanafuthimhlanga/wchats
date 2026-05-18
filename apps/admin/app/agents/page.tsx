@@ -71,7 +71,7 @@ export default function AgentsDashboardPage() {
       }
     }
     loadAgents()
-  }, [apiBase])
+  }, [apiBase, getToken])
 
   return (
     <div
