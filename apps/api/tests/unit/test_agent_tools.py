@@ -193,7 +193,11 @@ def test_escalate_calls_notify_fn():
             )
         )
 
-    notify_fn.assert_called_once_with("Customer frustrated", "Order delayed 3 weeks")
+    # F3: reason is now prefixed with [AGENT-DETECTED — UNVERIFIED] before notify_fn.
+    notify_fn.assert_called_once_with(
+        "[AGENT-DETECTED — UNVERIFIED] Customer frustrated",
+        "Order delayed 3 weeks",
+    )
     assert "content" in result
 
 
@@ -340,4 +344,162 @@ def test_lookup_structured_sql_identifier_quoting():
     sql_arg = executed_sqls[0]
     assert isinstance(sql_arg, (pgsql.Composed, pgsql.SQL)), (
         f"Expected psycopg2.sql.Composed or SQL, got {type(sql_arg)}: {sql_arg!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 11: F3 — escalate_to_human is idempotent (second call skips notify_fn)
+# ---------------------------------------------------------------------------
+
+
+def test_escalate_to_human_idempotent():
+    """Second escalation call on already-escalated conversation must not fire _notify_fn again."""
+    notify_fn = MagicMock()
+
+    agent_tools._notify_fn = notify_fn
+    agent_tools._conversation_id = "conv-idempotent-1"
+    agent_tools._conn_str = "postgresql://test:test@localhost/testdb"
+    agent_tools._agent_id = "agent-abc"
+
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn.cursor.return_value = mock_cursor
+
+    # First call: rowcount=1 (row updated — not yet escalated)
+    mock_cursor.rowcount = 1
+    with patch("psycopg2.connect", return_value=mock_conn):
+        _run(
+            agent_tools.escalate_to_human_tool(
+                {"reason": "Angry customer", "context": "Some context"}
+            )
+        )
+
+    # Second call: rowcount=0 (already escalated — idempotency guard fires)
+    mock_cursor.rowcount = 0
+    with patch("psycopg2.connect", return_value=mock_conn):
+        result = _run(
+            agent_tools.escalate_to_human_tool(
+                {"reason": "Angry customer", "context": "Some context"}
+            )
+        )
+
+    assert result.get("already_escalated") is True, (
+        "Expected already_escalated=True on second call"
+    )
+    assert notify_fn.call_count == 1, (
+        f"_notify_fn should be called exactly once, got {notify_fn.call_count}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 12: F3 — escalate_to_human sanitises control characters in reason
+# ---------------------------------------------------------------------------
+
+
+def test_escalate_to_human_sanitises_reason():
+    """Control characters in reason must be stripped before passing to _notify_fn."""
+    notify_fn = MagicMock()
+
+    agent_tools._notify_fn = notify_fn
+    agent_tools._conversation_id = "conv-sanitise-1"
+    agent_tools._conn_str = "postgresql://test:test@localhost/testdb"
+    agent_tools._agent_id = "agent-abc"
+
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_cursor.rowcount = 1
+    mock_conn.cursor.return_value = mock_cursor
+
+    dirty_reason = f"Angry{chr(0)}Customer{chr(31)}Now"
+
+    with patch("psycopg2.connect", return_value=mock_conn):
+        _run(
+            agent_tools.escalate_to_human_tool(
+                {"reason": dirty_reason, "context": "Normal context"}
+            )
+        )
+
+    notify_fn.assert_called_once()
+    called_reason = notify_fn.call_args[0][0]  # first positional arg
+    assert chr(0) not in called_reason, "NULL byte must be stripped from reason"
+    assert chr(31) not in called_reason, "Control char 0x1f must be stripped from reason"
+
+
+# ---------------------------------------------------------------------------
+# Test 13: F3 — escalate_to_human truncates reason at 500 chars
+# ---------------------------------------------------------------------------
+
+
+def test_escalate_to_human_reason_truncated_at_500():
+    """Reason longer than 500 chars must be truncated; notify_fn payload ≤ prefix + 500."""
+    notify_fn = MagicMock()
+
+    agent_tools._notify_fn = notify_fn
+    agent_tools._conversation_id = "conv-truncate-1"
+    agent_tools._conn_str = "postgresql://test:test@localhost/testdb"
+    agent_tools._agent_id = "agent-abc"
+
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_cursor.rowcount = 1
+    mock_conn.cursor.return_value = mock_cursor
+
+    long_reason = "A" * 600
+
+    with patch("psycopg2.connect", return_value=mock_conn):
+        _run(
+            agent_tools.escalate_to_human_tool(
+                {"reason": long_reason, "context": "Normal context"}
+            )
+        )
+
+    notify_fn.assert_called_once()
+    called_reason = notify_fn.call_args[0][0]
+    # The prefix is "[AGENT-DETECTED — UNVERIFIED] " — extract the payload portion after it
+    prefix = "[AGENT-DETECTED — UNVERIFIED] "
+    assert called_reason.startswith(prefix), (
+        f"Reason must be prefixed with {prefix!r}, got: {called_reason[:80]!r}"
+    )
+    payload = called_reason[len(prefix):]
+    assert len(payload) <= 500, (
+        f"Payload segment must be at most 500 chars, got {len(payload)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 14: F7 — retrieve_tool logs warning when filters are present
+# ---------------------------------------------------------------------------
+
+
+def test_retrieve_tool_logs_warning_on_unused_filters():
+    """retrieve_tool must emit log.warning('retrieve_tool.filters_ignored') when filters given."""
+    with (
+        patch("app.services.agent_tools.embed_query", return_value=[0.1] * 1024),
+        patch(
+            "app.services.agent_tools.rrf_fuse",
+            return_value={"fused": [], "vector_candidates": [], "bm25_candidates": []},
+        ),
+        patch("app.services.agent_tools.rerank", return_value=[]),
+        patch("app.services.agent_tools.log") as mock_log,
+    ):
+        _run(
+            agent_tools.retrieve_tool(
+                {"query": "test", "filters": [{"document_id": "abc"}]}
+            )
+        )
+
+    # Find the warning call with event="retrieve_tool.filters_ignored"
+    warning_events = [
+        call.args[0]
+        for call in mock_log.warning.call_args_list
+        if call.args and call.args[0] == "retrieve_tool.filters_ignored"
+    ]
+    assert len(warning_events) >= 1, (
+        "Expected log.warning('retrieve_tool.filters_ignored') to be called"
     )

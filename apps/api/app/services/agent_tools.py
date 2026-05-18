@@ -64,6 +64,18 @@ def _validate_filter_columns(table: str, filters: dict) -> list[str]:
     return [col for col in filters if col not in allowed]
 
 
+# ---------------------------------------------------------------------------
+# F3 — Control character sanitiser for escalation fields
+# ---------------------------------------------------------------------------
+
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _sanitise_escalation_field(value: str, max_len: int = 500) -> str:
+    """Strip control characters and enforce max_len cap on escalation fields."""
+    return _CONTROL_CHAR_RE.sub(" ", value[:max_len]).strip()
+
+
 MAX_CHUNKS: int = 5
 MAX_CHUNK_TOKENS: int = 500  # approximate; character proxy = MAX_CHUNK_TOKENS * 4 = 2000
 
@@ -87,13 +99,22 @@ _notify_fn = None
 
 def _mark_conversation_escalated(
     conversation_id: str,
+    agent_id: str,
     reason: str,
     context: str,
     conn_str: str,
-) -> None:
+) -> dict:
     """Write escalation marker to conversations table via jsonb_set UPDATE.
 
-    Uses the module-level _conn_str if conn_str is not supplied separately.
+    Idempotency guard: only updates when metadata->>'escalated' IS DISTINCT FROM 'true'.
+    Returns {"already_escalated": True} if the row was already escalated (rowcount==0).
+
+    Args:
+        conversation_id: UUID of the conversation to escalate.
+        agent_id:        UUID of the agent (used as additional WHERE guard).
+        reason:          Sanitised escalation reason string (for logging).
+        context:         Sanitised conversation context string.
+        conn_str:        Decrypted tenant DB connection string.
     """
     sql = """
         UPDATE conversations
@@ -102,12 +123,19 @@ def _mark_conversation_escalated(
             '{escalated}',
             'true'::jsonb
         )
-        WHERE id = %s
+        WHERE id = %s AND agent_id = %s
+          AND (metadata->>'escalated') IS DISTINCT FROM 'true'
     """
     conn = psycopg2.connect(conn_str, connect_timeout=5)
     try:
         with conn.cursor() as cur:
-            cur.execute(sql, (conversation_id,))
+            cur.execute(sql, (conversation_id, agent_id))
+            if cur.rowcount == 0:
+                log.info(
+                    "escalate_to_human.already_escalated",
+                    conversation_id=conversation_id,
+                )
+                return {"already_escalated": True}
         conn.commit()
     finally:
         conn.close()
@@ -117,6 +145,7 @@ def _mark_conversation_escalated(
         conversation_id=conversation_id,
         reason=reason,
     )
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +178,18 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     code already runs inside a Celery task.
     """
     query: str = args["query"]
+    # F7: filters is a no-op. Emit warning so any LLM-supplied filter value is visible
+    # in observability before it silently becomes load-bearing in a future change.
+    # Enforcement tracked as TODO-RET-01 (M5 milestone).
+    filters = args.get("filters", [])
+    if filters:
+        log.warning(
+            "retrieve_tool.filters_ignored",
+            filter_count=len(filters),
+            conversation_id=_conversation_id,
+            note="filters parameter is not yet enforced; upgrade to M5 allowlist before activation",
+        )
+    # filters intentionally not applied — see AR-03-07 / TODO-RET-01
     strategy = _strategy or RetrievalStrategy.model_validate({})
 
     log.debug("retrieve_tool.start", query=query[:80])
@@ -304,23 +345,37 @@ async def lookup_structured_tool(args: dict[str, Any]) -> dict[str, Any]:
     },
 )
 async def escalate_to_human_tool(args: dict[str, Any]) -> dict[str, Any]:
-    """Write escalation marker and fire-and-forget notify_fn."""
-    reason: str = args["reason"]
-    context: str = args["context"]
+    """Write escalation marker and fire-and-forget notify_fn.
+
+    F3 hardening:
+      - reason and context are sanitised (control chars stripped, 500-char cap).
+      - _mark_conversation_escalated returns already_escalated=True on duplicate call;
+        in that case _notify_fn is NOT called.
+      - Notification payload is prefixed with [AGENT-DETECTED — UNVERIFIED].
+    """
+    reason: str = _sanitise_escalation_field(args.get("reason", ""))
+    context: str = _sanitise_escalation_field(args.get("context", ""))
 
     log.info("escalate_to_human_tool.called", reason=reason)
 
     loop = asyncio.get_event_loop()
 
-    # Write escalation marker to conversations table.
-    await loop.run_in_executor(
+    # Write escalation marker to conversations table (idempotency guard inside).
+    result = await loop.run_in_executor(
         None,
-        lambda: _mark_conversation_escalated(_conversation_id, reason, context, _conn_str),
+        lambda: _mark_conversation_escalated(
+            _conversation_id, _agent_id, reason, context, _conn_str
+        ),
     )
 
+    if result.get("already_escalated"):
+        return result
+
     # Fire-and-forget notification (email / webhook / slack — injected by task).
+    # Prefix with [AGENT-DETECTED — UNVERIFIED] so recipients know this is LLM-sourced.
     if _notify_fn is not None:
-        _notify_fn(reason, context)
+        prefixed_reason = f"[AGENT-DETECTED — UNVERIFIED] {reason}"
+        _notify_fn(prefixed_reason, context)
 
     return {
         "content": [
