@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     SMTP_FROM: str | None = None
     OWNER_EMAIL: str | None = None
 
+    # M4.1: Tenant daily budget ceiling (global default; per-tenant override in M5 admin UI)
+    TENANT_DAILY_BUDGET_USD: float = 5.0
+
     MAX_UPLOAD_SIZE_MB: int = 50
 
     def __repr__(self) -> str:  # T-01-01, T-01-02: never leak field values
