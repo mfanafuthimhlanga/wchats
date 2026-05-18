@@ -35,8 +35,10 @@ from app.schemas.agent import (
     AgentCreate,
     AgentCreateResponse,
     AgentDetailResponse,
+    AgentListResponse,
     AgentResponse,
     AgentSoulUpdate,
+    WidgetConfigUpdate,
 )
 from app.worker.tasks.pipeline.provision import provision_neon
 
@@ -97,6 +99,26 @@ async def create_agent(
         status="pending",
         events_url=f"/jobs/{job.id}/events",
     )
+
+
+@router.get("/agents", response_model=AgentListResponse)
+async def list_agents(
+    db: AsyncSession = Depends(get_async_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> AgentListResponse:
+    """Return all non-deleted agents for the authenticated tenant, newest first.
+
+    Security:
+        T-04.2-02-01: tenant_id filter prevents cross-tenant enumeration (T-04-05 pattern).
+        Only agents where Agent.tenant_id == tenant.id are returned.
+    """
+    result = await db.execute(
+        select(Agent)
+        .where(Agent.tenant_id == tenant.id, Agent.deleted_at.is_(None))
+        .order_by(Agent.created_at.desc())
+    )
+    agents = result.scalars().all()
+    return AgentListResponse(agents=[AgentResponse.model_validate(a) for a in agents])
 
 
 @router.get("/agents/{agent_id}", response_model=AgentResponse)
@@ -178,3 +200,58 @@ async def patch_agent(
 
     # 6. Return full agent representation
     return AgentDetailResponse.model_validate(agent)
+
+
+@router.get("/agents/{agent_id}/widget-config")
+async def get_widget_config(
+    agent_id: UUID,
+    db: AsyncSession = Depends(get_async_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> dict:
+    """Return the stored widget_config JSONB for an agent.
+
+    Security:
+        T-04.2-02-02: IDOR prevention — filters by both agent.id AND tenant_id.
+        Returns 404 if agent not found or belongs to a different tenant.
+    """
+    result = await db.execute(
+        select(Agent).where(
+            Agent.id == agent_id,
+            Agent.tenant_id == tenant.id,
+            Agent.deleted_at.is_(None),
+        )
+    )
+    agent = result.scalar_one_or_none()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return agent.widget_config or {}
+
+
+@router.post("/agents/{agent_id}/widget-config", status_code=200)
+async def save_widget_config(
+    agent_id: UUID,
+    body: WidgetConfigUpdate,
+    db: AsyncSession = Depends(get_async_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> dict:
+    """Validate and persist a widget_config payload for an agent.
+
+    Security:
+        T-04.2-02-02: IDOR prevention — filters by both agent.id AND tenant_id.
+        T-04.2-02-03: Color hex validated by WidgetColorsSchema before this route runs.
+        T-04.2-02-04: Appearance/launcher_shape/font/radius constrained by Literal.
+    """
+    result = await db.execute(
+        select(Agent).where(
+            Agent.id == agent_id,
+            Agent.tenant_id == tenant.id,
+            Agent.deleted_at.is_(None),
+        )
+    )
+    agent = result.scalar_one_or_none()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    agent.widget_config = body.model_dump()
+    await db.commit()
+    await db.refresh(agent)
+    return agent.widget_config

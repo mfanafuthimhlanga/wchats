@@ -7,8 +7,13 @@ AgentResponse      — response body for GET /agents/{id}
 AgentCreateResponse — response body for POST /agents (202 Accepted)
 AgentSoulUpdate    — request body for PATCH /agents/{id} (partial soul update)
 AgentDetailResponse — response body for PATCH /agents/{id}
+AgentListResponse  — response body for GET /agents (list all tenant agents)
+WidgetColorsSchema — nested colors block for widget customization (validates hex)
+WidgetTypographySchema — nested typography block for widget customization
+WidgetConfigUpdate — request body for POST /agents/{id}/widget-config
 """
 
+import re
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
@@ -91,3 +96,63 @@ class AgentDetailResponse(BaseModel):
     soul_donot_list: list = []
     status: str
     created_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# M4.2: Widget config schemas
+# ---------------------------------------------------------------------------
+
+
+class AgentListResponse(BaseModel):
+    """Response body for GET /agents — list all non-deleted agents for the tenant."""
+
+    agents: list[AgentResponse]
+
+
+class WidgetColorsSchema(BaseModel):
+    """Color palette for widget customization.
+
+    All fields are validated as 6-digit hex strings (#RRGGBB).
+    Defaults match UI-SPEC §9 Design G color palette.
+
+    Security: T-04.2-02-03 — server-side hex validation prevents
+    XSS / CSS injection via widget color values rendered in the iframe.
+    """
+
+    widget_bg: str = "#FDF9F5"
+    header_bg: str = "#7B1C3A"
+    header_text: str = "#FFFFFF"
+    agent_bubble_bg: str = "#FDF9F5"
+    agent_bubble_text: str = "#4A2030"
+    user_bubble_bg: str = "#7B1C3A"
+    user_bubble_text: str = "#FFFFFF"
+    send_button: str = "#7B1C3A"
+    input_bg: str = "#F7F0EA"
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def validate_hex_color(cls, v: str) -> str:
+        if re.match(r'^#[0-9A-Fa-f]{6}$', v) is None:
+            raise ValueError(f"Invalid hex color: {v}")
+        return v
+
+
+class WidgetTypographySchema(BaseModel):
+    """Typography settings for widget customization."""
+
+    font_family: Literal["Inter", "System UI", "Georgia", "custom"] = "Inter"
+    font_custom_url: str | None = None
+    border_radius_preset: Literal["sharp", "rounded", "pill"] = "rounded"
+
+
+class WidgetConfigUpdate(BaseModel):
+    """Request body for POST /agents/{id}/widget-config.
+
+    Security: T-04.2-02-04 — Literal constraints on appearance, launcher_shape,
+    font_family, and border_radius_preset prevent arbitrary string injection.
+    """
+
+    appearance: Literal["floating-button", "floating-mini-modal", "slide-out-panel"] = "floating-button"
+    launcher_shape: Literal["circle", "square"] = "circle"
+    colors: WidgetColorsSchema = Field(default_factory=WidgetColorsSchema)
+    typography: WidgetTypographySchema = Field(default_factory=WidgetTypographySchema)
