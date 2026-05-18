@@ -40,6 +40,7 @@ from redis.asyncio import Redis
 
 from app.api.deps import get_async_db, get_async_redis
 from app.core.config import settings
+from app.services.budget import check_and_increment_budget
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.models.job import Job
@@ -68,6 +69,11 @@ _CORS_MAX_AGE = "3600"
 # SSE slot cap constant (F8 — T-04.1-02-02)
 # ---------------------------------------------------------------------------
 _MAX_CONCURRENT_SSE_PER_AGENT = 50
+
+# ---------------------------------------------------------------------------
+# F4: Estimated per-turn Anthropic cost (conservative upper bound for Haiku 4.5)
+# ---------------------------------------------------------------------------
+ESTIMATED_TURN_COST_USD = 0.01
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +399,23 @@ async def post_widget_chat(
     db.add(job)
     await db.commit()
     await db.refresh(job)
+
+    # ------------------------------------------------------------------
+    # 5b. Budget guard — F4 (T-04.1-03-01): check tenant daily ceiling
+    #     BEFORE dispatching the Celery task. Returns 429 if exhausted.
+    # ------------------------------------------------------------------
+    budget_ok = await check_and_increment_budget(
+        str(agent.tenant_id),
+        ESTIMATED_TURN_COST_USD,
+        redis_client,
+        settings.TENANT_DAILY_BUDGET_USD,
+    )
+    if not budget_ok:
+        raise HTTPException(
+            status_code=429,
+            detail="Daily usage limit reached. Please try again tomorrow.",
+            headers={"Retry-After": "3600"},
+        )
 
     # ------------------------------------------------------------------
     # 6. Dispatch run_agent_turn (message NEVER logged — T-04-03-05)
