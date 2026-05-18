@@ -147,6 +147,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
               <Link
                 href={step.href}
                 style={{ textDecoration: 'none', color: 'inherit', display: 'block' }}
+                aria-label={`${step.title} — ${step.state === 'done' ? 'completed' : 'in progress'}`}
               >
                 {rowContent}
               </Link>
