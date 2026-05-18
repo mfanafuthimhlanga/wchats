@@ -237,6 +237,21 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
   }
 
   const handleSaveDesign = async () => {
+    const url = widgetConfig.typography.font_custom_url
+    if (url) {
+      try {
+        const parsed = new URL(url)
+        if (parsed.protocol !== 'https:') {
+          setSaveStatus('error')
+          setLoadError('Custom font URL must use HTTPS.')
+          return
+        }
+      } catch {
+        setSaveStatus('error')
+        setLoadError('Custom font URL is not a valid URL.')
+        return
+      }
+    }
     setSaveStatus('saving')
     try {
       const token = await getToken()
