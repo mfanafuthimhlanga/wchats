@@ -1,0 +1,73 @@
+'use client'
+import { usePathname } from 'next/navigation'
+import { UserButton } from '@clerk/nextjs'
+import Link from 'next/link'
+
+const NAV_LINKS = [
+  { href: '/agents', label: 'Agents' },
+  { href: '/evals', label: 'Evals' },
+  { href: '/settings', label: 'Settings' },
+]
+
+export default function TopNav() {
+  const pathname = usePathname()
+
+  return (
+    <nav
+      style={{
+        height: '56px',
+        background: 'var(--bg)',
+        borderBottom: '1px solid var(--border-soft)',
+        display: 'flex',
+        alignItems: 'center',
+        padding: '0 24px',
+        position: 'sticky',
+        top: 0,
+        zIndex: 100,
+      }}
+    >
+      {/* Logo */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginRight: '32px' }}>
+        <div
+          style={{
+            width: '30px',
+            height: '30px',
+            background: 'var(--accent)',
+            borderRadius: '7px',
+          }}
+        />
+        <span style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-1)' }}>
+          Veridian
+        </span>
+      </div>
+
+      {/* Nav links */}
+      <div style={{ display: 'flex', gap: '4px', flex: 1 }}>
+        {NAV_LINKS.map(({ href, label }) => {
+          const active = pathname.startsWith(href)
+          return (
+            <Link
+              key={href}
+              href={href}
+              aria-current={active ? 'page' : undefined}
+              style={{
+                padding: '6px 14px',
+                borderRadius: 'var(--radius-xs)',
+                background: active ? 'var(--accent-dim)' : 'transparent',
+                color: active ? 'var(--accent)' : 'var(--text-2)',
+                fontWeight: active ? 600 : 400,
+                fontSize: '14px',
+                textDecoration: 'none',
+              }}
+            >
+              {label}
+            </Link>
+          )
+        })}
+      </div>
+
+      {/* User avatar */}
+      <UserButton appearance={{ elements: { avatarBox: { width: 32, height: 32 } } }} />
+    </nav>
+  )
+}
