@@ -15,6 +15,7 @@ interface SoulData {
 }
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
+type ListItem = { id: string; value: string }
 
 // ---------------------------------------------------------------------------
 // buildSystemPromptPreview — TypeScript port of agent_prompt.py build_system_prompt
@@ -95,8 +96,8 @@ export default function SoulEditorPage({
   const [name, setName] = useState('')
   const [soulRole, setSoulRole] = useState('')
   const [soulVoice, setSoulVoice] = useState('')
-  const [soulDoList, setSoulDoList] = useState<string[]>([''])
-  const [soulDonotList, setSoulDonotList] = useState<string[]>([''])
+  const [soulDoList, setSoulDoList] = useState<ListItem[]>([{ id: crypto.randomUUID(), value: '' }])
+  const [soulDonotList, setSoulDonotList] = useState<ListItem[]>([{ id: crypto.randomUUID(), value: '' }])
 
   // Save state machine
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
@@ -137,13 +138,13 @@ export default function SoulEditorPage({
         setSoulVoice(data.soul_voice || '')
         setSoulDoList(
           data.soul_do_list && data.soul_do_list.length > 0
-            ? data.soul_do_list
-            : ['']
+            ? data.soul_do_list.map((v) => ({ id: crypto.randomUUID(), value: v }))
+            : [{ id: crypto.randomUUID(), value: '' }]
         )
         setSoulDonotList(
           data.soul_donot_list && data.soul_donot_list.length > 0
-            ? data.soul_donot_list
-            : ['']
+            ? data.soul_donot_list.map((v) => ({ id: crypto.randomUUID(), value: v }))
+            : [{ id: crypto.randomUUID(), value: '' }]
         )
       } catch (err) {
         console.error(err)
@@ -179,8 +180,8 @@ export default function SoulEditorPage({
     name,
     soul_role: soulRole,
     soul_voice: soulVoice,
-    soul_do_list: soulDoList,
-    soul_donot_list: soulDonotList,
+    soul_do_list: soulDoList.map((item) => item.value),
+    soul_donot_list: soulDonotList.map((item) => item.value),
   })
 
   // ---------------------------------------------------------------------------
@@ -194,8 +195,8 @@ export default function SoulEditorPage({
       soul_role: soulRole || undefined,
       soul_voice: soulVoice || undefined,
       // Strip empty items client-side before PATCH (server also strips)
-      soul_do_list: soulDoList.filter((s) => s.trim().length > 0),
-      soul_donot_list: soulDonotList.filter((s) => s.trim().length > 0),
+      soul_do_list: soulDoList.map((item) => item.value).filter((s) => s.trim().length > 0),
+      soul_donot_list: soulDonotList.map((item) => item.value).filter((s) => s.trim().length > 0),
     }
     try {
       const token = await getToken()
@@ -223,17 +224,17 @@ export default function SoulEditorPage({
   // List helpers
   // ---------------------------------------------------------------------------
 
-  const addDoItem = () => setSoulDoList((l) => [...l, ''])
-  const removeDoItem = (i: number) =>
-    setSoulDoList((l) => l.filter((_, j) => j !== i))
-  const updateDoItem = (i: number, val: string) =>
-    setSoulDoList((l) => l.map((x, j) => (j === i ? val : x)))
+  const addDoItem = () => setSoulDoList((l) => [...l, { id: crypto.randomUUID(), value: '' }])
+  const removeDoItem = (id: string) =>
+    setSoulDoList((l) => l.filter((item) => item.id !== id))
+  const updateDoItem = (id: string, val: string) =>
+    setSoulDoList((l) => l.map((item) => (item.id === id ? { ...item, value: val } : item)))
 
-  const addDonotItem = () => setSoulDonotList((l) => [...l, ''])
-  const removeDonotItem = (i: number) =>
-    setSoulDonotList((l) => l.filter((_, j) => j !== i))
-  const updateDonotItem = (i: number, val: string) =>
-    setSoulDonotList((l) => l.map((x, j) => (j === i ? val : x)))
+  const addDonotItem = () => setSoulDonotList((l) => [...l, { id: crypto.randomUUID(), value: '' }])
+  const removeDonotItem = (id: string) =>
+    setSoulDonotList((l) => l.filter((item) => item.id !== id))
+  const updateDonotItem = (id: string, val: string) =>
+    setSoulDonotList((l) => l.map((item) => (item.id === id ? { ...item, value: val } : item)))
 
   // ---------------------------------------------------------------------------
   // Derived state
@@ -458,14 +459,14 @@ export default function SoulEditorPage({
             </label>
             {soulDoList.map((item, i) => (
               <div
-                key={i}
+                key={item.id}
                 style={{ display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center' }}
               >
                 <input
                   ref={i === soulDoList.length - 1 ? newDoRef : undefined}
                   type="text"
-                  value={item}
-                  onChange={(e) => updateDoItem(i, e.target.value)}
+                  value={item.value}
+                  onChange={(e) => updateDoItem(item.id, e.target.value)}
                   placeholder="e.g. verify account before discussing billing"
                   style={{
                     flex: 1,
@@ -480,7 +481,7 @@ export default function SoulEditorPage({
                   }}
                 />
                 <button
-                  onClick={() => removeDoItem(i)}
+                  onClick={() => removeDoItem(item.id)}
                   aria-label={`Remove do item ${i + 1}`}
                   style={{
                     minWidth: '44px',
@@ -542,14 +543,14 @@ export default function SoulEditorPage({
             </label>
             {soulDonotList.map((item, i) => (
               <div
-                key={i}
+                key={item.id}
                 style={{ display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center' }}
               >
                 <input
                   ref={i === soulDonotList.length - 1 ? newDonotRef : undefined}
                   type="text"
-                  value={item}
-                  onChange={(e) => updateDonotItem(i, e.target.value)}
+                  value={item.value}
+                  onChange={(e) => updateDonotItem(item.id, e.target.value)}
                   placeholder="e.g. promise refunds without manager approval"
                   style={{
                     flex: 1,
@@ -564,7 +565,7 @@ export default function SoulEditorPage({
                   }}
                 />
                 <button
-                  onClick={() => removeDonotItem(i)}
+                  onClick={() => removeDonotItem(item.id)}
                   aria-label={`Remove do-not item ${i + 1}`}
                   style={{
                     minWidth: '44px',
