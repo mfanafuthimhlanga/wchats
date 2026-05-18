@@ -24,10 +24,13 @@ export default function CreateAgentPage() {
 
   // Polling ref — cleaned up on unmount and on success/error
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const isMountedRef = useRef(true)
+  const agentIdRef = useRef<string | null>(null)
 
   // Cleanup polling on unmount (T-04.2-04-02 resource exhaustion guard)
   useEffect(() => {
     return () => {
+      isMountedRef.current = false
       if (pollRef.current) clearInterval(pollRef.current)
     }
   }, [])
@@ -76,6 +79,7 @@ export default function CreateAgentPage() {
         await res.json()
       const createdAgentId = data.agent_id
       setAgentId(createdAgentId)
+      agentIdRef.current = createdAgentId
       setStatus('pending')
 
       // Poll GET /api/v1/agents/{id} every 2s — polling only, not SSE (see RESEARCH Pitfall 4)
@@ -84,18 +88,22 @@ export default function CreateAgentPage() {
           const pollToken = await getToken()
           if (!pollToken) return
 
-          const pollRes = await fetch(`${apiBase}/api/v1/agents/${createdAgentId}`, {
+          const currentAgentId = agentIdRef.current
+          if (!currentAgentId) return
+
+          const pollRes = await fetch(`${apiBase}/api/v1/agents/${currentAgentId}`, {
             headers: { Authorization: `Bearer ${pollToken}` },
           })
           if (!pollRes.ok) return
 
           const pollData: { status: string } = await pollRes.json()
+          if (!isMountedRef.current) return
           setStatus(pollData.status)
 
           if (pollData.status === 'ready') {
             clearInterval(pollRef.current!)
             pollRef.current = null
-            router.push('/agents/' + createdAgentId)
+            router.push('/agents/' + currentAgentId)
           } else if (pollData.status === 'error') {
             clearInterval(pollRef.current!)
             pollRef.current = null
