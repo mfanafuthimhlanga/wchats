@@ -155,14 +155,21 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 
 | Wave | Plan | Objective | Status |
 |------|------|-----------|--------|
-| Wave 1 | 04-01 | Schema foundation: control DB 0004 soul fields + tenant DB 0003 conversations (R-01 fix) + Settings JWT_SECRET/SMTP_* + pyproject pins (claude-agent-sdk, python-jose) | ○ Pending |
-| Wave 2 | 04-02 | Agent domain core: build_system_prompt assembler + four MCP tools (retrieve, lookup_structured allowlist, escalate_to_human, clarify) + build_tool_server factory + 11 unit tests | ○ Pending |
-| Wave 3 | 04-03 | run_agent_turn Celery task (asyncio.run bridge, R-02 sdk_session_id capture, idempotency, citation extraction, escalation routing) + escalation SMTP helper + celery_app include + 6 unit tests | ○ Pending |
+| Wave 1 | 04-01 | Schema foundation: control DB 0004 soul fields + tenant DB 0003 conversations (R-01 fix) + Settings JWT_SECRET/SMTP_* + pyproject pins (claude-agent-sdk, python-jose) | ✓ Complete |
+| Wave 2 | 04-02 | Agent domain core: build_system_prompt assembler + four MCP tools (retrieve, lookup_structured allowlist, escalate_to_human, clarify) + build_tool_server factory + 11 unit tests | ✓ Complete |
+| Wave 3 | 04-03 | run_agent_turn Celery task (asyncio.run bridge, R-02 sdk_session_id capture, idempotency, citation extraction, escalation routing) + escalation SMTP helper + celery_app include + 6 unit tests | ✓ Complete |
 | Wave 4 | 04-04 | FastAPI routes: agent_chat (POST chat + GET conversations) + widget (config + chat + PUBLIC SSE per R-03) + JWT + rate limit + CORS + 25 unit tests | ✓ Complete |
-| Wave 5 *(parallel)* | 04-05 | Preact widget — apps/widget/ scaffold + components + Design G CSS + Vite IIFE build + zlib bundle-size gate ≤20kb | ○ Pending |
-| Wave 5 *(parallel)* | 04-06 | Next.js admin Soul Editor + PATCH /agents/{id} backend + AgentSoulUpdate schema + 6 unit tests | ○ Pending |
-| Wave 6 | 04-07 | Integration test (guarded) + eval harness (judge.py + run_evals.py covering D1-D8) + 20 scenario JSON files (6 golden/5 edge/5 adversarial/4 oos) + Bella Vista Coffee SQL fixture | ○ Pending |
-| Wave 7 *(blocked on 04-05, 04-06, 04-07)* | 04-08 | Static demo page + Bash & PowerShell orchestrator scripts + guarded E2E test + HUMAN CHECKPOINT (visual demo verification) | ○ Pending |
+| Wave 5 *(parallel)* | 04-05 | Preact widget — apps/widget/ scaffold + components + Design G CSS + Vite IIFE build + zlib bundle-size gate ≤20kb | ✓ Complete |
+| Wave 5 *(parallel)* | 04-06 | Next.js admin Soul Editor + PATCH /agents/{id} backend + AgentSoulUpdate schema + 6 unit tests | ✓ Complete |
+| Wave 6 | 04-07 | Integration test (guarded) + eval harness (judge.py + run_evals.py covering D1-D8) + 20 scenario JSON files (6 golden/5 edge/5 adversarial/4 oos) + eval SQL fixture | ✓ Complete |
+| ~~Wave 7~~ | ~~04-08~~ | ~~Static demo page + Bash & PowerShell orchestrator scripts + guarded E2E test~~ | ✗ Superseded by 04-09 + 04-10 |
+| Wave 8 | 04-09 | Demo cleanup: rename eval fixture (Bella Vista → Acme Consulting); replace demo page with sign-in redirect; add guarded E2E test; generic provision_agent scripts; delete old demo scripts | ○ Pending |
+| Wave 9 *(blocked on 04-09)* | 04-10 | Clerk full platform auth: PyJWT JWKS FastAPI middleware; dual-auth (Bearer + X-API-Key fallback); svix webhook provisioning; /me/provision self-heal; @clerk/nextjs admin UI (middleware + layout + sign-in + soul editor migration); CORS Authorization+PATCH | ○ Pending |
+| Phase 4.2 Wave 1 | 04.2-01 | Frontend foundation: fix globals.css tokens (--bg, status colors, shadows); make ''/'' public; sign-up page; TopNav component; nested app/agents/layout.tsx | ○ Pending |
+| Phase 4.2 Wave 1 *(parallel)* | 04.2-02 | Backend foundation: Alembic 0009 widget_config column + Agent ORM field; 4 Pydantic schemas (AgentListResponse, WidgetColorsSchema, WidgetTypographySchema, WidgetConfigUpdate); 3 new routes (GET /agents list, GET/POST /agents/{id}/widget-config); 7 unit tests | ○ Pending |
+| Phase 4.2 Wave 2 *(blocked on 04.2-01 + 04.2-02)* | 04.2-03 | Landing page (/) server component + dashboard (/agents) client component listing agents via GET /api/v1/agents + AgentCard component | ○ Pending |
+| Phase 4.2 Wave 2 *(blocked on 04.2-01)* | 04.2-04 | Agent journey view (/agents/[id]) with JourneyStepper + StepSubtaskCard + create-agent wizard (polling) + ingest/eval stubs | ○ Pending |
+| Phase 4.2 Wave 2 *(blocked on 04.2-01 + 04.2-02)* | 04.2-05 | Deploy page (/agents/[id]/deploy): Embed Code tab + full Customise Widget tab (3-column panel: appearance + 9 color pickers + typography + live preview) wired to widget-config endpoints | ○ Pending |
 
 **Cross-cutting constraints:**
 - claude-agent-sdk==0.1.81 PINNED (do not upgrade — 0.2.82 is forbidden per CLAUDE.md)
