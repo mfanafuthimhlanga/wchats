@@ -144,3 +144,4 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [04.1-04] F6 AgentSoulUpdate field validators strip injection markers from soul_voice, soul_role, soul_do_list, soul_donot_list at admit-time via sanitize_chunk_text
 - [04.1-04] TDD: 2 RED tests failed; GREEN passed all 19; no REFACTOR needed
 - Last session: 2026-05-18 — completed 04.1-04-PLAN.md (F5+F6 config/schema hardening) — 3 commits: 4db7220 + 4b0e73d + 281b8fb
+- [TODO-RET-01] F7 / filters enforcement gate: retrieve_tool filters field must have allowlisted-column enforcement before being wired to LLM output. Gate: M5 phase planning MUST resolve this before activating filters in retrieve_tool. Logged Phase 4.1.
