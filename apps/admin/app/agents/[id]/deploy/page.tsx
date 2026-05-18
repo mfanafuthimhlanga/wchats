@@ -341,7 +341,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
       >
         <button
           role="tab"
+          id="tab-embed"
           aria-selected={activeTab === 'embed'}
+          aria-controls="panel-embed"
           onClick={() => setActiveTab('embed')}
           style={{
             padding: '10px 20px',
@@ -359,7 +361,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
         </button>
         <button
           role="tab"
+          id="tab-design"
           aria-selected={activeTab === 'design'}
+          aria-controls="panel-design"
           onClick={() => setActiveTab('design')}
           style={{
             padding: '10px 20px',
@@ -380,6 +384,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
       {/* Tab content */}
       {activeTab === 'embed' && (
         <div
+          role="tabpanel"
+          id="panel-embed"
+          aria-labelledby="tab-embed"
           style={{
             background: 'var(--surface-2)',
             border: '1px solid var(--border-soft)',
@@ -427,7 +434,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
       )}
 
       {activeTab === 'design' && (
-        <div style={{ padding: '0' }}>
+        <div role="tabpanel" id="panel-design" aria-labelledby="tab-design" style={{ padding: '0' }}>
           {/* 3-column design panel */}
           <div
             style={{
