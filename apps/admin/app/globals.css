@@ -47,8 +47,11 @@
   --red-bg: #FEF2F2;
   --green: #166534;
   --green-bg: #F0FDF4;
+  --green-solid: #16A34A;
   --amber: #92400E;
   --amber-bg: #FEF3C7;
+  --orange: #EA580C;
+  --orange-dim: rgba(234, 88, 12, 0.10);
 
   /* Typography */
   --font-sans: 'Inter', system-ui, sans-serif;
@@ -56,9 +59,9 @@
 }
 
 @keyframes pulse-ring {
-  0%   { box-shadow: 0 0 0 0   rgba(123, 28, 58, 0.45); }
-  60%  { box-shadow: 0 0 0 7px rgba(123, 28, 58, 0);    }
-  100% { box-shadow: 0 0 0 0   rgba(123, 28, 58, 0);    }
+  0%   { box-shadow: 0 0 0 0   rgba(234, 88, 12, 0.50); }
+  60%  { box-shadow: 0 0 0 8px rgba(234, 88, 12, 0);    }
+  100% { box-shadow: 0 0 0 0   rgba(234, 88, 12, 0);    }
 }
 
 @keyframes blink-dot {

@@ -12,7 +12,7 @@ const STEPS = [
 type StepState = 'done' | 'active' | 'upcoming'
 
 function stepState(i: number, active: number): StepState {
-  if (i < active)  return 'done'
+  if (i < active)   return 'done'
   if (i === active) return 'active'
   return 'upcoming'
 }
@@ -28,7 +28,7 @@ export function HeroSteps() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
       {STEPS.map((step, i) => {
-        const state = stepState(i, active)
+        const state      = stepState(i, active)
         const isDone     = state === 'done'
         const isActive   = state === 'active'
         const isUpcoming = state === 'upcoming'
@@ -41,13 +41,13 @@ export function HeroSteps() {
                 padding: '16px 18px',
                 background: isUpcoming ? 'var(--surface-2)' : 'var(--surface-1)',
                 border: isActive
-                  ? '1.5px solid var(--accent)'
+                  ? '1.5px solid var(--orange)'
                   : isDone
-                  ? '1px solid var(--border)'
+                  ? '1px solid var(--green-solid)'
                   : '1px solid var(--border-soft)',
                 borderRadius: 'var(--radius-xs)',
                 boxShadow: isActive
-                  ? 'var(--shadow-lift), 0 0 0 3px var(--accent-dim)'
+                  ? 'var(--shadow-lift), 0 0 0 3px var(--orange-dim)'
                   : isDone
                   ? 'var(--shadow-card)'
                   : 'none',
@@ -72,13 +72,13 @@ export function HeroSteps() {
                   fontSize: '12px',
                   transition: 'background 0.5s ease, color 0.5s ease, border-color 0.5s ease',
                   ...(isDone ? {
-                    background: 'var(--accent)',
+                    background: 'var(--green-solid)',
                     color: '#fff',
                     border: 'none',
                   } : isActive ? {
-                    background: 'var(--accent-dim)',
-                    color: 'var(--accent)',
-                    border: '2px solid var(--accent)',
+                    background: 'var(--orange-dim)',
+                    color: 'var(--orange)',
+                    border: '2px solid var(--orange)',
                     animation: 'pulse-ring 1.6s ease-out infinite',
                   } : {
                     background: 'var(--surface-3)',
@@ -102,7 +102,7 @@ export function HeroSteps() {
                 </div>
                 <div style={{
                   fontSize: '12px',
-                  color: isActive ? 'var(--text-2)' : 'var(--text-3)',
+                  color: isActive ? 'var(--orange)' : isDone ? 'var(--green-solid)' : 'var(--text-3)',
                   marginTop: '2px',
                   transition: 'color 0.5s ease',
                 }}>
@@ -110,13 +110,13 @@ export function HeroSteps() {
                 </div>
               </div>
 
-              {/* Live dot on active step */}
+              {/* Live dot — orange on active */}
               {isActive && (
                 <div style={{
                   width: '7px',
                   height: '7px',
                   borderRadius: '50%',
-                  background: 'var(--accent)',
+                  background: 'var(--orange)',
                   flexShrink: 0,
                   animation: 'blink-dot 1.1s ease-in-out infinite',
                 }} />
@@ -129,7 +129,7 @@ export function HeroSteps() {
                 marginLeft: '31px',
                 width: '2px',
                 height: '12px',
-                background: isDone ? 'var(--accent)' : 'var(--border-soft)',
+                background: isDone ? 'var(--green-solid)' : 'var(--border-soft)',
                 transition: 'background 0.5s ease',
                 borderRadius: '1px',
               }} />
