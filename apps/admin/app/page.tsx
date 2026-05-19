@@ -58,7 +58,7 @@ export default function LandingPage() {
             alt="Chats logo"
             style={{ width: '30px', height: '30px', objectFit: 'contain' }}
           />
-          <span style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-1)' }}>
+          <span style={{ fontWeight: 700, fontSize: '19px', color: 'var(--text-1)' }}>
             Chats
           </span>
         </div>
