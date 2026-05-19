@@ -4,3 +4,6 @@ node_modules/
 .env.local
 .env.development.local
 next-env.d.ts
+
+# clerk configuration (can include secrets)
+/.clerk/

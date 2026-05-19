@@ -55,3 +55,21 @@ node_modules/
 
 # Eval captured responses — may contain real tenant data
 apps/api/tests/evals/responses/
+
+# Dev server logs (root-level, generated at runtime)
+*.log
+*_err.log
+
+# Celery runtime state
+apps/api/celerybeat-schedule
+
+# TypeScript build info
+apps/admin/tsconfig.tsbuildinfo
+
+# Git worktree / clone scratch dirs
+.clone/
+
+# Claude Code session/worktree data
+.claude/worktrees/
+.claude/projects/
+.claude/todos/
