@@ -109,11 +109,11 @@ from app.api.v1 import agents, documents, health, jobs, tenants, query, agent_ch
 # webhooks router registered FIRST — ensures /webhooks/clerk and /me/provision are matched
 # before any wildcard route patterns
 app.include_router(webhooks.router)
-app.include_router(tenants.router)
-app.include_router(agents.router)
-app.include_router(documents.router)
-app.include_router(jobs.router)
 app.include_router(health.router)
-app.include_router(query.router)
-app.include_router(agent_chat.router)
 app.include_router(widget.router)
+app.include_router(tenants.router, prefix="/api/v1")
+app.include_router(agents.router, prefix="/api/v1")
+app.include_router(documents.router, prefix="/api/v1")
+app.include_router(jobs.router, prefix="/api/v1")
+app.include_router(query.router, prefix="/api/v1")
+app.include_router(agent_chat.router, prefix="/api/v1")

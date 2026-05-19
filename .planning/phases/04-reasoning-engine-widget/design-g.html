@@ -1,0 +1,1812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Design G — Parchment &amp; Wine | Veridian M4 Mockup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    /* ===================================================
+       DESIGN G — PARCHMENT & WINE
+       Hybrid: Design D structure/layout/fonts
+                + Design F colors/accents/backgrounds
+       Enterprise-clean IBM-Carbon skeleton in a warm
+       burgundy-and-alabaster palette.
+       =================================================== */
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      /* Surfaces — from Design F */
+      --bg:              #FDF9F5;
+      --surface-1:       #FFFCF9;
+      --surface-2:       #F7F0EA;
+      --surface-3:       #EDE3D8;
+      --border:          #D9CCBE;
+      --border-soft:     #EDE3D8;
+      --border-hard:     #B8906A;
+
+      /* Primary accent — wine from Design F (replaces cobalt from D) */
+      --accent:          #7B1C3A;
+      --accent-hover:    #5E1229;
+      --accent-deep:     #3D0B1F;
+      --accent-dim:      rgba(123,28,58,0.08);
+
+      /* Secondary — gold from Design F */
+      --gold:            #B8860B;
+      --gold-light:      #FEF9E7;
+      --gold-soft:       #E8D8A6;
+
+      /* Status */
+      --amber:           #92400E;
+      --amber-bg:        #FEF3C7;
+      --red:             #B91C1C;
+      --red-bg:          #FEF2F2;
+      --green:           #166534;
+
+      /* Text — from Design F */
+      --text-1:          #1A0A0F;
+      --text-2:          #4A2030;
+      --text-3:          #8A6060;
+      --text-4:          #C4A0A0;
+
+      /* Typography — from Design D */
+      --font-sans:       "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+      --font-mono:       "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+      /* Radius — from Design D (sharp/rectangular) */
+      --radius-xs:       8px;
+      --radius-sm:       14px;
+      --radius-md:       20px;
+
+      /* Shadows — warm-tinted (D structure, F shadow color) */
+      --shadow-card:     0 1px 2px rgba(74,32,48,0.04), 0 4px 12px rgba(74,32,48,0.06);
+      --shadow-lift:     0 4px 8px rgba(74,32,48,0.04), 0 16px 32px rgba(74,32,48,0.08);
+      --shadow-focus:    0 0 0 3px rgba(123,28,58,0.18);
+    }
+
+    html {
+      background: #F4EDE5;
+      font-family: var(--font-sans);
+      color: var(--text-1);
+      font-feature-settings: "ss01", "cv11";
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    body { min-height: 100vh; }
+
+    /* ---- Page Layout (from Design D) ---- */
+    .page-wrapper { max-width: 1400px; margin: 0 auto; padding: 56px 32px 96px; }
+    .section { margin-bottom: 96px; }
+
+    /* Section label — D structure, wine accent line */
+    .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-3);
+      margin-bottom: 32px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .section-label::before {
+      content: '';
+      width: 24px;
+      height: 1px;
+      background: var(--accent);
+    }
+    .section-label::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border-soft);
+    }
+
+    .divider { height: 1px; background: var(--border-soft); margin: 56px 0; }
+
+    /* ===================================================
+       PAGE HEADER — Design D layout, F palette
+       =================================================== */
+    .page-header {
+      padding: 0 0 72px;
+      border-bottom: 1px solid var(--border-soft);
+      margin-bottom: 56px;
+    }
+    .design-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 12px;
+      border-radius: var(--radius-xs);
+      background: var(--accent);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 28px;
+    }
+    .design-tag::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      background: rgba(255,255,255,0.5);
+      border-radius: 0;
+    }
+    .page-header h1 {
+      font-size: 52px;
+      font-weight: 800;
+      color: var(--text-1);
+      letter-spacing: -0.028em;
+      line-height: 1.05;
+      margin-bottom: 16px;
+    }
+    .page-header h1 .accent-word { color: var(--accent); }
+    .page-header p {
+      font-size: 17px;
+      color: var(--text-2);
+      max-width: 680px;
+      line-height: 1.55;
+      letter-spacing: -0.005em;
+    }
+    .page-header-meta {
+      display: flex;
+      gap: 32px;
+      margin-top: 32px;
+      padding-top: 24px;
+      border-top: 1px solid var(--border-soft);
+    }
+    .header-meta-item { display: flex; flex-direction: column; gap: 4px; }
+    .header-meta-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-3);
+    }
+    .header-meta-value {
+      font-size: 14px;
+      color: var(--text-1);
+      font-family: var(--font-mono);
+      font-weight: 500;
+    }
+
+    /* ===================================================
+       SECTION 1: WIDGET
+       =================================================== */
+    .widget-showcase {
+      display: grid;
+      grid-template-columns: 380px 380px 1fr;
+      gap: 40px;
+      align-items: flex-start;
+    }
+    @media (max-width: 1200px) { .widget-showcase { grid-template-columns: 380px 380px; } }
+    @media (max-width: 820px)  { .widget-showcase { grid-template-columns: 380px; } }
+
+    /* State labels — D style, wine dot */
+    .widget-state-block { display: flex; flex-direction: column; gap: 14px; }
+    .widget-state-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-3);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .widget-state-dot { width: 6px; height: 6px; background: var(--accent); }
+    .widget-state-dot.gold { background: var(--gold); }
+
+    /* Widget frame — D structure */
+    .widget-frame {
+      width: 380px;
+      height: 600px;
+      background: var(--surface-1);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: var(--shadow-card);
+      flex-shrink: 0;
+    }
+
+    /* Disclosure bar — D layout (space-between), F warm surface */
+    .widget-disclosure {
+      height: 32px;
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      flex-shrink: 0;
+    }
+    .disclosure-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .disclosure-rule {
+      width: 10px;
+      height: 1px;
+      background: var(--gold);
+    }
+    .widget-disclosure .disc-text {
+      font-size: 11px;
+      color: var(--text-2);
+      font-weight: 500;
+      letter-spacing: 0.02em;
+    }
+    .disclosure-right {
+      font-size: 10px;
+      color: var(--text-3);
+      font-family: var(--font-mono);
+      font-weight: 500;
+      letter-spacing: 0.04em;
+    }
+
+    /* Message area */
+    .widget-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      background: var(--surface-1);
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+
+    /* Agent cluster — D layout: name + AGENT pill above message */
+    .agent-cluster {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-width: 88%;
+    }
+    .agent-name-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent);
+      letter-spacing: 0.04em;
+      padding-left: 2px;
+    }
+    .agent-badge {
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      color: var(--text-3);
+      padding: 2px 6px;
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-xs);
+      background: var(--surface-2);
+    }
+
+    /* Agent bubble — D geometry: white card, 3px left wine border */
+    .bubble-agent {
+      background: var(--surface-1);
+      color: var(--text-1);
+      border: 1px solid var(--border-soft);
+      border-left: 3px solid var(--accent);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      font-size: 14px;
+      line-height: 1.6;
+      box-shadow: 0 1px 2px rgba(74,32,48,0.04);
+    }
+    .bubble-agent strong { font-weight: 600; color: var(--text-1); }
+
+    /* User bubble — D geometry: rectangular, 4px radius, wine fill */
+    .user-row { display: flex; justify-content: flex-end; }
+    .user-meta {
+      font-size: 10px;
+      color: var(--text-4);
+      font-family: var(--font-mono);
+      text-align: right;
+      margin-top: 4px;
+      padding-right: 2px;
+    }
+    .bubble-user {
+      background: var(--accent);
+      color: #FFFFFF;
+      padding: 10px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      line-height: 1.5;
+      font-weight: 500;
+      max-width: 80%;
+      box-shadow: 0 1px 2px rgba(123,28,58,0.2);
+    }
+
+    /* Citation — D layout: separate bordered row with left wine rule */
+    .citation-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: var(--radius-sm);
+      margin-top: 4px;
+    }
+    .citation-icon-svg {
+      flex-shrink: 0;
+      color: var(--accent);
+    }
+    .citation-text {
+      font-size: 12px;
+      color: var(--text-2);
+      flex: 1;
+    }
+    .citation-text strong { color: var(--accent-deep); font-weight: 600; }
+    .citation-action {
+      font-size: 11px;
+      color: var(--accent);
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+
+    /* Typing indicator — D geometry, wine dots */
+    .typing-cluster {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-width: 88%;
+    }
+    .typing-bubble {
+      background: var(--surface-1);
+      border: 1px solid var(--border-soft);
+      border-left: 3px solid var(--accent);
+      border-radius: var(--radius-sm);
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      width: fit-content;
+      box-shadow: 0 1px 2px rgba(74,32,48,0.04);
+    }
+    .dot {
+      width: 6px;
+      height: 6px;
+      background: var(--accent);
+      border-radius: 50%;
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    .dot:nth-child(2) { animation-delay: 0.2s; }
+    .dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes pulse {
+      0%, 60%, 100% { opacity: 0.25; transform: scale(0.85); }
+      30% { opacity: 1; transform: scale(1); }
+    }
+
+    /* Tool call label — D: dashed border box, blinking gold dot */
+    .tool-call-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--text-3);
+      font-family: var(--font-mono);
+      padding: 6px 10px;
+      background: var(--surface-2);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-xs);
+      width: fit-content;
+    }
+    .tool-call-label::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      background: var(--gold);
+      border-radius: 50%;
+      animation: blink 1.2s infinite;
+      flex-shrink: 0;
+    }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* Escalation panel — D structure (left amber rule), warm F palette */
+    .escalation-panel {
+      margin: 0 18px 18px;
+      background: var(--gold-light);
+      border: 1px solid var(--gold-soft);
+      border-left: 3px solid var(--gold);
+      border-radius: var(--radius-sm);
+      padding: 16px;
+      flex-shrink: 0;
+    }
+    .escalation-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .escalation-icon-box {
+      width: 22px;
+      height: 22px;
+      background: var(--gold);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 700;
+      border-radius: var(--radius-xs);
+      flex-shrink: 0;
+    }
+    .escalation-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--amber);
+      letter-spacing: -0.005em;
+    }
+    .escalation-status {
+      margin-left: auto;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      color: var(--gold);
+      text-transform: uppercase;
+      padding: 2px 6px;
+      background: rgba(184,134,11,0.1);
+      border-radius: var(--radius-xs);
+    }
+    .escalation-msg {
+      font-size: 12.5px;
+      color: var(--text-2);
+      line-height: 1.55;
+      margin-bottom: 14px;
+    }
+    .escalation-form { display: flex; flex-direction: column; gap: 8px; }
+    .esc-label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-3);
+      margin-bottom: -2px;
+    }
+    .esc-input {
+      background: var(--surface-1);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-xs);
+      padding: 9px 12px;
+      font-size: 13px;
+      color: var(--text-1);
+      outline: none;
+      font-family: var(--font-sans);
+      width: 100%;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .esc-input:focus { border-color: var(--accent); box-shadow: var(--shadow-focus); }
+    .esc-btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius-xs);
+      padding: 9px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: var(--font-sans);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      transition: background 0.15s;
+      margin-top: 4px;
+    }
+    .esc-btn:hover { background: var(--accent-hover); }
+
+    /* Input bar — D layout */
+    .widget-input-bar {
+      height: 64px;
+      border-top: 1px solid var(--border);
+      background: var(--surface-1);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 14px;
+      flex-shrink: 0;
+    }
+    .widget-input {
+      flex: 1;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+      font-size: 13px;
+      color: var(--text-1);
+      outline: none;
+      font-family: var(--font-sans);
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .widget-input:focus { border-color: var(--accent); box-shadow: var(--shadow-focus); }
+    .widget-input::placeholder { color: var(--text-4); }
+    .send-btn {
+      width: 36px;
+      height: 36px;
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: background 0.15s;
+    }
+    .send-btn:hover { background: var(--accent-hover); }
+    .send-btn svg { color: #fff; }
+
+    /* Widget spec panel */
+    .widget-panel-info { min-width: 240px; }
+    .widget-panel-info h3 {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-1);
+      margin-bottom: 6px;
+      letter-spacing: -0.01em;
+    }
+    .widget-panel-info p {
+      font-size: 13.5px;
+      color: var(--text-2);
+      line-height: 1.6;
+      margin-bottom: 20px;
+    }
+    .spec-table { width: 100%; border-collapse: collapse; }
+    .spec-table td {
+      padding: 8px 0;
+      font-size: 13px;
+      border-bottom: 1px solid var(--border-soft);
+      vertical-align: top;
+    }
+    .spec-table td:first-child {
+      color: var(--text-3);
+      width: 140px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+    }
+    .spec-table td:last-child { color: var(--text-2); }
+
+    /* ===================================================
+       SECTION 2: SOUL EDITOR — D layout (horizontal tabs), F palette
+       =================================================== */
+    .soul-editor-outer {
+      background: var(--surface-1);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      box-shadow: var(--shadow-card);
+    }
+
+    /* Browser chrome — D topbar style */
+    .editor-topbar {
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      height: 48px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .topbar-dots { display: flex; gap: 6px; }
+    .topbar-dot { width: 11px; height: 11px; border-radius: 50%; }
+    .dot-red    { background: #FF5F57; }
+    .dot-yellow { background: #FFBD2E; }
+    .dot-green  { background: #28C840; }
+    .topbar-breadcrumb {
+      font-size: 13px;
+      color: var(--text-2);
+      margin-left: 8px;
+    }
+    .topbar-breadcrumb .sep { color: var(--text-4); padding: 0 4px; }
+    .topbar-breadcrumb strong { color: var(--accent); font-weight: 600; }
+
+    /* Horizontal tabs — Design D nav pattern */
+    .editor-tabs {
+      display: flex;
+      border-bottom: 1px solid var(--border-soft);
+      background: var(--surface-1);
+      padding: 0 24px;
+      gap: 0;
+    }
+    .editor-tab {
+      padding: 0 20px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-3);
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      letter-spacing: 0.01em;
+      transition: color 0.15s;
+    }
+    .editor-tab:hover { color: var(--text-1); }
+    .editor-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+      font-weight: 600;
+    }
+
+    /* Two-column body: form + preview — from Design D */
+    .editor-body {
+      display: grid;
+      grid-template-columns: 1fr 400px;
+      align-items: flex-start;
+    }
+    @media (max-width: 1100px) { .editor-body { grid-template-columns: 1fr; } }
+
+    .editor-form-panel { padding: 32px 36px; border-right: 1px solid var(--border-soft); }
+
+    .editor-section-header { margin-bottom: 28px; }
+    .editor-section-header h1 {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text-1);
+      letter-spacing: -0.015em;
+      margin-bottom: 4px;
+    }
+    .editor-section-header p { font-size: 13.5px; color: var(--text-3); line-height: 1.5; }
+    .editor-section-header p strong { color: var(--accent); font-weight: 600; }
+
+    .form-group { margin-bottom: 22px; }
+    .form-label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-3);
+      margin-bottom: 8px;
+    }
+    .form-input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xs);
+      padding: 10px 14px;
+      font-size: 14px;
+      color: var(--text-1);
+      outline: none;
+      font-family: var(--font-sans);
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .form-input:focus { border-color: var(--accent); box-shadow: var(--shadow-focus); }
+    .form-input.filled { border-color: rgba(123,28,58,0.3); }
+
+    .form-select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xs);
+      padding: 10px 14px;
+      font-size: 14px;
+      color: var(--text-1);
+      outline: none;
+      font-family: var(--font-sans);
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238A6060' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 14px center;
+    }
+
+    .form-textarea {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xs);
+      padding: 10px 14px;
+      font-size: 14px;
+      color: var(--text-1);
+      outline: none;
+      font-family: var(--font-sans);
+      resize: vertical;
+      min-height: 80px;
+      line-height: 1.6;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .form-textarea:focus { border-color: var(--accent); box-shadow: var(--shadow-focus); }
+
+    /* Dynamic list — D layout */
+    .list-section { margin-bottom: 22px; }
+    .list-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .list-header-left { display: flex; align-items: center; gap: 8px; }
+    .list-title {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-3);
+    }
+    .list-badge {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 2px 7px;
+      border-radius: var(--radius-xs);
+    }
+    .badge-do    { background: rgba(22,101,52,0.08);  color: var(--green);  border: 1px solid rgba(22,101,52,0.15); }
+    .badge-donot { background: rgba(185,28,28,0.08);  color: var(--red);    border: 1px solid rgba(185,28,28,0.15); }
+
+    .list-add-btn {
+      font-size: 12px;
+      color: var(--accent);
+      background: var(--accent-dim);
+      border: 1px solid rgba(123,28,58,0.2);
+      border-radius: var(--radius-xs);
+      padding: 4px 10px;
+      cursor: pointer;
+      font-family: var(--font-sans);
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      transition: background 0.15s;
+    }
+    .list-add-btn:hover { background: rgba(123,28,58,0.14); }
+
+    .list-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .list-item-number {
+      width: 20px;
+      font-size: 11px;
+      color: var(--text-4);
+      font-family: var(--font-mono);
+      flex-shrink: 0;
+      text-align: right;
+    }
+    .list-item-input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xs);
+      padding: 8px 12px;
+      font-size: 13px;
+      color: var(--text-1);
+      outline: none;
+      font-family: var(--font-sans);
+      transition: border-color 0.15s;
+    }
+    .list-item-input:focus { border-color: var(--accent); }
+
+    .list-remove-btn {
+      width: 28px;
+      height: 28px;
+      background: none;
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-xs);
+      color: var(--text-4);
+      cursor: pointer;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .list-remove-btn:hover { border-color: var(--red); color: var(--red); background: rgba(185,28,28,0.04); }
+
+    /* Save section */
+    .save-section {
+      padding-top: 20px;
+      border-top: 1px solid var(--border-soft);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .save-btn {
+      padding: 10px 28px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius-xs);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: var(--font-sans);
+      letter-spacing: 0.01em;
+      transition: background 0.15s;
+    }
+    .save-btn:hover { background: var(--accent-hover); }
+    .save-hint { font-size: 12px; color: var(--text-3); }
+
+    /* Live preview panel — D structure, warm mono palette */
+    .editor-preview-panel { background: var(--bg); }
+    .preview-topbar {
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border-soft);
+      padding: 10px 18px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .preview-status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+    .preview-topbar-title {
+      font-size: 12px;
+      color: var(--text-3);
+      font-family: var(--font-mono);
+      font-weight: 500;
+    }
+    .preview-content {
+      padding: 22px 20px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-2);
+      line-height: 1.75;
+      white-space: pre-wrap;
+      word-break: break-word;
+      min-height: 420px;
+    }
+    .preview-key     { color: var(--accent);       font-weight: 600; }
+    .preview-val     { color: var(--text-1);        }
+    .preview-string  { color: var(--amber);         }
+    .preview-comment { color: var(--text-4);        font-style: italic; }
+    .preview-item    { color: var(--text-2);        }
+
+    /* ===================================================
+       SECTION 3: DEMO SITE — D enterprise layout, F warm palette
+       =================================================== */
+    .demo-site {
+      background: var(--surface-1);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      box-shadow: var(--shadow-lift);
+    }
+
+    /* Nav — D structure, warm palette */
+    .demo-nav {
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border);
+      padding: 0 48px;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .demo-logo {
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--text-1);
+      letter-spacing: -0.02em;
+    }
+    .demo-logo .logo-accent { color: var(--accent); }
+    .demo-nav-links { display: flex; gap: 28px; align-items: center; }
+    .demo-nav-link {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-3);
+      text-decoration: none;
+      letter-spacing: 0.01em;
+    }
+    .demo-nav-link:hover { color: var(--text-1); }
+    .demo-nav-cta {
+      padding: 7px 16px;
+      background: var(--accent);
+      color: #fff;
+      border-radius: var(--radius-xs);
+      font-size: 13px;
+      font-weight: 600;
+      text-decoration: none;
+      letter-spacing: 0.02em;
+    }
+
+    /* Hero — D split layout (left text, right widget), warm background */
+    .demo-hero {
+      display: grid;
+      grid-template-columns: 1fr 420px;
+      align-items: center;
+      gap: 56px;
+      padding: 72px 48px;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border-soft);
+    }
+
+    .demo-hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 12px;
+      background: var(--accent-dim);
+      border: 1px solid rgba(123,28,58,0.2);
+      border-radius: var(--radius-xs);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--accent);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 24px;
+    }
+    .demo-hero-badge::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      background: var(--accent);
+      animation: blink 2s infinite;
+    }
+
+    .demo-hero-headline {
+      font-size: 44px;
+      font-weight: 800;
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+      color: var(--text-1);
+      margin-bottom: 20px;
+    }
+    .demo-hero-headline .hl-accent { color: var(--accent); }
+
+    .demo-hero-sub {
+      font-size: 17px;
+      color: var(--text-2);
+      line-height: 1.65;
+      margin-bottom: 36px;
+      max-width: 460px;
+    }
+
+    .demo-hero-ctas { display: flex; gap: 12px; }
+    .cta-primary {
+      padding: 12px 24px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius-xs);
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: var(--font-sans);
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      letter-spacing: 0.01em;
+      transition: background 0.15s;
+    }
+    .cta-primary:hover { background: var(--accent-hover); }
+    .cta-secondary {
+      padding: 12px 24px;
+      background: transparent;
+      color: var(--text-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xs);
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: var(--font-sans);
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .cta-secondary:hover { border-color: var(--border-hard); color: var(--text-1); }
+
+    /* Widget embed in demo */
+    .demo-widget-wrap { position: relative; }
+    .demo-widget-card {
+      width: 380px;
+      height: 520px;
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      box-shadow: var(--shadow-lift);
+    }
+
+    /* Mini widget internals */
+    .mini-disc {
+      height: 28px;
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 14px;
+    }
+    .mini-disc-left { display: flex; align-items: center; gap: 6px; }
+    .mini-disc-rule { width: 8px; height: 1px; background: var(--gold); }
+    .mini-disc span { font-size: 10px; color: var(--text-3); font-weight: 500; }
+    .mini-disc-right { font-size: 9px; color: var(--text-4); font-family: var(--font-mono); }
+
+    .mini-messages { padding: 14px; display: flex; flex-direction: column; gap: 12px; height: 380px; overflow: hidden; }
+
+    .mini-agent-cluster { display: flex; flex-direction: column; gap: 4px; max-width: 86%; }
+    .mini-agent-label {
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+      text-transform: uppercase;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .mini-agent-pill {
+      font-size: 8px;
+      padding: 1px 4px;
+      background: var(--surface-2);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-xs);
+      color: var(--text-3);
+      font-weight: 600;
+      letter-spacing: 0.08em;
+    }
+    .mini-bubble-agent {
+      background: var(--surface-1);
+      border: 1px solid var(--border-soft);
+      border-left: 2px solid var(--accent);
+      border-radius: var(--radius-sm);
+      padding: 8px 10px;
+      font-size: 11.5px;
+      color: var(--text-1);
+      line-height: 1.5;
+    }
+    .mini-citation {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-left: 2px solid var(--accent);
+      border-radius: var(--radius-sm);
+      font-size: 9.5px;
+      color: var(--text-3);
+    }
+    .mini-cite-strong { color: var(--accent-deep); font-weight: 600; }
+
+    .mini-user-row { display: flex; justify-content: flex-end; }
+    .mini-bubble-user {
+      background: var(--accent);
+      border-radius: var(--radius-sm);
+      padding: 7px 10px;
+      font-size: 11.5px;
+      color: #fff;
+      font-weight: 500;
+      max-width: 75%;
+    }
+    .mini-typing {
+      background: var(--surface-1);
+      border: 1px solid var(--border-soft);
+      border-left: 2px solid var(--accent);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      width: fit-content;
+    }
+    .mini-dot {
+      width: 5px;
+      height: 5px;
+      background: var(--accent);
+      border-radius: 50%;
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    .mini-dot:nth-child(2) { animation-delay: 0.2s; }
+    .mini-dot:nth-child(3) { animation-delay: 0.4s; }
+
+    .mini-input-bar {
+      height: 52px;
+      border-top: 1px solid var(--border);
+      background: var(--surface-1);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+    }
+    .mini-input {
+      flex: 1;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 7px 10px;
+      font-size: 11px;
+      color: var(--text-4);
+      font-family: var(--font-sans);
+    }
+    .mini-send-btn {
+      width: 28px;
+      height: 28px;
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius-xs);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+
+    /* Metrics strip — D's bordered table grid, warm palette */
+    .demo-metrics {
+      border-top: 1px solid var(--border-soft);
+      background: var(--surface-1);
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+    }
+    .metric-item {
+      padding: 32px 40px;
+      border-right: 1px solid var(--border-soft);
+      text-align: center;
+    }
+    .metric-item:last-child { border-right: none; }
+    .metric-value {
+      font-size: 34px;
+      font-weight: 800;
+      color: var(--accent);
+      letter-spacing: -0.04em;
+      font-family: var(--font-sans);
+      margin-bottom: 6px;
+    }
+    .metric-label { font-size: 13px; color: var(--text-3); line-height: 1.4; }
+
+    /* Trust strip — D's horizontal row, warm palette */
+    .demo-trust {
+      border-top: 1px solid var(--border-soft);
+      background: var(--bg);
+      padding: 40px 48px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 40px;
+    }
+    .trust-item { display: flex; align-items: flex-start; gap: 16px; }
+    .trust-icon-box {
+      width: 40px;
+      height: 40px;
+      background: var(--accent-dim);
+      border: 1px solid rgba(123,28,58,0.15);
+      border-radius: var(--radius-xs);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+      color: var(--accent);
+    }
+    .trust-text h4 {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-1);
+      margin-bottom: 5px;
+      letter-spacing: -0.01em;
+    }
+    .trust-text p { font-size: 13px; color: var(--text-3); line-height: 1.55; }
+
+    /* Footer — D layout */
+    .demo-footer {
+      border-top: 1px solid var(--border-soft);
+      padding: 20px 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--surface-2);
+    }
+    .demo-footer-brand { font-size: 13px; color: var(--text-3); font-family: var(--font-mono); }
+    .demo-footer-links { display: flex; gap: 24px; }
+    .demo-footer-link { font-size: 13px; color: var(--text-3); text-decoration: none; font-weight: 500; }
+    .demo-footer-link:hover { color: var(--accent); }
+  </style>
+</head>
+<body>
+
+<div class="page-wrapper">
+
+  <!-- ===================================================
+       PAGE HEADER
+       =================================================== -->
+  <div class="page-header">
+    <div class="design-tag">&#9679; Design G</div>
+    <h1>Parchment <span class="accent-word">&amp; Wine</span></h1>
+    <p>Hybrid: Design D enterprise structure (Inter, horizontal tabs, left-rule bubbles, rectangular geometry) dressed in Design F's warm alabaster backgrounds, deep burgundy accent, and antique gold secondary.</p>
+    <div class="page-header-meta">
+      <div class="header-meta-item">
+        <span class="header-meta-label">Background</span>
+        <span class="header-meta-value">#FDF9F5</span>
+      </div>
+      <div class="header-meta-item">
+        <span class="header-meta-label">Primary</span>
+        <span class="header-meta-value">#7B1C3A wine</span>
+      </div>
+      <div class="header-meta-item">
+        <span class="header-meta-label">Secondary</span>
+        <span class="header-meta-value">#B8860B gold</span>
+      </div>
+      <div class="header-meta-item">
+        <span class="header-meta-label">Font</span>
+        <span class="header-meta-value">Inter + JetBrains Mono</span>
+      </div>
+      <div class="header-meta-item">
+        <span class="header-meta-label">Bubble</span>
+        <span class="header-meta-value">3px left-rule / 4px rect</span>
+      </div>
+      <div class="header-meta-item">
+        <span class="header-meta-label">Nav</span>
+        <span class="header-meta-value">Horizontal tabs (D)</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================
+       SECTION 1: WIDGET
+       =================================================== -->
+  <div class="section">
+    <div class="section-label">Widget</div>
+
+    <div class="widget-showcase">
+
+      <!-- State 1: Conversation -->
+      <div class="widget-state-block">
+        <div class="widget-state-label">
+          <div class="widget-state-dot"></div>
+          Idle / Conversation
+        </div>
+
+        <div class="widget-frame">
+
+          <!-- Disclosure bar -->
+          <div class="widget-disclosure">
+            <div class="disclosure-left">
+              <div class="disclosure-rule"></div>
+              <span class="disc-text">Powered by AI</span>
+            </div>
+            <span class="disclosure-right">veridian v0</span>
+          </div>
+
+          <!-- Messages -->
+          <div class="widget-messages" role="log" aria-live="polite">
+
+            <!-- Empty state / greeting -->
+            <div class="agent-cluster">
+              <div class="agent-name-label">
+                Luna
+                <span class="agent-badge">AGENT</span>
+              </div>
+              <div class="bubble-agent">
+                Hi! I'm <strong>Luna</strong>. Ask me anything about Bella Vista Coffee &#9749;
+              </div>
+            </div>
+
+            <!-- User message -->
+            <div class="user-row">
+              <div>
+                <div class="bubble-user">Do you have oat milk lattes?</div>
+                <div class="user-meta">You · 10:42</div>
+              </div>
+            </div>
+
+            <!-- Agent response + citation -->
+            <div class="agent-cluster">
+              <div class="agent-name-label">
+                Luna
+                <span class="agent-badge">AGENT</span>
+              </div>
+              <div class="bubble-agent">
+                Yes! We offer oat milk as a dairy-free alternative in all espresso drinks — lattes, cappuccinos, and flat whites. Our house oat milk latte is a double-shot with steamed Oatly. Flavour syrups (vanilla, caramel, hazelnut) available on request.
+              </div>
+              <div class="citation-row">
+                <svg class="citation-icon-svg" width="14" height="14" fill="none" viewBox="0 0 24 24">
+                  <path d="M9 12h6M9 16h6M7 8h10M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+                </svg>
+                <span class="citation-text">Based on: <strong>Menu &amp; Specials, Section 2.3</strong></span>
+                <span class="citation-action">View</span>
+              </div>
+            </div>
+
+            <!-- User follow-up -->
+            <div class="user-row">
+              <div>
+                <div class="bubble-user">What sizes do you have?</div>
+                <div class="user-meta">You · 10:43</div>
+              </div>
+            </div>
+
+            <!-- Typing indicator + tool call -->
+            <div class="typing-cluster">
+              <div class="agent-name-label">
+                Luna
+                <span class="agent-badge">AGENT</span>
+              </div>
+              <div class="typing-bubble">
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+              </div>
+              <div class="tool-call-label">retrieve("latte sizes available")</div>
+            </div>
+
+          </div>
+
+          <!-- Input bar -->
+          <div class="widget-input-bar">
+            <input class="widget-input" type="text" placeholder="Ask a question..." aria-label="Message" disabled>
+            <button class="send-btn" disabled style="opacity:0.45;" aria-label="Send message">
+              <svg width="15" height="15" fill="none" viewBox="0 0 24 24">
+                <path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- State 2: Escalated -->
+      <div class="widget-state-block">
+        <div class="widget-state-label">
+          <div class="widget-state-dot gold"></div>
+          Escalated state
+        </div>
+
+        <div class="widget-frame">
+
+          <!-- Disclosure bar -->
+          <div class="widget-disclosure">
+            <div class="disclosure-left">
+              <div class="disclosure-rule"></div>
+              <span class="disc-text">Powered by AI</span>
+            </div>
+            <span class="disclosure-right">veridian v0</span>
+          </div>
+
+          <!-- Messages -->
+          <div class="widget-messages" role="log" aria-live="polite">
+
+            <div class="agent-cluster">
+              <div class="agent-name-label">
+                Luna
+                <span class="agent-badge">AGENT</span>
+              </div>
+              <div class="bubble-agent">Hi! I'm <strong>Luna</strong>. Ask me anything about Bella Vista Coffee.</div>
+            </div>
+
+            <div class="user-row">
+              <div>
+                <div class="bubble-user">My order was completely wrong and I want a refund!</div>
+                <div class="user-meta">You · 11:05</div>
+              </div>
+            </div>
+
+            <div class="agent-cluster">
+              <div class="agent-name-label">
+                Luna
+                <span class="agent-badge">AGENT</span>
+              </div>
+              <div class="bubble-agent">
+                I'm really sorry to hear that — that's not the experience we want for you at all. I've flagged this for our team straight away.
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Escalation panel -->
+          <div class="escalation-panel" role="dialog" aria-modal="false">
+            <div class="escalation-header">
+              <div class="escalation-icon-box">!</div>
+              <div class="escalation-title">Flagged for our team</div>
+              <div class="escalation-status">Pending</div>
+            </div>
+            <div class="escalation-msg">
+              I've flagged this for our team. Expect a reply within 24 hours. Leave your contact details and we'll reach out directly.
+            </div>
+            <div class="escalation-form">
+              <div class="esc-label">Your name</div>
+              <input class="esc-input" type="text" value="Sarah Chen" aria-label="Your name">
+              <div class="esc-label">Email address</div>
+              <input class="esc-input" type="email" value="sarah@example.com" aria-label="Email address">
+              <button class="esc-btn">Send my details</button>
+            </div>
+          </div>
+
+          <!-- Input bar -->
+          <div class="widget-input-bar">
+            <input class="widget-input" type="text" placeholder="Type a message..." aria-label="Message">
+            <button class="send-btn" aria-label="Send message">
+              <svg width="15" height="15" fill="none" viewBox="0 0 24 24">
+                <path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Spec panel -->
+      <div class="widget-panel-info">
+        <h3>Widget — Parchment &amp; Wine</h3>
+        <p>380×600px iframe. Enterprise D structure in warm F palette: alabaster background (#FDF9F5), wine (#7B1C3A) left-rule on agent cards, rectangular user tiles, gold (#B8860B) secondary.</p>
+        <table class="spec-table">
+          <tr><td>Dimensions</td><td>380 × 600px</td></tr>
+          <tr><td>Background</td><td>#FDF9F5 alabaster</td></tr>
+          <tr><td>Accent</td><td>#7B1C3A wine</td></tr>
+          <tr><td>Secondary</td><td>#B8860B gold</td></tr>
+          <tr><td>Agent bubble</td><td>White card, 3px wine left rule</td></tr>
+          <tr><td>User bubble</td><td>Wine fill, 4px radius rect</td></tr>
+          <tr><td>Citation</td><td>Left-rule row (D layout)</td></tr>
+          <tr><td>Tool call</td><td>Dashed box, blinking gold dot</td></tr>
+          <tr><td>Escalation</td><td>Gold-rule panel, amber title</td></tr>
+          <tr><td>Font</td><td>Inter / JetBrains Mono</td></tr>
+          <tr><td>Disclosure</td><td>Gold rule separators, warm bg</td></tr>
+          <tr><td>Bundle target</td><td>≤20kb gzipped</td></tr>
+        </table>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- ===================================================
+       SECTION 2: SOUL EDITOR
+       =================================================== -->
+  <div class="section">
+    <div class="section-label">Soul Editor</div>
+
+    <div class="soul-editor-outer">
+
+      <!-- Browser chrome -->
+      <div class="editor-topbar">
+        <div class="topbar-dots">
+          <div class="topbar-dot dot-red"></div>
+          <div class="topbar-dot dot-yellow"></div>
+          <div class="topbar-dot dot-green"></div>
+        </div>
+        <div class="topbar-breadcrumb">
+          Veridian Admin
+          <span class="sep">/</span>
+          Agents
+          <span class="sep">/</span>
+          <strong>Luna</strong>
+          <span class="sep">/</span>
+          Soul
+        </div>
+      </div>
+
+      <!-- Horizontal tabs — Design D layout pattern -->
+      <div class="editor-tabs">
+        <div class="editor-tab">Overview</div>
+        <div class="editor-tab active">Soul</div>
+        <div class="editor-tab">Conversations</div>
+        <div class="editor-tab">Retrieval</div>
+        <div class="editor-tab">Settings</div>
+      </div>
+
+      <!-- Two-column body — Design D layout -->
+      <div class="editor-body">
+
+        <!-- Form panel -->
+        <div class="editor-form-panel">
+
+          <div class="editor-section-header">
+            <h1>Agent Soul</h1>
+            <p>Configure the personality and behaviour of <strong>Luna</strong>. These fields assemble the system prompt sent at every conversation turn.</p>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Agent Name</label>
+            <input class="form-input filled" type="text" value="Luna">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Role</label>
+            <select class="form-select">
+              <option selected>Customer Support</option>
+              <option>Sales Qualification</option>
+              <option>Internal Helpdesk</option>
+              <option>Custom...</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Voice &amp; Tone</label>
+            <textarea class="form-textarea" rows="3">Warm, conversational, uses first names when possible. Friendly but professional. Always ends with an offer to help further.</textarea>
+          </div>
+
+          <!-- Do list -->
+          <div class="list-section">
+            <div class="list-header">
+              <div class="list-header-left">
+                <span class="list-title">Do</span>
+                <span class="list-badge badge-do">DO</span>
+              </div>
+              <button class="list-add-btn">+ Add item</button>
+            </div>
+            <div class="list-item">
+              <div class="list-item-number">01</div>
+              <input class="list-item-input" type="text" value="Ask for the customer's name">
+              <button class="list-remove-btn">&times;</button>
+            </div>
+            <div class="list-item">
+              <div class="list-item-number">02</div>
+              <input class="list-item-input" type="text" value="Always offer alternatives if item unavailable">
+              <button class="list-remove-btn">&times;</button>
+            </div>
+            <div class="list-item">
+              <div class="list-item-number">03</div>
+              <input class="list-item-input" type="text" value="End with a warm, friendly closing">
+              <button class="list-remove-btn">&times;</button>
+            </div>
+          </div>
+
+          <!-- Do-Not list -->
+          <div class="list-section">
+            <div class="list-header">
+              <div class="list-header-left">
+                <span class="list-title">Do Not</span>
+                <span class="list-badge badge-donot">DON'T</span>
+              </div>
+              <button class="list-add-btn">+ Add item</button>
+            </div>
+            <div class="list-item">
+              <div class="list-item-number">01</div>
+              <input class="list-item-input" type="text" value="Never promise free drinks or discounts">
+              <button class="list-remove-btn">&times;</button>
+            </div>
+            <div class="list-item">
+              <div class="list-item-number">02</div>
+              <input class="list-item-input" type="text" value="Never discuss competitor pricing">
+              <button class="list-remove-btn">&times;</button>
+            </div>
+            <div class="list-item">
+              <div class="list-item-number">03</div>
+              <input class="list-item-input" type="text" value="Never handle complaints without escalation">
+              <button class="list-remove-btn">&times;</button>
+            </div>
+          </div>
+
+          <!-- Save -->
+          <div class="save-section">
+            <button class="save-btn">Save Soul</button>
+            <span class="save-hint">Changes apply on the next conversation turn.</span>
+          </div>
+
+        </div>
+
+        <!-- Live preview panel — D structure, warm mono palette -->
+        <div class="editor-preview-panel">
+          <div class="preview-topbar">
+            <div class="preview-status-dot"></div>
+            <div class="preview-topbar-title">system_prompt_preview.txt</div>
+          </div>
+          <div class="preview-content"><span class="preview-comment"># Assembled at call time — read-only preview</span>
+
+<span class="preview-key">role:</span>        <span class="preview-string">Customer Support</span>
+<span class="preview-key">agent_name:</span> <span class="preview-string">Luna</span>
+
+<span class="preview-key">voice_and_tone:</span>
+<span class="preview-item">  Warm, conversational, uses first names
+  when possible. Friendly but professional.
+  Always ends with an offer to help further.</span>
+
+<span class="preview-key">do:</span>
+<span class="preview-item">  - Ask for the customer's name
+  - Always offer alternatives if item unavailable
+  - End with a warm, friendly closing</span>
+
+<span class="preview-key">do_not:</span>
+<span class="preview-item">  - Never promise free drinks or discounts
+  - Never discuss competitor pricing
+  - Never handle complaints without escalation</span>
+
+<span class="preview-key">grounding:</span>
+<span class="preview-item">  Always ground answers in retrieved content.
+  Cite sources in every response.</span>
+
+<span class="preview-comment">---
+model:   claude-haiku-4-5-20251001
+session: resume={conversation_id}
+tenant:  bella-vista-coffee</span></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- ===================================================
+       SECTION 3: DEMO SITE
+       =================================================== -->
+  <div class="section">
+    <div class="section-label">Demo Site</div>
+
+    <div class="demo-site">
+
+      <!-- Nav -->
+      <div class="demo-nav">
+        <div class="demo-logo">Veri<span class="logo-accent">dian</span></div>
+        <div class="demo-nav-links">
+          <a class="demo-nav-link" href="#">Demo</a>
+          <a class="demo-nav-link" href="#">Docs</a>
+          <a class="demo-nav-link" href="#">Blog</a>
+          <a class="demo-nav-cta" href="#">View on GitHub &#8599;</a>
+        </div>
+      </div>
+
+      <!-- Hero — D split layout -->
+      <div class="demo-hero">
+
+        <div class="demo-hero-left">
+          <div class="demo-hero-badge">Live Demo &mdash; Bella Vista Coffee</div>
+          <h1 class="demo-hero-headline">
+            Ask anything about<br>
+            <span class="hl-accent">Bella Vista Coffee</span>
+          </h1>
+          <p class="demo-hero-sub">
+            Luna is a grounded AI agent powered by Veridian. Every answer cites its source document. When Luna reaches her limit, she escalates to a human &mdash; immediately.
+          </p>
+          <div class="demo-hero-ctas">
+            <a class="cta-primary" href="#">
+              Try the demo
+              <svg width="14" height="14" fill="none" viewBox="0 0 24 24">
+                <path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </a>
+            <a class="cta-secondary" href="#">
+              View on GitHub
+              <svg width="14" height="14" fill="none" viewBox="0 0 24 24">
+                <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </a>
+          </div>
+        </div>
+
+        <!-- Widget embed mockup -->
+        <div class="demo-widget-wrap">
+          <div class="demo-widget-card">
+
+            <div class="mini-disc">
+              <div class="mini-disc-left">
+                <div class="mini-disc-rule"></div>
+                <span>Powered by AI</span>
+              </div>
+              <span class="mini-disc-right">veridian v0</span>
+            </div>
+
+            <div class="mini-messages">
+
+              <div class="mini-agent-cluster">
+                <div class="mini-agent-label">
+                  Luna
+                  <span class="mini-agent-pill">AGENT</span>
+                </div>
+                <div class="mini-bubble-agent">Hi! I'm Luna. Ask me anything about Bella Vista Coffee &#9749;</div>
+              </div>
+
+              <div class="mini-user-row">
+                <div class="mini-bubble-user">Do you have oat milk lattes?</div>
+              </div>
+
+              <div class="mini-agent-cluster">
+                <div class="mini-agent-label">
+                  Luna
+                  <span class="mini-agent-pill">AGENT</span>
+                </div>
+                <div class="mini-bubble-agent">Yes! We offer oat milk in all espresso drinks. Our house oat milk latte uses double-shot espresso with steamed Oatly.</div>
+                <div class="mini-citation">
+                  <svg width="10" height="10" fill="none" viewBox="0 0 24 24"><path d="M9 12h6M9 16h6M7 8h10M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                  Based on: <span class="mini-cite-strong">Menu &amp; Specials §2.3</span>
+                </div>
+              </div>
+
+              <div class="mini-user-row">
+                <div class="mini-bubble-user">What's the price for a large?</div>
+              </div>
+
+              <div class="mini-agent-cluster">
+                <div class="mini-agent-label">
+                  Luna
+                  <span class="mini-agent-pill">AGENT</span>
+                </div>
+                <div class="mini-typing">
+                  <div class="mini-dot"></div>
+                  <div class="mini-dot"></div>
+                  <div class="mini-dot"></div>
+                </div>
+              </div>
+
+            </div>
+
+            <div class="mini-input-bar">
+              <div class="mini-input">Ask a question...</div>
+              <button class="mini-send-btn" disabled style="opacity:0.5;">
+                <svg width="11" height="11" fill="none" viewBox="0 0 24 24">
+                  <path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Metrics — D's bordered-grid table layout -->
+      <div class="demo-metrics">
+        <div class="metric-item">
+          <div class="metric-value">100%</div>
+          <div class="metric-label">Grounded in your documents</div>
+        </div>
+        <div class="metric-item">
+          <div class="metric-value">&lt;20kb</div>
+          <div class="metric-label">Widget bundle gzipped</div>
+        </div>
+        <div class="metric-item">
+          <div class="metric-value">SSE</div>
+          <div class="metric-label">Real-time streamed responses</div>
+        </div>
+      </div>
+
+      <!-- Trust strip — D's icon-box layout, warm palette -->
+      <div class="demo-trust">
+        <div class="trust-item">
+          <div class="trust-icon-box">
+            <svg width="18" height="18" fill="none" viewBox="0 0 24 24"><path d="M9 12h6M9 16h6M7 8h10M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>
+          </div>
+          <div class="trust-text">
+            <h4>Cites every source</h4>
+            <p>Every response links to the exact document and section it was drawn from.</p>
+          </div>
+        </div>
+        <div class="trust-item">
+          <div class="trust-icon-box">
+            <svg width="18" height="18" fill="none" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="trust-text">
+            <h4>Human escalation built in</h4>
+            <p>When the agent can't help, it flags the conversation and notifies your team immediately.</p>
+          </div>
+        </div>
+        <div class="trust-item">
+          <div class="trust-icon-box">
+            <svg width="18" height="18" fill="none" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="trust-text">
+            <h4>Grounded, not hallucinating</h4>
+            <p>Answers are generated only from your ingested documents — not from model prior knowledge.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="demo-footer">
+        <div class="demo-footer-brand">veridian/m4 · portfolio demo · Bantuson Kehinde</div>
+        <div class="demo-footer-links">
+          <a class="demo-footer-link" href="#">GitHub</a>
+          <a class="demo-footer-link" href="#">UI-SPEC</a>
+          <a class="demo-footer-link" href="#">Contact</a>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

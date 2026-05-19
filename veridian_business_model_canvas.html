@@ -1,0 +1,141 @@
+<h2 class="sr-only">Business Model Canvas for Veridian: a nine-block summary of partners, activities, value propositions, customer relationships, segments, key resources, channels, cost structure, and revenue streams.</h2>
+
+<div style="padding: 1rem 0 0.5rem;">
+  <div style="display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 0.25rem;">
+    <h2 style="margin: 0; font-size: 18px; font-weight: 500;">Veridian — business model canvas</h2>
+    <span style="font-size: 12px; color: var(--color-text-tertiary);">v1 · 2026-05-13</span>
+  </div>
+  <p style="margin: 0 0 1rem; font-size: 13px; color: var(--color-text-secondary);">Customer service agents your business can stand behind.</p>
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(10, 1fr); grid-auto-rows: minmax(160px, auto); gap: 8px;">
+
+  <div style="grid-column: span 2; grid-row: span 2; background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 12px;">
+    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+      <i class="ti ti-users-group" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+      <span style="font-size: 12px; font-weight: 500; color: var(--color-text-secondary); letter-spacing: 0.02em;">Key partners</span>
+    </div>
+    <ul style="margin: 0; padding-left: 14px; font-size: 12px; line-height: 1.55;">
+      <li>Neon (per-tenant Postgres, branching, programmatic provisioning)</li>
+      <li>Anthropic (Claude API + Agent SDK — agents, judges, validators)</li>
+      <li>Voyage AI (embeddings + reranker)</li>
+      <li>Langfuse (observability)</li>
+      <li>Microsoft GraphRAG (insights layer)</li>
+      <li>Docling, Chonkie, Ragas, PyRIT (open-source ingestion + eval)</li>
+      <li>SMB integration partners (Shopify, WooCommerce, Wix) — M10+</li>
+    </ul>
+  </div>
+
+  <div style="grid-column: span 2; background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 12px;">
+    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+      <i class="ti ti-tools" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+      <span style="font-size: 12px; font-weight: 500; color: var(--color-text-secondary); letter-spacing: 0.02em;">Key activities</span>
+    </div>
+    <ul style="margin: 0; padding-left: 14px; font-size: 12px; line-height: 1.55;">
+      <li>Per-tenant agent provisioning &amp; ingestion</li>
+      <li>Hybrid retrieval + verified knowledge layer</li>
+      <li>Validation chain &amp; eval harness</li>
+      <li>Red teaming &amp; pre-deployment gating</li>
+      <li>Continuous maintenance crons</li>
+    </ul>
+  </div>
+
+  <div style="grid-column: span 2; grid-row: span 2; background: #FAEEDA; border: 2px solid #BA7517; border-radius: var(--border-radius-md); padding: 12px;">
+    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+      <i class="ti ti-diamond" style="font-size: 16px; color: #854F0B;" aria-hidden="true"></i>
+      <span style="font-size: 12px; font-weight: 500; color: #854F0B; letter-spacing: 0.02em;">Value propositions</span>
+    </div>
+    <ul style="margin: 0; padding-left: 14px; font-size: 12px; line-height: 1.55; color: #633806;">
+      <li><span style="font-weight: 500; color: #412402;">Ship-ready agents, not toys.</span> Eval-gated, red-teamed, human-validated before they talk to a customer.</li>
+      <li><span style="font-weight: 500; color: #412402;">Compounding knowledge.</span> Every passing test becomes a cached answer. Agents get faster and cheaper over time.</li>
+      <li><span style="font-weight: 500; color: #412402;">Non-technical end-to-end.</span> Signup to deployed widget without writing code or touching infra.</li>
+      <li><span style="font-weight: 500; color: #412402;">You own the data.</span> Per-tenant Neon Postgres, open stack, no vendor lock-in.</li>
+    </ul>
+  </div>
+
+  <div style="grid-column: span 2; background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 12px;">
+    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+      <i class="ti ti-heart-handshake" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+      <span style="font-size: 12px; font-weight: 500; color: var(--color-text-secondary); letter-spacing: 0.02em;">Customer relationships</span>
+    </div>
+    <ul style="margin: 0; padding-left: 14px; font-size: 12px; line-height: 1.55;">
+      <li>Self-serve onboarding (no sales call to launch)</li>
+      <li>Weekly digest: evals, red team, promotion candidates</li>
+      <li>Automated maintenance — system manages the agent</li>
+      <li>In-app human escalation for owner edge cases</li>
+    </ul>
+  </div>
+
+  <div style="grid-column: span 2; grid-row: span 2; background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 12px;">
+    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+      <i class="ti ti-user-search" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+      <span style="font-size: 12px; font-weight: 500; color: var(--color-text-secondary); letter-spacing: 0.02em;">Customer segments</span>
+    </div>
+    <ul style="margin: 0; padding-left: 14px; font-size: 12px; line-height: 1.55;">
+      <li><span style="font-weight: 500;">SMB owners (primary).</span> Non-technical, owns customer relationship, currently using email + WhatsApp for support.</li>
+      <li><span style="font-weight: 500;">SA &amp; emerging-market e-commerce.</span> Shopify, WooCommerce, Wix shops 50–500 orders/month.</li>
+      <li><span style="font-weight: 500;">Solo founders &amp; ops leads.</span> Power users who want the depth.</li>
+      <li><span style="font-weight: 500;">Eventually:</span> agencies bundling Veridian for their SMB clients.</li>
+    </ul>
+  </div>
+
+  <div style="grid-column: span 2; background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 12px;">
+    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+      <i class="ti ti-stack-2" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+      <span style="font-size: 12px; font-weight: 500; color: var(--color-text-secondary); letter-spacing: 0.02em;">Key resources</span>
+    </div>
+    <ul style="margin: 0; padding-left: 14px; font-size: 12px; line-height: 1.55;">
+      <li>Veridian codebase (open source, the artifact itself)</li>
+      <li>Eval &amp; red team libraries (curated, growing)</li>
+      <li>Per-tenant verified knowledge layers (data moat)</li>
+      <li>Founder credibility — GSD contributor, eval-focused engineer</li>
+    </ul>
+  </div>
+
+  <div style="grid-column: span 2; background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 12px;">
+    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+      <i class="ti ti-router" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+      <span style="font-size: 12px; font-weight: 500; color: var(--color-text-secondary); letter-spacing: 0.02em;">Channels</span>
+    </div>
+    <ul style="margin: 0; padding-left: 14px; font-size: 12px; line-height: 1.55;">
+      <li>Open-source repo (GitHub, primary discovery)</li>
+      <li>Architecture deep-dive blog &amp; M4 public demo</li>
+      <li>iframe widget on customer websites (acquisition surface)</li>
+      <li>Direct: founder network in SA tech ecosystem</li>
+      <li>Eventually: app store listings (Shopify, Wix)</li>
+    </ul>
+  </div>
+
+  <div style="grid-column: span 5; background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 12px;">
+    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+      <i class="ti ti-arrow-down-circle" style="font-size: 16px; color: #A32D2D;" aria-hidden="true"></i>
+      <span style="font-size: 12px; font-weight: 500; color: #A32D2D; letter-spacing: 0.02em;">Cost structure</span>
+    </div>
+    <ul style="margin: 0; padding-left: 14px; font-size: 12px; line-height: 1.55;">
+      <li><span style="font-weight: 500;">Variable:</span> Claude API (agents, judges, red team), Voyage embeddings &amp; rerank, Neon storage + compute per tenant</li>
+      <li><span style="font-weight: 500;">Fixed:</span> Founder time (open-source build), control-plane hosting, Redis, observability</li>
+      <li><span style="font-weight: 500;">Strategic:</span> Verified knowledge layer cuts per-query Claude cost by ~40% by month 3 — primary unit-economics lever</li>
+      <li><span style="font-weight: 500;">Risk:</span> Neon per-tenant cost at scale (mitigated by scale-to-zero defaults)</li>
+    </ul>
+  </div>
+
+  <div style="grid-column: span 5; background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 12px;">
+    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+      <i class="ti ti-arrow-up-circle" style="font-size: 16px; color: #0F6E56;" aria-hidden="true"></i>
+      <span style="font-size: 12px; font-weight: 500; color: #0F6E56; letter-spacing: 0.02em;">Revenue streams</span>
+    </div>
+    <ul style="margin: 0; padding-left: 14px; font-size: 12px; line-height: 1.55;">
+      <li><span style="font-weight: 500;">SaaS tiers</span> — per-agent monthly with conversation caps (Starter, Growth, Pro)</li>
+      <li><span style="font-weight: 500;">Usage overage</span> — per-conversation above tier cap, billed monthly</li>
+      <li><span style="font-weight: 500;">Managed service add-on</span> — owner offloads weekly digest review, custom red team scenarios, SLA support</li>
+      <li><span style="font-weight: 500;">Eventually:</span> hosted vs self-hosted licensing for agencies and larger teams</li>
+      <li><span style="font-weight: 500;">Pricing model locked at M8</span> once cost-per-tenant data exists</li>
+    </ul>
+  </div>
+
+</div>
+
+<div style="margin-top: 1rem; padding: 10px 12px; background: var(--color-background-secondary); border-radius: var(--border-radius-md); font-size: 12px; color: var(--color-text-secondary); line-height: 1.55;">
+  <span style="font-weight: 500; color: var(--color-text-primary);">Strategic thesis.</span>
+  Pinecone is closing the knowledge-layer pattern behind Nexus. Veridian implements the same upstream-reasoning insight on open Postgres, fed by the platform's own eval harness — making the data moat owned by each tenant, not the vendor.
+</div>

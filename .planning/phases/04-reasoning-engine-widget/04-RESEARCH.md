@@ -840,22 +840,25 @@ cd apps/widget && npm run build
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **SDK session_id semantics in 0.1.81**
    - What we know: `ResultMessage.session_id` is documented to exist; AI-SPEC.md §4 says to store it in `conversations.metadata["sdk_session_id"]` and pass it as `resume=` on subsequent turns
    - What's unclear: Does the SDK session persist across multiple `asyncio.run()` calls (i.e., across separate Celery task invocations), or does each `asyncio.run()` create a new subprocess that cannot resume a prior session?
    - Recommendation: Implement resume and test E2E with `AGENT_E2E_ENABLED=1`; if resume fails, fall back to re-injecting conversation history manually in the system prompt (and document this in STATE.md)
+   - RESOLVED: SDK sessions do NOT persist across `asyncio.run()` calls -- each call starts a fresh subprocess, so `sdk_session_id` from `ResultMessage` must be stored in `conversations.metadata["sdk_session_id"]` after the first turn and passed as `resume=` on every subsequent turn.
 
 2. **Widget SSE endpoint authentication decision**
    - What we know: Existing SSE endpoint requires X-API-Key; EventSource cannot send Authorization headers
    - What's unclear: Planner must decide between (a) public `/widget/jobs/{job_id}/events` endpoint or (b) query-param JWT
-   - Recommendation: Option (a) — public endpoint scoped by UUID4 job_id; add to `widget.py` router; reuse existing `event_generator`
+   - Recommendation: Option (a) -- public endpoint scoped by UUID4 job_id; add to `widget.py` router; reuse existing `event_generator`
+   - RESOLVED: Public `GET /widget/jobs/{job_id}/events` endpoint (no auth) implemented in `widget.py`. UUID4 job_id is unguessable and short-lived; this is the correct pattern for EventSource clients that cannot send custom headers.
 
 3. **Next.js admin page initial data fetch**
    - What we know: Soul editor at `app/agents/[id]/soul/page.tsx` must pre-populate existing soul fields
    - What's unclear: Server component or client component fetch for initial agent data? Server component can call the API on first render; client component uses useEffect.
    - Recommendation: Client component with useEffect (simpler, no server-side secrets needed, X-API-Key stays in the browser session storage for admin use)
+   - RESOLVED: Client component with `useEffect` for initial data fetch. `'use client'` directive at top of page; `useEffect` calls `GET /agents/{id}` on mount to pre-populate soul fields.
 
 ---
 
