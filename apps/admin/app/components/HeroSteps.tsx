@@ -11,9 +11,11 @@ const STEPS = [
 
 type StepState = 'done' | 'active' | 'upcoming'
 
+// active 0-3 = that step is in-progress; active === STEPS.length = all done frame
 function stepState(i: number, active: number): StepState {
-  if (i < active)   return 'done'
-  if (i === active) return 'active'
+  if (active >= STEPS.length) return 'done'  // all-done frame: every step green
+  if (i < active)             return 'done'
+  if (i === active)           return 'active'
   return 'upcoming'
 }
 
@@ -21,7 +23,11 @@ export function HeroSteps() {
   const [active, setActive] = useState(2)
 
   useEffect(() => {
-    const id = setInterval(() => setActive(p => (p + 1) % STEPS.length), 2400)
+    const id = setInterval(() => setActive(p => {
+      // after the all-done frame (p === STEPS.length), reset to 0
+      if (p >= STEPS.length) return 0
+      return p + 1
+    }), 2400)
     return () => clearInterval(id)
   }, [])
 
