@@ -52,16 +52,14 @@ export default function LandingPage() {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div
-            style={{
-              width: '30px',
-              height: '30px',
-              background: 'var(--accent)',
-              borderRadius: '7px',
-            }}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/w-chats-lettermann.png"
+            alt="Chats logo"
+            style={{ width: '30px', height: '30px', objectFit: 'contain' }}
           />
           <span style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-1)' }}>
-            Veridian
+            Chats
           </span>
         </div>
 
