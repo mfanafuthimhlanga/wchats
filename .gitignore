@@ -56,7 +56,10 @@ node_modules/
 # Eval captured responses — may contain real tenant data
 apps/api/tests/evals/responses/
 
-# Dev server logs (root-level, generated at runtime)
+# Dev server logs — all logs live in /logs, contents ignored
+logs/*
+!logs/.gitkeep
+# Catch any stray logs accidentally written outside /logs
 *.log
 *_err.log
 
