@@ -430,6 +430,16 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
           >
             {copyStatus === 'copied' ? 'Copied!' : 'Copy snippet'}
           </button>
+          <p
+            style={{
+              fontSize: '12px',
+              color: 'var(--text-4)',
+              fontStyle: 'italic',
+              marginTop: '8px',
+            }}
+          >
+            Note: The CDN URL above is a preview placeholder. Widget CDN deployment is not yet live and will be activated in a future release.
+          </p>
         </div>
       )}
 
