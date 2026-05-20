@@ -281,7 +281,7 @@ export default function SoulEditorPage({
             fontFamily: 'var(--font-mono)',
           }}
         >
-          veridian-admin / agents / {id} / soul
+          w-chats / agents / {id} / soul
         </span>
       </div>
 
@@ -373,7 +373,7 @@ export default function SoulEditorPage({
                 borderRadius: 'var(--radius-xs)',
                 fontSize: '14px',
                 fontFamily: 'var(--font-sans)',
-                background: 'var(--surface-1)',
+                background: 'var(--surface-2)',
                 color: 'var(--text-1)',
                 outline: 'none',
               }}
@@ -399,7 +399,7 @@ export default function SoulEditorPage({
                 borderRadius: 'var(--radius-xs)',
                 fontSize: '14px',
                 fontFamily: 'var(--font-sans)',
-                background: 'var(--surface-1)',
+                background: 'var(--surface-2)',
                 color: 'var(--text-1)',
                 outline: 'none',
                 cursor: 'pointer',
@@ -426,7 +426,7 @@ export default function SoulEditorPage({
                 borderRadius: 'var(--radius-xs)',
                 fontSize: '14px',
                 fontFamily: 'var(--font-sans)',
-                background: 'var(--surface-1)',
+                background: 'var(--surface-2)',
                 color: 'var(--text-1)',
                 outline: 'none',
                 resize: 'vertical',
@@ -476,7 +476,7 @@ export default function SoulEditorPage({
                     borderRadius: 'var(--radius-xs)',
                     fontSize: '14px',
                     fontFamily: 'var(--font-sans)',
-                    background: 'var(--surface-1)',
+                    background: 'var(--surface-2)',
                     color: 'var(--text-1)',
                     outline: 'none',
                   }}
@@ -560,7 +560,7 @@ export default function SoulEditorPage({
                     borderRadius: 'var(--radius-xs)',
                     fontSize: '14px',
                     fontFamily: 'var(--font-sans)',
-                    background: 'var(--surface-1)',
+                    background: 'var(--surface-2)',
                     color: 'var(--text-1)',
                     outline: 'none',
                   }}

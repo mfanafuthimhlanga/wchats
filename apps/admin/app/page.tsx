@@ -56,9 +56,9 @@ export default function LandingPage() {
           <img
             src="/w-chats-lettermann.png"
             alt="Chats logo"
-            style={{ width: '30px', height: '30px', objectFit: 'contain' }}
+            style={{ width: '30px', height: '30px', objectFit: 'contain', animation: 'spin-cw 4s linear infinite' }}
           />
-          <span style={{ fontWeight: 700, fontSize: '19px', color: 'var(--text-1)' }}>
+          <span style={{ fontFamily: 'var(--font-pixelify)', fontSize: '20px', color: 'var(--text-1)' }}>
             Chats
           </span>
         </div>
@@ -116,7 +116,7 @@ export default function LandingPage() {
                 marginTop: 0,
               }}
             >
-              Veridian wires a Claude Agent SDK reasoning engine to your business
+              W Chats wires a Claude Agent SDK reasoning engine to your business
               documents, evaluates every answer, and ships a 20kb widget for any page.
             </p>
 

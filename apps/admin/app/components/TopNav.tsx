@@ -28,16 +28,14 @@ export default function TopNav() {
     >
       {/* Logo */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginRight: '32px' }}>
-        <div
-          style={{
-            width: '30px',
-            height: '30px',
-            background: 'var(--accent)',
-            borderRadius: '7px',
-          }}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/w-chats-lettermann.png"
+          alt="Chats logo"
+          style={{ width: '30px', height: '30px', objectFit: 'contain', animation: 'spin-cw 4s linear infinite' }}
         />
-        <span style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-1)' }}>
-          Veridian
+        <span style={{ fontFamily: 'var(--font-pixelify)', fontSize: '20px', color: 'var(--text-1)' }}>
+          Chats
         </span>
       </div>
 

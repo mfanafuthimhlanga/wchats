@@ -711,7 +711,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                       fontSize: '14px',
                     }}
                   >
-                    Veridian assistant
+                    Chats assistant
                   </div>
 
                   {/* Chat body */}

@@ -177,7 +177,7 @@ export default function CreateAgentPage() {
     borderRadius: 'var(--radius-xs)',
     fontSize: '14px',
     fontFamily: 'var(--font-sans)',
-    background: 'var(--surface-1)',
+    background: 'var(--surface-2)',
     color: 'var(--text-1)',
     outline: 'none',
     boxSizing: 'border-box',
