@@ -54,6 +54,25 @@ export default function AgentsDashboardPage() {
           setLoadError('Not authenticated. Please sign in.')
           return
         }
+
+        // Best-effort tenant provisioning — webhooks don't fire in local dev.
+        // A provision failure (e.g. server not running, tenant already exists)
+        // is logged but does NOT block the agent list fetch.
+        try {
+          const provRes = await fetch(`${apiBase}/me/provision`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+          })
+          if (!provRes.ok && provRes.status !== 200 && provRes.status !== 201) {
+            console.warn(`[agents] /me/provision returned HTTP ${provRes.status} — continuing`)
+          }
+        } catch (provErr) {
+          // Network-level failure (ERR_CONNECTION_REFUSED) — API server may not be running.
+          // Log for debugging; do not surface to the user yet (the agent list fetch will fail
+          // too and produce a clearer error message at that point).
+          console.warn('[agents] /me/provision fetch failed (server unreachable?):', provErr)
+        }
+
         const r = await fetch(`${apiBase}/api/v1/agents`, {
           headers: { Authorization: `Bearer ${token}` },
         })
@@ -65,7 +84,15 @@ export default function AgentsDashboardPage() {
         setAgents(data.agents)
       } catch (err) {
         console.error(err)
-        setLoadError('Failed to load agents. Please refresh.')
+        const isNetworkError =
+          err instanceof TypeError && err.message.toLowerCase().includes('fetch')
+        setLoadError(
+          isNetworkError
+            ? 'Cannot reach the API server. Make sure the backend is running on ' +
+                (apiBase || 'http://localhost:8000') +
+                ' and refresh.'
+            : 'Failed to load agents. Please refresh.'
+        )
       } finally {
         setLoading(false)
       }
