@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect, useRef, use } from 'react'
 import { useAuth } from '@clerk/nextjs'
+import Link from 'next/link'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -214,7 +215,7 @@ export default function SoulEditorPage({
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       setSaveStatus('saved')
-      setTimeout(() => setSaveStatus('idle'), 2000)
+      // Intentionally do NOT reset to 'idle' — keep persistent saved state + show Next CTA
     } catch {
       setSaveStatus('error')
     }
@@ -608,41 +609,68 @@ export default function SoulEditorPage({
           </div>
 
           {/* Save Section */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            <button
-              onClick={handleSave}
-              disabled={!canSave}
-              style={{
-                padding: '12px 32px',
-                minHeight: '44px',
-                background: canSave ? 'var(--accent)' : 'var(--surface-3)',
-                color: canSave ? '#fff' : 'var(--text-4)',
-                border: 'none',
-                borderRadius: 'var(--radius-sm)',
-                cursor: canSave ? 'pointer' : 'not-allowed',
-                fontSize: '15px',
-                fontWeight: 600,
-                fontFamily: 'var(--font-sans)',
-                transition: 'background 0.15s',
-              }}
-            >
-              {saveStatus === 'saving'
-                ? 'Saving...'
-                : saveStatus === 'saved'
-                ? 'Saved'
-                : saveStatus === 'error'
-                ? 'Error — retry'
-                : 'Save Soul'}
-            </button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+              <button
+                onClick={handleSave}
+                disabled={!canSave}
+                style={{
+                  padding: '12px 32px',
+                  minHeight: '44px',
+                  background: canSave ? 'var(--accent)' : 'var(--surface-3)',
+                  color: canSave ? '#fff' : 'var(--text-4)',
+                  border: 'none',
+                  borderRadius: 'var(--radius-sm)',
+                  cursor: canSave ? 'pointer' : 'not-allowed',
+                  fontSize: '15px',
+                  fontWeight: 600,
+                  fontFamily: 'var(--font-sans)',
+                  transition: 'background 0.15s',
+                }}
+              >
+                {saveStatus === 'saving'
+                  ? 'Saving...'
+                  : saveStatus === 'saved'
+                  ? '✓ Soul saved'
+                  : saveStatus === 'error'
+                  ? 'Error — retry'
+                  : 'Save Soul'}
+              </button>
+              {saveStatus === 'saved' && (
+                <span style={{ fontSize: '14px', color: 'var(--green)' }}>
+                  Changes saved successfully
+                </span>
+              )}
+              {saveStatus === 'error' && (
+                <span style={{ fontSize: '14px', color: 'var(--red)' }}>
+                  Save failed — check API key and connection
+                </span>
+              )}
+            </div>
+
+            {/* Persistent Next CTA — shown once soul is saved */}
             {saveStatus === 'saved' && (
-              <span style={{ fontSize: '14px', color: 'var(--green)' }}>
-                Changes saved successfully
-              </span>
-            )}
-            {saveStatus === 'error' && (
-              <span style={{ fontSize: '14px', color: 'var(--red)' }}>
-                Save failed — check API key and connection
-              </span>
+              <Link
+                href={`/agents/${id}/ingest`}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '10px 20px',
+                  minHeight: '44px',
+                  background: 'var(--accent-dim)',
+                  color: 'var(--accent)',
+                  border: '1px solid rgba(123,28,58,0.2)',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: '14px',
+                  fontWeight: 600,
+                  fontFamily: 'var(--font-sans)',
+                  textDecoration: 'none',
+                  alignSelf: 'flex-start',
+                }}
+              >
+                Next: Upload documents →
+              </Link>
             )}
           </div>
         </div>
