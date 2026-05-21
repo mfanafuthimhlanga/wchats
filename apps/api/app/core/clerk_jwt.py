@@ -58,7 +58,7 @@ def verify_clerk_jwt(token: str) -> dict[str, Any]:
             # 10s leeway absorbs clock skew between client and server.
             # Freshly-refreshed Clerk tokens can have nbf == now(), which
             # fails verify_nbf when server clock is a few seconds behind.
-            leeway=timedelta(seconds=10),
+            leeway=timedelta(seconds=30),
         )
         return payload
     except Exception as exc:
