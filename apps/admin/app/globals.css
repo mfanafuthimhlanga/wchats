@@ -153,7 +153,7 @@ html.page-flip {
 
 .sign-out-tab {
   position: fixed;
-  bottom: 48px;
+  bottom: 0;
   right: 0;
   z-index: 9999;
 
@@ -168,7 +168,7 @@ html.page-flip {
   height: 52px;
 
   background: #1A0A0F;
-  border-radius: 8px 0 0 8px;
+  border-radius: 8px 0 0 0;
   border: 1px solid rgba(239, 68, 68, 0.25);
   border-right: none;
 
@@ -183,7 +183,7 @@ html.page-flip {
   position: absolute;
   left: 0;
   top: 12px;
-  bottom: 12px;
+  bottom: 0;
   width: 2px;
   border-radius: 2px;
   background: #ef4444;
