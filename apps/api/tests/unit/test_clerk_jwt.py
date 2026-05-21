@@ -76,22 +76,35 @@ async def test_get_current_tenant_jwt_path():
     mock_result = MagicMock()
     mock_result.scalars.return_value.first.return_value = mock_tenant
     mock_db = AsyncMock()
+    mock_db.add = MagicMock()  # add() is synchronous in async SQLAlchemy
     mock_db.execute.return_value = mock_result
+
+    # refresh() must set .id so AgentCreateResponse Pydantic validation passes
+    _agent_id, _job_id = uuid4(), uuid4()
+    async def _mock_refresh(obj):
+        from app.models.agent import Agent
+        from app.models.job import Job
+        if isinstance(obj, Agent):
+            obj.id = _agent_id
+        elif isinstance(obj, Job):
+            obj.id = _job_id
+    mock_db.refresh = AsyncMock(side_effect=_mock_refresh)
 
     async def override_db():
         yield mock_db
 
-    with patch("app.api.deps.verify_clerk_jwt", return_value={"sub": "user_test123"}):
+    with patch("app.api.deps.verify_clerk_jwt", return_value={"sub": "user_test123"}), \
+         patch("app.api.v1.agents.provision_neon") as mock_pn:
+        mock_pn.apply_async = MagicMock()
         app.dependency_overrides[get_async_db] = override_db
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.post(
-                    "/agents",  # Routes are at /agents, not /api/v1/agents
+                    "/api/v1/agents",
                     headers={"Authorization": "Bearer fake.clerk.token"},
-                    json={"name": "Test Agent"},
+                    json={"name": "Test Agent", "soul": {"voice": "", "do": [], "do_not": []}, "role": "support"},
                 )
-            # Auth succeeded — not 401. May be 400/422 due to missing fields, but not 401
-            assert resp.status_code != 401, f"Expected auth to succeed, got {resp.status_code}: {resp.text}"
+            assert resp.status_code == 202, f"Expected 202, got {resp.status_code}: {resp.text}"
         finally:
             app.dependency_overrides.pop(get_async_db, None)
 
@@ -122,21 +135,33 @@ async def test_get_current_tenant_apikey_fallback():
     mock_result.scalars.return_value.first.return_value = mock_tenant
 
     mock_db = AsyncMock()
+    mock_db.add = MagicMock()  # add() is synchronous in async SQLAlchemy
     mock_db.execute.return_value = mock_result
+
+    _agent_id, _job_id = uuid4(), uuid4()
+    async def _mock_refresh(obj):
+        from app.models.agent import Agent
+        from app.models.job import Job
+        if isinstance(obj, Agent):
+            obj.id = _agent_id
+        elif isinstance(obj, Job):
+            obj.id = _job_id
+    mock_db.refresh = AsyncMock(side_effect=_mock_refresh)
 
     async def override_db():
         yield mock_db
 
     app.dependency_overrides[get_async_db] = override_db
     try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.post(
-                "/agents",  # Routes are at /agents, not /api/v1/agents
-                headers={"X-API-Key": raw_key},
-                json={"name": "Test Agent"},
-            )
-        # Auth should succeed (not 401)
-        assert resp.status_code != 401, f"Expected auth to succeed, got {resp.status_code}"
+        with patch("app.api.v1.agents.provision_neon") as mock_pn:
+            mock_pn.apply_async = MagicMock()
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/agents",
+                    headers={"X-API-Key": raw_key},
+                    json={"name": "Test Agent", "soul": {"voice": "", "do": [], "do_not": []}, "role": "support"},
+                )
+        assert resp.status_code == 202, f"Expected 202, got {resp.status_code}"
     finally:
         app.dependency_overrides.pop(get_async_db, None)
 
@@ -232,6 +257,6 @@ async def test_no_credentials_returns_401():
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         # POST /agents requires get_current_tenant which requires auth
-        resp = await client.post("/agents", json={"name": "Test"})
+        resp = await client.post("/api/v1/agents", json={"name": "Test"})
 
     assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"

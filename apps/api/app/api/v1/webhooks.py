@@ -9,7 +9,9 @@ Threat mitigations:
     T-04-10-03: Svix HMAC-SHA256 signature verification on every webhook request.
     T-04-10-04: Svix timestamp window (5 min) prevents replay attacks; ON CONFLICT DO NOTHING is idempotent.
     T-04-10-05: CLERK_WEBHOOK_SIGNING_SECRET never logged; structlog context excludes request headers.
-    T-04-10-07: clerk_user_id TEXT UNIQUE + ON CONFLICT DO NOTHING prevents duplicate tenant rows.
+    T-04-10-07: clerk_user_id partial unique index (active rows only) + ON CONFLICT index inference prevents
+                duplicate active tenant rows. Partial index: tenants_clerk_user_id_active_uniq
+                (WHERE deleted_at IS NULL AND clerk_user_id IS NOT NULL) — migration 0007.
     T-04-10-10: verify_clerk_jwt validates RS256 signature + exp; ON CONFLICT prevents rogue tenant creation.
 """
 
@@ -33,6 +35,11 @@ router = APIRouter(tags=["webhooks"])
 # Bearer scheme for /me/provision — auto_error=True raises 401 if header missing
 _bearer_scheme_prov = HTTPBearer(auto_error=True)
 
+# Partial index predicate from migration 0007 — used in ON CONFLICT index inference clauses.
+# Must match exactly: CREATE UNIQUE INDEX tenants_clerk_user_id_active_uniq
+#   ON tenants(clerk_user_id) WHERE deleted_at IS NULL AND clerk_user_id IS NOT NULL
+_CONFLICT_PREDICATE = "WHERE deleted_at IS NULL AND clerk_user_id IS NOT NULL"
+
 
 # ---------------------------------------------------------------------------
 # POST /webhooks/clerk
@@ -51,7 +58,8 @@ async def clerk_webhook(
     Svix HMAC is computed over raw bytes, NOT parsed JSON (Pitfall 2).
 
     user.created:
-        Idempotent INSERT with ON CONFLICT (clerk_user_id) DO NOTHING.
+        Idempotent INSERT with ON CONFLICT index inference matching the partial
+        unique index tenants_clerk_user_id_active_uniq (migration 0007).
         Provisions tenants row with clerk_user_id + generated api_key_hash.
 
     user.deleted:
@@ -85,12 +93,16 @@ async def clerk_webhook(
         key_hash = hash_api_key(raw_key)
         key_prefix = hmac_key_prefix(raw_key)
 
-        # Idempotent INSERT — Clerk may retry webhooks; ON CONFLICT is the idempotency gate
+        # Idempotent INSERT — Clerk may retry webhooks; ON CONFLICT is the idempotency gate.
+        # Uses index inference predicate to match the partial unique index from migration 0007.
+        # Plain ON CONFLICT (clerk_user_id) fails after 0007 replaced the unconditional UNIQUE
+        # constraint with a partial unique index.
         await db.execute(
             text(
                 "INSERT INTO tenants (name, api_key_hash, api_key_prefix, clerk_user_id) "
                 "VALUES (:name, :api_key_hash, :api_key_prefix, :clerk_user_id) "
-                "ON CONFLICT (clerk_user_id) DO NOTHING"
+                "ON CONFLICT (clerk_user_id) WHERE deleted_at IS NULL AND clerk_user_id IS NOT NULL "
+                "DO NOTHING"
             ),
             {
                 "name": display_name,
@@ -167,11 +179,15 @@ async def provision_me(
     key_prefix = hmac_key_prefix(raw_key)
     display_name = payload.get("email", clerk_user_id)  # fallback to clerk_user_id
 
+    # ON CONFLICT uses index inference predicate matching migration 0007's partial unique index.
+    # The plain ON CONFLICT (clerk_user_id) form requires an unconditional UNIQUE constraint;
+    # after migration 0007 replaced it with a partial index, the predicate must be stated explicitly.
     result = await db.execute(
         text(
             "INSERT INTO tenants (name, api_key_hash, api_key_prefix, clerk_user_id) "
             "VALUES (:name, :api_key_hash, :api_key_prefix, :clerk_user_id) "
-            "ON CONFLICT (clerk_user_id) DO NOTHING "
+            "ON CONFLICT (clerk_user_id) WHERE deleted_at IS NULL AND clerk_user_id IS NOT NULL "
+            "DO NOTHING "
             "RETURNING id"
         ),
         {

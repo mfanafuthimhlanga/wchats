@@ -121,10 +121,10 @@ class TestPostAgents:
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
-                with unittest.mock.patch("app.api.v1.agents.chain") as mock_chain:
-                    mock_chain.return_value.apply_async = MagicMock()
+                with unittest.mock.patch("app.api.v1.agents.provision_neon") as mock_pn:
+                    mock_pn.apply_async = MagicMock()
                     response = await client.post(
-                        "/agents",
+                        "/api/v1/agents",
                         json=_VALID_PAYLOAD,
                         headers={"X-API-Key": "vrd_live_test"},
                     )
@@ -147,10 +147,10 @@ class TestPostAgents:
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
-                with unittest.mock.patch("app.api.v1.agents.chain") as mock_chain:
-                    mock_chain.return_value.apply_async = MagicMock()
+                with unittest.mock.patch("app.api.v1.agents.provision_neon") as mock_pn:
+                    mock_pn.apply_async = MagicMock()
                     response = await client.post(
-                        "/agents",
+                        "/api/v1/agents",
                         json=_VALID_PAYLOAD,
                         headers={"X-API-Key": "vrd_live_test"},
                     )
@@ -178,10 +178,10 @@ class TestPostAgents:
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
-                with unittest.mock.patch("app.api.v1.agents.chain") as mock_chain:
-                    mock_chain.return_value.apply_async = MagicMock()
+                with unittest.mock.patch("app.api.v1.agents.provision_neon") as mock_pn:
+                    mock_pn.apply_async = MagicMock()
                     response = await client.post(
-                        "/agents",
+                        "/api/v1/agents",
                         json=_VALID_PAYLOAD,
                         headers={"X-API-Key": "vrd_live_test"},
                     )
@@ -202,7 +202,7 @@ class TestPostAgents:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    "/agents",
+                    "/api/v1/agents",
                     json={
                         # name is missing
                         "soul": {"voice": "v", "do": [], "do_not": []},
@@ -226,7 +226,7 @@ class TestPostAgents:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    "/agents",
+                    "/api/v1/agents",
                     json={
                         "name": "Bot",
                         "soul": {"voice": "v", "do": [], "do_not": []},
@@ -250,7 +250,7 @@ class TestPostAgents:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    "/agents",
+                    "/api/v1/agents",
                     json={"name": "Bot", "role": "support"},
                     headers={"X-API-Key": "vrd_live_test"},
                 )
@@ -283,7 +283,7 @@ class TestGetAgent:
             ) as client:
                 nonexistent_id = uuid4()
                 response = await client.get(
-                    f"/agents/{nonexistent_id}",
+                    f"/api/v1/agents/{nonexistent_id}",
                     headers={"X-API-Key": "vrd_live_test"},
                 )
         finally:
@@ -310,7 +310,7 @@ class TestGetAgent:
             ) as client:
                 other_tenants_agent_id = uuid4()
                 response = await client.get(
-                    f"/agents/{other_tenants_agent_id}",
+                    f"/api/v1/agents/{other_tenants_agent_id}",
                     headers={"X-API-Key": "vrd_live_test"},
                 )
         finally:
@@ -333,7 +333,7 @@ class TestGetAgent:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.get(
-                    "/agents/not-a-valid-uuid",
+                    "/api/v1/agents/not-a-valid-uuid",
                     headers={"X-API-Key": "vrd_live_test"},
                 )
         finally:

@@ -18,9 +18,10 @@ import secrets
 import ssl
 
 import redis.asyncio as aioredis
+import structlog
 from fastapi import Depends, HTTPException, Security
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
-from jwt import InvalidTokenError
+from jwt import InvalidTokenError, PyJWKClientConnectionError, PyJWKClientError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +30,8 @@ from app.core.config import settings
 from app.core.database import get_async_db
 from app.core.security import hmac_key_prefix, verify_api_key
 from app.models.tenant import Tenant
+
+log = structlog.get_logger()
 
 # ---------------------------------------------------------------------------
 # Header extractors — auto_error=False for dual-auth (neither header is mandatory alone)
@@ -59,6 +62,7 @@ async def get_current_tenant(
                → existing argon2 HMAC-prefix lookup (O(1) + fallback scan for legacy rows)
 
     Raises HTTP 401 if neither credential is present or valid.
+    Raises HTTP 503 if the JWKS endpoint is unreachable (network error, not an auth failure).
     Never logs credentials (T-04-02).
     """
     # --- Path 1: Clerk JWT ---
@@ -82,9 +86,45 @@ async def get_current_tenant(
             )
         except HTTPException:
             raise
-        except Exception:
-            # T-04-03: no key fragment or DB error in detail string
+        except (PyJWKClientConnectionError, PyJWKClientError) as exc:
+            # JWKS endpoint unreachable or key set error — infrastructure failure,
+            # NOT an auth failure. Return 503 so the client knows to retry later.
+            # T-04-03: detail string contains no key fragment or raw exception message.
+            token_prefix = (bearer.credentials[:8] + "...") if bearer and len(bearer.credentials) > 8 else "(short)"
+            log.error(
+                "jwt.jwks_unavailable",
+                exc_type=type(exc).__name__,
+                token_prefix=token_prefix,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication service temporarily unavailable. Please retry.",
+            )
+        except InvalidTokenError as exc:
+            # JWT signature/expiry/format failure — genuine auth failure → 401.
+            token_prefix = (bearer.credentials[:8] + "...") if bearer and len(bearer.credentials) > 8 else "(short)"
+            log.warning(
+                "jwt.verify_failed",
+                exc_type=type(exc).__name__,
+                exc_msg=str(exc)[:200],
+                token_prefix=token_prefix,
+            )
             raise HTTPException(status_code=401, detail="Invalid session token")
+        except Exception as exc:
+            # Unexpected error (DB connection failure, ORM error, etc.) — log as
+            # error (not warning) and return 503 to avoid masking infra failures as 401.
+            # T-04-03: detail string contains no DB error message or key fragment.
+            token_prefix = (bearer.credentials[:8] + "...") if bearer and len(bearer.credentials) > 8 else "(short)"
+            log.error(
+                "jwt.unexpected_error",
+                exc_type=type(exc).__name__,
+                exc_msg=str(exc)[:200],
+                token_prefix=token_prefix,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication service temporarily unavailable. Please retry.",
+            )
 
     # --- Path 2: X-API-Key (legacy + service-account tokens) ---
     if api_key is not None:

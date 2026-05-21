@@ -9,6 +9,10 @@ type Role = 'support' | 'sales' | 'helpdesk'
 
 const POLL_TIMEOUT_TICKS = 60 // 60 ticks × 2s = 120s
 
+// Number of consecutive non-2xx responses before surfacing the error to the user.
+// Transient network hiccups (1-2 failures) are swallowed; sustained failures abort.
+const POLL_ERROR_TOLERANCE = 3
+
 export default function CreateAgentPage() {
   const router = useRouter()
   const { getToken } = useAuth()
@@ -30,6 +34,7 @@ export default function CreateAgentPage() {
   const isMountedRef = useRef(true)
   const agentIdRef = useRef<string | null>(null)
   const pollCountRef = useRef(0)
+  const pollErrorCountRef = useRef(0)
 
   // Cleanup polling on unmount (T-04.2-04-02 resource exhaustion guard)
   useEffect(() => {
@@ -38,6 +43,13 @@ export default function CreateAgentPage() {
       if (pollRef.current) clearInterval(pollRef.current)
     }
   }, [])
+
+  const _stopPoll = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -51,6 +63,7 @@ export default function CreateAgentPage() {
     setTimedOut(false)
     setPhase('provisioning')
     pollCountRef.current = 0
+    pollErrorCountRef.current = 0
 
     const token = await getToken()
     if (!token) {
@@ -105,8 +118,7 @@ export default function CreateAgentPage() {
 
         // Timeout after 60 ticks (120s)
         if (pollCountRef.current >= POLL_TIMEOUT_TICKS) {
-          clearInterval(pollRef.current!)
-          pollRef.current = null
+          _stopPoll()
           if (isMountedRef.current) {
             setTimedOut(true)
             setPhase('error')
@@ -120,7 +132,14 @@ export default function CreateAgentPage() {
 
         try {
           const pollToken = await getToken()
-          if (!pollToken) return
+          if (!pollToken) {
+            // Clerk session expired — cannot refresh JWT
+            if (!isMountedRef.current) return
+            _stopPoll()
+            setError('Your session expired. Please sign in again.')
+            setPhase('error')
+            return
+          }
 
           const currentAgentId = agentIdRef.current
           if (!currentAgentId) return
@@ -128,19 +147,58 @@ export default function CreateAgentPage() {
           const pollRes = await fetch(`${apiBase}/api/v1/agents/${currentAgentId}`, {
             headers: { Authorization: `Bearer ${pollToken}` },
           })
-          if (!pollRes.ok) return
+
+          if (!pollRes.ok) {
+            // Distinguish auth failures from transient errors.
+            // 401/403: session/auth problem — abort immediately, show actionable error.
+            // 5xx: server error — tolerate up to POLL_ERROR_TOLERANCE ticks, then abort.
+            // Other (404, 422): unexpected — abort immediately.
+            pollErrorCountRef.current += 1
+            if (!isMountedRef.current) return
+
+            if (pollRes.status === 401 || pollRes.status === 403) {
+              _stopPoll()
+              setError(
+                `Authentication failed (HTTP ${pollRes.status}). ` +
+                'Your session may have expired — please sign out and sign back in, ' +
+                'then try creating the agent again.',
+              )
+              setPhase('error')
+              return
+            }
+
+            if (pollRes.status >= 500) {
+              if (pollErrorCountRef.current >= POLL_ERROR_TOLERANCE) {
+                _stopPoll()
+                setError(
+                  `Server error (HTTP ${pollRes.status}) polling agent status. ` +
+                  'Check that the FastAPI server is running on localhost:8000.',
+                )
+                setPhase('error')
+              }
+              // else: tolerate transient 5xx, retry next tick
+              return
+            }
+
+            // Unexpected status (404, 422, etc.) — abort
+            _stopPoll()
+            setError(`Unexpected response (HTTP ${pollRes.status}) polling agent status.`)
+            setPhase('error')
+            return
+          }
+
+          // Successful response — reset consecutive error counter
+          pollErrorCountRef.current = 0
 
           const pollData: { status: string } = await pollRes.json()
           if (!isMountedRef.current) return
           setStatus(pollData.status)
 
           if (pollData.status === 'ready') {
-            clearInterval(pollRef.current!)
-            pollRef.current = null
+            _stopPoll()
             router.push('/agents/' + currentAgentId)
-          } else if (pollData.status === 'error') {
-            clearInterval(pollRef.current!)
-            pollRef.current = null
+          } else if (pollData.status === 'error' || pollData.status === 'failed') {
+            _stopPoll()
             setError('Provisioning failed. Please try again.')
             setPhase('error')
           }
@@ -156,11 +214,9 @@ export default function CreateAgentPage() {
   }
 
   const handleReset = () => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
+    _stopPoll()
     pollCountRef.current = 0
+    pollErrorCountRef.current = 0
     setName('')
     setRole('support')
     setError(null)
