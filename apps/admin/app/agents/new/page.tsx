@@ -1,88 +1,36 @@
 'use client'
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuth } from '@clerk/nextjs'
 import { useRouter } from 'next/navigation'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import JourneyStepper, { type JourneyStep } from '../../components/JourneyStepper'
 
-type Phase = 'form' | 'provisioning' | 'error'
 type Role = 'support' | 'sales' | 'helpdesk'
-
-const POLL_TIMEOUT_TICKS = 60 // 60 ticks × 2s = 120s
-
-// Number of consecutive non-2xx responses before surfacing the error to the user.
-// Transient network hiccups (1-2 failures) are swallowed; sustained failures abort.
-const POLL_ERROR_TOLERANCE = 3
 
 export default function CreateAgentPage() {
   const router = useRouter()
-  const { getToken } = useAuth()
+  const { getToken, isLoaded, isSignedIn } = useAuth()
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ''
 
   // Form fields
   const [name, setName] = useState('')
   const [role, setRole] = useState<Role>('support')
 
-  // Wizard state
-  const [phase, setPhase] = useState<Phase>('form')
-  const [error, setError] = useState<string | null>(null)
+  // agentId is set after a successful mutation; drives polling
   const [agentId, setAgentId] = useState<string | null>(null)
-  const [status, setStatus] = useState<string>('')
-  const [timedOut, setTimedOut] = useState(false)
 
-  // Polling refs — cleaned up on unmount and on success/error
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const isMountedRef = useRef(true)
-  const agentIdRef = useRef<string | null>(null)
-  const pollCountRef = useRef(0)
-  const pollErrorCountRef = useRef(0)
+  // --- Mutation: provision + create agent ---
+  const mutation = useMutation({
+    mutationFn: async ({ agentName, agentRole }: { agentName: string; agentRole: Role }) => {
+      const token = await getToken()
+      if (!token) throw new Error('Not authenticated. Please sign in.')
 
-  // Cleanup polling on unmount (T-04.2-04-02 resource exhaustion guard)
-  useEffect(() => {
-    return () => {
-      isMountedRef.current = false
-      if (pollRef.current) clearInterval(pollRef.current)
-    }
-  }, [])
-
-  const _stopPoll = () => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
-  }
-
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-
-    if (!name.trim()) {
-      setError('Agent name is required.')
-      return
-    }
-
-    setError(null)
-    setTimedOut(false)
-    setPhase('provisioning')
-    pollCountRef.current = 0
-    pollErrorCountRef.current = 0
-
-    const token = await getToken()
-    if (!token) {
-      setError('Not authenticated. Please sign in.')
-      setPhase('error')
-      return
-    }
-
-    try {
       // Ensure tenant row exists — webhooks don't fire in local dev
       const provRes = await fetch(`${apiBase}/me/provision`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       })
-      if (!provRes.ok) {
-        setError(`Provision failed: HTTP ${provRes.status}`)
-        setPhase('error')
-        return
-      }
+      if (!provRes.ok) throw new Error(`Provision failed: HTTP ${provRes.status}`)
 
       // POST /api/v1/agents
       const res = await fetch(`${apiBase}/api/v1/agents`, {
@@ -92,140 +40,104 @@ export default function CreateAgentPage() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          name: name.trim(),
-          role,
+          name: agentName.trim(),
+          role: agentRole,
           soul: { voice: '', do: [], do_not: [] },
         }),
       })
-
-      if (!res.ok) {
-        const msg = `Create failed: HTTP ${res.status}`
-        setError(msg)
-        setPhase('error')
-        return
-      }
+      if (!res.ok) throw new Error(`Create failed: HTTP ${res.status}`)
 
       const data: { agent_id: string; job_id: string; status: string; events_url: string } =
         await res.json()
-      const createdAgentId = data.agent_id
-      setAgentId(createdAgentId)
-      agentIdRef.current = createdAgentId
-      setStatus('pending')
+      return { agent_id: data.agent_id, job_id: data.job_id }
+    },
+  })
 
-      // Poll GET /api/v1/agents/{id} every 2s — polling only, not SSE (see RESEARCH Pitfall 4)
-      pollRef.current = setInterval(async () => {
-        pollCountRef.current += 1
-
-        // Timeout after 60 ticks (120s)
-        if (pollCountRef.current >= POLL_TIMEOUT_TICKS) {
-          _stopPoll()
-          if (isMountedRef.current) {
-            setTimedOut(true)
-            setPhase('error')
-            setError(
-              'This is taking longer than expected. Make sure your Celery worker is running:\n' +
-              'celery -A app.worker.celery_app worker -Q pipeline,runtime --loglevel=info',
-            )
-          }
-          return
-        }
-
-        try {
-          const pollToken = await getToken()
-          if (!pollToken) {
-            // Clerk session expired — cannot refresh JWT
-            if (!isMountedRef.current) return
-            _stopPoll()
-            setError('Your session expired. Please sign in again.')
-            setPhase('error')
-            return
-          }
-
-          const currentAgentId = agentIdRef.current
-          if (!currentAgentId) return
-
-          const pollRes = await fetch(`${apiBase}/api/v1/agents/${currentAgentId}`, {
-            headers: { Authorization: `Bearer ${pollToken}` },
-          })
-
-          if (!pollRes.ok) {
-            // Distinguish auth failures from transient errors.
-            // 401/403: session/auth problem — abort immediately, show actionable error.
-            // 5xx: server error — tolerate up to POLL_ERROR_TOLERANCE ticks, then abort.
-            // Other (404, 422): unexpected — abort immediately.
-            pollErrorCountRef.current += 1
-            if (!isMountedRef.current) return
-
-            if (pollRes.status === 401 || pollRes.status === 403) {
-              _stopPoll()
-              setError(
-                `Authentication failed (HTTP ${pollRes.status}). ` +
-                'Your session may have expired — please sign out and sign back in, ' +
-                'then try creating the agent again.',
-              )
-              setPhase('error')
-              return
-            }
-
-            if (pollRes.status >= 500) {
-              if (pollErrorCountRef.current >= POLL_ERROR_TOLERANCE) {
-                _stopPoll()
-                setError(
-                  `Server error (HTTP ${pollRes.status}) polling agent status. ` +
-                  'Check that the FastAPI server is running on localhost:8000.',
-                )
-                setPhase('error')
-              }
-              // else: tolerate transient 5xx, retry next tick
-              return
-            }
-
-            // Unexpected status (404, 422, etc.) — abort
-            _stopPoll()
-            setError(`Unexpected response (HTTP ${pollRes.status}) polling agent status.`)
-            setPhase('error')
-            return
-          }
-
-          // Successful response — reset consecutive error counter
-          pollErrorCountRef.current = 0
-
-          const pollData: { status: string } = await pollRes.json()
-          if (!isMountedRef.current) return
-          setStatus(pollData.status)
-
-          if (pollData.status === 'ready') {
-            _stopPoll()
-            router.push('/agents/' + currentAgentId)
-          } else if (pollData.status === 'error' || pollData.status === 'failed') {
-            _stopPoll()
-            setError('Provisioning failed. Please try again.')
-            setPhase('error')
-          }
-        } catch (pollErr) {
-          console.error('Poll error:', pollErr)
-        }
-      }, 2000)
-    } catch (err) {
-      console.error(err)
-      setError('Failed to create agent. Please try again.')
-      setPhase('error')
+  // Set agentId when mutation succeeds
+  useEffect(() => {
+    if (mutation.data?.agent_id) {
+      setAgentId(mutation.data.agent_id)
     }
+  }, [mutation.data?.agent_id])
+
+  // --- Query: poll agent status ---
+  const pollQuery = useQuery({
+    queryKey: ['agent-status', agentId],
+    queryFn: async () => {
+      const token = await getToken()
+      if (!token) throw new Error('Session expired')
+      const res = await fetch(`${apiBase}/api/v1/agents/${agentId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.json() as Promise<{ status: string }>
+    },
+    enabled: !!agentId,
+    refetchInterval: (query) => {
+      const s = query.state.data?.status
+      if (s === 'ready' || s === 'error' || s === 'failed') return false
+      return 2000
+    },
+    retry: 3,
+    retryDelay: 2000,
+  })
+
+  // Navigate to agent page once ready
+  useEffect(() => {
+    if (pollQuery.data?.status === 'ready' && agentId) {
+      router.push('/agents/' + agentId)
+    }
+  }, [pollQuery.data?.status, agentId, router])
+
+  // --- Derived phase ---
+  const polledStatus = pollQuery.data?.status ?? ''
+  const isTerminalError =
+    mutation.isError ||
+    pollQuery.isError ||
+    polledStatus === 'error' ||
+    polledStatus === 'failed'
+
+  const phase =
+    isTerminalError
+      ? 'error'
+      : mutation.isPending || (agentId && !pollQuery.data)
+      ? 'provisioning'
+      : agentId
+      ? 'provisioning'
+      : 'form'
+
+  // --- Error message ---
+  let errorMessage: string | null = null
+  if (mutation.isError) {
+    errorMessage = `Create failed: ${(mutation.error as Error).message}`
+  } else if (pollQuery.isError) {
+    errorMessage = 'Provisioning check failed. Check your server is running.'
+  } else if (polledStatus === 'error' || polledStatus === 'failed') {
+    errorMessage = 'Provisioning failed. Please try again.'
+  }
+
+  // --- Handlers ---
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+
+    if (!name.trim()) {
+      // Surface a validation error inline — mutation hasn't been called yet
+      return
+    }
+
+    if (!isLoaded || !isSignedIn) return
+
+    mutation.mutate({ agentName: name, agentRole: role })
   }
 
   const handleReset = () => {
-    _stopPoll()
-    pollCountRef.current = 0
-    pollErrorCountRef.current = 0
+    mutation.reset()
+    setAgentId(null)
     setName('')
     setRole('support')
-    setError(null)
-    setAgentId(null)
-    setStatus('')
-    setTimedOut(false)
-    setPhase('form')
   }
 
+  // --- Styles ---
   const inputStyle: React.CSSProperties = {
     width: '100%',
     padding: '10px 12px',
@@ -249,7 +161,7 @@ export default function CreateAgentPage() {
     marginBottom: '6px',
   }
 
-  // Left-panel journey steps — step 1 active during form/provisioning, done only when agent ready
+  // Left-panel journey steps
   const steps: JourneyStep[] = [
     {
       num: 1,
@@ -311,22 +223,7 @@ export default function CreateAgentPage() {
         {/* Form phase */}
         {phase === 'form' && (
           <form onSubmit={handleSubmit} style={{ maxWidth: '480px' }}>
-            {error && (
-              <div
-                role="alert"
-                style={{
-                  padding: '12px 16px',
-                  marginBottom: '20px',
-                  background: 'var(--red-bg)',
-                  border: '1px solid rgba(192,57,43,0.3)',
-                  borderRadius: 'var(--radius-xs)',
-                  fontSize: '14px',
-                  color: 'var(--red)',
-                }}
-              >
-                {error}
-              </div>
-            )}
+            {!name.trim() && mutation.isIdle ? null : null}
 
             {/* Agent name */}
             <div style={{ marginBottom: '20px' }}>
@@ -407,7 +304,7 @@ export default function CreateAgentPage() {
               Setting up a dedicated database. This usually takes about 30 seconds.
             </p>
             <p style={{ fontSize: '13px', color: 'var(--text-4)', fontFamily: 'var(--font-mono)' }}>
-              Current status: {status || 'pending'}
+              Current status: {polledStatus || 'pending'}
             </p>
             {agentId && (
               <p style={{ fontSize: '12px', color: 'var(--text-4)', marginTop: '8px', fontFamily: 'var(--font-mono)' }}>
@@ -430,10 +327,9 @@ export default function CreateAgentPage() {
                 borderRadius: 'var(--radius-xs)',
                 fontSize: '14px',
                 color: 'var(--red)',
-                whiteSpace: timedOut ? 'pre-line' : undefined,
               }}
             >
-              {error}
+              {errorMessage}
             </div>
             <button
               onClick={handleReset}
@@ -450,7 +346,7 @@ export default function CreateAgentPage() {
                 fontFamily: 'var(--font-sans)',
               }}
             >
-              {timedOut ? 'Retry' : 'Try again'}
+              Try again
             </button>
           </div>
         )}
