@@ -1,7 +1,7 @@
 'use client'
 import { usePathname } from 'next/navigation'
-import { UserButton } from '@clerk/nextjs'
 import Link from 'next/link'
+import UserAvatar from './UserAvatar'
 
 const NAV_LINKS = [
   { href: '/agents', label: 'Agents' },
@@ -65,7 +65,7 @@ export default function TopNav() {
       </div>
 
       {/* User avatar */}
-      <UserButton appearance={{ elements: { avatarBox: { width: 32, height: 32 } } }} />
+      <UserAvatar />
     </nav>
   )
 }
