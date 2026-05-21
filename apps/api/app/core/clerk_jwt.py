@@ -9,6 +9,7 @@ Security: azp claim NOT validated per 04-9-RESEARCH.md Pitfall 3
 (azp absent in some Clerk token configurations).
 """
 
+from datetime import timedelta
 from functools import lru_cache
 from typing import Any
 
@@ -54,6 +55,10 @@ def verify_clerk_jwt(token: str) -> dict[str, Any]:
                 # Do not require audience — Clerk session tokens have no aud by default
                 "verify_aud": False,
             },
+            # 10s leeway absorbs clock skew between client and server.
+            # Freshly-refreshed Clerk tokens can have nbf == now(), which
+            # fails verify_nbf when server clock is a few seconds behind.
+            leeway=timedelta(seconds=10),
         )
         return payload
     except Exception as exc:
