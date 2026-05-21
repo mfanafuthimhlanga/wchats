@@ -53,6 +53,15 @@ os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret-for-tests-only")
 os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "whsec_test123456789abcdefghijklmnop")
 
+# M4.1: Clerk JWKS URL — must be set explicitly to prevent the config default
+# (https://api.clerk.com/v1/jwks) from being used. The default generic URL
+# does not contain the instance-specific signing key; any token signed by an
+# instance-specific Clerk key will fail verification (InvalidTokenError → 401)
+# if this is not overridden. Unit tests that exercise the JWT path should mock
+# verify_clerk_jwt directly; this value prevents the lru_cache from being
+# poisoned with the generic URL for tests that import app.main early.
+os.environ.setdefault("CLERK_JWKS_URL", "https://test.clerk.accounts.dev/.well-known/jwks.json")
+
 # Celery eager mode — tasks run synchronously in the test process,
 # no running worker required (unit tests only; integration tests override this).
 os.environ.setdefault("CELERY_TASK_ALWAYS_EAGER", "True")
