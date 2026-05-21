@@ -46,6 +46,24 @@ export default function AgentsDashboardPage() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
 
+  // Deletes an agent via DELETE /api/v1/agents/{id}. Removes from local state
+  // on a 204 response. Throws on failure so the card can surface an inline
+  // error next to its own Delete button (we do not optimistically remove —
+  // the card stays visible until the server confirms the delete).
+  const handleDelete = async (agentId: string) => {
+    const token = await getToken()
+    if (!token) throw new Error('Not authenticated. Please sign in again.')
+
+    const res = await fetch(`${apiBase}/api/v1/agents/${agentId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (res.status !== 204) {
+      throw new Error(`Delete failed (HTTP ${res.status})`)
+    }
+    setAgents((prev) => prev.filter((a) => a.id !== agentId))
+  }
+
   useEffect(() => {
     const loadAgents = async () => {
       try {
@@ -183,7 +201,7 @@ export default function AgentsDashboardPage() {
           }}
         >
           {agents.map((a) => (
-            <AgentCard key={a.id} {...a} />
+            <AgentCard key={a.id} {...a} onDelete={handleDelete} />
           ))}
         </div>
       )}
