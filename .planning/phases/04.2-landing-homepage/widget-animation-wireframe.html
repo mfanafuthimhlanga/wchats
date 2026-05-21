@@ -1,0 +1,1341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Widget Animation Storyboard — HeroSteps Extended</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg:            #F0E8E0;
+      --surface-1:     #FFFCF9;
+      --surface-2:     #F7F0EA;
+      --surface-3:     #EDE3D8;
+      --border:        #D9CCBE;
+      --border-soft:   #EDE3D8;
+      --accent:        #7B1C3A;
+      --accent-hover:  #5E1229;
+      --accent-deep:   #3D0B1F;
+      --accent-dim:    rgba(123,28,58,0.08);
+      --gold:          #B8860B;
+      --text-1:        #1A0A0F;
+      --text-2:        #4A2030;
+      --text-3:        #8A6060;
+      --text-4:        #C4A0A0;
+      --green:         #166534;
+      --green-bg:      #F0FDF4;
+      --amber:         #92400E;
+      --amber-bg:      #FEF3C7;
+      --orange:        #C2540A;
+      --orange-dim:    rgba(194,84,10,0.10);
+      --radius-xs:     8px;
+      --radius-sm:     14px;
+      --radius-md:     20px;
+      --font-sans:     "Inter", system-ui, -apple-system, sans-serif;
+      --font-mono:     "JetBrains Mono", ui-monospace, monospace;
+      --shadow-card:   0 1px 2px rgba(74,32,48,0.04), 0 4px 12px rgba(74,32,48,0.06);
+      --shadow-lift:   0 4px 8px rgba(74,32,48,0.04), 0 16px 32px rgba(74,32,48,0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #C8B8AC;
+      font-family: var(--font-sans);
+      color: var(--text-1);
+      -webkit-font-smoothing: antialiased;
+      font-feature-settings: "ss01","cv11";
+    }
+
+    .page {
+      max-width: 1360px;
+      margin: 0 auto;
+      padding: 56px 32px 96px;
+    }
+
+    /* ============ Page header ============ */
+    .doc-header {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 36px 40px;
+      margin-bottom: 32px;
+      box-shadow: var(--shadow-card);
+    }
+    .doc-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      background: var(--accent-dim);
+      padding: 6px 12px;
+      border-radius: 999px;
+      margin-bottom: 16px;
+    }
+    .doc-eyebrow::before {
+      content: "";
+      width: 6px; height: 6px;
+      background: var(--accent);
+      border-radius: 50%;
+    }
+    .doc-title {
+      font-size: 36px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin: 0 0 12px;
+      color: var(--text-1);
+    }
+    .doc-subtitle {
+      font-size: 15px;
+      line-height: 1.55;
+      color: var(--text-3);
+      max-width: 720px;
+      margin: 0;
+    }
+    .doc-meta {
+      display: flex;
+      gap: 24px;
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border-soft);
+      flex-wrap: wrap;
+    }
+    .doc-meta-item {
+      font-size: 12px;
+      color: var(--text-3);
+    }
+    .doc-meta-item strong {
+      color: var(--text-1);
+      font-weight: 600;
+    }
+
+    /* ============ Legend strip ============ */
+    .legend {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      margin-bottom: 32px;
+      padding: 16px 20px;
+      background: var(--bg);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-sm);
+    }
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-2);
+      font-weight: 500;
+    }
+    .legend-dot {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      border: 2px solid;
+      flex-shrink: 0;
+    }
+    .legend-dot.upcoming { border-color: var(--text-4); background: transparent; }
+    .legend-dot.active   { border-color: var(--orange); background: var(--orange-dim); }
+    .legend-dot.done     { border-color: var(--green); background: var(--green); }
+    .legend-anim {
+      font-style: italic;
+      color: var(--orange);
+      font-size: 11px;
+    }
+
+    /* ============ Grid of frames ============ */
+    .frames-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 24px;
+    }
+    @media (max-width: 1080px) {
+      .frames-grid { grid-template-columns: 1fr; }
+    }
+
+    .frame {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 24px;
+      box-shadow: var(--shadow-card);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .frame-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .frame-num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px; height: 32px;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .frame-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-1);
+      letter-spacing: -0.01em;
+      flex: 1;
+    }
+    .frame-phase {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-3);
+      background: var(--surface-3);
+      padding: 4px 8px;
+      border-radius: 6px;
+    }
+
+    /* ============ Dual panel (steps + widget) ============ */
+    .stage {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+      background: var(--surface-2);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-sm);
+      padding: 18px;
+      min-height: 380px;
+    }
+    .stage-steps { width: 200px; flex-shrink: 0; }
+    .stage-widget {
+      width: 260px;
+      flex-shrink: 0;
+      margin-left: auto;
+    }
+
+    /* ============ Steps list (left side) ============ */
+    .steps-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .step {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 12px;
+      background: var(--surface-1);
+      border: 1px solid var(--border-soft);
+      border-radius: 10px;
+      transition: all 0.3s;
+    }
+    .step.upcoming { opacity: 0.45; }
+    .step.active {
+      border-color: var(--orange);
+      box-shadow: 0 0 0 3px var(--orange-dim);
+    }
+    .step.done {
+      border-color: var(--green);
+      background: var(--green-bg);
+    }
+    .step-circle {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      border: 2px solid var(--text-4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-3);
+      flex-shrink: 0;
+      background: var(--surface-1);
+    }
+    .step.active .step-circle {
+      border-color: var(--orange);
+      color: var(--orange);
+      background: #fff;
+      position: relative;
+    }
+    .step.active .step-circle::after {
+      content: "";
+      position: absolute;
+      inset: -5px;
+      border-radius: 50%;
+      border: 2px solid var(--orange);
+      opacity: 0.4;
+    }
+    .step.done .step-circle {
+      background: var(--green);
+      border-color: var(--green);
+      color: #fff;
+    }
+    .step-body { flex: 1; min-width: 0; }
+    .step-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-1);
+      margin-bottom: 2px;
+      letter-spacing: -0.01em;
+    }
+    .step-desc {
+      font-size: 10.5px;
+      color: var(--text-3);
+      line-height: 1.35;
+    }
+    .step.done .step-title { color: var(--green); }
+
+    /* ============ Widget (right side) ============ */
+    .widget {
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      box-shadow: var(--shadow-lift);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .widget.empty .widget-body {
+      min-height: 240px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-4);
+      font-size: 11px;
+      font-style: italic;
+    }
+    .widget.fading {
+      opacity: 0.3;
+      filter: blur(0.5px);
+    }
+    .widget-bar {
+      height: 36px;
+      background: var(--accent);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      gap: 8px;
+    }
+    .widget-bar-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #fff;
+      flex: 1;
+    }
+    .widget-live {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      color: rgba(255,255,255,0.85);
+      font-family: var(--font-mono);
+      letter-spacing: 0.05em;
+    }
+    .widget-live::before {
+      content: "";
+      width: 6px; height: 6px;
+      background: #4ade80;
+      border-radius: 50%;
+      box-shadow: 0 0 6px #4ade80;
+    }
+    .widget-body {
+      padding: 12px;
+      background: var(--surface-2);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 240px;
+      max-height: 320px;
+      overflow: hidden;
+    }
+    .widget-input {
+      height: 48px;
+      border-top: 1px solid var(--border-soft);
+      background: var(--surface-1);
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      gap: 8px;
+    }
+    .widget-input-field {
+      flex: 1;
+      height: 30px;
+      background: var(--surface-2);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      font-size: 11px;
+      color: var(--text-4);
+    }
+    .widget-input-cursor {
+      width: 1px; height: 13px;
+      background: var(--accent);
+      margin-left: 2px;
+    }
+    .widget-send {
+      width: 30px; height: 30px;
+      background: var(--accent);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-size: 12px;
+    }
+    .widget-send.pulse {
+      box-shadow: 0 0 0 4px var(--accent-dim);
+    }
+
+    /* Messages */
+    .msg-agent {
+      background: var(--surface-1);
+      border: 1px solid var(--border-soft);
+      border-left: 3px solid var(--accent);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 11.5px;
+      line-height: 1.45;
+      color: var(--text-1);
+      max-width: 85%;
+      align-self: flex-start;
+    }
+    .msg-user {
+      background: var(--accent);
+      color: #fff;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 11.5px;
+      line-height: 1.45;
+      max-width: 75%;
+      align-self: flex-end;
+    }
+
+    /* Typing dots */
+    .typing-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 8px 10px;
+      background: var(--surface-1);
+      border: 1px solid var(--border-soft);
+      border-left: 3px solid var(--accent);
+      border-radius: 8px;
+      align-self: flex-start;
+    }
+    .typing-dot {
+      width: 5px; height: 5px;
+      background: var(--accent);
+      border-radius: 50%;
+      opacity: 0.6;
+    }
+    .typing-dot:nth-child(2) { opacity: 0.8; }
+    .typing-dot:nth-child(3) { opacity: 1; }
+
+    /* Source chips */
+    .source-chips {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      align-self: flex-start;
+      max-width: 85%;
+    }
+    .source-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      background: var(--surface-1);
+      border: 1px solid var(--border-soft);
+      border-radius: 999px;
+      font-size: 10px;
+      color: var(--text-2);
+      font-family: var(--font-mono);
+      position: relative;
+      overflow: hidden;
+    }
+    .source-chip::after {
+      content: "";
+      position: absolute;
+      top: 0; bottom: 0;
+      left: 30%;
+      width: 1px;
+      background: linear-gradient(to bottom, transparent, var(--accent), transparent);
+      opacity: 0.6;
+    }
+    .source-chip-icon { color: var(--accent); }
+
+    /* Citations inline */
+    .citations {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+      margin-top: 6px;
+    }
+    .citation {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      color: var(--accent);
+      background: var(--accent-dim);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    /* OTP boxes */
+    .otp-row {
+      display: flex;
+      gap: 5px;
+      margin-top: 4px;
+      align-self: flex-start;
+    }
+    .otp-cell {
+      width: 28px; height: 32px;
+      border: 1.5px solid var(--border);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: 600;
+      background: var(--surface-1);
+      color: var(--text-1);
+    }
+    .otp-cell.active {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-dim);
+    }
+    .otp-cell.filled {
+      background: var(--surface-1);
+      border-color: var(--border);
+    }
+    .otp-cursor {
+      width: 1px; height: 14px;
+      background: var(--accent);
+    }
+    .verified-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10.5px;
+      font-weight: 600;
+      color: var(--green);
+      background: var(--green-bg);
+      border: 1px solid var(--green);
+      padding: 4px 8px;
+      border-radius: 999px;
+      align-self: flex-start;
+      margin-top: 4px;
+    }
+
+    /* Stripe card form */
+    .stripe-card {
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      align-self: stretch;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .stripe-row {
+      display: flex;
+      gap: 6px;
+    }
+    .stripe-field {
+      flex: 1;
+      height: 32px;
+      background: var(--surface-2);
+      border: 1px solid var(--border-soft);
+      border-radius: 6px;
+      padding: 0 9px;
+      display: flex;
+      align-items: center;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-1);
+    }
+    .stripe-field.active {
+      border-color: var(--accent);
+      background: #fff;
+      box-shadow: 0 0 0 3px var(--accent-dim);
+    }
+    .stripe-field-label {
+      font-size: 9px;
+      font-family: var(--font-mono);
+      color: var(--text-3);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-right: 6px;
+    }
+    .stripe-pay {
+      height: 36px;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .stripe-pay.success {
+      background: var(--green);
+    }
+    .stripe-pay.success::before {
+      content: "✓";
+      margin-right: 6px;
+      font-weight: 700;
+    }
+
+    /* Receipt card */
+    .receipt {
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      line-height: 1.6;
+      color: var(--text-2);
+      align-self: stretch;
+    }
+    .receipt-title {
+      font-size: 9.5px;
+      letter-spacing: 0.12em;
+      font-weight: 700;
+      color: var(--accent);
+      text-align: center;
+      margin-bottom: 4px;
+    }
+    .receipt-divider {
+      border-top: 1px dashed var(--border);
+      margin: 4px 0;
+    }
+    .receipt-row {
+      display: flex;
+      justify-content: space-between;
+    }
+    .receipt-total {
+      font-weight: 700;
+      color: var(--text-1);
+    }
+    .receipt-paid { color: var(--green); }
+
+    /* ============ Caption ============ */
+    .caption {
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--text-2);
+      padding: 12px 14px;
+      background: var(--surface-1);
+      border: 1px solid var(--border-soft);
+      border-left: 3px solid var(--accent);
+      border-radius: 8px;
+    }
+    .caption-prefix {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--accent);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-right: 8px;
+    }
+
+    /* ============ Anim notation ============ */
+    .anim-note {
+      font-style: italic;
+      font-size: 10px;
+      color: var(--orange);
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      margin-top: 2px;
+    }
+    .anim-note::before { content: "⟳"; }
+
+    /* Greeting outline shimmer */
+    .widget.outline .widget-bar {
+      background: repeating-linear-gradient(45deg, var(--accent), var(--accent) 8px, var(--accent-hover) 8px, var(--accent-hover) 16px);
+      opacity: 0.35;
+    }
+    .widget.outline .widget-body {
+      background: var(--surface-2);
+      border: 1px dashed var(--border);
+    }
+    .shimmer-line {
+      height: 10px;
+      background: linear-gradient(90deg, var(--surface-3), var(--border-soft), var(--surface-3));
+      border-radius: 4px;
+      width: 60%;
+    }
+    .shimmer-line.short { width: 35%; }
+
+    /* Cursor blink visual */
+    .cursor {
+      display: inline-block;
+      width: 1px;
+      height: 12px;
+      background: var(--accent);
+      vertical-align: -2px;
+      margin-left: 1px;
+    }
+
+    /* Footer block */
+    .doc-footer {
+      margin-top: 56px;
+      padding: 24px 28px;
+      background: var(--bg);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-sm);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 24px;
+      flex-wrap: wrap;
+    }
+    .doc-footer-label {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-3);
+    }
+    .doc-footer-actions {
+      display: flex;
+      gap: 12px;
+    }
+    .pseudo-btn {
+      padding: 8px 16px;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .pseudo-btn.ghost {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+
+    <!-- ============ HEADER ============ -->
+    <header class="doc-header">
+      <span class="doc-eyebrow">Design Approval · Storyboard</span>
+      <h1 class="doc-title">Widget Animation Storyboard — HeroSteps Extended</h1>
+      <p class="doc-subtitle">
+        Fourteen static frames showing every phase of the extended HeroSteps animation for the Veridian / Chats landing page. Each frame pairs the four-step provisioning panel with the corresponding widget state. Approve here, build once.
+      </p>
+      <div class="doc-meta">
+        <div class="doc-meta-item"><strong>Component:</strong> HeroSteps (extended)</div>
+        <div class="doc-meta-item"><strong>Frames:</strong> 14</div>
+        <div class="doc-meta-item"><strong>Frame size:</strong> 200px steps + 260px widget</div>
+        <div class="doc-meta-item"><strong>Cycle:</strong> Provision → Configure → Test → Deploy → Widget demo → reset</div>
+        <div class="doc-meta-item"><strong>Total runtime:</strong> ~18 s</div>
+      </div>
+    </header>
+
+    <!-- ============ LEGEND ============ -->
+    <section class="legend" aria-label="Legend">
+      <span class="legend-item"><span class="legend-dot upcoming"></span> Upcoming step (0.45 opacity)</span>
+      <span class="legend-item"><span class="legend-dot active"></span> Active step (orange · pulsing ring)</span>
+      <span class="legend-item"><span class="legend-dot done"></span> Done step (green ✓)</span>
+      <span class="legend-item legend-anim">⟳ animated marker — element animates in the live build</span>
+    </section>
+
+    <!-- ============ FRAMES GRID ============ -->
+    <div class="frames-grid">
+
+      <!-- ============ FRAME 1 ============ -->
+      <article class="frame">
+        <header class="frame-header">
+          <span class="frame-num">01</span>
+          <h2 class="frame-title">Provision → Deploy cycling (existing)</h2>
+          <span class="frame-phase">Setup</span>
+        </header>
+        <div class="stage">
+          <div class="stage-steps">
+            <div class="steps-list">
+              <div class="step done">
+                <div class="step-circle">✓</div>
+                <div class="step-body">
+                  <div class="step-title">1 · Provision</div>
+                  <div class="step-desc">Dedicated tenant database ready</div>
+                </div>
+              </div>
+              <div class="step done">
+                <div class="step-circle">✓</div>
+                <div class="step-body">
+                  <div class="step-title">2 · Configure</div>
+                  <div class="step-desc">Soul + documents ingested</div>
+                </div>
+              </div>
+              <div class="step done">
+                <div class="step-circle">✓</div>
+                <div class="step-body">
+                  <div class="step-title">3 · Test</div>
+                  <div class="step-desc">Evals running</div>
+                </div>
+              </div>
+              <div class="step active">
+                <div class="step-circle">4</div>
+                <div class="step-body">
+                  <div class="step-title">4 · Deploy</div>
+                  <div class="step-desc">Embed widget live</div>
+                  <span class="anim-note">pulse ring</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="stage-widget">
+            <div class="widget empty">
+              <div class="widget-bar">
+                <div class="widget-bar-title">Bakery Assistant</div>
+                <span class="widget-live">Live</span>
+              </div>
+              <div class="widget-body">
+                Widget not yet rendered
+              </div>
+              <div class="widget-input">
+                <div class="widget-input-field">Type a message…</div>
+                <div class="widget-send">→</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="caption"><span class="caption-prefix">F01</span>Steps cycle orange → green every 2.4 s. Widget area remains a faint placeholder. <span class="anim-note">step state cycles</span></p>
+      </article>
+
+      <!-- ============ FRAME 2 ============ -->
+      <article class="frame">
+        <header class="frame-header">
+          <span class="frame-num">02</span>
+          <h2 class="frame-title">All Done · Deploy Green</h2>
+          <span class="frame-phase">Handoff</span>
+        </header>
+        <div class="stage">
+          <div class="stage-steps">
+            <div class="steps-list">
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">1 · Provision</div><div class="step-desc">Dedicated tenant database ready</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">2 · Configure</div><div class="step-desc">Soul + documents ingested</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">3 · Test</div><div class="step-desc">Evals running</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">4 · Deploy</div><div class="step-desc">Embed widget live</div></div></div>
+            </div>
+          </div>
+          <div class="stage-widget">
+            <div class="widget outline">
+              <div class="widget-bar">
+                <div class="widget-bar-title">Bakery Assistant</div>
+                <span class="widget-live">Live</span>
+              </div>
+              <div class="widget-body">
+                <div class="shimmer-line"></div>
+                <div class="shimmer-line short"></div>
+                <span class="anim-note">widget outline materialising</span>
+              </div>
+              <div class="widget-input">
+                <div class="widget-input-field">…</div>
+                <div class="widget-send">→</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="caption"><span class="caption-prefix">F02</span>All four steps hold green for ~1.2 s, then the widget shell slides in from the right with an easing curve. <span class="anim-note">widget enter</span></p>
+      </article>
+
+      <!-- ============ FRAME 3 ============ -->
+      <article class="frame">
+        <header class="frame-header">
+          <span class="frame-num">03</span>
+          <h2 class="frame-title">Widget: Agent Greeting</h2>
+          <span class="frame-phase">Conversation start</span>
+        </header>
+        <div class="stage">
+          <div class="stage-steps">
+            <div class="steps-list">
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">1 · Provision</div><div class="step-desc">Dedicated tenant database ready</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">2 · Configure</div><div class="step-desc">Soul + documents ingested</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">3 · Test</div><div class="step-desc">Evals running</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">4 · Deploy</div><div class="step-desc">Embed widget live</div></div></div>
+            </div>
+          </div>
+          <div class="stage-widget">
+            <div class="widget">
+              <div class="widget-bar"><div class="widget-bar-title">Bakery Assistant</div><span class="widget-live">Live</span></div>
+              <div class="widget-body">
+                <div class="msg-agent">Hi! 👋 I'm Maya, your Lakewood Bakery assistant. Ask me anything about our menu, orders, or delivery.<span class="cursor"></span></div>
+              </div>
+              <div class="widget-input">
+                <div class="widget-input-field">Type a message…<span class="widget-input-cursor"></span></div>
+                <div class="widget-send">→</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="caption"><span class="caption-prefix">F03</span>Widget fades in. Greeting types character by character (≈ 28 ms / char). Input cursor blinks. <span class="anim-note">typing + cursor blink</span></p>
+      </article>
+
+      <!-- ============ FRAME 4 ============ -->
+      <article class="frame">
+        <header class="frame-header">
+          <span class="frame-num">04</span>
+          <h2 class="frame-title">Customer: Delivery question</h2>
+          <span class="frame-phase">User turn</span>
+        </header>
+        <div class="stage">
+          <div class="stage-steps">
+            <div class="steps-list">
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">1 · Provision</div><div class="step-desc">Dedicated tenant database ready</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">2 · Configure</div><div class="step-desc">Soul + documents ingested</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">3 · Test</div><div class="step-desc">Evals running</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">4 · Deploy</div><div class="step-desc">Embed widget live</div></div></div>
+            </div>
+          </div>
+          <div class="stage-widget">
+            <div class="widget">
+              <div class="widget-bar"><div class="widget-bar-title">Bakery Assistant</div><span class="widget-live">Live</span></div>
+              <div class="widget-body">
+                <div class="msg-agent">Hi! 👋 I'm Maya, your Lakewood Bakery assistant. Ask me anything about our menu, orders, or delivery.</div>
+                <div class="msg-user">What areas do you deliver to, and what days/times?<span class="cursor"></span></div>
+              </div>
+              <div class="widget-input">
+                <div class="widget-input-field">What areas do you deliver to…</div>
+                <div class="widget-send pulse">→</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="caption"><span class="caption-prefix">F04</span>User message types in the input field, then animates up into the message stack. Send button pulses, then fires. <span class="anim-note">type → send pulse → message bubble</span></p>
+      </article>
+
+      <!-- ============ FRAME 5 ============ -->
+      <article class="frame">
+        <header class="frame-header">
+          <span class="frame-num">05</span>
+          <h2 class="frame-title">RAG Retrieval in progress</h2>
+          <span class="frame-phase">Agent reasoning</span>
+        </header>
+        <div class="stage">
+          <div class="stage-steps">
+            <div class="steps-list">
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">1 · Provision</div><div class="step-desc">Dedicated tenant database ready</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">2 · Configure</div><div class="step-desc">Soul + documents ingested</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">3 · Test</div><div class="step-desc">Evals running</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">4 · Deploy</div><div class="step-desc">Embed widget live</div></div></div>
+            </div>
+          </div>
+          <div class="stage-widget">
+            <div class="widget">
+              <div class="widget-bar"><div class="widget-bar-title">Bakery Assistant</div><span class="widget-live">Live</span></div>
+              <div class="widget-body">
+                <div class="msg-user">What areas do you deliver to, and what days/times?</div>
+                <div class="typing-row">
+                  <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
+                </div>
+                <div class="source-chips">
+                  <span class="source-chip"><span class="source-chip-icon">📄</span> Menu &amp; Delivery Policy.pdf</span>
+                  <span class="source-chip"><span class="source-chip-icon">📄</span> Opening Hours.pdf</span>
+                </div>
+                <span class="anim-note">dots pulse · chips scan in sequence</span>
+              </div>
+              <div class="widget-input">
+                <div class="widget-input-field">Type a message…</div>
+                <div class="widget-send">→</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="caption"><span class="caption-prefix">F05</span>Three pulsing dots signal reasoning. Source chips animate in sequentially with a vertical scanning-line sweep (≈ 1.5 s total). <span class="anim-note">retrieval indicator</span></p>
+      </article>
+
+      <!-- ============ FRAME 6 ============ -->
+      <article class="frame">
+        <header class="frame-header">
+          <span class="frame-num">06</span>
+          <h2 class="frame-title">Agent: Delivery answer with citations</h2>
+          <span class="frame-phase">Grounded response</span>
+        </header>
+        <div class="stage">
+          <div class="stage-steps">
+            <div class="steps-list">
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">1 · Provision</div><div class="step-desc">Dedicated tenant database ready</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">2 · Configure</div><div class="step-desc">Soul + documents ingested</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">3 · Test</div><div class="step-desc">Evals running</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">4 · Deploy</div><div class="step-desc">Embed widget live</div></div></div>
+            </div>
+          </div>
+          <div class="stage-widget">
+            <div class="widget">
+              <div class="widget-bar"><div class="widget-bar-title">Bakery Assistant</div><span class="widget-live">Live</span></div>
+              <div class="widget-body">
+                <div class="msg-user">What areas do you deliver to, and what days/times?</div>
+                <div class="msg-agent">
+                  We deliver to Northside, Eastpark &amp; Downtown ✦ Mon–Fri 9am–6pm · Sat 9am–2pm, no Sunday delivery.
+                  <div class="citations">
+                    <span class="citation">[1] Delivery Policy.pdf</span>
+                    <span class="citation">[2] Opening Hours.pdf</span>
+                  </div>
+                </div>
+              </div>
+              <div class="widget-input">
+                <div class="widget-input-field">Type a message…</div>
+                <div class="widget-send">→</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="caption"><span class="caption-prefix">F06</span>Answer types in word by word. Citation chips fade in 200 ms after the answer completes — visual proof of grounding. <span class="anim-note">word reveal + citation fade-in</span></p>
+      </article>
+
+      <!-- ============ FRAME 7 ============ -->
+      <article class="frame">
+        <header class="frame-header">
+          <span class="frame-num">07</span>
+          <h2 class="frame-title">Customer: Tiramisu order</h2>
+          <span class="frame-phase">User turn</span>
+        </header>
+        <div class="stage">
+          <div class="stage-steps">
+            <div class="steps-list">
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">1 · Provision</div><div class="step-desc">Dedicated tenant database ready</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">2 · Configure</div><div class="step-desc">Soul + documents ingested</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">3 · Test</div><div class="step-desc">Evals running</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">4 · Deploy</div><div class="step-desc">Embed widget live</div></div></div>
+            </div>
+          </div>
+          <div class="stage-widget">
+            <div class="widget">
+              <div class="widget-bar"><div class="widget-bar-title">Bakery Assistant</div><span class="widget-live">Live</span></div>
+              <div class="widget-body">
+                <div class="msg-agent">We deliver to Northside, Eastpark &amp; Downtown ✦ Mon–Fri 9am–6pm · Sat 9am–2pm.</div>
+                <div class="msg-user">I'd love to order 3 tiramisu for my birthday next Tuesday 🎂<span class="cursor"></span></div>
+              </div>
+              <div class="widget-input">
+                <div class="widget-input-field">I'd love to order 3 tiramisu…</div>
+                <div class="widget-send pulse">→</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="caption"><span class="caption-prefix">F07</span>Conversation progresses. Customer pivots from question to intent: ordering. Same type → send → bubble flow as F04. <span class="anim-note">message bubble</span></p>
+      </article>
+
+      <!-- ============ FRAME 8 ============ -->
+      <article class="frame">
+        <header class="frame-header">
+          <span class="frame-num">08</span>
+          <h2 class="frame-title">Agent: Collect customer details</h2>
+          <span class="frame-phase">Form-gathering</span>
+        </header>
+        <div class="stage">
+          <div class="stage-steps">
+            <div class="steps-list">
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">1 · Provision</div><div class="step-desc">Dedicated tenant database ready</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">2 · Configure</div><div class="step-desc">Soul + documents ingested</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">3 · Test</div><div class="step-desc">Evals running</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">4 · Deploy</div><div class="step-desc">Embed widget live</div></div></div>
+            </div>
+          </div>
+          <div class="stage-widget">
+            <div class="widget">
+              <div class="widget-bar"><div class="widget-bar-title">Bakery Assistant</div><span class="widget-live">Live</span></div>
+              <div class="widget-body">
+                <div class="msg-user">I'd love to order 3 tiramisu for my birthday next Tuesday 🎂</div>
+                <div class="msg-agent">What a lovely choice! 🎉 To place your order securely, I'll need your full name, email address, and delivery address.<span class="cursor"></span></div>
+              </div>
+              <div class="widget-input">
+                <div class="widget-input-field">Type a message…</div>
+                <div class="widget-send">→</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="caption"><span class="caption-prefix">F08</span>Agent confirms intent and requests the three identity fields. Types in with the same cadence as previous agent messages. <span class="anim-note">typing</span></p>
+      </article>
+
+      <!-- ============ FRAME 9 ============ -->
+      <article class="frame">
+        <header class="frame-header">
+          <span class="frame-num">09</span>
+          <h2 class="frame-title">Customer: Provides details</h2>
+          <span class="frame-phase">User turn</span>
+        </header>
+        <div class="stage">
+          <div class="stage-steps">
+            <div class="steps-list">
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">1 · Provision</div><div class="step-desc">Dedicated tenant database ready</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">2 · Configure</div><div class="step-desc">Soul + documents ingested</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">3 · Test</div><div class="step-desc">Evals running</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">4 · Deploy</div><div class="step-desc">Embed widget live</div></div></div>
+            </div>
+          </div>
+          <div class="stage-widget">
+            <div class="widget">
+              <div class="widget-bar"><div class="widget-bar-title">Bakery Assistant</div><span class="widget-live">Live</span></div>
+              <div class="widget-body">
+                <div class="msg-agent">To place your order securely, I'll need your full name, email address, and delivery address.</div>
+                <div class="msg-user">Sarah Mitchell · sarah@example.com · 14 Maple Ave, Northside<span class="cursor"></span></div>
+              </div>
+              <div class="widget-input">
+                <div class="widget-input-field">Sarah Mitchell · sarah@example.com…</div>
+                <div class="widget-send pulse">→</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="caption"><span class="caption-prefix">F09</span>Customer responds with all three fields in one message. Demonstrates the agent can parse free-form structured data without a rigid form. <span class="anim-note">message bubble</span></p>
+      </article>
+
+      <!-- ============ FRAME 10 ============ -->
+      <article class="frame">
+        <header class="frame-header">
+          <span class="frame-num">10</span>
+          <h2 class="frame-title">Agent: Sends verification code</h2>
+          <span class="frame-phase">Identity check</span>
+        </header>
+        <div class="stage">
+          <div class="stage-steps">
+            <div class="steps-list">
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">1 · Provision</div><div class="step-desc">Dedicated tenant database ready</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">2 · Configure</div><div class="step-desc">Soul + documents ingested</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">3 · Test</div><div class="step-desc">Evals running</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">4 · Deploy</div><div class="step-desc">Embed widget live</div></div></div>
+            </div>
+          </div>
+          <div class="stage-widget">
+            <div class="widget">
+              <div class="widget-bar"><div class="widget-bar-title">Bakery Assistant</div><span class="widget-live">Live</span></div>
+              <div class="widget-body">
+                <div class="msg-user">Sarah Mitchell · sarah@example.com · 14 Maple Ave, Northside</div>
+                <div class="msg-agent">Perfect! I've sent a 6-digit code to <strong>sarah@example.com</strong>. Enter it below to verify:</div>
+                <div class="otp-row">
+                  <div class="otp-cell active"><span class="otp-cursor"></span></div>
+                  <div class="otp-cell"></div>
+                  <div class="otp-cell"></div>
+                  <div class="otp-cell"></div>
+                  <div class="otp-cell"></div>
+                  <div class="otp-cell"></div>
+                </div>
+                <span class="anim-note">first cell focused, cursor blinks</span>
+              </div>
+              <div class="widget-input">
+                <div class="widget-input-field">Type a message…</div>
+                <div class="widget-send">→</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="caption"><span class="caption-prefix">F10</span>An inline OTP component appears below the agent message — same widget, no modal. First cell auto-focuses with a blinking cursor. <span class="anim-note">OTP focus</span></p>
+      </article>
+
+      <!-- ============ FRAME 11 ============ -->
+      <article class="frame">
+        <header class="frame-header">
+          <span class="frame-num">11</span>
+          <h2 class="frame-title">Customer enters OTP + verified</h2>
+          <span class="frame-phase">Identity verified</span>
+        </header>
+        <div class="stage">
+          <div class="stage-steps">
+            <div class="steps-list">
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">1 · Provision</div><div class="step-desc">Dedicated tenant database ready</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">2 · Configure</div><div class="step-desc">Soul + documents ingested</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">3 · Test</div><div class="step-desc">Evals running</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">4 · Deploy</div><div class="step-desc">Embed widget live</div></div></div>
+            </div>
+          </div>
+          <div class="stage-widget">
+            <div class="widget">
+              <div class="widget-bar"><div class="widget-bar-title">Bakery Assistant</div><span class="widget-live">Live</span></div>
+              <div class="widget-body">
+                <div class="msg-agent">I've sent a 6-digit code to <strong>sarah@example.com</strong>. Enter it below to verify:</div>
+                <div class="otp-row">
+                  <div class="otp-cell filled">8</div>
+                  <div class="otp-cell filled">4</div>
+                  <div class="otp-cell filled">7</div>
+                  <div class="otp-cell filled">2</div>
+                  <div class="otp-cell filled">9</div>
+                  <div class="otp-cell filled">1</div>
+                </div>
+                <span class="verified-badge">✓ Verified</span>
+                <div class="msg-agent">✓ Verified! Now let's complete your payment for 3 × Tiramisu (<strong>$89.97</strong>):</div>
+              </div>
+              <div class="widget-input">
+                <div class="widget-input-field">Type a message…</div>
+                <div class="widget-send">→</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="caption"><span class="caption-prefix">F11</span>Digits drop into OTP cells one at a time (~120 ms each). Verified badge slides up. Agent confirms total. <span class="anim-note">cell fill cascade + badge slide</span></p>
+      </article>
+
+      <!-- ============ FRAME 12 ============ -->
+      <article class="frame">
+        <header class="frame-header">
+          <span class="frame-num">12</span>
+          <h2 class="frame-title">Stripe payment card</h2>
+          <span class="frame-phase">Checkout</span>
+        </header>
+        <div class="stage">
+          <div class="stage-steps">
+            <div class="steps-list">
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">1 · Provision</div><div class="step-desc">Dedicated tenant database ready</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">2 · Configure</div><div class="step-desc">Soul + documents ingested</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">3 · Test</div><div class="step-desc">Evals running</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">4 · Deploy</div><div class="step-desc">Embed widget live</div></div></div>
+            </div>
+          </div>
+          <div class="stage-widget">
+            <div class="widget">
+              <div class="widget-bar"><div class="widget-bar-title">Bakery Assistant</div><span class="widget-live">Live</span></div>
+              <div class="widget-body">
+                <div class="msg-agent">Complete your payment for 3 × Tiramisu (<strong>$89.97</strong>):</div>
+                <div class="stripe-card">
+                  <div class="stripe-field active">
+                    <span class="stripe-field-label">Card</span>4242 4242 4242 4242<span class="cursor"></span>
+                  </div>
+                  <div class="stripe-row">
+                    <div class="stripe-field"><span class="stripe-field-label">Exp</span>04 / 28</div>
+                    <div class="stripe-field"><span class="stripe-field-label">CVC</span>424</div>
+                  </div>
+                  <div class="stripe-pay">Pay $89.97</div>
+                </div>
+                <span class="anim-note">card field active, value typing in</span>
+              </div>
+              <div class="widget-input">
+                <div class="widget-input-field">Type a message…</div>
+                <div class="widget-send">→</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="caption"><span class="caption-prefix">F12</span>Stripe Elements-style card form mounts inside the widget. Card number field is active (accent ring); test card fills in character by character. <span class="anim-note">card form mount + input</span></p>
+      </article>
+
+      <!-- ============ FRAME 13 ============ -->
+      <article class="frame">
+        <header class="frame-header">
+          <span class="frame-num">13</span>
+          <h2 class="frame-title">Payment success</h2>
+          <span class="frame-phase">Order confirmed</span>
+        </header>
+        <div class="stage">
+          <div class="stage-steps">
+            <div class="steps-list">
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">1 · Provision</div><div class="step-desc">Dedicated tenant database ready</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">2 · Configure</div><div class="step-desc">Soul + documents ingested</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">3 · Test</div><div class="step-desc">Evals running</div></div></div>
+              <div class="step done"><div class="step-circle">✓</div><div class="step-body"><div class="step-title">4 · Deploy</div><div class="step-desc">Embed widget live</div></div></div>
+            </div>
+          </div>
+          <div class="stage-widget">
+            <div class="widget">
+              <div class="widget-bar"><div class="widget-bar-title">Bakery Assistant</div><span class="widget-live">Live</span></div>
+              <div class="widget-body">
+                <div class="stripe-pay success">Paid $89.97</div>
+                <div class="msg-agent">🎉 Payment confirmed! Order <strong>#VRD-2847</strong> placed.</div>
+                <div class="receipt">
+                  <div class="receipt-title">ORDER RECEIPT</div>
+                  <div class="receipt-divider"></div>
+                  <div class="receipt-row"><span>3× Tiramisu</span><span>$89.97</span></div>
+                  <div class="receipt-row"><span>Delivery</span><span>Tue 26 May</span></div>
+                  <div class="receipt-row"><span>Address</span><span>14 Maple Ave</span></div>
+                  <div class="receipt-divider"></div>
+                  <div class="receipt-row receipt-total"><span>Total</span><span>$89.97</span></div>
+                  <div class="receipt-row receipt-paid"><span>✓ Paid</span><span>**** 4242</span></div>
+                  <div class="receipt-row"><span>Order #</span><span>VRD-2847</span></div>
+                </div>
+              </div>
+              <div class="widget-input">
+                <div class="widget-input-field">Type a message…</div>
+                <div class="widget-send">→</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="caption"><span class="caption-prefix">F13</span>Pay button morphs to green with check. Webhook confirms payment → receipt card scales in below the agent message with mono receipt styling. <span class="anim-note">button morph + receipt reveal</span></p>
+      </article>
+
+      <!-- ============ FRAME 14 ============ -->
+      <article class="frame">
+        <header class="frame-header">
+          <span class="frame-num">14</span>
+          <h2 class="frame-title">Loop → Reset</h2>
+          <span class="frame-phase">Cycle restart</span>
+        </header>
+        <div class="stage">
+          <div class="stage-steps">
+            <div class="steps-list">
+              <div class="step active">
+                <div class="step-circle">1</div>
+                <div class="step-body">
+                  <div class="step-title">1 · Provision</div>
+                  <div class="step-desc">Dedicated tenant database ready</div>
+                  <span class="anim-note">pulse ring</span>
+                </div>
+              </div>
+              <div class="step upcoming"><div class="step-circle">2</div><div class="step-body"><div class="step-title">2 · Configure</div><div class="step-desc">Soul + documents ingested</div></div></div>
+              <div class="step upcoming"><div class="step-circle">3</div><div class="step-body"><div class="step-title">3 · Test</div><div class="step-desc">Evals running</div></div></div>
+              <div class="step upcoming"><div class="step-circle">4</div><div class="step-body"><div class="step-title">4 · Deploy</div><div class="step-desc">Embed widget live</div></div></div>
+            </div>
+          </div>
+          <div class="stage-widget">
+            <div class="widget fading">
+              <div class="widget-bar"><div class="widget-bar-title">Bakery Assistant</div><span class="widget-live">Live</span></div>
+              <div class="widget-body">
+                <div class="msg-agent" style="opacity: 0.4;">🎉 Payment confirmed! Order <strong>#VRD-2847</strong> placed.</div>
+                <span class="anim-note">widget fading to 0 opacity</span>
+              </div>
+              <div class="widget-input">
+                <div class="widget-input-field">…</div>
+                <div class="widget-send">→</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="caption"><span class="caption-prefix">F14</span>After ~3 s holding the receipt, widget fades to 0 opacity over 600 ms. Steps reset: step 1 returns to active orange. Cycle restarts at F01. <span class="anim-note">widget fade-out + steps reset</span></p>
+      </article>
+
+    </div>
+
+    <!-- ============ FOOTER ============ -->
+    <footer class="doc-footer">
+      <div>
+        <div class="doc-footer-label">Approval</div>
+        <div style="font-size: 14px; color: var(--text-2); margin-top: 4px;">Sign off on the storyboard before we build the animated React component.</div>
+      </div>
+      <div class="doc-footer-actions">
+        <span class="pseudo-btn ghost">Request changes</span>
+        <span class="pseudo-btn">Approve storyboard</span>
+      </div>
+    </footer>
+
+  </main>
+</body>
+</html>
