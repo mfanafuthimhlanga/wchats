@@ -1,10 +1,13 @@
 import type { Metadata } from 'next'
 import { Inter, JetBrains_Mono } from 'next/font/google'
+import localFont from 'next/font/local'
 import { ClerkProvider } from '@clerk/nextjs'
+import SignOutTab from './components/SignOutTab'
 import './globals.css'
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter' })
 const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono-loaded' })
+const fungkyBrow = localFont({ src: '../public/fonts/FungkyBrowDEMO.otf', variable: '--font-pixelify' })
 
 export const metadata: Metadata = {
   title: 'Chats',
@@ -28,8 +31,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${inter.variable} ${mono.variable}`}>
-        <ClerkProvider>{children}</ClerkProvider>
+      <body className={`${inter.variable} ${mono.variable} ${fungkyBrow.variable}`}>
+        <ClerkProvider>
+          {children}
+          <SignOutTab />
+        </ClerkProvider>
       </body>
     </html>
   )
