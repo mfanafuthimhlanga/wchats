@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { Inter, JetBrains_Mono } from 'next/font/google'
 import localFont from 'next/font/local'
 import { ClerkProvider } from '@clerk/nextjs'
+import QueryProvider from './components/QueryProvider'
 import SignOutTab from './components/SignOutTab'
 import './globals.css'
 
@@ -97,8 +98,10 @@ export default function RootLayout({
     <html lang="en">
       <body className={`${inter.variable} ${mono.variable} ${fungkyBrow.variable}`}>
         <ClerkProvider appearance={clerkAppearance}>
-          {children}
-          <SignOutTab />
+          <QueryProvider>
+            {children}
+            <SignOutTab />
+          </QueryProvider>
         </ClerkProvider>
       </body>
     </html>
