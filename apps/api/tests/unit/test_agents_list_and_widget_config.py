@@ -1,8 +1,9 @@
 """
 Unit tests for:
-  - GET  /agents               — list_agents (T-04.2-02-01: tenant isolation)
-  - GET  /agents/{id}/widget-config — get_widget_config
-  - POST /agents/{id}/widget-config — save_widget_config
+  - GET    /agents               — list_agents (T-04.2-02-01: tenant isolation)
+  - GET    /agents/{id}/widget-config — get_widget_config
+  - POST   /agents/{id}/widget-config — save_widget_config
+  - DELETE /agents/{id}          — delete_agent (soft-delete + IDOR guard)
 
 Tests:
   1. test_list_agents_returns_tenant_scoped_list        — 200; two agents returned
@@ -12,6 +13,11 @@ Tests:
   5. test_save_widget_config_persists_payload           — 200; model_dump persisted; commit awaited
   6. test_save_widget_config_rejects_invalid_hex        — 422; invalid hex color rejected
   7. test_widget_config_not_owned_returns_404           — 404; IDOR guard enforced
+  8. test_delete_agent_soft_deletes_and_returns_204     — 204; deleted_at stamped, commit awaited
+  9. test_delete_agent_not_owned_returns_404            — 404; IDOR guard, no commit
+
+Routes are mounted under the /api/v1 prefix (app.main:include_router), so all
+request paths use that prefix.
 
 Uses ASGITransport + AsyncClient + dependency_overrides (same pattern as test_agents_patch.py).
 """
@@ -122,7 +128,7 @@ class TestListAgents:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.get(
-                    "/agents",
+                    "/api/v1/agents",
                     headers={"X-API-Key": "vrd_live_test"},
                 )
         finally:
@@ -147,7 +153,7 @@ class TestListAgents:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.get(
-                    "/agents",
+                    "/api/v1/agents",
                     headers={"X-API-Key": "vrd_live_test"},
                 )
         finally:
@@ -176,7 +182,7 @@ class TestGetWidgetConfig:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.get(
-                    f"/agents/{agent_id}/widget-config",
+                    f"/api/v1/agents/{agent_id}/widget-config",
                     headers={"X-API-Key": "vrd_live_test"},
                 )
         finally:
@@ -200,7 +206,7 @@ class TestGetWidgetConfig:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.get(
-                    f"/agents/{agent_id}/widget-config",
+                    f"/api/v1/agents/{agent_id}/widget-config",
                     headers={"X-API-Key": "vrd_live_test"},
                 )
         finally:
@@ -235,7 +241,7 @@ class TestSaveWidgetConfig:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    f"/agents/{agent_id}/widget-config",
+                    f"/api/v1/agents/{agent_id}/widget-config",
                     json={},  # all defaults
                     headers={"X-API-Key": "vrd_live_test"},
                 )
@@ -258,7 +264,7 @@ class TestSaveWidgetConfig:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    f"/agents/{agent_id}/widget-config",
+                    f"/api/v1/agents/{agent_id}/widget-config",
                     json={"colors": {"widget_bg": "notahex"}},
                     headers={"X-API-Key": "vrd_live_test"},
                 )
@@ -282,10 +288,65 @@ class TestSaveWidgetConfig:
             ) as client:
                 other_tenants_agent_id = uuid4()
                 response = await client.get(
-                    f"/agents/{other_tenants_agent_id}/widget-config",
+                    f"/api/v1/agents/{other_tenants_agent_id}/widget-config",
                     headers={"X-API-Key": "vrd_live_test"},
                 )
         finally:
             app.dependency_overrides.clear()
 
         assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+class TestDeleteAgent:
+    async def test_delete_agent_soft_deletes_and_returns_204(self):
+        """DELETE /agents/{id} sets deleted_at, commits, and returns 204."""
+        fake_tenant = _make_fake_tenant()
+        agent_id = uuid4()
+        agent = _make_mock_agent(fake_tenant.id, agent_id=agent_id)
+        agent.deleted_at = None
+        mock_db = _make_mock_db_with_agent(agent)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.delete(
+                    f"/api/v1/agents/{agent_id}",
+                    headers={"X-API-Key": "vrd_live_test"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 204
+        # Soft-delete: deleted_at stamped, row not physically removed
+        assert agent.deleted_at is not None
+        mock_db.commit.assert_awaited_once()
+
+    async def test_delete_agent_not_owned_returns_404(self):
+        """DELETE /agents/{id} for an agent owned by a different tenant → 404 (IDOR guard)."""
+        fake_tenant = _make_fake_tenant()
+        # DB returns None — agent not found for this tenant (tenant_id filter)
+        mock_db = _make_mock_db_no_agent()
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                other_tenants_agent_id = uuid4()
+                response = await client.delete(
+                    f"/api/v1/agents/{other_tenants_agent_id}",
+                    headers={"X-API-Key": "vrd_live_test"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 404
+        # No commit on the not-found path — nothing was mutated
+        mock_db.commit.assert_not_called()

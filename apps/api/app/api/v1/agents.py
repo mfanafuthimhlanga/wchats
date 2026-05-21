@@ -10,6 +10,8 @@ Security:
     - tenant_id sourced from authenticated Tenant (not request body) — T-04-04.
     - GET /agents/{agent_id} filters by both agent.id AND tenant_id — T-04-05.
     - PATCH /agents/{agent_id} enforces tenant ownership (T-04-06-03).
+    - DELETE /agents/{agent_id} soft-deletes; tenant_id filter prevents IDOR
+      (cross-tenant delete).
 
 Architecture:
     - POST /agents does NOT emit events inline — the "started" event is emitted
@@ -19,9 +21,10 @@ Architecture:
       (RESEARCH.md §Pattern 10).
 """
 
+from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.contextvars import get_contextvars
@@ -200,6 +203,45 @@ async def patch_agent(
 
     # 6. Return full agent representation
     return AgentDetailResponse.model_validate(agent)
+
+
+@router.delete("/agents/{agent_id}", status_code=204)
+async def delete_agent(
+    agent_id: UUID,
+    db: AsyncSession = Depends(get_async_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> Response:
+    """Soft-delete an agent by setting deleted_at.
+
+    Soft-delete (not hard DELETE) preserves the row for audit trails and for any
+    foreign-key references (jobs, documents). All read routes already filter on
+    deleted_at IS NULL, so a soft-deleted agent disappears from the API surface.
+
+    Security:
+        Filters by both agent.id AND tenant_id so a tenant cannot delete another
+        tenant's agent (IDOR). Returns 404 if not found or owned by another tenant.
+
+    Idempotency:
+        Re-deleting an already-deleted agent returns 404 (the deleted_at IS NULL
+        filter excludes it), which is the same response as a non-existent agent.
+
+    Returns 204 No Content on success.
+    """
+    result = await db.execute(
+        select(Agent).where(
+            Agent.id == agent_id,
+            Agent.tenant_id == tenant.id,
+            Agent.deleted_at.is_(None),
+        )
+    )
+    agent = result.scalar_one_or_none()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    agent.deleted_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    return Response(status_code=204)
 
 
 @router.get("/agents/{agent_id}/widget-config")
