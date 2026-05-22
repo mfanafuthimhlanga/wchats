@@ -95,10 +95,9 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [progressLabel, setProgressLabel] = useState<string | null>(null)
-  // Neutral (non-error) status surfaced after a stream ends without a terminal
-  // event — e.g. timeout/abort or a dropped connection. Distinct from
-  // submitError so it does not render as a red alert.
-  const [progressNotice, setProgressNotice] = useState<string | null>(null)
+  // When true, refetchInterval on docsQuery polls every 3 s until all docs
+  // leave pending/processing — used after stream drops without terminal event.
+  const [pollingActive, setPollingActive] = useState(false)
   // Epoch ms when the current job started; null when no job is running. Drives
   // the elapsed-time counter (see elapsedSeconds effect below).
   const [jobStartedAt, setJobStartedAt] = useState<number | null>(null)
@@ -164,21 +163,22 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
     },
     enabled: isLoaded && !!isSignedIn && agentQuery.data?.status === 'ready',
     staleTime: 10_000,
+    refetchInterval: pollingActive ? 3_000 : false,
   })
+
+  // Stop polling once every document has left pending/processing.
+  useEffect(() => {
+    if (!pollingActive) return
+    const docs = docsQuery.data ?? []
+    if (docs.length === 0) return
+    if (docs.every((d) => d.parse_status !== 'pending' && d.parse_status !== 'processing')) {
+      setPollingActive(false)
+    }
+  }, [pollingActive, docsQuery.data])
 
   const agentStatus = agentQuery.data?.status ?? null
   const documents = docsQuery.data ?? []
   const loadError = agentQuery.isError ? 'Failed to load agent. Please refresh.' : null
-
-  // ---------------------------------------------------------------------------
-  // TanStack Query: invalidate + refetch the documents list.
-  // Used after a job reaches a terminal state so freshly-ingested rows
-  // (and their final parse_status / chunk_count) appear without a manual reload.
-  // ---------------------------------------------------------------------------
-
-  const refreshDocuments = useCallback(async () => {
-    await queryClient.invalidateQueries({ queryKey: ['agent-documents', id] })
-  }, [queryClient, id])
 
   const handleDeleteDoc = useCallback(
     async (docId: string) => {
@@ -239,9 +239,8 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
     // Always: refetch real docs, drop optimistic rows, clear the in-progress
     // label/timer, and re-enable the form.
     const teardown = async () => {
-      // The job may have produced (or be finishing) real rows server-side; pull
-      // whatever exists now so the KB list reflects reality.
-      await refreshDocuments()
+      // Await the refetch so optimistic rows stay visible until real rows land.
+      await queryClient.refetchQueries({ queryKey: ['agent-documents', id] })
       setOptimisticDocs([])
       setProgressLabel(null)
       setSubmitting(false)
@@ -264,7 +263,6 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
 
       if (eventType === 'job.complete') {
         sawTerminal = true
-        setProgressNotice('Processing complete.')
         return true
       }
       if (eventType === 'job.failed') {
@@ -319,24 +317,17 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
         }
       }
 
-      // Reader returned done:true. If we got here WITHOUT a terminal event the
-      // Celery chain may have finished but the connection dropped before
-      // job.complete arrived (network blip, server restart). Surface a neutral
-      // hint rather than leaving the form stuck.
-      if (!sawTerminal) {
-        setProgressNotice('Upload submitted — refresh to see status.')
-      }
+      // Reader returned done:true without a terminal event — connection dropped.
+      // Polling (via pollingActive) will auto-refresh the KB list below.
     } catch (err) {
-      if ((err as Error).name === 'AbortError') {
-        // Timeout/abort: the job is very likely still running server-side.
-        setProgressNotice('Taking longer than expected — check back in a moment.')
-      } else {
+      if ((err as Error).name !== 'AbortError') {
         setSubmitError('Lost connection to job stream. The job may still be running.')
       }
     } finally {
       clearTimeout(timeoutId)
-      // Cleanup is unconditional: terminal event, silent drop, abort, or error
-      // all funnel through here so `submitting` is always cleared.
+      // If the stream ended without a terminal event, start polling so the KB
+      // list auto-refreshes until parse_status leaves pending/processing.
+      if (!sawTerminal) setPollingActive(true)
       await teardown()
     }
   }
@@ -396,8 +387,8 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
 
   const handleSubmit = async () => {
     setSubmitError(null)
-    setProgressNotice(null)
     setProgressLabel(null)
+    setPollingActive(false)
 
     // Snapshot the sources being submitted so we can render optimistic
     // "processing" rows in the KB list while the job runs. Captured before the
@@ -584,7 +575,6 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   setSubmitError(null)
                   setUrlError(null)
                   setProgressLabel(null)
-                  setProgressNotice(null)
                   setSubmitting(false)
                   setJobStartedAt(null)
                 }}
@@ -620,66 +610,6 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
               }}
             >
               {submitError}
-            </div>
-          )}
-
-          {/* Progress indicator — live label + elapsed-time counter so a long
-              job visibly stays alive. */}
-          {submitting && progressLabel && (
-            <div
-              role="status"
-              aria-live="polite"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '12px',
-                padding: '12px 16px',
-                marginBottom: '16px',
-                background: 'var(--accent-dim)',
-                border: '1px solid rgba(123,28,58,0.15)',
-                borderRadius: 'var(--radius-xs)',
-                fontSize: '14px',
-                color: 'var(--accent)',
-                fontWeight: 500,
-              }}
-            >
-              <span>{progressLabel}</span>
-              {jobStartedAt !== null && (
-                <span
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: '12px',
-                    fontVariantNumeric: 'tabular-nums',
-                    opacity: 0.8,
-                    flexShrink: 0,
-                  }}
-                >
-                  {formatElapsed(elapsedSeconds)}
-                </span>
-              )}
-            </div>
-          )}
-
-          {/* Neutral notice — shown after a stream ends without a terminal event
-              (timeout/abort or a dropped connection). Not an error: the job may
-              still be running or already finished server-side. */}
-          {progressNotice && !submitting && (
-            <div
-              role="status"
-              aria-live="polite"
-              style={{
-                padding: '12px 16px',
-                marginBottom: '16px',
-                background: 'var(--surface-2)',
-                border: '1px solid var(--border-soft)',
-                borderRadius: 'var(--radius-xs)',
-                fontSize: '14px',
-                color: 'var(--text-2)',
-                fontWeight: 500,
-              }}
-            >
-              {progressNotice}
             </div>
           )}
 

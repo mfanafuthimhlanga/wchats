@@ -145,3 +145,8 @@ async def event_generator(
 
             if terminal_seen:
                 return
+
+            # Keepalive comment — prevents HTTP intermediaries from closing the
+            # connection during long jobs where no new events are emitted for
+            # several poll cycles (e.g. during a multi-batch Haiku run).
+            yield ServerSentEvent(comment="keepalive")
