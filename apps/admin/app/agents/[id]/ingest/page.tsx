@@ -1,5 +1,5 @@
 'use client'
-import { useState, useRef, useCallback, use } from 'react'
+import { useState, useRef, useCallback, useEffect, use } from 'react'
 import { useAuth } from '@clerk/nextjs'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import DocumentDetailModal from './DocumentDetailModal'
@@ -59,6 +59,21 @@ function getParseStatusColor(status: string) {
   return PARSE_STATUS_COLORS[status] ?? { bg: 'var(--surface-3)', fg: 'var(--text-3)' }
 }
 
+// SSE stream is aborted after this long. URL ingestion with Haiku extraction can
+// run for several minutes, so the cap is generous; on abort the form is reset to
+// usable and a neutral "check back" message is shown (the job may still finish
+// server-side). See readSseProgress.
+const SSE_TIMEOUT_MS = 600_000 // 10 min
+
+// Render an elapsed-seconds counter as "Xs" or "Xm Xs" so the user can see the
+// job is still alive during long ingests.
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return `${m}m ${s}s`
+}
+
 // ---------------------------------------------------------------------------
 // IngestPage
 // ---------------------------------------------------------------------------
@@ -79,6 +94,14 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [progressLabel, setProgressLabel] = useState<string | null>(null)
+  // Neutral (non-error) status surfaced after a stream ends without a terminal
+  // event — e.g. timeout/abort or a dropped connection. Distinct from
+  // submitError so it does not render as a red alert.
+  const [progressNotice, setProgressNotice] = useState<string | null>(null)
+  // Epoch ms when the current job started; null when no job is running. Drives
+  // the elapsed-time counter (see elapsedSeconds effect below).
+  const [jobStartedAt, setJobStartedAt] = useState<number | null>(null)
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
   // Optimistic in-flight rows surfaced in the KB list while a job is running.
   const [optimisticDocs, setOptimisticDocs] = useState<OptimisticDoc[]>([])
@@ -88,6 +111,24 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
   // Track each row's DOM node so focus can be restored to the triggering row
   // when the modal closes (WCAG 2.4.3 Focus Order).
   const rowRefs = useRef<Map<string, HTMLDivElement | null>>(new Map())
+
+  // ---------------------------------------------------------------------------
+  // Elapsed-time counter — ticks once per second while a job is running so the
+  // user gets a sign of life during long ingests. Resets to 0 whenever a job
+  // starts (jobStartedAt set) and stops when it clears (job terminal/aborted).
+  // ---------------------------------------------------------------------------
+
+  useEffect(() => {
+    if (jobStartedAt === null) {
+      setElapsedSeconds(0)
+      return
+    }
+    setElapsedSeconds(Math.floor((Date.now() - jobStartedAt) / 1000))
+    const tick = setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - jobStartedAt) / 1000))
+    }, 1000)
+    return () => clearInterval(tick)
+  }, [jobStartedAt])
 
   // ---------------------------------------------------------------------------
   // Load agent status + documents via TanStack Query
@@ -184,25 +225,31 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
 
   const readSseProgress = async (eventsUrl: string, token: string) => {
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 180_000) // 3 min
+    const timeoutId = setTimeout(() => controller.abort(), SSE_TIMEOUT_MS)
 
-    // Reach a terminal state exactly once: update progress, refresh the list,
-    // drop optimistic rows, and clear the submitting flag.
-    const finish = async (mode: 'complete' | 'failed') => {
-      if (mode === 'complete') {
-        setProgressLabel(EVENT_LABELS['job.complete'])
-      } else {
-        setSubmitError('Ingestion failed. Check the Celery worker logs.')
-      }
-      // Real rows now exist in the backend — pull them and discard placeholders.
+    // Was a terminal event (job.complete / job.failed) observed on the stream?
+    // Drives whether the cleanup path treats the run as resolved or as a silent
+    // drop that still needs a neutral "refresh to see status" hint.
+    let sawTerminal = false
+
+    // Single source of truth for resetting the form back to a usable state.
+    // Runs on EVERY exit path — terminal event, natural stream end, timeout,
+    // abort, or error — so the UI can never be left stuck on "processing".
+    // Always: refetch real docs, drop optimistic rows, clear the in-progress
+    // label/timer, and re-enable the form.
+    const teardown = async () => {
+      // The job may have produced (or be finishing) real rows server-side; pull
+      // whatever exists now so the KB list reflects reality.
       await refreshDocuments()
       setOptimisticDocs([])
+      setProgressLabel(null)
       setSubmitting(false)
+      setJobStartedAt(null)
     }
 
     // Handle one fully-parsed SSE event block.
     // Returns true if the stream should stop (terminal event reached).
-    const handleEvent = async (eventType: string, dataLines: string[]): Promise<boolean> => {
+    const handleEvent = (eventType: string, dataLines: string[]): boolean => {
       // The event NAME is authoritative (from the `event:` line). The data JSON
       // is parsed only for completeness; we never read an `event` field from it.
       if (dataLines.length > 0) {
@@ -214,17 +261,19 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
       }
       if (!eventType) return false
 
-      const label = EVENT_LABELS[eventType] ?? eventType
-      setProgressLabel(label)
-
       if (eventType === 'job.complete') {
-        await finish('complete')
+        sawTerminal = true
+        setProgressNotice('Processing complete.')
         return true
       }
       if (eventType === 'job.failed') {
-        await finish('failed')
+        sawTerminal = true
+        setSubmitError('Ingestion failed. Check the Celery worker logs.')
         return true
       }
+
+      // Non-terminal progress event — surface its label.
+      setProgressLabel(EVENT_LABELS[eventType] ?? eventType)
       return false
     }
 
@@ -235,8 +284,6 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
       })
       if (!resp.body) {
         setSubmitError('No response stream. Check if the Celery worker is running.')
-        setOptimisticDocs([])
-        setSubmitting(false)
         return
       }
 
@@ -266,22 +313,30 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
             }
             // `id:` and comment (`:`) lines are ignored for progress purposes
           }
-          const stop = await handleEvent(eventType, dataLines)
+          const stop = handleEvent(eventType, dataLines)
           if (stop) return
         }
       }
+
+      // Reader returned done:true. If we got here WITHOUT a terminal event the
+      // Celery chain may have finished but the connection dropped before
+      // job.complete arrived (network blip, server restart). Surface a neutral
+      // hint rather than leaving the form stuck.
+      if (!sawTerminal) {
+        setProgressNotice('Upload submitted — refresh to see status.')
+      }
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
-        setSubmitError('Job timed out after 3 minutes. Check Celery worker logs.')
+        // Timeout/abort: the job is very likely still running server-side.
+        setProgressNotice('Taking longer than expected — check back in a moment.')
       } else {
         setSubmitError('Lost connection to job stream. The job may still be running.')
       }
-      // The job may still complete server-side; pull whatever exists now.
-      await refreshDocuments()
-      setOptimisticDocs([])
-      setSubmitting(false)
     } finally {
       clearTimeout(timeoutId)
+      // Cleanup is unconditional: terminal event, silent drop, abort, or error
+      // all funnel through here so `submitting` is always cleared.
+      await teardown()
     }
   }
 
@@ -340,6 +395,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
 
   const handleSubmit = async () => {
     setSubmitError(null)
+    setProgressNotice(null)
     setProgressLabel(null)
 
     // Snapshot the sources being submitted so we can render optimistic
@@ -368,12 +424,14 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
 
     setSubmitting(true)
     setProgressLabel('Starting...')
+    setJobStartedAt(Date.now())
 
     try {
       const token = await getToken()
       if (!token) {
         setSubmitError('Not authenticated. Please sign in.')
         setSubmitting(false)
+        setJobStartedAt(null)
         return
       }
 
@@ -396,12 +454,14 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
       if (res.status === 409) {
         setSubmitError('Agent is still provisioning. Please wait for it to finish.')
         setSubmitting(false)
+        setJobStartedAt(null)
         return
       }
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
         setSubmitError(`Upload failed: ${body?.detail ?? `HTTP ${res.status}`}`)
         setSubmitting(false)
+        setJobStartedAt(null)
         return
       }
 
@@ -431,6 +491,8 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
       setSubmitError('Upload failed. Please try again.')
       setOptimisticDocs([])
       setSubmitting(false)
+      setProgressLabel(null)
+      setJobStartedAt(null)
     }
   }
 
@@ -521,7 +583,9 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   setSubmitError(null)
                   setUrlError(null)
                   setProgressLabel(null)
+                  setProgressNotice(null)
                   setSubmitting(false)
+                  setJobStartedAt(null)
                 }}
                 style={{
                   padding: '10px 20px',
@@ -558,10 +622,17 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
             </div>
           )}
 
-          {/* Progress indicator */}
+          {/* Progress indicator — live label + elapsed-time counter so a long
+              job visibly stays alive. */}
           {submitting && progressLabel && (
             <div
+              role="status"
+              aria-live="polite"
               style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
                 padding: '12px 16px',
                 marginBottom: '16px',
                 background: 'var(--accent-dim)',
@@ -572,7 +643,42 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                 fontWeight: 500,
               }}
             >
-              {progressLabel}
+              <span>{progressLabel}</span>
+              {jobStartedAt !== null && (
+                <span
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '12px',
+                    fontVariantNumeric: 'tabular-nums',
+                    opacity: 0.8,
+                    flexShrink: 0,
+                  }}
+                >
+                  {formatElapsed(elapsedSeconds)}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Neutral notice — shown after a stream ends without a terminal event
+              (timeout/abort or a dropped connection). Not an error: the job may
+              still be running or already finished server-side. */}
+          {progressNotice && !submitting && (
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+                padding: '12px 16px',
+                marginBottom: '16px',
+                background: 'var(--surface-2)',
+                border: '1px solid var(--border-soft)',
+                borderRadius: 'var(--radius-xs)',
+                fontSize: '14px',
+                color: 'var(--text-2)',
+                fontWeight: 500,
+              }}
+            >
+              {progressNotice}
             </div>
           )}
 
@@ -861,7 +967,8 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   </div>
                 </div>
 
-                {/* Processing badge (live label tracks the SSE progress) */}
+                {/* Processing badge (live label tracks the SSE progress; the
+                    elapsed counter signals the job is still alive). */}
                 <span
                   style={{
                     padding: '3px 10px',
@@ -875,6 +982,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   }}
                 >
                   {progressLabel ?? 'processing…'}
+                  {jobStartedAt !== null && ` · ${formatElapsed(elapsedSeconds)}`}
                 </span>
               </div>
             ))}
