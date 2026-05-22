@@ -4,8 +4,8 @@ Unit tests for generate_metadata Celery task — ING-06.
 Tests:
   1. test_generate_metadata_acks_late                                    — acks_late=True, max_retries=3
   2. test_generate_metadata_signature                                     — (self, result) only; no conn/api_key param
-  3. test_layer_3_idempotency_skips_haiku_when_metadata_exists           — Layer 3 fires; enrich_chunk NOT called
-  4. test_generate_metadata_calls_enrich_when_no_existing_metadata        — enrich_chunk called once with "content"
+  3. test_layer_3_idempotency_skips_haiku_when_metadata_exists           — Layer 3 fires; enrich_chunks_batch NOT called
+  4. test_generate_metadata_calls_enrich_when_no_existing_metadata        — enrich_chunks_batch called once with ["the content"]
   5. test_generate_metadata_upserts_entities_with_on_conflict_normalized_type — entity UPSERT SQL shape
   6. test_generate_metadata_emits_event_sequence                          — metadata.started then metadata.complete
 
@@ -163,10 +163,11 @@ def test_generate_metadata_signature():
 
 
 def test_layer_3_idempotency_skips_haiku_when_metadata_exists(monkeypatch):
-    """generate_metadata skips enrich_chunk when SELECT COUNT(*) FROM chunk_metadata > 0.
+    """generate_metadata skips enrich_chunks_batch when SELECT COUNT(*) FROM chunk_metadata > 0.
 
     This is the Layer 3 idempotency contract: previously enriched chunks must not
-    trigger additional Haiku API calls on task retry (prevents re-billing).
+    trigger additional Haiku API calls on task retry (prevents re-billing). When all
+    chunks are already enriched, `pending` is empty so no batch call is made.
     """
     from app.worker.tasks.pipeline.metadata import generate_metadata
 
@@ -197,7 +198,7 @@ def test_layer_3_idempotency_skips_haiku_when_metadata_exists(monkeypatch):
         lambda _: mock_conn,
     )
     monkeypatch.setattr(
-        "app.worker.tasks.pipeline.metadata.enrich_chunk",
+        "app.worker.tasks.pipeline.metadata.enrich_chunks_batch",
         mock_enrich,
     )
     monkeypatch.setattr(
@@ -209,9 +210,9 @@ def test_layer_3_idempotency_skips_haiku_when_metadata_exists(monkeypatch):
         {"tenant_id": "t", "agent_id": "a", "job_id": "j", "document_ids": ["d1"]}
     )
 
-    # Layer 3 fired: enrich_chunk must NOT be called
+    # Layer 3 fired: enrich_chunks_batch must NOT be called
     assert mock_enrich.call_count == 0, (
-        f"Layer 3 idempotency failed: enrich_chunk was called {mock_enrich.call_count} "
+        f"Layer 3 idempotency failed: enrich_chunks_batch was called {mock_enrich.call_count} "
         "time(s) but should have been skipped (chunk_metadata row exists)"
     )
 
@@ -222,7 +223,7 @@ def test_layer_3_idempotency_skips_haiku_when_metadata_exists(monkeypatch):
 
 
 def test_generate_metadata_calls_enrich_when_no_existing_metadata(monkeypatch):
-    """generate_metadata calls enrich_chunk once with the chunk content when no metadata exists."""
+    """generate_metadata calls enrich_chunks_batch once with the chunk content list when no metadata exists."""
     from app.services.metadata_service import ChunkMetadataAndEntities
     from app.worker.tasks.pipeline.metadata import generate_metadata
 
@@ -240,7 +241,8 @@ def test_generate_metadata_calls_enrich_when_no_existing_metadata(monkeypatch):
     mock_meta = ChunkMetadataAndEntities(
         summary="s", keywords=["k"], questions=["q?"], entities=[]
     )
-    mock_enrich = MagicMock(return_value=mock_meta)
+    # Batched call returns a LIST of per-chunk results matching the batch size.
+    mock_enrich = MagicMock(return_value=[mock_meta])
     mock_emit = MagicMock()
 
     monkeypatch.setattr(
@@ -256,7 +258,7 @@ def test_generate_metadata_calls_enrich_when_no_existing_metadata(monkeypatch):
         lambda _: mock_conn,
     )
     monkeypatch.setattr(
-        "app.worker.tasks.pipeline.metadata.enrich_chunk",
+        "app.worker.tasks.pipeline.metadata.enrich_chunks_batch",
         mock_enrich,
     )
     monkeypatch.setattr(
@@ -269,10 +271,10 @@ def test_generate_metadata_calls_enrich_when_no_existing_metadata(monkeypatch):
     )
 
     assert mock_enrich.call_count == 1, (
-        f"Expected enrich_chunk to be called once but got {mock_enrich.call_count}"
+        f"Expected enrich_chunks_batch to be called once but got {mock_enrich.call_count}"
     )
-    assert mock_enrich.call_args[0][0] == "the content", (
-        f"Expected enrich_chunk called with 'the content' but got "
+    assert mock_enrich.call_args[0][0] == ["the content"], (
+        f"Expected enrich_chunks_batch called with ['the content'] but got "
         f"{mock_enrich.call_args[0][0]!r}"
     )
 
@@ -308,7 +310,8 @@ def test_generate_metadata_upserts_entities_with_on_conflict_normalized_type(mon
     mock_meta = ChunkMetadataAndEntities(
         summary="s", keywords=["k"], questions=["q?"], entities=[entity]
     )
-    mock_enrich = MagicMock(return_value=mock_meta)
+    # Batched call returns a LIST of per-chunk results matching the batch size.
+    mock_enrich = MagicMock(return_value=[mock_meta])
     mock_emit = MagicMock()
 
     monkeypatch.setattr(
@@ -324,7 +327,7 @@ def test_generate_metadata_upserts_entities_with_on_conflict_normalized_type(mon
         lambda _: mock_conn,
     )
     monkeypatch.setattr(
-        "app.worker.tasks.pipeline.metadata.enrich_chunk",
+        "app.worker.tasks.pipeline.metadata.enrich_chunks_batch",
         mock_enrich,
     )
     monkeypatch.setattr(
@@ -398,8 +401,8 @@ def test_generate_metadata_emits_event_sequence(monkeypatch):
         lambda _: mock_conn,
     )
     monkeypatch.setattr(
-        "app.worker.tasks.pipeline.metadata.enrich_chunk",
-        MagicMock(),
+        "app.worker.tasks.pipeline.metadata.enrich_chunks_batch",
+        MagicMock(return_value=[]),
     )
     monkeypatch.setattr(
         "app.worker.tasks.pipeline.metadata.emit",

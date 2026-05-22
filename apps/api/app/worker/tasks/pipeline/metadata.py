@@ -30,30 +30,29 @@ Connection string security (CLAUDE.md non-negotiable rule):
     The connection string is fetched from the control DB by agent_id and decrypted
     with fernet_decrypt() at runtime.
 
-Concurrency design (Haiku fan-out):
-    Haiku metadata extraction is the pipeline's slowest step (~8-10s per chunk).
-    Serialized, 50 chunks take ~7.7 minutes. enrich_chunk() is a synchronous
-    httpx/anthropic call with no shared mutable state, so it is safe to run in
-    threads. A ThreadPoolExecutor with MAX_CONCURRENT_HAIKU=5 workers fans the
-    Haiku calls out concurrently, cutting 50 chunks from ~7.7 min to ~90s while
-    staying well under Anthropic rate limits.
+Cost design (batched Haiku calls):
+    Haiku metadata extraction is the pipeline's slowest and most billed step.
+    enrich_chunks_batch() packs BATCH_SIZE (10) chunks into a single Haiku call,
+    cutting 50 chunks from 50 calls (~$0.08/doc) to 5 calls (~$0.008/doc) — a
+    ~10x cost reduction. Chunks are numbered by position in the batch and the
+    model returns per-chunk results in submission order; the task zips results
+    back to chunk_ids by index, NOT by ID.
 
-    DB writes are NOT parallelized. psycopg2 connections and cursors are not
-    thread-safe — sharing one across threads corrupts the protocol state. Only
-    the network-bound enrich_chunk() runs in worker threads; every DB write
-    (chunk_metadata UPSERT, entities UPSERT, chunk_entities link) and the
-    per-chunk commit happen on the main thread as as_completed() yields results.
-    This preserves the per-chunk commit granularity that backs Layer 3 retry
-    safety.
+    DB writes stay serial on the main thread. psycopg2 connections and cursors
+    are not thread-safe, and the per-chunk commit granularity backs Layer 3
+    retry safety: each chunk's metadata + entities are written and committed
+    individually so a worker kill mid-batch leaves already-written chunks
+    skippable by the SELECT COUNT(*) guard on retry.
 
-    Partial-failure tolerance: a single chunk's enrich_chunk() raising (e.g. a
-    fatal ValidationError after retries) is logged and skipped — it does not
-    abort the whole document. The chunk simply has no metadata row, and a future
-    re-run will re-attempt it (Layer 3 skips only chunks that DID succeed).
+    Partial-failure tolerance: a single batch's enrich_chunks_batch() raising
+    (e.g. a fatal ValidationError or a size mismatch) is logged and the batch is
+    skipped — it does not abort the whole document. Those chunks simply have no
+    metadata row, and a future re-run re-attempts them (Layer 3 skips only chunks
+    that DID succeed).
 
 Event emission order (CONTEXT.md §SSE Event Vocabulary):
-    metadata.started  ← emitted per document (before per-chunk loop)
-    metadata.progress ← emitted every 5 processed chunks ({processed, total})
+    metadata.started  ← emitted per document (before the batch loop)
+    metadata.progress ← emitted after each batch ({processed, total})
     metadata.complete ← emitted per document (after all chunks processed)
 
 Return value (chain contract):
@@ -74,7 +73,6 @@ Threat mitigations (T-02-04):
 
 import ssl
 import structlog
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import psycopg2
 import redis as redis_lib
@@ -84,15 +82,10 @@ from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.services.events import emit
-from app.services.metadata_service import enrich_chunk
+from app.services.metadata_service import enrich_chunks_batch, BATCH_SIZE
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
-
-# Max concurrent Haiku calls. enrich_chunk() is network-bound (httpx/anthropic);
-# 5 threads fans out the slow API calls while staying well under Anthropic rate
-# limits. DB writes remain serial on the main thread (psycopg2 is not thread-safe).
-MAX_CONCURRENT_HAIKU = 5
 
 # Module-level sync Redis client — strip query params; pass ssl_cert_reqs as constant.
 _url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
@@ -112,8 +105,8 @@ def generate_metadata(self, result: dict) -> dict:
 
     Receives the result dict from chunk_documents, iterates all chunks per document,
     applies Layer 3 idempotency (skip chunks already in chunk_metadata), calls Haiku
-    once per unprocessed chunk, UPSERTs chunk_metadata, UPSERTs entities by
-    (normalized, type), and links chunk_entities.
+    once per batch of BATCH_SIZE unprocessed chunks, UPSERTs chunk_metadata, UPSERTs
+    entities by (normalized, type), and links chunk_entities.
 
     Args:
         result: Return value from chunk_documents —
@@ -209,104 +202,101 @@ def generate_metadata(self, result: dict) -> dict:
                     pending.append((chunk_id, content))
 
                 # ----------------------------------------------------------
-                # Pass 2 (parallel Haiku, serial DB): fan out enrich_chunk()
-                # across MAX_CONCURRENT_HAIKU threads. As each future completes,
-                # write its result to the DB on THIS (main) thread and commit.
+                # Pass 2: batch Haiku calls (BATCH_SIZE chunks per call) then
+                # serial DB writes. Each batch is one Haiku call returning
+                # per-chunk results in submission order; results are zipped back
+                # to chunk_ids by index (NOT by ID — the model has no IDs).
                 #
-                # Only the network-bound Haiku call is parallelized. All DB
-                # access stays on the main thread because the single psycopg2
-                # connection/cursor is not thread-safe (T-02-04-06: content
-                # never logged; only chunk_id/document_id).
+                # All DB access stays on the main thread because the single
+                # psycopg2 connection/cursor is not thread-safe (T-02-04-06:
+                # content never logged; only chunk_id/document_id). Per-chunk
+                # commit preserves Layer 3 retry granularity.
                 # ----------------------------------------------------------
                 processed = 0
-                if pending:
-                    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_HAIKU) as executor:
-                        # enrich_chunk(content) — same Haiku call as before
-                        futures = {
-                            executor.submit(enrich_chunk, content): (chunk_id, content)
-                            for chunk_id, content in pending
-                        }
-                        for future in as_completed(futures):
-                            chunk_id, _content = futures[future]
-                            try:
-                                meta = future.result()
-                            except Exception as enrich_exc:
-                                # Partial-failure tolerance: one chunk's failure
-                                # (e.g. fatal ValidationError after retries) must
-                                # NOT abort the whole document. Log and skip — a
-                                # future re-run re-attempts this chunk (Layer 3
-                                # only skips chunks that succeeded).
-                                log.warning(
-                                    "generate_metadata.metadata_extraction_failed",
-                                    chunk_id=str(chunk_id),
-                                    error=str(enrich_exc),
-                                )
-                                continue
+                for batch_start in range(0, len(pending), BATCH_SIZE):
+                    batch = pending[batch_start : batch_start + BATCH_SIZE]
+                    batch_texts = [content for _, content in batch]
 
-                            with tenant_conn.cursor() as cur:
-                                # ------------------------------------------
-                                # UPSERT chunk_metadata (ON CONFLICT (chunk_id) DO UPDATE)
-                                # ------------------------------------------
+                    try:
+                        results = enrich_chunks_batch(batch_texts)
+                    except Exception as exc:
+                        # Partial-failure tolerance: one batch's failure (fatal
+                        # ValidationError after retries, size mismatch, etc.) must
+                        # NOT abort the whole document. Log and skip — a future
+                        # re-run re-attempts these chunks (Layer 3 only skips
+                        # chunks that succeeded).
+                        log.warning(
+                            "generate_metadata.batch_extraction_failed",
+                            batch_start=batch_start,
+                            batch_size=len(batch),
+                            error=str(exc),
+                        )
+                        continue  # skip this batch, don't abort the document
+
+                    for (chunk_id, _content), meta in zip(batch, results):
+                        with tenant_conn.cursor() as cur:
+                            # ------------------------------------------
+                            # UPSERT chunk_metadata (ON CONFLICT (chunk_id) DO UPDATE)
+                            # ------------------------------------------
+                            cur.execute(
+                                """
+                                INSERT INTO chunk_metadata (chunk_id, summary, keywords, questions)
+                                VALUES (%s, %s, %s, %s)
+                                ON CONFLICT (chunk_id) DO UPDATE
+                                    SET summary   = EXCLUDED.summary,
+                                        keywords  = EXCLUDED.keywords,
+                                        questions = EXCLUDED.questions
+                                """,
+                                (chunk_id, meta.summary, meta.keywords, meta.questions),
+                            )
+
+                            # ------------------------------------------
+                            # UPSERT entities + link chunk_entities
+                            #
+                            # Entity dedup: ON CONFLICT (normalized, type) DO UPDATE
+                            # SET name so the human-readable name reflects the most
+                            # recent occurrence; the canonical normalized form is the
+                            # dedup key (T-02-04-02).
+                            #
+                            # chunk_entities link: ON CONFLICT DO NOTHING prevents
+                            # duplicate (chunk_id, entity_id) pairs on retry.
+                            # ------------------------------------------
+                            for entity in meta.entities:
                                 cur.execute(
                                     """
-                                    INSERT INTO chunk_metadata (chunk_id, summary, keywords, questions)
-                                    VALUES (%s, %s, %s, %s)
-                                    ON CONFLICT (chunk_id) DO UPDATE
-                                        SET summary   = EXCLUDED.summary,
-                                            keywords  = EXCLUDED.keywords,
-                                            questions = EXCLUDED.questions
+                                    INSERT INTO entities (name, type, normalized)
+                                    VALUES (%s, %s, %s)
+                                    ON CONFLICT (normalized, type) DO UPDATE
+                                        SET name = EXCLUDED.name
+                                    RETURNING id
                                     """,
-                                    (chunk_id, meta.summary, meta.keywords, meta.questions),
+                                    (entity.name, entity.type, entity.normalized),
+                                )
+                                entity_id = cur.fetchone()[0]
+                                cur.execute(
+                                    """
+                                    INSERT INTO chunk_entities (chunk_id, entity_id)
+                                    VALUES (%s, %s)
+                                    ON CONFLICT DO NOTHING
+                                    """,
+                                    (chunk_id, entity_id),
                                 )
 
-                                # ------------------------------------------
-                                # UPSERT entities + link chunk_entities
-                                #
-                                # Entity dedup: ON CONFLICT (normalized, type) DO UPDATE
-                                # SET name so the human-readable name reflects the most
-                                # recent occurrence; the canonical normalized form is the
-                                # dedup key (T-02-04-02).
-                                #
-                                # chunk_entities link: ON CONFLICT DO NOTHING prevents
-                                # duplicate (chunk_id, entity_id) pairs on retry.
-                                # ------------------------------------------
-                                for entity in meta.entities:
-                                    cur.execute(
-                                        """
-                                        INSERT INTO entities (name, type, normalized)
-                                        VALUES (%s, %s, %s)
-                                        ON CONFLICT (normalized, type) DO UPDATE
-                                            SET name = EXCLUDED.name
-                                        RETURNING id
-                                        """,
-                                        (entity.name, entity.type, entity.normalized),
-                                    )
-                                    entity_id = cur.fetchone()[0]
-                                    cur.execute(
-                                        """
-                                        INSERT INTO chunk_entities (chunk_id, entity_id)
-                                        VALUES (%s, %s)
-                                        ON CONFLICT DO NOTHING
-                                        """,
-                                        (chunk_id, entity_id),
-                                    )
+                        # Commit per-chunk: partial-progress safety on retry
+                        # (Layer 3 design). If the worker is killed mid-batch,
+                        # the SELECT COUNT(*) guard on the next retry skips
+                        # already-committed chunks.
+                        tenant_conn.commit()
+                        processed += 1
 
-                            # Commit per-chunk: partial-progress safety on retry
-                            # (Layer 3 design). If the worker is killed after commit,
-                            # the SELECT COUNT(*) guard on the next retry skips this chunk.
-                            tenant_conn.commit()
-
-                            # Per-chunk progress: emit every 5 processed chunks so the
-                            # admin UI shows movement during long documents.
-                            processed += 1
-                            if processed % 5 == 0:
-                                emit(
-                                    job_id,
-                                    "metadata.progress",
-                                    {"processed": processed, "total": len(pending)},
-                                    db,
-                                    _redis,
-                                )
+                    # Emit progress after each batch (each batch IS ~BATCH_SIZE chunks).
+                    emit(
+                        job_id,
+                        "metadata.progress",
+                        {"processed": processed, "total": len(pending)},
+                        db,
+                        _redis,
+                    )
 
                 # Emit metadata.complete for this document
                 emit(
