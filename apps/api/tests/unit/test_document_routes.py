@@ -529,6 +529,208 @@ class TestListDocuments:
 
 
 # ---------------------------------------------------------------------------
+# GET /agents/{agent_id}/documents/{document_id}/detail
+# ---------------------------------------------------------------------------
+
+
+def _make_detail_cursor(*, document_exists: bool, chunk_rows=None, entity_rows=None):
+    """Scripted cursor for the /detail flow.
+
+    The endpoint issues, in order:
+      1. SELECT ... FROM documents WHERE id = ...      -> fetchone()
+      2. SELECT chunks LEFT JOIN chunk_metadata ...    -> fetchall()
+      3. SELECT chunk_entities LEFT JOIN entities ...  -> fetchall()
+
+    fetchone() drives the document existence check; the two fetchall() calls are
+    returned in order via side_effect.
+    """
+    cursor = MagicMock()
+    if document_exists:
+        cursor.fetchone.return_value = (
+            str(uuid4()),                 # id
+            "doc.pdf",                    # title
+            "doc.pdf",                    # source_uri
+            "pdf",                        # source_type
+            "parsed",                     # parse_status
+            datetime.now(timezone.utc),   # created_at
+        )
+    else:
+        cursor.fetchone.return_value = None
+    cursor.fetchall.side_effect = [chunk_rows or [], entity_rows or []]
+    cursor.execute = MagicMock()
+    return cursor
+
+
+@pytest.mark.asyncio
+class TestGetDocumentDetail:
+    async def test_detail_returns_chunks_metadata_and_entities(self):
+        """Document with chunks returns ordered chunks, metadata, and entities."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = ready_agent
+        mock_db = AsyncMock()
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        chunk_id = str(uuid4())
+        # (id, ordinal, content, summary, keywords, questions)
+        chunk_rows = [
+            (chunk_id, 0, "chunk text", "a summary", ["kw1", "kw2"], ["q1?"]),
+        ]
+        # (chunk_id, name, type, normalized)
+        entity_rows = [
+            (chunk_id, "Acme", "product", "acme"),
+        ]
+        cursor = _make_detail_cursor(
+            document_exists=True, chunk_rows=chunk_rows, entity_rows=entity_rows
+        )
+
+        try:
+            with (
+                patch("app.api.v1.documents.fernet_decrypt", return_value="postgresql://fake/db"),
+                patch("app.api.v1.documents.psycopg2.connect") as mock_connect,
+            ):
+                mock_conn = MagicMock()
+                mock_connect.return_value = mock_conn
+                _bind_cursor(mock_conn, cursor)
+
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        f"/api/v1/agents/{ready_agent.id}/documents/{uuid4()}/detail",
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["chunks"]) == 1
+        chunk = body["chunks"][0]
+        assert chunk["chunk_index"] == 0          # ordinal -> chunk_index
+        assert chunk["text"] == "chunk text"      # content -> text
+        assert chunk["metadata"]["summary"] == "a summary"
+        assert chunk["metadata"]["keywords"] == ["kw1", "kw2"]
+        assert chunk["metadata"]["questions"] == ["q1?"]
+        assert len(chunk["entities"]) == 1
+        assert chunk["entities"][0] == {
+            "name": "Acme",
+            "type": "product",
+            "normalized": "acme",
+        }
+
+    async def test_detail_chunk_without_metadata_or_entities(self):
+        """LEFT JOINs: a chunk with no metadata row and no entities still appears."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = ready_agent
+        mock_db = AsyncMock()
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        chunk_id = str(uuid4())
+        # No metadata row -> summary/keywords/questions are all NULL.
+        chunk_rows = [(chunk_id, 0, "lonely chunk", None, None, None)]
+        cursor = _make_detail_cursor(
+            document_exists=True, chunk_rows=chunk_rows, entity_rows=[]
+        )
+
+        try:
+            with (
+                patch("app.api.v1.documents.fernet_decrypt", return_value="postgresql://fake/db"),
+                patch("app.api.v1.documents.psycopg2.connect") as mock_connect,
+            ):
+                mock_conn = MagicMock()
+                mock_connect.return_value = mock_conn
+                _bind_cursor(mock_conn, cursor)
+
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        f"/api/v1/agents/{ready_agent.id}/documents/{uuid4()}/detail",
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["chunks"]) == 1
+        chunk = body["chunks"][0]
+        assert chunk["metadata"] is None
+        assert chunk["entities"] == []
+
+    async def test_detail_404_when_document_missing(self):
+        """Document absent from the agent's tenant DB returns 404."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = ready_agent
+        mock_db = AsyncMock()
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        cursor = _make_detail_cursor(document_exists=False)
+
+        try:
+            with (
+                patch("app.api.v1.documents.fernet_decrypt", return_value="postgresql://fake/db"),
+                patch("app.api.v1.documents.psycopg2.connect") as mock_connect,
+            ):
+                mock_conn = MagicMock()
+                mock_connect.return_value = mock_conn
+                _bind_cursor(mock_conn, cursor)
+
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        f"/api/v1/agents/{ready_agent.id}/documents/{uuid4()}/detail",
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 404
+
+    async def test_detail_404_when_wrong_tenant(self):
+        """Agent not owned by tenant returns 404 before any tenant-DB access."""
+        fake_tenant = _make_fake_tenant()
+        mock_db = _make_mock_db_no_agent()
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with patch("app.api.v1.documents.psycopg2.connect") as mock_connect:
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        f"/api/v1/agents/{uuid4()}/documents/{uuid4()}/detail",
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 404
+        mock_connect.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # DELETE /agents/{agent_id}/documents/{document_id}
 # ---------------------------------------------------------------------------
 

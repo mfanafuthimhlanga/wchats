@@ -4,6 +4,7 @@ Document routes for Veridian M2 ingestion pipeline.
 POST   /agents/{agent_id}/documents — upload files and/or URLs; dispatches Celery chain
 GET    /agents/{agent_id}/documents — list all documents for agent from tenant DB
 GET    /agents/{agent_id}/documents/{document_id} — fetch a single document row
+GET    /agents/{agent_id}/documents/{document_id}/detail — document + chunks/metadata/entities
 DELETE /agents/{agent_id}/documents/{document_id} — remove a document + all derived rows
 
 Security:
@@ -53,6 +54,10 @@ from app.models.agent import Agent
 from app.models.job import Job
 from app.models.tenant import Tenant
 from app.schemas.document import (
+    ChunkDetailResponse,
+    ChunkEntityResponse,
+    ChunkMetadataResponse,
+    DocumentDetailResponse,
     DocumentListResponse,
     DocumentResponse,
     DocumentUploadResponse,
@@ -395,6 +400,150 @@ async def get_document(
         parse_status=row[4],
         chunk_count=row[5],
         created_at=row[6],
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /agents/{agent_id}/documents/{document_id}/detail
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/agents/{agent_id}/documents/{document_id}/detail",
+    response_model=DocumentDetailResponse,
+)
+async def get_document_detail(
+    agent_id: UUID,
+    document_id: UUID,
+    db: AsyncSession = Depends(get_async_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> DocumentDetailResponse:
+    """Return full detail for a single document: metadata + ordered chunks.
+
+    Each chunk carries its chunk_metadata (summary / keywords / questions) and
+    the list of entities linked to it. LEFT JOINs are used so chunks whose
+    metadata or entity extraction never ran (or partially ran) still appear.
+
+    Field mapping (tenant schema -> response):
+        chunks.ordinal  -> chunk_index
+        chunks.content  -> text
+
+    Returns:
+        DocumentDetailResponse.
+
+    Raises:
+        404 if the agent is not found / not owned by the tenant, or the document
+            does not exist in the agent's tenant DB.
+    """
+    # Validate agent ownership (same filter + dependency as the GET list route).
+    result = await db.execute(
+        select(Agent).where(
+            Agent.id == agent_id,
+            Agent.tenant_id == tenant.id,
+            Agent.deleted_at.is_(None),
+        )
+    )
+    agent = result.scalar_one_or_none()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Decrypt connection string (never logged — T-02-06-08)
+    conn_str = fernet_decrypt(agent.neon_connection_string)
+
+    doc_id = str(document_id)
+    tenant_conn = psycopg2.connect(conn_str, connect_timeout=5)
+    try:
+        with tenant_conn.cursor() as cur:
+            # 1. Document row (drives 404 if absent in THIS agent's DB).
+            cur.execute(
+                """
+                SELECT id, title, source_uri, source_type, parse_status, created_at
+                FROM documents
+                WHERE id = %s
+                """,
+                (doc_id,),
+            )
+            doc_row = cur.fetchone()
+            if doc_row is None:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            # 2. Chunks + their metadata (LEFT JOIN so metadata-less chunks stay).
+            #    ordinal -> chunk_index, content -> text. Ordered by ordinal.
+            cur.execute(
+                """
+                SELECT c.id, c.ordinal, c.content,
+                       m.summary, m.keywords, m.questions
+                FROM chunks c
+                LEFT JOIN chunk_metadata m ON m.chunk_id = c.id
+                WHERE c.document_id = %s
+                ORDER BY c.ordinal ASC
+                """,
+                (doc_id,),
+            )
+            chunk_rows = cur.fetchall()
+
+            # 3. Entities for all of this document's chunks in one query
+            #    (LEFT JOIN entities so a dangling chunk_entities row — which the
+            #    schema's composite PK + FK should prevent — never breaks the
+            #    response). Grouped into a per-chunk map for assembly.
+            cur.execute(
+                """
+                SELECT ce.chunk_id, e.name, e.type, e.normalized
+                FROM chunks c
+                JOIN chunk_entities ce ON ce.chunk_id = c.id
+                LEFT JOIN entities e ON e.id = ce.entity_id
+                WHERE c.document_id = %s
+                ORDER BY c.ordinal ASC
+                """,
+                (doc_id,),
+            )
+            entity_rows = cur.fetchall()
+    finally:
+        tenant_conn.close()
+
+    # Group entities by chunk_id. Rows with a NULL entity (e.name is None) are
+    # skipped — they carry no displayable data.
+    entities_by_chunk: dict[str, list[ChunkEntityResponse]] = {}
+    for chunk_id, name, etype, normalized in entity_rows:
+        if name is None:
+            continue
+        entities_by_chunk.setdefault(str(chunk_id), []).append(
+            ChunkEntityResponse(name=name, type=etype, normalized=normalized)
+        )
+
+    chunks: list[ChunkDetailResponse] = []
+    for chunk_id, ordinal, content, summary, keywords, questions in chunk_rows:
+        # metadata is None only when no chunk_metadata row joined. A row that
+        # exists but has NULL columns still yields a metadata object (with
+        # null/empty fields), matching the partial-extraction case.
+        has_metadata = not (summary is None and keywords is None and questions is None)
+        metadata = (
+            ChunkMetadataResponse(
+                summary=summary,
+                keywords=list(keywords) if keywords else [],
+                questions=list(questions) if questions else [],
+            )
+            if has_metadata
+            else None
+        )
+        chunks.append(
+            ChunkDetailResponse(
+                id=chunk_id,
+                chunk_index=ordinal,
+                text=content,
+                metadata=metadata,
+                entities=entities_by_chunk.get(str(chunk_id), []),
+            )
+        )
+
+    return DocumentDetailResponse(
+        id=doc_row[0],
+        title=doc_row[1],
+        source_uri=doc_row[2],
+        source_type=doc_row[3],
+        parse_status=doc_row[4],
+        created_at=doc_row[5],
+        chunks=chunks,
     )
 
 
