@@ -43,6 +43,7 @@ interface DocumentDetail {
 
 const PARSE_STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
   complete: { bg: 'var(--green-bg)', fg: 'var(--green)' },
+  parsed: { bg: 'var(--green-bg)', fg: 'var(--green)' },
   pending: { bg: 'var(--amber-bg)', fg: 'var(--amber)' },
   processing: { bg: 'var(--amber-bg)', fg: 'var(--amber)' },
   failed: { bg: 'var(--red-bg)', fg: 'var(--red)' },
