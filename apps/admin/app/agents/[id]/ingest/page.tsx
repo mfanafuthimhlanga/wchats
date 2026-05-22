@@ -2,6 +2,7 @@
 import { useState, useRef, useCallback, use } from 'react'
 import { useAuth } from '@clerk/nextjs'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import DocumentDetailModal from './DocumentDetailModal'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -80,6 +81,12 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
   // Optimistic in-flight rows surfaced in the KB list while a job is running.
   const [optimisticDocs, setOptimisticDocs] = useState<OptimisticDoc[]>([])
+
+  // Document detail modal: the id of the row whose detail is open (null = closed).
+  const [selectedDocId, setSelectedDocId] = useState<string | null>(null)
+  // Track each row's DOM node so focus can be restored to the triggering row
+  // when the modal closes (WCAG 2.4.3 Focus Order).
+  const rowRefs = useRef<Map<string, HTMLDivElement | null>>(new Map())
 
   // ---------------------------------------------------------------------------
   // Load agent status + documents via TanStack Query
@@ -876,6 +883,20 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
               return (
                 <div
                   key={doc.id}
+                  ref={(el) => {
+                    rowRefs.current.set(doc.id, el)
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  aria-haspopup="dialog"
+                  aria-label={`View details for ${doc.title || doc.source_uri}`}
+                  onClick={() => setSelectedDocId(doc.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      setSelectedDocId(doc.id)
+                    }
+                  }}
                   style={{
                     padding: '14px 16px',
                     borderTop:
@@ -886,6 +907,14 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                     display: 'flex',
                     alignItems: 'center',
                     gap: '12px',
+                    cursor: 'pointer',
+                    transition: 'background 0.15s ease',
+                  }}
+                  onMouseEnter={(e) => {
+                    ;(e.currentTarget as HTMLDivElement).style.background = 'var(--surface-2)'
+                  }}
+                  onMouseLeave={(e) => {
+                    ;(e.currentTarget as HTMLDivElement).style.background = 'var(--surface-1)'
                   }}
                 >
                   {/* Source type badge */}
@@ -956,9 +985,14 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                     {new Date(doc.created_at).toLocaleDateString()}
                   </span>
 
-                  {/* Delete button */}
+                  {/* Delete button — stop propagation so it never opens the
+                      detail modal; the row click handler must not fire. */}
                   <button
-                    onClick={() => handleDeleteDoc(doc.id)}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleDeleteDoc(doc.id)
+                    }}
+                    onKeyDown={(e) => e.stopPropagation()}
                     disabled={deletingIds.has(doc.id)}
                     aria-label={`Delete ${doc.title || doc.source_uri}`}
                     style={{
@@ -991,6 +1025,16 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
             })}
           </div>
         </div>
+      )}
+
+      {/* Document detail modal — opened by clicking a KB row. */}
+      {selectedDocId && (
+        <DocumentDetailModal
+          agentId={id}
+          documentId={selectedDocId}
+          onClose={() => setSelectedDocId(null)}
+          returnFocusRef={{ current: rowRefs.current.get(selectedDocId) ?? null }}
+        />
       )}
     </div>
   )
