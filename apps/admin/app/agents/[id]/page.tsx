@@ -21,6 +21,13 @@ interface AgentDetail {
   created_at: string
 }
 
+// Minimal document shape — only the field we need to decide "Configure done".
+// The full shape lives in the ingest page; here we just need parse_status.
+interface AgentDocument {
+  id: string
+  parse_status: string
+}
+
 // ---------------------------------------------------------------------------
 // Status color map — mirrors AgentCard STATUS_COLORS
 // ---------------------------------------------------------------------------
@@ -94,11 +101,42 @@ export default function AgentJourneyPage({
       agent.status === 'provisioning_complete' ||
       agent.neon_project_id !== null)
 
+  // Documents query — same key/shape as the ingest page so the cache is shared.
+  // Only enabled once step1 is done (the backend rejects /documents while the
+  // tenant DB is still provisioning), mirroring the ingest page's gate.
+  const docsQuery = useQuery({
+    queryKey: ['agent-documents', id],
+    queryFn: async () => {
+      const token = await getToken()
+      if (!token) throw new Error('Not authenticated')
+      const r = await fetch(`${apiBase}/api/v1/agents/${id}/documents`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const data = await r.json()
+      return (data.documents ?? []) as AgentDocument[]
+    },
+    enabled: isLoaded && !!isSignedIn && step1Done,
+    staleTime: 10_000,
+  })
+
+  const documents = docsQuery.data ?? []
+
   // Derived soulSaved — gates the soul card CTA emphasis + downstream copy
   const soulSaved = !!(
     agent?.soul_voice ||
     (agent?.soul_do_list?.length ?? 0) > 0
   )
+
+  // Derived hasDocs — at least one document that did not fail to parse.
+  const hasDocs = documents.some((d) => d.parse_status !== 'failed')
+
+  // "Configure done" is a single, unambiguous definition: BOTH the soul is
+  // saved AND there is at least one non-failed document in the knowledge base.
+  const configureDone = soulSaved && hasDocs
+
+  // Step 3 (Test) is not buildable until M6 ships the eval harness.
+  const step3Done = false
 
   // ---- Right-panel: loading skeleton (first load, no cached data yet) -------
   const loadingPanel = (
@@ -154,7 +192,11 @@ export default function AgentJourneyPage({
     </div>
   )
 
-  // ---- Right-panel: configure subtask cards (step1 done) -------------------
+  // ---- Right-panel: configure subtask cards (step1 done, configure pending)-
+  // Configure owns exactly two sub-tasks — Soul and Ingest. Steps 3 (Test) and
+  // 4 (Deploy) are separate journey stages and are NOT previewed here. The
+  // "active" CTA emphasis follows the natural order: soul first, then ingest
+  // once the soul is saved.
   const configurePanel = (
     <>
       <h1
@@ -168,7 +210,8 @@ export default function AgentJourneyPage({
         Configure your agent
       </h1>
       <p style={{ fontSize: '14px', color: 'var(--text-3)', marginBottom: '24px' }}>
-        Define the soul, ingest your knowledge base, and prepare for testing.
+        Define the soul and ingest your knowledge base. Configure is complete once
+        both are done.
       </p>
 
       <div
@@ -179,42 +222,65 @@ export default function AgentJourneyPage({
           marginTop: '24px',
         }}
       >
-        {/* Soul — available once step1 is done */}
+        {/* Soul — done when saved, otherwise the active first step */}
         <StepSubtaskCard
           icon="◐"
           title="Define the soul"
-          description="Personality, behaviors, and boundaries"
+          description={
+            soulSaved
+              ? 'Personality, behaviors, and boundaries — saved'
+              : 'Personality, behaviors, and boundaries'
+          }
           href={`/agents/${id}/soul`}
-          ctaLabel="Open editor"
-          state="active"
+          ctaLabel={soulSaved ? 'Edit soul' : 'Open editor'}
+          state={soulSaved ? 'completed' : 'active'}
         />
 
-        {/* Ingest — available once step1 is done; soul is the suggested next step */}
+        {/* Ingest — done when at least one non-failed doc exists; becomes the
+            active step once the soul is saved. */}
         <StepSubtaskCard
           icon="⬆"
           title="Ingest documents"
-          description={soulSaved ? 'Upload PDFs or URLs' : 'Save soul settings first'}
+          description={
+            hasDocs
+              ? 'Knowledge base has documents'
+              : soulSaved
+              ? 'Upload PDFs or URLs'
+              : 'Save soul settings first'
+          }
           href={`/agents/${id}/ingest`}
-          ctaLabel="Upload"
-          state="idle"
+          ctaLabel={hasDocs ? 'Manage documents' : 'Upload'}
+          state={hasDocs ? 'completed' : soulSaved ? 'active' : 'idle'}
         />
+      </div>
+    </>
+  )
 
-        {/* Eval — always unavailable until M6 */}
+  // ---- Right-panel: Test stage (configure done, M6 not built) --------------
+  // Step 3 is blocked until the eval harness ships in M6. Surface a single,
+  // honest placeholder card rather than implying the feature is available.
+  const testPanel = (
+    <>
+      <h1
+        style={{
+          fontSize: '22px',
+          fontWeight: 700,
+          color: 'var(--text-1)',
+          marginBottom: '8px',
+        }}
+      >
+        Test your agent
+      </h1>
+      <p style={{ fontSize: '14px', color: 'var(--text-3)', marginBottom: '24px' }}>
+        Once the eval harness ships, automated tests run here before you deploy.
+      </p>
+
+      <div style={{ marginTop: '24px' }}>
         <StepSubtaskCard
           icon="✓"
-          title="Run evaluations"
-          description="Ragas metrics + adversarial probes"
+          title="Automated Evals — Available in M6"
+          description="Eval results will appear here once M6 is complete."
           ctaLabel="Available in M6"
-          state="idle"
-        />
-
-        {/* Deploy — available once step1 is done */}
-        <StepSubtaskCard
-          icon="↗"
-          title="Deploy widget"
-          description="Embed snippet + design customization"
-          href={`/agents/${id}/deploy`}
-          ctaLabel="Configure deploy"
           state="idle"
         />
       </div>
@@ -222,13 +288,20 @@ export default function AgentJourneyPage({
   )
 
   // ---- Dispatch -------------------------------------------------------------
+  // This landing page owns the Provision and Configure stages. Once Configure
+  // is done, the right panel advances to the (M6-blocked) Test placeholder.
+  // The Deploy stage lives at /agents/[id]/deploy and is reached via the stepper.
   let panel: React.ReactNode
   if (agentQuery.isPending) {
     panel = loadingPanel
   } else if (!step1Done) {
     panel = provisioningPanel
-  } else {
+  } else if (!configureDone) {
     panel = configurePanel
+  } else {
+    // configureDone === true → step 3 (Test) is the active stage. step3Done is
+    // always false until M6, so we show the Test placeholder.
+    panel = step3Done ? configurePanel : testPanel
   }
 
   return (
