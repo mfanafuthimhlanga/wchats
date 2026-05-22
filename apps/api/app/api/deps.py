@@ -68,23 +68,6 @@ async def get_current_tenant(
     # --- Path 1: Clerk JWT ---
     if bearer is not None:
         try:
-            # DEBUG: decode header/payload without verification to diagnose 401s
-            import base64 as _b64, json as _json
-            def _decode_part(s):
-                try:
-                    return _json.loads(_b64.urlsafe_b64decode(s + '=='))
-                except Exception:
-                    return {}
-            _parts = bearer.credentials.split('.')
-            if len(_parts) == 3:
-                _hdr = _decode_part(_parts[0])
-                _pld = _decode_part(_parts[1])
-                log.info("jwt.debug_incoming", kid=_hdr.get('kid'), alg=_hdr.get('alg'),
-                         sub=_pld.get('sub'), nbf=_pld.get('nbf'), exp=_pld.get('exp'),
-                         iss=str(_pld.get('iss',''))[:60])
-            else:
-                log.info("jwt.debug_incoming", error="malformed_jwt", parts=len(_parts))
-            # END DEBUG
             payload = verify_clerk_jwt(bearer.credentials)
             clerk_user_id: str = payload["sub"]  # "user_xxx" format
             result = await db.execute(

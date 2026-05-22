@@ -1,5 +1,6 @@
 'use client'
-import { useState, useEffect, useRef, use } from 'react'
+import { use } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
 import Link from 'next/link'
 import JourneyStepper, { type JourneyStep, type StepState } from '../../components/JourneyStepper'
@@ -89,78 +90,38 @@ export default function AgentJourneyPage({
   params: Promise<{ id: string }>
 }) {
   const { id } = use(params)
-  const { getToken } = useAuth()
+  const { getToken, isLoaded, isSignedIn } = useAuth()
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ''
 
-  const [agent, setAgent] = useState<AgentDetail | null>(null)
-  const [loadError, setLoadError] = useState<string | null>(null)
+  const agentQuery = useQuery({
+    queryKey: ['agent', id],
+    queryFn: async () => {
+      const token = await getToken()
+      if (!token) throw new Error('Not authenticated. Please sign in.')
+      const r = await fetch(`${apiBase}/api/v1/agents/${id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      return r.json() as Promise<AgentDetail>
+    },
+    enabled: isLoaded && !!isSignedIn,
+    // Poll every 3s while provisioning; stop once ready
+    refetchInterval: (query) => {
+      const d = query.state.data
+      if (!d) return false
+      const done =
+        d.status === 'ready' ||
+        d.status === 'provisioning_complete' ||
+        d.neon_project_id !== null
+      return done ? false : 3000
+    },
+    staleTime: 0,
+  })
 
-  // Auto-refresh ref — used when step1 is still active (agent not yet ready)
-  const refreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const isMountedRef = useRef(true)
-
-  useEffect(() => {
-    return () => {
-      isMountedRef.current = false
-      if (refreshRef.current) clearInterval(refreshRef.current)
-    }
-  }, [])
-
-  useEffect(() => {
-    const loadAgent = async () => {
-      try {
-        const token = await getToken()
-        if (!token) {
-          setLoadError('Not authenticated. Please sign in.')
-          return
-        }
-        const r = await fetch(`${apiBase}/api/v1/agents/${id}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
-        const data: AgentDetail = await r.json()
-        if (isMountedRef.current) setAgent(data)
-
-        // If not yet ready, start auto-refresh every 3s
-        const step1Done =
-          data.status === 'ready' ||
-          data.status === 'provisioning_complete' ||
-          data.neon_project_id !== null
-
-        if (!step1Done && !refreshRef.current) {
-          refreshRef.current = setInterval(async () => {
-            try {
-              const t = await getToken()
-              if (!t) return
-              const pr = await fetch(`${apiBase}/api/v1/agents/${id}`, {
-                headers: { Authorization: `Bearer ${t}` },
-              })
-              if (!pr.ok) return
-              const pd: AgentDetail = await pr.json()
-              if (!isMountedRef.current) return
-              setAgent(pd)
-
-              const nowDone =
-                pd.status === 'ready' ||
-                pd.status === 'provisioning_complete' ||
-                pd.neon_project_id !== null
-
-              if (nowDone) {
-                clearInterval(refreshRef.current!)
-                refreshRef.current = null
-              }
-            } catch (err) {
-              console.error('Auto-refresh error:', err)
-            }
-          }, 3000)
-        }
-      } catch (err) {
-        console.error(err)
-        setLoadError('Failed to load agent. Please refresh.')
-      }
-    }
-    loadAgent()
-  }, [id, apiBase, getToken])
+  const agent = agentQuery.data ?? null
+  const loadError = agentQuery.isError
+    ? (agentQuery.error as Error).message || 'Failed to load agent. Please refresh.'
+    : null
 
   // Derived step1Done for right-panel dispatch
   const step1Done =
