@@ -39,6 +39,7 @@ const EVENT_LABELS: Record<string, string> = {
   'chunking.started': 'Splitting into chunks...',
   'chunking.complete': 'Chunks ready',
   'metadata.started': 'Extracting metadata & entities...',
+  'metadata.progress': 'Extracting metadata & entities...',
   'metadata.complete': 'Metadata extracted',
   'embedding.started': 'Generating embeddings...',
   'embedding.complete': 'Embeddings done',
