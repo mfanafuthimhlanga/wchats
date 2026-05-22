@@ -65,7 +65,8 @@ from app.core.security import fernet_encrypt
 from app.models.agent import Agent
 from app.models.job import Job
 from app.services.events import emit
-from app.services.neon import NeonHTTPError, create_neon_project, _NEON_API_BASE, _neon_headers
+from app.models.tenant import Tenant
+from app.services.neon import NeonHTTPError, _NEON_API_BASE, _neon_headers, _project_slug, create_neon_project
 from app.worker.celery_app import celery_app
 from celery.exceptions import MaxRetriesExceededError
 
@@ -223,7 +224,15 @@ def provision_neon(self, tenant_id: str, agent_id: str) -> dict:
             # T-03-06: log only status_code, not the raw exception string.
             # ------------------------------------------------------------------
             try:
-                result = create_neon_project(agent_id)
+                tenant = db.get(Tenant, agent.tenant_id)
+                # account_tag: first 8 chars of clerk_user_id after "user_" prefix,
+                # or fallback to first 8 chars of tenant name slug.
+                if tenant and tenant.clerk_user_id:
+                    account_tag = tenant.clerk_user_id.removeprefix("user_")[:8]
+                else:
+                    account_tag = (tenant.name if tenant else "")
+                neon_name = _project_slug(agent.name, account_tag)
+                result = create_neon_project(agent_id, project_name=neon_name)
             except NeonHTTPError as exc:
                 log.warning(
                     "provision_neon.neon_api_error",

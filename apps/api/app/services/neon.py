@@ -63,7 +63,37 @@ def _neon_headers() -> dict:
     }
 
 
-def create_neon_project(agent_id: str) -> dict:
+import re as _re
+
+
+def _project_slug(agent_name: str, account_tag: str) -> str:
+    """Build a human-readable Neon project name.
+
+    Format: {agent-slug}-{account-tag}-{8-digit-random}
+    Example: portfolio-assistant-bant1234-82741059
+
+    Rules:
+    - Lowercase, spaces/special chars → hyphens, collapse runs, strip edges.
+    - agent_name truncated to 30 chars; account_tag to 8 chars.
+    - 8-digit random suffix ensures uniqueness across retries.
+    - Total stays under Neon's 64-char project name limit.
+    """
+    import random
+
+    def _slug(s: str, maxlen: int) -> str:
+        s = s.lower()
+        s = _re.sub(r"[^a-z0-9]+", "-", s)
+        s = s.strip("-")
+        return s[:maxlen]
+
+    agent_part = _slug(agent_name, 30)
+    account_part = _slug(account_tag, 8)
+    suffix = str(random.randint(10_000_000, 99_999_999))
+    parts = [p for p in [agent_part, account_part, suffix] if p]
+    return "-".join(parts)
+
+
+def create_neon_project(agent_id: str, project_name: str | None = None) -> dict:
     """Create a Neon project for the given agent and return project_id + URIs.
 
     Fetches connection URIs immediately after project creation — does NOT wait
@@ -74,7 +104,9 @@ def create_neon_project(agent_id: str) -> dict:
     code on error responses — the SDK drops it when raising NeonAPIError.
 
     Args:
-        agent_id: The agent's UUID string, used for project naming.
+        agent_id: The agent's UUID string (fallback name if project_name omitted).
+        project_name: Human-readable Neon project name. Pass the result of
+                      _project_slug(agent.name, account_tag) from the task.
 
     Returns:
         dict with keys:
@@ -86,13 +118,14 @@ def create_neon_project(agent_id: str) -> dict:
         NeonHTTPError: On any non-2xx response from the Neon API. Caller uses
                        .status_code to distinguish fatal 4xx from retryable 5xx.
     """
+    name = project_name or f"vrd-{agent_id}"
     # --- Create project ---------------------------------------------------
     r = requests.post(
         f"{_NEON_API_BASE}/projects",
         headers=_neon_headers(),
         json={
             "project": {
-                "name": f"vrd-{agent_id}",
+                "name": name,
                 "region_id": settings.NEON_REGION,
                 "pg_version": 17,
             }
