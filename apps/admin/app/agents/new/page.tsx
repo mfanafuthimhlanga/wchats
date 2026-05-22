@@ -301,10 +301,10 @@ export default function CreateAgentPage() {
               Provisioning your agent…
             </h2>
             <p style={{ fontSize: '14px', color: 'var(--text-3)', marginBottom: '16px' }}>
-              Setting up a dedicated database. This usually takes about 30 seconds.
+              Setting up a dedicated database. This usually takes 30–60 seconds.
             </p>
             <p style={{ fontSize: '13px', color: 'var(--text-4)', fontFamily: 'var(--font-mono)' }}>
-              Current status: {polledStatus || 'pending'}
+              Status: {polledStatus || 'pending'}{polledStatus === 'ready' ? ' — redirecting…' : ' — working…'}
             </p>
             {agentId && (
               <p style={{ fontSize: '12px', color: 'var(--text-4)', marginTop: '8px', fontFamily: 'var(--font-mono)' }}>
