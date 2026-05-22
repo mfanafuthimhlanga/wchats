@@ -1,67 +1,46 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-15T16:45:00Z",
-  "phase": "02",
-  "phase_name": "ingestion-pipeline",
-  "phase_dir": ".planning/phases/02-ingestion-pipeline",
-  "plan": "07",
-  "task": 9,
-  "total_tasks": 9,
+  "timestamp": "2026-05-22T13:45:00Z",
+  "phase": "post-M4",
+  "phase_name": "ingest-ux-bugfix",
+  "phase_dir": ".planning",
+  "plan": "adhoc",
+  "task": 5,
+  "total_tasks": 6,
   "status": "paused",
   "completed_tasks": [
-    {"id": 1, "name": "Fix alembic/env.py — wire CONTROL_DB_SYNC_URL for CLI mode", "status": "done", "commit": "73669f7"},
-    {"id": 2, "name": "All prior M2 tasks 2-8 done", "status": "done"},
-    {"id": 3, "name": "Migrate from Docker to native Windows stack", "status": "done", "notes": "Docker killed. Neon control DB + Upstash Redis + native uvicorn + native Celery workers running."},
-    {"id": 4, "name": "Fix .env loader in demo_m2.sh (safe KEY=VALUE parser, no source)", "status": "done"},
-    {"id": 5, "name": "Fix UPLOADS_DIR hardcoded /vrd-uploads", "status": "done", "notes": "Made configurable via UPLOADS_DIR env var in config.py, documents.py, parse.py"},
-    {"id": 6, "name": "Fix CONTROL_DB_URL for asyncpg (ssl=require not sslmode=require)", "status": "done"},
-    {"id": 7, "name": "Fix REDIS_URL (strip redis-cli --tls -u prefix, use rediss://)", "status": "done"},
-    {"id": 8, "name": "Fix pydantic env_file resolution (_find_env_file walks up from config.py)", "status": "done"},
-    {"id": 9, "name": "Fix Celery rediss:// SSL — broker_use_ssl + redis_backend_use_ssl with ssl.CERT_NONE", "status": "in_progress", "progress": "Code change done in celery_app.py. But a stale Python process (PID 14032 / original start_native.ps1 window) was holding port 8000 throughout — all demo runs were hitting the OLD API. Services restarted with PowerShell Stop-Process. Celery backend confirmed to init OK in isolation test. Demo not yet re-run after clean restart."}
+    {"id": 1, "name": "Add .md to ALLOWED_EXTENSIONS in documents.py", "status": "done", "commit": "uncommitted"},
+    {"id": 2, "name": "Fix chunk.py _resolve_local_path — use settings.UPLOADS_DIR not hardcoded /vrd-uploads", "status": "done", "commit": "uncommitted"},
+    {"id": 3, "name": "Fix chunk.py source_type condition to include 'md' in local-file branch", "status": "done", "commit": "uncommitted"},
+    {"id": 4, "name": "Add drag-and-drop + multi-file upload to ingest page", "status": "done", "commit": "uncommitted"},
+    {"id": 5, "name": "Fix EVENT_LABELS in ingest page to match actual backend event types", "status": "done", "commit": "uncommitted"}
   ],
   "remaining_tasks": [
-    {"id": 9, "name": "Run demo_m2.sh clean end-to-end and verify all 11 SSE events", "status": "not_started"}
+    {"id": 6, "name": "Fix ANTHROPIC_API_KEY not reaching Celery worker — see blocker below", "status": "not_started"}
   ],
   "blockers": [
     {
-      "description": "Celery rediss:// SSL — all fixes applied but demo not re-run after truly clean process kill",
+      "description": "ANTHROPIC_API_KEY not in Celery worker OS environment. Worker starts fine and processes parse+chunk tasks, then crashes at generate_metadata with: TypeError: Could not resolve authentication method. Expected one of api_key, auth_token, or credentials to be set.",
       "type": "technical",
-      "workaround": "PowerShell Stop-Process killed all Python. Services restarted. Run demo now."
+      "workaround": "Fix: in metadata_service.py, change `_anthropic = anthropic.Anthropic()` to `_anthropic = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)` — pydantic Settings already loads ANTHROPIC_API_KEY from .env via _find_env_file(), so this bypasses the OS env gap. settings is already imported in config.py. Import settings in metadata_service.py."
     }
   ],
   "human_actions_pending": [
     {
-      "action": "Delete 7 orphan Neon projects from Neon console",
-      "context": "Created during debugging of operations polling timeout. Free tier caps at 10.",
-      "blocking": false
+      "action": "After applying the ANTHROPIC_API_KEY fix, restart Celery worker and re-test upload",
+      "context": "Worker is currently running but will crash on any metadata task. Must restart after code fix.",
+      "blocking": true
     }
   ],
   "decisions": [
-    {"decision": "Go fully Docker-free: Neon for control DB, Upstash for Redis, native Python for all services", "rationale": "4GB RAM PC — Docker Desktop WSL2 VM takes 1-2GB idle, libxcb.so.1 error in Linux containers goes away on Windows native", "phase": "02"},
-    {"decision": "pydantic _find_env_file() walks up from config.py location", "rationale": "env_file='.env' is CWD-relative; running from apps/api/ never found project-root .env", "phase": "02"},
-    {"decision": "UPLOADS_DIR config setting added to Settings", "rationale": "/vrd-uploads hardcoded — doesn't exist on Windows; configurable via env var", "phase": "02"},
-    {"decision": "Celery SSL: broker_use_ssl + redis_backend_use_ssl with ssl.CERT_NONE Python constant", "rationale": "Celery 5.x does not reliably parse ssl_cert_reqs string from URL query params", "phase": "02"},
-    {"decision": "ingestion.started only emits on self.request.retries == 0", "rationale": "Task retries were emitting duplicate SSE events (4x each on libxcb failure)", "phase": "02"},
-    {"decision": "parsing.started + status UPDATE only fire when parse_status != 'parsing'", "rationale": "Same duplicate SSE event problem on retry", "phase": "02"}
+    {"decision": "ANTHROPIC_API_KEY fix: use explicit api_key=settings.ANTHROPIC_API_KEY in Anthropic() constructor rather than setting env var in shell", "rationale": "pydantic Settings already loads .env correctly; anthropic SDK reads os.environ independently. Explicit constructor arg is more robust and avoids shell-level env var management.", "phase": "post-M4"},
+    {"decision": "EVENT_LABELS keys updated to match real backend event names", "rationale": "Old keys (parsing, chunking, embedding) did not match backend events (parsing.started, chunking.started, etc.) — progress never updated from 'Starting...'", "phase": "post-M4"}
   ],
   "uncommitted_files": [
     "apps/api/app/api/v1/documents.py",
-    "apps/api/app/core/config.py",
-    "apps/api/app/worker/celery_app.py",
-    "apps/api/app/worker/tasks/pipeline/parse.py",
-    "scripts/demo_m2.sh",
-    "scripts/start_native.ps1"
+    "apps/api/app/worker/tasks/pipeline/chunk.py",
+    "apps/admin/app/agents/[id]/ingest/page.tsx"
   ],
-  "infrastructure_state": {
-    "docker": "All containers stopped and removed",
-    "control_db": "Neon — ep-damp-flower-apdt91kg-pooler.c-7.us-east-1.aws.neon.tech/neondb — migrations applied (0001+0002)",
-    "redis": "Upstash — singular-ocelot-125167.upstash.io:6379 — rediss:// TLS",
-    "uploads_dir": "C:/vrd-uploads (set in .env as UPLOADS_DIR)",
-    "api": "uvicorn on port 8000 — process freshly restarted by PowerShell Stop-Process",
-    "pipeline_worker": "celery --queues=pipeline — freshly restarted",
-    "runtime_worker": "celery --queues=runtime — freshly restarted",
-    "health": "curl http://localhost:8000/health → {status:ok, redis:ok, db:ok}"
-  },
-  "next_action": "Run: cd C:/Users/Bantu/mzansi-agentive/veridian && ADMIN_KEY=<redacted-admin-key> SSE_TIMEOUT=600 bash scripts/demo_m2.sh. This will provision a new tenant+agent (Neon project will be created), upload demo_business.pdf, and stream 11 SSE events. If Celery SSL still fails on chain dispatch, check vrd-api.log at C:/Users/Bantu/AppData/Local/Temp/vrd-api.log",
-  "context_notes": "All infrastructure is now Docker-free. The last blocker was a stale PID 14032 process (from start_native.ps1 PowerShell window) holding port 8000 throughout the entire debugging session — every demo run was hitting the OLD broken API. PowerShell Stop-Process killed it. Services freshly restarted. Session interrupted before the clean demo run completed."
+  "next_action": "Fix metadata_service.py: change `_anthropic = anthropic.Anthropic()` to `_anthropic = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)` and add `from app.core.config import settings` import. Then restart Celery. Then commit all uncommitted files. Then verify upload end-to-end in browser.",
+  "context_notes": "M4/4.2 is fully complete per STATE.md (42/42 plans). This was an ad-hoc UX improvement session: added .md upload support, drag-and-drop, multi-file, and fixed EVENT_LABELS. The remaining blocker (ANTHROPIC_API_KEY) is a one-line fix in metadata_service.py. After the fix + restart + verification, commit all three files and the session is done. Next planned work is M5 planning (/gsd-discuss-phase 5)."
 }
