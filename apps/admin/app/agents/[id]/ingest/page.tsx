@@ -1,7 +1,7 @@
 'use client'
 import { useState, useRef, useCallback, use } from 'react'
 import { useAuth } from '@clerk/nextjs'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -18,6 +18,16 @@ interface Document {
 }
 
 type IngestTab = 'file' | 'url'
+
+// A locally-tracked, in-flight document shown optimistically in the KB list
+// while the ingestion job runs. Replaced by the real row once the job completes
+// and the documents query refetches.
+interface OptimisticDoc {
+  // Stable client key — never collides with a real backend UUID
+  clientKey: string
+  source_type: string
+  title: string
+}
 
 const ACCEPTED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.md']
 
@@ -54,6 +64,7 @@ function getParseStatusColor(status: string) {
 export default function IngestPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
   const { getToken, isLoaded, isSignedIn } = useAuth()
+  const queryClient = useQueryClient()
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ''
 
   const [activeTab, setActiveTab] = useState<IngestTab>('file')
@@ -66,6 +77,9 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [progressLabel, setProgressLabel] = useState<string | null>(null)
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
+  // Optimistic in-flight rows surfaced in the KB list while a job is running.
+  const [optimisticDocs, setOptimisticDocs] = useState<OptimisticDoc[]>([])
 
   // ---------------------------------------------------------------------------
   // Load agent status + documents via TanStack Query
@@ -107,12 +121,105 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
   const loadError = agentQuery.isError ? 'Failed to load agent. Please refresh.' : null
 
   // ---------------------------------------------------------------------------
-  // SSE progress reader — fetch + ReadableStream (EventSource doesn't support headers)
+  // TanStack Query: invalidate + refetch the documents list.
+  // Used after a job reaches a terminal state so freshly-ingested rows
+  // (and their final parse_status / chunk_count) appear without a manual reload.
+  // ---------------------------------------------------------------------------
+
+  const refreshDocuments = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: ['agent-documents', id] })
+  }, [queryClient, id])
+
+  const handleDeleteDoc = useCallback(
+    async (docId: string) => {
+      setDeletingIds((prev) => new Set(prev).add(docId))
+      try {
+        const token = await getToken()
+        const r = await fetch(`${apiBase}/api/v1/agents/${id}/documents/${docId}`, {
+          method: 'DELETE',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+        if (!r.ok && r.status !== 404) throw new Error(`HTTP ${r.status}`)
+        await queryClient.invalidateQueries({ queryKey: ['agent-documents', id] })
+      } catch (err) {
+        console.error('Delete failed', err)
+        setSubmitError('Failed to delete document — please try again.')
+      } finally {
+        setDeletingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(docId)
+          return next
+        })
+      }
+    },
+    [getToken, apiBase, id, queryClient],
+  )
+
+  // ---------------------------------------------------------------------------
+  // SSE progress reader — fetch + ReadableStream (EventSource can't send the
+  // Authorization header). The backend uses standard SSE framing produced by
+  // sse-starlette:
+  //
+  //     event: parsing.started
+  //     data: {"document_id": "...", "at": "..."}
+  //     id: <uuid>
+  //     <blank line terminates the event>
+  //
+  // The event NAME lives on the `event:` line — the `data:` JSON is only the
+  // payload metadata and contains NO `event` field. The previous reader looked
+  // for `data:` lines and read `payload.event`, which was always undefined, so
+  // progress never advanced past "Starting..." and the terminal job.complete /
+  // job.failed transitions never fired. This parser reads the `event:` line for
+  // the type and buffers across chunk boundaries so events split across two TCP
+  // reads are not dropped.
   // ---------------------------------------------------------------------------
 
   const readSseProgress = async (eventsUrl: string, token: string) => {
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), 180_000) // 3 min
+
+    // Reach a terminal state exactly once: update progress, refresh the list,
+    // drop optimistic rows, and clear the submitting flag.
+    const finish = async (mode: 'complete' | 'failed') => {
+      if (mode === 'complete') {
+        setProgressLabel(EVENT_LABELS['job.complete'])
+      } else {
+        setSubmitError('Ingestion failed. Check the Celery worker logs.')
+      }
+      // Real rows now exist in the backend — pull them and discard placeholders.
+      await refreshDocuments()
+      setOptimisticDocs([])
+      setSubmitting(false)
+    }
+
+    // Handle one fully-parsed SSE event block.
+    // Returns true if the stream should stop (terminal event reached).
+    const handleEvent = async (eventType: string, dataLines: string[]): Promise<boolean> => {
+      // The event NAME is authoritative (from the `event:` line). The data JSON
+      // is parsed only for completeness; we never read an `event` field from it.
+      if (dataLines.length > 0) {
+        try {
+          JSON.parse(dataLines.join('\n'))
+        } catch {
+          // payload may be malformed/empty (e.g. keep-alive) — type still drives UI
+        }
+      }
+      if (!eventType) return false
+
+      const label = EVENT_LABELS[eventType] ?? eventType
+      setProgressLabel(label)
+
+      if (eventType === 'job.complete') {
+        await finish('complete')
+        return true
+      }
+      if (eventType === 'job.failed') {
+        await finish('failed')
+        return true
+      }
+      return false
+    }
+
     try {
       const resp = await fetch(`${apiBase}${eventsUrl}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -120,37 +227,39 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
       })
       if (!resp.body) {
         setSubmitError('No response stream. Check if the Celery worker is running.')
+        setOptimisticDocs([])
         setSubmitting(false)
         return
       }
 
       const reader = resp.body.getReader()
       const decoder = new TextDecoder()
+      let buffer = ''
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        const chunk = decoder.decode(value, { stream: true })
-        for (const line of chunk.split('\n')) {
-          if (line.startsWith('data: ')) {
-            try {
-              const payload = JSON.parse(line.slice(6))
-              const label = EVENT_LABELS[payload.event] ?? payload.event
-              setProgressLabel(label)
-              if (payload.event === 'job.complete') {
-                await docsQuery.refetch()
-                setSubmitting(false)
-                return
-              }
-              if (payload.event === 'job.failed') {
-                setSubmitError('Ingestion failed. Check the Celery worker logs.')
-                setSubmitting(false)
-                return
-              }
-            } catch {
-              // ignore malformed lines
+        buffer += decoder.decode(value, { stream: true })
+
+        // SSE events are separated by a blank line. Normalise CRLF then split
+        // into complete blocks, keeping any trailing partial block in `buffer`.
+        buffer = buffer.replace(/\r\n/g, '\n')
+        const blocks = buffer.split('\n\n')
+        buffer = blocks.pop() ?? '' // last element is incomplete (or '')
+
+        for (const block of blocks) {
+          let eventType = ''
+          const dataLines: string[] = []
+          for (const rawLine of block.split('\n')) {
+            if (rawLine.startsWith('event:')) {
+              eventType = rawLine.slice('event:'.length).trim()
+            } else if (rawLine.startsWith('data:')) {
+              dataLines.push(rawLine.slice('data:'.length).replace(/^ /, ''))
             }
+            // `id:` and comment (`:`) lines are ignored for progress purposes
           }
+          const stop = await handleEvent(eventType, dataLines)
+          if (stop) return
         }
       }
     } catch (err) {
@@ -159,6 +268,9 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
       } else {
         setSubmitError('Lost connection to job stream. The job may still be running.')
       }
+      // The job may still complete server-side; pull whatever exists now.
+      await refreshDocuments()
+      setOptimisticDocs([])
       setSubmitting(false)
     } finally {
       clearTimeout(timeoutId)
@@ -222,6 +334,12 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
     setSubmitError(null)
     setProgressLabel(null)
 
+    // Snapshot the sources being submitted so we can render optimistic
+    // "processing" rows in the KB list while the job runs. Captured before the
+    // inputs are reset below.
+    const pendingFiles = [...selectedFiles]
+    const pendingUrl = urlInput.trim()
+
     // Validate
     if (activeTab === 'url') {
       if (!urlInput.trim()) {
@@ -281,6 +399,19 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
 
       const data: { job_id: string; events_url: string } = await res.json()
 
+      // Optimistic feedback: show a "processing" row per submitted source while
+      // the ingestion job runs. Cleared once a terminal SSE event triggers a
+      // refetch of the real documents list (see readSseProgress -> finish()).
+      const placeholders: OptimisticDoc[] =
+        activeTab === 'url'
+          ? [{ clientKey: `${data.job_id}:url`, source_type: 'url', title: pendingUrl }]
+          : pendingFiles.map((f, i) => ({
+              clientKey: `${data.job_id}:${i}`,
+              source_type: (f.name.split('.').pop() || 'file').toLowerCase(),
+              title: f.name,
+            }))
+      setOptimisticDocs(placeholders)
+
       // Reset inputs
       setSelectedFiles([])
       setUrlInput('')
@@ -290,6 +421,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
     } catch (err) {
       console.error(err)
       setSubmitError('Upload failed. Please try again.')
+      setOptimisticDocs([])
       setSubmitting(false)
     }
   }
@@ -652,7 +784,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
       )}
 
       {/* Document list */}
-      {documents.length > 0 && (
+      {(documents.length > 0 || optimisticDocs.length > 0) && (
         <div style={{ marginTop: '32px' }}>
           <h2
             style={{
@@ -664,7 +796,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
               marginBottom: '12px',
             }}
           >
-            Knowledge Base ({documents.length})
+            Knowledge Base ({documents.length + optimisticDocs.length})
           </h2>
           <div
             style={{
@@ -673,6 +805,72 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
               overflow: 'hidden',
             }}
           >
+            {/* Optimistic in-flight rows — shown while the ingestion job runs,
+                replaced by real rows once the documents query refetches. */}
+            {optimisticDocs.map((doc) => (
+              <div
+                key={doc.clientKey}
+                aria-busy="true"
+                style={{
+                  padding: '14px 16px',
+                  background: 'var(--surface-2)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                }}
+              >
+                {/* Source type badge */}
+                <span
+                  style={{
+                    padding: '2px 8px',
+                    borderRadius: '999px',
+                    fontSize: '10px',
+                    fontWeight: 700,
+                    background: 'var(--surface-3)',
+                    color: 'var(--text-3)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.06em',
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0,
+                  }}
+                >
+                  {doc.source_type}
+                </span>
+
+                {/* Title */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      color: 'var(--text-2)',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    {doc.title}
+                  </div>
+                </div>
+
+                {/* Processing badge (live label tracks the SSE progress) */}
+                <span
+                  style={{
+                    padding: '3px 10px',
+                    borderRadius: '999px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    background: 'var(--amber-bg)',
+                    color: 'var(--amber)',
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0,
+                  }}
+                >
+                  {progressLabel ?? 'processing…'}
+                </span>
+              </div>
+            ))}
+
             {documents.map((doc, i) => {
               const sc = getParseStatusColor(doc.parse_status)
               return (
@@ -680,7 +878,10 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   key={doc.id}
                   style={{
                     padding: '14px 16px',
-                    borderTop: i > 0 ? '1px solid var(--border-soft)' : undefined,
+                    borderTop:
+                      i > 0 || optimisticDocs.length > 0
+                        ? '1px solid var(--border-soft)'
+                        : undefined,
                     background: 'var(--surface-1)',
                     display: 'flex',
                     alignItems: 'center',
@@ -754,6 +955,37 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   >
                     {new Date(doc.created_at).toLocaleDateString()}
                   </span>
+
+                  {/* Delete button */}
+                  <button
+                    onClick={() => handleDeleteDoc(doc.id)}
+                    disabled={deletingIds.has(doc.id)}
+                    aria-label={`Delete ${doc.title || doc.source_uri}`}
+                    style={{
+                      flexShrink: 0,
+                      background: 'none',
+                      border: 'none',
+                      cursor: deletingIds.has(doc.id) ? 'not-allowed' : 'pointer',
+                      padding: '4px 6px',
+                      borderRadius: 'var(--radius-xs)',
+                      color: deletingIds.has(doc.id) ? 'var(--text-4)' : 'var(--text-3)',
+                      fontSize: '14px',
+                      lineHeight: 1,
+                      opacity: deletingIds.has(doc.id) ? 0.4 : 1,
+                      transition: 'color 0.15s ease, opacity 0.15s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!deletingIds.has(doc.id))
+                        (e.currentTarget as HTMLButtonElement).style.color = 'var(--red)'
+                    }}
+                    onMouseLeave={(e) => {
+                      ;(e.currentTarget as HTMLButtonElement).style.color = deletingIds.has(doc.id)
+                        ? 'var(--text-4)'
+                        : 'var(--text-3)'
+                    }}
+                  >
+                    {deletingIds.has(doc.id) ? '…' : '×'}
+                  </button>
                 </div>
               )
             })}
