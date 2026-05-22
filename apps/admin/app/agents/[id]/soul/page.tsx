@@ -115,6 +115,11 @@ export default function SoulEditorPage({
   const prevDoLength = useRef(soulDoList.length)
   const prevDonotLength = useRef(soulDonotList.length)
 
+  // Tracks whether the form has been seeded from the agent query. Once seeded,
+  // later query refreshes (e.g. the refetch triggered by invalidateQueries on
+  // save) must NOT overwrite in-progress user edits.
+  const seeded = useRef(false)
+
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ''
 
   // ---------------------------------------------------------------------------
@@ -149,10 +154,12 @@ export default function SoulEditorPage({
     }
   }, [agentQuery.isError, isLoaded, isSignedIn])
 
-  // Populate soul form fields once the agent data arrives (or refreshes).
+  // Populate soul form fields once the agent data first arrives. Guarded by the
+  // `seeded` ref so subsequent query refreshes don't clobber user edits.
   useEffect(() => {
     const data = agentQuery.data
-    if (!data) return
+    if (!data || seeded.current) return
+    seeded.current = true
     setName(data.name || '')
     setSoulRole(data.soul_role || '')
     setSoulVoice(data.soul_voice || '')
