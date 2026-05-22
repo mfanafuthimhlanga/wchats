@@ -30,8 +30,30 @@ Connection string security (CLAUDE.md non-negotiable rule):
     The connection string is fetched from the control DB by agent_id and decrypted
     with fernet_decrypt() at runtime.
 
+Concurrency design (Haiku fan-out):
+    Haiku metadata extraction is the pipeline's slowest step (~8-10s per chunk).
+    Serialized, 50 chunks take ~7.7 minutes. enrich_chunk() is a synchronous
+    httpx/anthropic call with no shared mutable state, so it is safe to run in
+    threads. A ThreadPoolExecutor with MAX_CONCURRENT_HAIKU=5 workers fans the
+    Haiku calls out concurrently, cutting 50 chunks from ~7.7 min to ~90s while
+    staying well under Anthropic rate limits.
+
+    DB writes are NOT parallelized. psycopg2 connections and cursors are not
+    thread-safe — sharing one across threads corrupts the protocol state. Only
+    the network-bound enrich_chunk() runs in worker threads; every DB write
+    (chunk_metadata UPSERT, entities UPSERT, chunk_entities link) and the
+    per-chunk commit happen on the main thread as as_completed() yields results.
+    This preserves the per-chunk commit granularity that backs Layer 3 retry
+    safety.
+
+    Partial-failure tolerance: a single chunk's enrich_chunk() raising (e.g. a
+    fatal ValidationError after retries) is logged and skipped — it does not
+    abort the whole document. The chunk simply has no metadata row, and a future
+    re-run will re-attempt it (Layer 3 skips only chunks that DID succeed).
+
 Event emission order (CONTEXT.md §SSE Event Vocabulary):
     metadata.started  ← emitted per document (before per-chunk loop)
+    metadata.progress ← emitted every 5 processed chunks ({processed, total})
     metadata.complete ← emitted per document (after all chunks processed)
 
 Return value (chain contract):
@@ -52,6 +74,8 @@ Threat mitigations (T-02-04):
 
 import ssl
 import structlog
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import psycopg2
 import redis as redis_lib
 
@@ -64,6 +88,11 @@ from app.services.metadata_service import enrich_chunk
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
+
+# Max concurrent Haiku calls. enrich_chunk() is network-bound (httpx/anthropic);
+# 5 threads fans out the slow API calls while staying well under Anthropic rate
+# limits. DB writes remain serial on the main thread (psycopg2 is not thread-safe).
+MAX_CONCURRENT_HAIKU = 5
 
 # Module-level sync Redis client — strip query params; pass ssl_cert_reqs as constant.
 _url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
@@ -157,12 +186,16 @@ def generate_metadata(self, result: dict) -> dict:
                     _redis,
                 )
 
+                # ----------------------------------------------------------
+                # Pass 1 (serial, main thread): Layer 3 idempotency pre-check.
+                # SELECT COUNT(*) FROM chunk_metadata for each chunk to decide
+                # which chunks need a Haiku call. Already-enriched chunks are
+                # skipped here (no Haiku call, no re-billing — T-02-04-03).
+                # This must stay on the main thread: psycopg2 is not thread-safe.
+                # ----------------------------------------------------------
+                pending: list[tuple] = []  # (chunk_id, content) needing enrichment
                 for chunk_id, content in chunk_rows:
                     with tenant_conn.cursor() as cur:
-                        # ------------------------------------------------------
-                        # Layer 3 idempotency: skip chunk if metadata exists
-                        # Prevents re-billing Haiku on task retry (T-02-04-03)
-                        # ------------------------------------------------------
                         cur.execute(
                             "SELECT COUNT(*) FROM chunk_metadata WHERE chunk_id = %s",
                             (chunk_id,),
@@ -173,64 +206,107 @@ def generate_metadata(self, result: dict) -> dict:
                                 chunk_id=str(chunk_id),
                             )
                             continue
+                    pending.append((chunk_id, content))
 
-                        # ------------------------------------------------------
-                        # Single Haiku call — summary + keywords + questions + entities
-                        # (CONTEXT.md non-negotiable: entity extraction in same call)
-                        # T-02-04-06: chunk content not logged before or after call
-                        # ------------------------------------------------------
-                        meta = enrich_chunk(content)
+                # ----------------------------------------------------------
+                # Pass 2 (parallel Haiku, serial DB): fan out enrich_chunk()
+                # across MAX_CONCURRENT_HAIKU threads. As each future completes,
+                # write its result to the DB on THIS (main) thread and commit.
+                #
+                # Only the network-bound Haiku call is parallelized. All DB
+                # access stays on the main thread because the single psycopg2
+                # connection/cursor is not thread-safe (T-02-04-06: content
+                # never logged; only chunk_id/document_id).
+                # ----------------------------------------------------------
+                processed = 0
+                if pending:
+                    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_HAIKU) as executor:
+                        # enrich_chunk(content) — same Haiku call as before
+                        futures = {
+                            executor.submit(enrich_chunk, content): (chunk_id, content)
+                            for chunk_id, content in pending
+                        }
+                        for future in as_completed(futures):
+                            chunk_id, _content = futures[future]
+                            try:
+                                meta = future.result()
+                            except Exception as enrich_exc:
+                                # Partial-failure tolerance: one chunk's failure
+                                # (e.g. fatal ValidationError after retries) must
+                                # NOT abort the whole document. Log and skip — a
+                                # future re-run re-attempts this chunk (Layer 3
+                                # only skips chunks that succeeded).
+                                log.warning(
+                                    "generate_metadata.metadata_extraction_failed",
+                                    chunk_id=str(chunk_id),
+                                    error=str(enrich_exc),
+                                )
+                                continue
 
-                        # ------------------------------------------------------
-                        # UPSERT chunk_metadata (ON CONFLICT (chunk_id) DO UPDATE)
-                        # ------------------------------------------------------
-                        cur.execute(
-                            """
-                            INSERT INTO chunk_metadata (chunk_id, summary, keywords, questions)
-                            VALUES (%s, %s, %s, %s)
-                            ON CONFLICT (chunk_id) DO UPDATE
-                                SET summary   = EXCLUDED.summary,
-                                    keywords  = EXCLUDED.keywords,
-                                    questions = EXCLUDED.questions
-                            """,
-                            (chunk_id, meta.summary, meta.keywords, meta.questions),
-                        )
+                            with tenant_conn.cursor() as cur:
+                                # ------------------------------------------
+                                # UPSERT chunk_metadata (ON CONFLICT (chunk_id) DO UPDATE)
+                                # ------------------------------------------
+                                cur.execute(
+                                    """
+                                    INSERT INTO chunk_metadata (chunk_id, summary, keywords, questions)
+                                    VALUES (%s, %s, %s, %s)
+                                    ON CONFLICT (chunk_id) DO UPDATE
+                                        SET summary   = EXCLUDED.summary,
+                                            keywords  = EXCLUDED.keywords,
+                                            questions = EXCLUDED.questions
+                                    """,
+                                    (chunk_id, meta.summary, meta.keywords, meta.questions),
+                                )
 
-                        # ------------------------------------------------------
-                        # UPSERT entities + link chunk_entities
-                        #
-                        # Entity dedup: ON CONFLICT (normalized, type) DO UPDATE SET name
-                        # so the human-readable name reflects the most recent occurrence;
-                        # the canonical normalized form is the dedup key (T-02-04-02).
-                        #
-                        # chunk_entities link: ON CONFLICT DO NOTHING prevents duplicate
-                        # (chunk_id, entity_id) pairs on retry.
-                        # ------------------------------------------------------
-                        for entity in meta.entities:
-                            cur.execute(
-                                """
-                                INSERT INTO entities (name, type, normalized)
-                                VALUES (%s, %s, %s)
-                                ON CONFLICT (normalized, type) DO UPDATE
-                                    SET name = EXCLUDED.name
-                                RETURNING id
-                                """,
-                                (entity.name, entity.type, entity.normalized),
-                            )
-                            entity_id = cur.fetchone()[0]
-                            cur.execute(
-                                """
-                                INSERT INTO chunk_entities (chunk_id, entity_id)
-                                VALUES (%s, %s)
-                                ON CONFLICT DO NOTHING
-                                """,
-                                (chunk_id, entity_id),
-                            )
+                                # ------------------------------------------
+                                # UPSERT entities + link chunk_entities
+                                #
+                                # Entity dedup: ON CONFLICT (normalized, type) DO UPDATE
+                                # SET name so the human-readable name reflects the most
+                                # recent occurrence; the canonical normalized form is the
+                                # dedup key (T-02-04-02).
+                                #
+                                # chunk_entities link: ON CONFLICT DO NOTHING prevents
+                                # duplicate (chunk_id, entity_id) pairs on retry.
+                                # ------------------------------------------
+                                for entity in meta.entities:
+                                    cur.execute(
+                                        """
+                                        INSERT INTO entities (name, type, normalized)
+                                        VALUES (%s, %s, %s)
+                                        ON CONFLICT (normalized, type) DO UPDATE
+                                            SET name = EXCLUDED.name
+                                        RETURNING id
+                                        """,
+                                        (entity.name, entity.type, entity.normalized),
+                                    )
+                                    entity_id = cur.fetchone()[0]
+                                    cur.execute(
+                                        """
+                                        INSERT INTO chunk_entities (chunk_id, entity_id)
+                                        VALUES (%s, %s)
+                                        ON CONFLICT DO NOTHING
+                                        """,
+                                        (chunk_id, entity_id),
+                                    )
 
-                    # Commit per-chunk: partial-progress safety on retry (Layer 3 design)
-                    # If the worker is killed after commit, the SELECT COUNT(*) guard on
-                    # the next retry will skip already-processed chunks.
-                    tenant_conn.commit()
+                            # Commit per-chunk: partial-progress safety on retry
+                            # (Layer 3 design). If the worker is killed after commit,
+                            # the SELECT COUNT(*) guard on the next retry skips this chunk.
+                            tenant_conn.commit()
+
+                            # Per-chunk progress: emit every 5 processed chunks so the
+                            # admin UI shows movement during long documents.
+                            processed += 1
+                            if processed % 5 == 0:
+                                emit(
+                                    job_id,
+                                    "metadata.progress",
+                                    {"processed": processed, "total": len(pending)},
+                                    db,
+                                    _redis,
+                                )
 
                 # Emit metadata.complete for this document
                 emit(
@@ -241,7 +317,11 @@ def generate_metadata(self, result: dict) -> dict:
                     _redis,
                 )
 
-                log.info("generate_metadata.complete", document_id=doc_id)
+                log.info(
+                    "generate_metadata.complete",
+                    document_id=doc_id,
+                    chunks_enriched=processed,
+                )
 
         except Exception as exc:
             # Best-effort rollback on unexpected error
