@@ -66,7 +66,7 @@ log = structlog.get_logger(__name__)
 router = APIRouter(tags=["documents"])
 
 # Whitelist of accepted file extensions (T-02-06-03)
-ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
+ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".md"}
 
 
 # ---------------------------------------------------------------------------

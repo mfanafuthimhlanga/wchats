@@ -37,15 +37,18 @@ import anthropic
 from pydantic import BaseModel
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
+from app.core.config import settings
+
 log = structlog.get_logger(__name__)
 
 # Pinned model string — verify via anthropic.Anthropic().models.list() before deploy
 # (RESEARCH.md Open Question 2). Do NOT use "claude-haiku-latest" — embedding drift risk.
 HAIKU_MODEL = "claude-haiku-4-5"
 
-# Module-level client — reads ANTHROPIC_API_KEY from env automatically.
-# Fail-fast at import: misconfigured workers crash at startup, not on first task.
-_anthropic = anthropic.Anthropic()
+# Module-level client — explicit api_key bypasses os.environ gap when Celery
+# is started without inheriting the .env file (e.g., via Start-Process on Windows).
+# pydantic Settings loads .env via _find_env_file(); os.environ is not populated.
+_anthropic = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
 # System prompt for structured metadata + entity extraction
 METADATA_SYSTEM_PROMPT = (

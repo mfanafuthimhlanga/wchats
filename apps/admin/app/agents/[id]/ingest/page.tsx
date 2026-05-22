@@ -1,5 +1,5 @@
 'use client'
-import { useState, use } from 'react'
+import { useState, useRef, useCallback, use } from 'react'
 import { useAuth } from '@clerk/nextjs'
 import { useQuery } from '@tanstack/react-query'
 
@@ -19,11 +19,19 @@ interface Document {
 
 type IngestTab = 'file' | 'url'
 
+const ACCEPTED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.md']
+
 const EVENT_LABELS: Record<string, string> = {
-  'job.started': 'Starting...',
-  parsing: 'Parsing documents...',
-  chunking: 'Chunking text...',
-  embedding: 'Generating embeddings...',
+  'ingestion.started': 'Starting ingestion...',
+  'parsing.started': 'Parsing document...',
+  'parsing.complete': 'Document parsed',
+  'chunking.started': 'Splitting into chunks...',
+  'chunking.complete': 'Chunks ready',
+  'metadata.started': 'Extracting metadata & entities...',
+  'metadata.complete': 'Metadata extracted',
+  'embedding.started': 'Generating embeddings...',
+  'embedding.complete': 'Embeddings done',
+  'ingestion.complete': 'Processing complete',
   'job.complete': 'Done!',
   'job.failed': 'Failed',
 }
@@ -49,7 +57,9 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ''
 
   const [activeTab, setActiveTab] = useState<IngestTab>('file')
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([])
+  const [isDragging, setIsDragging] = useState<boolean>(false)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [urlInput, setUrlInput] = useState('')
   const [urlError, setUrlError] = useState<string | null>(null)
 
@@ -156,6 +166,55 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
   }
 
   // ---------------------------------------------------------------------------
+  // Drag-and-drop handlers
+  // ---------------------------------------------------------------------------
+
+  const acceptFile = useCallback((files: FileList | File[]) => {
+    const list = Array.from(files)
+    const valid: File[] = []
+    let hadRejected = false
+    for (const file of list) {
+      const name = file.name.toLowerCase()
+      const isAccepted = ACCEPTED_EXTENSIONS.some((ext) => name.endsWith(ext))
+      if (isAccepted) {
+        valid.push(file)
+      } else {
+        hadRejected = true
+      }
+    }
+    setSelectedFiles(valid)
+    if (hadRejected) {
+      setSubmitError('Unsupported file type removed. Accepted: PDF, PNG, JPG, MD')
+    } else {
+      setSubmitError(null)
+    }
+  }, [])
+
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setIsDragging(true)
+  }, [])
+
+  const handleDragEnter = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setIsDragging(true)
+  }, [])
+
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setIsDragging(false)
+  }, [])
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      e.preventDefault()
+      setIsDragging(false)
+      acceptFile(e.dataTransfer.files)
+    },
+    [acceptFile],
+  )
+
+  // ---------------------------------------------------------------------------
   // Submit handler
   // ---------------------------------------------------------------------------
 
@@ -175,8 +234,8 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
       }
       setUrlError(null)
     } else {
-      if (!selectedFile) {
-        setSubmitError('Please select a file.')
+      if (selectedFiles.length === 0) {
+        setSubmitError('Please select at least one file.')
         return
       }
     }
@@ -193,8 +252,10 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
       }
 
       const formData = new FormData()
-      if (activeTab === 'file' && selectedFile) {
-        formData.append('files', selectedFile)
+      if (activeTab === 'file' && selectedFiles.length > 0) {
+        for (const f of selectedFiles) {
+          formData.append('files', f)
+        }
       } else if (activeTab === 'url') {
         formData.append('urls', urlInput.trim())
       }
@@ -221,7 +282,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
       const data: { job_id: string; events_url: string } = await res.json()
 
       // Reset inputs
-      setSelectedFile(null)
+      setSelectedFiles([])
       setUrlInput('')
 
       // Stream SSE progress
@@ -263,7 +324,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
           marginBottom: '24px',
         }}
       >
-        Upload PDFs, images, or URLs for your agent&apos;s knowledge base.
+        Upload PDFs, images, markdown, or URLs for your agent&apos;s knowledge base.
       </p>
 
       {/* Load error */}
@@ -391,33 +452,126 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
               >
                 File
               </label>
+              <div
+                role="button"
+                tabIndex={0}
+                aria-label="Drop a file here or click to browse"
+                onClick={() => {
+                  if (!submitting) fileInputRef.current?.click()
+                }}
+                onKeyDown={(e) => {
+                  if ((e.key === 'Enter' || e.key === ' ') && !submitting) {
+                    e.preventDefault()
+                    fileInputRef.current?.click()
+                  }
+                }}
+                onDragOver={handleDragOver}
+                onDragEnter={handleDragEnter}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  textAlign: 'center',
+                  height: '160px',
+                  marginBottom: '16px',
+                  padding: '16px',
+                  border: `2px dashed ${isDragging ? 'var(--accent)' : 'var(--border-soft)'}`,
+                  borderRadius: 'var(--radius-sm)',
+                  background: isDragging ? 'var(--accent-dim)' : 'var(--surface-2)',
+                  cursor: submitting ? 'not-allowed' : 'pointer',
+                  transition: 'border-color 0.15s ease, background 0.15s ease',
+                }}
+              >
+                {selectedFiles.length === 1 ? (
+                  <span
+                    style={{
+                      fontSize: '14px',
+                      fontWeight: 600,
+                      color: 'var(--text-2)',
+                      fontFamily: 'var(--font-sans)',
+                      wordBreak: 'break-all',
+                    }}
+                  >
+                    {selectedFiles[0].name}
+                  </span>
+                ) : selectedFiles.length > 1 ? (
+                  <>
+                    <span
+                      style={{
+                        fontSize: '14px',
+                        fontWeight: 600,
+                        color: 'var(--text-2)',
+                        fontFamily: 'var(--font-sans)',
+                      }}
+                    >
+                      {selectedFiles.length} files selected
+                    </span>
+                    <span
+                      style={{
+                        fontSize: '12px',
+                        color: 'var(--text-3)',
+                        fontFamily: 'var(--font-sans)',
+                        marginTop: '4px',
+                        wordBreak: 'break-all',
+                      }}
+                    >
+                      {(() => {
+                        const names = selectedFiles.map((f) => f.name).join(', ')
+                        return names.length > 60 ? `${names.slice(0, 60)}…` : names
+                      })()}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span
+                      style={{
+                        fontSize: '14px',
+                        fontWeight: 600,
+                        color: 'var(--text-2)',
+                        fontFamily: 'var(--font-sans)',
+                      }}
+                    >
+                      Drop files here
+                    </span>
+                    <span
+                      style={{
+                        fontSize: '12px',
+                        color: 'var(--text-3)',
+                        fontFamily: 'var(--font-sans)',
+                        marginTop: '4px',
+                      }}
+                    >
+                      or click to browse
+                    </span>
+                  </>
+                )}
+              </div>
               <input
+                ref={fileInputRef}
                 type="file"
-                accept=".pdf,.png,.jpg,.jpeg"
+                multiple
+                accept=".pdf,.png,.jpg,.jpeg,.md"
                 onChange={(e) => {
-                  setSelectedFile(e.target.files?.[0] ?? null)
-                  setSubmitError(null)
+                  if (e.target.files) acceptFile(e.target.files)
                 }}
                 disabled={submitting}
-                style={{
-                  display: 'block',
-                  marginBottom: '16px',
-                  fontSize: '14px',
-                  color: 'var(--text-2)',
-                  fontFamily: 'var(--font-sans)',
-                }}
+                style={{ display: 'none' }}
               />
               <button
                 onClick={handleSubmit}
-                disabled={submitting || !selectedFile}
+                disabled={submitting || selectedFiles.length === 0}
                 style={{
                   padding: '12px 28px',
                   minHeight: '44px',
-                  background: submitting || !selectedFile ? 'var(--surface-3)' : 'var(--accent)',
-                  color: submitting || !selectedFile ? 'var(--text-4)' : '#fff',
+                  background:
+                    submitting || selectedFiles.length === 0 ? 'var(--surface-3)' : 'var(--accent)',
+                  color: submitting || selectedFiles.length === 0 ? 'var(--text-4)' : '#fff',
                   border: 'none',
                   borderRadius: 'var(--radius-sm)',
-                  cursor: submitting || !selectedFile ? 'not-allowed' : 'pointer',
+                  cursor: submitting || selectedFiles.length === 0 ? 'not-allowed' : 'pointer',
                   fontSize: '14px',
                   fontWeight: 600,
                   fontFamily: 'var(--font-sans)',

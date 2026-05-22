@@ -82,7 +82,7 @@ def _resolve_local_path(agent_id: str, doc_id: str, source_uri: str) -> Path:
         Path: absolute path at /vrd-uploads/{agent_id}/{doc_id}{ext} (Docker volume mount)
     """
     ext = Path(source_uri).suffix or ".bin"
-    return Path("/vrd-uploads") / agent_id / f"{doc_id}{ext}"
+    return Path(settings.UPLOADS_DIR) / agent_id / f"{doc_id}{ext}"
 
 
 @celery_app.task(
@@ -207,7 +207,7 @@ def chunk_documents(self, result: dict) -> dict:
                 # Re-parsing is cheaper than round-tripping a 100MB+ object via Redis.
                 # --------------------------------------------------------------
                 try:
-                    if source_type in ("pdf", "png", "jpg", "jpeg"):
+                    if source_type in ("pdf", "png", "jpg", "jpeg", "md"):
                         local_path = _resolve_local_path(agent_id, doc_id, source_uri)
                         doc = parse_document(local_path)
                     else:
