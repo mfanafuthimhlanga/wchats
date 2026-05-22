@@ -224,3 +224,186 @@ def test_chunk_metadata_and_entities_validates_shape():
     assert result.entities[0].normalized == "acme corp"
     assert result.entities[0].type == "product"
     assert result.entities[0].name == "Acme Corp"
+
+
+# ---------------------------------------------------------------------------
+# Test 7: enrich_chunks_batch happy path — 2 chunks in, 2 results out (in order)
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_chunks_batch_happy_path():
+    """enrich_chunks_batch returns a list of ChunkMetadataAndEntities in input order.
+
+    Verifies one Haiku call extracts metadata for multiple chunks, uses BatchResult
+    as output_format, packs chunks into <chunk index="N"> tags, and budgets
+    max_tokens=4096.
+    """
+    from app.services.metadata_service import (
+        enrich_chunks_batch,
+        ChunkMetadataAndEntities,
+        BatchResult,
+        HAIKU_MODEL,
+    )
+
+    batch = BatchResult(
+        chunks=[
+            ChunkMetadataAndEntities(
+                summary="First chunk.", keywords=["a"], questions=["q1?"], entities=[]
+            ),
+            ChunkMetadataAndEntities(
+                summary="Second chunk.", keywords=["b"], questions=["q2?"], entities=[]
+            ),
+        ]
+    )
+    mock_result = MagicMock()
+    mock_result.parsed_output = batch
+
+    with patch("app.services.metadata_service._anthropic") as mock_anthropic:
+        mock_anthropic.messages.parse.return_value = mock_result
+        results = enrich_chunks_batch(["chunk one text", "chunk two text"])
+
+    # Returns a plain list of per-chunk results in submission order
+    assert isinstance(results, list)
+    assert len(results) == 2
+    assert all(isinstance(r, ChunkMetadataAndEntities) for r in results)
+    assert results[0].summary == "First chunk."
+    assert results[1].summary == "Second chunk."
+
+    # Single Haiku call (one batched request, not one per chunk)
+    assert mock_anthropic.messages.parse.call_count == 1
+
+    call_kwargs = mock_anthropic.messages.parse.call_args.kwargs
+    assert call_kwargs.get("model") == HAIKU_MODEL
+    assert call_kwargs.get("output_format") is BatchResult
+    assert call_kwargs.get("max_tokens") == 4096
+
+    # Chunks are packed with index-tagged wrappers in order
+    user_content = call_kwargs["messages"][0]["content"]
+    assert '<chunk index="0">' in user_content
+    assert '<chunk index="1">' in user_content
+    assert "chunk one text" in user_content
+    assert "chunk two text" in user_content
+
+
+# ---------------------------------------------------------------------------
+# Test 8: enrich_chunks_batch raises ValueError on batch size mismatch
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_chunks_batch_size_mismatch_raises_value_error():
+    """enrich_chunks_batch raises ValueError when Haiku returns a different count."""
+    from app.services.metadata_service import (
+        enrich_chunks_batch,
+        ChunkMetadataAndEntities,
+        BatchResult,
+    )
+
+    # Sent 2 chunks but model returns only 1 result
+    batch = BatchResult(
+        chunks=[
+            ChunkMetadataAndEntities(
+                summary="Only one.", keywords=["a"], questions=["q?"], entities=[]
+            ),
+        ]
+    )
+    mock_result = MagicMock()
+    mock_result.parsed_output = batch
+
+    with patch("app.services.metadata_service._anthropic") as mock_anthropic:
+        mock_anthropic.messages.parse.return_value = mock_result
+        with pytest.raises(ValueError, match="Batch size mismatch"):
+            enrich_chunks_batch(["chunk one", "chunk two"])
+
+
+# ---------------------------------------------------------------------------
+# Test 9: enrich_chunks_batch retries on RateLimitError (tenacity)
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_chunks_batch_retries_on_rate_limit():
+    """enrich_chunks_batch retries when Anthropic raises RateLimitError."""
+    import anthropic as anthropic_lib
+    from app.services.metadata_service import (
+        enrich_chunks_batch,
+        ChunkMetadataAndEntities,
+        BatchResult,
+    )
+
+    real_request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    real_response = httpx.Response(
+        429,
+        request=real_request,
+        content=b'{"error":{"type":"rate_limit_error","message":"rate limited"}}',
+    )
+    rate_limit_err = anthropic_lib.RateLimitError(
+        "rate limited", response=real_response, body=None
+    )
+
+    mock_result = MagicMock()
+    mock_result.parsed_output = BatchResult(
+        chunks=[
+            ChunkMetadataAndEntities(
+                summary="s", keywords=["k"], questions=["q?"], entities=[]
+            ),
+        ]
+    )
+
+    side_effects = [rate_limit_err, mock_result]
+    call_count = 0
+
+    def _parse_side_effect(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        effect = side_effects[call_count - 1]
+        if isinstance(effect, Exception):
+            raise effect
+        return effect
+
+    with patch("app.services.metadata_service._anthropic") as mock_anthropic:
+        mock_anthropic.messages.parse.side_effect = _parse_side_effect
+        with patch("tenacity.wait_exponential.__call__", return_value=0):
+            results = enrich_chunks_batch(["text"])
+
+    assert call_count == 2, (
+        f"Expected 2 calls (1 rate-limit retry), got {call_count}"
+    )
+    assert len(results) == 1
+    assert isinstance(results[0], ChunkMetadataAndEntities)
+
+
+# ---------------------------------------------------------------------------
+# Test 10: enrich_chunks_batch — AuthenticationError is fatal (no retry)
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_chunks_batch_auth_error_is_fatal():
+    """enrich_chunks_batch does NOT retry on AuthenticationError — raised immediately."""
+    import anthropic as anthropic_lib
+    from app.services.metadata_service import enrich_chunks_batch
+
+    real_request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    real_response = httpx.Response(
+        401,
+        request=real_request,
+        content=b'{"error":{"type":"authentication_error","message":"bad key"}}',
+    )
+    auth_err = anthropic_lib.AuthenticationError(
+        "bad key", response=real_response, body=None
+    )
+
+    call_count = 0
+
+    def _parse_side_effect(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise auth_err
+
+    with patch("app.services.metadata_service._anthropic") as mock_anthropic:
+        mock_anthropic.messages.parse.side_effect = _parse_side_effect
+        with pytest.raises(anthropic_lib.AuthenticationError):
+            enrich_chunks_batch(["text"])
+
+    # Fatal — no retry; exactly one call
+    assert call_count == 1, (
+        f"AuthenticationError must NOT retry; expected 1 call, got {call_count}"
+    )

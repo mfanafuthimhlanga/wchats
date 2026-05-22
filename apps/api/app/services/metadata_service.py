@@ -135,3 +135,96 @@ def enrich_chunk(text: str) -> ChunkMetadataAndEntities:
         output_format=ChunkMetadataAndEntities,
     )
     return result.parsed_output
+
+
+# ---------------------------------------------------------------------------
+# Batched extraction — multiple chunks per Haiku call (cost reduction).
+#
+# enrich_chunk() makes one Haiku call per chunk: 50 chunks = 50 calls (~$0.08/doc).
+# enrich_chunks_batch() packs BATCH_SIZE chunks into a single call: 50 chunks =
+# 5 calls (~$0.008/doc), a ~10x cost reduction at the same per-chunk quality.
+#
+# Both coexist: enrich_chunk() remains the fallback and is exercised by tests.
+# ---------------------------------------------------------------------------
+
+# Chunks packed into one Haiku call. max_tokens budget scales with this value:
+# ~400 tokens output per chunk × 10 = ~4000, hence max_tokens=4096 below.
+BATCH_SIZE = 10
+
+
+class BatchResult(BaseModel):
+    """Structured output for a single batched Haiku call.
+
+    Wraps a list of per-chunk results returned in the SAME order the chunks were
+    submitted. The task zips results back to chunk_ids by position — never by ID,
+    since the model is not given chunk IDs.
+    """
+
+    chunks: list[ChunkMetadataAndEntities]
+
+
+# System prompt for batched metadata + entity extraction. Mirrors
+# METADATA_SYSTEM_PROMPT but instructs the model to process multiple
+# index-tagged chunks and return per-chunk results in submission order.
+BATCH_SYSTEM_PROMPT = (
+    "You are a metadata extractor for a RAG system. "
+    "You will receive multiple text chunks, each wrapped in <chunk index=\"N\"> tags. "
+    "For EACH chunk produce: "
+    "(1) a 1-2 sentence summary, "
+    "(2) 5-10 keywords as noun phrases with no stop words, "
+    "(3) 3-5 hypothetical questions a user might ask that this chunk would answer, "
+    "and (4) all named entities present, classified as exactly one of: "
+    "product, person, place, policy, process. "
+    "For each entity, return: name (raw form in text), type, normalized (lowercase canonical form). "
+    "Return entities only when explicit; do not invent. "
+    "Return results for ALL chunks in the same order they were given."
+)
+
+
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(5),
+    retry=retry_if_exception_type((anthropic.RateLimitError, anthropic.APITimeoutError)),
+)
+def enrich_chunks_batch(texts: list[str]) -> list[ChunkMetadataAndEntities]:
+    """Single Haiku call extracting metadata for up to BATCH_SIZE chunks at once.
+
+    Chunks are numbered by position in the input list. Returns results in the
+    same order — zip by index, not by ID.
+
+    The same tenacity contract as enrich_chunk applies: retry ONLY on rate-limit
+    and timeout; authentication errors and validation errors are fatal and raised
+    immediately (T-02-04-04). The max_tokens budget (4096) scales with BATCH_SIZE
+    to leave headroom for ~10 chunks of structured output.
+
+    Args:
+        texts: Chunk contents (sanitized by sanitize_chunk_text before storage).
+               Up to BATCH_SIZE entries — callers slice the pending list.
+
+    Returns:
+        list[ChunkMetadataAndEntities] in the same order as `texts`.
+
+    Raises:
+        ValueError: Batch size mismatch — model returned a different count than sent.
+        pydantic.ValidationError: Fatal — Haiku response doesn't match BatchResult schema.
+        anthropic.AuthenticationError: Fatal — raised immediately, no retry.
+        anthropic.RateLimitError: Re-raised after max retries exhausted.
+        anthropic.APITimeoutError: Re-raised after max retries exhausted.
+    """
+    prompt = "\n\n".join(
+        f'<chunk index="{i}">\n{text}\n</chunk>'
+        for i, text in enumerate(texts)
+    )
+    result = _anthropic.messages.parse(
+        model=HAIKU_MODEL,
+        system=BATCH_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=4096,  # ~80-400 tokens output per chunk × 10 chunks + headroom
+        output_format=BatchResult,
+    )
+    batch = result.parsed_output
+    if len(batch.chunks) != len(texts):
+        raise ValueError(
+            f"Batch size mismatch: sent {len(texts)} chunks, got {len(batch.chunks)} results"
+        )
+    return batch.chunks
