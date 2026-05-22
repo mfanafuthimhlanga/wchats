@@ -44,6 +44,8 @@ import sys
 import structlog
 from tenacity import retry, wait_exponential, stop_after_attempt
 
+from app.core.config import settings
+
 log = structlog.get_logger(__name__)
 
 # Voyage API hard limit per request (RESEARCH.md §7)
@@ -78,7 +80,12 @@ def _get_vo():
                 # satisfies the isinstance check voyageai performs.
                 sys.modules["pkg_resources"] = type(sys)("pkg_resources")  # type: ignore[assignment]
         import voyageai as _voyageai  # noqa: PLC0415
-        _vo = _voyageai.Client()
+        # Explicit api_key bypasses the os.environ gap when Celery is started
+        # without inheriting the .env file (e.g., via Start-Process on Windows).
+        # pydantic Settings loads .env via _find_env_file(); os.environ is not
+        # populated, so voyageai.Client()'s default os.environ['VOYAGE_API_KEY']
+        # lookup fails with AuthenticationError. Mirrors metadata_service.py.
+        _vo = _voyageai.Client(api_key=settings.VOYAGE_API_KEY)
     return _vo
 
 

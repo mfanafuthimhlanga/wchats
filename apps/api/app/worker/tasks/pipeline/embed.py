@@ -370,7 +370,13 @@ def embed_and_migrate(self, result: dict) -> dict:
                 total_chunks_embedded=total_chunks_embedded,
             )
 
-            # On final retry exhaustion, mark job failed
+            # On final retry exhaustion, mark job failed and RE-RAISE so Celery
+            # records the task as FAILURE. Previously this branch swallowed the
+            # exception and fell through to `return {...success dict...}`,
+            # producing a phantom success: the embed step would "succeed" with
+            # 0 chunks embedded (e.g. VOYAGE_API_KEY AuthenticationError exhausting
+            # tenacity retries → RetryError). The job must be marked failed, not
+            # silently completed.
             if self.request.retries >= self.max_retries:
                 try:
                     job.status = "failed"
@@ -380,6 +386,9 @@ def embed_and_migrate(self, result: dict) -> dict:
                     emit(job_id, "job.failed", {"error": str(exc)}, db, _redis)
                 except Exception:
                     pass
+                # Re-raise the original error: Celery marks the task FAILURE and
+                # the chain stops here rather than forwarding a success dict.
+                raise
             else:
                 raise self.retry(exc=exc, countdown=2**self.request.retries)
 
