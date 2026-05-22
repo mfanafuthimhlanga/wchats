@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect, useRef, use } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
 import Link from 'next/link'
 
@@ -59,10 +60,8 @@ function buildSystemPromptPreview(soul: SoulData): string {
 }
 
 // ---------------------------------------------------------------------------
-// Tab nav items
+// Form options
 // ---------------------------------------------------------------------------
-
-const TABS = ['Overview', 'Soul', 'Conversations', 'Retrieval', 'Settings']
 
 const ROLE_OPTIONS = [
   'Customer Support',
@@ -91,7 +90,8 @@ export default function SoulEditorPage({
   params: Promise<{ id: string }>
 }) {
   const { id } = use(params)
-  const { getToken } = useAuth()
+  const { getToken, isLoaded, isSignedIn } = useAuth()
+  const queryClient = useQueryClient()
 
   // Soul fields
   const [name, setName] = useState('')
@@ -118,42 +118,55 @@ export default function SoulEditorPage({
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ''
 
   // ---------------------------------------------------------------------------
-  // Load agent soul fields on mount (when apiKey is available)
+  // Load agent — TanStack Query. Shares the ['agent', id] cache with the layout
+  // and the journey/configure pages, so this is an instant cache hit on mount
+  // (no extra network request beyond what the layout already issued).
   // ---------------------------------------------------------------------------
 
+  const agentQuery = useQuery<SoulData & { status?: string }>({
+    queryKey: ['agent', id],
+    queryFn: async () => {
+      const token = await getToken()
+      if (!token) throw new Error('Not authenticated')
+      const r = await fetch(`${apiBase}/api/v1/agents/${id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      return r.json()
+    },
+    enabled: isLoaded && !!isSignedIn,
+    staleTime: 30_000,
+  })
+
+  // Surface a load error in the form panel when the query fails.
   useEffect(() => {
-    const loadAgent = async () => {
-      try {
-        const token = await getToken()
-        if (!token) {
-          setLoadError('Not authenticated. Please sign in.')
-          return
-        }
-        const r = await fetch(`${apiBase}/api/v1/agents/${id}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
-        const data: SoulData & { status?: string } = await r.json()
-        setName(data.name || '')
-        setSoulRole(data.soul_role || '')
-        setSoulVoice(data.soul_voice || '')
-        setSoulDoList(
-          data.soul_do_list && data.soul_do_list.length > 0
-            ? data.soul_do_list.map((v) => ({ id: crypto.randomUUID(), value: v }))
-            : [{ id: crypto.randomUUID(), value: '' }]
-        )
-        setSoulDonotList(
-          data.soul_donot_list && data.soul_donot_list.length > 0
-            ? data.soul_donot_list.map((v) => ({ id: crypto.randomUUID(), value: v }))
-            : [{ id: crypto.randomUUID(), value: '' }]
-        )
-      } catch (err) {
-        console.error(err)
-        setLoadError('Failed to load agent. Please refresh.')
-      }
+    if (agentQuery.isError) {
+      setLoadError(
+        isLoaded && !isSignedIn
+          ? 'Not authenticated. Please sign in.'
+          : 'Failed to load agent. Please refresh.'
+      )
     }
-    loadAgent()
-  }, [id, apiBase])
+  }, [agentQuery.isError, isLoaded, isSignedIn])
+
+  // Populate soul form fields once the agent data arrives (or refreshes).
+  useEffect(() => {
+    const data = agentQuery.data
+    if (!data) return
+    setName(data.name || '')
+    setSoulRole(data.soul_role || '')
+    setSoulVoice(data.soul_voice || '')
+    setSoulDoList(
+      data.soul_do_list && data.soul_do_list.length > 0
+        ? data.soul_do_list.map((v) => ({ id: crypto.randomUUID(), value: v }))
+        : [{ id: crypto.randomUUID(), value: '' }]
+    )
+    setSoulDonotList(
+      data.soul_donot_list && data.soul_donot_list.length > 0
+        ? data.soul_donot_list.map((v) => ({ id: crypto.randomUUID(), value: v }))
+        : [{ id: crypto.randomUUID(), value: '' }]
+    )
+  }, [agentQuery.data])
 
   // ---------------------------------------------------------------------------
   // Auto-focus newly added list rows
@@ -214,6 +227,9 @@ export default function SoulEditorPage({
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      // Invalidate the shared ['agent', id] cache so the configure overview
+      // page reflects soulSaved = true immediately on back-navigation.
+      await queryClient.invalidateQueries({ queryKey: ['agent', id] })
       setSaveStatus('saved')
       // Intentionally do NOT reset to 'idle' — keep persistent saved state + show Next CTA
     } catch {
@@ -250,91 +266,22 @@ export default function SoulEditorPage({
   // ---------------------------------------------------------------------------
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)', fontFamily: 'var(--font-sans)' }}>
-      {/* Browser Chrome bar */}
-      <div
-        style={{
-          height: '40px',
-          background: 'var(--surface-2)',
-          borderBottom: '1px solid var(--border)',
-          display: 'flex',
-          alignItems: 'center',
-          padding: '0 16px',
-          gap: '8px',
-        }}
-      >
-        {/* Traffic-light dots */}
-        <span
-          style={{ width: '12px', height: '12px', borderRadius: '50%', background: '#FF5F57', display: 'inline-block' }}
-        />
-        <span
-          style={{ width: '12px', height: '12px', borderRadius: '50%', background: '#FFBD2E', display: 'inline-block' }}
-        />
-        <span
-          style={{ width: '12px', height: '12px', borderRadius: '50%', background: '#28C940', display: 'inline-block' }}
-        />
-        <span
+    // No outer minHeight wrapper — the shared /agents/[id]/layout.tsx provides
+    // the page container (JourneyStepper on the left, this content on the right).
+    <div style={{ display: 'flex', flex: 1, overflow: 'hidden', fontFamily: 'var(--font-sans)' }}>
+      {/* Two-column body — preview hidden below 1100px */}
+      {/* Form Panel */}
+      <div style={{ flex: 1, padding: '32px', maxWidth: '600px', overflowY: 'auto' }}>
+        <h1
           style={{
-            marginLeft: '12px',
-            fontSize: '13px',
-            color: 'var(--text-3)',
-            fontFamily: 'var(--font-mono)',
+            fontSize: '20px',
+            fontWeight: 700,
+            color: 'var(--text-1)',
+            marginBottom: '24px',
           }}
         >
-          w-chats / agents / {id} / soul
-        </span>
-      </div>
-
-      {/* Tab nav */}
-      <div
-        style={{
-          borderBottom: '1px solid var(--border)',
-          display: 'flex',
-          padding: '0 32px',
-          background: 'var(--surface-1)',
-        }}
-      >
-        {TABS.map((tab) => {
-          const isActive = tab === 'Soul'
-          return (
-            <button
-              key={tab}
-              disabled={!isActive}
-              aria-disabled={!isActive}
-              tabIndex={isActive ? 0 : -1}
-              style={{
-                padding: '12px 20px',
-                border: 'none',
-                borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
-                background: 'none',
-                cursor: isActive ? 'default' : 'not-allowed',
-                color: isActive ? 'var(--accent)' : 'var(--text-3)',
-                fontWeight: isActive ? 600 : 400,
-                fontSize: '14px',
-                fontFamily: 'var(--font-sans)',
-                opacity: isActive ? 1 : 0.6,
-              }}
-            >
-              {tab}
-            </button>
-          )
-        })}
-      </div>
-
-      {/* Two-column body — preview hidden below 1100px */}
-      <div style={{ display: 'flex', minHeight: 'calc(100vh - 89px)' }}>
-        {/* Form Panel */}
-        <div style={{ flex: 1, padding: '32px', maxWidth: '600px', overflowY: 'auto' }}>
-          <h1
-            style={{
-              fontSize: '20px',
-              fontWeight: 700,
-              color: 'var(--text-1)',
-              marginBottom: '24px',
-            }}
-          >
-            Agent Soul
-          </h1>
+          {agentQuery.data?.name ?? 'Agent'} — Soul
+        </h1>
 
           {loadError && (
             <div
@@ -728,7 +675,6 @@ export default function SoulEditorPage({
             the deployed system prompt after citations and context injection.
           </p>
         </div>
-      </div>
     </div>
   )
 }
