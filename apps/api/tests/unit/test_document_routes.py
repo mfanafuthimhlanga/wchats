@@ -1,5 +1,5 @@
 """
-Unit tests for POST/GET /agents/{agent_id}/documents routes — ING-01.
+Unit tests for POST/GET/DELETE /agents/{agent_id}/documents routes — ING-01.
 
 Tests the HTTP contract of documents.py:
   - 202 response with correct body keys
@@ -11,6 +11,9 @@ Tests the HTTP contract of documents.py:
   - Chain dispatched with correct signature (4 tasks, correct order)
   - No connection string in chain task args (CLAUDE.md rule 4)
   - GET list returns documents array
+  - DELETE 204 cascades through chunk_entities/embeddings/chunk_metadata/chunks
+  - DELETE 404 when document missing (no commit) or agent wrong-tenant (no conn)
+  - DELETE skips FS unlink for url-sourced documents
 
 Security coverage:
   - T-02-06-01: cross-tenant 404 (test_upload_documents_404_when_wrong_tenant)
@@ -134,7 +137,7 @@ class TestUploadDocumentsReturns202:
                     transport=ASGITransport(app=app), base_url="http://test"
                 ) as client:
                     response = await client.post(
-                        f"/agents/{ready_agent.id}/documents",
+                        f"/api/v1/agents/{ready_agent.id}/documents",
                         headers={"X-API-Key": "vrd_live_test"},
                         files=[("files", ("test.pdf", _small_pdf_bytes(), "application/pdf"))],
                     )
@@ -172,7 +175,7 @@ class TestUploadDocuments404WrongTenant:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    f"/agents/{uuid4()}/documents",
+                    f"/api/v1/agents/{uuid4()}/documents",
                     headers={"X-API-Key": "vrd_live_test"},
                     files=[("files", ("test.pdf", _small_pdf_bytes(), "application/pdf"))],
                 )
@@ -208,7 +211,7 @@ class TestUploadDocuments409NotReady:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    f"/agents/{pending_agent.id}/documents",
+                    f"/api/v1/agents/{pending_agent.id}/documents",
                     headers={"X-API-Key": "vrd_live_test"},
                     files=[("files", ("test.pdf", _small_pdf_bytes(), "application/pdf"))],
                 )
@@ -249,7 +252,7 @@ class TestUploadDocuments413Oversize:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    f"/agents/{ready_agent.id}/documents",
+                    f"/api/v1/agents/{ready_agent.id}/documents",
                     headers={"X-API-Key": "vrd_live_test"},
                     files=[("files", ("big.pdf", oversized_content, "application/pdf"))],
                 )
@@ -284,7 +287,7 @@ class TestUploadDocuments415UnsupportedType:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    f"/agents/{ready_agent.id}/documents",
+                    f"/api/v1/agents/{ready_agent.id}/documents",
                     headers={"X-API-Key": "vrd_live_test"},
                     files=[("files", ("report.txt", b"text content", "text/plain"))],
                 )
@@ -320,7 +323,7 @@ class TestUploadDocuments422Empty:
             ) as client:
                 # No files= and no urls= fields in the multipart form
                 response = await client.post(
-                    f"/agents/{ready_agent.id}/documents",
+                    f"/api/v1/agents/{ready_agent.id}/documents",
                     headers={"X-API-Key": "vrd_live_test"},
                     data={},  # empty form — no files, no urls
                 )
@@ -383,7 +386,7 @@ class TestUploadDocumentsChainSignature:
                     transport=ASGITransport(app=app), base_url="http://test"
                 ) as client:
                     response = await client.post(
-                        f"/agents/{ready_agent.id}/documents",
+                        f"/api/v1/agents/{ready_agent.id}/documents",
                         headers={"X-API-Key": "vrd_live_test"},
                         files=[("files", ("test.pdf", _small_pdf_bytes(), "application/pdf"))],
                     )
@@ -452,7 +455,7 @@ class TestUploadDocumentsNoConnStringInArgs:
                     transport=ASGITransport(app=app), base_url="http://test"
                 ) as client:
                     response = await client.post(
-                        f"/agents/{ready_agent.id}/documents",
+                        f"/api/v1/agents/{ready_agent.id}/documents",
                         headers={"X-API-Key": "vrd_live_test"},
                         files=[("files", ("test.pdf", _small_pdf_bytes(), "application/pdf"))],
                     )
@@ -513,7 +516,7 @@ class TestListDocuments:
                     transport=ASGITransport(app=app), base_url="http://test"
                 ) as client:
                     response = await client.get(
-                        f"/agents/{ready_agent.id}/documents",
+                        f"/api/v1/agents/{ready_agent.id}/documents",
                         headers={"X-API-Key": "vrd_live_test"},
                     )
         finally:
@@ -523,3 +526,200 @@ class TestListDocuments:
         body = response.json()
         assert "documents" in body
         assert len(body["documents"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# DELETE /agents/{agent_id}/documents/{document_id}
+# ---------------------------------------------------------------------------
+
+
+def _make_delete_cursor(*, document_exists: bool, chunk_ids=None):
+    """Build a MagicMock psycopg2 cursor scripted for the delete flow.
+
+    The DELETE endpoint issues, in order:
+      1. SELECT source_type FROM documents WHERE id = ...   -> fetchone()
+      2. SELECT id FROM chunks WHERE document_id = ...        -> fetchall()
+      3..N DELETE ...                                         -> no fetch
+
+    `document_exists=False` makes the first fetchone() return None (404 path).
+    """
+    cursor = MagicMock()
+
+    # fetchone() drives the existence check; fetchall() drives chunk collection.
+    if document_exists:
+        cursor.fetchone.return_value = ("pdf",)
+    else:
+        cursor.fetchone.return_value = None
+    cursor.fetchall.return_value = [(cid,) for cid in (chunk_ids or [])]
+
+    cursor.execute = MagicMock()
+    return cursor
+
+
+def _bind_cursor(mock_conn, cursor):
+    """Wire a MagicMock connection's cursor() context manager to *cursor*."""
+    mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=cursor)
+    mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+
+@pytest.mark.asyncio
+class TestDeleteDocument:
+    async def test_delete_document_returns_204_and_cascades(self):
+        """Existing document deletes all derived rows and returns 204."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = ready_agent
+        mock_db = AsyncMock()
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        document_id = uuid4()
+        chunk_ids = [str(uuid4()), str(uuid4())]
+        cursor = _make_delete_cursor(document_exists=True, chunk_ids=chunk_ids)
+
+        try:
+            with (
+                patch("app.api.v1.documents.fernet_decrypt", return_value="postgresql://fake/db"),
+                patch("app.api.v1.documents.psycopg2.connect") as mock_connect,
+                # Patch Path so the file-unlink branch never touches the real FS.
+                patch("app.api.v1.documents.Path") as mock_path,
+            ):
+                mock_conn = MagicMock()
+                mock_connect.return_value = mock_conn
+                _bind_cursor(mock_conn, cursor)
+                mock_path.return_value.__truediv__.return_value.__truediv__.return_value.unlink = MagicMock()
+
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.delete(
+                        f"/api/v1/agents/{ready_agent.id}/documents/{document_id}",
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 204
+        assert response.content == b""
+
+        # Verify the full ordered delete fan-out fired.
+        executed_sql = " ".join(
+            str(call.args[0]).lower() for call in cursor.execute.call_args_list
+        )
+        assert "delete from chunk_entities" in executed_sql
+        assert "delete from embeddings" in executed_sql
+        assert "delete from chunk_metadata" in executed_sql
+        assert "delete from chunks where document_id" in executed_sql
+        assert "delete from documents where id" in executed_sql
+        assert "delete from entities" in executed_sql
+        # Transaction committed exactly once.
+        mock_conn.commit.assert_called_once()
+        mock_conn.rollback.assert_not_called()
+
+    async def test_delete_document_404_when_document_missing(self):
+        """Document absent from the agent's tenant DB returns 404, no commit."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = ready_agent
+        mock_db = AsyncMock()
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        cursor = _make_delete_cursor(document_exists=False)
+
+        try:
+            with (
+                patch("app.api.v1.documents.fernet_decrypt", return_value="postgresql://fake/db"),
+                patch("app.api.v1.documents.psycopg2.connect") as mock_connect,
+            ):
+                mock_conn = MagicMock()
+                mock_connect.return_value = mock_conn
+                _bind_cursor(mock_conn, cursor)
+
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.delete(
+                        f"/api/v1/agents/{ready_agent.id}/documents/{uuid4()}",
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 404
+        # No document row was deleted and the (empty) tx was rolled back.
+        mock_conn.commit.assert_not_called()
+        mock_conn.rollback.assert_called_once()
+
+    async def test_delete_document_404_when_wrong_tenant(self):
+        """Agent not owned by tenant returns 404 before any tenant-DB access."""
+        fake_tenant = _make_fake_tenant()
+        mock_db = _make_mock_db_no_agent()  # ownership filter returns None
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with patch("app.api.v1.documents.psycopg2.connect") as mock_connect:
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.delete(
+                        f"/api/v1/agents/{uuid4()}/documents/{uuid4()}",
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 404
+        # Ownership rejected before opening a tenant-DB connection.
+        mock_connect.assert_not_called()
+
+    async def test_delete_url_document_skips_file_unlink(self):
+        """A url-sourced document deletes DB rows but never touches the FS."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = ready_agent
+        mock_db = AsyncMock()
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        cursor = _make_delete_cursor(document_exists=True, chunk_ids=[])
+        cursor.fetchone.return_value = ("url",)  # url source => no file on disk
+
+        try:
+            with (
+                patch("app.api.v1.documents.fernet_decrypt", return_value="postgresql://fake/db"),
+                patch("app.api.v1.documents.psycopg2.connect") as mock_connect,
+                patch("app.api.v1.documents.Path") as mock_path,
+            ):
+                mock_conn = MagicMock()
+                mock_connect.return_value = mock_conn
+                _bind_cursor(mock_conn, cursor)
+
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.delete(
+                        f"/api/v1/agents/{ready_agent.id}/documents/{uuid4()}",
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 204
+        mock_conn.commit.assert_called_once()
+        # The file-path branch must be skipped entirely for url documents.
+        mock_path.assert_not_called()
