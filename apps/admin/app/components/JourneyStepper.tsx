@@ -69,10 +69,10 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
           borderRadius: 'var(--radius-xs)',
           marginBottom: '8px',
           ...(step.state === 'active'
-            ? { background: 'var(--accent-dim)', border: '1px solid rgba(123,28,58,0.12)' }
+            ? { background: 'rgba(217,119,6,0.08)', border: '1px solid rgba(217,119,6,0.2)' }
             : step.state === 'done'
-            ? { background: 'transparent', border: '1px solid transparent' }
-            : { background: 'transparent', border: '1px solid transparent', opacity: 0.6 }),
+            ? { background: 'var(--green-bg)', border: '1px solid rgba(22,163,74,0.2)' }
+            : { background: 'transparent', border: '1px solid transparent', opacity: 0.45 }),
         }
 
         const circleStyle: React.CSSProperties = {
@@ -86,9 +86,9 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
           fontWeight: 600,
           flexShrink: 0,
           ...(step.state === 'done'
-            ? { background: 'var(--accent)', color: '#fff' }
+            ? { background: '#16A34A', color: '#fff' }
             : step.state === 'active'
-            ? { background: '#fff', border: '2px solid var(--accent)', color: 'var(--accent)' }
+            ? { background: 'transparent', border: '2px solid #D97706', color: '#D97706' }
             : { background: 'var(--surface-3)', border: '1px solid var(--border)', color: 'var(--text-4)' }),
         }
 
@@ -164,8 +164,8 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
                   top: '52px',
                   bottom: '-8px',
                   width: '2px',
-                  background: step.state === 'done' ? 'var(--accent)' : 'var(--border-soft)',
-                  opacity: step.state === 'done' ? 0.35 : 1,
+                  background: step.state === 'done' ? '#16A34A' : 'var(--border-soft)',
+                  opacity: step.state === 'done' ? 0.4 : 1,
                 }}
               />
             )}

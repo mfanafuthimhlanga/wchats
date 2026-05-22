@@ -2,8 +2,6 @@
 import { use } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
-import Link from 'next/link'
-import JourneyStepper, { type JourneyStep, type StepState } from '../../components/JourneyStepper'
 import StepSubtaskCard from '../../components/StepSubtaskCard'
 
 // ---------------------------------------------------------------------------
@@ -45,43 +43,8 @@ function getStatusColor(status: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Step state derivation
-// ---------------------------------------------------------------------------
-
-function deriveStepState(
-  stepNum: number,
-  agent: AgentDetail | null,
-): StepState {
-  if (!agent) {
-    return stepNum === 1 ? 'active' : 'locked'
-  }
-
-  const step1Done =
-    agent.status === 'ready' ||
-    agent.status === 'provisioning_complete' ||
-    agent.neon_project_id !== null
-
-  const step3Done = false     // Test: not done until M6 eval harness wires up
-  const step4Done = false     // Deploy: not done until widget deployed
-
-  switch (stepNum) {
-    case 1:
-      return step1Done ? 'done' : 'active'
-    case 2:
-      return step1Done ? 'active' : 'locked'
-    case 3:
-      if (!step1Done) return 'locked'
-      return step3Done ? 'done' : 'active'
-    case 4:
-      if (!step3Done) return 'locked'
-      return step4Done ? 'done' : 'active'
-    default:
-      return 'locked'
-  }
-}
-
-// ---------------------------------------------------------------------------
-// AgentJourneyPage
+// AgentJourneyPage — renders the right-panel content only.
+// The shared layout (layout.tsx) provides the two-panel wrapper + stepper.
 // ---------------------------------------------------------------------------
 
 export default function AgentJourneyPage({
@@ -93,6 +56,7 @@ export default function AgentJourneyPage({
   const { getToken, isLoaded, isSignedIn } = useAuth()
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ''
 
+  // Same queryKey as the layout — TanStack serves this from cache (no extra fetch).
   const agentQuery = useQuery({
     queryKey: ['agent', id],
     queryFn: async () => {
@@ -130,47 +94,18 @@ export default function AgentJourneyPage({
       agent.status === 'provisioning_complete' ||
       agent.neon_project_id !== null)
 
-  // Derived soulSaved — used in C-03 gating
+  // Derived soulSaved — gates the soul card CTA emphasis + downstream copy
   const soulSaved = !!(
     agent?.soul_voice ||
     (agent?.soul_do_list?.length ?? 0) > 0
   )
 
-  // Build step definitions
-  const steps: JourneyStep[] = [
-    {
-      num: 1,
-      key: 'provision',
-      title: 'Provision',
-      subtitle: 'Dedicated tenant database',
-      state: deriveStepState(1, agent),
-    },
-    {
-      num: 2,
-      key: 'configure',
-      title: 'Configure',
-      subtitle: 'Soul, voice, knowledge base',
-      state: deriveStepState(2, agent),
-    },
-    {
-      num: 3,
-      key: 'test',
-      title: 'Test',
-      subtitle: 'Evaluations + adversarial probes',
-      state: deriveStepState(3, agent),
-      href: `/agents/${id}/eval`,
-    },
-    {
-      num: 4,
-      key: 'deploy',
-      title: 'Deploy',
-      subtitle: 'Embed snippet + design',
-      state: deriveStepState(4, agent),
-      href: `/agents/${id}/deploy`,
-    },
-  ]
+  // ---- Right-panel: loading skeleton (first load, no cached data yet) -------
+  const loadingPanel = (
+    <p style={{ fontSize: '14px', color: 'var(--text-3)' }}>Loading agent…</p>
+  )
 
-  // Right-panel: provisioning status card (step1 not yet done)
+  // ---- Right-panel: provisioning status card (step1 not yet done) ----------
   const provisioningPanel = (
     <div
       style={{
@@ -181,7 +116,14 @@ export default function AgentJourneyPage({
         maxWidth: '480px',
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: '12px',
+        }}
+      >
         <h2 style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-1)', margin: 0 }}>
           Provisioning
         </h2>
@@ -202,7 +144,7 @@ export default function AgentJourneyPage({
         )}
       </div>
       <p style={{ fontSize: '14px', color: 'var(--text-3)', marginBottom: '16px' }}>
-        Your dedicated database is being provisioned. This may take up to 30 seconds.
+        Your dedicated database is being provisioned. This may take up to 60 seconds.
       </p>
       {agent && (
         <p style={{ fontSize: '12px', color: 'var(--text-4)', fontFamily: 'var(--font-mono)' }}>
@@ -212,7 +154,7 @@ export default function AgentJourneyPage({
     </div>
   )
 
-  // Right-panel: configure subtask cards (step1 done)
+  // ---- Right-panel: configure subtask cards (step1 done) -------------------
   const configurePanel = (
     <>
       <h1
@@ -241,18 +183,18 @@ export default function AgentJourneyPage({
         <StepSubtaskCard
           icon="◐"
           title="Define the soul"
-          description="Voice, do, do-not — structured fields, not a blank textarea"
-          href={step1Done ? `/agents/${id}/soul` : undefined}
+          description="Personality, behaviors, and boundaries"
+          href={`/agents/${id}/soul`}
           ctaLabel="Open editor"
-          state={step1Done ? 'active' : 'idle'}
+          state="active"
         />
 
-        {/* Ingest — available once soul is saved */}
+        {/* Ingest — available once step1 is done; soul is the suggested next step */}
         <StepSubtaskCard
           icon="⬆"
           title="Ingest documents"
-          description={soulSaved ? 'Upload PDFs or URLs' : 'Complete provisioning first'}
-          href={soulSaved ? `/agents/${id}/ingest` : undefined}
+          description={soulSaved ? 'Upload PDFs or URLs' : 'Save soul settings first'}
+          href={`/agents/${id}/ingest`}
           ctaLabel="Upload"
           state="idle"
         />
@@ -266,12 +208,12 @@ export default function AgentJourneyPage({
           state="idle"
         />
 
-        {/* Deploy — available once soul is saved */}
+        {/* Deploy — available once step1 is done */}
         <StepSubtaskCard
           icon="↗"
           title="Deploy widget"
           description="Embed snippet + design customization"
-          href={soulSaved ? `/agents/${id}/deploy` : undefined}
+          href={`/agents/${id}/deploy`}
           ctaLabel="Configure deploy"
           state="idle"
         />
@@ -279,46 +221,37 @@ export default function AgentJourneyPage({
     </>
   )
 
-  return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)', fontFamily: 'var(--font-sans)' }}>
-      <div style={{ display: 'flex', minHeight: 'calc(100vh - 56px)' }}>
-        {/* Left: 320px journey stepper */}
-        <JourneyStepper
-          agentName={agent?.name ?? 'Loading…'}
-          agentRole={agent?.role ?? ''}
-          steps={steps}
-        />
+  // ---- Dispatch -------------------------------------------------------------
+  let panel: React.ReactNode
+  if (agentQuery.isPending) {
+    panel = loadingPanel
+  } else if (!step1Done) {
+    panel = provisioningPanel
+  } else {
+    panel = configurePanel
+  }
 
-        {/* Right: active step content */}
-        <section
+  return (
+    <div style={{ padding: '32px 40px' }}>
+      {/* Error alert */}
+      {loadError && (
+        <div
+          role="alert"
           style={{
-            flex: 1,
-            padding: '32px 40px',
-            overflowY: 'auto',
+            padding: '12px 16px',
+            marginBottom: '20px',
+            background: 'var(--red-bg)',
+            border: '1px solid rgba(192,57,43,0.3)',
+            borderRadius: 'var(--radius-xs)',
+            fontSize: '14px',
+            color: 'var(--red)',
           }}
         >
-          {/* Error alert */}
-          {loadError && (
-            <div
-              role="alert"
-              style={{
-                padding: '12px 16px',
-                marginBottom: '20px',
-                background: 'var(--red-bg)',
-                border: '1px solid rgba(192,57,43,0.3)',
-                borderRadius: 'var(--radius-xs)',
-                fontSize: '14px',
-                color: 'var(--red)',
-              }}
-            >
-              {loadError}
-            </div>
-          )}
+          {loadError}
+        </div>
+      )}
 
-          {/* Dispatch on step1Done */}
-          {step1Done ? configurePanel : provisioningPanel}
-        </section>
-      </div>
+      {panel}
     </div>
   )
 }
