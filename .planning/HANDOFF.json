@@ -1,46 +1,48 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-22T13:45:00Z",
+  "timestamp": "2026-05-22T19:37:22Z",
   "phase": "post-M4",
-  "phase_name": "ingest-ux-bugfix",
+  "phase_name": "ingest-ux-sse-fix",
   "phase_dir": ".planning",
   "plan": "adhoc",
-  "task": 5,
-  "total_tasks": 6,
+  "task": 1,
+  "total_tasks": 1,
   "status": "paused",
   "completed_tasks": [
-    {"id": 1, "name": "Add .md to ALLOWED_EXTENSIONS in documents.py", "status": "done", "commit": "uncommitted"},
-    {"id": 2, "name": "Fix chunk.py _resolve_local_path — use settings.UPLOADS_DIR not hardcoded /vrd-uploads", "status": "done", "commit": "uncommitted"},
-    {"id": 3, "name": "Fix chunk.py source_type condition to include 'md' in local-file branch", "status": "done", "commit": "uncommitted"},
-    {"id": 4, "name": "Add drag-and-drop + multi-file upload to ingest page", "status": "done", "commit": "uncommitted"},
-    {"id": 5, "name": "Fix EVENT_LABELS in ingest page to match actual backend event types", "status": "done", "commit": "uncommitted"}
+    {"id": 1, "name": ".md upload + ANTHROPIC_API_KEY fix", "status": "done", "commit": "365c27b"},
+    {"id": 2, "name": "Delete buttons on KB list", "status": "done", "commit": "dc50d37"},
+    {"id": 3, "name": "DELETE uuid[] cast fix (doc stayed after click)", "status": "done", "commit": "7f80848"},
+    {"id": 4, "name": "Document route tests (13 passing)", "status": "done", "commit": "ea2cedf"},
+    {"id": 5, "name": "GET /detail endpoint (chunks + metadata + entities)", "status": "done", "commit": "5478295"},
+    {"id": 6, "name": "DocumentDetailModal — click row to see Haiku output", "status": "done", "commit": "615a35a"},
+    {"id": 7, "name": "parsed → green in PARSE_STATUS_COLORS", "status": "done", "commit": "87e6da5"},
+    {"id": 8, "name": "SSE timeout 3min→10min + teardown() on all exit paths + elapsed timer", "status": "done", "commit": "41d2227"},
+    {"id": 9, "name": "VOYAGE_API_KEY explicit pass + embed task fail-fast", "status": "done", "commit": "a597f53"},
+    {"id": 10, "name": "Parallel Haiku extraction (5 concurrent threads)", "status": "done", "commit": "df49d39"},
+    {"id": 11, "name": "Batched Haiku extraction — BatchResult (10 chunks/call, 10x cheaper)", "status": "done", "commit": "ef06a08 + d81e64f"},
+    {"id": 12, "name": "metadata.progress in EVENT_LABELS", "status": "done", "commit": "08bf958"}
   ],
   "remaining_tasks": [
-    {"id": 6, "name": "Fix ANTHROPIC_API_KEY not reaching Celery worker — see blocker below", "status": "not_started"}
+    {
+      "id": 13,
+      "name": "Fix SSE streaming UX: remove split banner, add polling-on-drop, single progress location",
+      "status": "not_started",
+      "details": "Two issues: (1) progress renders in TWO places simultaneously (banner above URL input + optimistic KB row) — remove the banner, keep only the KB row; (2) stream drops before job.complete → shows 'Upload submitted — refresh to see status' — replace with refetchInterval polling on documents query until parse_status leaves pending/processing. Also investigate uvicorn SSE keepalive."
+    }
   ],
   "blockers": [
     {
-      "description": "ANTHROPIC_API_KEY not in Celery worker OS environment. Worker starts fine and processes parse+chunk tasks, then crashes at generate_metadata with: TypeError: Could not resolve authentication method. Expected one of api_key, auth_token, or credentials to be set.",
+      "description": "SSE stream drops before job.complete terminal event — uvicorn may close the response during long Haiku batch (15-20s per batch, 5 batches). No keepalive comments sent?",
       "type": "technical",
-      "workaround": "Fix: in metadata_service.py, change `_anthropic = anthropic.Anthropic()` to `_anthropic = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)` — pydantic Settings already loads ANTHROPIC_API_KEY from .env via _find_env_file(), so this bypasses the OS env gap. settings is already imported in config.py. Import settings in metadata_service.py."
+      "workaround": "Add polling fallback: after any stream termination without terminal event, set refetchInterval:3000 on documents query until all docs have terminal parse_status"
     }
   ],
-  "human_actions_pending": [
-    {
-      "action": "After applying the ANTHROPIC_API_KEY fix, restart Celery worker and re-test upload",
-      "context": "Worker is currently running but will crash on any metadata task. Must restart after code fix.",
-      "blocking": true
-    }
-  ],
+  "human_actions_pending": [],
   "decisions": [
-    {"decision": "ANTHROPIC_API_KEY fix: use explicit api_key=settings.ANTHROPIC_API_KEY in Anthropic() constructor rather than setting env var in shell", "rationale": "pydantic Settings already loads .env correctly; anthropic SDK reads os.environ independently. Explicit constructor arg is more robust and avoids shell-level env var management.", "phase": "post-M4"},
-    {"decision": "EVENT_LABELS keys updated to match real backend event names", "rationale": "Old keys (parsing, chunking, embedding) did not match backend events (parsing.started, chunking.started, etc.) — progress never updated from 'Starting...'", "phase": "post-M4"}
+    {"decision": "BatchResult wrapper schema (not JSON mode) for batched Haiku", "rationale": "Pydantic validation on batch response, same retry contract, no manual json.loads", "phase": "post-M4"},
+    {"decision": "Consolidate SSE progress to KB row only — remove banner above input", "rationale": "User saw two simultaneous status areas — one above URL input, one in KB list — confusing split UX", "phase": "post-M4"}
   ],
-  "uncommitted_files": [
-    "apps/api/app/api/v1/documents.py",
-    "apps/api/app/worker/tasks/pipeline/chunk.py",
-    "apps/admin/app/agents/[id]/ingest/page.tsx"
-  ],
-  "next_action": "Fix metadata_service.py: change `_anthropic = anthropic.Anthropic()` to `_anthropic = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)` and add `from app.core.config import settings` import. Then restart Celery. Then commit all uncommitted files. Then verify upload end-to-end in browser.",
-  "context_notes": "M4/4.2 is fully complete per STATE.md (42/42 plans). This was an ad-hoc UX improvement session: added .md upload support, drag-and-drop, multi-file, and fixed EVENT_LABELS. The remaining blocker (ANTHROPIC_API_KEY) is a one-line fix in metadata_service.py. After the fix + restart + verification, commit all three files and the session is done. Next planned work is M5 planning (/gsd-discuss-phase 5)."
+  "uncommitted_files": [],
+  "next_action": "1. Find SSE endpoint: grep -r 'EventSourceResponse|job_events' apps/api/app/api/ --include='*.py' -l. 2. Check keepalive. 3. Read page.tsx, locate progressLabel banner render, remove it. 4. Add refetchInterval polling on stream drop.",
+  "context_notes": "Pipeline is fully functional — Haiku batch extraction works, VoyageAI embeddings work, docs land in KB. The only remaining problem is the fragmented progress UX. The user described it clearly: one flash that disappears, split between two UI areas, and a dead-end refresh message. Fix is frontend-only unless uvicorn keepalive is missing (which would also need a one-liner backend fix)."
 }
