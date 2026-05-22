@@ -1,9 +1,10 @@
 """
 Document routes for Veridian M2 ingestion pipeline.
 
-POST /agents/{agent_id}/documents — upload files and/or URLs; dispatches Celery chain
-GET  /agents/{agent_id}/documents — list all documents for agent from tenant DB
-GET  /agents/{agent_id}/documents/{document_id} — fetch a single document row
+POST   /agents/{agent_id}/documents — upload files and/or URLs; dispatches Celery chain
+GET    /agents/{agent_id}/documents — list all documents for agent from tenant DB
+GET    /agents/{agent_id}/documents/{document_id} — fetch a single document row
+DELETE /agents/{agent_id}/documents/{document_id} — remove a document + all derived rows
 
 Security:
     - Requires X-API-Key on all routes (get_current_tenant dependency).
@@ -395,3 +396,192 @@ async def get_document(
         chunk_count=row[5],
         created_at=row[6],
     )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /agents/{agent_id}/documents/{document_id}
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/agents/{agent_id}/documents/{document_id}",
+    status_code=204,
+)
+async def delete_document(
+    agent_id: UUID,
+    document_id: UUID,
+    db: AsyncSession = Depends(get_async_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> None:
+    """Permanently remove a document and every row derived from it.
+
+    Tenant isolation is structural: each agent owns a dedicated Neon database
+    (connection string stored encrypted on the Agent row). Validating that the
+    agent belongs to the authenticated tenant — and then connecting *only* to
+    that agent's database — makes cross-tenant and cross-agent deletion
+    impossible. A document_id from another agent simply will not exist in this
+    agent's tenant DB, yielding a 404.
+
+    Deletion order (inside a single tenant-DB transaction):
+        1. Collect chunk_ids for the document.
+        2. DELETE chunk_entities for those chunks.
+        3. DELETE embeddings for those chunks.
+        4. DELETE chunk_metadata for those chunks.
+        5. DELETE chunks WHERE document_id = :id.
+        6. DELETE the document row.
+        7. DELETE now-orphaned entities (entities referenced by no chunk_entities).
+
+    Although every child FK already declares ON DELETE CASCADE (so deleting the
+    document row alone would suffice), the explicit ordered deletes make the
+    operation self-documenting, resilient to future schema changes that drop a
+    cascade, and — critically — let us reclaim orphaned rows in the *shared*
+    `entities` registry, which CASCADE alone cannot do (entities are
+    deduplicated across documents via UNIQUE(normalized, type)).
+
+    After the DB transaction commits, the staged upload file (if any) is removed
+    from UPLOADS_DIR. File removal is best-effort and never rolls back the DB
+    delete: the authoritative state is the database, and a leftover temp file is
+    a benign disk-space concern, not a correctness one.
+
+    Returns:
+        204 No Content on success.
+
+    Raises:
+        404 if the agent is not found / not owned by tenant, or the document
+            does not exist in the agent's tenant DB.
+    """
+    # ------------------------------------------------------------------
+    # 1. Validate agent ownership (control DB) — same filter as GET routes.
+    #    Returns 404 (not 403) on mismatch to avoid leaking existence of
+    #    other tenants' agents (T-02-06-01 pattern).
+    # ------------------------------------------------------------------
+    result = await db.execute(
+        select(Agent).where(
+            Agent.id == agent_id,
+            Agent.tenant_id == tenant.id,
+            Agent.deleted_at.is_(None),
+        )
+    )
+    agent = result.scalar_one_or_none()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Decrypt connection string (never logged — T-02-06-08)
+    conn_str = fernet_decrypt(agent.neon_connection_string)
+
+    # ------------------------------------------------------------------
+    # 2. Delete document + derived rows in a single tenant-DB transaction.
+    #    psycopg2.connect(connect_timeout=5) bounds blocking on the async
+    #    event loop thread (T-02-06-09).
+    # ------------------------------------------------------------------
+    source_type: str | None = None
+    tenant_conn = psycopg2.connect(conn_str, connect_timeout=5)
+    try:
+        with tenant_conn.cursor() as cur:
+            # Confirm the document exists in THIS agent's DB; capture
+            # source_type so we can locate the on-disk file afterwards.
+            cur.execute(
+                "SELECT source_type FROM documents WHERE id = %s",
+                (str(document_id),),
+            )
+            row = cur.fetchone()
+            if row is None:
+                # Roll back the (empty) tx and signal not-found to the caller.
+                tenant_conn.rollback()
+                raise HTTPException(status_code=404, detail="Document not found")
+            source_type = row[0]
+
+            # Gather chunk ids for this document (drives the join/derived deletes).
+            cur.execute(
+                "SELECT id FROM chunks WHERE document_id = %s",
+                (str(document_id),),
+            )
+            chunk_ids = [r[0] for r in cur.fetchall()]
+
+            if chunk_ids:
+                # chunk_entities: join rows linking these chunks to entities.
+                cur.execute(
+                    "DELETE FROM chunk_entities WHERE chunk_id = ANY(%s)",
+                    (chunk_ids,),
+                )
+                # embeddings: 1:1 with chunk (PK = chunk_id).
+                cur.execute(
+                    "DELETE FROM embeddings WHERE chunk_id = ANY(%s)",
+                    (chunk_ids,),
+                )
+                # chunk_metadata: 1:1 with chunk (PK = chunk_id).
+                cur.execute(
+                    "DELETE FROM chunk_metadata WHERE chunk_id = ANY(%s)",
+                    (chunk_ids,),
+                )
+
+            # chunks for the document.
+            cur.execute(
+                "DELETE FROM chunks WHERE document_id = %s",
+                (str(document_id),),
+            )
+
+            # the document row itself.
+            cur.execute(
+                "DELETE FROM documents WHERE id = %s",
+                (str(document_id),),
+            )
+
+            # Reclaim orphaned entities: entities in the shared registry that
+            # are no longer referenced by ANY chunk_entities row. CASCADE on the
+            # join table cannot do this — entities are deduplicated across docs.
+            cur.execute(
+                """
+                DELETE FROM entities
+                WHERE id NOT IN (SELECT entity_id FROM chunk_entities)
+                """
+            )
+
+        tenant_conn.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        tenant_conn.rollback()
+        log.error(
+            "delete_document.tenant_db_failed",
+            agent_id=str(agent.id),
+            document_id=str(document_id),
+            error=str(exc),
+        )
+        raise HTTPException(
+            status_code=500, detail="Failed to delete document"
+        ) from exc
+    finally:
+        tenant_conn.close()
+
+    # ------------------------------------------------------------------
+    # 3. Best-effort removal of the staged upload file (T-02-06-05 layout:
+    #    UPLOADS_DIR/{agent_id}/{document_id}{ext}). URL-sourced documents
+    #    have no file on disk (source_type == 'url'). Never let a filesystem
+    #    error reverse a committed DB delete.
+    # ------------------------------------------------------------------
+    if source_type and source_type != "url":
+        local_path = (
+            Path(settings.UPLOADS_DIR)
+            / str(agent.id)
+            / f"{document_id}.{source_type}"
+        )
+        try:
+            local_path.unlink(missing_ok=True)
+        except OSError as exc:
+            # Disk cleanup is non-authoritative; log and move on.
+            log.warning(
+                "delete_document.file_unlink_failed",
+                agent_id=str(agent.id),
+                document_id=str(document_id),
+                error=str(exc),
+            )
+
+    log.info(
+        "delete_document.success",
+        agent_id=str(agent.id),
+        document_id=str(document_id),
+    )
+
+    # FastAPI returns 204 No Content with an empty body for None.
+    return None
