@@ -95,9 +95,6 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [progressLabel, setProgressLabel] = useState<string | null>(null)
-  // When true, refetchInterval on docsQuery polls every 3 s until all docs
-  // leave pending/processing — used after stream drops without terminal event.
-  const [pollingActive, setPollingActive] = useState(false)
   // Epoch ms when the current job started; null when no job is running. Drives
   // the elapsed-time counter (see elapsedSeconds effect below).
   const [jobStartedAt, setJobStartedAt] = useState<number | null>(null)
@@ -163,18 +160,13 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
     },
     enabled: isLoaded && !!isSignedIn && agentQuery.data?.status === 'ready',
     staleTime: 10_000,
-    refetchInterval: pollingActive ? 3_000 : false,
+    refetchInterval: (query) => {
+      const docs = (query.state.data as Document[] | undefined) ?? []
+      return docs.some((d) => d.parse_status === 'pending' || d.parse_status === 'processing')
+        ? 3_000
+        : false
+    },
   })
-
-  // Stop polling once every document has left pending/processing.
-  useEffect(() => {
-    if (!pollingActive) return
-    const docs = docsQuery.data ?? []
-    if (docs.length === 0) return
-    if (docs.every((d) => d.parse_status !== 'pending' && d.parse_status !== 'processing')) {
-      setPollingActive(false)
-    }
-  }, [pollingActive, docsQuery.data])
 
   const agentStatus = agentQuery.data?.status ?? null
   const documents = docsQuery.data ?? []
@@ -318,16 +310,14 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
       }
 
       // Reader returned done:true without a terminal event — connection dropped.
-      // Polling (via pollingActive) will auto-refresh the KB list below.
+      // refetchInterval polls until pending docs reach a terminal parse_status.
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
         setSubmitError('Lost connection to job stream. The job may still be running.')
       }
     } finally {
       clearTimeout(timeoutId)
-      // If the stream ended without a terminal event, start polling so the KB
-      // list auto-refreshes until parse_status leaves pending/processing.
-      if (!sawTerminal) setPollingActive(true)
+      // refetchInterval drives polling automatically — no signal needed here.
       await teardown()
     }
   }
@@ -388,7 +378,6 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
   const handleSubmit = async () => {
     setSubmitError(null)
     setProgressLabel(null)
-    setPollingActive(false)
 
     // Snapshot the sources being submitted so we can render optimistic
     // "processing" rows in the KB list while the job runs. Captured before the
