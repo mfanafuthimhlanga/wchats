@@ -1,7 +1,7 @@
 'use client'
-import { useState, useEffect, use } from 'react'
+import { useState, use } from 'react'
 import { useAuth } from '@clerk/nextjs'
-import Link from 'next/link'
+import { useQuery } from '@tanstack/react-query'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,12 +45,8 @@ function getParseStatusColor(status: string) {
 
 export default function IngestPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
-  const { getToken } = useAuth()
+  const { getToken, isLoaded, isSignedIn } = useAuth()
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ''
-
-  const [agentStatus, setAgentStatus] = useState<string | null>(null)
-  const [documents, setDocuments] = useState<Document[]>([])
-  const [loadError, setLoadError] = useState<string | null>(null)
 
   const [activeTab, setActiveTab] = useState<IngestTab>('file')
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
@@ -62,69 +58,61 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
   const [progressLabel, setProgressLabel] = useState<string | null>(null)
 
   // ---------------------------------------------------------------------------
-  // Load agent status + documents on mount
+  // Load agent status + documents via TanStack Query
   // ---------------------------------------------------------------------------
 
-  const loadDocuments = async () => {
-    try {
+  const agentQuery = useQuery({
+    queryKey: ['agent', id], // shares cache with layout — instant hit
+    queryFn: async () => {
       const token = await getToken()
-      if (!token) {
-        setLoadError('Not authenticated. Please sign in.')
-        return
-      }
+      if (!token) throw new Error('Not authenticated')
+      const r = await fetch(`${apiBase}/api/v1/agents/${id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      return r.json() as Promise<{ id: string; status: string; name: string }>
+    },
+    enabled: isLoaded && !!isSignedIn,
+    staleTime: 30_000,
+  })
+
+  const docsQuery = useQuery({
+    queryKey: ['agent-documents', id],
+    queryFn: async () => {
+      const token = await getToken()
+      if (!token) throw new Error('Not authenticated')
       const r = await fetch(`${apiBase}/api/v1/agents/${id}/documents`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      const data: { documents: Document[] } = await r.json()
-      setDocuments(data.documents ?? [])
-    } catch (err) {
-      console.error(err)
-      setLoadError('Failed to load documents. Please refresh.')
-    }
-  }
+      const data = await r.json()
+      return (data.documents ?? []) as Document[]
+    },
+    enabled: isLoaded && !!isSignedIn && agentQuery.data?.status === 'ready',
+    staleTime: 10_000,
+  })
 
-  useEffect(() => {
-    const init = async () => {
-      try {
-        const token = await getToken()
-        if (!token) {
-          setLoadError('Not authenticated. Please sign in.')
-          return
-        }
-        // Load agent status
-        const ar = await fetch(`${apiBase}/api/v1/agents/${id}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-        if (!ar.ok) throw new Error(`HTTP ${ar.status}`)
-        const agent = await ar.json()
-        setAgentStatus(agent.status)
-
-        // Load documents
-        const dr = await fetch(`${apiBase}/api/v1/agents/${id}/documents`, {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-        if (!dr.ok) throw new Error(`HTTP ${dr.status}`)
-        const data: { documents: Document[] } = await dr.json()
-        setDocuments(data.documents ?? [])
-      } catch (err) {
-        console.error(err)
-        setLoadError('Failed to load agent data. Please refresh.')
-      }
-    }
-    init()
-  }, [id, apiBase, getToken])
+  const agentStatus = agentQuery.data?.status ?? null
+  const documents = docsQuery.data ?? []
+  const loadError = agentQuery.isError ? 'Failed to load agent. Please refresh.' : null
 
   // ---------------------------------------------------------------------------
   // SSE progress reader — fetch + ReadableStream (EventSource doesn't support headers)
   // ---------------------------------------------------------------------------
 
   const readSseProgress = async (eventsUrl: string, token: string) => {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 180_000) // 3 min
     try {
       const resp = await fetch(`${apiBase}${eventsUrl}`, {
         headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
       })
-      if (!resp.body) return
+      if (!resp.body) {
+        setSubmitError('No response stream. Check if the Celery worker is running.')
+        setSubmitting(false)
+        return
+      }
 
       const reader = resp.body.getReader()
       const decoder = new TextDecoder()
@@ -140,7 +128,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
               const label = EVENT_LABELS[payload.event] ?? payload.event
               setProgressLabel(label)
               if (payload.event === 'job.complete') {
-                await loadDocuments()
+                await docsQuery.refetch()
                 setSubmitting(false)
                 return
               }
@@ -156,9 +144,14 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
         }
       }
     } catch (err) {
-      console.error('SSE read error:', err)
-      setSubmitError('Lost connection to job stream. Check if the job completed.')
+      if ((err as Error).name === 'AbortError') {
+        setSubmitError('Job timed out after 3 minutes. Check Celery worker logs.')
+      } else {
+        setSubmitError('Lost connection to job stream. The job may still be running.')
+      }
       setSubmitting(false)
+    } finally {
+      clearTimeout(timeoutId)
     }
   }
 
@@ -213,10 +206,14 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
         body: formData,
       })
 
+      if (res.status === 409) {
+        setSubmitError('Agent is still provisioning. Please wait for it to finish.')
+        setSubmitting(false)
+        return
+      }
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
-        const detail = body?.detail ?? `HTTP ${res.status}`
-        setSubmitError(`Upload failed: ${detail}`)
+        setSubmitError(`Upload failed: ${body?.detail ?? `HTTP ${res.status}`}`)
         setSubmitting(false)
         return
       }
@@ -248,21 +245,6 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
         fontFamily: 'var(--font-sans)',
       }}
     >
-      <Link
-        href={`/agents/${id}`}
-        style={{
-          fontSize: '14px',
-          color: 'var(--accent)',
-          textDecoration: 'none',
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: '6px',
-          marginBottom: '24px',
-        }}
-      >
-        ← Back to Configure
-      </Link>
-
       <h1
         style={{
           fontSize: '22px',
@@ -337,6 +319,8 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   setActiveTab(tab)
                   setSubmitError(null)
                   setUrlError(null)
+                  setProgressLabel(null)
+                  setSubmitting(false)
                 }}
                 style={{
                   padding: '10px 20px',
@@ -439,7 +423,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   fontFamily: 'var(--font-sans)',
                 }}
               >
-                {submitting ? 'Uploading…' : 'Upload file'}
+                Upload file
               </button>
             </div>
           )}
@@ -506,7 +490,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   fontFamily: 'var(--font-sans)',
                 }}
               >
-                {submitting ? 'Adding…' : 'Add URL'}
+                Add URL
               </button>
             </div>
           )}
