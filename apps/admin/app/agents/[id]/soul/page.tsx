@@ -1,8 +1,8 @@
 'use client'
 import { useState, useEffect, useRef, use } from 'react'
+import { useRouter } from 'next/navigation'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
-import Link from 'next/link'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -90,6 +90,7 @@ export default function SoulEditorPage({
   params: Promise<{ id: string }>
 }) {
   const { id } = use(params)
+  const router = useRouter()
   const { getToken, isLoaded, isSignedIn } = useAuth()
   const queryClient = useQueryClient()
 
@@ -565,17 +566,20 @@ export default function SoulEditorPage({
           {/* Save Section */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+              {/* Once saved, the same button becomes the "Next" CTA: it navigates
+                  to the ingest step and keeps accent styling (not a disabled
+                  state). Before/while saving it performs the save action. */}
               <button
-                onClick={handleSave}
-                disabled={!canSave}
+                onClick={saveStatus === 'saved' ? () => router.push(`/agents/${id}/ingest`) : handleSave}
+                disabled={saveStatus === 'saved' ? false : !canSave}
                 style={{
                   padding: '12px 32px',
                   minHeight: '44px',
-                  background: canSave ? 'var(--accent)' : 'var(--surface-3)',
-                  color: canSave ? '#fff' : 'var(--text-4)',
+                  background: saveStatus === 'saved' || canSave ? 'var(--accent)' : 'var(--surface-3)',
+                  color: saveStatus === 'saved' || canSave ? '#fff' : 'var(--text-4)',
                   border: 'none',
                   borderRadius: 'var(--radius-sm)',
-                  cursor: canSave ? 'pointer' : 'not-allowed',
+                  cursor: saveStatus === 'saved' || canSave ? 'pointer' : 'not-allowed',
                   fontSize: '15px',
                   fontWeight: 600,
                   fontFamily: 'var(--font-sans)',
@@ -585,7 +589,7 @@ export default function SoulEditorPage({
                 {saveStatus === 'saving'
                   ? 'Saving...'
                   : saveStatus === 'saved'
-                  ? '✓ Soul saved'
+                  ? 'Next: Upload documents →'
                   : saveStatus === 'error'
                   ? 'Error — retry'
                   : 'Save Soul'}
@@ -601,31 +605,6 @@ export default function SoulEditorPage({
                 </span>
               )}
             </div>
-
-            {/* Persistent Next CTA — shown once soul is saved */}
-            {saveStatus === 'saved' && (
-              <Link
-                href={`/agents/${id}/ingest`}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  padding: '10px 20px',
-                  minHeight: '44px',
-                  background: 'var(--accent-dim)',
-                  color: 'var(--accent)',
-                  border: '1px solid rgba(123,28,58,0.2)',
-                  borderRadius: 'var(--radius-sm)',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  fontFamily: 'var(--font-sans)',
-                  textDecoration: 'none',
-                  alignSelf: 'flex-start',
-                }}
-              >
-                Next: Upload documents →
-              </Link>
-            )}
           </div>
         </div>
 
