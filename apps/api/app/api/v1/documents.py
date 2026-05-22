@@ -499,19 +499,25 @@ async def delete_document(
             chunk_ids = [r[0] for r in cur.fetchall()]
 
             if chunk_ids:
+                # psycopg2 returns uuid columns as Python str, so chunk_ids is a
+                # list[str]. Binding it as ANY(%s) renders a text[] array, and
+                # Postgres has no `uuid = text` operator — the comparison raises
+                # UndefinedFunction, the whole tx rolls back, and the delete is a
+                # silent no-op (the document stays). Cast the array to uuid[] so
+                # the comparison is uuid = uuid.
                 # chunk_entities: join rows linking these chunks to entities.
                 cur.execute(
-                    "DELETE FROM chunk_entities WHERE chunk_id = ANY(%s)",
+                    "DELETE FROM chunk_entities WHERE chunk_id = ANY(%s::uuid[])",
                     (chunk_ids,),
                 )
                 # embeddings: 1:1 with chunk (PK = chunk_id).
                 cur.execute(
-                    "DELETE FROM embeddings WHERE chunk_id = ANY(%s)",
+                    "DELETE FROM embeddings WHERE chunk_id = ANY(%s::uuid[])",
                     (chunk_ids,),
                 )
                 # chunk_metadata: 1:1 with chunk (PK = chunk_id).
                 cur.execute(
-                    "DELETE FROM chunk_metadata WHERE chunk_id = ANY(%s)",
+                    "DELETE FROM chunk_metadata WHERE chunk_id = ANY(%s::uuid[])",
                     (chunk_ids,),
                 )
 
