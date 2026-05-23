@@ -30,6 +30,7 @@ Queue: runtime (CLAUDE.md non-negotiable: both Celery queues always present)
 """
 
 import asyncio
+import json
 import re
 import ssl
 import uuid
@@ -38,6 +39,7 @@ from datetime import datetime, timezone
 import psycopg2
 import redis as redis_lib
 import structlog
+from celery import chain as celery_chain
 from sqlalchemy import text as sa_text
 
 from app.core.config import settings
@@ -50,6 +52,7 @@ from app.services.agent_tools import build_tool_server, RetrievalStrategy
 from app.services.escalation import send_escalation_email
 from app.services.events import emit
 from app.worker.celery_app import celery_app
+from app.worker.tasks.runtime.validators import run_gatekeeper, run_auditor, run_strategist
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
@@ -213,7 +216,6 @@ def _persist_messages(
 
             # Insert tool_calls rows (one per ToolUseBlock observed)
             for tc in tool_calls_log:
-                import json
                 cur.execute(
                     """
                     INSERT INTO tool_calls (id, message_id, tool_name, arguments, result, created_at)
@@ -343,6 +345,11 @@ async def _run_sdk_turn(
                             db,
                             redis,
                         )
+                        # Capture retrieve result for Auditor (M5 — plan 05-04)
+                        for tc in reversed(tool_calls_log):
+                            if tc.get("tool_name") == "retrieve" and "result" not in tc:
+                                tc["result"] = str(getattr(block, "content", ""))[:1800]
+                                break
 
             elif isinstance(msg, ResultMessage):
                 sdk_session_id_out = msg.session_id
@@ -602,6 +609,17 @@ def run_agent_turn(
             job.status = "complete"
             job.finished_at = datetime.now(timezone.utc)
             db.commit()
+
+            # Dispatch validation chain (M5 — VAL-04)
+            retrieve_results = [tc.get("result") for tc in tool_calls_log
+                                 if tc.get("tool_name") == "retrieve" and tc.get("result")]
+            retrieved_context_json = json.dumps([str(r)[:600] for r in retrieve_results][:3])
+            celery_chain(
+                run_gatekeeper.si(str(agent_id), job_id, response_text, message),
+                run_auditor.si(str(agent_id), job_id, response_text, message,
+                               retrieved_context_json, str(local_conversation_id)),
+                run_strategist.si(str(agent_id), job_id, response_text, message),
+            ).apply_async(queue="runtime")
 
             log.info(
                 "run_agent_turn.complete",
