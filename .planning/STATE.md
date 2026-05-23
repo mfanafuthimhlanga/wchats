@@ -18,7 +18,7 @@ progress:
 
 **Active Milestone:** M7 — Red Team (M6 ✓ Complete + Verified)
 **Milestone Phase:** Phase 7 IN PROGRESS — 6 plans, 5 waves, RED-01–RED-08 covered (2026-05-23)
-**Current Position:** Phase 7, Plan 4 (07-03 complete)
+**Current Position:** Phase 7, Plan 5 (07-04 complete)
 **Last updated:** 2026-05-23
 
 ## Project Reference
@@ -156,6 +156,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Last session: 2026-05-23 — completed 07-01-PLAN.md (migration 0006 status+deployment_blocked, RED_TEAM_MAX_TURNS=5, RED_TEAM_ATTACK_SEQUENCES=3, 2 xfail stubs) — 2 commits: bc4b75e + 31e610d
 - Last session: 2026-05-23 — completed 07-02-PLAN.md (red_team_service.py: RedTeamFinding/RedTeamResult/SeverityVerdict models, classify_severity Haiku judge, 3 runner functions with probe_fn pattern; pyrit>=0.6.0 added) — 2 commits: bab1950 + 03eb1ab
 - Last session: 2026-05-23 — completed 07-03-PLAN.md (run_red_team_beat + run_red_team Celery tasks; red-team-weekly beat schedule Monday 03:00 UTC; probe_fn uses direct Anthropic API not _run_sdk_turn; deployment_blocked gate RED-06) — 2 commits: a23a26f + 354816a
+- Last session: 2026-05-23 — completed 07-04-PLAN.md (red_team Pydantic schemas + FastAPI routes GET list/GET detail/POST trigger 202 + main.py registration; IDOR + conn_str patterns identical to evals.py) — 1 commit: 46eac62
 - Phase 6 COMPLETE: all 9/9 plans done, all EVL-01 through EVL-08 requirements satisfied
 - Phase 6 VERIFIED (2026-05-23): automated codebase audit confirms all EVL-01–EVL-08 PASS; 06-VERIFICATION.md written
 - [TODO-RET-01] F7 / filters enforcement gate: retrieve_tool filters field must have allowlisted-column enforcement before being wired to LLM output. Gate: M5 phase planning MUST resolve this before activating filters in retrieve_tool. Logged Phase 4.1.
@@ -169,3 +170,5 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [07-03] Idempotency window 30 min (vs 10 min for eval) — red team runs take longer (3 agents x 5 turns each)
 - [07-03] deployment_blocked = (max_severity == "critical") is the exact RED-06 gate condition
 - [07-03] red-team-weekly: day_of_week=1 (Monday 03:00 UTC) — fires one hour after eval-nightly to avoid Redis contention
+- [07-04] POST trigger returns run_id = task.id as correlator at dispatch time; actual DB run_id generated inside the task
+- [07-04] findings defaults to [] and deployment_blocked defaults to False for rows where JSONB/boolean columns may be None
