@@ -171,6 +171,83 @@ def create_neon_project(agent_id: str, project_name: str | None = None) -> dict:
     }
 
 
+def create_branch(project_id: str, branch_name: str) -> tuple[str, str]:
+    """Create a Neon branch and return (branch_id, connection_string).
+
+    Branch name should be 'eval-{run_id}'. conn_str is NEVER stored — pass as
+    a local variable to the eval task only (D-18).
+
+    Args:
+        project_id:  The Neon project ID (str) for the tenant's project.
+        branch_name: A human-readable branch name, e.g. 'eval-{run_id}'.
+
+    Returns:
+        tuple[str, str]: (branch_id, conn_str)
+            branch_id — Neon branch ID, used later by delete_branch().
+            conn_str  — Direct (non-pooled) connection URI for the branch.
+                        NEVER log or store this value (T-03-02, D-18).
+
+    Raises:
+        NeonHTTPError: On any non-2xx response from the Neon API.
+    """
+    # Step 1 — POST to create branch with a read_write endpoint
+    r = requests.post(
+        f"{_NEON_API_BASE}/projects/{project_id}/branches",
+        headers=_neon_headers(),
+        json={"branch": {"name": branch_name}, "endpoints": [{"type": "read_write"}]},
+        timeout=30,
+    )
+    if not r.ok:
+        raise NeonHTTPError(r.status_code, r.text[:200])
+    data = r.json()
+    branch_id = data["branch"]["id"]
+    # T-03-02: log project_id and branch_id only — do NOT log conn_str
+    log.debug("neon.branch_created", project_id=project_id, branch_id=branch_id)
+
+    # Step 2 — GET connection URI for the branch (direct/non-pooled for psycopg2)
+    r_uri = requests.get(
+        f"{_NEON_API_BASE}/projects/{project_id}/connection_uri",
+        headers=_neon_headers(),
+        params={
+            "database_name": "neondb",
+            "role_name": "neondb_owner",
+            "pooled": "false",
+            "branch_id": branch_id,
+        },
+        timeout=15,
+    )
+    if not r_uri.ok:
+        raise NeonHTTPError(r_uri.status_code, r_uri.text[:200])
+    conn_str = r_uri.json()["uri"]
+
+    # T-03-02: DO NOT log conn_str
+    return (branch_id, conn_str)
+
+
+def delete_branch(project_id: str, branch_id: str) -> None:
+    """Delete a Neon branch.
+
+    Called in the eval task finally block (D-10) to ensure cleanup even on
+    exception. Raises NeonHTTPError on failure — the caller is responsible for
+    catching and logging.
+
+    Args:
+        project_id: The Neon project ID for the tenant's project.
+        branch_id:  The Neon branch ID returned by create_branch().
+
+    Raises:
+        NeonHTTPError: On any non-2xx response from the Neon API.
+    """
+    r = requests.delete(
+        f"{_NEON_API_BASE}/projects/{project_id}/branches/{branch_id}",
+        headers=_neon_headers(),
+        timeout=30,
+    )
+    if not r.ok:
+        raise NeonHTTPError(r.status_code, r.text[:200])
+    log.debug("neon.branch_deleted", project_id=project_id, branch_id=branch_id)
+
+
 def wait_for_neon_ready(conn_string: str, max_attempts: int = 15) -> None:
     """Probe a Neon compute endpoint until it accepts a simple SELECT query.
 
