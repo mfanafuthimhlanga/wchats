@@ -87,6 +87,11 @@ class Settings(BaseSettings):
     # M5: Verified-QA confidence threshold — auditor confidence must meet this to enqueue candidate
     VERIFIED_QA_CONFIDENCE_THRESHOLD: float = 0.90
 
+    # M6: Eval system thresholds — Ragas metric promotion gates + retrieval cache
+    EVAL_FAITHFULNESS_THRESHOLD: float = 0.90
+    EVAL_RELEVANCY_THRESHOLD: float = 0.90
+    VERIFIED_QA_HIT_THRESHOLD: float = 0.93
+
     MAX_UPLOAD_SIZE_MB: int = 50
 
     def __repr__(self) -> str:  # T-01-01, T-01-02: never leak field values
