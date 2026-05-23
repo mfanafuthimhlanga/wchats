@@ -205,6 +205,8 @@ def test_retrieve_and_rank_happy_path():
         patch("app.worker.tasks.runtime.retrieve.get_sync_db", return_value=mock_db_ctx),
         patch("app.worker.tasks.runtime.retrieve.fernet_decrypt", return_value="postgresql://tenant"),
         patch("app.worker.tasks.runtime.retrieve.embed_query", return_value=fake_vector),
+        # D-27: verified_qa_lookup returns None (cache miss) — falls through to hybrid search
+        patch("app.worker.tasks.runtime.retrieve.verified_qa_lookup", return_value=None),
         patch("app.worker.tasks.runtime.retrieve.rrf_fuse", return_value={
             "fused": fake_fused,
             "vector_candidates": fake_vector_cands,
@@ -235,6 +237,172 @@ def test_retrieve_and_rank_happy_path():
     assert job.status == "complete"
     assert job.finished_at is not None
     mock_db.commit.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# verified_qa cache hit path — D-24/D-26
+# ---------------------------------------------------------------------------
+
+def test_retrieve_and_rank_cache_hit_skips_hybrid_search():
+    """D-24/D-26: cache hit returns early — rrf_fuse must NOT be called."""
+    from app.worker.tasks.runtime.retrieve import retrieve_and_rank
+
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    agent = _make_agent(agent_id=agent_id)
+    job = _make_job(job_id=job_id)
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None  # no idempotency row
+    mock_db.get.side_effect = [agent, job]
+
+    mock_db_ctx = MagicMock()
+    mock_db_ctx.__enter__ = MagicMock(return_value=mock_db_ctx)
+    mock_db_ctx.__exit__ = MagicMock(return_value=False)
+    mock_db_ctx.__enter__ = MagicMock(return_value=mock_db)
+
+    fake_vector = [0.1] * 1024
+    cache_hit_result = {
+        "answer": "Refunds are processed within 5 business days.",
+        "citations": [{"doc": "policy.pdf", "page": 3}],
+        "similarity": 0.971,
+        "source": "verified_qa_cache",
+    }
+
+    emitted_events: list[str] = []
+
+    def fake_emit(jid, event_type, payload, db, redis):
+        emitted_events.append(event_type)
+
+    mock_rrf_fuse = MagicMock()
+
+    with (
+        patch("app.worker.tasks.runtime.retrieve.get_sync_db", return_value=mock_db_ctx),
+        patch("app.worker.tasks.runtime.retrieve.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.retrieve.embed_query", return_value=fake_vector),
+        # D-26: cache hit — verified_qa_lookup returns a cached answer
+        patch("app.worker.tasks.runtime.retrieve.verified_qa_lookup", return_value=cache_hit_result),
+        patch("app.worker.tasks.runtime.retrieve.rrf_fuse", mock_rrf_fuse),
+        patch("app.worker.tasks.runtime.retrieve.emit", side_effect=fake_emit),
+    ):
+        result = retrieve_and_rank.run(
+            job_id=job_id,
+            agent_id=agent_id,
+            query="what is the refund policy?",
+        )
+
+    assert result == {}
+
+    # D-24: hybrid search must NOT have been called on cache hit
+    mock_rrf_fuse.assert_not_called()
+
+    # query.complete must still be emitted (cache hit short-circuits but emits complete)
+    assert "query.complete" in emitted_events
+
+    # Job marked complete on cache hit
+    assert job.status == "complete"
+    assert job.finished_at is not None
+
+
+def test_retrieve_and_rank_cache_hit_payload_has_cache_trace():
+    """D-26: query.complete payload on cache hit contains cache_hit=True trace."""
+    from app.worker.tasks.runtime.retrieve import retrieve_and_rank
+
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    agent = _make_agent(agent_id=agent_id)
+    job = _make_job(job_id=job_id)
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None
+    mock_db.get.side_effect = [agent, job]
+
+    mock_db_ctx = MagicMock()
+    mock_db_ctx.__enter__ = MagicMock(return_value=mock_db)
+    mock_db_ctx.__exit__ = MagicMock(return_value=False)
+
+    fake_vector = [0.2] * 1024
+    cache_hit_result = {
+        "answer": "The cached answer.",
+        "citations": [],
+        "similarity": 0.963,
+        "source": "verified_qa_cache",
+    }
+
+    emitted_payloads: dict[str, dict] = {}
+
+    def fake_emit(jid, event_type, payload, db, redis):
+        emitted_payloads[event_type] = payload
+
+    with (
+        patch("app.worker.tasks.runtime.retrieve.get_sync_db", return_value=mock_db_ctx),
+        patch("app.worker.tasks.runtime.retrieve.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.retrieve.embed_query", return_value=fake_vector),
+        patch("app.worker.tasks.runtime.retrieve.verified_qa_lookup", return_value=cache_hit_result),
+        patch("app.worker.tasks.runtime.retrieve.rrf_fuse", MagicMock()),
+        patch("app.worker.tasks.runtime.retrieve.emit", side_effect=fake_emit),
+    ):
+        retrieve_and_rank.run(
+            job_id=job_id,
+            agent_id=agent_id,
+            query="some query",
+        )
+
+    complete_payload = emitted_payloads.get("query.complete", {})
+    trace = complete_payload.get("trace", {})
+
+    # Verify required demo trace keys (D-32)
+    assert trace.get("cache_hit") is True
+    assert trace.get("source") == "verified_qa_cache"
+    assert trace.get("similarity") == 0.963
+
+    # Results list must contain the cached answer
+    results = complete_payload.get("results", [])
+    assert len(results) == 1
+    assert results[0]["content"] == "The cached answer."
+
+
+def test_retrieve_and_rank_verified_qa_lookup_called_with_threshold():
+    """D-25: verified_qa_lookup called with threshold=settings.VERIFIED_QA_HIT_THRESHOLD."""
+    from app.worker.tasks.runtime.retrieve import retrieve_and_rank
+    from app.core.config import settings
+
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    agent = _make_agent(agent_id=agent_id)
+    job = _make_job(job_id=job_id)
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None
+    mock_db.get.side_effect = [agent, job]
+
+    mock_db_ctx = MagicMock()
+    mock_db_ctx.__enter__ = MagicMock(return_value=mock_db)
+    mock_db_ctx.__exit__ = MagicMock(return_value=False)
+
+    fake_vector = [0.3] * 1024
+    mock_lookup = MagicMock(return_value=None)  # cache miss
+
+    with (
+        patch("app.worker.tasks.runtime.retrieve.get_sync_db", return_value=mock_db_ctx),
+        patch("app.worker.tasks.runtime.retrieve.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.retrieve.embed_query", return_value=fake_vector),
+        patch("app.worker.tasks.runtime.retrieve.verified_qa_lookup", mock_lookup),
+        patch("app.worker.tasks.runtime.retrieve.rrf_fuse", return_value={
+            "fused": [], "vector_candidates": [], "bm25_candidates": []
+        }),
+        patch("app.worker.tasks.runtime.retrieve.rerank", return_value=[]),
+        patch("app.worker.tasks.runtime.retrieve.build_trace", return_value={}),
+        patch("app.worker.tasks.runtime.retrieve.emit"),
+    ):
+        retrieve_and_rank.run(job_id=job_id, agent_id=agent_id, query="test")
+
+    mock_lookup.assert_called_once()
+    call_kwargs = mock_lookup.call_args
+    # Verify threshold uses settings.VERIFIED_QA_HIT_THRESHOLD (D-25)
+    assert call_kwargs.kwargs.get("threshold") == settings.VERIFIED_QA_HIT_THRESHOLD
+    # Verify query_vector passed through
+    assert call_kwargs.kwargs.get("query_vector") == fake_vector
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ from app.services.retrieval_service import (
     rrf_fuse,
     rerank,
     build_trace,
+    verified_qa_lookup,
 )
 
 
@@ -451,3 +452,183 @@ class TestBuildTrace:
         )
         # The original list should be unchanged
         assert cands[0]["content"] == original_content
+
+
+# ---------------------------------------------------------------------------
+# verified_qa_lookup — D-24/D-25/D-26/D-27
+# ---------------------------------------------------------------------------
+
+class TestVerifiedQALookup:
+    """Unit tests for verified_qa_lookup (D-24 through D-27).
+
+    All DB interactions mocked via psycopg2 patch. Tests validate:
+      - HIT path: correct SELECT + UPDATE executed; dict returned with required keys
+      - MISS path: returns None without executing UPDATE
+      - psycopg2 connection closed in finally block on both hit and miss
+      - str() cast applied to query_vector (::vector cast pattern)
+    """
+
+    def _make_psycopg2_mock(self, fetchone_return):
+        """Return a mock psycopg2 connection that yields the given fetchone result."""
+        mock_cur = MagicMock()
+        mock_cur.fetchone.return_value = fetchone_return
+        mock_cur.__enter__ = MagicMock(return_value=mock_cur)
+        mock_cur.__exit__ = MagicMock(return_value=False)
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cur
+        return mock_conn, mock_cur
+
+    @patch("app.services.retrieval_service.psycopg2")
+    def test_hit_returns_dict_with_required_keys(self, mock_psycopg2):
+        """D-26: cache hit returns dict with answer, citations, similarity, source."""
+        import uuid
+        row_id = uuid.uuid4()
+        mock_conn, mock_cur = self._make_psycopg2_mock(
+            fetchone_return=(row_id, "The answer text.", [{"doc": "x"}], 0.97)
+        )
+        mock_psycopg2.connect.return_value = mock_conn
+
+        result = verified_qa_lookup("conn://fake", [0.1] * 1024, threshold=0.93)
+
+        assert result is not None
+        assert result["answer"] == "The answer text."
+        assert result["citations"] == [{"doc": "x"}]
+        assert result["similarity"] == 0.97
+        assert result["source"] == "verified_qa_cache"
+
+    @patch("app.services.retrieval_service.psycopg2")
+    def test_hit_updates_last_used_at_and_use_count(self, mock_psycopg2):
+        """D-26: UPDATE executed after hit to bump last_used_at + use_count."""
+        import uuid
+        row_id = uuid.uuid4()
+        mock_conn, mock_cur = self._make_psycopg2_mock(
+            fetchone_return=(row_id, "answer", [], 0.95)
+        )
+        mock_psycopg2.connect.return_value = mock_conn
+
+        verified_qa_lookup("conn://fake", [0.1] * 1024, threshold=0.93)
+
+        # Should have called execute twice: once for SELECT, once for UPDATE
+        assert mock_cur.execute.call_count == 2
+        # The second call must be the UPDATE
+        second_call_sql = mock_cur.execute.call_args_list[1][0][0]
+        assert "last_used_at" in second_call_sql
+        assert "use_count = use_count + 1" in second_call_sql
+        assert "WHERE id = %(row_id)s" in second_call_sql
+
+    @patch("app.services.retrieval_service.psycopg2")
+    def test_hit_commits_transaction(self, mock_psycopg2):
+        """D-26: connection.commit() called after hit to persist the UPDATE."""
+        import uuid
+        mock_conn, _ = self._make_psycopg2_mock(
+            fetchone_return=(uuid.uuid4(), "answer", [], 0.95)
+        )
+        mock_psycopg2.connect.return_value = mock_conn
+
+        verified_qa_lookup("conn://fake", [0.1] * 1024, threshold=0.93)
+
+        mock_conn.commit.assert_called_once()
+
+    @patch("app.services.retrieval_service.psycopg2")
+    def test_miss_returns_none(self, mock_psycopg2):
+        """D-27: cache miss returns None — falls through to hybrid search."""
+        mock_conn, _ = self._make_psycopg2_mock(fetchone_return=None)
+        mock_psycopg2.connect.return_value = mock_conn
+
+        result = verified_qa_lookup("conn://fake", [0.1] * 1024, threshold=0.93)
+
+        assert result is None
+
+    @patch("app.services.retrieval_service.psycopg2")
+    def test_miss_does_not_execute_update(self, mock_psycopg2):
+        """D-27: UPDATE must NOT be called when no row matches (miss path)."""
+        mock_conn, mock_cur = self._make_psycopg2_mock(fetchone_return=None)
+        mock_psycopg2.connect.return_value = mock_conn
+
+        verified_qa_lookup("conn://fake", [0.1] * 1024, threshold=0.93)
+
+        # Only the SELECT should have been called (once), never the UPDATE
+        assert mock_cur.execute.call_count == 1
+
+    @patch("app.services.retrieval_service.psycopg2")
+    def test_connection_closed_in_finally_on_hit(self, mock_psycopg2):
+        """psycopg2 try/finally/close pattern — connection closed after hit."""
+        import uuid
+        mock_conn, _ = self._make_psycopg2_mock(
+            fetchone_return=(uuid.uuid4(), "answer", [], 0.95)
+        )
+        mock_psycopg2.connect.return_value = mock_conn
+
+        verified_qa_lookup("conn://fake", [0.1] * 1024, threshold=0.93)
+
+        mock_conn.close.assert_called_once()
+
+    @patch("app.services.retrieval_service.psycopg2")
+    def test_connection_closed_in_finally_on_miss(self, mock_psycopg2):
+        """psycopg2 try/finally/close pattern — connection closed after miss."""
+        mock_conn, _ = self._make_psycopg2_mock(fetchone_return=None)
+        mock_psycopg2.connect.return_value = mock_conn
+
+        verified_qa_lookup("conn://fake", [0.1] * 1024, threshold=0.93)
+
+        mock_conn.close.assert_called_once()
+
+    @patch("app.services.retrieval_service.psycopg2")
+    def test_connection_closed_on_exception(self, mock_psycopg2):
+        """psycopg2 finally block — connection closed even when execute raises."""
+        mock_cur = MagicMock()
+        mock_cur.__enter__ = MagicMock(return_value=mock_cur)
+        mock_cur.__exit__ = MagicMock(return_value=False)
+        mock_cur.execute.side_effect = RuntimeError("DB error")
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cur
+        mock_psycopg2.connect.return_value = mock_conn
+
+        with pytest.raises(RuntimeError):
+            verified_qa_lookup("conn://fake", [0.1] * 1024, threshold=0.93)
+
+        mock_conn.close.assert_called_once()
+
+    @patch("app.services.retrieval_service.psycopg2")
+    def test_query_vector_stringified_for_cast(self, mock_psycopg2):
+        """D-25: query_vector passed as str(query_vector) for ::vector cast pattern."""
+        import uuid
+        query_vec = [0.1, 0.2, 0.3]
+        mock_conn, mock_cur = self._make_psycopg2_mock(
+            fetchone_return=(uuid.uuid4(), "answer", [], 0.94)
+        )
+        mock_psycopg2.connect.return_value = mock_conn
+
+        verified_qa_lookup("conn://fake", query_vec, threshold=0.93)
+
+        # The first execute call (SELECT) should have "qv" param as str(query_vec)
+        first_call_params = mock_cur.execute.call_args_list[0][0][1]
+        assert first_call_params["qv"] == str(query_vec)
+        assert first_call_params["threshold"] == 0.93
+
+    @patch("app.services.retrieval_service.psycopg2")
+    def test_similarity_returned_as_float(self, mock_psycopg2):
+        """similarity must be float in returned dict (not Decimal or other DB type)."""
+        import uuid
+        from decimal import Decimal
+        # Simulate psycopg2 returning a Decimal from NUMERIC column
+        mock_conn, _ = self._make_psycopg2_mock(
+            fetchone_return=(uuid.uuid4(), "answer", [], Decimal("0.9512"))
+        )
+        mock_psycopg2.connect.return_value = mock_conn
+
+        result = verified_qa_lookup("conn://fake", [0.1] * 1024, threshold=0.93)
+
+        assert isinstance(result["similarity"], float)
+        assert abs(result["similarity"] - 0.9512) < 1e-6
+
+    @patch("app.services.retrieval_service.psycopg2")
+    def test_lookup_sql_filters_invalidated_at_null(self, mock_psycopg2):
+        """D-25: SELECT must filter WHERE invalidated_at IS NULL."""
+        mock_conn, mock_cur = self._make_psycopg2_mock(fetchone_return=None)
+        mock_psycopg2.connect.return_value = mock_conn
+
+        verified_qa_lookup("conn://fake", [0.1], threshold=0.93)
+
+        first_call_sql = mock_cur.execute.call_args_list[0][0][0]
+        assert "invalidated_at IS NULL" in first_call_sql
