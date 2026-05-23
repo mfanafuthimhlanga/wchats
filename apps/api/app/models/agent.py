@@ -51,6 +51,10 @@ class Agent(Base):
     widget_config: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
+    # M5: validation chain — persistent Auditor ungrounded failures trigger resynthesis
+    strategy_resynthesis_flagged: Mapped[bool] = mapped_column(
+        nullable=False, server_default=text("false")
+    )
     # M4: structured soul fields (additive — legacy soul JSONB + role TEXT kept for M1 compat)
     soul_voice: Mapped[str | None] = mapped_column(Text, nullable=True)
     soul_do_list: Mapped[list] = mapped_column(
