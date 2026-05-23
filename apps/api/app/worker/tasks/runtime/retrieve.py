@@ -50,6 +50,7 @@ from app.services.retrieval_service import (
     embed_query,
     rerank,
     rrf_fuse,
+    verified_qa_lookup,
 )
 from app.worker.celery_app import celery_app
 
@@ -148,6 +149,44 @@ def retrieve_and_rank(self, job_id: str, agent_id: str, query: str) -> dict:
 
             # EVENT 2: query.embedding — vector produced
             emit(job_id, "query.embedding", {"model": "voyage-3"}, db, _redis)
+
+            # --------------------------------------------------------------
+            # D-24: verified_qa cache lookup BEFORE hybrid search.
+            # If cosine similarity >= VERIFIED_QA_HIT_THRESHOLD (0.93), return
+            # the cached answer immediately and skip vector + BM25 entirely.
+            # --------------------------------------------------------------
+            cache_hit = verified_qa_lookup(
+                conn_str=conn_str,
+                query_vector=query_vector,
+                threshold=settings.VERIFIED_QA_HIT_THRESHOLD,
+            )
+            if cache_hit is not None:
+                log.info(
+                    "retrieve_and_rank.cache_hit",
+                    job_id=job_id,
+                    similarity=cache_hit["similarity"],
+                )
+                payload = {
+                    "results": [{"content": cache_hit["answer"], "citations": cache_hit["citations"]}],
+                    "trace": {
+                        "cache_hit": True,
+                        "similarity": cache_hit["similarity"],
+                        "source": "verified_qa_cache",
+                    },
+                }
+                emit(job_id, "query.complete", payload, db, _redis)
+                job.status = "complete"
+                job.finished_at = datetime.now(timezone.utc)
+                db.commit()
+                log.info(
+                    "retrieve_and_rank.complete",
+                    job_id=job_id,
+                    agent_id=agent_id,
+                    reranked_count=1,
+                )
+                return {}
+
+            # D-27: cache miss — fall through to hybrid search (existing code unchanged)
 
             # --------------------------------------------------------------
             # RRF fusion — single CTE returns fused + individual candidates
