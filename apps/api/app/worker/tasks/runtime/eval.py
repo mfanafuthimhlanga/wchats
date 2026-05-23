@@ -280,7 +280,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
         results = run_ragas_eval(valid_scenarios, branch_conn_str)
         write_eval_results(run_id, results["scores"], branch_conn_str)
         promoted = promote_to_verified_qa(valid_scenarios, results["scores"], branch_conn_str)
-        update_eval_run_status(run_id, "complete", finished_at=True, branch_conn_str=conn_str)
+        update_eval_run_status(run_id, "complete", finished_at=True, branch_conn_str=branch_conn_str)
 
         log.info(
             "run_eval_suite.complete",
@@ -302,7 +302,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
             run_id=run_id,
             error=str(exc),
         )
-        update_eval_run_status(run_id, "failed", finished_at=True, branch_conn_str=conn_str)
+        update_eval_run_status(run_id, "failed", finished_at=True, branch_conn_str=branch_conn_str)
         if self.request.retries >= self.max_retries:
             return {}
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
