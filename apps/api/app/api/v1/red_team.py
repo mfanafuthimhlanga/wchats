@@ -143,6 +143,7 @@ _GET_RED_TEAM_RUN_SQL = """
     SELECT id, kind, status, started_at, finished_at, findings, max_severity, deployment_blocked
     FROM red_team_runs
     WHERE id = %(run_id)s
+      AND kind = %(kind)s
 """
 
 
@@ -182,7 +183,7 @@ async def get_red_team_run(
         _query_tenant_db_sync,
         conn_str,
         _GET_RED_TEAM_RUN_SQL,
-        {"run_id": str(run_id)},
+        {"run_id": str(run_id), "kind": f"m7:{agent_id}"},
     )
 
     # 6. 404 if not found
@@ -266,4 +267,4 @@ async def trigger_red_team_run(
         tenant_id=str(tenant.id),
     )
 
-    return {"job_id": task.id, "run_id": task.id, "message": "Red team run queued"}
+    return {"job_id": task.id, "task_id": task.id, "message": "Red team run queued — poll GET /red-team-runs for results"}
