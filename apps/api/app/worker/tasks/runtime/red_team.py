@@ -264,8 +264,9 @@ def run_red_team(self, agent_id: str) -> dict:
     # Step 3 — Insert red_team_run row (status='running')
     # ------------------------------------------------------------------
     run_id = str(uuid.uuid4())
-    _run_conn = psycopg2.connect(conn_str, connect_timeout=5)
+    _run_conn = None
     try:
+        _run_conn = psycopg2.connect(conn_str, connect_timeout=5)
         try:
             with _run_conn.cursor() as _cur:
                 _cur.execute(
@@ -286,7 +287,8 @@ def run_red_team(self, agent_id: str) -> dict:
                 raise self.retry(exc=exc, countdown=2 ** self.request.retries)
             return {}
     finally:
-        _run_conn.close()
+        if _run_conn is not None:
+            _run_conn.close()
 
     # ------------------------------------------------------------------
     # Step 4 — Build probe_fn closure
