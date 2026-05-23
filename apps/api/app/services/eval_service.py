@@ -138,8 +138,8 @@ def run_ragas_eval(scenarios: list[dict], branch_conn_str: str) -> dict:  # noqa
     ]
 
     score_rows = []
-    for idx, row in df.iterrows():
-        scenario = valid_scenarios[idx] if idx < len(valid_scenarios) else {}
+    for i, (idx, row) in enumerate(df.iterrows()):
+        scenario = valid_scenarios[i] if i < len(valid_scenarios) else {}
         score_row = {
             "scenario_id": str(scenario.get("id", str(uuid.uuid4()))),
         }
