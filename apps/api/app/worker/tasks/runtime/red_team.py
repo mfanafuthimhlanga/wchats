@@ -324,7 +324,7 @@ def run_red_team(self, agent_id: str) -> dict:
         # deployment_blocked is True iff max_severity == "critical" (RED-06 gate).
         # ------------------------------------------------------------------
         SEVERITY_ORDER = ["low", "medium", "high", "critical"]
-        severities = [f.severity for f in all_findings]
+        severities = [f.severity for f in all_findings if f.severity in SEVERITY_ORDER]
         max_severity = (
             max(severities, key=lambda s: SEVERITY_ORDER.index(s))
             if severities
