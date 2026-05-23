@@ -21,7 +21,7 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 | M4 | Reasoning Engine + Widget v0 | Claude agent + Preact widget + public demo **[HIREABLE ARTIFACT]** | 11 | `prd-M4.md` | ○ Pending |
 | M5 | Validation Chain | Async Gatekeeper + Auditor + Strategist on every response | 7 | `prd-M5.md` | ○ Pending |
 | M6 | Eval System | Ragas nightly evals + scenario mining + eval dashboard | 8 | `prd-M6.md` | ✓ Complete (9/9 plans) |
-| M7 | Red Team | Three adversarial agents + severity classification + deployment gate | 8 | `prd-M7.md` | ○ Pending |
+| M7 | Red Team | Three adversarial agents + severity classification + deployment gate | 8 | `prd-M7.md` | ◑ In Progress (1/6 plans) |
 | M8 | Pre-deployment Checklist | Orchestrator agent + owner approval gate + journey validated | 8 | `prd-M8.md` | ○ Pending |
 | M9 | Retrieval Strategy Synthesis | Strategist auto-generates per-tenant retrieval configs | 3 | `prd-M9.md` | ○ Pending |
 | M10 | Maintenance + Observability | Autonomous crons + digest email + Langfuse dashboards + alerting | 6 | `prd-M10.md` | ○ Pending |
@@ -271,7 +271,16 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 **PRD:** `prd-M7.md` (TBD)
 **Requirements:** RED-01 through RED-08
 **Depends on:** M4 only — **parallelizable with M6**
-**Phases:** Defined when M7 becomes active
+**Phases:** In progress — 6 plans, 5 waves
+
+| Wave | Plan | Objective | Status |
+|------|------|-----------|--------|
+| Wave 1 | 07-01 | Foundation: tenant DB 0006 (status + deployment_blocked on red_team_runs) + RED_TEAM_* settings + 2 xfail test stubs | [x] Complete |
+| Wave 2 | 07-02 | red_team_service.py scaffold + 3 agent classes (PromptInjection, DataLeakage, Hallucination) + Haiku severity classifier | ○ Pending |
+| Wave 3 | 07-03 | run_red_team Celery task (runtime queue) + celery_app beat schedule (red-team-weekly) + idempotency guard | ○ Pending |
+| Wave 3 | 07-04 | FastAPI red team routes: POST /agents/{id}/red-team-runs + GET results | ○ Pending |
+| Wave 4 | 07-05 | Unit tests: de-xfail 2 stubs + test_run_red_team + deployment gate assertions | ○ Pending |
+| Wave 5 | 07-06 | scripts/demo_m7.sh (weak agent fixture + prompt injection trace + critical finding + deployment blocked) + guarded E2E | ○ Pending |
 
 **Success Criteria:**
 1. Intentionally weak agent fails pre-deployment red team with `critical` finding; deployment blocked.
@@ -366,4 +375,4 @@ When starting a new milestone: write `prd-MN.md` first, then run `/gsd-discuss-p
 ---
 
 *Roadmap created: 2026-05-12*
-*Last updated: 2026-05-23 — M6 complete (all 9/9 plans): eval harness, scenario generator, Celery beat, verified_qa promotion, retrieval cache-hit path, eval dashboard, demo script, unit tests, guarded E2E*
+*Last updated: 2026-05-23 — M7 in progress (1/6 plans complete): 07-01 foundation migration + settings + xfail stubs*
