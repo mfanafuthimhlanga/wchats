@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     EVAL_RELEVANCY_THRESHOLD: float = 0.90
     VERIFIED_QA_HIT_THRESHOLD: float = 0.93
 
+    # M7: Red team configuration
+    RED_TEAM_MAX_TURNS: int = 5        # max turns per attack sequence per agent
+    RED_TEAM_ATTACK_SEQUENCES: int = 3  # number of distinct attack sequences per agent
+
     MAX_UPLOAD_SIZE_MB: int = 50
 
     def __repr__(self) -> str:  # T-01-01, T-01-02: never leak field values
