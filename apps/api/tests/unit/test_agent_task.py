@@ -421,3 +421,17 @@ def test_citations_missing_returns_empty_list_and_warns():
     assert any("citation" in w.lower() or "citations" in w.lower() for w in warning_calls), (
         f"Expected citation warning, got: {warning_calls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# M5 stub — VAL chain dispatch from run_agent_turn (Plan 05-04)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.xfail(reason="implemented in 05-04", strict=False)
+def test_validators_dispatched():
+    """run_agent_turn dispatches the Gatekeeper→Auditor→Strategist chain after agent.response."""
+    from app.worker.tasks.runtime.agent import run_agent_turn  # noqa: F401
+
+    # Eventual assertion: after a successful agent turn, celery_chain.apply_async is called
+    # with run_gatekeeper.si, run_auditor.si, run_strategist.si in that order.
+    assert False, "stub"
