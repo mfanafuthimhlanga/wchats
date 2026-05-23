@@ -87,14 +87,54 @@ def test_gatekeeper_verdict():
 # VAL-02: run_gatekeeper Celery task
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason="implemented in 05-02", strict=False)
 def test_run_gatekeeper_task():
-    """run_gatekeeper returns idempotency sentinel when job_events row already exists."""
-    from app.worker.tasks.runtime.validators import run_gatekeeper  # noqa: F401
+    """run_gatekeeper emits 'gatekeeper.complete' with agent_id after calling the judge."""
+    from app.worker.tasks.runtime.validators import run_gatekeeper
+    from app.services.validation_service import GatekeeperVerdict
 
-    # Eventual assertion: patch get_sync_db to return existing job_events row,
-    # call run_gatekeeper.run(...), assert result == {"status": "already_complete"}
-    assert False, "stub"
+    agent_id = str(uuid.uuid4())
+    job_id = str(uuid.uuid4())
+
+    mock_db = MagicMock()
+    # Idempotency check: no existing row → fetchone() returns None
+    mock_db.execute.return_value.fetchone.return_value = None
+    # Agent fetch
+    mock_db.get.return_value = _make_agent(agent_id)
+
+    with patch(
+        "app.worker.tasks.runtime.validators.get_sync_db",
+        return_value=_make_db_ctx(mock_db),
+    ), patch(
+        "app.worker.tasks.runtime.validators.call_gatekeeper",
+        return_value=GatekeeperVerdict(verdict="pass", confidence=0.9, reason="r"),
+    ) as mock_call_gk, patch(
+        "app.worker.tasks.runtime.validators._log_verdict",
+    ), patch(
+        "app.worker.tasks.runtime.validators.emit",
+    ) as mock_emit, patch(
+        "app.worker.tasks.runtime.validators._redis",
+        new_callable=MagicMock,
+    ):
+        result = run_gatekeeper.run(
+            agent_id=agent_id,
+            job_id=job_id,
+            response_text="The price is $10.",
+            question="What is the price?",
+        )
+
+    # Task should succeed and return {}
+    assert result == {}
+
+    # call_gatekeeper should have been called once
+    mock_call_gk.assert_called_once()
+
+    # emit should have been called with "gatekeeper.complete" and agent_id in payload
+    mock_emit.assert_called_once()
+    call_args = mock_emit.call_args
+    assert call_args.args[1] == "gatekeeper.complete"
+    payload = call_args.args[2]
+    assert payload["agent_id"] == agent_id
+    assert payload["verdict"] == "pass"
 
 
 # ---------------------------------------------------------------------------
@@ -145,15 +185,65 @@ def test_auditor_verdict():
 # VAL-04: Auditor inserts verified QA candidate
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason="implemented in 05-02/05-03", strict=False)
 def test_auditor_inserts_candidate():
     """run_auditor inserts into verified_qa_candidates when auditor_confidence >= threshold."""
-    from app.worker.tasks.runtime.validators import run_auditor  # noqa: F401
+    from app.worker.tasks.runtime.validators import run_auditor
+    from app.services.validation_service import AuditorVerdict, CitationSpan
 
-    # Eventual assertion: patch get_sync_db + fernet_decrypt + call_auditor to return
-    # AuditorVerdict(verdict="grounded", confidence=0.96, ...), then assert psycopg2.connect
-    # was called and INSERT INTO verified_qa_candidates was executed
-    assert False, "stub"
+    agent_id = str(uuid.uuid4())
+    job_id = str(uuid.uuid4())
+    conv_id = str(uuid.uuid4())
+
+    mock_db = MagicMock()
+    # Idempotency: no existing row
+    mock_db.execute.return_value.fetchone.return_value = None
+    agent_mock = _make_agent(agent_id)
+    agent_mock.retrieval_strategy = {}  # use global default threshold 0.90
+    mock_db.get.return_value = agent_mock
+
+    grounded_verdict = AuditorVerdict(
+        verdict="grounded",
+        confidence=0.95,
+        citation_spans=[
+            CitationSpan(claim="price is $10", source_chunk="product costs $10", supported=True)
+        ],
+        reason="all claims supported",
+    )
+
+    with patch(
+        "app.worker.tasks.runtime.validators.get_sync_db",
+        return_value=_make_db_ctx(mock_db),
+    ), patch(
+        "app.worker.tasks.runtime.validators.call_auditor",
+        return_value=grounded_verdict,
+    ), patch(
+        "app.worker.tasks.runtime.validators._log_verdict",
+    ), patch(
+        "app.worker.tasks.runtime.validators.emit",
+    ), patch(
+        "app.worker.tasks.runtime.validators.fernet_decrypt",
+        return_value="postgresql://tenant/db",
+    ), patch(
+        "app.worker.tasks.runtime.validators._insert_verified_qa_candidate",
+    ) as mock_insert, patch(
+        "app.worker.tasks.runtime.validators._redis",
+        new_callable=MagicMock,
+    ):
+        result = run_auditor.run(
+            agent_id=agent_id,
+            job_id=job_id,
+            response_text="The price is $10.",
+            question="What is the price?",
+            retrieved_context_json='[{"content": "product costs $10"}]',
+            conversation_id=conv_id,
+        )
+
+    assert result == {}
+
+    # _insert_verified_qa_candidate must have been called once with confidence 0.95
+    mock_insert.assert_called_once()
+    call_kwargs = mock_insert.call_args
+    assert call_kwargs.kwargs.get("auditor_confidence") == 0.95 or call_kwargs.args[5] == 0.95
 
 
 # ---------------------------------------------------------------------------
@@ -253,11 +343,61 @@ def test_langfuse_logged(monkeypatch):
 # VAL-06: strategy_resynthesis_flagged set on 3+ ungrounded verdicts
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason="implemented in 05-03", strict=False)
 def test_resynthesis_flag():
     """run_auditor sets strategy_resynthesis_flagged=TRUE after 3 ungrounded verdicts in 24h."""
-    from app.worker.tasks.runtime.validators import run_auditor  # noqa: F401
+    from app.worker.tasks.runtime.validators import run_auditor
+    from app.services.validation_service import AuditorVerdict
 
-    # Eventual assertion: patch job_events COUNT query to return 3, verify
-    # UPDATE agents SET strategy_resynthesis_flagged = TRUE was executed
-    assert False, "stub"
+    agent_id = str(uuid.uuid4())
+    job_id = str(uuid.uuid4())
+    conv_id = str(uuid.uuid4())
+
+    mock_db = MagicMock()
+    # Idempotency check: no existing auditor.complete row
+    # emit call goes through db.execute too, so we need selective mocking.
+    # fetchone() is called only for idempotency guard; scalar() for count query.
+    mock_db.execute.return_value.fetchone.return_value = None
+    # count query returns 3 (meaning this verdict pushes us to >= 3)
+    mock_db.execute.return_value.scalar.return_value = 3
+    agent_mock = _make_agent(agent_id)
+    mock_db.get.return_value = agent_mock
+
+    ungrounded_verdict = AuditorVerdict(
+        verdict="ungrounded",
+        confidence=0.85,
+        citation_spans=[],
+        reason="no claims supported",
+    )
+
+    with patch(
+        "app.worker.tasks.runtime.validators.get_sync_db",
+        return_value=_make_db_ctx(mock_db),
+    ), patch(
+        "app.worker.tasks.runtime.validators.call_auditor",
+        return_value=ungrounded_verdict,
+    ), patch(
+        "app.worker.tasks.runtime.validators._log_verdict",
+    ), patch(
+        "app.worker.tasks.runtime.validators.emit",
+    ), patch(
+        "app.worker.tasks.runtime.validators._redis",
+        new_callable=MagicMock,
+    ):
+        result = run_auditor.run(
+            agent_id=agent_id,
+            job_id=job_id,
+            response_text="Not sure about the price.",
+            question="What is the price?",
+            retrieved_context_json="[]",
+            conversation_id=conv_id,
+        )
+
+    assert result == {}
+
+    # Verify that db.execute was called with the UPDATE statement
+    executed_sqls = [str(call.args[0]) for call in mock_db.execute.call_args_list]
+    update_called = any("strategy_resynthesis_flagged" in sql for sql in executed_sqls)
+    assert update_called, f"Expected UPDATE strategy_resynthesis_flagged in calls: {executed_sqls}"
+
+    # Verify db.commit() was called after the UPDATE
+    mock_db.commit.assert_called()

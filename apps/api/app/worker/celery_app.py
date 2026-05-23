@@ -76,6 +76,8 @@ celery_app.conf.update(
         "app.worker.tasks.runtime.retrieve",
         # M4: agent turn task (runtime queue)
         "app.worker.tasks.runtime.agent",
+        # M5: validation chain (Gatekeeper, Auditor, Strategist)
+        "app.worker.tasks.runtime.validators",
     ],
 
     # --- Queue topology -------------------------------------------------
