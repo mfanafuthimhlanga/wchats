@@ -267,4 +267,4 @@ async def trigger_red_team_run(
         tenant_id=str(tenant.id),
     )
 
-    return {"job_id": task.id, "task_id": task.id, "message": "Red team run queued — poll GET /red-team-runs for results"}
+    return {"job_id": task.id, "run_id": task.id, "message": "Red team run queued — poll GET /red-team-runs for results"}
