@@ -3,25 +3,21 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: ready_to_execute
-last_updated: "2026-05-23T00:00:00.000Z"
+last_updated: "2026-05-23T12:30:00.000Z"
 progress:
-  total_phases: 7
+  total_phases: 9
   completed_phases: 7
-  total_plans: 47
+  total_plans: 56
   completed_plans: 47
-  percent: 100
-current_phase: "05-validation-chain"
-current_wave: 5
-phase_plans_total: 5
-phase_plans_complete: 5
+  percent: 84
 ---
 
 # Project State
 
 ## Current Status
 
-**Active Milestone:** M5 — Validation Chain
-**Milestone Phase:** Phase 5 complete — all 5 plans executed, VAL-07 checkpoint approved (2026-05-23)
+**Active Milestone:** M6 — Eval System
+**Milestone Phase:** Phase 6 planned — 9 plans in 5 waves, EVL-01..EVL-08 covered, verification passed (2026-05-23)
 **Last updated:** 2026-05-23
 
 ## Project Reference
