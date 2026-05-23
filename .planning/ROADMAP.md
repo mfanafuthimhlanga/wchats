@@ -202,7 +202,26 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 **PRD:** `prd-M5.md` (TBD)
 **Requirements:** VAL-01 through VAL-07
 **Depends on:** M4
-**Phases:** Defined when M5 becomes active
+**Phases:** Planned — 5 plans, 5 waves
+
+| Wave | Plan | Objective | Status |
+|------|------|-----------|--------|
+| Wave 1 | 05-01 | Foundation: langfuse pin + LANGFUSE_* settings + confidence threshold; control DB 0010 (strategy_resynthesis_flagged) + tenant DB 0004 (verified_qa_candidates); Agent ORM field; Wave-0 test scaffold | [ ] |
+| Wave 2 | 05-02 | validation_service.py: 3 verdict Pydantic models + 3 Haiku tool-use judge calls + Langfuse v3 logging helper (TDD) | [ ] |
+| Wave 3 | 05-03 | validators.py: run_gatekeeper / run_auditor / run_strategist runtime tasks + verified_qa_candidates insert (D-19) + resynthesis flag (VAL-06) + celery_app include | [ ] |
+| Wave 4 | 05-04 | agent.py: capture retrieve tool result for Auditor + dispatch gatekeeper to auditor to strategist chain after agent.response (chain not chord) | [ ] |
+| Wave 5 | 05-05 | demo_m5.sh (adversarial query, 3 verdicts, local processes) + guarded E2E test + Langfuse walkthrough checkpoint (VAL-07) | [ ] |
+
+**Plans:** 5 plans
+
+**Cross-cutting constraints:**
+- acks_late=True AND idempotency guard on all three validator tasks
+- Connection strings never in Celery task args — Auditor decrypts conn_str at runtime by agent_id (CTL-08)
+- FastAPI never does work inline — validators are runtime-queue tasks dispatched from run_agent_turn
+- Celery chord BROKEN on worker_pool=solo — dispatch via chain with .si() immutable signatures
+- Langfuse v3 (3.12.1): start_as_current_generation() only — never start_span()/start_generation()/.trace()
+- No asyncio in validators — synchronous anthropic Haiku calls (not Agent SDK per D-02)
+- No Docker — demo_m5.sh targets local processes only
 
 **Success Criteria:**
 1. Every widget response has three structured verdicts in Langfuse within seconds — user never waits.
