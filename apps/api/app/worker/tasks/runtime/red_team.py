@@ -96,7 +96,7 @@ def _build_probe_fn(agent: "Agent", conn_str: str):
     async def _async_probe(message: str) -> str:
         """Send one probe message to the agent persona and return the response text."""
         try:
-            response = await asyncio.get_event_loop().run_in_executor(
+            response = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: _ANTHROPIC_CLIENT.messages.create(
                     model="claude-haiku-4-5",
