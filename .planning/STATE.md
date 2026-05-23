@@ -3,22 +3,22 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-last_updated: "2026-05-23T14:00:00.000Z"
+last_updated: "2026-05-23T18:00:00.000Z"
 progress:
   total_phases: 9
-  completed_phases: 7
+  completed_phases: 8
   total_plans: 65
-  completed_plans: 48
-  percent: 74
+  completed_plans: 57
+  percent: 88
 ---
 
 # Project State
 
 ## Current Status
 
-**Active Milestone:** M6 — Eval System
-**Milestone Phase:** Phase 6 executing — Wave 1/5 complete, Wave 2 next (2026-05-23)
-**Current Position:** 06-01 complete — 06-02 next
+**Active Milestone:** M7 — Red Team (M6 ✓ Complete)
+**Milestone Phase:** Phase 6 COMPLETE — all 9/9 plans done (2026-05-23)
+**Current Position:** Phase 6 complete — Phase 7 (Red Team) next
 **Last updated:** 2026-05-23
 
 ## Project Reference
@@ -36,9 +36,9 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | M1 | Control Plane Skeleton | ✓ Complete (8/8 plans complete) | `prd-M1.md` ✓ |
 | M2 | Ingestion Pipeline | ✓ Complete (7/7 plans) | `prd-M2.md` ✓ |
 | M3 | Hybrid Retrieval | ✓ Complete (7/7 plans) | `prd-M3.md` ✓ |
-| M4 | Reasoning Engine + Widget | ○ Pending | `prd-M4.md` (TBD) |
-| M5 | Validation Chain | ○ Pending | `prd-M5.md` (TBD) |
-| M6 | Eval System | ○ Pending | `prd-M6.md` (TBD) |
+| M4 | Reasoning Engine + Widget | ✓ Complete (10/10 plans) | `prd-M4.md` ✓ |
+| M5 | Validation Chain | ✓ Complete (5/5 plans) | `prd-M5.md` ✓ |
+| M6 | Eval System | ✓ Complete (9/9 plans) | `prd-M6.md` ✓ |
 | M7 | Red Team | ○ Pending | `prd-M7.md` (TBD) |
 | M8 | Pre-deployment Checklist | ○ Pending | `prd-M8.md` (TBD) |
 | M9 | Retrieval Strategy Synthesis | ○ Pending | `prd-M9.md` (TBD) |
@@ -151,4 +151,6 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Last session: 2026-05-23 — completed 05-03-PLAN.md (validators.py: run_gatekeeper + run_auditor + run_strategist runtime tasks; _insert_verified_qa_candidate; resynthesis flag; celery_app include; 3 xfail stubs de-xfailed; 7/7 tests pass) — 2 commits: 0ab013c + d21b167
 - Last session: 2026-05-23 — completed 05-04-PLAN.md (agent.py: retrieve result capture in _run_sdk_turn + validation chain dispatch after agent.response; test_validators_dispatched + test_validators_not_dispatched_on_idempotency_skip; 8/8 tests pass) — 3 commits: edd0542 + a8172c2 + fa3f226
 - Last session: 2026-05-23 — completed 06-01-PLAN.md (tenant DB migration 0005 verified_qa+eval_scenarios; Settings 3 eval thresholds; celery_app beat_schedule eval-nightly crontab 02:00 UTC) — 3 commits: 088ea50 + 67118d8 + 4efa68b
+- Last session: 2026-05-23 — completed Phase 6 (06-09, Wave 5): demo_m6.sh (local-process demo, no Docker, D-32), test_eval_service.py (6 tests, Ragas 0.4.x regression guards), test_scenario_service.py (7 tests, D-12/D-13), guarded E2E test (EVAL_E2E_ENABLED=1) — 4 commits: 63ac00f + 79eac65 + fed1b1e + 838ce12
+- Phase 6 COMPLETE: all 9/9 plans done, all EVL-01 through EVL-08 requirements satisfied
 - [TODO-RET-01] F7 / filters enforcement gate: retrieve_tool filters field must have allowlisted-column enforcement before being wired to LLM output. Gate: M5 phase planning MUST resolve this before activating filters in retrieve_tool. Logged Phase 4.1.
