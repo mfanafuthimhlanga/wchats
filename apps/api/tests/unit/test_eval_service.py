@@ -197,6 +197,8 @@ class TestPromoteToVerifiedQA:
         mock_cursor = MagicMock()
         mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
         mock_cursor.__exit__ = MagicMock(return_value=False)
+        # Return None for the existence-check SELECT (no existing row → proceed with INSERT)
+        mock_cursor.fetchone.return_value = None
         mock_conn.cursor.return_value = mock_cursor
         mock_psycopg2.connect.return_value = mock_conn
 
