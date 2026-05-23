@@ -189,7 +189,8 @@ async def get_eval_run_results(
     Response shape:
         {"results": [{scenario_id, question, source, scores, passed}]}
 
-    passed = True when all four metric scores are >= EVAL_FAITHFULNESS_THRESHOLD (0.90).
+    passed = True when faithfulness >= EVAL_FAITHFULNESS_THRESHOLD AND answer_relevancy >= EVAL_RELEVANCY_THRESHOLD.
+    Mirrors the 2-metric promotion gate used by promote_to_verified_qa (D-21).
     """
     # 1. Fetch agent and verify ownership (same as list_eval_runs)
     agent = await db.get(Agent, agent_id)
@@ -233,16 +234,14 @@ async def get_eval_run_results(
         if metric in scenarios[sid]["scores"] and score is not None:
             scenarios[sid]["scores"][metric] = float(score)
 
-    # 5. Compute passed flag — all four scores must meet the threshold (D-21)
-    threshold = settings.EVAL_FAITHFULNESS_THRESHOLD
+    # 5. Compute passed flag — mirrors the 2-metric promotion gate in promote_to_verified_qa (D-21)
+    #    faithfulness >= EVAL_FAITHFULNESS_THRESHOLD AND answer_relevancy >= EVAL_RELEVANCY_THRESHOLD
     results = []
     for scen in scenarios.values():
         s = scen["scores"]
         passed = (
-            s["faithfulness"] >= threshold
-            and s["answer_relevancy"] >= threshold
-            and s["context_precision"] >= threshold
-            and s["context_recall"] >= threshold
+            s["faithfulness"] >= settings.EVAL_FAITHFULNESS_THRESHOLD
+            and s["answer_relevancy"] >= settings.EVAL_RELEVANCY_THRESHOLD
         )
         results.append({**scen, "passed": passed})
 
