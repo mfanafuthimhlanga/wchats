@@ -270,3 +270,200 @@ def update_eval_run_status(
         conn.close()
 
     log.info("update_eval_run_status.complete", eval_run_id=eval_run_id, status=status)
+
+
+# ---------------------------------------------------------------------------
+# Task 2: verified_qa promotion helper
+# ---------------------------------------------------------------------------
+
+def promote_to_verified_qa(
+    scenarios: list[dict],
+    scenario_scores: list[dict],
+    branch_conn_str: str,
+) -> int:
+    """Promote passing scenarios to the verified_qa table on the tenant DB branch.
+
+    Promotion criteria (D-21 LOCKED):
+        faithfulness >= EVAL_FAITHFULNESS_THRESHOLD
+        AND answer_relevancy >= EVAL_RELEVANCY_THRESHOLD
+        (both default 0.90 from settings)
+
+    Promoted rows written with (D-22 LOCKED):
+        source = 'sandbox_test'
+        promoted_by = 'system'
+
+    question_vector populated via Voyage embed at promotion time (D-23 LOCKED).
+
+    Uses psycopg2 try/finally/close pattern. ON CONFLICT DO NOTHING ensures
+    idempotent promotion on Celery retry (acks_late + idempotency rule).
+
+    Args:
+        scenarios: Original scenario dicts (same list passed to run_ragas_eval).
+        scenario_scores: Per-scenario score dicts from run_ragas_eval() "scores" list.
+        branch_conn_str: Neon branch connection string (never stored — D-18).
+
+    Returns:
+        Count of rows successfully promoted.
+    """
+    # Build a lookup from scenario_id → scenario dict for O(1) access
+    scenario_by_id = {str(s.get("id", "")): s for s in scenarios}
+
+    sql = """
+        INSERT INTO verified_qa (
+            id, question, question_vector, answer, citations,
+            source, faithfulness, relevance, promoted_at, promoted_by, use_count
+        )
+        VALUES (
+            gen_random_uuid(),
+            %(question)s,
+            %(question_vector)s::vector,
+            %(answer)s,
+            %(citations)s::jsonb,
+            'sandbox_test',
+            %(faithfulness)s,
+            %(relevance)s,
+            NOW(),
+            'system',
+            0
+        )
+        ON CONFLICT DO NOTHING
+    """
+
+    promoted_count = 0
+    conn = psycopg2.connect(branch_conn_str)
+    try:
+        with conn.cursor() as cur:
+            for score in scenario_scores:
+                faithfulness = score.get("faithfulness")
+                answer_relevancy = score.get("answer_relevancy")
+
+                # D-21 LOCKED: both thresholds must be met
+                if (
+                    faithfulness is None
+                    or answer_relevancy is None
+                    or faithfulness < settings.EVAL_FAITHFULNESS_THRESHOLD
+                    or answer_relevancy < settings.EVAL_RELEVANCY_THRESHOLD
+                ):
+                    continue
+
+                scenario = scenario_by_id.get(str(score["scenario_id"]))
+                if scenario is None:
+                    log.warning(
+                        "promote_to_verified_qa.scenario_not_found",
+                        scenario_id=score["scenario_id"],
+                    )
+                    continue
+
+                question = scenario["question"]
+
+                # D-23 LOCKED: Voyage embedding for question_vector
+                question_vector = _get_vo().embed(
+                    [question], model="voyage-3", input_type="query"
+                ).embeddings[0]
+
+                answer = scenario.get("agent_response", "")
+                citations = scenario.get("citations", [])
+
+                cur.execute(sql, {
+                    "question": question,
+                    # str(vector) then cast with ::vector — matching retrieval_service.py pattern
+                    "question_vector": str(question_vector),
+                    "answer": answer,
+                    "citations": json.dumps(citations),
+                    "faithfulness": faithfulness,
+                    "relevance": answer_relevancy,
+                })
+
+                promoted_count += 1
+                log.info(
+                    "verified_qa.promoted",
+                    scenario_id=score["scenario_id"],
+                    faithfulness=faithfulness,
+                    relevance=answer_relevancy,
+                )
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    log.info(
+        "promote_to_verified_qa.complete",
+        promoted=promoted_count,
+        total_scored=len(scenario_scores),
+    )
+    return promoted_count
+
+
+# ---------------------------------------------------------------------------
+# Top-level orchestrator (used by 06-05 Celery task)
+# ---------------------------------------------------------------------------
+
+def run_eval_for_agent(
+    eval_run_id: str,
+    scenarios: list[dict],
+    branch_conn_str: str,
+) -> dict:
+    """Run a full eval cycle for one agent: Ragas eval + DB writes + promotion.
+
+    This is the function called by the run_eval_suite Celery task (06-05).
+    The branch_conn_str is passed as a local variable within the task — it is
+    NEVER stored in the DB or passed as a Celery argument (CLAUDE.md CTL-08).
+
+    Sequence:
+        1. update_eval_run_status → 'running'
+        2. run_ragas_eval (four metrics against branch)
+        3. write_eval_results (eval_results rows on branch)
+        4. promote_to_verified_qa (verified_qa rows on branch)
+        5. update_eval_run_status → 'complete'
+
+    On exception: update_eval_run_status → 'failed', then re-raise.
+
+    Args:
+        eval_run_id: UUID string — the eval_runs row already created by caller.
+        scenarios: List of scenario dicts from the eval_scenarios table.
+        branch_conn_str: Neon branch connection string (never production).
+
+    Returns:
+        Dict: {
+            "eval_run_id": str,
+            "scenario_count": int,
+            "means": dict,
+            "promoted_count": int,
+        }
+    """
+    log.info("run_eval_for_agent.start", eval_run_id=eval_run_id)
+    update_eval_run_status(eval_run_id, "running", finished_at=False, branch_conn_str=branch_conn_str)
+
+    try:
+        result = run_ragas_eval(scenarios, branch_conn_str)
+        scenario_scores = result["scores"]
+        means = result["means"]
+
+        write_eval_results(eval_run_id, scenario_scores, branch_conn_str)
+        promoted_count = promote_to_verified_qa(scenarios, scenario_scores, branch_conn_str)
+
+        update_eval_run_status(eval_run_id, "complete", finished_at=True, branch_conn_str=branch_conn_str)
+
+        log.info(
+            "run_eval_for_agent.complete",
+            eval_run_id=eval_run_id,
+            scenario_count=len(scenarios),
+            promoted_count=promoted_count,
+        )
+
+        return {
+            "eval_run_id": eval_run_id,
+            "scenario_count": len(scenarios),
+            "means": means,
+            "promoted_count": promoted_count,
+        }
+
+    except Exception as exc:
+        log.error(
+            "run_eval_for_agent.failed",
+            eval_run_id=eval_run_id,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        update_eval_run_status(eval_run_id, "failed", finished_at=True, branch_conn_str=branch_conn_str)
+        raise
