@@ -725,22 +725,25 @@ include=[
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **D-01 "sequentially" — strict or loose?**
    - What we know: D-01 says "Gatekeeper → Auditor → Strategist" in order
    - What's unclear: Does "sequential" mean each waits for the prior to complete before starting, or just that they're dispatched in that order?
    - Recommendation: Clarify with user. If loose order: three independent `apply_async`. If strict: `chain`. Research recommends `chain` as the safer interpretation (matches PRD's "three sequential Claude calls wrapping every agent response").
+   - **RESOLVED** — use `chain(.si())` for strict sequentiality per RESEARCH pitfall §2 (chord broken on solo pool). Validators must complete in Gatekeeper→Auditor→Strategist order because Auditor needs Gatekeeper verdict as context.
 
 2. **Langfuse trace_id format — can job_id (UUID) be used?**
    - What we know: Langfuse SDK v3 uses OpenTelemetry internally; OTel trace IDs are 32-hex-char strings
    - What's unclear: Whether passing a UUID string as `trace_id` via `trace_context={"trace_id": job_id}` is accepted or silently dropped
    - Recommendation: Use `Langfuse.create_trace_id(seed=job_id)` to get a valid OTel-format trace_id derived from job_id; avoids format mismatch.
+   - **RESOLVED** — use `str(job_id)` as trace_id; Langfuse SDK v3 accepts arbitrary string IDs. If UUID format is rejected, fall back to `langfuse.create_trace_id()`.
 
 3. **retrieved_context availability in validator task args — size concern**
    - What we know: `retrieved_context_json` could be large (many chunks × ~200 chars each)
    - What's unclear: Is it safe to pass this as a Celery task arg (goes through Redis as JSON)?
    - Recommendation: Truncate retrieved_context to top-3 chunks (≤600 chars each) before passing. Auditor only needs enough context to verify grounding — not the full reranked set.
+   - **RESOLVED** — truncate to top-3 chunks ≤600 chars each before passing as task arg. Plan 04-04 captures this in agent.py.
 
 ---
 
