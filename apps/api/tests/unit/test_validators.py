@@ -59,14 +59,28 @@ def _make_db_ctx(db: MagicMock) -> MagicMock:
 # VAL-01: Gatekeeper verdict model
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason="implemented in 05-02", strict=False)
 def test_gatekeeper_verdict():
     """GatekeeperVerdict Pydantic model validates and normalises verdict field."""
-    from app.services.validation_service import GatekeeperVerdict  # noqa: F401
+    from app.services.validation_service import GatekeeperVerdict
+    from pydantic import ValidationError
 
-    # Eventual assertion: model_validate({"verdict":"Pass","confidence":0.92,"reason":"ok"})
-    # returns GatekeeperVerdict with verdict=="pass" (field_validator lowercases)
-    assert False, "stub"
+    # field_validator lowercases verdict — "Pass" → "pass"
+    v = GatekeeperVerdict.model_validate({"verdict": "Pass", "confidence": 0.92, "reason": "ok"})
+    assert v.verdict == "pass"
+    assert v.confidence == 0.92
+    assert isinstance(v.reason, str)
+
+    # Uppercase also normalizes
+    v2 = GatekeeperVerdict.model_validate({"verdict": "FAIL", "confidence": 0.1, "reason": "x"})
+    assert v2.verdict == "fail"
+
+    # needs_clarification variant
+    v3 = GatekeeperVerdict.model_validate({"verdict": "needs_clarification", "confidence": 0.5, "reason": "ambiguous"})
+    assert v3.verdict == "needs_clarification"
+
+    # Invalid verdict raises ValidationError
+    with pytest.raises(ValidationError):
+        GatekeeperVerdict.model_validate({"verdict": "maybe", "confidence": 0.5, "reason": "x"})
 
 
 # ---------------------------------------------------------------------------
@@ -87,14 +101,44 @@ def test_run_gatekeeper_task():
 # VAL-03: Auditor verdict model
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason="implemented in 05-02", strict=False)
 def test_auditor_verdict():
     """AuditorVerdict Pydantic model validates and normalises verdict field."""
-    from app.services.validation_service import AuditorVerdict  # noqa: F401
+    from app.services.validation_service import AuditorVerdict, CitationSpan
 
-    # Eventual assertion: model_validate({"verdict":"Grounded","confidence":0.95,
-    # "citation_spans":[],"reason":"ok"}) returns verdict=="grounded"
-    assert False, "stub"
+    # field_validator lowercases verdict — "Grounded" → "grounded"
+    v = AuditorVerdict.model_validate({
+        "verdict": "Grounded",
+        "confidence": 0.95,
+        "citation_spans": [],
+        "reason": "ok",
+    })
+    assert v.verdict == "grounded"
+    assert v.confidence == 0.95
+    assert v.citation_spans == []
+
+    # Citation spans are CitationSpan instances
+    v2 = AuditorVerdict.model_validate({
+        "verdict": "partial",
+        "confidence": 0.6,
+        "citation_spans": [
+            {"claim": "price is $10", "source_chunk": "product costs $10", "supported": True},
+            {"claim": "ships in 2 days", "source_chunk": "no shipping info found", "supported": False},
+        ],
+        "reason": "some claims supported",
+    })
+    assert len(v2.citation_spans) == 2
+    assert isinstance(v2.citation_spans[0], CitationSpan)
+    assert v2.citation_spans[0].supported is True
+    assert v2.citation_spans[1].supported is False
+
+    # UNGROUNDED uppercase normalizes
+    v3 = AuditorVerdict.model_validate({
+        "verdict": "UNGROUNDED",
+        "confidence": 0.9,
+        "citation_spans": [],
+        "reason": "no support",
+    })
+    assert v3.verdict == "ungrounded"
 
 
 # ---------------------------------------------------------------------------
@@ -116,14 +160,49 @@ def test_auditor_inserts_candidate():
 # VAL-05: Strategist verdict model
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason="implemented in 05-02", strict=False)
 def test_strategist_verdict():
     """StrategistVerdict Pydantic model validates and normalises verdict field."""
-    from app.services.validation_service import StrategistVerdict  # noqa: F401
+    from app.services.validation_service import StrategistVerdict
+    from pydantic import ValidationError
 
-    # Eventual assertion: model_validate({"verdict":"Ship","confidence":0.88,
-    # "issues":[],"reason":"ok"}) returns verdict=="ship"
-    assert False, "stub"
+    # field_validator lowercases verdict — "SHIP" → "ship"
+    v = StrategistVerdict.model_validate({
+        "verdict": "SHIP",
+        "confidence": 0.88,
+        "issues": [],
+        "reason": "ok",
+    })
+    assert v.verdict == "ship"
+    assert v.confidence == 0.88
+    assert v.issues == []
+
+    # Revise with issues list
+    v2 = StrategistVerdict.model_validate({
+        "verdict": "Revise",
+        "confidence": 0.7,
+        "issues": ["too formal", "missing greeting"],
+        "reason": "off-brand tone",
+    })
+    assert v2.verdict == "revise"
+    assert len(v2.issues) == 2
+
+    # Escalate
+    v3 = StrategistVerdict.model_validate({
+        "verdict": "escalate",
+        "confidence": 0.95,
+        "issues": ["legal question"],
+        "reason": "requires human review",
+    })
+    assert v3.verdict == "escalate"
+
+    # Invalid verdict raises ValidationError
+    with pytest.raises(ValidationError):
+        StrategistVerdict.model_validate({
+            "verdict": "unknown",
+            "confidence": 0.5,
+            "issues": [],
+            "reason": "x",
+        })
 
 
 # ---------------------------------------------------------------------------
