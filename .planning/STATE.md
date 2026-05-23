@@ -11,9 +11,9 @@ progress:
   completed_plans: 43
   percent: 91
 current_phase: "05-validation-chain"
-current_wave: 2
+current_wave: 3
 phase_plans_total: 5
-phase_plans_complete: 1
+phase_plans_complete: 2
 ---
 
 # Project State
@@ -21,7 +21,7 @@ phase_plans_complete: 1
 ## Current Status
 
 **Active Milestone:** M5 — Validation Chain
-**Milestone Phase:** Phase 5 executing — 5 plans, 5 waves — Wave 1 complete, Wave 2 up next (2026-05-23)
+**Milestone Phase:** Phase 5 executing — 5 plans, 5 waves — Wave 2 complete, Wave 3 up next (2026-05-23)
 **Last updated:** 2026-05-23
 
 ## Project Reference
@@ -150,4 +150,5 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Last session: 2026-05-18 — completed 04.1-04-PLAN.md (F5+F6 config/schema hardening) — 3 commits: 4db7220 + 4b0e73d + 281b8fb
 - Last session: 2026-05-18 — completed 04.1-05-PLAN.md (security paper trail closure) — 3 commits: e3a3d50 + 2dc1e96 + 679ae10
 - Last session: 2026-05-23 — completed 05-01-PLAN.md (langfuse dep + LANGFUSE_* settings + control DB 0010 + tenant DB 0004 + Agent ORM field + 7 xfail stubs) — 4 commits: e6efe6e + 265079a + 2502946 + cf779ba
+- Last session: 2026-05-23 — completed 05-02-PLAN.md (validation_service.py: 3 verdict models + 3 Haiku judge calls + Langfuse _log_verdict; 4 tests de-xfailed) — 3 commits: c2a6dee + 065489b + a3b86be
 - [TODO-RET-01] F7 / filters enforcement gate: retrieve_tool filters field must have allowlisted-column enforcement before being wired to LLM output. Gate: M5 phase planning MUST resolve this before activating filters in retrieve_tool. Logged Phase 4.1.
