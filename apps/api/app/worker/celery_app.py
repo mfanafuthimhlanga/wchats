@@ -38,6 +38,7 @@ import ssl
 
 import structlog
 from celery import Celery, signals
+from celery.schedules import crontab
 from kombu import Exchange, Queue
 
 from app.core.config import settings
@@ -78,6 +79,8 @@ celery_app.conf.update(
         "app.worker.tasks.runtime.agent",
         # M5: validation chain (Gatekeeper, Auditor, Strategist)
         "app.worker.tasks.runtime.validators",
+        # M6: eval suite + scenario mining tasks (runtime queue)
+        "app.worker.tasks.runtime.eval",
     ],
 
     # --- Queue topology -------------------------------------------------
@@ -116,6 +119,18 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     # Result expiry (F5: broker now carries PII — purge results after 5 min)
     result_expires=300,
+
+    # --- Celery beat schedule (M6: nightly eval) ------------------------
+    # D-19 LOCKED: 'eval-nightly' runs run_eval_suite_beat at 02:00 UTC daily.
+    # D-20 LOCKED: the beat task receives agent_id (not a connection string).
+    # Run the beat process separately:
+    #   celery -A app.worker.celery_app beat --loglevel=info
+    beat_schedule={
+        "eval-nightly": {
+            "task": "app.worker.tasks.runtime.eval.run_eval_suite_beat",
+            "schedule": crontab(hour=2, minute=0),
+        },
+    },
 
     # --- Serialization (T-02-04: no pickle) ----------------------------
     task_serializer="json",
