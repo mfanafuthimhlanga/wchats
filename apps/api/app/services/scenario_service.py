@@ -331,7 +331,7 @@ def mine_production_scenarios(
             WHERE je.event_type IN ('gatekeeper.complete', 'auditor.complete')
               AND je.payload->>'agent_id' = :agent_id
               AND je.payload->>'verdict' IN ('fail', 'ungrounded', 'partial')
-              AND je.created_at > NOW() - INTERVAL ':hours hours'
+              AND je.created_at > NOW() - make_interval(hours => :hours)
         """),
         {"agent_id": agent_id, "hours": lookback_hours},
     ).fetchall()
