@@ -294,8 +294,9 @@ def promote_to_verified_qa(
 
     question_vector populated via Voyage embed at promotion time (D-23 LOCKED).
 
-    Uses psycopg2 try/finally/close pattern. ON CONFLICT DO NOTHING ensures
-    idempotent promotion on Celery retry (acks_late + idempotency rule).
+    Uses psycopg2 try/finally/close pattern. Idempotency on Celery retry
+    (acks_late rule) is ensured by a SELECT-first existence check on question
+    before INSERT — gen_random_uuid() PK means ON CONFLICT cannot fire.
 
     Args:
         scenarios: Original scenario dicts (same list passed to run_ragas_eval).
@@ -308,7 +309,7 @@ def promote_to_verified_qa(
     # Build a lookup from scenario_id → scenario dict for O(1) access
     scenario_by_id = {str(s.get("id", "")): s for s in scenarios}
 
-    sql = """
+    insert_sql = """
         INSERT INTO verified_qa (
             id, question, question_vector, answer, citations,
             source, faithfulness, relevance, promoted_at, promoted_by, use_count
@@ -326,8 +327,9 @@ def promote_to_verified_qa(
             'system',
             0
         )
-        ON CONFLICT DO NOTHING
     """
+
+    exists_sql = "SELECT id FROM verified_qa WHERE question = %(question)s LIMIT 1"
 
     promoted_count = 0
     conn = psycopg2.connect(branch_conn_str)
@@ -356,6 +358,16 @@ def promote_to_verified_qa(
 
                 question = scenario["question"]
 
+                # Idempotency: skip if a verified_qa row with this question already exists
+                # (ON CONFLICT DO NOTHING cannot fire because id is gen_random_uuid())
+                cur.execute(exists_sql, {"question": question})
+                if cur.fetchone() is not None:
+                    log.info(
+                        "verified_qa.already_exists",
+                        scenario_id=score["scenario_id"],
+                    )
+                    continue
+
                 # D-23 LOCKED: Voyage embedding for question_vector
                 question_vector = _get_vo().embed(
                     [question], model="voyage-3", input_type="query"
@@ -364,7 +376,7 @@ def promote_to_verified_qa(
                 answer = scenario.get("agent_response", "")
                 citations = scenario.get("citations", [])
 
-                cur.execute(sql, {
+                cur.execute(insert_sql, {
                     "question": question,
                     # str(vector) then cast with ::vector — matching retrieval_service.py pattern
                     "question_vector": str(question_vector),
