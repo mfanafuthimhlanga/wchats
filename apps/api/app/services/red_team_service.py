@@ -268,7 +268,7 @@ def run_prompt_injection_agent(
                                 turn_counter += 1
                                 if block.name == "send_probe":
                                     probe_message = block.input.get("message", "")
-                                    probe_fn(probe_message)  # result returned as tool result by SDK
+                                    await asyncio.to_thread(probe_fn, probe_message)
                                 elif block.name == "report_finding":
                                     raw_findings.append({
                                         **block.input,
@@ -362,7 +362,7 @@ def run_data_leakage_agent(
                                 turn_counter += 1
                                 if block.name == "send_probe":
                                     probe_message = block.input.get("message", "")
-                                    probe_fn(probe_message)  # result returned as tool result by SDK
+                                    await asyncio.to_thread(probe_fn, probe_message)
                                 elif block.name == "report_finding":
                                     raw_findings.append({
                                         **block.input,
@@ -455,7 +455,7 @@ def run_hallucination_agent(
                                 turn_counter += 1
                                 if block.name == "send_probe":
                                     probe_message = block.input.get("message", "")
-                                    probe_fn(probe_message)  # result returned as tool result by SDK
+                                    await asyncio.to_thread(probe_fn, probe_message)
                                 elif block.name == "report_finding":
                                     raw_findings.append({
                                         **block.input,
