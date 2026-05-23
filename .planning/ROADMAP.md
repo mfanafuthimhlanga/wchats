@@ -299,7 +299,16 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 **PRD:** `prd-M8.md` (TBD)
 **Requirements:** DEP-01 through DEP-08
 **Depends on:** M6 and M7
-**Phases:** Defined when M8 becomes active
+**Plans:** 7 plans, 6 waves
+
+Plans:
+- [ ] 08-01-PLAN.md — Foundation: migration 0011 + ChecklistRun ORM + is_deployed + DEP_BLOCK_ON_HIGH_RED_TEAM + 4 xfail test stubs
+- [ ] 08-02-PLAN.md — deployment_service.py: Agent SDK orchestrator + 4 signal collectors + submit_report tool + DeploymentReport models
+- [ ] 08-03-PLAN.md — run_deployment_checklist Celery task (runtime queue, acks_late, idempotency 60 min, dual-DB split)
+- [ ] 08-04-PLAN.md — FastAPI routes (5 routes: trigger/list/detail/acknowledge/approve) + Pydantic schemas
+- [ ] 08-05-PLAN.md — Admin UI Pre-Deploy tab (Next.js, 5 states, polling, warning checkboxes, approval flow)
+- [ ] 08-06-PLAN.md — De-xfail all unit tests (test_deployment_service + test_deployment_task + test_deployment_routes)
+- [ ] 08-07-PLAN.md — demo_m8.sh + guarded E2E test (DEP_E2E_ENABLED) + celery_app include + main.py router registration
 
 **Success Criteria:**
 1. Non-technical tester completes full journey (signup → ingest → approve → widget live) without assistance.
