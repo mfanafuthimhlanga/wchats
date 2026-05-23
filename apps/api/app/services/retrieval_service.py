@@ -79,6 +79,73 @@ def embed_query(query_text: str) -> list[float]:
 
 
 # ---------------------------------------------------------------------------
+# verified_qa cache lookup (D-24: BEFORE hybrid search)
+# ---------------------------------------------------------------------------
+
+def verified_qa_lookup(
+    conn_str: str,
+    query_vector: list[float],
+    threshold: float,
+) -> Optional[dict]:
+    """Check verified_qa for a cached answer matching the query via cosine similarity.
+
+    Called BEFORE hybrid search (D-24). On hit: update last_used_at + use_count
+    (D-26); return dict. On miss: return None (D-27).
+
+    Uses psycopg2 try/finally/close pattern (NOT context manager `with conn:`) to
+    match the existing vector_search and bm25_search patterns in this module.
+
+    Args:
+        conn_str:     Decrypted tenant DB connection string.
+        query_vector: 1024-dim float vector from embed_query() (input_type="query").
+        threshold:    Cosine similarity threshold (settings.VERIFIED_QA_HIT_THRESHOLD = 0.93).
+
+    Returns:
+        Dict with keys: answer (str), citations (list), similarity (float),
+        source (str="verified_qa_cache") on cache hit; None on miss.
+    """
+    sql_lookup = """
+        SELECT id, answer, citations,
+               1 - (question_vector <=> %(qv)s::vector) AS similarity
+        FROM verified_qa
+        WHERE invalidated_at IS NULL
+          AND 1 - (question_vector <=> %(qv)s::vector) >= %(threshold)s
+        ORDER BY similarity DESC
+        LIMIT 1
+    """
+    sql_update = """
+        UPDATE verified_qa
+        SET last_used_at = NOW(), use_count = use_count + 1
+        WHERE id = %(row_id)s
+    """
+
+    conn = psycopg2.connect(conn_str)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql_lookup, {
+                "qv": str(query_vector),
+                "threshold": threshold,
+            })
+            row = cur.fetchone()
+            if row is None:
+                log.debug("verified_qa_lookup.miss")
+                return None
+            row_id, answer, citations, similarity = row
+            cur.execute(sql_update, {"row_id": row_id})
+        conn.commit()
+    finally:
+        conn.close()
+
+    log.debug("verified_qa_lookup.hit", similarity=float(similarity))
+    return {
+        "answer": answer,
+        "citations": citations,  # JSONB — psycopg2 returns as Python dict/list
+        "similarity": float(similarity),
+        "source": "verified_qa_cache",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Vector search (pgvector HNSW)
 # ---------------------------------------------------------------------------
 
