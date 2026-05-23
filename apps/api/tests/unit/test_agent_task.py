@@ -424,14 +424,103 @@ def test_citations_missing_returns_empty_list_and_warns():
 
 
 # ---------------------------------------------------------------------------
-# M5 stub — VAL chain dispatch from run_agent_turn (Plan 05-04)
+# M5 — VAL chain dispatch from run_agent_turn (Plan 05-04)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason="implemented in 05-04", strict=False)
+# Canned result with a retrieve tool call carrying a captured result
+_CANNED_RESULT_WITH_RETRIEVE = {
+    "response_text": (
+        "You can return items within 14 days.\n\n"
+        "CITATIONS:\n"
+        "- Document: FAQ.pdf | Section: 1\n"
+    ),
+    "tool_calls_log": [
+        {
+            "tool_name": "retrieve",
+            "input": {"query": "return policy"},
+            "result": "Return policy: 14 days, no questions asked.",
+        }
+    ],
+    "escalated": False,
+    "escalation_reason": None,
+    "escalation_context": None,
+    "sdk_session_id": "sdk-val-001",
+}
+
+
 def test_validators_dispatched():
     """run_agent_turn dispatches the Gatekeeper→Auditor→Strategist chain after agent.response."""
-    from app.worker.tasks.runtime.agent import run_agent_turn  # noqa: F401
+    from app.worker.tasks.runtime.agent import run_agent_turn
 
-    # Eventual assertion: after a successful agent turn, celery_chain.apply_async is called
-    # with run_gatekeeper.si, run_auditor.si, run_strategist.si in that order.
-    assert False, "stub"
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    agent = _make_agent(str(agent_id))
+    job = _make_job(job_id)
+    local_conv_id = "00000000-0000-0000-0000-000000000010"
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None  # no idempotency row
+    mock_db.get.side_effect = [agent, job]
+
+    # Mock the chain result so apply_async can be asserted
+    mock_chain_instance = MagicMock(name="chain_instance")
+    mock_celery_chain = MagicMock(name="celery_chain", return_value=mock_chain_instance)
+
+    with (
+        patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
+        patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
+        patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
+        patch("app.worker.tasks.runtime.agent._persist_messages"),
+        patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
+        patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys prompt"),
+        patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_RESULT_WITH_RETRIEVE),
+        patch("app.worker.tasks.runtime.agent.emit"),
+        patch("app.worker.tasks.runtime.agent.celery_chain", mock_celery_chain),
+    ):
+        result = run_agent_turn.run(
+            job_id=job_id,
+            agent_id=agent_id,
+            message="What is the return policy?",
+            conversation_id=None,
+        )
+
+    # chain(...).apply_async must have been called once with queue="runtime"
+    mock_celery_chain.assert_called_once()
+    mock_chain_instance.apply_async.assert_called_once_with(queue="runtime")
+
+    # Verify auditor was called with 6 positional args (the last call arg to celery_chain)
+    chain_call_args = mock_celery_chain.call_args[0]
+    # chain_call_args is (gatekeeper_sig, auditor_sig, strategist_sig)
+    assert len(chain_call_args) == 3, (
+        f"Expected 3 chain tasks (gatekeeper, auditor, strategist), got {len(chain_call_args)}"
+    )
+
+
+def test_validators_not_dispatched_on_idempotency_skip():
+    """Validation chain is NOT dispatched on the idempotency-skip path."""
+    from app.worker.tasks.runtime.agent import run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+
+    mock_db = MagicMock()
+    # Idempotency row exists — triggers early return
+    mock_db.execute.return_value.fetchone.return_value = MagicMock()
+
+    mock_celery_chain = MagicMock(name="celery_chain")
+
+    with (
+        patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
+        patch("app.worker.tasks.runtime.agent.emit"),
+        patch("app.worker.tasks.runtime.agent.celery_chain", mock_celery_chain),
+    ):
+        result = run_agent_turn.run(
+            job_id=job_id,
+            agent_id=agent_id,
+            message="hello",
+            conversation_id=None,
+        )
+
+    assert result == {"status": "already_complete", "job_id": job_id}
+    mock_celery_chain.assert_not_called()
