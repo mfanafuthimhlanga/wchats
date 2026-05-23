@@ -160,6 +160,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Last session: 2026-05-23 — completed 07-06-PLAN.md (demo_m7.sh: weak agent, red team trigger, Celery poll, deployment gate assertion, injection trace; test_red_team_e2e.py: RED_TEAM_E2E_ENABLED guard, 300s poll loop, schema validation) — 2 commits: a5b0fa9 + 8aff4fa
 - Phase 6 COMPLETE: all 9/9 plans done, all EVL-01 through EVL-08 requirements satisfied
 - Phase 7 COMPLETE: all 6/6 plans done, all RED-01 through RED-08 requirements satisfied
+- Phase 7 VERIFIED (2026-05-23): 8/8 must-haves pass codebase audit; code review fixed 2 critical (SQL data isolation + asyncio nested loop) + 5 warnings; 18 unit tests pass; 07-VERIFICATION.md written
 - Phase 6 VERIFIED (2026-05-23): automated codebase audit confirms all EVL-01–EVL-08 PASS; 06-VERIFICATION.md written
 - [TODO-RET-01] F7 / filters enforcement gate: retrieve_tool filters field must have allowlisted-column enforcement before being wired to LLM output. Gate: M5 phase planning MUST resolve this before activating filters in retrieve_tool. Logged Phase 4.1.
 - [07-01] IF NOT EXISTS guards on ALTER TABLE make migration 0006 safe to re-run on pre-altered tenant DBs
