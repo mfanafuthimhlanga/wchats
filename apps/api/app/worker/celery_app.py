@@ -81,6 +81,8 @@ celery_app.conf.update(
         "app.worker.tasks.runtime.validators",
         # M6: eval suite + scenario mining tasks (runtime queue)
         "app.worker.tasks.runtime.eval",
+        # M7: red team tasks (runtime queue)
+        "app.worker.tasks.runtime.red_team",
     ],
 
     # --- Queue topology -------------------------------------------------
@@ -129,6 +131,10 @@ celery_app.conf.update(
         "eval-nightly": {
             "task": "app.worker.tasks.runtime.eval.run_eval_suite_beat",
             "schedule": crontab(hour=2, minute=0),
+        },
+        "red-team-weekly": {
+            "task": "app.worker.tasks.runtime.red_team.run_red_team_beat",
+            "schedule": crontab(hour=3, minute=0, day_of_week=1),
         },
     },
 
