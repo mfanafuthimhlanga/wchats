@@ -48,6 +48,12 @@ os.environ.setdefault("ADMIN_KEY", "vrd_admin_test_key_for_tests_only")
 
 # M2 ingestion pipeline keys — must be set before any app import (pydantic-settings)
 os.environ.setdefault("ANTHROPIC_API_KEY", "test_anthropic_key")
+
+# M5: Langfuse — set before any import so module-level Langfuse() init in
+# validation_service.py does not raise on missing keys during test discovery.
+os.environ.setdefault("LANGFUSE_PUBLIC_KEY", "test-pk")
+os.environ.setdefault("LANGFUSE_SECRET_KEY", "test-sk")
+os.environ.setdefault("LANGFUSE_HOST", "http://localhost:3000")
 os.environ.setdefault("VOYAGE_API_KEY", "test_voyage_key")
 os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret-for-tests-only")

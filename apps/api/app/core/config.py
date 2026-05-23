@@ -79,6 +79,14 @@ class Settings(BaseSettings):
     # M4.1: Tenant daily budget ceiling (global default; per-tenant override in M5 admin UI)
     TENANT_DAILY_BUDGET_USD: float = 5.0
 
+    # M5: Langfuse observability (optional — validation chain still runs when unset)
+    LANGFUSE_PUBLIC_KEY: str | None = None
+    LANGFUSE_SECRET_KEY: str | None = None
+    LANGFUSE_HOST: str = "https://cloud.langfuse.com"
+
+    # M5: Verified-QA confidence threshold — auditor confidence must meet this to enqueue candidate
+    VERIFIED_QA_CONFIDENCE_THRESHOLD: float = 0.90
+
     MAX_UPLOAD_SIZE_MB: int = 50
 
     def __repr__(self) -> str:  # T-01-01, T-01-02: never leak field values
