@@ -223,10 +223,11 @@ export default function EvalPage({
   // Poll while a run is in progress
   useEffect(() => {
     if (isRunning) {
-      pollIntervalRef.current = setInterval(() => {
-        queryClient.invalidateQueries({ queryKey: ['eval-runs', id] })
-        // Check if a new "complete" run appeared
-        const runs = evalRunsQuery.data?.eval_runs ?? []
+      pollIntervalRef.current = setInterval(async () => {
+        await queryClient.invalidateQueries({ queryKey: ['eval-runs', id] })
+        // Read fresh data from the query cache after invalidation — avoids stale closure
+        const fresh = queryClient.getQueryData<EvalRunsResponse>(['eval-runs', id])
+        const runs = fresh?.eval_runs ?? []
         if (runs.length > 0 && runs[0].status === 'complete') {
           setIsRunning(false)
           if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
