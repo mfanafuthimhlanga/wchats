@@ -210,9 +210,9 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 | Wave 2 | 05-02 | validation_service.py: 3 verdict Pydantic models + 3 Haiku tool-use judge calls + Langfuse v3 logging helper (TDD) | [x] |
 | Wave 3 | 05-03 | validators.py: run_gatekeeper / run_auditor / run_strategist runtime tasks + verified_qa_candidates insert (D-19) + resynthesis flag (VAL-06) + celery_app include | [x] |
 | Wave 4 | 05-04 | agent.py: capture retrieve tool result for Auditor + dispatch gatekeeper to auditor to strategist chain after agent.response (chain not chord) | [x] |
-| Wave 5 | 05-05 | demo_m5.sh (adversarial query, 3 verdicts, local processes) + guarded E2E test + Langfuse walkthrough checkpoint (VAL-07) | [ ] |
+| Wave 5 | 05-05 | demo_m5.sh (adversarial query, 3 verdicts, local processes) + guarded E2E test + Langfuse walkthrough checkpoint (VAL-07) | [x] Complete |
 
-**Plans:** 5 plans
+**Plans:** 5 plans, **all complete** ✓
 
 **Cross-cutting constraints:**
 - acks_late=True AND idempotency guard on all three validator tasks
