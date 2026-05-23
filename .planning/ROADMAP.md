@@ -206,7 +206,7 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 
 | Wave | Plan | Objective | Status |
 |------|------|-----------|--------|
-| Wave 1 | 05-01 | Foundation: langfuse pin + LANGFUSE_* settings + confidence threshold; control DB 0010 (strategy_resynthesis_flagged) + tenant DB 0004 (verified_qa_candidates); Agent ORM field; Wave-0 test scaffold | [ ] |
+| Wave 1 | 05-01 | Foundation: langfuse pin + LANGFUSE_* settings + confidence threshold; control DB 0010 (strategy_resynthesis_flagged) + tenant DB 0004 (verified_qa_candidates); Agent ORM field; Wave-0 test scaffold | [x] |
 | Wave 2 | 05-02 | validation_service.py: 3 verdict Pydantic models + 3 Haiku tool-use judge calls + Langfuse v3 logging helper (TDD) | [ ] |
 | Wave 3 | 05-03 | validators.py: run_gatekeeper / run_auditor / run_strategist runtime tasks + verified_qa_candidates insert (D-19) + resynthesis flag (VAL-06) + celery_app include | [ ] |
 | Wave 4 | 05-04 | agent.py: capture retrieve tool result for Auditor + dispatch gatekeeper to auditor to strategist chain after agent.response (chain not chord) | [ ] |

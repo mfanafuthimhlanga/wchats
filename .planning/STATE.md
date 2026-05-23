@@ -2,14 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: ready_to_execute
+status: in_progress
 last_updated: "2026-05-23T00:00:00.000Z"
 progress:
   total_phases: 7
   completed_phases: 6
   total_plans: 47
-  completed_plans: 42
-  percent: 89
+  completed_plans: 43
+  percent: 91
+current_phase: "05-validation-chain"
+current_wave: 2
+phase_plans_total: 5
+phase_plans_complete: 1
 ---
 
 # Project State
@@ -17,8 +21,8 @@ progress:
 ## Current Status
 
 **Active Milestone:** M5 — Validation Chain
-**Milestone Phase:** Phase 5 planned — 5 plans, 5 waves — Ready to execute (2026-05-23)
-**Last updated:** 2026-05-17
+**Milestone Phase:** Phase 5 executing — 5 plans, 5 waves — Wave 1 complete, Wave 2 up next (2026-05-23)
+**Last updated:** 2026-05-23
 
 ## Project Reference
 
@@ -145,4 +149,5 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [04.1-04] TDD: 2 RED tests failed; GREEN passed all 19; no REFACTOR needed
 - Last session: 2026-05-18 — completed 04.1-04-PLAN.md (F5+F6 config/schema hardening) — 3 commits: 4db7220 + 4b0e73d + 281b8fb
 - Last session: 2026-05-18 — completed 04.1-05-PLAN.md (security paper trail closure) — 3 commits: e3a3d50 + 2dc1e96 + 679ae10
+- Last session: 2026-05-23 — completed 05-01-PLAN.md (langfuse dep + LANGFUSE_* settings + control DB 0010 + tenant DB 0004 + Agent ORM field + 7 xfail stubs) — 4 commits: e6efe6e + 265079a + 2502946 + cf779ba
 - [TODO-RET-01] F7 / filters enforcement gate: retrieve_tool filters field must have allowlisted-column enforcement before being wired to LLM output. Gate: M5 phase planning MUST resolve this before activating filters in retrieve_tool. Logged Phase 4.1.
