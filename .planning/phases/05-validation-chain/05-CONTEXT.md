@@ -45,7 +45,7 @@ Phase 5 wraps every agent response with three async Claude judges — Gatekeeper
 ### Infrastructure
 - **D-14 [LOCKED]** Validators are Celery tasks on the `runtime` queue — FastAPI never does validation inline
 - **D-15 [LOCKED]** Validation triggered as a Celery chord/chain after `run_agent_turn` completes
-- **D-16 [LOCKED]** Langfuse v4 API only — use `langfuse.trace()` / `trace.span()` / `trace.generation()` patterns; never `start_span()` / `start_generation()`
+- **D-16 [LOCKED]** Langfuse SDK v3 API only — use `start_as_current_generation()` context manager pattern; never use the deprecated v2 `StatefulTraceClient` chain (`langfuse.trace()` / `trace.generation()`); always call `langfuse.flush()` at end of each Celery task
 - **D-17 [LOCKED]** `strategy_resynthesis_flagged` field requires a new Alembic migration on the control DB agents table
 
 ### Verified-Knowledge Candidate Queueing
