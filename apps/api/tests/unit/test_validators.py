@@ -209,14 +209,44 @@ def test_strategist_verdict():
 # VAL-05: Langfuse logging
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason="implemented in 05-02", strict=False)
-def test_langfuse_logged():
-    """_log_verdict() calls start_as_current_generation when _langfuse is set."""
-    from app.services.validation_service import _log_verdict  # noqa: F401
+def test_langfuse_logged(monkeypatch):
+    """_log_verdict() calls start_as_current_generation and flush when _langfuse is set."""
+    import app.services.validation_service as vs
+    from app.services.validation_service import _log_verdict
 
-    # Eventual assertion: monkeypatch app.services.validation_service._langfuse to MagicMock,
-    # call _log_verdict("gatekeeper", ...), assert mock_lf.start_as_current_generation.called
-    assert False, "stub"
+    # Set up a MagicMock for _langfuse at module level
+    mock_lf = MagicMock()
+    # start_as_current_generation must work as a context manager
+    mock_cm = MagicMock()
+    mock_cm.__enter__ = MagicMock(return_value=mock_cm)
+    mock_cm.__exit__ = MagicMock(return_value=False)
+    mock_lf.start_as_current_generation.return_value = mock_cm
+
+    monkeypatch.setattr(vs, "_langfuse", mock_lf)
+
+    _log_verdict(
+        judge_name="gatekeeper",
+        agent_id="test-agent-id",
+        job_id="test-job-id",
+        input_payload={"question": "what is the price?", "response_length": 50},
+        verdict_dict={"verdict": "pass", "confidence": 0.92, "reason": "ok"},
+    )
+
+    # start_as_current_generation must have been called
+    mock_lf.start_as_current_generation.assert_called_once()
+    call_kwargs = mock_lf.start_as_current_generation.call_args
+    assert call_kwargs.kwargs.get("name") == "gatekeeper-judge" or (
+        len(call_kwargs.args) > 0 and call_kwargs.args[0] == "gatekeeper-judge"
+    )
+
+    # flush must have been called
+    mock_lf.flush.assert_called_once()
+
+    # create_score must have been called with CATEGORICAL data_type
+    mock_lf.create_score.assert_called_once()
+    score_kwargs = mock_lf.create_score.call_args.kwargs
+    assert score_kwargs.get("data_type") == "CATEGORICAL"
+    assert score_kwargs.get("trace_id") == "test-job-id"
 
 
 # ---------------------------------------------------------------------------

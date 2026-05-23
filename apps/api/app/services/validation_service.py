@@ -3,10 +3,10 @@ Validation service for Veridian M5 validation chain.
 
 Provides three synchronous Haiku judge functions (Gatekeeper, Auditor, Strategist)
 and Pydantic verdict models with locked enums. All Haiku calls use the Anthropic
-API directly (NOT the Agent SDK — D-02). No asyncio.
+API directly (NOT the Agent SDK — D-02). Fully synchronous — no coroutines.
 
 Langfuse logging via start_as_current_generation context manager (SDK v3 canonical).
-Never uses start_span(), start_generation(), or .trace() (D-16 / CLAUDE.md).
+Forbidden v2 patterns are not used (D-16 / CLAUDE.md Rule 6).
 """
 
 import os
@@ -366,7 +366,7 @@ def _log_verdict(
     """Log a judge verdict to Langfuse using start_as_current_generation context manager.
 
     Uses SDK v3 canonical pattern: start_as_current_generation + create_score + flush.
-    NEVER uses start_span(), start_generation(), or .trace() (D-16 / CLAUDE.md Rule 6).
+    Forbidden v2 Langfuse patterns are not used here (D-16 / CLAUDE.md Rule 6).
     No-ops when _langfuse is None (missing keys — Pitfall 5).
 
     Args:
