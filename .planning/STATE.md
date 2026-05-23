@@ -18,7 +18,7 @@ progress:
 
 **Active Milestone:** M7 — Red Team (M6 ✓ Complete + Verified)
 **Milestone Phase:** Phase 7 IN PROGRESS — 6 plans, 5 waves, RED-01–RED-08 covered (2026-05-23)
-**Current Position:** Phase 7, Plan 2 (07-01 complete)
+**Current Position:** Phase 7, Plan 3 (07-02 complete)
 **Last updated:** 2026-05-23
 
 ## Project Reference
@@ -154,8 +154,13 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Last session: 2026-05-23 — completed Phase 6 (06-09, Wave 5): demo_m6.sh (local-process demo, no Docker, D-32), test_eval_service.py (6 tests, Ragas 0.4.x regression guards), test_scenario_service.py (7 tests, D-12/D-13), guarded E2E test (EVAL_E2E_ENABLED=1) — 4 commits: 63ac00f + 79eac65 + fed1b1e + 838ce12
 - Last session: 2026-05-23 — resumed; discarded stale SSE-UX HANDOFF.json (pre-M5/M6, superseded); proceeding to execute Phase 7 (Red Team)
 - Last session: 2026-05-23 — completed 07-01-PLAN.md (migration 0006 status+deployment_blocked, RED_TEAM_MAX_TURNS=5, RED_TEAM_ATTACK_SEQUENCES=3, 2 xfail stubs) — 2 commits: bc4b75e + 31e610d
+- Last session: 2026-05-23 — completed 07-02-PLAN.md (red_team_service.py: RedTeamFinding/RedTeamResult/SeverityVerdict models, classify_severity Haiku judge, 3 runner functions with probe_fn pattern; pyrit>=0.6.0 added) — 2 commits: bab1950 + 03eb1ab
 - Phase 6 COMPLETE: all 9/9 plans done, all EVL-01 through EVL-08 requirements satisfied
 - Phase 6 VERIFIED (2026-05-23): automated codebase audit confirms all EVL-01–EVL-08 PASS; 06-VERIFICATION.md written
 - [TODO-RET-01] F7 / filters enforcement gate: retrieve_tool filters field must have allowlisted-column enforcement before being wired to LLM output. Gate: M5 phase planning MUST resolve this before activating filters in retrieve_tool. Logged Phase 4.1.
 - [07-01] IF NOT EXISTS guards on ALTER TABLE make migration 0006 safe to re-run on pre-altered tenant DBs
 - [07-01] RED_TEAM_MAX_TURNS=5 and RED_TEAM_ATTACK_SEQUENCES=3 are plain int fields in Settings — no Field() wrapper needed; xfail strict=True stubs de-xfailed in 07-05
+- [07-02] classify_severity called post-loop (not inside async loop) — avoids nested asyncio.run conflicts
+- [07-02] SONNET_MODEL for red-team agents (attack creativity); HAIKU_MODEL for severity classifier (cost efficiency)
+- [07-02] probe_fn result not captured inline — SDK manages tool result delivery; runner calls probe_fn for side effect only
+- [07-02] pyrit>=0.6.0 added to core dependencies (not optional) — required at runtime by red-team Celery task
