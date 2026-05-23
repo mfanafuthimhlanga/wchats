@@ -34,6 +34,8 @@ dependencies = [
     "python-jose[cryptography]==3.5.0",
     "PyJWT[cryptography]==2.12.1",
     "svix==1.93.0",
+    # M7: Red Team — pyrit for attack prompt seed datasets only (no PyRIT orchestrators)
+    "pyrit>=0.6.0",
 ]
 
 [project.optional-dependencies]
