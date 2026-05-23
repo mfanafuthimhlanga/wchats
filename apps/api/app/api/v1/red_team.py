@@ -67,6 +67,7 @@ def _query_tenant_db_sync(conn_str: str, sql: str, params: dict) -> list[tuple]:
 _LIST_RED_TEAM_RUNS_SQL = """
     SELECT id, kind, status, started_at, finished_at, findings, max_severity, deployment_blocked
     FROM red_team_runs
+    WHERE kind = %(kind)s
     ORDER BY started_at DESC
     LIMIT 20
 """
@@ -105,7 +106,7 @@ async def list_red_team_runs(
 
     # 5. Query tenant DB in a thread pool to avoid blocking the event loop
     rows = await asyncio.to_thread(
-        _query_tenant_db_sync, conn_str, _LIST_RED_TEAM_RUNS_SQL, {}
+        _query_tenant_db_sync, conn_str, _LIST_RED_TEAM_RUNS_SQL, {"kind": f"m7:{agent_id}"}
     )
 
     # 6. Build response
