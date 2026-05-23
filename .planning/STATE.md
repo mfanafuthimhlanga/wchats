@@ -16,9 +16,9 @@ progress:
 
 ## Current Status
 
-**Active Milestone:** M7 — Red Team (M6 ✓ Complete)
-**Milestone Phase:** Phase 6 COMPLETE — all 9/9 plans done (2026-05-23)
-**Current Position:** Phase 6 complete — Phase 7 (Red Team) next
+**Active Milestone:** M7 — Red Team (M6 ✓ Complete + Verified)
+**Milestone Phase:** Phase 6 COMPLETE and VERIFIED — all 9/9 plans done, EVL-01–EVL-08 all PASS (2026-05-23)
+**Current Position:** Phase 6 verified — Phase 7 (Red Team) next
 **Last updated:** 2026-05-23
 
 ## Project Reference
@@ -153,4 +153,5 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Last session: 2026-05-23 — completed 06-01-PLAN.md (tenant DB migration 0005 verified_qa+eval_scenarios; Settings 3 eval thresholds; celery_app beat_schedule eval-nightly crontab 02:00 UTC) — 3 commits: 088ea50 + 67118d8 + 4efa68b
 - Last session: 2026-05-23 — completed Phase 6 (06-09, Wave 5): demo_m6.sh (local-process demo, no Docker, D-32), test_eval_service.py (6 tests, Ragas 0.4.x regression guards), test_scenario_service.py (7 tests, D-12/D-13), guarded E2E test (EVAL_E2E_ENABLED=1) — 4 commits: 63ac00f + 79eac65 + fed1b1e + 838ce12
 - Phase 6 COMPLETE: all 9/9 plans done, all EVL-01 through EVL-08 requirements satisfied
+- Phase 6 VERIFIED (2026-05-23): automated codebase audit confirms all EVL-01–EVL-08 PASS; 06-VERIFICATION.md written
 - [TODO-RET-01] F7 / filters enforcement gate: retrieve_tool filters field must have allowlisted-column enforcement before being wired to LLM output. Gate: M5 phase planning MUST resolve this before activating filters in retrieve_tool. Logged Phase 4.1.
