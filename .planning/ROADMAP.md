@@ -20,7 +20,7 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 | M3 | Hybrid Retrieval | pgvector + BM25 + RRF + Voyage rerank | 8 | `prd-M3.md` | ✓ Complete (7/7 plans) |
 | M4 | Reasoning Engine + Widget v0 | Claude agent + Preact widget + public demo **[HIREABLE ARTIFACT]** | 11 | `prd-M4.md` | ○ Pending |
 | M5 | Validation Chain | Async Gatekeeper + Auditor + Strategist on every response | 7 | `prd-M5.md` | ○ Pending |
-| M6 | Eval System | Ragas nightly evals + scenario mining + eval dashboard | 8 | `prd-M6.md` | ○ Pending |
+| M6 | Eval System | Ragas nightly evals + scenario mining + eval dashboard | 8 | `prd-M6.md` | ◑ In progress (1/9 plans) |
 | M7 | Red Team | Three adversarial agents + severity classification + deployment gate | 8 | `prd-M7.md` | ○ Pending |
 | M8 | Pre-deployment Checklist | Orchestrator agent + owner approval gate + journey validated | 8 | `prd-M8.md` | ○ Pending |
 | M9 | Retrieval Strategy Synthesis | Strategist auto-generates per-tenant retrieval configs | 3 | `prd-M9.md` | ○ Pending |
@@ -240,7 +240,19 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 **PRD:** `prd-M6.md` (TBD)
 **Requirements:** EVL-01 through EVL-08
 **Depends on:** M5
-**Phases:** Defined when M6 becomes active — **note: parallelizable with M7 after M4**
+**Phases:** In progress — 9 plans, 5 waves
+
+| Wave | Plan | Objective | Status |
+|------|------|-----------|--------|
+| Wave 1 | 06-01 | Foundation: tenant DB 0005 (verified_qa + eval_scenarios), Settings eval thresholds, Celery beat schedule | [x] Complete |
+| Wave 2 | 06-02 | eval_service.py: Ragas 0.4.x harness (4 metrics) + Neon branch management (neon_service.py) | ○ Pending |
+| Wave 2 | 06-03 | scenario_service.py: Claude API scenario generator + production conversation mining | ○ Pending |
+| Wave 3 | 06-04 | run_eval_suite Celery task (runtime queue) + run_eval_suite_beat dispatcher + celery_app wiring | ○ Pending |
+| Wave 3 | 06-05 | verified_qa promotion + retrieval_service.py verified_qa_lookup (cache-hit path) | ○ Pending |
+| Wave 4 | 06-06 | FastAPI eval routes: GET /agents/{id}/eval-runs + GET /agents/{id}/eval-runs/{run_id}/results | ○ Pending |
+| Wave 4 | 06-07 | Next.js eval dashboard page: /agents/[id]/evals (Pass Rates tab + Scenarios tab) | ○ Pending |
+| Wave 5 | 06-08 | Unit + integration tests for eval_service, scenario_service, run_eval_suite | ○ Pending |
+| Wave 5 | 06-09 | scripts/demo_m6.sh + guarded E2E test + demo_m6 verification | ○ Pending |
 
 **Success Criteria:**
 1. Nightly Celery beat triggers eval run; executes against a Neon branch; branch deleted after run.
@@ -354,4 +366,4 @@ When starting a new milestone: write `prd-MN.md` first, then run `/gsd-discuss-p
 ---
 
 *Roadmap created: 2026-05-12*
-*Last updated: 2026-05-16 — M3 complete (7/7 plans, RET-01–RET-08 satisfied, human checkpoint passed)*
+*Last updated: 2026-05-23 — M6 Phase 06-01 complete (foundation: migration 0005, eval thresholds, Celery beat)*

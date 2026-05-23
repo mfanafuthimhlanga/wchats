@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: ready_to_execute
-last_updated: "2026-05-23T12:30:00.000Z"
+status: executing
+last_updated: "2026-05-23T14:00:00.000Z"
 progress:
   total_phases: 9
   completed_phases: 7
-  total_plans: 56
-  completed_plans: 47
-  percent: 84
+  total_plans: 65
+  completed_plans: 48
+  percent: 74
 ---
 
 # Project State
@@ -17,7 +17,8 @@ progress:
 ## Current Status
 
 **Active Milestone:** M6 — Eval System
-**Milestone Phase:** Phase 6 planned — 9 plans in 5 waves, EVL-01..EVL-08 covered, verification passed (2026-05-23)
+**Milestone Phase:** Phase 6 executing — Wave 1/5 complete, Wave 2 next (2026-05-23)
+**Current Position:** 06-01 complete — 06-02 next
 **Last updated:** 2026-05-23
 
 ## Project Reference
@@ -149,4 +150,5 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Last session: 2026-05-23 — completed 05-02-PLAN.md (validation_service.py: 3 verdict models + 3 Haiku judge calls + Langfuse _log_verdict; 4 tests de-xfailed) — 3 commits: c2a6dee + 065489b + a3b86be
 - Last session: 2026-05-23 — completed 05-03-PLAN.md (validators.py: run_gatekeeper + run_auditor + run_strategist runtime tasks; _insert_verified_qa_candidate; resynthesis flag; celery_app include; 3 xfail stubs de-xfailed; 7/7 tests pass) — 2 commits: 0ab013c + d21b167
 - Last session: 2026-05-23 — completed 05-04-PLAN.md (agent.py: retrieve result capture in _run_sdk_turn + validation chain dispatch after agent.response; test_validators_dispatched + test_validators_not_dispatched_on_idempotency_skip; 8/8 tests pass) — 3 commits: edd0542 + a8172c2 + fa3f226
+- Last session: 2026-05-23 — completed 06-01-PLAN.md (tenant DB migration 0005 verified_qa+eval_scenarios; Settings 3 eval thresholds; celery_app beat_schedule eval-nightly crontab 02:00 UTC) — 3 commits: 088ea50 + 67118d8 + 4efa68b
 - [TODO-RET-01] F7 / filters enforcement gate: retrieve_tool filters field must have allowlisted-column enforcement before being wired to LLM output. Gate: M5 phase planning MUST resolve this before activating filters in retrieve_tool. Logged Phase 4.1.
