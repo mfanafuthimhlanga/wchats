@@ -54,6 +54,11 @@ def upgrade() -> None:
     op.execute(
         "CREATE INDEX vqa_candidates_status_idx ON verified_qa_candidates(status)"
     )
+    # C-02 fix: idempotency requires UNIQUE on (conversation_id, question) so
+    # ON CONFLICT DO NOTHING has a conflict target and retries don't duplicate rows
+    op.execute(
+        "CREATE UNIQUE INDEX vqa_candidates_dedup_idx ON verified_qa_candidates(conversation_id, question)"
+    )
 
 
 def downgrade() -> None:

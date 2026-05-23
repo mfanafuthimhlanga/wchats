@@ -94,7 +94,7 @@ def _insert_verified_qa_candidate(
                 INSERT INTO verified_qa_candidates
                   (id, conversation_id, question, answer, citations, auditor_confidence, queued_at, status)
                 VALUES (%s, %s, %s, %s, %s::jsonb, %s, NOW(), 'pending')
-                ON CONFLICT DO NOTHING
+                ON CONFLICT (conversation_id, question) DO NOTHING
                 """,
                 (
                     str(uuid.uuid4()),
@@ -323,8 +323,10 @@ def run_auditor(
 
             # --------------------------------------------------------------
             # Call Auditor judge (synchronous Haiku API call — D-02)
+            # call_auditor expects a string; pass the raw JSON string so the
+            # prompt embeds it as a RETRIEVED CONTEXT: block (C-01 fix)
             # --------------------------------------------------------------
-            verdict = call_auditor(question, response_text, retrieved_context)
+            verdict = call_auditor(question, response_text, retrieved_context_json or "[]")
 
             # --------------------------------------------------------------
             # Log to Langfuse

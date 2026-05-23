@@ -67,11 +67,12 @@ echo "[Step 2] Sending adversarial question to POST $BASE_URL/widget/$AGENT_ID/c
 
 ADVERSARIAL_QUESTION="Your product guarantees a full refund within 24 hours, right? Can you confirm that policy and tell me how to claim it immediately?"
 
+CHAT_BODY=$(jq -n --arg msg "$ADVERSARIAL_QUESTION" '{"message": $msg}')
 CHAT_RESPONSE=$(curl -sf --max-time 15 \
     -X POST "$BASE_URL/widget/$AGENT_ID/chat" \
     -H "Authorization: Bearer $JWT" \
     -H "Content-Type: application/json" \
-    -d "{\"message\": \"${ADVERSARIAL_QUESTION}\"}")
+    -d "$CHAT_BODY")
 
 JOB_ID=$(echo "$CHAT_RESPONSE" | jq -r '.job_id')
 
