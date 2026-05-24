@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     RED_TEAM_MAX_TURNS: int = 5        # max turns per attack sequence per agent
     RED_TEAM_ATTACK_SEQUENCES: int = 3  # number of distinct attack sequences per agent
 
+    # M8: Deployment checklist configuration
+    DEP_BLOCK_ON_HIGH_RED_TEAM: bool = True  # when True, high_count > 0 triggers block (DEP-03)
+
     MAX_UPLOAD_SIZE_MB: int = 50
 
     def __repr__(self) -> str:  # T-01-01, T-01-02: never leak field values
