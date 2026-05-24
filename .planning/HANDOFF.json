@@ -1,48 +1,32 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-22T19:37:22Z",
-  "phase": "post-M4",
-  "phase_name": "ingest-ux-sse-fix",
+  "timestamp": "2026-05-24T16:30:00.000Z",
+  "phase": "post-08",
+  "phase_name": "admin-ui-configure-bugs",
   "phase_dir": ".planning",
-  "plan": "adhoc",
-  "task": 1,
-  "total_tasks": 1,
+  "plan": 0,
+  "task": 0,
+  "total_tasks": 4,
   "status": "paused",
   "completed_tasks": [
-    {"id": 1, "name": ".md upload + ANTHROPIC_API_KEY fix", "status": "done", "commit": "365c27b"},
-    {"id": 2, "name": "Delete buttons on KB list", "status": "done", "commit": "dc50d37"},
-    {"id": 3, "name": "DELETE uuid[] cast fix (doc stayed after click)", "status": "done", "commit": "7f80848"},
-    {"id": 4, "name": "Document route tests (13 passing)", "status": "done", "commit": "ea2cedf"},
-    {"id": 5, "name": "GET /detail endpoint (chunks + metadata + entities)", "status": "done", "commit": "5478295"},
-    {"id": 6, "name": "DocumentDetailModal — click row to see Haiku output", "status": "done", "commit": "615a35a"},
-    {"id": 7, "name": "parsed → green in PARSE_STATUS_COLORS", "status": "done", "commit": "87e6da5"},
-    {"id": 8, "name": "SSE timeout 3min→10min + teardown() on all exit paths + elapsed timer", "status": "done", "commit": "41d2227"},
-    {"id": 9, "name": "VOYAGE_API_KEY explicit pass + embed task fail-fast", "status": "done", "commit": "a597f53"},
-    {"id": 10, "name": "Parallel Haiku extraction (5 concurrent threads)", "status": "done", "commit": "df49d39"},
-    {"id": 11, "name": "Batched Haiku extraction — BatchResult (10 chunks/call, 10x cheaper)", "status": "done", "commit": "ef06a08 + d81e64f"},
-    {"id": 12, "name": "metadata.progress in EVENT_LABELS", "status": "done", "commit": "08bf958"}
+    {"id": 1, "name": "Identify BUG-1: soul state not persisting across sessions", "status": "done", "commit": "none"},
+    {"id": 2, "name": "Identify BUG-2: no next-step CTA after Configure completes", "status": "done", "commit": "none"},
+    {"id": 3, "name": "Analyse root causes in page.tsx / layout.tsx / soul/page.tsx", "status": "done", "commit": "none"}
   ],
   "remaining_tasks": [
-    {
-      "id": 13,
-      "name": "Fix SSE streaming UX: remove split banner, add polling-on-drop, single progress location",
-      "status": "not_started",
-      "details": "Two issues: (1) progress renders in TWO places simultaneously (banner above URL input + optimistic KB row) — remove the banner, keep only the KB row; (2) stream drops before job.complete → shows 'Upload submitted — refresh to see status' — replace with refetchInterval polling on documents query until parse_status leaves pending/processing. Also investigate uvicorn SSE keepalive."
-    }
+    {"id": 4, "name": "Reproduce BUG-1: check soul/page.tsx PATCH call + API response for soul fields", "status": "not_started"},
+    {"id": 5, "name": "Fix BUG-1: ensure soul_voice/soul_do_list/soul_donot_list/soul_role written to DB via PATCH /agents/{id}", "status": "not_started"},
+    {"id": 6, "name": "Fix BUG-2: replace testPanel placeholder with real CTA to /agents/[id]/eval; add 'Go to Evals' button in configurePanel once configureDone", "status": "not_started"},
+    {"id": 7, "name": "Wire step3Done in layout.tsx: query eval-runs, derive step3Done = runs.length > 0; unlock Deploy step", "status": "not_started"}
   ],
-  "blockers": [
-    {
-      "description": "SSE stream drops before job.complete terminal event — uvicorn may close the response during long Haiku batch (15-20s per batch, 5 batches). No keepalive comments sent?",
-      "type": "technical",
-      "workaround": "Add polling fallback: after any stream termination without terminal event, set refetchInterval:3000 on documents query until all docs have terminal parse_status"
-    }
-  ],
+  "blockers": [],
   "human_actions_pending": [],
   "decisions": [
-    {"decision": "BatchResult wrapper schema (not JSON mode) for batched Haiku", "rationale": "Pydantic validation on batch response, same retry contract, no manual json.loads", "phase": "post-M4"},
-    {"decision": "Consolidate SSE progress to KB row only — remove banner above input", "rationale": "User saw two simultaneous status areas — one above URL input, one in KB list — confusing split UX", "phase": "post-M4"}
+    {"decision": "configureDone definition is correct: soulSaved && hasDocs", "rationale": "Both conditions are necessary; gate is sound", "phase": "post-08"},
+    {"decision": "step3Done should derive from eval-runs query (runs.length > 0), not a passing-score threshold", "rationale": "M8 pre-deploy checklist is the real quality gate; stepper just needs to know a run was triggered", "phase": "post-08"},
+    {"decision": "Soul persist bug: PATCH call may be silently failing or soul fields absent from request body", "rationale": "Docs persist (separate endpoint) but soul does not — points to the PATCH /agents/{id} call in soul/page.tsx", "phase": "post-08"}
   ],
   "uncommitted_files": [],
-  "next_action": "1. Find SSE endpoint: grep -r 'EventSourceResponse|job_events' apps/api/app/api/ --include='*.py' -l. 2. Check keepalive. 3. Read page.tsx, locate progressLabel banner render, remove it. 4. Add refetchInterval polling on stream drop.",
-  "context_notes": "Pipeline is fully functional — Haiku batch extraction works, VoyageAI embeddings work, docs land in KB. The only remaining problem is the fragmented progress UX. The user described it clearly: one flash that disappears, split between two UI areas, and a dead-end refresh message. Fix is frontend-only unless uvicorn keepalive is missing (which would also need a one-liner backend fix)."
+  "next_action": "Open apps/admin/app/agents/[id]/soul/page.tsx, find the save handler, log the PATCH request body and response in browser devtools to confirm whether soul fields are sent and whether the API writes them. Then check apps/api/app/api/v1/agents.py list_agents and patch_agent for soul field handling.",
+  "context_notes": "No active GSD phase — this is a live-testing bug-fix session discovered during M8 manual verification. The agent page layout is a two-panel design: left = JourneyStepper (layout.tsx), right = content panel (page.tsx child). The Configure step's done condition is correct but the downstream panel (testPanel) is a stale M6-era placeholder with no navigation. step3Done is hardcoded false in both layout.tsx:139 and page.tsx:139. Infrastructure: redis running (already was), uvicorn on :8000, Celery worker (pool=solo, bg process), Next.js on :3000. Migrations applied: control DB now at 0011 (was at 0009, applied 0010+0011 to fix agents.strategy_resynthesis_flagged 500 error)."
 }
