@@ -8,17 +8,17 @@ progress:
   total_phases: 10
   completed_phases: 9
   total_plans: 72
-  completed_plans: 62
-  percent: 86
+  completed_plans: 63
+  percent: 88
 ---
 
 # Project State
 
 ## Current Status
 
-**Active Milestone:** M8 — Pre-deployment Checklist (1/7 plans complete)
-**Milestone Phase:** Phase 8 IN PROGRESS — 7 plans, 6 waves, DEP-01–DEP-08 mapped; Plan 01 complete (2026-05-24)
-**Current Position:** Phase 8, Plan 1 (complete) — Plan 2 next
+**Active Milestone:** M8 — Pre-deployment Checklist (2/7 plans complete)
+**Milestone Phase:** Phase 8 IN PROGRESS — 7 plans, 6 waves, DEP-01–DEP-08 mapped; Plans 01–02 complete (2026-05-24)
+**Current Position:** Phase 8, Plan 2 (complete) — Plan 3 next
 **Last updated:** 2026-05-24
 
 ## Project Reference
@@ -87,6 +87,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|
+| 08 | 02 | ~5 min | 2 | 1 |
 | 08 | 01 | ~12 min | 2 | 8 |
 | 04.1 | 04 | ~12 min | 2 | 3 |
 | 04.1 | 03 | ~7 min | 2 | 6 |
@@ -184,3 +185,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [08-01] Migration 0011 uses IF NOT EXISTS on all three DDL statements for safe re-run on pre-altered DBs (T-08-01-01)
 - [08-01] checklist_runs is in control DB (not tenant DB) — platform metadata, no PII, IDOR check gated in routes (Plan 08-04)
 - [08-01] DEP_BLOCK_ON_HIGH_RED_TEAM defaults True — safe production default; operators can set to False to degrade high findings to warnings
+- Last session: 2026-05-24 — completed 08-02-PLAN.md (deployment_service.py: DeploymentReport/DeploymentWarning models, _TOOL_SUBMIT_REPORT, 4 signal collectors, _run_orchestrator_loop, run_orchestrator bridge, _make_iframe_snippet) — 1 commit: 828c525
+- [08-02] red_team_runs.findings is JSONB list — severity counts derived by iterating findings list, not a separate red_team_findings table (schema confirmed via alembic_tenant migration 0001)
+- [08-02] verified_qa column names are faithfulness and relevance (not faithfulness_score/relevance_score) — matches alembic_tenant migration 0005
+- [08-02] run_orchestrator wraps _run_orchestrator_loop in asyncio.run(asyncio.wait_for(..., timeout=120.0)) — swallows exceptions so Celery task can set status='failed'

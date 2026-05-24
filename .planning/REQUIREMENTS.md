@@ -113,9 +113,9 @@ Requirements for full platform delivery (M1–M10). M1–M4 is the first hireabl
 
 ### Pre-deployment Checklist (M8)
 
-- [ ] **DEP-01**: Orchestrator agent (Claude Agent SDK, Sonnet) reads eval results, red team findings, latency (p50/p95/p99), cost, and corpus coverage analysis
-- [ ] **DEP-02**: Orchestrator writes structured deployment recommendation: `ship | ship_with_warnings | block`
-- [ ] **DEP-03**: `block` triggered by: any critical eval failure or high/critical red team finding
+- [x] **DEP-01**: Orchestrator agent (Claude Agent SDK, Sonnet) reads eval results, red team findings, latency (p50/p95/p99), cost, and corpus coverage analysis
+- [x] **DEP-02**: Orchestrator writes structured deployment recommendation: `ship | ship_with_warnings | block`
+- [x] **DEP-03**: `block` triggered by: any critical eval failure or high/critical red team finding
 - [ ] **DEP-04**: Owner sees plain-language deployment report in admin UI with expandable technical detail
 - [ ] **DEP-05**: Owner must acknowledge each warning individually before `ship_with_warnings` proceeds; acknowledgments logged
 - [ ] **DEP-06**: On approval, iframe widget snippet is shown and the agent goes live
@@ -256,9 +256,9 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 | RED-06 | Phase 7 | M7 — Red Team | Pending |
 | RED-07 | Phase 7 | M7 — Red Team | Pending |
 | RED-08 | Phase 7 | M7 — Red Team | Pending |
-| DEP-01 | Phase 8 | M8 — Pre-deployment Checklist | Pending |
-| DEP-02 | Phase 8 | M8 — Pre-deployment Checklist | Pending |
-| DEP-03 | Phase 8 | M8 — Pre-deployment Checklist | Pending |
+| DEP-01 | Phase 8 | M8 — Pre-deployment Checklist | Complete |
+| DEP-02 | Phase 8 | M8 — Pre-deployment Checklist | Complete |
+| DEP-03 | Phase 8 | M8 — Pre-deployment Checklist | Complete |
 | DEP-04 | Phase 8 | M8 — Pre-deployment Checklist | Pending |
 | DEP-05 | Phase 8 | M8 — Pre-deployment Checklist | Pending |
 | DEP-06 | Phase 8 | M8 — Pre-deployment Checklist | Pending |
