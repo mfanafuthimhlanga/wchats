@@ -7,8 +7,24 @@ import Link from 'next/link'
 // Types
 // ---------------------------------------------------------------------------
 
-type DeployTab = 'embed' | 'design'
+type DeployTab = 'customize' | 'predeploy' | 'embed'
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
+
+type ChecklistState =
+  | { kind: 'idle' }
+  | { kind: 'running'; runId: string }
+  | { kind: 'complete'; run: ChecklistRun }
+  | { kind: 'approved' }
+
+interface ChecklistRun {
+  id: string
+  status: string
+  recommendation: string | null
+  report: Record<string, unknown> | null
+  warnings: Array<{ warning_id: string; category: string; message: string; severity_level: string }>
+  warning_acknowledgments: Record<string, string>
+  all_warnings_acknowledged: boolean
+}
 
 interface WidgetConfig {
   appearance: 'floating-button' | 'floating-mini-modal' | 'slide-out-panel'
@@ -184,11 +200,52 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ''
 
   // State
-  const [activeTab, setActiveTab] = useState<DeployTab>('embed')
+  const [activeTab, setActiveTab] = useState<DeployTab>('customize')
   const [widgetConfig, setWidgetConfig] = useState<WidgetConfig>(DEFAULT_CONFIG)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [loadError, setLoadError] = useState<string | null>(null)
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied'>('idle')
+  const [checklistState, setChecklistState] = useState<ChecklistState>({ kind: 'idle' })
+  const [acknowledged, setAcknowledged] = useState<Set<string>>(new Set())
+  const [checklistError, setChecklistError] = useState<string | null>(null)
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  const scoreColor = (score: number) =>
+    score >= 0.9 ? 'var(--green)' : score >= 0.7 ? 'var(--amber)' : 'var(--red)'
+
+  // ---------------------------------------------------------------------------
+  // Polling useEffect for checklist runs
+  // ---------------------------------------------------------------------------
+
+  useEffect(() => {
+    if (checklistState.kind !== 'running') return
+    const interval = setInterval(async () => {
+      try {
+        const token = await getToken()
+        if (!token) return
+        const r = await fetch(
+          `${apiBase}/api/v1/agents/${id}/checklist-runs/${checklistState.runId}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        )
+        if (!r.ok) return
+        const data = await r.json()
+        const run: ChecklistRun = data.run
+        if (run.status === 'complete' || run.status === 'failed') {
+          if (run.status === 'failed') {
+            setChecklistState({ kind: 'idle' })
+            setChecklistError('Checklist run failed. Try again or check the API logs.')
+          } else {
+            setChecklistState({ kind: 'complete', run })
+          }
+          clearInterval(interval)
+        }
+      } catch { /* ignore poll errors */ }
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [checklistState, id, apiBase, getToken])
 
   // ---------------------------------------------------------------------------
   // Load saved widget config on mount
@@ -341,6 +398,48 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
       >
         <button
           role="tab"
+          id="tab-customize"
+          aria-selected={activeTab === 'customize'}
+          aria-controls="panel-customize"
+          onClick={() => setActiveTab('customize')}
+          style={{
+            padding: '10px 20px',
+            border: 'none',
+            borderBottom: `2px solid ${activeTab === 'customize' ? 'var(--accent)' : 'transparent'}`,
+            background: 'none',
+            color: activeTab === 'customize' ? 'var(--accent)' : 'var(--text-3)',
+            fontWeight: activeTab === 'customize' ? 600 : 400,
+            fontSize: '14px',
+            cursor: activeTab === 'customize' ? 'default' : 'pointer',
+            fontFamily: 'var(--font-sans)',
+            marginBottom: -1,
+          }}
+        >
+          Customise Widget
+        </button>
+        <button
+          role="tab"
+          id="tab-predeploy"
+          aria-selected={activeTab === 'predeploy'}
+          aria-controls="panel-predeploy"
+          onClick={() => setActiveTab('predeploy')}
+          style={{
+            padding: '10px 20px',
+            border: 'none',
+            borderBottom: `2px solid ${activeTab === 'predeploy' ? 'var(--accent)' : 'transparent'}`,
+            background: 'none',
+            color: activeTab === 'predeploy' ? 'var(--accent)' : 'var(--text-3)',
+            fontWeight: activeTab === 'predeploy' ? 600 : 400,
+            fontSize: '14px',
+            cursor: activeTab === 'predeploy' ? 'default' : 'pointer',
+            fontFamily: 'var(--font-sans)',
+            marginBottom: -1,
+          }}
+        >
+          Pre-Deploy Check
+        </button>
+        <button
+          role="tab"
           id="tab-embed"
           aria-selected={activeTab === 'embed'}
           aria-controls="panel-embed"
@@ -355,29 +454,10 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
             fontSize: '14px',
             cursor: activeTab === 'embed' ? 'default' : 'pointer',
             fontFamily: 'var(--font-sans)',
+            marginBottom: -1,
           }}
         >
           Embed Code
-        </button>
-        <button
-          role="tab"
-          id="tab-design"
-          aria-selected={activeTab === 'design'}
-          aria-controls="panel-design"
-          onClick={() => setActiveTab('design')}
-          style={{
-            padding: '10px 20px',
-            border: 'none',
-            borderBottom: `2px solid ${activeTab === 'design' ? 'var(--accent)' : 'transparent'}`,
-            background: 'none',
-            color: activeTab === 'design' ? 'var(--accent)' : 'var(--text-3)',
-            fontWeight: activeTab === 'design' ? 600 : 400,
-            fontSize: '14px',
-            cursor: activeTab === 'design' ? 'default' : 'pointer',
-            fontFamily: 'var(--font-sans)',
-          }}
-        >
-          Customise Widget
         </button>
       </div>
 
@@ -443,8 +523,496 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
         </div>
       )}
 
-      {activeTab === 'design' && (
-        <div role="tabpanel" id="panel-design" aria-labelledby="tab-design" style={{ padding: '0' }}>
+      {activeTab === 'predeploy' && (
+        <div role="tabpanel" id="panel-predeploy" aria-labelledby="tab-predeploy" style={{ padding: '32px 40px' }}>
+          {/* Checklist error alert */}
+          {checklistError && (
+            <div
+              role="alert"
+              style={{
+                padding: '12px 16px',
+                marginBottom: '20px',
+                background: 'var(--red-bg)',
+                border: '1px solid rgba(185,28,28,0.3)',
+                borderRadius: 'var(--radius-xs)',
+                fontSize: '14px',
+                color: 'var(--red)',
+              }}
+            >
+              {checklistError}
+            </div>
+          )}
+
+          {/* STATE 1: idle — No Run */}
+          {checklistState.kind === 'idle' && (
+            <div style={{ border: '2px dashed var(--border)', padding: '64px 40px', textAlign: 'center', borderRadius: 'var(--radius-xs)' }}>
+              <h2 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-1)', margin: '0 0 12px' }}>
+                Ready to deploy your agent?
+              </h2>
+              <p style={{ fontSize: '14px', color: 'var(--text-3)', maxWidth: '420px', margin: '0 auto 24px', lineHeight: 1.5 }}>
+                Run the pre-deployment checklist to verify your agent meets quality standards before going live. The check takes 1–2 minutes.
+              </p>
+              <button
+                onClick={async () => {
+                  setChecklistError(null)
+                  try {
+                    const token = await getToken()
+                    if (!token) return
+                    const r = await fetch(`${apiBase}/api/v1/agents/${id}/checklist-runs`, {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${token}` },
+                    })
+                    if (r.status === 202) {
+                      const data = await r.json()
+                      setChecklistState({ kind: 'running', runId: data.checklist_run_id })
+                    } else {
+                      setChecklistError(`Failed to start checklist run (HTTP ${r.status}).`)
+                    }
+                  } catch (err) {
+                    console.error(err)
+                    setChecklistError('Failed to start checklist run. Please try again.')
+                  }
+                }}
+                style={{
+                  background: 'var(--accent)',
+                  color: '#fff',
+                  padding: '10px 18px',
+                  borderRadius: 'var(--radius-xs)',
+                  fontWeight: 600,
+                  fontSize: '14px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontFamily: 'var(--font-sans)',
+                }}
+              >
+                Run pre-deployment checklist
+              </button>
+            </div>
+          )}
+
+          {/* STATE 2: running */}
+          {checklistState.kind === 'running' && (
+            <div style={{ border: '2px dashed var(--border)', padding: '64px 40px', textAlign: 'center', borderRadius: 'var(--radius-xs)' }}>
+              <div
+                aria-label="Checking readiness"
+                aria-live="polite"
+                style={{
+                  width: '32px',
+                  height: '32px',
+                  border: '3px solid var(--border)',
+                  borderTopColor: 'var(--accent)',
+                  borderRadius: '50%',
+                  animation: 'spin-cw 1s linear infinite',
+                  margin: '0 auto 20px',
+                }}
+              />
+              <h2 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-1)', margin: '0 0 12px' }}>
+                {"Checking your agent's readiness…"}
+              </h2>
+              <p style={{ fontSize: '14px', color: 'var(--text-3)', lineHeight: 1.5 }}>
+                This usually takes 1–2 minutes. Your results will appear here automatically.
+              </p>
+            </div>
+          )}
+
+          {/* STATES 3/4/4b: complete */}
+          {checklistState.kind === 'complete' && (() => {
+            const run = checklistState.run
+            const rec = run.recommendation
+            const report = run.report as Record<string, unknown> | null
+            const evalSummary = report?.eval_summary as Record<string, unknown> | null
+            const redTeamSummary = report?.red_team_summary as Record<string, unknown> | null
+            const corpusStats = report?.corpus_stats as Record<string, unknown> | null
+            const qaStats = report?.verified_qa_stats as Record<string, unknown> | null
+            const passRates = (evalSummary?.pass_rates as Record<string, number>) ?? {}
+            const failingScenarios = (evalSummary?.failing_scenarios as number) ?? 0
+            const deploymentBlocked = redTeamSummary?.deployment_blocked as boolean | undefined
+            const severityCounts = (redTeamSummary?.severity_counts as Record<string, number>) ?? {}
+            const rowCount = (qaStats?.row_count as number) ?? 0
+            const avgFaithfulness = (qaStats?.avg_faithfulness as number) ?? 0
+            const avgRelevance = (qaStats?.avg_relevance as number) ?? 0
+            const docCount = (corpusStats?.document_count as number) ?? 0
+            const chunkCount = (corpusStats?.chunk_count as number) ?? 0
+            const lastIngested = corpusStats?.last_ingested_at as string | null | undefined
+            const isApprovable =
+              rec === 'ship' ||
+              (rec === 'ship_with_warnings' && acknowledged.size === run.warnings.length && run.warnings.length > 0)
+
+            const cardStyle = {
+              background: 'var(--surface-2)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-xs)',
+              padding: '16px',
+              boxShadow: 'var(--shadow-card)',
+            }
+            const labelStyle = {
+              fontSize: '11px',
+              fontWeight: 600,
+              textTransform: 'uppercase' as const,
+              letterSpacing: '0.08em',
+              color: 'var(--text-3)',
+              marginBottom: '12px',
+            }
+            const metricRowStyle = {
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              fontSize: '13px',
+              marginBottom: '6px',
+            }
+
+            return (
+              <>
+                {/* Banner */}
+                {rec === 'block' && (
+                  <div
+                    role="alert"
+                    style={{
+                      background: 'var(--red-bg)',
+                      border: '1px solid rgba(185,28,28,0.3)',
+                      borderLeft: '4px solid var(--red)',
+                      borderRadius: 'var(--radius-xs)',
+                      padding: '16px',
+                      marginBottom: '24px',
+                    }}
+                  >
+                    <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--red)', marginBottom: '6px' }}>
+                      ✕ <strong>Deployment blocked</strong>
+                    </div>
+                    <div style={{ fontSize: '14px', color: 'var(--text-3)' }}>
+                      {(report?.summary as string) || 'Agent has critical issues.'}
+                    </div>
+                  </div>
+                )}
+                {rec === 'ship_with_warnings' && (
+                  <div
+                    role="alert"
+                    style={{
+                      background: 'var(--amber-bg)',
+                      border: '1px solid rgba(146,64,14,0.3)',
+                      borderLeft: '4px solid var(--amber)',
+                      borderRadius: 'var(--radius-xs)',
+                      padding: '16px',
+                      marginBottom: '24px',
+                    }}
+                  >
+                    <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--amber)', marginBottom: '6px' }}>
+                      ⚠ Ready to deploy with warnings
+                    </div>
+                    <div style={{ fontSize: '14px', color: 'var(--text-3)' }}>{report?.summary as string}</div>
+                  </div>
+                )}
+                {rec === 'ship' && (
+                  <div
+                    style={{
+                      background: 'var(--green-bg)',
+                      border: '1px solid rgba(22,163,74,0.3)',
+                      borderLeft: '4px solid var(--green-solid)',
+                      borderRadius: 'var(--radius-xs)',
+                      padding: '16px',
+                      marginBottom: '24px',
+                    }}
+                  >
+                    <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--green)', marginBottom: '6px' }}>
+                      Agent is ready to deploy
+                    </div>
+                    <div style={{ fontSize: '14px', color: 'var(--text-3)' }}>{report?.summary as string}</div>
+                  </div>
+                )}
+
+                {/* Signal cards grid */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
+                  {/* Eval Quality */}
+                  <div style={cardStyle}>
+                    <p style={labelStyle}>EVAL QUALITY</p>
+                    {evalSummary?.last_run_at != null && (
+                      <div style={{ fontSize: '12px', color: 'var(--text-4)', marginBottom: '8px' }}>
+                        Last run: {String(evalSummary.last_run_at)}
+                      </div>
+                    )}
+                    {Object.entries(passRates).map(([metric, score]) => (
+                      <div key={metric} style={metricRowStyle}>
+                        <span style={{ color: 'var(--text-2)' }}>{metric.replace(/_/g, ' ')}</span>
+                        <span style={{ fontFamily: 'var(--font-mono)', color: scoreColor(score) }}>{score.toFixed(3)}</span>
+                      </div>
+                    ))}
+                    {failingScenarios > 0 && (
+                      <div style={{ fontSize: '13px', color: 'var(--red)', marginTop: '8px' }}>
+                        {failingScenarios} scenario{failingScenarios !== 1 ? 's' : ''} failed
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Security */}
+                  <div style={cardStyle}>
+                    <p style={labelStyle}>SECURITY</p>
+                    {redTeamSummary?.last_run_at != null && (
+                      <div style={{ fontSize: '12px', color: 'var(--text-4)', marginBottom: '8px' }}>
+                        Last run: {String(redTeamSummary.last_run_at)}
+                      </div>
+                    )}
+                    <div style={{ ...metricRowStyle, marginBottom: '10px' }}>
+                      <span style={{ color: 'var(--text-2)', fontSize: '13px' }}>Deployment status</span>
+                      <span style={{
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        padding: '2px 8px',
+                        borderRadius: 'var(--radius-xs)',
+                        background: deploymentBlocked ? 'var(--red-bg)' : 'var(--green-bg)',
+                        color: deploymentBlocked ? 'var(--red)' : 'var(--green)',
+                      }}>
+                        {deploymentBlocked ? 'BLOCKED' : 'OK'}
+                      </span>
+                    </div>
+                    {(['critical', 'high', 'medium', 'low'] as const).map((sev) => (
+                      <div key={sev} style={metricRowStyle}>
+                        <span style={{ color: 'var(--text-2)' }}>{sev.charAt(0).toUpperCase() + sev.slice(1)}</span>
+                        <span style={{
+                          fontFamily: 'var(--font-mono)',
+                          color: sev === 'critical' ? 'var(--red)' : sev === 'high' ? '#EA580C' : sev === 'medium' ? 'var(--amber)' : 'var(--text-3)',
+                        }}>
+                          {(severityCounts[sev] ?? 0)} finding{(severityCounts[sev] ?? 0) !== 1 ? 's' : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Corpus Coverage */}
+                  <div style={cardStyle}>
+                    <p style={labelStyle}>CORPUS COVERAGE</p>
+                    <div style={metricRowStyle}>
+                      <span style={{ color: 'var(--text-2)' }}>Documents</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-1)' }}>{docCount}</span>
+                    </div>
+                    <div style={metricRowStyle}>
+                      <span style={{ color: 'var(--text-2)' }}>Chunks</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-1)' }}>{chunkCount}</span>
+                    </div>
+                    {lastIngested && (
+                      <div style={metricRowStyle}>
+                        <span style={{ color: 'var(--text-2)' }}>Last ingested</span>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--text-3)' }}>
+                          {new Date(lastIngested).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Knowledge Depth */}
+                  <div style={cardStyle}>
+                    <p style={labelStyle}>KNOWLEDGE DEPTH</p>
+                    <div style={metricRowStyle}>
+                      <span style={{ color: 'var(--text-2)' }}>Verified Q&amp;A pairs</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-1)' }}>{rowCount}</span>
+                    </div>
+                    <div style={metricRowStyle}>
+                      <span style={{ color: 'var(--text-2)' }}>Avg faithfulness</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', color: scoreColor(avgFaithfulness) }}>{avgFaithfulness.toFixed(3)}</span>
+                    </div>
+                    <div style={metricRowStyle}>
+                      <span style={{ color: 'var(--text-2)' }}>Avg relevance</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', color: scoreColor(avgRelevance) }}>{avgRelevance.toFixed(3)}</span>
+                    </div>
+                    {rowCount < 50 && (
+                      <div style={{
+                        marginTop: '8px',
+                        fontSize: '11px',
+                        fontWeight: 500,
+                        padding: '2px 8px',
+                        borderRadius: 'var(--radius-xs)',
+                        background: 'var(--amber-bg)',
+                        color: 'var(--amber)',
+                        display: 'inline-block',
+                      }}>
+                        Below 50 — agent answers more from scratch
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Warning acknowledgments (ship_with_warnings only) */}
+                {rec === 'ship_with_warnings' && run.warnings.length > 0 && (
+                  <div style={{ marginBottom: '24px' }}>
+                    <p style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-1)', marginBottom: '12px' }}>
+                      Acknowledge each warning to proceed
+                    </p>
+                    {run.warnings.map((w) => {
+                      const badgeColors: Record<string, { bg: string; color: string }> = {
+                        eval_quality: { bg: 'var(--amber-bg)', color: 'var(--amber)' },
+                        security: { bg: 'var(--red-bg)', color: 'var(--red)' },
+                        knowledge_depth: { bg: '#EFF6FF', color: '#1D4ED8' },
+                        corpus_coverage: { bg: 'var(--green-bg)', color: 'var(--green)' },
+                      }
+                      const badge = badgeColors[w.category] ?? { bg: 'var(--surface-3)', color: 'var(--text-3)' }
+                      return (
+                        <label
+                          key={w.warning_id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            gap: '12px',
+                            padding: '12px 0',
+                            borderBottom: '1px solid var(--border-soft)',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            style={{ accentColor: 'var(--accent)', width: 16, height: 16, marginTop: '2px', flexShrink: 0 }}
+                            checked={acknowledged.has(w.warning_id)}
+                            onChange={async (e) => {
+                              if (e.target.checked) {
+                                try {
+                                  const token = await getToken()
+                                  if (!token) return
+                                  await fetch(
+                                    `${apiBase}/api/v1/agents/${id}/checklist-runs/${run.id}/acknowledge`,
+                                    {
+                                      method: 'POST',
+                                      headers: {
+                                        Authorization: `Bearer ${token}`,
+                                        'Content-Type': 'application/json',
+                                      },
+                                      body: JSON.stringify({ warning_ids: [w.warning_id] }),
+                                    }
+                                  )
+                                } catch { /* ignore */ }
+                                setAcknowledged((prev) => new Set(prev).add(w.warning_id))
+                              }
+                            }}
+                          />
+                          <span style={{
+                            fontSize: '11px',
+                            fontWeight: 500,
+                            padding: '2px 8px',
+                            borderRadius: 'var(--radius-xs)',
+                            background: badge.bg,
+                            color: badge.color,
+                            flexShrink: 0,
+                          }}>
+                            {w.category.replace(/_/g, ' ')}
+                          </span>
+                          <span style={{ fontSize: '14px', color: 'var(--text-1)', flex: 1 }}>{w.message}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* Approve button */}
+                {rec !== 'block' && (
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      disabled={!isApprovable}
+                      aria-disabled={!isApprovable}
+                      onClick={async () => {
+                        if (!isApprovable) return
+                        setChecklistError(null)
+                        try {
+                          const token = await getToken()
+                          if (!token) return
+                          const r = await fetch(`${apiBase}/api/v1/agents/${id}/approve-deployment`, {
+                            method: 'POST',
+                            headers: {
+                              Authorization: `Bearer ${token}`,
+                              'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ checklist_run_id: run.id }),
+                          })
+                          if (r.ok) {
+                            setChecklistState({ kind: 'approved' })
+                          } else {
+                            const d = await r.json().catch(() => ({}))
+                            setChecklistError(`Approval failed — ${(d as Record<string, string>).detail ?? r.status}. Ensure all warnings are acknowledged.`)
+                          }
+                        } catch (err) {
+                          console.error(err)
+                          setChecklistError('Approval failed. Please try again.')
+                        }
+                      }}
+                      style={{
+                        padding: '12px 24px',
+                        background: isApprovable ? 'var(--accent)' : 'var(--surface-3)',
+                        color: isApprovable ? '#fff' : 'var(--text-4)',
+                        border: 'none',
+                        borderRadius: 'var(--radius-xs)',
+                        fontWeight: 600,
+                        fontSize: '14px',
+                        cursor: isApprovable ? 'pointer' : 'not-allowed',
+                        fontFamily: 'var(--font-sans)',
+                      }}
+                    >
+                      Approve deployment
+                    </button>
+                  </div>
+                )}
+                {rec === 'block' && (
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      disabled
+                      aria-disabled="true"
+                      style={{
+                        padding: '12px 24px',
+                        background: 'var(--surface-3)',
+                        color: 'var(--text-4)',
+                        border: 'none',
+                        borderRadius: 'var(--radius-xs)',
+                        fontWeight: 600,
+                        fontSize: '14px',
+                        cursor: 'not-allowed',
+                        fontFamily: 'var(--font-sans)',
+                      }}
+                    >
+                      Cannot approve — resolve issues above
+                    </button>
+                  </div>
+                )}
+              </>
+            )
+          })()}
+
+          {/* STATE 5: approved */}
+          {checklistState.kind === 'approved' && (
+            <div style={{ textAlign: 'center', padding: '64px 40px' }}>
+              <div style={{
+                display: 'inline-block',
+                background: 'var(--green-bg)',
+                border: '1px solid rgba(22,163,74,0.3)',
+                borderRadius: '9999px',
+                padding: '6px 16px',
+                color: 'var(--green)',
+                fontWeight: 600,
+                fontSize: '13px',
+                marginBottom: '20px',
+              }}>
+                ● Live
+              </div>
+              <h2 style={{ fontSize: '22px', fontWeight: 700, color: 'var(--text-1)', margin: '0 0 12px' }}>
+                Your agent is live
+              </h2>
+              <p style={{ fontSize: '14px', color: 'var(--text-3)', marginBottom: '16px' }}>
+                Your widget is now active and ready to embed on your site.
+              </p>
+              <p style={{ fontSize: '14px', color: 'var(--text-3)' }}>
+                Go to the{' '}
+                <span
+                  style={{ color: 'var(--accent)', cursor: 'pointer', textDecoration: 'none' }}
+                  onClick={() => setActiveTab('embed')}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === 'Enter') setActiveTab('embed') }}
+                >
+                  Embed Code
+                </span>
+                {' '}tab to get your installation snippet.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'customize' && (
+        <div role="tabpanel" id="panel-customize" aria-labelledby="tab-customize" style={{ padding: '0' }}>
           {/* 3-column design panel */}
           <div
             style={{
