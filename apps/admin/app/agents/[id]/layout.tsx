@@ -15,6 +15,7 @@ interface AgentDetail {
   status: string
   neon_project_id: string | null
   schema_version: string | null
+  soul_role?: string | null
   soul_voice?: string | null
   soul_do_list?: string[] | null
   created_at: string
@@ -133,7 +134,7 @@ export default function AgentDetailLayout({
   })
 
   const documents = docsQuery.data ?? []
-  const soulSaved = !!(agent?.soul_voice || (agent?.soul_do_list?.length ?? 0) > 0)
+  const soulSaved = !!(agent?.soul_role || agent?.soul_voice || (agent?.soul_do_list?.length ?? 0) > 0)
   const hasDocs = documents.some((d) => d.parse_status !== 'failed')
   const configureDone = soulSaved && hasDocs
 

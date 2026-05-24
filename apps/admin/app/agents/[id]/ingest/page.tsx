@@ -1,4 +1,5 @@
 'use client'
+import Link from 'next/link'
 import { useState, useRef, useCallback, useEffect, use } from 'react'
 import { useAuth } from '@clerk/nextjs'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -1053,6 +1054,41 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
               )
             })}
           </div>
+        </div>
+      )}
+
+      {/* Next step CTA — visible once at least one document is successfully ingested */}
+      {documents.some((d) => d.parse_status !== 'failed') && (
+        <div
+          style={{
+            marginTop: '32px',
+            paddingTop: '24px',
+            borderTop: '1px solid var(--border-soft)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <p style={{ fontSize: '14px', color: 'var(--text-3)', margin: 0 }}>
+            Knowledge base ready — you can now run evaluations.
+          </p>
+          <Link
+            href={`/agents/${id}/eval`}
+            style={{
+              display: 'inline-block',
+              padding: '12px 28px',
+              minHeight: '44px',
+              background: 'var(--accent)',
+              color: '#fff',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '15px',
+              fontWeight: 600,
+              textDecoration: 'none',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Next: Run Evals →
+          </Link>
         </div>
       )}
 

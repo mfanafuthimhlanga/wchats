@@ -17,6 +17,7 @@ interface AgentDetail {
   status: 'pending' | 'provisioning' | 'ready' | 'error' | string
   neon_project_id: string | null
   schema_version: string | null
+  soul_role?: string | null
   soul_voice?: string | null
   soul_do_list?: string[] | null
   created_at: string
@@ -125,6 +126,7 @@ export default function AgentJourneyPage({
 
   // Derived soulSaved — gates the soul card CTA emphasis + downstream copy
   const soulSaved = !!(
+    agent?.soul_role ||
     agent?.soul_voice ||
     (agent?.soul_do_list?.length ?? 0) > 0
   )

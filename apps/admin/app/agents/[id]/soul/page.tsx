@@ -214,7 +214,9 @@ export default function SoulEditorPage({
     setSaveStatus('saving')
     const body = {
       name: name || undefined,
-      soul_role: soulRole || undefined,
+      // Always send the displayed role value — if the user never touched the
+      // dropdown the state is '' but we should persist the shown default.
+      soul_role: soulRole || ROLE_OPTIONS[0],
       soul_voice: soulVoice || undefined,
       // Strip empty items client-side before PATCH (server also strips)
       soul_do_list: soulDoList.map((item) => item.value).filter((s) => s.trim().length > 0),
@@ -615,7 +617,7 @@ export default function SoulEditorPage({
             width: '400px',
             padding: '32px',
             borderLeft: '1px solid var(--border)',
-            background: 'var(--surface-1)',
+            background: 'var(--surface-3)',
             overflowY: 'auto',
             flexShrink: 0,
           }}
@@ -639,11 +641,11 @@ export default function SoulEditorPage({
               lineHeight: 1.65,
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-word',
-              color: 'var(--text-2)',
-              background: 'var(--surface-2)',
+              color: '#D4C0BC',
+              background: '#1A0A0F',
               padding: '16px',
               borderRadius: 'var(--radius-xs)',
-              border: '1px solid var(--border-soft)',
+              border: '1px solid rgba(255,255,255,0.06)',
               margin: 0,
             }}
           >
