@@ -136,7 +136,26 @@ export default function AgentDetailLayout({
   const soulSaved = !!(agent?.soul_voice || (agent?.soul_do_list?.length ?? 0) > 0)
   const hasDocs = documents.some((d) => d.parse_status !== 'failed')
   const configureDone = soulSaved && hasDocs
-  const step3Done = false // M6 not built
+
+  // Eval runs query — gated on configureDone so we don't hit the tenant DB
+  // before the agent is configured. step3Done unlocks step 4 (Deploy).
+  const evalRunsQuery = useQuery({
+    queryKey: ['agent-eval-runs', id],
+    queryFn: async () => {
+      const token = await getToken()
+      if (!token) throw new Error('Not authenticated')
+      const r = await fetch(`${apiBase}/api/v1/agents/${id}/eval-runs`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const data = await r.json()
+      return (data.eval_runs ?? []) as { id: string; status: string }[]
+    },
+    enabled: isLoaded && !!isSignedIn && configureDone,
+    staleTime: 30_000,
+  })
+
+  const step3Done = (evalRunsQuery.data?.length ?? 0) > 0
 
   const flags: StepFlags = { step1Done, configureDone, step3Done }
 

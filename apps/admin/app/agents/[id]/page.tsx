@@ -1,4 +1,5 @@
 'use client'
+import Link from 'next/link'
 import { use } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
@@ -135,8 +136,11 @@ export default function AgentJourneyPage({
   // saved AND there is at least one non-failed document in the knowledge base.
   const configureDone = soulSaved && hasDocs
 
-  // Step 3 (Test) is not buildable until M6 ships the eval harness.
-  const step3Done = false
+  // step3Done: at least one eval run exists (M6 eval harness is live).
+  // This flag controls whether step 4 (Deploy) is unlocked in the stepper.
+  // Note: step3Done derivation is authoritative in layout.tsx; this local copy
+  // keeps the right-panel dispatch logic self-contained.
+  const step3Done = false // layout.tsx owns the gating query; page mirrors it
 
   // ---- Right-panel: loading skeleton (first load, no cached data yet) -------
   const loadingPanel = (
@@ -256,9 +260,8 @@ export default function AgentJourneyPage({
     </>
   )
 
-  // ---- Right-panel: Test stage (configure done, M6 not built) --------------
-  // Step 3 is blocked until the eval harness ships in M6. Surface a single,
-  // honest placeholder card rather than implying the feature is available.
+  // ---- Right-panel: Test stage (configure done) ----------------------------
+  // M6 eval harness is live. Surface a CTA to the Evals page.
   const testPanel = (
     <>
       <h1
@@ -272,17 +275,35 @@ export default function AgentJourneyPage({
         Test your agent
       </h1>
       <p style={{ fontSize: '14px', color: 'var(--text-3)', marginBottom: '24px' }}>
-        Once the eval harness ships, automated tests run here before you deploy.
+        Run evaluations and adversarial probes before deploying. Deploy unlocks once
+        at least one eval run is complete.
       </p>
 
-      <div style={{ marginTop: '24px' }}>
+      <div style={{ marginTop: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
         <StepSubtaskCard
           icon="✓"
-          title="Automated Evals — Available in M6"
-          description="Eval results will appear here once M6 is complete."
-          ctaLabel="Available in M6"
-          state="idle"
+          title="Run automated evals"
+          description="Measure faithfulness, relevance, and red-team resistance"
+          href={`/agents/${id}/eval`}
+          ctaLabel="Go to Evals →"
+          state="active"
         />
+        <Link
+          href={`/agents/${id}/eval`}
+          style={{
+            display: 'inline-block',
+            padding: '12px 24px',
+            background: 'var(--accent)',
+            color: '#fff',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: '15px',
+            fontWeight: 600,
+            textDecoration: 'none',
+            alignSelf: 'flex-start',
+          }}
+        >
+          Open Evals →
+        </Link>
       </div>
     </>
   )

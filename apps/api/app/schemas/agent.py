@@ -45,6 +45,10 @@ class AgentResponse(BaseModel):
     status: str
     neon_project_id: str | None
     schema_version: str | None
+    soul_role: str | None = None
+    soul_voice: str | None = None
+    soul_do_list: list = []
+    soul_donot_list: list = []
     created_at: datetime
 
 
