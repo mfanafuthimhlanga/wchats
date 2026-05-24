@@ -3,23 +3,23 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: complete
-last_updated: "2026-05-23T16:38:12.376Z"
+last_updated: "2026-05-24T00:00:00.000Z"
 progress:
-  total_phases: 8
-  completed_phases: 8
-  total_plans: 56
-  completed_plans: 56
-  percent: 100
+  total_phases: 10
+  completed_phases: 9
+  total_plans: 72
+  completed_plans: 62
+  percent: 86
 ---
 
 # Project State
 
 ## Current Status
 
-**Active Milestone:** M7 — Red Team COMPLETE (6/6 plans)
-**Milestone Phase:** Phase 7 COMPLETE — 6 plans, 5 waves, RED-01–RED-08 all satisfied (2026-05-23)
-**Current Position:** Phase 7, Plan 6 (07-06 complete — all plans done)
-**Last updated:** 2026-05-23
+**Active Milestone:** M8 — Pre-deployment Checklist (1/7 plans complete)
+**Milestone Phase:** Phase 8 IN PROGRESS — 7 plans, 6 waves, DEP-01–DEP-08 mapped; Plan 01 complete (2026-05-24)
+**Current Position:** Phase 8, Plan 1 (complete) — Plan 2 next
+**Last updated:** 2026-05-24
 
 ## Project Reference
 
@@ -87,6 +87,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|
+| 08 | 01 | ~12 min | 2 | 8 |
 | 04.1 | 04 | ~12 min | 2 | 3 |
 | 04.1 | 03 | ~7 min | 2 | 6 |
 | 04 | 07 | ~22 min | 2 | 25 |
@@ -160,6 +161,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Last session: 2026-05-23 — completed 07-06-PLAN.md (demo_m7.sh: weak agent, red team trigger, Celery poll, deployment gate assertion, injection trace; test_red_team_e2e.py: RED_TEAM_E2E_ENABLED guard, 300s poll loop, schema validation) — 2 commits: a5b0fa9 + 8aff4fa
 - Phase 6 COMPLETE: all 9/9 plans done, all EVL-01 through EVL-08 requirements satisfied
 - Phase 7 COMPLETE: all 6/6 plans done, all RED-01 through RED-08 requirements satisfied
+- Last session: 2026-05-24 — Phase 8 fully planned: RESEARCH.md + VALIDATION.md + UI-SPEC.md + 08-predeploy-mockup.html + PATTERNS.md + 7 PLAN.md files (08-01–08-07) — 4 blockers found and fixed; verification PASSED; all DEP-01–DEP-08 covered
 - Phase 7 VERIFIED (2026-05-23): 8/8 must-haves pass codebase audit; code review fixed 2 critical (SQL data isolation + asyncio nested loop) + 5 warnings; 18 unit tests pass; 07-VERIFICATION.md written
 - Phase 6 VERIFIED (2026-05-23): automated codebase audit confirms all EVL-01–EVL-08 PASS; 06-VERIFICATION.md written
 - [TODO-RET-01] F7 / filters enforcement gate: retrieve_tool filters field must have allowlisted-column enforcement before being wired to LLM output. Gate: M5 phase planning MUST resolve this before activating filters in retrieve_tool. Logged Phase 4.1.
@@ -178,3 +180,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [07-06] demo_m7.sh agent status polling handles two JSON shapes (status at root vs. nested under 'agent' key) via Python extractor fallback
 - [07-06] Section 4 assertion output uses KEY=VALUE line format parsed with grep+cut — avoids subshell quoting issues with multi-line Python blocks in bash strict mode
 - [07-06] E2E test polls GET /red-team-runs instead of direct Celery state — avoids requiring celery_app import in CI test runner environment
+- Last session: 2026-05-24 — completed 08-01-PLAN.md (migration 0011, ChecklistRun ORM, Agent.is_deployed, DEP_BLOCK_ON_HIGH_RED_TEAM, 4 xfail test stubs) — 2 commits: 72a3cb6 + 5b211b9
+- [08-01] Migration 0011 uses IF NOT EXISTS on all three DDL statements for safe re-run on pre-altered DBs (T-08-01-01)
+- [08-01] checklist_runs is in control DB (not tenant DB) — platform metadata, no PII, IDOR check gated in routes (Plan 08-04)
+- [08-01] DEP_BLOCK_ON_HIGH_RED_TEAM defaults True — safe production default; operators can set to False to degrade high findings to warnings

@@ -302,7 +302,7 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 **Plans:** 7 plans, 6 waves
 
 Plans:
-- [ ] 08-01-PLAN.md — Foundation: migration 0011 + ChecklistRun ORM + is_deployed + DEP_BLOCK_ON_HIGH_RED_TEAM + 4 xfail test stubs
+- [x] 08-01-PLAN.md — Foundation: migration 0011 + ChecklistRun ORM + is_deployed + DEP_BLOCK_ON_HIGH_RED_TEAM + 4 xfail test stubs
 - [ ] 08-02-PLAN.md — deployment_service.py: Agent SDK orchestrator + 4 signal collectors + submit_report tool + DeploymentReport models
 - [ ] 08-03-PLAN.md — run_deployment_checklist Celery task (runtime queue, acks_late, idempotency 60 min, dual-DB split)
 - [ ] 08-04-PLAN.md — FastAPI routes (5 routes: trigger/list/detail/acknowledge/approve) + Pydantic schemas
