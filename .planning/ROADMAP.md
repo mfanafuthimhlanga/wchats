@@ -304,10 +304,10 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 Plans:
 - [x] 08-01-PLAN.md — Foundation: migration 0011 + ChecklistRun ORM + is_deployed + DEP_BLOCK_ON_HIGH_RED_TEAM + 4 xfail test stubs
 - [x] 08-02-PLAN.md — deployment_service.py: Agent SDK orchestrator + 4 signal collectors + submit_report tool + DeploymentReport models
-- [ ] 08-03-PLAN.md — run_deployment_checklist Celery task (runtime queue, acks_late, idempotency 60 min, dual-DB split)
-- [ ] 08-04-PLAN.md — FastAPI routes (5 routes: trigger/list/detail/acknowledge/approve) + Pydantic schemas
-- [ ] 08-05-PLAN.md — Admin UI Pre-Deploy tab (Next.js, 5 states, polling, warning checkboxes, approval flow)
-- [ ] 08-06-PLAN.md — De-xfail all unit tests (test_deployment_service + test_deployment_task + test_deployment_routes)
+- [x] 08-03-PLAN.md — run_deployment_checklist Celery task (runtime queue, acks_late, idempotency 60 min, dual-DB split)
+- [x] 08-04-PLAN.md — FastAPI routes (5 routes: trigger/list/detail/acknowledge/approve) + Pydantic schemas
+- [x] 08-05-PLAN.md — Admin UI Pre-Deploy tab (Next.js, 5 states, polling, warning checkboxes, approval flow)
+- [x] 08-06-PLAN.md — De-xfail all unit tests (test_deployment_service + test_deployment_task + test_deployment_routes)
 - [ ] 08-07-PLAN.md — demo_m8.sh + guarded E2E test (DEP_E2E_ENABLED) + celery_app include + main.py router registration
 
 **Success Criteria:**
@@ -384,4 +384,4 @@ When starting a new milestone: write `prd-MN.md` first, then run `/gsd-discuss-p
 ---
 
 *Roadmap created: 2026-05-12*
-*Last updated: 2026-05-23 — M7 COMPLETE (6/6 plans): demo_m7.sh (weak agent + deployment gate assertion + injection trace) + guarded E2E test (RED_TEAM_E2E_ENABLED); RED-08 satisfied*
+*Last updated: 2026-05-24 — 08-06 COMPLETE: 15 unit tests de-xfailed (DEP-01–DEP-06); deployment router added to main.py (Rule 1 fix); 6/7 M8 plans done*

@@ -8,17 +8,17 @@ progress:
   total_phases: 10
   completed_phases: 9
   total_plans: 72
-  completed_plans: 63
-  percent: 88
+  completed_plans: 64
+  percent: 89
 ---
 
 # Project State
 
 ## Current Status
 
-**Active Milestone:** M8 — Pre-deployment Checklist (5/7 plans complete)
-**Milestone Phase:** Phase 8 IN PROGRESS — 7 plans, 6 waves, DEP-01–DEP-08 mapped; Plans 01–05 complete (2026-05-24)
-**Current Position:** Phase 8, Plan 5 (complete) — Plan 6 next
+**Active Milestone:** M8 — Pre-deployment Checklist (6/7 plans complete)
+**Milestone Phase:** Phase 8 IN PROGRESS — 7 plans, 6 waves, DEP-01–DEP-08 mapped; Plans 01–06 complete (2026-05-24)
+**Current Position:** Phase 8, Plan 6 (complete) — Plan 7 next
 **Last updated:** 2026-05-24
 
 ## Project Reference
@@ -87,6 +87,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|
+| 08 | 06 | ~40 min | 2 | 4 |
 | 08 | 05 | ~20 min | 2 | 1 |
 | 08 | 02 | ~5 min | 2 | 1 |
 | 08 | 01 | ~12 min | 2 | 8 |
@@ -193,3 +194,8 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [08-02] red_team_runs.findings is JSONB list — severity counts derived by iterating findings list, not a separate red_team_findings table (schema confirmed via alembic_tenant migration 0001)
 - [08-02] verified_qa column names are faithfulness and relevance (not faithfulness_score/relevance_score) — matches alembic_tenant migration 0005
 - [08-02] run_orchestrator wraps _run_orchestrator_loop in asyncio.run(asyncio.wait_for(..., timeout=120.0)) — swallows exceptions so Celery task can set status='failed'
+- Last session: 2026-05-24 — completed 08-06-PLAN.md (de-xfail 10 stubs → 15 real tests; Rule 1 fix: deployment router added to main.py) — 2 commits: 86f3f2e + ccb0220
+- [08-06] _call_orchestrator_async patched (not run_orchestrator) — task calls asyncio.run(_call_orchestrator_async(...)) so patch the coroutine, not the sync bridge
+- [08-06] Celery Retry exception caught with broad except in failure-path test — CELERY_TASK_ALWAYS_EAGER=True causes self.retry() to raise Retry; important assertion is db.commit() was called before retry
+- [08-06] deployment router was missing from main.py — Rule 1 auto-fix; all route tests returned 404 until fix applied
+- [08-06] Pre-existing unit test failures in test_agent_chat_routes, test_agents_patch, test_chunking_service, etc. logged to .planning/deferred-items.md; not introduced by 08-06
