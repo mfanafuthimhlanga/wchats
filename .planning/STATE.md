@@ -16,9 +16,9 @@ progress:
 
 ## Current Status
 
-**Active Milestone:** M8 — Pre-deployment Checklist (2/7 plans complete)
-**Milestone Phase:** Phase 8 IN PROGRESS — 7 plans, 6 waves, DEP-01–DEP-08 mapped; Plans 01–02 complete (2026-05-24)
-**Current Position:** Phase 8, Plan 2 (complete) — Plan 3 next
+**Active Milestone:** M8 — Pre-deployment Checklist (5/7 plans complete)
+**Milestone Phase:** Phase 8 IN PROGRESS — 7 plans, 6 waves, DEP-01–DEP-08 mapped; Plans 01–05 complete (2026-05-24)
+**Current Position:** Phase 8, Plan 5 (complete) — Plan 6 next
 **Last updated:** 2026-05-24
 
 ## Project Reference
@@ -87,6 +87,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|
+| 08 | 05 | ~20 min | 2 | 1 |
 | 08 | 02 | ~5 min | 2 | 1 |
 | 08 | 01 | ~12 min | 2 | 8 |
 | 04.1 | 04 | ~12 min | 2 | 3 |
@@ -162,6 +163,9 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Last session: 2026-05-23 — completed 07-06-PLAN.md (demo_m7.sh: weak agent, red team trigger, Celery poll, deployment gate assertion, injection trace; test_red_team_e2e.py: RED_TEAM_E2E_ENABLED guard, 300s poll loop, schema validation) — 2 commits: a5b0fa9 + 8aff4fa
 - Phase 6 COMPLETE: all 9/9 plans done, all EVL-01 through EVL-08 requirements satisfied
 - Phase 7 COMPLETE: all 6/6 plans done, all RED-01 through RED-08 requirements satisfied
+- Last session: 2026-05-24 — completed 08-05-PLAN.md (Pre-Deploy tab UI: DeployTab 'customize'|'predeploy'|'embed', ChecklistState 5-state machine, polling useEffect 3000ms, 4 signal cards, warning ack gate, approve button) — 1 commit: 9531b78
+- [08-05] DeployTab initial state changed to 'customize' (not 'predeploy') per UI-SPEC journey ordering: Customise first
+- [08-05] Both tasks committed together (9531b78) — implementation was a single edit pass; all acceptance criteria verified
 - Last session: 2026-05-24 — Phase 8 fully planned: RESEARCH.md + VALIDATION.md + UI-SPEC.md + 08-predeploy-mockup.html + PATTERNS.md + 7 PLAN.md files (08-01–08-07) — 4 blockers found and fixed; verification PASSED; all DEP-01–DEP-08 covered
 - Phase 7 VERIFIED (2026-05-23): 8/8 must-haves pass codebase audit; code review fixed 2 critical (SQL data isolation + asyncio nested loop) + 5 warnings; 18 unit tests pass; 07-VERIFICATION.md written
 - Phase 6 VERIFIED (2026-05-23): automated codebase audit confirms all EVL-01–EVL-08 PASS; 06-VERIFICATION.md written
