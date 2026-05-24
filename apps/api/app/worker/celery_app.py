@@ -83,6 +83,8 @@ celery_app.conf.update(
         "app.worker.tasks.runtime.eval",
         # M7: red team tasks (runtime queue)
         "app.worker.tasks.runtime.red_team",
+        # M8: deployment checklist task (runtime queue)
+        "app.worker.tasks.runtime.deployment",
     ],
 
     # --- Queue topology -------------------------------------------------
