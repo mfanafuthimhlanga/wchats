@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -40,7 +41,7 @@ class AcknowledgeResponse(BaseModel):
 
 
 class ApproveDeploymentRequest(BaseModel):
-    checklist_run_id: str   # UUID of the checklist_run to approve
+    checklist_run_id: UUID  # UUID of the checklist_run to approve — typed UUID so db.get(ChecklistRun, ...) matches UUID PK
 
 
 class ApproveDeploymentResponse(BaseModel):
