@@ -22,7 +22,7 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 | M5 | Validation Chain | Async Gatekeeper + Auditor + Strategist on every response | 7 | `prd-M5.md` | ○ Pending |
 | M6 | Eval System | Ragas nightly evals + scenario mining + eval dashboard | 8 | `prd-M6.md` | ✓ Complete (9/9 plans) |
 | M7 | Red Team | Three adversarial agents + severity classification + deployment gate | 8 | `prd-M7.md` | ✓ Complete (6/6 plans) |
-| M8 | Pre-deployment Checklist | Orchestrator agent + owner approval gate + journey validated | 8 | `prd-M8.md` | ○ Pending |
+| M8 | Pre-deployment Checklist | Orchestrator agent + owner approval gate + journey validated | 8 | `prd-M8.md` | ✓ Complete (7/7 plans) |
 | M9 | Retrieval Strategy Synthesis | Strategist auto-generates per-tenant retrieval configs | 3 | `prd-M9.md` | ○ Pending |
 | M10 | Maintenance + Observability | Autonomous crons + digest email + Langfuse dashboards + alerting | 6 | `prd-M10.md` | ○ Pending |
 
@@ -308,7 +308,7 @@ Plans:
 - [x] 08-04-PLAN.md — FastAPI routes (5 routes: trigger/list/detail/acknowledge/approve) + Pydantic schemas
 - [x] 08-05-PLAN.md — Admin UI Pre-Deploy tab (Next.js, 5 states, polling, warning checkboxes, approval flow)
 - [x] 08-06-PLAN.md — De-xfail all unit tests (test_deployment_service + test_deployment_task + test_deployment_routes)
-- [ ] 08-07-PLAN.md — demo_m8.sh + guarded E2E test (DEP_E2E_ENABLED) + celery_app include + main.py router registration
+- [x] 08-07-PLAN.md — demo_m8.sh + guarded E2E test (DEP_E2E_ENABLED) + celery_app include + main.py router registration
 
 **Success Criteria:**
 1. Non-technical tester completes full journey (signup → ingest → approve → widget live) without assistance.

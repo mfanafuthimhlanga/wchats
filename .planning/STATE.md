@@ -16,9 +16,9 @@ progress:
 
 ## Current Status
 
-**Active Milestone:** M8 — Pre-deployment Checklist (6/7 plans complete)
-**Milestone Phase:** Phase 8 IN PROGRESS — 7 plans, 6 waves, DEP-01–DEP-08 mapped; Plans 01–06 complete (2026-05-24)
-**Current Position:** Phase 8, Plan 6 (complete) — Plan 7 next
+**Active Milestone:** M8 — Pre-deployment Checklist (7/7 plans complete)
+**Milestone Phase:** Phase 8 COMPLETE — 7 plans, 6 waves, DEP-01–DEP-08 mapped; all plans complete (2026-05-24)
+**Current Position:** Phase 8, Plan 7 (complete) — Phase 8 complete; awaiting human-verify checkpoint
 **Last updated:** 2026-05-24
 
 ## Project Reference
@@ -87,6 +87,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|
+| 08 | 07 | ~25 min | 2 | 3 |
 | 08 | 06 | ~40 min | 2 | 4 |
 | 08 | 05 | ~20 min | 2 | 1 |
 | 08 | 02 | ~5 min | 2 | 1 |
@@ -186,6 +187,10 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [07-06] demo_m7.sh agent status polling handles two JSON shapes (status at root vs. nested under 'agent' key) via Python extractor fallback
 - [07-06] Section 4 assertion output uses KEY=VALUE line format parsed with grep+cut — avoids subshell quoting issues with multi-line Python blocks in bash strict mode
 - [07-06] E2E test polls GET /red-team-runs instead of direct Celery state — avoids requiring celery_app import in CI test runner environment
+- [08-07] main.py deployment router already registered (Wave 5 Rule 1 auto-fix in 08-06) — no change needed in Task 1
+- [08-07] demo_m8.sh block outcome exits 0 — block is valid checklist result, not a script failure
+- [08-07] demo_m8.sh no echo of API_KEY in any print statement (T-08-07-01 satisfied)
+- [08-07] test_deployment_e2e.py uses E2E_AGENT_ID (not AGENT_ID) to prevent accidental targeting of production agent
 - Last session: 2026-05-24 — completed 08-01-PLAN.md (migration 0011, ChecklistRun ORM, Agent.is_deployed, DEP_BLOCK_ON_HIGH_RED_TEAM, 4 xfail test stubs) — 2 commits: 72a3cb6 + 5b211b9
 - [08-01] Migration 0011 uses IF NOT EXISTS on all three DDL statements for safe re-run on pre-altered DBs (T-08-01-01)
 - [08-01] checklist_runs is in control DB (not tenant DB) — platform metadata, no PII, IDOR check gated in routes (Plan 08-04)
@@ -194,6 +199,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [08-02] red_team_runs.findings is JSONB list — severity counts derived by iterating findings list, not a separate red_team_findings table (schema confirmed via alembic_tenant migration 0001)
 - [08-02] verified_qa column names are faithfulness and relevance (not faithfulness_score/relevance_score) — matches alembic_tenant migration 0005
 - [08-02] run_orchestrator wraps _run_orchestrator_loop in asyncio.run(asyncio.wait_for(..., timeout=120.0)) — swallows exceptions so Celery task can set status='failed'
+- Last session: 2026-05-24 — completed 08-07-PLAN.md (celery_app include deployment task; demo_m8.sh 6-section M8 journey; test_deployment_e2e.py de-stubbed with real poll/ack/approve flow) — 2 commits: 2454da1 + 5a0110e; blocking human-verify checkpoint active
 - Last session: 2026-05-24 — completed 08-06-PLAN.md (de-xfail 10 stubs → 15 real tests; Rule 1 fix: deployment router added to main.py) — 2 commits: 86f3f2e + ccb0220
 - [08-06] _call_orchestrator_async patched (not run_orchestrator) — task calls asyncio.run(_call_orchestrator_async(...)) so patch the coroutine, not the sync bridge
 - [08-06] Celery Retry exception caught with broad except in failure-path test — CELERY_TASK_ALWAYS_EAGER=True causes self.retry() to raise Retry; important assertion is db.commit() was called before retry
