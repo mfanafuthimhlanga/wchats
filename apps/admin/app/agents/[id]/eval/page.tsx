@@ -360,7 +360,7 @@ export default function EvalPage({
     borderRadius: 'var(--radius-sm)',
     padding: '64px 40px',
     textAlign: 'center',
-    background: 'var(--surface-1)',
+    background: 'var(--surface-2)',
   }
 
   const tableCardStyle: React.CSSProperties = {

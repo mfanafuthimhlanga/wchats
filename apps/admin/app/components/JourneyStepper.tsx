@@ -1,5 +1,6 @@
 'use client'
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,6 +28,20 @@ export interface JourneyStepperProps {
 // ---------------------------------------------------------------------------
 
 export default function JourneyStepper({ agentName, agentRole, steps }: JourneyStepperProps) {
+  const pathname = usePathname()
+
+  // Determine which step is the current page (exact href match wins; fall back
+  // to the longest prefix match so sub-pages like /soul and /ingest still light
+  // up their parent step).
+  const currentStepKey = (
+    steps.find((s) => s.href && s.href === pathname) ??
+    steps.reduce<JourneyStep | null>((best, s) => {
+      if (!s.href || !pathname.startsWith(s.href + '/')) return best
+      if (!best || s.href.length > (best.href?.length ?? 0)) return s
+      return best
+    }, null)
+  )?.key ?? null
+
   return (
     <aside
       style={{
@@ -63,14 +78,20 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
       {/* Step list */}
       {steps.map((step, idx) => {
         const isLast = idx === steps.length - 1
+        // If the user is on this step's page and data says locked, treat it as
+        // active so the current page is never ghosted.
+        const isCurrentPage = step.key === currentStepKey
+        const visualState: StepState =
+          isCurrentPage && step.state === 'locked' ? 'active' : step.state
+
         const containerStyle: React.CSSProperties = {
           position: 'relative',
           padding: '12px',
           borderRadius: 'var(--radius-xs)',
           marginBottom: '8px',
-          ...(step.state === 'active'
+          ...(visualState === 'active'
             ? { background: 'rgba(217,119,6,0.08)', border: '1px solid rgba(217,119,6,0.2)' }
-            : step.state === 'done'
+            : visualState === 'done'
             ? { background: 'var(--green-bg)', border: '1px solid rgba(22,163,74,0.2)' }
             : { background: 'transparent', border: '1px solid transparent', opacity: 0.45 }),
         }
@@ -85,9 +106,9 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
           fontSize: '13px',
           fontWeight: 600,
           flexShrink: 0,
-          ...(step.state === 'done'
+          ...(visualState === 'done'
             ? { background: '#16A34A', color: '#fff' }
-            : step.state === 'active'
+            : visualState === 'active'
             ? { background: 'transparent', border: '2px solid #D97706', color: '#D97706' }
             : { background: 'var(--surface-3)', border: '1px solid var(--border)', color: 'var(--text-4)' }),
         }
@@ -96,7 +117,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             {/* Circle indicator */}
             <div style={circleStyle}>
-              {step.state === 'done' ? '✓' : step.num}
+              {visualState === 'done' ? '✓' : step.num}
             </div>
 
             {/* Text block */}
@@ -105,7 +126,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
                 style={{
                   fontSize: '14px',
                   fontWeight: 600,
-                  color: step.state === 'locked' ? 'var(--text-4)' : 'var(--text-1)',
+                  color: visualState === 'locked' ? 'var(--text-4)' : 'var(--text-1)',
                 }}
               >
                 {step.title}
@@ -113,7 +134,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
               <div
                 style={{
                   fontSize: '12px',
-                  color: step.state === 'locked' ? 'var(--text-4)' : 'var(--text-3)',
+                  color: visualState === 'locked' ? 'var(--text-4)' : 'var(--text-3)',
                 }}
               >
                 {step.subtitle}
@@ -121,7 +142,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
             </div>
 
             {/* Done badge */}
-            {step.state === 'done' && (
+            {visualState === 'done' && (
               <span
                 style={{
                   marginLeft: 'auto',
@@ -143,11 +164,11 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
         return (
           <div key={step.key} style={containerStyle}>
             {/* Row: optionally wrapped in Link */}
-            {step.href && step.state !== 'locked' ? (
+            {step.href && visualState !== 'locked' ? (
               <Link
                 href={step.href}
                 style={{ textDecoration: 'none', color: 'inherit', display: 'block' }}
-                aria-label={`${step.title} — ${step.state === 'done' ? 'completed' : 'in progress'}`}
+                aria-label={`${step.title} — ${visualState === 'done' ? 'completed' : 'in progress'}`}
               >
                 {rowContent}
               </Link>
@@ -164,8 +185,8 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
                   top: '52px',
                   bottom: '-8px',
                   width: '2px',
-                  background: step.state === 'done' ? '#16A34A' : 'var(--border-soft)',
-                  opacity: step.state === 'done' ? 0.4 : 1,
+                  background: visualState === 'done' ? '#16A34A' : 'var(--border-soft)',
+                  opacity: visualState === 'done' ? 0.4 : 1,
                 }}
               />
             )}
