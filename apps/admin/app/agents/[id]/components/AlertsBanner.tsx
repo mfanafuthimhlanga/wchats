@@ -1,5 +1,5 @@
 "use client"
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useAuth } from "@clerk/nextjs"
 
 // ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ export function AlertsBanner({ agentId }: { agentId: string }) {
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ""
   const [alerts, setAlerts] = useState<Alert[]>([])
 
-  const fetchAlerts = async () => {
+  const fetchAlerts = useCallback(async () => {
     const token = await getToken()
     if (!token) return
     try {
@@ -60,14 +60,13 @@ export function AlertsBanner({ agentId }: { agentId: string }) {
     } catch {
       // Silent failure — retain previous state until next poll
     }
-  }
+  }, [agentId, getToken, apiBase])
 
   useEffect(() => {
     fetchAlerts()
     const id = setInterval(fetchAlerts, 30_000)
     return () => clearInterval(id)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId])
+  }, [fetchAlerts])
 
   if (alerts.length === 0) return null
 
