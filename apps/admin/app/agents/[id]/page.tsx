@@ -4,6 +4,7 @@ import { use } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
 import StepSubtaskCard from '../../components/StepSubtaskCard'
+import { AlertsBanner } from './components/AlertsBanner'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -347,7 +348,23 @@ export default function AgentJourneyPage({
         </div>
       )}
 
+      <AlertsBanner agentId={id} />
+
       {panel}
+
+      {/* Langfuse observability link — always visible */}
+      <div style={{ marginTop: '24px', paddingTop: '16px',
+                    borderTop: '1px solid var(--border-soft)' }}>
+        <a
+          href="https://cloud.langfuse.com"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ fontSize: '13px', color: 'var(--text-3)',
+                   textDecoration: 'underline' }}
+        >
+          View Langfuse Dashboard →
+        </a>
+      </div>
     </div>
   )
 }
