@@ -87,6 +87,8 @@ celery_app.conf.update(
         "app.worker.tasks.runtime.deployment",
         # M9: retrieval strategy synthesis (pipeline queue)
         "app.worker.tasks.pipeline.strategy",
+        # M10: weekly digest (runtime queue)
+        "app.worker.tasks.runtime.digest",
     ],
 
     # --- Queue topology -------------------------------------------------
@@ -163,6 +165,10 @@ celery_app.conf.update(
         "red-team-weekly": {
             "task": "app.worker.tasks.runtime.red_team.run_red_team_beat",
             "schedule": crontab(hour=3, minute=0, day_of_week=1),
+        },
+        "digest-weekly": {
+            "task": "app.worker.tasks.runtime.digest.run_weekly_digest_beat",
+            "schedule": crontab(hour=6, minute=0, day_of_week=0),  # Sunday 06:00 UTC
         },
     },
 
