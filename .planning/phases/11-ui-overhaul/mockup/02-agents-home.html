@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>w.chats — Agents Home</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..800,0..100&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg-deep:#0B0717; --bg:#110C24; --bg-elev:#181232;
+      --surface-1:#1E1638; --surface-2:#2A1E4A; --surface-3:#382860;
+      --glass-bg:rgba(30,22,56,0.55); --glass-bg-strong:rgba(40,28,72,0.70); --glass-border:rgba(244,232,220,0.10); --glass-blur:blur(24px) saturate(140%);
+      --border:rgba(196,154,232,0.18); --border-soft:rgba(196,154,232,0.10); --border-hard:rgba(244,116,140,0.32);
+      --accent:#F4748C; --accent-hover:#FF8AA0; --accent-dim:rgba(244,116,140,0.10); --accent-deep:#C8485E;
+      --lilac:#B79AE0; --lilac-dim:rgba(183,154,224,0.12);
+      --cyan:#5EDFD3; --amber:#E8A87C;
+      --green:#34D399; --green-bg:rgba(52,211,153,0.12); --green-border:rgba(52,211,153,0.25);
+      --gold:#F0C674; --gold-bg:rgba(240,198,116,0.10); --gold-border:rgba(240,198,116,0.25);
+      --red:#FF8585; --red-bg:rgba(255,133,133,0.10); --red-border:rgba(255,133,133,0.25);
+      --text-1:#F4EDE5; --text-2:#C4BCD0; --text-3:#8A82A0; --text-4:#5A5470; --text-on-accent:#0B0717;
+      --shadow-card:0 1px 2px rgba(0,0,0,0.3),0 4px 16px rgba(11,7,23,0.5);
+      --shadow-lift:0 4px 12px rgba(0,0,0,0.35),0 24px 48px rgba(11,7,23,0.6);
+      --shadow-glow:0 0 32px rgba(244,116,140,0.18);
+      --font-display:"Fraunces",Georgia,serif; --font-sans:"Inter",system-ui,sans-serif; --font-mono:"JetBrains Mono",monospace;
+      --radius-sm:8px; --radius-md:14px; --radius-lg:20px; --radius-xl:28px; --radius-pill:100px;
+    }
+    body {
+      font-family:var(--font-sans);
+      background-image:url('../../../../.claude/skills/wchats-design/assets/skyline-w-chats.png');
+      background-size:cover; background-position:center; background-attachment:fixed;
+      background-color:var(--bg-deep); color:var(--text-1); min-height:100vh;
+    }
+    body::before {
+      content:''; position:fixed; inset:0; z-index:0; pointer-events:none;
+      background:radial-gradient(ellipse 60% 40% at 80% 0%,rgba(244,116,140,0.07) 0%,transparent 50%),
+                 radial-gradient(ellipse 40% 30% at 0% 60%,rgba(183,154,224,0.05) 0%,transparent 50%),
+                 rgba(11,7,23,0.72);
+    }
+    body::after {
+      content:''; position:fixed; inset:0; z-index:0; pointer-events:none;
+      opacity:0.025; mix-blend-mode:overlay;
+      background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    }
+    #root { position:relative; z-index:1; min-height:100vh; padding-top:56px; }
+
+    /* ── NAV (authenticated) ── */
+    nav {
+      position:fixed; top:0; z-index:100;
+      height:56px; background:var(--glass-bg-strong);
+      backdrop-filter:var(--glass-blur); -webkit-backdrop-filter:var(--glass-blur);
+      border-bottom:1px solid var(--glass-border);
+      display:flex; align-items:center; padding:0 32px; gap:8px;
+    }
+    .logo { display:flex; align-items:center; gap:9px; text-decoration:none; }
+    .logo-mark {
+      width:30px; height:30px; border-radius:8px;
+      background:linear-gradient(135deg,var(--accent),var(--accent-deep));
+      display:flex; align-items:center; justify-content:center;
+    }
+    .logo-mark svg { width:15px; height:15px; }
+    .logo-word { font-family:var(--font-display); font-weight:500; font-variation-settings:"opsz" 144,"SOFT" 30; font-size:16px; color:var(--text-1); }
+    .logo-word em { font-style:normal; color:var(--accent); }
+    .nav-items { display:flex; gap:2px; margin-left:24px; }
+    .nav-item {
+      padding:6px 12px; border-radius:var(--radius-md); font-size:13.5px; font-weight:500;
+      color:var(--text-3); text-decoration:none; transition:all 0.15s;
+    }
+    .nav-item:hover { background:rgba(255,255,255,0.06); color:var(--text-1); }
+    .nav-item.active { background:var(--accent-dim); color:var(--accent); }
+    .nav-right { margin-left:auto; display:flex; align-items:center; gap:12px; }
+    .avatar {
+      width:32px; height:32px; border-radius:50%;
+      border:1px solid rgba(183,154,224,0.6);
+      background:linear-gradient(135deg,var(--surface-3),var(--lilac-dim));
+      display:flex; align-items:center; justify-content:center;
+      font-size:12px; font-weight:600; color:var(--lilac);
+    }
+
+    /* ── GREETING STRIP ── */
+    .greeting-strip {
+      background:
+        radial-gradient(ellipse 35% 60% at 100% 0%,rgba(244,116,140,0.08) 0%,transparent 60%),
+        radial-gradient(ellipse 25% 80% at 0% 50%,rgba(183,154,224,0.06) 0%,transparent 60%);
+      padding:32px 40px 28px;
+    }
+    .greeting-header { display:flex; align-items:flex-end; }
+    .greeting-text {
+      font-family:var(--font-display); font-weight:300; font-style:italic;
+      font-variation-settings:"opsz" 144,"SOFT" 100;
+      font-size:28px; color:var(--text-1);
+    }
+    .greeting-text em { font-style:italic; color:var(--accent); }
+    .greeting-meta {
+      font-family:var(--font-mono); font-size:10.5px; font-weight:500;
+      color:var(--text-4); letter-spacing:0.10em; text-transform:uppercase;
+      margin-top:6px;
+    }
+    /* ── AGENT GRID ── */
+    .content { padding:32px 40px 80px; }
+    .section-header {
+      display:flex; align-items:center; gap:10px; margin-bottom:20px;
+    }
+    .section-count {
+      font-family:var(--font-mono); font-size:11px; color:var(--text-4); letter-spacing:0.12em;
+    }
+    .section-title {
+      font-size:11px; font-weight:600; color:var(--text-4);
+      letter-spacing:0.12em; text-transform:uppercase;
+    }
+    .agent-grid {
+      display:grid; grid-template-columns:repeat(3,1fr); gap:16px;
+    }
+
+    /* ── AGENT CARD ── */
+    .agent-card {
+      background:var(--surface-1); border:1px solid var(--border-soft);
+      border-radius:var(--radius-xl); padding:24px;
+      box-shadow:var(--shadow-card); cursor:pointer;
+      transition:transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+      position:relative; overflow:hidden;
+      text-decoration:none; display:block; color:inherit;
+    }
+    .agent-card::before {
+      content:''; position:absolute; top:0; left:0; right:0; height:1px;
+      background:linear-gradient(to right,transparent,var(--accent),transparent);
+      opacity:0; transition:opacity 0.15s;
+    }
+    .agent-card:hover { transform:translateY(-2px); border-color:var(--border); box-shadow:var(--shadow-lift); }
+    .agent-card:hover::before { opacity:1; }
+
+    .card-header { display:flex; align-items:flex-start; gap:12px; margin-bottom:16px; }
+    .card-icon {
+      width:40px; height:40px; border-radius:var(--radius-md); flex-shrink:0;
+      background:var(--accent-dim); display:flex; align-items:center; justify-content:center;
+      position:relative;
+    }
+    .card-icon::after {
+      content:''; position:absolute; inset:0; border-radius:inherit;
+      background:linear-gradient(180deg,rgba(255,255,255,0.08) 0%,transparent 50%);
+      pointer-events:none;
+    }
+    .card-icon svg { width:20px; height:20px; }
+    .card-meta { flex:1; min-width:0; }
+    .card-name {
+      font-family:var(--font-display); font-weight:600;
+      font-variation-settings:"opsz" 144,"SOFT" 30;
+      font-size:16px; color:var(--text-1); line-height:1.2;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+    .card-role {
+      font-size:11px; font-weight:600; color:var(--text-3);
+      letter-spacing:0.12em; text-transform:uppercase; margin-top:3px;
+    }
+
+    .status-chip {
+      display:inline-flex; align-items:center; gap:5px;
+      padding:3px 9px; border-radius:40px;
+      font-family:var(--font-mono); font-size:10px; font-weight:600;
+      letter-spacing:0.12em; text-transform:uppercase; flex-shrink:0;
+    }
+    .status-chip-dot { width:5px; height:5px; border-radius:50%; }
+    .status-chip.live { background:var(--green-bg); color:var(--green); border:1px solid var(--green-border); }
+    .status-chip.live .status-chip-dot { background:var(--green); }
+    @keyframes live-pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.4; }
+    }
+    .status-chip.live .status-chip-dot {
+      animation: live-pulse 2.5s ease-in-out infinite;
+    }
+    .status-chip.evaluating { background:var(--gold-bg); color:var(--gold); border:1px solid var(--gold-border); }
+    .status-chip.evaluating .status-chip-dot { background:var(--gold); }
+    .status-chip.draft { background:rgba(90,84,112,0.2); color:var(--text-3); border:1px solid var(--border); }
+    .status-chip.draft .status-chip-dot { background:var(--text-4); }
+
+    .card-stats { display:flex; gap:20px; margin-top:16px; padding-top:16px; border-top:1px solid var(--border-soft); }
+    .card-stat { display:flex; flex-direction:column; gap:2px; }
+    .card-stat-val {
+      font-family:var(--font-mono); font-size:18px; font-weight:600;
+      color:var(--text-1); letter-spacing:-0.02em;
+    }
+    .card-stat-label {
+      font-size:10px; font-weight:600; color:var(--text-4);
+      letter-spacing:0.12em; text-transform:uppercase;
+    }
+
+    .card-footer { display:flex; align-items:center; justify-content:space-between; margin-top:16px; }
+    .card-id { font-family:var(--font-mono); font-size:10px; color:var(--text-4); letter-spacing:0.04em; }
+    .card-action {
+      font-size:12px; font-weight:500; color:var(--accent);
+      text-decoration:none; display:flex; align-items:center; gap:4px;
+    }
+    .card-action:hover { color:var(--accent-hover); }
+
+    /* ── EMPTY STATE ── */
+    .empty-card {
+      background:var(--surface-1); border:1px dashed var(--border);
+      border-radius:var(--radius-xl); padding:48px 20px;
+      display:flex; flex-direction:column; align-items:center;
+      gap:12px; cursor:pointer; transition:border-color 0.15s, box-shadow 0.15s;
+    }
+    .empty-card:hover { border-color:var(--border-hard); box-shadow:0 0 0 1px rgba(244,116,140,0.15); }
+    .empty-icon {
+      width:48px; height:48px; border-radius:var(--radius-xl);
+      background:var(--accent-dim); display:flex; align-items:center; justify-content:center;
+    }
+    .empty-title { font-size:15px; font-weight:600; color:var(--text-2); }
+    .empty-sub { font-size:12.5px; color:var(--text-4); text-align:center; }
+
+    a:focus-visible,
+    button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+<div id="root">
+
+  <!-- AUTHENTICATED NAV -->
+  <nav>
+    <a href="/" class="logo">
+      <div class="logo-mark">
+        <svg viewBox="0 0 16 16" fill="white"><path d="M2 2h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H9l-3 3v-3H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/></svg>
+      </div>
+      <span class="logo-word">w<em>.</em>chats</span>
+    </a>
+    <div class="nav-items">
+      <a href="/agents" class="nav-item active">Agents</a>
+      <a href="/docs" class="nav-item">Docs</a>
+      <a href="/settings" class="nav-item">Settings</a>
+    </div>
+    <div class="nav-right">
+      <div class="avatar">B</div>
+    </div>
+  </nav>
+
+  <!-- GREETING STRIP -->
+  <div class="greeting-strip">
+    <div class="greeting-header">
+      <div>
+        <div class="greeting-text">Good evening, <em>Bantu</em></div>
+        <div class="greeting-meta">20:14 SAST · 3 agents · 2 live</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONTENT -->
+  <div class="content">
+    <div class="section-header">
+      <span class="section-title">Your agents</span>
+      <span class="section-count">3 agents</span>
+    </div>
+
+    <div class="agent-grid">
+
+      <!-- Card 1: Live agent -->
+      <a href="/agents/agt-7f3a" class="agent-card">
+        <div class="card-header">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+          </div>
+          <div class="card-meta">
+            <div class="card-name">Acme Support</div>
+            <div class="card-role">Customer Service</div>
+          </div>
+          <div class="status-chip live"><span class="status-chip-dot"></span>Live</div>
+        </div>
+        <div class="card-stats">
+          <div class="card-stat">
+            <span class="card-stat-val">247</span>
+            <span class="card-stat-label">Conversations</span>
+          </div>
+          <div class="card-stat">
+            <span class="card-stat-val">0.91</span>
+            <span class="card-stat-label">Eval score</span>
+          </div>
+          <div class="card-stat">
+            <span class="card-stat-val">$0.04</span>
+            <span class="card-stat-label">Cost / conv</span>
+          </div>
+        </div>
+        <div class="card-footer">
+          <span class="card-id">AGT-7f3a</span>
+          <span class="card-action">View control plane →</span>
+        </div>
+      </a>
+
+      <!-- Card 2: Evaluating -->
+      <a href="/agents/agt-2b1c" class="agent-card">
+        <div class="card-header">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+          </div>
+          <div class="card-meta">
+            <div class="card-name">Hillbrow Realty</div>
+            <div class="card-role">Property Q&amp;A</div>
+          </div>
+          <div class="status-chip evaluating"><span class="status-chip-dot"></span>Evaluating</div>
+        </div>
+        <div class="card-stats">
+          <div class="card-stat">
+            <span class="card-stat-val">—</span>
+            <span class="card-stat-label">Conversations</span>
+          </div>
+          <div class="card-stat">
+            <span class="card-stat-val">0.78</span>
+            <span class="card-stat-label">Eval score</span>
+          </div>
+          <div class="card-stat">
+            <span class="card-stat-val">—</span>
+            <span class="card-stat-label">Cost / conv</span>
+          </div>
+        </div>
+        <div class="card-footer">
+          <span class="card-id">AGT-2b1c</span>
+          <span class="card-action">View progress →</span>
+        </div>
+      </a>
+
+      <!-- Empty state: add new -->
+      <div class="empty-card" onclick="window.location='/agents/new'">
+        <div style="display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:var(--radius-pill);background:var(--accent-dim);border:1px solid var(--border-hard);margin-bottom:4px;">
+          <span style="font-family:var(--font-mono);font-size:10px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:var(--accent);">New agent</span>
+        </div>
+        <div class="empty-title">Create new agent</div>
+        <div class="empty-sub">Set up a grounded agent<br>with eval + red team</div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

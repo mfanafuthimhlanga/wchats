@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>w.chats — New Agent Wizard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..800,0..100&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{
+      --bg-deep:#0B0717;--bg:#110C24;--bg-elev:#181232;
+      --surface-1:#1E1638;--surface-2:#2A1E4A;--surface-3:#382860;
+      --glass-bg:rgba(30,22,56,0.55);--glass-bg-strong:rgba(40,28,72,0.70);
+      --glass-border:rgba(244,232,220,0.10);--glass-blur:blur(24px) saturate(140%);
+      --border:rgba(196,154,232,0.18);--border-soft:rgba(196,154,232,0.10);--border-hard:rgba(244,116,140,0.32);
+      --accent:#F4748C;--accent-hover:#FF8AA0;--accent-dim:rgba(244,116,140,0.10);--accent-deep:#C8485E;
+      --lilac:#B79AE0;--lilac-dim:rgba(183,154,224,0.12);
+      --green:#34D399;--green-bg:rgba(52,211,153,0.12);--green-border:rgba(52,211,153,0.25);
+      --gold:#F0C674;--gold-bg:rgba(240,198,116,0.10);
+      --text-1:#F4EDE5;--text-2:#C4BCD0;--text-3:#8A82A0;--text-4:#5A5470;--text-on-accent:#0B0717;
+      --shadow-card:0 1px 2px rgba(0,0,0,0.3),0 4px 16px rgba(11,7,23,0.5);
+      --shadow-lift:0 4px 12px rgba(0,0,0,0.35),0 24px 48px rgba(11,7,23,0.6);
+      --shadow-focus:0 0 0 3px rgba(244,116,140,0.28);
+      --shadow-glow:0 0 32px rgba(244,116,140,0.18);
+      --font-display:"Fraunces",Georgia,serif;--font-sans:"Inter",system-ui,sans-serif;--font-mono:"JetBrains Mono",monospace;
+      --radius-xs:8px;--radius-sm:14px;--radius-md:20px;--radius-lg:28px;--radius-pill:100px;
+    }
+
+    html,body{height:100%;}
+    body{
+      font-family:var(--font-sans);
+      background-image:url('../../../../.claude/skills/wchats-design/assets/skyline-w-chats.png');
+      background-size:cover;background-position:center;background-attachment:fixed;
+      background-color:var(--bg-deep);
+      color:var(--text-1);min-height:100vh;
+    }
+    body::before{
+      content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+      background:
+        radial-gradient(ellipse 60% 40% at 80% 0%,rgba(244,116,140,0.07) 0%,transparent 50%),
+        radial-gradient(ellipse 40% 30% at 0% 60%,rgba(183,154,224,0.05) 0%,transparent 50%),
+        rgba(11,7,23,0.72);
+    }
+    body::after{
+      content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+      opacity:0.025;mix-blend-mode:overlay;
+      background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    }
+    #root{position:relative;z-index:1;min-height:100vh;display:flex;flex-direction:column;}
+
+    /* ── TOP NAV ── */
+    nav{
+      position:sticky;top:0;z-index:100;height:60px;
+      background:var(--glass-bg-strong);
+      backdrop-filter:blur(24px) saturate(140%);-webkit-backdrop-filter:blur(24px) saturate(140%);
+      border-bottom:1px solid var(--glass-border);
+      display:flex;align-items:center;padding:0 28px;
+    }
+    .logo{display:flex;align-items:center;gap:9px;text-decoration:none;flex-shrink:0;}
+    .logo-mark{
+      width:32px;height:32px;border-radius:8px;
+      background:linear-gradient(135deg,var(--accent),var(--accent-deep));
+      display:flex;align-items:center;justify-content:center;
+      box-shadow:0 0 16px rgba(244,116,140,0.35);
+    }
+    .logo-mark svg{width:16px;height:16px;}
+    .logo-name{font-family:var(--font-display);font-weight:500;font-variation-settings:"opsz" 144,"SOFT" 30;font-size:18px;color:var(--text-1);}
+    .logo-name .dot{color:var(--accent);}
+    .nav-center{flex:1;display:flex;align-items:center;justify-content:center;gap:4px;}
+    .nav-link{
+      font-size:13.5px;color:var(--text-3);text-decoration:none;
+      padding:7px 14px;border-radius:var(--radius-xs);transition:color 0.15s,background 0.15s;
+    }
+    .nav-link:hover{color:var(--text-1);}
+    .nav-link.active{background:var(--accent-dim);color:var(--accent);}
+    .nav-right{flex-shrink:0;display:flex;align-items:center;}
+    .avatar{
+      width:32px;height:32px;border-radius:50%;
+      background:linear-gradient(135deg,var(--lilac),var(--surface-3));
+      display:flex;align-items:center;justify-content:center;
+      font-size:12px;font-weight:600;color:var(--text-1);
+      border:1px solid rgba(183,154,224,0.4);
+    }
+
+    /* ── PAGE BODY ── */
+    .page-body{
+      display:flex;
+      min-height:calc(100vh - 60px);
+    }
+
+    /* ── JOURNEY SIDEBAR ── */
+    .journey-sidebar{
+      width:280px;flex-shrink:0;
+      border-right:1px solid var(--glass-border);
+      padding:32px 24px;
+    }
+    .sidebar-agent-name{
+      font-family:var(--font-display);font-weight:700;
+      font-variation-settings:"opsz" 144,"SOFT" 30;
+      font-size:16px;color:var(--text-1);
+      margin-bottom:3px;
+    }
+    .sidebar-agent-sub{font-size:12px;color:var(--text-3);margin-bottom:28px;}
+
+    .step-row{
+      position:relative;
+      padding:12px;border-radius:var(--radius-xs);
+      margin-bottom:6px;
+      transition:background 0.2s,border-color 0.2s;
+      display:flex;align-items:flex-start;gap:12px;
+    }
+    .step-row.state-done{background:var(--green-bg);border:1px solid rgba(111,232,170,0.2);}
+    .step-row.state-active{background:var(--accent-dim);border:1px solid var(--border-hard);}
+    .step-row.state-locked{border:1px solid transparent;opacity:0.4;}
+
+    .step-row:not(:last-child) {
+      padding-bottom: 6px;
+    }
+    .step-row:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      left: 23px;
+      top: 52px;
+      bottom: -6px;
+      width: 2px;
+      background: var(--border-soft);
+    }
+
+    .step-circle{
+      width:28px;height:28px;border-radius:50%;flex-shrink:0;
+      display:flex;align-items:center;justify-content:center;
+      font-family:var(--font-mono);font-size:12px;font-weight:700;
+      transition:all 0.2s;
+    }
+    .step-circle.done{background:var(--green);color:var(--bg-deep);}
+    .step-circle.active{background:transparent;border:2px solid var(--accent);color:var(--accent);}
+    .step-circle.locked{background:var(--surface-2);border:1px solid var(--border-soft);color:var(--text-4);}
+
+    .step-info{flex:1;}
+    .step-title{font-size:13.5px;font-weight:600;color:var(--text-1);line-height:1.3;}
+    .step-subtitle{font-size:11px;color:var(--text-3);margin-top:2px;}
+    .step-done-chip{
+      display:inline-block;margin-top:5px;
+      padding:2px 8px;border-radius:var(--radius-pill);
+      background:var(--green-bg);border:1px solid var(--green-border);
+      color:var(--green);font-size:10px;font-weight:600;letter-spacing:0.06em;
+    }
+
+    /* ── STEP MAIN ── */
+    .step-main{
+      flex:1;
+      padding:40px 48px;
+      overflow-y:auto;
+    }
+
+    /* ── PANEL ── */
+    .panel{background:transparent;border:none;padding:0;display:none;}
+    .panel.active{display:block;}
+
+    /* ── PANEL HEADER ── */
+    .panel-eyebrow{
+      font-family:var(--font-mono);font-size:10px;font-weight:600;
+      letter-spacing:0.12em;text-transform:uppercase;
+      color:var(--text-4);margin-bottom:8px;
+    }
+    .panel-title{
+      font-family:var(--font-display);font-weight:600;
+      font-variation-settings:"opsz" 144,"SOFT" 30;
+      font-size:24px;color:var(--text-1);margin-bottom:8px;
+    }
+    .panel-sub{
+      font-size:14px;color:var(--text-3);line-height:1.6;
+      max-width:520px;margin-bottom:32px;
+    }
+
+    /* ── FORM FIELDS ── */
+    .field{margin-bottom:20px;}
+    .field-label{font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:7px;display:block;}
+    .field-input{
+      width:100%;padding:11px 14px;
+      background:var(--surface-2);border:1px solid var(--border-soft);
+      border-radius:var(--radius-sm);color:var(--text-1);
+      font-family:var(--font-sans);font-size:14px;
+      outline:none;transition:border-color 0.15s,box-shadow 0.15s;
+    }
+    .field-input:focus{border-color:var(--border-hard);box-shadow:var(--shadow-focus);}
+    .field-input::placeholder{color:var(--text-4);}
+    .field-textarea{min-height:90px;resize:vertical;font-size:14px;line-height:1.55;}
+    .field-hint{font-size:12px;color:var(--text-4);margin-top:5px;}
+
+    /* ── PANEL FOOTER ── */
+    .panel-footer{
+      display:flex;align-items:center;justify-content:space-between;
+      margin-top:32px;padding-top:24px;border-top:1px solid var(--border-soft);
+    }
+    .step-count{font-family:var(--font-mono);font-size:11px;color:var(--text-4);letter-spacing:0.08em;}
+    .btn-next{
+      padding:11px 28px;border-radius:var(--radius-sm);font-size:14px;font-weight:600;
+      background:var(--accent);color:var(--text-on-accent);border:none;
+      cursor:pointer;box-shadow:var(--shadow-glow);transition:background 0.15s;
+    }
+    .btn-next:hover{background:var(--accent-hover);}
+    .btn-back{
+      padding:11px 22px;border-radius:var(--radius-sm);font-size:14px;font-weight:600;
+      border:1px solid var(--border);background:transparent;color:var(--text-2);
+      cursor:pointer;transition:all 0.15s;
+    }
+    .btn-back:hover{border-color:var(--border-hard);color:var(--text-1);}
+
+    /* ── SOUL SECTION (step 2) ── */
+    .soul-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+    .soul-full{grid-column:1/-1;}
+
+    /* ── KB UPLOAD (step 2) ── */
+    .kb-section{margin-top:24px;padding-top:24px;border-top:1px solid var(--border-soft);}
+    .kb-section-title{font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:14px;}
+    .upload-zone{
+      border:1px dashed var(--border);border-radius:var(--radius-lg);
+      padding:28px;text-align:center;cursor:pointer;transition:all 0.15s;
+    }
+    .upload-zone:hover{border-color:var(--border-hard);background:var(--accent-dim);}
+    .upload-icon{
+      width:40px;height:40px;border-radius:var(--radius-sm);background:var(--accent-dim);
+      display:flex;align-items:center;justify-content:center;margin:0 auto 10px;
+    }
+    .upload-text{font-size:14px;font-weight:500;color:var(--text-2);}
+    .upload-hint{font-size:12px;color:var(--text-4);margin-top:4px;}
+    .url-row{display:flex;gap:10px;margin-top:14px;}
+.btn-sm{padding:10px 16px;border-radius:var(--radius-sm);font-size:13px;font-weight:600;border:none;cursor:pointer;transition:background 0.15s;}
+    .btn-sm.outline{background:transparent;border:1px solid var(--border);color:var(--text-2);}
+    .btn-sm.outline:hover{border-color:var(--border-hard);color:var(--text-1);}
+
+    /* ── EVAL TEST PANEL (step 3) ── */
+    .eval-trigger{
+      text-align:center;padding:28px 20px;
+      background:var(--surface-1);border-radius:var(--radius-lg);
+      border:1px solid var(--border-soft);margin-bottom:20px;
+    }
+    .eval-trigger-title{font-size:16px;font-weight:600;color:var(--text-1);margin-bottom:6px;}
+    .eval-trigger-sub{font-size:13px;color:var(--text-3);margin-bottom:18px;}
+    .btn-eval{
+      display:inline-flex;align-items:center;gap:10px;
+      background:var(--accent);color:var(--text-on-accent);
+      padding:12px 28px;border-radius:var(--radius-sm);
+      font-size:15px;font-weight:600;border:none;cursor:pointer;
+      box-shadow:var(--shadow-glow);transition:background 0.15s;
+    }
+    .btn-eval:hover{background:var(--accent-hover);}
+    .sse-log{
+      background:var(--bg-deep);border:1px solid var(--border-soft);
+      border-radius:var(--radius-sm);padding:16px;
+      font-family:var(--font-mono);font-size:12px;line-height:1.7;
+      color:var(--text-3);min-height:180px;overflow-y:auto;
+    }
+    .sse-line-dim{color:var(--text-4);}
+    .sse-line-ok{color:var(--green);}
+    .sse-line-info{color:var(--lilac);}
+    .sse-line-score{color:var(--accent);}
+    .sse-cursor{
+      display:inline-block;width:8px;height:13px;background:var(--accent);
+      opacity:0.7;animation:blink 1s step-end infinite;
+      vertical-align:text-bottom;margin-left:2px;
+    }
+.eval-results{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:16px;}
+    .eval-stat{
+      background:var(--glass-bg);border:1px solid var(--glass-border);
+      border-radius:var(--radius-sm);padding:14px 12px;text-align:center;
+    }
+    .eval-stat-val{font-family:var(--font-mono);font-size:22px;font-weight:600;color:var(--text-1);letter-spacing:-0.03em;}
+    .eval-stat-label{font-size:10px;font-weight:600;color:var(--text-4);letter-spacing:0.12em;text-transform:uppercase;margin-top:3px;}
+
+    /* ── DEPLOY PANEL (step 4) ── */
+    .deploy-cols{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:28px;}
+    .widget-preview{
+      background:var(--bg-deep);border:1px solid var(--border-soft);
+      border-radius:var(--radius-lg);padding:20px;
+      display:flex;flex-direction:column;align-items:center;gap:14px;
+    }
+    .widget-bubble{
+      background:var(--accent);border-radius:50%;
+      width:56px;height:56px;display:flex;align-items:center;justify-content:center;
+      box-shadow:var(--shadow-glow);
+    }
+    .widget-preview-label{font-size:11px;font-weight:600;color:var(--text-4);letter-spacing:0.12em;text-transform:uppercase;}
+    .checklist-item{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border-soft);}
+    .checklist-item:last-child{border-bottom:none;}
+    .check-icon{width:20px;height:20px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;}
+    .check-icon.pass{background:var(--green-bg);color:var(--green);}
+    .check-icon.warn{background:var(--gold-bg);color:var(--gold);}
+    .check-text{font-size:13.5px;color:var(--text-2);}
+    .embed-block{
+      background:var(--bg-deep);border:1px solid var(--border-soft);
+      border-radius:var(--radius-sm);padding:14px 16px;
+      font-family:var(--font-mono);font-size:12px;color:var(--text-2);
+      line-height:1.7;margin-top:16px;position:relative;
+    }
+    .copy-btn{
+      position:absolute;top:10px;right:10px;padding:4px 10px;
+      background:var(--accent-dim);border:1px solid var(--border-hard);
+      border-radius:var(--radius-xs);color:var(--accent);
+      font-size:11px;font-weight:600;cursor:pointer;
+    }
+    .copy-btn.copied {
+      background: var(--green-bg);
+      border-color: var(--green-border);
+      color: var(--green);
+    }
+    .code-kw{color:var(--lilac);}
+    .code-str{color:var(--green);}
+    .code-attr{color:var(--gold);}
+
+    /* ── CONFIG CARDS (step 2) ── */
+    .config-cards { display:flex; flex-direction:column; gap:12px; margin-bottom:8px; }
+    .config-card {
+      display:flex; align-items:center; gap:16px;
+      padding:20px 22px;
+      background:var(--surface-1); border:1px solid var(--border-soft);
+      border-radius:var(--radius-md); cursor:pointer;
+      transition:border-color 0.15s, background 0.15s, transform 0.15s;
+    }
+    .config-card:hover {
+      border-color:var(--border-hard); background:var(--surface-2);
+      transform:translateY(-1px);
+    }
+    .config-card-icon {
+      width:44px; height:44px; border-radius:var(--radius-sm); flex-shrink:0;
+      display:flex; align-items:center; justify-content:center;
+    }
+    .soul-icon { background:rgba(183,154,224,0.15); color:var(--lilac); }
+    .docs-icon { background:var(--accent-dim); color:var(--accent); }
+    .config-card-body { flex:1; min-width:0; }
+    .config-card-title { font-size:15px; font-weight:600; color:var(--text-1); margin-bottom:4px; }
+    .config-card-desc { font-size:13px; color:var(--text-3); line-height:1.5; margin-bottom:8px; }
+    .config-card-meta { display:flex; gap:6px; flex-wrap:wrap; }
+    .config-tag {
+      font-family:var(--font-mono); font-size:10px; font-weight:500;
+      padding:2px 8px; border-radius:100px;
+      background:var(--surface-2); border:1px solid var(--border-soft);
+      color:var(--text-3); letter-spacing:0.02em;
+    }
+    .config-card-arrow { color:var(--text-4); flex-shrink:0; transition:color 0.15s, transform 0.15s; }
+    .config-card:hover .config-card-arrow { color:var(--accent); transform:translateX(2px); }
+
+    /* ── SLIDE-OVERS ── */
+    .slideover-backdrop {
+      position:fixed; inset:0; z-index:200;
+      background:rgba(11,7,23,0.45); backdrop-filter:blur(4px);
+      opacity:0; pointer-events:none; transition:opacity 0.25s;
+    }
+    .slideover-backdrop.open { opacity:1; pointer-events:all; }
+    .slideover {
+      position:fixed; top:0; right:0; bottom:0; z-index:201;
+      width:520px; max-width:calc(100vw - 32px);
+      background:var(--bg-elev); border-left:1px solid var(--glass-border);
+      display:flex; flex-direction:column;
+      transform:translateX(100%); transition:transform 0.28s cubic-bezier(0.4,0,0.2,1);
+      box-shadow:-24px 0 64px rgba(11,7,23,0.6);
+    }
+    .slideover.open { transform:translateX(0); }
+    .slideover-header {
+      display:flex; align-items:flex-start; justify-content:space-between;
+      padding:24px 28px 20px; border-bottom:1px solid var(--border-soft); flex-shrink:0;
+    }
+    .slideover-title { font-family:var(--font-display); font-weight:400; font-variation-settings:"opsz" 144,"SOFT" 30; font-size:20px; color:var(--text-1); margin-bottom:3px; }
+    .slideover-sub { font-size:12px; color:var(--text-3); }
+    .slideover-close {
+      width:32px; height:32px; border-radius:var(--radius-xs);
+      background:var(--surface-1); border:1px solid var(--border-soft);
+      color:var(--text-3); cursor:pointer; display:flex; align-items:center; justify-content:center;
+      flex-shrink:0; transition:color 0.15s, border-color 0.15s;
+    }
+    .slideover-close:hover { color:var(--text-1); border-color:var(--border-hard); }
+    .slideover-body { flex:1; overflow-y:auto; padding:24px 28px; }
+    .slideover-footer {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:16px 28px 20px; border-top:1px solid var(--border-soft); flex-shrink:0;
+    }
+
+    /* ── SYSTEM PROMPT PREVIEW ── */
+    .prompt-preview-section { margin-top:24px; }
+    .prompt-preview-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+    .prompt-preview-label { font-size:11px; font-weight:600; color:var(--text-3); letter-spacing:0.12em; text-transform:uppercase; }
+    .prompt-preview-badge {
+      font-family:var(--font-mono); font-size:10px; font-weight:600;
+      padding:2px 8px; border-radius:100px;
+      background:var(--lilac-dim); color:var(--lilac); border:1px solid rgba(183,154,224,0.25);
+      letter-spacing:0.04em;
+    }
+    .prompt-preview-box {
+      background:var(--bg-deep); border:1px solid var(--border-soft);
+      border-radius:var(--radius-sm); padding:16px 18px;
+      font-family:var(--font-mono); font-size:12px; line-height:1.75;
+      color:var(--text-3); white-space:pre-wrap; min-height:160px;
+    }
+    .prompt-section-label { color:var(--lilac); font-weight:600; }
+    .prompt-value { color:var(--text-2); }
+
+    /* ── DOC LIST ── */
+    .doc-list { display:flex; flex-direction:column; gap:6px; }
+    .doc-row {
+      display:flex; align-items:center; gap:12px;
+      padding:10px 14px; background:var(--surface-2);
+      border:1px solid var(--border-soft); border-radius:var(--radius-xs);
+    }
+    .doc-icon { width:28px; height:28px; border-radius:var(--radius-xs); background:var(--accent-dim); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+    .doc-info { flex:1; min-width:0; }
+    .doc-name { font-size:13px; font-weight:500; color:var(--text-1); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .doc-meta { font-family:var(--font-mono); font-size:10.5px; color:var(--text-4); margin-top:2px; }
+    .doc-remove {
+      width:24px; height:24px; border-radius:var(--radius-xs);
+      background:transparent; border:1px solid transparent; color:var(--text-4);
+      cursor:pointer; font-size:16px; display:flex; align-items:center; justify-content:center;
+      flex-shrink:0; transition:all 0.15s;
+    }
+    .doc-remove:hover { background:var(--red-bg,rgba(255,133,133,0.1)); color:var(--accent); border-color:var(--border-hard); }
+
+    /* ── DEPLOY TABS ── */
+    .deploy-tabs {
+      display:flex; gap:4px; margin-bottom:24px;
+      padding:4px; background:var(--surface-1); border-radius:var(--radius-sm);
+      width:fit-content;
+    }
+    .deploy-tab {
+      display:inline-flex; align-items:center; gap:6px;
+      padding:8px 16px; border-radius:var(--radius-xs);
+      font-size:13px; font-weight:500; color:var(--text-3);
+      background:transparent; border:none; cursor:pointer;
+      transition:all 0.15s;
+    }
+    .deploy-tab:hover { color:var(--text-1); background:var(--surface-2); }
+    .deploy-tab.active { background:var(--surface-2); color:var(--text-1); font-weight:600; box-shadow:var(--shadow-card); }
+    .deploy-tab-panel { display:none; }
+    .deploy-tab-panel.active { display:block; }
+
+    /* ── CHECKLIST CLASSES (W9) ── */
+    .checklist-meta {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-4);
+      margin-top: 2px;
+    }
+    .checklist-badge {
+      margin-left: auto;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 100px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .checklist-badge.pass {
+      color: var(--green);
+      background: var(--green-bg);
+      border: 1px solid var(--green-border);
+    }
+    .checklist-badge.warn {
+      color: var(--gold);
+      background: var(--gold-bg);
+      border: 1px solid rgba(240,198,116,0.25);
+    }
+    .deploy-summary-banner {
+      padding: 14px 16px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .deploy-summary-banner.pass {
+      background: var(--green-bg);
+      border: 1px solid var(--green-border);
+      color: var(--green);
+    }
+
+    /* ── FOCUS-VISIBLE RINGS (Cross) ── */
+    a:focus-visible,
+    button:focus-visible,
+    input:focus-visible,
+    textarea:focus-visible,
+    select:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
+
+    /* ── REDUCED MOTION (Cross) ── */
+    @media (prefers-reduced-motion: no-preference) {
+      @keyframes blink{0%,100%{opacity:0.7}50%{opacity:0}}
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+      .sse-cursor { opacity: 0.7; }
+    }
+  </style>
+</head>
+<body>
+<div id="root">
+
+  <!-- TOP NAV -->
+  <nav>
+    <a href="/agents" class="logo">
+      <div class="logo-mark">
+        <svg viewBox="0 0 16 16" fill="white" width="16" height="16"><path d="M2 2h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H9l-3 3v-3H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/></svg>
+      </div>
+      <span class="logo-name">w<span class="dot">.</span>chats</span>
+    </a>
+    <div class="nav-center">
+      <a href="/agents" class="nav-link active">Agents</a>
+      <a href="/docs" class="nav-link">Docs</a>
+      <a href="/settings" class="nav-link">Settings</a>
+    </div>
+    <div class="nav-right">
+      <div class="avatar">B</div>
+    </div>
+  </nav>
+
+  <!-- PAGE BODY -->
+  <div class="page-body">
+
+    <!-- JOURNEY SIDEBAR -->
+    <aside class="journey-sidebar">
+      <div class="sidebar-agent-name">New agent</div>
+      <div class="sidebar-agent-sub">Acme Consulting</div>
+
+      <!-- Step 1: Provision — active -->
+      <div class="step-row state-active" id="row1">
+        <div class="step-circle active" id="circle1">1</div>
+        <div class="step-info">
+          <div class="step-title">Provision</div>
+          <div class="step-subtitle">Name &amp; role</div>
+        </div>
+      </div>
+
+      <!-- Step 2: Configure — locked -->
+      <div class="step-row state-locked" id="row2">
+        <div class="step-circle locked" id="circle2">2</div>
+        <div class="step-info">
+          <div class="step-title">Configure</div>
+          <div class="step-subtitle">Voice &amp; knowledge base</div>
+        </div>
+      </div>
+
+      <!-- Step 3: Test — locked -->
+      <div class="step-row state-locked" id="row3">
+        <div class="step-circle locked" id="circle3">3</div>
+        <div class="step-info">
+          <div class="step-title">Test</div>
+          <div class="step-subtitle">Eval suite</div>
+        </div>
+      </div>
+
+      <!-- Step 4: Deploy — locked (no connector after last) -->
+      <div class="step-row state-locked" id="row4">
+        <div class="step-circle locked" id="circle4">4</div>
+        <div class="step-info">
+          <div class="step-title">Deploy</div>
+          <div class="step-subtitle">Widget &amp; embed</div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="step-main">
+
+      <!-- STEP 1: PROVISION -->
+      <div class="panel active" id="panel1">
+        <div class="panel-eyebrow">Step 1 of 4</div>
+        <h1 class="panel-title">Provision your agent</h1>
+        <p class="panel-sub">Give your agent a name and define its primary role. This sets the context for all downstream configuration.</p>
+
+        <div class="field">
+          <label class="field-label">Agent name</label>
+          <input class="field-input" type="text" placeholder="e.g. Acme Support, Hillbrow Realty Assistant" value="Acme Support">
+        </div>
+        <div class="field">
+          <label class="field-label">Primary role</label>
+          <input class="field-input" type="text" placeholder="e.g. Customer service agent for Acme Consulting" value="Customer service agent for Acme Consulting">
+          <div class="field-hint">Used as the role context in the system prompt. Be specific.</div>
+        </div>
+        <div class="field">
+          <label class="field-label">Business domain</label>
+          <input class="field-input" type="text" placeholder="e.g. SaaS company, property agency, e-commerce" value="B2B SaaS consulting">
+        </div>
+
+        <div class="panel-footer">
+          <span class="step-count">Step 1 of 4</span>
+          <button class="btn-next" onclick="showStep(2)">Continue →</button>
+        </div>
+      </div>
+
+      <!-- STEP 2: CONFIGURE -->
+      <div class="panel" id="panel2">
+  <div class="panel-eyebrow">Step 2 of 4</div>
+  <h1 class="panel-title">Configure your agent</h1>
+  <p class="panel-sub">Shape the agent's voice and ground it with your business knowledge. Both sub-processes feed directly into the system prompt.</p>
+
+  <div class="config-cards">
+
+    <!-- Soul editor card -->
+    <div class="config-card" onclick="openPanel('soul')">
+      <div class="config-card-icon soul-icon">
+        <!-- brain/person icon -->
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a5 5 0 0 1 5 5c0 2.5-1.5 4.5-3.5 5.4V14h-3v-1.6C8.5 11.5 7 9.5 7 7a5 5 0 0 1 5-5z"/><path d="M9 14h6v2a3 3 0 0 1-6 0v-2z"/></svg>
+      </div>
+      <div class="config-card-body">
+        <div class="config-card-title">Soul editor</div>
+        <div class="config-card-desc">Define voice &amp; tone, behavioural rules (always/never do), and preview the assembled system prompt.</div>
+        <div class="config-card-meta">
+          <span class="config-tag">Voice &amp; tone</span>
+          <span class="config-tag">Rules</span>
+          <span class="config-tag">System prompt preview</span>
+        </div>
+      </div>
+      <div class="config-card-arrow">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </div>
+    </div>
+
+    <!-- Doc ingest card -->
+    <div class="config-card" onclick="openPanel('docs')">
+      <div class="config-card-icon docs-icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      </div>
+      <div class="config-card-body">
+        <div class="config-card-title">Document ingest</div>
+        <div class="config-card-desc">Upload PDFs, Word docs, or markdown files. Scrape URLs. Monitor ingestion progress per document.</div>
+        <div class="config-card-meta">
+          <span class="config-tag">PDF · DOCX · MD</span>
+          <span class="config-tag">URL scrape</span>
+          <span class="config-tag">3 docs · 847 chunks</span>
+        </div>
+      </div>
+      <div class="config-card-arrow">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="panel-footer">
+    <button class="btn-back" onclick="showStep(1)">← Back</button>
+    <span class="step-count">Step 2 of 4</span>
+    <button class="btn-next" onclick="showStep(3)">Continue →</button>
+  </div>
+</div>
+
+      <!-- STEP 3: TEST -->
+      <div class="panel" id="panel3">
+        <div class="panel-eyebrow">Step 3 of 4</div>
+        <h1 class="panel-title">Test your agent</h1>
+        <p class="panel-sub">Run the automated eval suite against your knowledge base. The backend controls the full pipeline — you watch the output stream live.</p>
+
+        <div class="eval-trigger">
+          <div class="eval-trigger-title">Eval suite ready</div>
+          <div class="eval-trigger-sub">20 scenarios · faithfulness, answer relevance, context precision, context recall</div>
+          <button class="btn-eval" onclick="runEval()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Run eval suite
+          </button>
+        </div>
+
+        <div class="sse-log" id="sseLog">
+          <span class="sse-line-dim">[waiting for eval run…]</span>
+        </div>
+
+        <div class="eval-results" id="evalResults" style="display:none">
+          <div class="eval-stat"><div class="eval-stat-val">0.91</div><div class="eval-stat-label">Faithfulness</div></div>
+          <div class="eval-stat"><div class="eval-stat-val">0.88</div><div class="eval-stat-label">Answer Rel.</div></div>
+          <div class="eval-stat"><div class="eval-stat-val">0.86</div><div class="eval-stat-label">Ctx Precision</div></div>
+          <div class="eval-stat"><div class="eval-stat-val">0.84</div><div class="eval-stat-label">Ctx Recall</div></div>
+        </div>
+
+        <div class="panel-footer">
+          <button class="btn-back" onclick="showStep(2)">← Back</button>
+          <span class="step-count">Step 3 of 4</span>
+          <button class="btn-next" onclick="showStep(4)">Continue →</button>
+        </div>
+      </div>
+
+      <!-- STEP 4: DEPLOY -->
+      <div class="panel" id="panel4">
+  <div class="panel-eyebrow">Step 4 of 4</div>
+  <h1 class="panel-title">Deploy your agent</h1>
+  <p class="panel-sub">Customise the widget, confirm all checks pass, then copy the embed snippet.</p>
+
+  <!-- Tab bar -->
+  <div class="deploy-tabs">
+    <button class="deploy-tab active" id="dtab1" onclick="showDeployTab(1)">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18"/></svg>
+      Widget
+    </button>
+    <button class="deploy-tab" id="dtab2" onclick="showDeployTab(2)">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+      Pre-deploy checks
+    </button>
+    <button class="deploy-tab" id="dtab3" onclick="showDeployTab(3)">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+      Embed code
+    </button>
+  </div>
+
+  <!-- Tab 1: Widget customisation -->
+  <div class="deploy-tab-panel active" id="dtabpanel1">
+    <div class="deploy-cols">
+      <div>
+        <div class="field">
+          <label class="field-label">Widget label</label>
+          <input class="field-input" type="text" value="Chat with us">
+        </div>
+        <div class="field">
+          <label class="field-label">Accent colour</label>
+          <div style="display:flex;gap:10px;align-items:center;">
+            <input class="field-input" type="text" value="#F4748C" style="flex:1;">
+            <div style="width:40px;height:40px;border-radius:var(--radius-xs);background:#F4748C;border:1px solid var(--border-soft);flex-shrink:0;"></div>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">Position</label>
+          <select class="field-input" style="cursor:pointer;">
+            <option>Bottom right</option>
+            <option>Bottom left</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="field-label">Allowed origins</label>
+          <input class="field-input" type="text" value="*.acme.com">
+          <div class="field-hint">Comma-separated CORS glob patterns.</div>
+        </div>
+      </div>
+      <div class="widget-preview">
+        <div style="flex:1;width:100%;background:var(--bg-deep);border-radius:var(--radius-sm);border:1px solid var(--border-soft);padding:12px;display:flex;flex-direction:column;gap:8px;min-height:140px;">
+          <div style="align-self:flex-start;background:var(--surface-2);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-2);max-width:80%;">Hi, how can I help you today?</div>
+          <div style="align-self:flex-end;background:var(--accent);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-on-accent);max-width:80%;">I need help with my invoice.</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:4px;">
+          <div class="widget-bubble" style="width:44px;height:44px;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          </div>
+          <span style="font-size:13px;font-weight:600;color:var(--text-2);">Chat with us</span>
+        </div>
+        <div class="widget-preview-label">Live preview</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 2: Pre-deployment checks -->
+  <div class="deploy-tab-panel" id="dtabpanel2">
+    <div style="margin-bottom:20px;">
+      <div class="checklist-item">
+        <div class="check-icon pass">✓</div>
+        <div>
+          <div class="check-text">Eval suite passed</div>
+          <div class="checklist-meta">F:0.91 · AR:0.88 · CP:0.86 · CR:0.84 — avg 0.88</div>
+        </div>
+        <span class="checklist-badge pass">PASS</span>
+      </div>
+      <div class="checklist-item">
+        <div class="check-icon pass">✓</div>
+        <div>
+          <div class="check-text">Red team cleared</div>
+          <div class="checklist-meta">0 critical · 1 low · prompt injection blocked</div>
+        </div>
+        <span class="checklist-badge pass">PASS</span>
+      </div>
+      <div class="checklist-item">
+        <div class="check-icon pass">✓</div>
+        <div>
+          <div class="check-text">Knowledge base ingested</div>
+          <div class="checklist-meta">3 documents · 847 chunks · voyage-3 embeddings</div>
+        </div>
+        <span class="checklist-badge pass">PASS</span>
+      </div>
+      <div class="checklist-item">
+        <div class="check-icon warn">!</div>
+        <div>
+          <div class="check-text">Soul configuration incomplete</div>
+          <div class="checklist-meta">Voice field is empty — agent will use default tone</div>
+        </div>
+        <span class="checklist-badge warn">WARN</span>
+      </div>
+    </div>
+    <div class="deploy-summary-banner pass">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+      3 of 4 checks passed — agent is deployable with warnings
+    </div>
+  </div>
+
+  <!-- Tab 3: Embed code -->
+  <div class="deploy-tab-panel" id="dtabpanel3">
+    <p style="font-size:14px;color:var(--text-3);line-height:1.6;margin-bottom:20px;max-width:540px;">Copy the snippet below and add it to the <code style="font-family:var(--font-mono);font-size:12px;background:var(--surface-2);padding:2px 6px;border-radius:4px;color:var(--lilac);">&lt;head&gt;</code> or end of <code style="font-family:var(--font-mono);font-size:12px;background:var(--surface-2);padding:2px 6px;border-radius:4px;color:var(--lilac);">&lt;body&gt;</code> on any page you want the widget to appear.</p>
+
+    <div class="embed-block">
+      <button class="copy-btn" onclick="this.textContent='Copied!';this.classList.add('copied');setTimeout(()=>{this.textContent='Copy';this.classList.remove('copied')},1500)">Copy</button>
+<span class="code-kw">&lt;script</span>
+  <span class="code-attr">src</span>=<span class="code-str">"https://cdn.wchats.io/widget.js"</span>
+  <span class="code-attr">data-agent-id</span>=<span class="code-str">"AGT-7f3a"</span>
+  <span class="code-attr">data-token</span>=<span class="code-str">"pk_live_…"</span>
+  <span class="code-attr">data-position</span>=<span class="code-str">"bottom-right"</span>
+  <span class="code-attr">data-color</span>=<span class="code-str">"#F4748C"</span>
+<span class="code-kw">&gt;&lt;/script&gt;</span>
+    </div>
+
+    <div style="margin-top:20px;padding:14px 16px;background:var(--surface-2);border:1px solid var(--border-soft);border-radius:var(--radius-sm);">
+      <div style="font-size:11px;font-weight:600;color:var(--text-4);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:10px;">iframe embed (alternative)</div>
+      <div class="embed-block" style="margin-top:0;">
+        <button class="copy-btn" onclick="this.textContent='Copied!';this.classList.add('copied');setTimeout(()=>{this.textContent='Copy';this.classList.remove('copied')},1500)">Copy</button>
+<span class="code-kw">&lt;iframe</span>
+  <span class="code-attr">src</span>=<span class="code-str">"https://widget.wchats.io/AGT-7f3a"</span>
+  <span class="code-attr">width</span>=<span class="code-str">"400"</span>
+  <span class="code-attr">height</span>=<span class="code-str">"600"</span>
+  <span class="code-attr">frameborder</span>=<span class="code-str">"0"</span>
+<span class="code-kw">&gt;&lt;/iframe&gt;</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel-footer">
+    <button class="btn-back" onclick="showStep(3)">← Back</button>
+    <span class="step-count">Step 4 of 4</span>
+    <button class="btn-next" onclick="showDeployTab(2)">Deploy agent ✓</button>
+  </div>
+</div>
+
+    </main>
+
+<!-- SOUL EDITOR SLIDE-OVER -->
+<div class="slideover-backdrop" id="backdropSoul" onclick="closePanel('soul')"></div>
+<div class="slideover" id="slideoverSoul">
+  <div class="slideover-header">
+    <div>
+      <div class="slideover-title">Soul editor</div>
+      <div class="slideover-sub">Shapes every response your agent gives</div>
+    </div>
+    <button class="slideover-close" onclick="closePanel('soul')">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="slideover-body">
+
+    <div class="field">
+      <label class="field-label">Voice &amp; tone</label>
+      <textarea class="field-input field-textarea" id="soulVoice" oninput="updatePromptPreview()">Professional and concise. Empathetic but direct. Never dismissive.</textarea>
+      <div class="field-hint">How the agent speaks — personality, register, warmth level.</div>
+    </div>
+
+    <div class="field">
+      <label class="field-label">Always do</label>
+      <textarea class="field-input field-textarea" id="soulDo" oninput="updatePromptPreview()">Greet users by name. Cite sources. Escalate unresolved issues after 2 attempts.</textarea>
+      <div class="field-hint">Behaviours the agent must exhibit in every interaction.</div>
+    </div>
+
+    <div class="field">
+      <label class="field-label">Never do</label>
+      <textarea class="field-input field-textarea" id="soulDont" oninput="updatePromptPreview()">Share pricing not in the knowledge base. Make promises about timelines. Apologise more than once.</textarea>
+      <div class="field-hint">Hard constraints. Violations are flagged during red team.</div>
+    </div>
+
+    <!-- System prompt preview -->
+    <div class="prompt-preview-section">
+      <div class="prompt-preview-header">
+        <span class="prompt-preview-label">System prompt preview</span>
+        <span class="prompt-preview-badge">Auto-assembled</span>
+      </div>
+      <div class="prompt-preview-box" id="promptPreview">
+        <!-- populated by JS -->
+      </div>
+    </div>
+
+  </div>
+  <div class="slideover-footer">
+    <button class="btn-back" onclick="closePanel('soul')">Cancel</button>
+    <button class="btn-next" onclick="closePanel('soul')">Save soul</button>
+  </div>
+</div>
+
+<!-- DOC INGEST SLIDE-OVER -->
+<div class="slideover-backdrop" id="backdropDocs" onclick="closePanel('docs')"></div>
+<div class="slideover" id="slideoverDocs">
+  <div class="slideover-header">
+    <div>
+      <div class="slideover-title">Document ingest</div>
+      <div class="slideover-sub">3 documents · 847 chunks indexed</div>
+    </div>
+    <button class="slideover-close" onclick="closePanel('docs')">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="slideover-body">
+
+    <div class="upload-zone" style="margin-bottom:16px;">
+      <div class="upload-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      </div>
+      <div class="upload-text">Drop PDFs, Word docs, or text files here</div>
+      <div class="upload-hint">PDF · DOCX · TXT · MD — max 50 MB per file</div>
+    </div>
+
+    <div class="url-row" style="margin-bottom:24px;">
+      <input class="field-input" type="url" placeholder="Paste a URL to scrape — https://docs.acme.com" style="flex:1;width:auto;">
+      <button class="btn-sm outline">Add URL</button>
+    </div>
+
+    <div class="field-label" style="margin-bottom:10px;">Ingested documents</div>
+    <div class="doc-list">
+      <div class="doc-row">
+        <div class="doc-icon">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        </div>
+        <div class="doc-info">
+          <div class="doc-name">acme-product-guide.pdf</div>
+          <div class="doc-meta">312 chunks · voyage-3 · <span style="color:var(--green)">indexed</span></div>
+        </div>
+        <button class="doc-remove">×</button>
+      </div>
+      <div class="doc-row">
+        <div class="doc-icon">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        </div>
+        <div class="doc-info">
+          <div class="doc-name">support-runbook-v3.docx</div>
+          <div class="doc-meta">289 chunks · voyage-3 · <span style="color:var(--green)">indexed</span></div>
+        </div>
+        <button class="doc-remove">×</button>
+      </div>
+      <div class="doc-row">
+        <div class="doc-icon">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--lilac)" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        </div>
+        <div class="doc-info">
+          <div class="doc-name">https://docs.acme.com/api</div>
+          <div class="doc-meta">246 chunks · scraped · <span style="color:var(--green)">indexed</span></div>
+        </div>
+        <button class="doc-remove">×</button>
+      </div>
+    </div>
+
+  </div>
+  <div class="slideover-footer">
+    <button class="btn-back" onclick="closePanel('docs')">Close</button>
+    <button class="btn-next" onclick="closePanel('docs')">Done</button>
+  </div>
+</div>
+
+  </div><!-- /.page-body -->
+
+</div><!-- /#root -->
+
+<script>
+  let current = 1;
+
+  // Step metadata for sidebar subtitles
+  const stepMeta = [
+    { title: 'Provision', sub: 'Name & role' },
+    { title: 'Configure', sub: 'Voice & knowledge base' },
+    { title: 'Test',      sub: 'Eval suite' },
+    { title: 'Deploy',    sub: 'Widget & embed' },
+  ];
+
+  function showStep(n) {
+    // Update panels
+    for (let i = 1; i <= 4; i++) {
+      document.getElementById('panel' + i).classList.toggle('active', i === n);
+    }
+
+    // Update sidebar step rows
+    for (let i = 1; i <= 4; i++) {
+      const row    = document.getElementById('row' + i);
+      const circle = document.getElementById('circle' + i);
+      const info   = row.querySelector('.step-info');
+
+      // Remove all state classes
+      row.classList.remove('state-done', 'state-active', 'state-locked');
+
+      if (i < n) {
+        // Done
+        row.classList.add('state-done');
+        circle.className = 'step-circle done';
+        circle.textContent = '✓';
+        // Add "Done" chip if not already present
+        let chip = info.querySelector('.step-done-chip');
+        if (!chip) {
+          chip = document.createElement('span');
+          chip.className = 'step-done-chip';
+          chip.textContent = 'Done';
+          info.appendChild(chip);
+        }
+      } else if (i === n) {
+        // Active
+        row.classList.add('state-active');
+        circle.className = 'step-circle active';
+        circle.textContent = i;
+        // Remove Done chip if present
+        const chip = info.querySelector('.step-done-chip');
+        if (chip) chip.remove();
+      } else {
+        // Locked
+        row.classList.add('state-locked');
+        circle.className = 'step-circle locked';
+        circle.textContent = i;
+        // Remove Done chip if present
+        const chip = info.querySelector('.step-done-chip');
+        if (chip) chip.remove();
+      }
+    }
+
+    current = n;
+    // Scroll main content to top on step change
+    document.querySelector('.step-main').scrollTop = 0;
+  }
+
+  // ── SLIDE-OVER ──
+  function openPanel(id) {
+    const key = id.charAt(0).toUpperCase() + id.slice(1);
+    document.getElementById('slideover' + key).classList.add('open');
+    document.getElementById('backdrop' + key).classList.add('open');
+    if (id === 'soul') updatePromptPreview();
+  }
+  function closePanel(id) {
+    const key = id.charAt(0).toUpperCase() + id.slice(1);
+    document.getElementById('slideover' + key).classList.remove('open');
+    document.getElementById('backdrop' + key).classList.remove('open');
+  }
+  function updatePromptPreview() {
+    const voice    = document.getElementById('soulVoice').value.trim() || '(not set)';
+    const doText   = document.getElementById('soulDo').value.trim()    || '(not set)';
+    const dontText = document.getElementById('soulDont').value.trim()  || '(not set)';
+    document.getElementById('promptPreview').innerHTML =
+      '<span class="prompt-section-label">## Role\n</span>' +
+      '<span class="prompt-value">You are a customer service agent for Acme Consulting.\n\n</span>' +
+      '<span class="prompt-section-label">## Voice &amp; tone\n</span>' +
+      '<span class="prompt-value">' + voice + '\n\n</span>' +
+      '<span class="prompt-section-label">## Always do\n</span>' +
+      '<span class="prompt-value">' + doText + '\n\n</span>' +
+      '<span class="prompt-section-label">## Never do\n</span>' +
+      '<span class="prompt-value">' + dontText + '\n\n</span>' +
+      '<span class="prompt-section-label">## Knowledge base\n</span>' +
+      '<span class="prompt-value">You have access to retrieved context from the knowledge base. Always cite the source document when referencing specific facts.</span>';
+  }
+
+  // ── DEPLOY TABS ──
+  function showDeployTab(n) {
+    for (let i = 1; i <= 3; i++) {
+      document.getElementById('dtab' + i).classList.toggle('active', i === n);
+      document.getElementById('dtabpanel' + i).classList.toggle('active', i === n);
+    }
+  }
+
+  function runEval() {
+    const log     = document.getElementById('sseLog');
+    const results = document.getElementById('evalResults');
+    const lines = [
+      { t: 0,    cls: 'sse-line-info',  txt: '[eval:start] run_id=EVL-9a4f · 20 scenarios' },
+      { t: 400,  cls: 'sse-line-dim',   txt: '[eval:scenario:01] running faithfulness…' },
+      { t: 900,  cls: 'sse-line-dim',   txt: '[eval:scenario:02] running answer_relevancy…' },
+      { t: 1400, cls: 'sse-line-ok',    txt: '[eval:scenario:01] faithfulness=0.94 ✓' },
+      { t: 1800, cls: 'sse-line-dim',   txt: '[eval:scenario:03] running context_precision…' },
+      { t: 2400, cls: 'sse-line-ok',    txt: '[eval:scenario:02] answer_relevancy=0.89 ✓' },
+      { t: 2900, cls: 'sse-line-dim',   txt: '[eval:scenario:04] running context_recall…' },
+      { t: 3500, cls: 'sse-line-ok',    txt: '[eval:scenario:03] context_precision=0.86 ✓' },
+      { t: 4100, cls: 'sse-line-dim',   txt: '… 16 more scenarios …' },
+      { t: 5200, cls: 'sse-line-ok',    txt: '[eval:complete] 18/20 pass · 2 warn · 0 fail' },
+      { t: 5600, cls: 'sse-line-score', txt: '[eval:scores] F:0.91 AR:0.88 CP:0.86 CR:0.84' },
+      { t: 6000, cls: 'sse-line-ok',    txt: '[eval:gate] PASS — threshold 0.80 cleared ✓' },
+    ];
+    log.innerHTML = '';
+    lines.forEach(({ t, cls, txt }) => setTimeout(() => {
+      const d = document.createElement('div');
+      d.className = cls;
+      d.textContent = txt;
+      log.appendChild(d);
+      log.scrollTop = log.scrollHeight;
+      if (t === 6000) results.style.display = 'grid';
+    }, t));
+  }
+</script>
+</body>
+</html>

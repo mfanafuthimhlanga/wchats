@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>w.chats — Landing Page</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..800,0..100&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg-deep:#0B0717; --bg:#110C24; --bg-elev:#181232;
+      --surface-1:#1E1638; --surface-2:#2A1E4A; --surface-3:#382860;
+      --glass-bg:rgba(30,22,56,0.55); --glass-bg-strong:rgba(40,28,72,0.70);
+      --glass-border:rgba(244,232,220,0.10); --glass-blur:blur(24px) saturate(140%);
+      --border:rgba(196,154,232,0.18); --border-soft:rgba(196,154,232,0.10); --border-hard:rgba(244,116,140,0.32);
+      --accent:#F4748C; --accent-hover:#FF8AA0; --accent-dim:rgba(244,116,140,0.10); --accent-deep:#C8485E; --accent-glow:rgba(244,116,140,0.32);
+      --lilac:#B79AE0; --lilac-dim:rgba(183,154,224,0.12);
+      --cyan:#5EDFD3; --amber:#E8A87C;
+      --green:#34D399; --green-bg:rgba(52,211,153,0.12); --green-border:rgba(52,211,153,0.25);
+      --text-1:#F4EDE5; --text-2:#C4BCD0; --text-3:#8A82A0; --text-4:#5A5470; --text-on-accent:#0B0717;
+      --shadow-card:0 1px 2px rgba(0,0,0,0.3),0 4px 16px rgba(11,7,23,0.5);
+      --shadow-lift:0 4px 12px rgba(0,0,0,0.35),0 24px 48px rgba(11,7,23,0.6);
+      --shadow-glow:0 0 32px rgba(244,116,140,0.18);
+      --font-display:"Fraunces",Georgia,serif; --font-sans:"Inter",system-ui,sans-serif; --font-mono:"JetBrains Mono",monospace;
+      --radius-xs:8px; --radius-sm:14px; --radius-md:20px; --radius-lg:28px; --radius-pill:100px;
+    }
+
+    html { font-feature-settings:"ss01","cv11","cv02"; -webkit-font-smoothing:antialiased; }
+
+    /* Skyline photo is the whole-app background */
+    body {
+      font-family: var(--font-sans);
+      background-image: url('../../../../.claude/skills/wchats-design/assets/skyline-w-chats.png');
+      background-size: cover; background-position: center top; background-attachment: fixed;
+      background-color: var(--bg-deep);
+      color: var(--text-1); min-height: 100vh;
+    }
+    /* Indigo veil + subtle radial accents */
+    body::before {
+      content:''; position:fixed; inset:0; z-index:0; pointer-events:none;
+      background:
+        radial-gradient(ellipse 60% 40% at 75% 10%, rgba(244,116,140,0.06) 0%, transparent 55%),
+        radial-gradient(ellipse 50% 40% at 0% 55%, rgba(183,154,224,0.05) 0%, transparent 55%),
+        rgba(11,7,23,0.72);
+    }
+    /* Film grain */
+    body::after {
+      content:''; position:fixed; inset:0; z-index:0; pointer-events:none;
+      opacity:0.025; mix-blend-mode:overlay;
+      background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    }
+    #root { position:relative; z-index:1; }
+
+    /* ── NAV ── */
+    nav {
+      position:fixed; top:0; left:0; right:0; z-index:100;
+      height:60px;
+      background:transparent;
+      backdrop-filter:var(--glass-blur); -webkit-backdrop-filter:var(--glass-blur);
+      border-bottom:1px solid var(--glass-border);
+      display:flex; align-items:center; padding:0 28px; gap:0;
+    }
+    .nav-logo { display:flex; align-items:center; gap:12px; margin-right:40px; text-decoration:none; }
+    .logo-mark {
+      width:32px; height:32px; border-radius:8px;
+      background:linear-gradient(135deg,var(--accent) 0%,var(--accent-deep) 100%);
+      display:flex; align-items:center; justify-content:center;
+      box-shadow:0 0 0 1px rgba(244,116,140,0.25), 0 4px 16px rgba(244,116,140,0.25);
+      position:relative;
+    }
+    .logo-mark::after {
+      content:''; position:absolute; inset:1px; border-radius:7px;
+      background:linear-gradient(180deg,rgba(255,255,255,0.18) 0%,transparent 45%);
+      pointer-events:none;
+    }
+    .logo-mark svg { color:#fff; position:relative; z-index:1; }
+    .logo-name {
+      font-family:var(--font-display); font-size:18px; font-weight:500;
+      font-variation-settings:"opsz" 144,"SOFT" 50;
+      color:var(--text-1); letter-spacing:-0.015em;
+    }
+    .logo-name .dot { color:var(--accent); }
+
+    .nav-links { display:flex; align-items:center; gap:2px; flex:1; justify-content:center; }
+    .nav-link {
+      padding:7px 14px; font-size:13.5px; font-weight:500;
+      color:var(--text-2); border-radius:var(--radius-xs);
+      text-decoration:none; transition:color 0.15s,background 0.15s;
+    }
+    .nav-link:hover { background:rgba(255,255,255,0.06); color:var(--text-1); }
+
+    .nav-right { display:flex; align-items:center; gap:10px; margin-left:auto; }
+
+    /* ── BUTTONS ── */
+    .btn {
+      font-family:var(--font-sans); font-weight:600;
+      letter-spacing:-0.005em; border-radius:var(--radius-xs);
+      cursor:pointer; border:none;
+      display:inline-flex; align-items:center; gap:8px;
+      transition:all 0.15s ease; white-space:nowrap; text-decoration:none;
+    }
+    .btn-primary {
+      background:var(--accent); color:var(--text-on-accent);
+      box-shadow:0 0 0 1px var(--accent-deep) inset, var(--shadow-glow);
+    }
+    .btn-primary:hover {
+      background:var(--accent-hover);
+      box-shadow:0 0 0 1px var(--accent-deep) inset, 0 0 40px rgba(244,116,140,0.32);
+      transform:translateY(-1px);
+    }
+    .btn-ghost {
+      background:transparent; color:var(--text-1);
+      border:1px solid var(--border);
+    }
+    .btn-ghost:hover { background:rgba(255,255,255,0.06); border-color:var(--border-hard); }
+    .btn-sm { font-size:13px; padding:7px 16px; }
+    .btn-lg { font-size:15px; padding:13px 24px; }
+
+    /* ── HERO (transparent — photo shows through body bg) ── */
+    .hero {
+      position:relative; min-height:100vh;
+      display:flex; align-items:center;
+    }
+    .hero-content {
+      position:relative; z-index:2;
+      max-width:1280px; margin:0 auto; width:100%;
+      padding:120px 56px 64px;
+      display:grid;
+      grid-template-columns:1fr 0.72fr;
+      gap:56px; align-items:center;
+    }
+    @media (max-width:1024px) { .hero-content { grid-template-columns:1fr; gap:48px; } }
+
+    /* ── HERO COPY ── */
+    .hero-headline {
+      font-family:var(--font-display); font-weight:400;
+      font-variation-settings:"opsz" 144,"SOFT" 30;
+      font-size:clamp(32px,3.4vw,52px); line-height:1.1;
+      letter-spacing:-0.022em; color:var(--text-1);
+      margin-bottom:16px;
+    }
+    .hero-headline em {
+      font-style:italic; font-weight:300; color:var(--accent);
+      font-variation-settings:"opsz" 144,"SOFT" 100;
+    }
+
+    .hero-sub {
+      font-size:15px; line-height:1.6; color:var(--text-2);
+      max-width:480px; margin-bottom:22px;
+    }
+    .hero-sub strong { color:var(--text-1); font-weight:600; }
+
+    .hero-cta-row { display:flex; gap:12px; margin-bottom:28px; flex-wrap:wrap; align-items:center; }
+
+    .hero-trust {
+      display:flex; align-items:center; gap:0;
+      padding-top:24px; border-top:1px solid var(--glass-border);
+    }
+    .trust-stat { display:flex; flex-direction:column; gap:2px; padding:0 28px; }
+    .trust-stat:first-child { padding-left:0; }
+    .trust-num {
+      font-family:var(--font-mono); font-size:18px; font-weight:600;
+      color:var(--text-1); letter-spacing:-0.01em;
+    }
+    .trust-num .unit { color:var(--accent); font-weight:500; }
+    .trust-lbl {
+      font-size:9.5px; font-weight:600;
+      letter-spacing:0.12em; text-transform:uppercase; color:var(--text-3);
+    }
+    .trust-sep { width:1px; height:32px; background:var(--glass-border); flex-shrink:0; }
+
+    /* ── DEMO CARD ── */
+    .hero-demo {}
+    .demo-card {
+      background: var(--glass-bg);
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      border:1px solid var(--glass-border); border-radius:var(--radius-md);
+      box-shadow:var(--shadow-lift), 0 0 60px rgba(11,7,23,0.5);
+      padding:24px; position:relative; overflow:hidden;
+    }
+    .demo-card::before {
+      content:''; position:absolute; inset:0;
+      background:radial-gradient(circle at 75% 0%, rgba(244,116,140,0.07) 0%, transparent 55%);
+      pointer-events:none;
+    }
+
+    .demo-header {
+      display:flex; align-items:center; gap:8px;
+      margin-bottom:16px; padding-bottom:14px;
+      border-bottom:1px solid var(--glass-border);
+      position:relative; z-index:1;
+    }
+    .demo-hd-dot {
+      width:7px; height:7px; border-radius:50%;
+      background:var(--accent); flex-shrink:0;
+    }
+    .demo-hd-text {
+      font-family:var(--font-mono); font-size:11px; font-weight:500;
+      letter-spacing:0.12em; text-transform:uppercase; color:var(--text-3);
+    }
+    .demo-hd-text strong { color:var(--text-2); }
+
+    .demo-steps { display:flex; flex-direction:column; gap:8px; position:relative; z-index:1; }
+    .demo-step {
+      display:flex; align-items:center; gap:14px;
+      padding:14px 16px;
+      background:rgba(11,7,23,0.30);
+      border:1px solid var(--glass-border);
+      border-radius:var(--radius-sm);
+      transition:all 0.3s ease;
+    }
+    .demo-step.done { border-color:var(--green-border); background:rgba(111,232,170,0.04); }
+    .demo-step.active {
+      border-color:var(--accent); background:var(--accent-dim);
+      box-shadow:0 0 0 1px rgba(244,116,140,0.12);
+    }
+    .demo-step.pending { opacity:0.45; }
+
+    .ds-circle {
+      width:28px; height:28px; border-radius:50%; flex-shrink:0;
+      display:flex; align-items:center; justify-content:center;
+    }
+    .demo-step.done .ds-circle { background:var(--green); color:var(--text-on-accent); }
+    .demo-step.active .ds-circle {
+      background:var(--accent); color:var(--text-on-accent);
+      font-family:var(--font-mono); font-size:12px; font-weight:700;
+      animation:spin-soft 3s linear infinite;
+    }
+    .demo-step.pending .ds-circle {
+      background:var(--surface-2); color:var(--text-4);
+      border:1px solid var(--border-soft);
+      font-family:var(--font-mono); font-size:12px; font-weight:600;
+    }
+    @keyframes spin-soft {
+      0%   { box-shadow: 0 0 0 0 var(--accent-glow); }
+      25%  { box-shadow: 0 0 0 3px rgba(244,116,140,0.20); }
+      50%  { box-shadow: 0 0 0 5px transparent; }
+      100% { box-shadow: 0 0 0 0 var(--accent-glow); }
+    }
+
+    .ds-info { flex:1; min-width:0; }
+    .ds-title { font-size:14px; font-weight:600; color:var(--text-1); margin-bottom:3px; }
+    .ds-meta { font-size:12px; font-family:var(--font-mono); color:var(--text-3); }
+    .demo-step.done .ds-meta { color:var(--green); }
+    .demo-step.active .ds-meta { color:var(--accent); }
+
+    .ds-spinner {
+      width:14px; height:14px; flex-shrink:0;
+      border:2px solid var(--accent-dim); border-top-color:var(--accent);
+      border-radius:50%;
+      animation:rotate 0.9s linear infinite;
+    }
+    @keyframes rotate { to { transform:rotate(360deg); } }
+
+    .trust-stat:last-child { padding-right:0; }
+
+    a:focus-visible,
+    button:focus-visible,
+    input:focus-visible,
+    textarea:focus-visible,
+    select:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+<div id="root">
+
+  <nav>
+    <a href="/" class="nav-logo">
+      <div class="logo-mark">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </svg>
+      </div>
+      <span class="logo-name">w<span class="dot">.</span>chats</span>
+    </a>
+    <div class="nav-links">
+      <a href="#" class="nav-link">Product</a>
+      <a href="#" class="nav-link">How it works</a>
+      <a href="#" class="nav-link">Pricing</a>
+      <a href="#" class="nav-link">Docs</a>
+      <a href="#" class="nav-link">Changelog</a>
+    </div>
+    <div class="nav-right">
+      <button class="btn btn-ghost btn-sm">Sign in</button>
+      <button class="btn btn-primary btn-sm">
+        Start free
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+      </button>
+    </div>
+  </nav>
+
+  <div class="hero">
+    <div class="hero-content">
+
+      <div class="hero-copy">
+        <div style="display:inline-flex;align-items:center;gap:8px;padding:5px 14px;border-radius:var(--radius-pill);background:var(--glass-bg);border:1px solid var(--glass-border);backdrop-filter:var(--glass-blur);-webkit-backdrop-filter:var(--glass-blur);margin-bottom:20px;">
+          <span style="width:6px;height:6px;border-radius:50%;background:var(--accent);flex-shrink:0;"></span>
+          <span style="font-family:var(--font-mono);font-size:11px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-2);">Early access · Open source</span>
+        </div>
+        <h1 class="hero-headline">
+          Ship a customer support agent that is <em>defensible</em> — grounded, evaluated, and red-teamed before it goes live.
+        </h1>
+
+        <p class="hero-sub">
+          W Chats wires a <strong>Claude Agent SDK</strong> reasoning engine to your business documents, evaluates every answer, and ships a <strong>20kb widget</strong> for any page.
+        </p>
+
+        <div class="hero-cta-row">
+          <button class="btn btn-primary btn-lg">
+            Build your agent
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          </button>
+          <button class="btn btn-ghost btn-lg">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Watch the build
+          </button>
+        </div>
+
+        <div class="hero-trust">
+          <div class="trust-stat">
+            <span class="trust-num">&lt;30<span class="unit">min</span></span>
+            <span class="trust-lbl">Signup to deployed</span>
+          </div>
+          <div class="trust-sep"></div>
+          <div class="trust-stat">
+            <span class="trust-num">&gt;0.85</span>
+            <span class="trust-lbl">Faithfulness target</span>
+          </div>
+          <div class="trust-sep"></div>
+          <div class="trust-stat">
+            <span class="trust-num">0<span class="unit">crit</span></span>
+            <span class="trust-lbl">Red team threshold</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="hero-demo">
+        <div class="demo-card">
+          <div class="demo-header">
+            <span class="demo-hd-dot"></span>
+            <span class="demo-hd-text"><strong>Build pipeline</strong>&nbsp;·&nbsp;agent.kgalema&nbsp;·&nbsp;v1</span>
+          </div>
+
+          <div class="demo-steps">
+            <div class="demo-step done">
+              <div class="ds-circle">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              </div>
+              <div class="ds-info">
+                <div class="ds-title">Provision</div>
+                <div class="ds-meta">Dedicated tenant database ready</div>
+              </div>
+            </div>
+
+            <div class="demo-step done">
+              <div class="ds-circle">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              </div>
+              <div class="ds-info">
+                <div class="ds-title">Configure</div>
+                <div class="ds-meta">Soul + documents ingested</div>
+              </div>
+            </div>
+
+            <div class="demo-step active">
+              <div class="ds-circle">3</div>
+              <div class="ds-info">
+                <div class="ds-title">Test</div>
+                <div class="ds-meta">Evals passed</div>
+              </div>
+              <div class="ds-spinner"></div>
+            </div>
+
+            <div class="demo-step pending">
+              <div class="ds-circle">4</div>
+              <div class="ds-info">
+                <div class="ds-title">Deploy</div>
+                <div class="ds-meta">Embed widget live</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
