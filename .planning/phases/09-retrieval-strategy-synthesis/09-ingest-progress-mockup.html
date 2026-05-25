@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Phase 9 — Ingest Progress Mockup</title>
+  <style>
+    /* -------------------------------------------------------------------------
+       Design system tokens — exact values from apps/admin/app/globals.css
+    -------------------------------------------------------------------------- */
+    :root {
+      --bg: #F0E8E0;
+      --surface-1: #FFFCF9;
+      --surface-2: #F7F0EA;
+      --surface-3: #EDE3D8;
+
+      --border: #D9CCBE;
+      --border-soft: #EDE3D8;
+      --border-hard: #B8906A;
+
+      --accent: #7B1C3A;
+      --accent-hover: #5E1229;
+      --accent-dim: rgba(123, 28, 58, 0.08);
+
+      --text-1: #1A0A0F;
+      --text-2: #4A2030;
+      --text-3: #8A6060;
+      --text-4: #C4A0A0;
+
+      --radius-xs: 8px;
+      --radius-sm: 14px;
+
+      --shadow-card: 0 1px 2px rgba(74,32,48,0.04), 0 4px 12px rgba(74,32,48,0.06);
+      --shadow-sm: 0 1px 3px rgba(26, 10, 15, 0.08);
+
+      --red: #B91C1C;
+      --red-bg: #FEF2F2;
+      --green: #166534;
+      --green-bg: #F0FDF4;
+      --green-solid: #16A34A;
+      --amber: #92400E;
+      --amber-bg: #FEF3C7;
+
+      --font-sans: 'Inter', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+    }
+
+    @keyframes spin-cw {
+      from { transform: rotate(0deg); }
+      to   { transform: rotate(360deg); }
+    }
+
+    @keyframes slide-in-up {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: var(--font-sans);
+      background: var(--bg);
+      color: var(--text-1);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* -------------------------------------------------------------------------
+       State-switcher nav (reviewer control)
+    -------------------------------------------------------------------------- */
+    .state-nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      background: var(--surface-1);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .state-nav-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-3);
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      margin-right: 6px;
+      white-space: nowrap;
+    }
+
+    .stage-btn {
+      padding: 5px 12px;
+      border-radius: var(--radius-xs);
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text-2);
+      font-size: 12px;
+      font-family: var(--font-sans);
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+
+    .stage-btn:hover {
+      background: var(--surface-3);
+    }
+
+    .stage-btn.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+
+    .stage-btn.new-stage {
+      border: 2px solid var(--accent);
+      font-weight: 700;
+    }
+
+    .stage-btn.new-stage.active {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    /* -------------------------------------------------------------------------
+       Page layout
+    -------------------------------------------------------------------------- */
+    .page-wrapper {
+      padding-top: 60px; /* clear fixed nav */
+      min-height: 100vh;
+      display: flex;
+    }
+
+    /* Sidebar — Journey Stepper (from Phase 8 UI-SPEC) */
+    .sidebar {
+      width: 240px;
+      min-height: calc(100vh - 60px);
+      background: var(--surface-1);
+      border-right: 1px solid var(--border);
+      padding: 24px 16px;
+      flex-shrink: 0;
+    }
+
+    .sidebar-agent-name {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-1);
+      margin-bottom: 2px;
+    }
+
+    .sidebar-agent-role {
+      font-size: 11px;
+      color: var(--text-3);
+      margin-bottom: 20px;
+    }
+
+    .step-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 8px;
+      border-radius: 10px;
+      margin-bottom: 2px;
+    }
+
+    .step-row.active-step {
+      background: var(--accent-dim);
+    }
+
+    .step-circle {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+      background: var(--surface-1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-3);
+      flex-shrink: 0;
+    }
+
+    .step-circle.done {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .step-circle.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .step-info { flex: 1; }
+    .step-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-1);
+    }
+    .step-subtitle {
+      font-size: 11px;
+      color: var(--text-3);
+    }
+
+    /* -------------------------------------------------------------------------
+       Main content
+    -------------------------------------------------------------------------- */
+    .main-content {
+      flex: 1;
+      padding: 32px 40px;
+      max-width: 860px;
+    }
+
+    .page-heading {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text-1);
+      margin-bottom: 4px;
+    }
+
+    .page-subhead {
+      font-size: 14px;
+      color: var(--text-3);
+      margin-bottom: 28px;
+    }
+
+    /* Tab bar */
+    .tab-bar {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 24px;
+    }
+
+    .tab-btn {
+      padding: 10px 20px;
+      border: none;
+      border-bottom: 2px solid transparent;
+      background: none;
+      font-size: 14px;
+      font-family: var(--font-sans);
+      color: var(--text-3);
+      font-weight: 400;
+      cursor: pointer;
+      margin-bottom: -1px;
+    }
+
+    .tab-btn.active {
+      color: var(--accent);
+      font-weight: 600;
+      border-bottom-color: var(--accent);
+    }
+
+    /* Knowledge base card */
+    .kb-card {
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      box-shadow: var(--shadow-card);
+      overflow: hidden;
+      margin-bottom: 24px;
+    }
+
+    .kb-card-header {
+      padding: 14px 18px;
+      background: var(--surface-3);
+      border-bottom: 1px solid var(--border-soft);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--text-3);
+    }
+
+    /* -------------------------------------------------------------------------
+       Optimistic in-flight document row
+       Exact styles from ingest/page.tsx lines 855-908
+    -------------------------------------------------------------------------- */
+    .doc-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      border-top: 1px solid var(--border-soft);
+      background: var(--surface-1);
+      animation: slide-in-up 0.2s ease-out;
+    }
+
+    .doc-row:first-child {
+      border-top: none;
+    }
+
+    .doc-icon {
+      width: 32px;
+      height: 32px;
+      background: var(--amber-bg);
+      border: 1px solid rgba(146,64,14,0.25);
+      border-radius: var(--radius-xs);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    .doc-icon.pdf { background: var(--red-bg); border-color: rgba(185,28,28,0.2); }
+    .doc-icon.complete { background: var(--green-bg); border-color: rgba(22,163,74,0.2); }
+
+    .doc-spinner-wrapper {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      flex-shrink: 0;
+    }
+
+    .doc-spinner {
+      width: 18px;
+      height: 18px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin-cw 0.9s linear infinite;
+    }
+
+    .doc-meta { flex: 1; min-width: 0; }
+
+    .doc-type-tag {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-4);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 2px;
+    }
+
+    .doc-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-2);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Amber progress badge — exact styles from ingest/page.tsx lines 893-907 */
+    .progress-badge {
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      background: var(--amber-bg);
+      color: var(--amber);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .progress-badge.complete {
+      background: var(--green-bg);
+      color: var(--green);
+    }
+
+    .progress-badge.failed {
+      background: var(--red-bg);
+      color: var(--red);
+    }
+
+    /* -------------------------------------------------------------------------
+       Pipeline timeline — visual reference for reviewers
+    -------------------------------------------------------------------------- */
+    .pipeline-timeline {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 20px 24px;
+      margin-bottom: 24px;
+    }
+
+    .pipeline-timeline-heading {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-3);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 16px;
+    }
+
+    .pipeline-stages {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    .pipeline-stage {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 7px 0;
+      position: relative;
+    }
+
+    .pipeline-stage:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      left: 10px;
+      top: 100%;
+      width: 2px;
+      height: 14px;
+      background: var(--border);
+      z-index: 1;
+    }
+
+    .pipeline-stage.completed::after { background: var(--green-solid); }
+    .pipeline-stage.active-stage::after { background: var(--amber); }
+
+    .stage-dot {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+      background: var(--surface-1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      flex-shrink: 0;
+      z-index: 2;
+      position: relative;
+    }
+
+    .stage-dot.completed {
+      background: var(--green-solid);
+      border-color: var(--green-solid);
+      color: #fff;
+    }
+
+    .stage-dot.active-stage {
+      background: var(--amber-bg);
+      border-color: var(--amber);
+    }
+
+    .stage-dot.pending {
+      background: var(--surface-2);
+    }
+
+    .stage-dot.new-badge {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .stage-label {
+      font-size: 13px;
+      color: var(--text-3);
+      font-weight: 400;
+    }
+
+    .stage-label.completed { color: var(--green); font-weight: 500; }
+    .stage-label.active-stage { color: var(--amber); font-weight: 600; }
+    .stage-label.new-marker {
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .new-pill {
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 999px;
+      font-size: 9px;
+      font-weight: 700;
+      background: var(--accent);
+      color: #fff;
+      margin-left: 6px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      vertical-align: middle;
+    }
+
+    .stage-event-name {
+      font-size: 10px;
+      font-family: var(--font-mono);
+      color: var(--text-4);
+      margin-left: auto;
+    }
+
+    /* -------------------------------------------------------------------------
+       Upload form (simplified, for context)
+    -------------------------------------------------------------------------- */
+    .upload-area {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius-sm);
+      padding: 36px 24px;
+      text-align: center;
+      background: var(--surface-2);
+      color: var(--text-3);
+      font-size: 14px;
+      margin-bottom: 16px;
+    }
+
+    .upload-area-icon { font-size: 28px; margin-bottom: 8px; }
+    .upload-area-heading {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-2);
+      margin-bottom: 4px;
+    }
+
+    .submit-btn {
+      padding: 10px 18px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius-xs);
+      font-size: 14px;
+      font-weight: 600;
+      font-family: var(--font-sans);
+      cursor: default;
+      opacity: 0.5;
+    }
+
+    /* -------------------------------------------------------------------------
+       State description banner (reviewer info — not part of app UI)
+    -------------------------------------------------------------------------- */
+    .state-info-banner {
+      background: var(--surface-3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xs);
+      padding: 10px 16px;
+      margin-bottom: 20px;
+      font-size: 12px;
+      color: var(--text-2);
+    }
+
+    .state-info-banner strong { color: var(--text-1); }
+
+    .state-label-display {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 6px;
+      color: var(--amber);
+    }
+
+    .state-label-display.complete { color: var(--green); }
+  </style>
+</head>
+<body>
+
+<!-- =========================================================================
+     STATE-SWITCHER NAV
+     Click each button to jump to that pipeline stage.
+========================================================================== -->
+<nav class="state-nav">
+  <span class="state-nav-label">Stage:</span>
+  <button class="stage-btn active" onclick="showStage('idle')">0. Idle</button>
+  <button class="stage-btn" onclick="showStage('ingestion.started')">1. Started</button>
+  <button class="stage-btn" onclick="showStage('parsing.started')">2. Parsing</button>
+  <button class="stage-btn" onclick="showStage('chunking.started')">3. Chunking</button>
+  <button class="stage-btn" onclick="showStage('metadata.started')">4. Metadata</button>
+  <button class="stage-btn" onclick="showStage('embedding.started')">5. Embedding</button>
+  <button class="stage-btn new-stage" onclick="showStage('strategy.synthesized')">6. Strategy (NEW)</button>
+  <button class="stage-btn" onclick="showStage('ingestion.complete')">7. Complete</button>
+  <button class="stage-btn" onclick="showStage('job.complete')">8. Done</button>
+</nav>
+
+<!-- =========================================================================
+     PAGE LAYOUT
+========================================================================== -->
+<div class="page-wrapper">
+
+  <!-- Sidebar — Journey Stepper -->
+  <aside class="sidebar">
+    <div class="sidebar-agent-name">Acme Consulting</div>
+    <div class="sidebar-agent-role">Customer service agent</div>
+
+    <div class="step-row">
+      <div class="step-circle done">✓</div>
+      <div class="step-info">
+        <div class="step-title">Configure</div>
+        <div class="step-subtitle">Identity &amp; soul</div>
+      </div>
+    </div>
+
+    <div class="step-row active-step">
+      <div class="step-circle active">2</div>
+      <div class="step-info">
+        <div class="step-title">Knowledge Base</div>
+        <div class="step-subtitle">Ingest documents</div>
+      </div>
+    </div>
+
+    <div class="step-row">
+      <div class="step-circle">3</div>
+      <div class="step-info">
+        <div class="step-title">Evaluate</div>
+        <div class="step-subtitle">Quality &amp; safety</div>
+      </div>
+    </div>
+
+    <div class="step-row">
+      <div class="step-circle">4</div>
+      <div class="step-info">
+        <div class="step-title">Deploy</div>
+        <div class="step-subtitle">Customise → Check → Embed</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <main class="main-content">
+    <h1 class="page-heading">Knowledge Base</h1>
+    <p class="page-subhead">Add documents and URLs that your agent will use to answer questions.</p>
+
+    <!-- Tab bar -->
+    <div class="tab-bar">
+      <button class="tab-btn active">Upload file</button>
+      <button class="tab-btn">Add URL</button>
+    </div>
+
+    <!-- Reviewer info banner (not part of app UI) -->
+    <div class="state-info-banner" id="state-info-banner">
+      <strong>Stage:</strong> <span id="stage-name-display">Idle</span> —
+      Active badge label: <span class="state-label-display" id="badge-label-display">—</span>
+    </div>
+
+    <!-- Upload area (simplified, non-interactive) -->
+    <div id="upload-section">
+      <div class="upload-area">
+        <div class="upload-area-icon">📄</div>
+        <div class="upload-area-heading">Drop files here or click to browse</div>
+        <div style="font-size:13px; color: var(--text-4);">.pdf · .md · .png · .jpg · .jpeg</div>
+      </div>
+      <div style="text-align: right; margin-bottom: 24px;">
+        <button class="submit-btn">Ingest</button>
+      </div>
+    </div>
+
+    <!-- Pipeline timeline (always visible — reviewer reference) -->
+    <div class="pipeline-timeline">
+      <div class="pipeline-timeline-heading">Ingestion Pipeline — Label Sequence</div>
+      <div class="pipeline-stages" id="pipeline-stages">
+        <!-- Populated by JS -->
+      </div>
+    </div>
+
+    <!-- Knowledge base document list -->
+    <div class="kb-card" id="kb-card">
+      <div class="kb-card-header">Documents</div>
+      <div id="doc-list">
+        <!-- Populated by JS -->
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+  // -------------------------------------------------------------------------
+  // Pipeline stage definitions
+  // -------------------------------------------------------------------------
+  const STAGES = [
+    { event: 'ingestion.started',  label: 'Starting ingestion...',              phase: 'M2' },
+    { event: 'parsing.started',    label: 'Parsing document...',                phase: 'M2' },
+    { event: 'parsing.complete',   label: 'Document parsed',                    phase: 'M2' },
+    { event: 'chunking.started',   label: 'Splitting into chunks...',           phase: 'M2' },
+    { event: 'chunking.complete',  label: 'Chunks ready',                       phase: 'M2' },
+    { event: 'metadata.started',   label: 'Extracting metadata & entities...', phase: 'M2' },
+    { event: 'metadata.progress',  label: 'Extracting metadata & entities...', phase: 'M2' },
+    { event: 'metadata.complete',  label: 'Metadata extracted',                 phase: 'M2' },
+    { event: 'embedding.started',  label: 'Generating embeddings...',           phase: 'M2' },
+    { event: 'embedding.complete', label: 'Embeddings done',                    phase: 'M2' },
+    { event: 'strategy.synthesized', label: 'Optimising retrieval strategy...', phase: 'M9', isNew: true },
+    { event: 'ingestion.complete', label: 'Processing complete',                phase: 'M2' },
+    { event: 'job.complete',       label: 'Done!',                              phase: 'M2' },
+  ]
+
+  // Stages keyed by the event name used to switch to that state
+  const STAGE_KEYS = [
+    'idle',
+    'ingestion.started',
+    'parsing.started',
+    'chunking.started',
+    'metadata.started',
+    'embedding.started',
+    'strategy.synthesized',
+    'ingestion.complete',
+    'job.complete',
+  ]
+
+  // For each nav stage, which STAGES[] entries are completed, active, or pending
+  const STAGE_STATE_MAP = {
+    'idle': { activeIdx: -1, completedUpTo: -1 },
+    'ingestion.started': { activeIdx: 0, completedUpTo: -1 },
+    'parsing.started': { activeIdx: 1, completedUpTo: 0 },
+    'chunking.started': { activeIdx: 3, completedUpTo: 2 },
+    'metadata.started': { activeIdx: 5, completedUpTo: 4 },
+    'embedding.started': { activeIdx: 8, completedUpTo: 7 },
+    'strategy.synthesized': { activeIdx: 10, completedUpTo: 9 },
+    'ingestion.complete': { activeIdx: 11, completedUpTo: 10 },
+    'job.complete': { activeIdx: 12, completedUpTo: 11 },
+  }
+
+  // Elapsed counter simulation
+  let elapsedInterval = null
+  let elapsedSeconds = 0
+
+  function startElapsed() {
+    clearInterval(elapsedInterval)
+    elapsedSeconds = 0
+    elapsedInterval = setInterval(() => {
+      elapsedSeconds++
+      renderElapsed()
+    }, 1000)
+  }
+
+  function stopElapsed() {
+    clearInterval(elapsedInterval)
+    elapsedInterval = null
+  }
+
+  function formatElapsed(s) {
+    if (s < 60) return s + 's'
+    const m = Math.floor(s / 60)
+    const sec = s % 60
+    return m + 'm ' + sec + 's'
+  }
+
+  function renderElapsed() {
+    const badges = document.querySelectorAll('.progress-badge.in-flight')
+    badges.forEach(b => {
+      const label = b.dataset.label || 'processing…'
+      b.textContent = label + ' · ' + formatElapsed(elapsedSeconds)
+    })
+  }
+
+  // -------------------------------------------------------------------------
+  // Render pipeline timeline
+  // -------------------------------------------------------------------------
+  function renderTimeline(activeEvent) {
+    const container = document.getElementById('pipeline-stages')
+    const stateInfo = STAGE_STATE_MAP[activeEvent] || { activeIdx: -1, completedUpTo: -1 }
+
+    container.innerHTML = ''
+
+    STAGES.forEach((stage, i) => {
+      const isCompleted = i <= stateInfo.completedUpTo
+      const isActive = i === stateInfo.activeIdx
+      const isPending = !isCompleted && !isActive
+
+      const row = document.createElement('div')
+      row.className = 'pipeline-stage' +
+        (isCompleted ? ' completed' : '') +
+        (isActive ? ' active-stage' : '')
+
+      // Dot
+      const dot = document.createElement('div')
+      dot.className = 'stage-dot'
+      if (isCompleted) {
+        dot.classList.add('completed')
+        dot.textContent = '✓'
+      } else if (isActive) {
+        if (stage.isNew) {
+          dot.classList.add('new-badge')
+          dot.textContent = '★'
+        } else {
+          dot.classList.add('active-stage')
+          dot.innerHTML = '<div style="width:8px;height:8px;border-radius:50%;background:var(--amber);animation:spin-cw 1s linear infinite;border:1.5px solid var(--amber);border-top-color:transparent;"></div>'
+        }
+      } else {
+        dot.classList.add('pending')
+        dot.textContent = (i + 1).toString()
+      }
+
+      // Label
+      const labelEl = document.createElement('span')
+      labelEl.className = 'stage-label'
+      if (isCompleted) labelEl.classList.add('completed')
+      if (isActive && stage.isNew) labelEl.classList.add('new-marker')
+      else if (isActive) labelEl.classList.add('active-stage')
+
+      let labelText = stage.label
+      if (stage.isNew) {
+        labelText += ''
+      }
+      labelEl.textContent = labelText
+
+      if (stage.isNew) {
+        const pill = document.createElement('span')
+        pill.className = 'new-pill'
+        pill.textContent = 'M9 NEW'
+        labelEl.appendChild(pill)
+      }
+
+      // Event name (monospace, right-aligned)
+      const eventEl = document.createElement('span')
+      eventEl.className = 'stage-event-name'
+      eventEl.textContent = stage.event
+
+      row.appendChild(dot)
+      row.appendChild(labelEl)
+      row.appendChild(eventEl)
+      container.appendChild(row)
+    })
+  }
+
+  // -------------------------------------------------------------------------
+  // Render document list
+  // -------------------------------------------------------------------------
+  function renderDocList(activeEvent) {
+    const docList = document.getElementById('doc-list')
+    const isIdle = activeEvent === 'idle'
+    const isDone = activeEvent === 'job.complete'
+    const isComplete = activeEvent === 'ingestion.complete'
+
+    if (isIdle) {
+      // Existing documents in KB, no in-flight row
+      docList.innerHTML = ''
+      docList.appendChild(makeCompletedDocRow('Employee Handbook 2024.pdf', 'PDF', '142 chunks'))
+      docList.appendChild(makeCompletedDocRow('Product FAQ.md', 'Markdown', '38 chunks'))
+      return
+    }
+
+    docList.innerHTML = ''
+
+    // Optimistic in-flight row (always shown when a job is running)
+    const inFlightRow = document.createElement('div')
+    inFlightRow.className = 'doc-row'
+    inFlightRow.style.borderTop = 'none'
+
+    // Spinner
+    const spinnerWrapper = document.createElement('div')
+    spinnerWrapper.className = 'doc-spinner-wrapper'
+    const spinner = document.createElement('div')
+    spinner.className = 'doc-spinner'
+    spinnerWrapper.appendChild(spinner)
+
+    // Meta
+    const meta = document.createElement('div')
+    meta.className = 'doc-meta'
+    const typeTag = document.createElement('div')
+    typeTag.className = 'doc-type-tag'
+    typeTag.textContent = 'PDF'
+    const title = document.createElement('div')
+    title.className = 'doc-title'
+    title.textContent = 'Technical Reference Manual v3.2.pdf'
+    meta.appendChild(typeTag)
+    meta.appendChild(title)
+
+    // Badge
+    const badge = document.createElement('span')
+
+    if (isDone || isComplete) {
+      badge.className = 'progress-badge complete'
+      badge.textContent = isDone ? 'Done!' : 'Processing complete'
+      stopElapsed()
+    } else {
+      badge.className = 'progress-badge in-flight'
+      const stateInfo = STAGE_STATE_MAP[activeEvent]
+      const activeStage = STAGES[stateInfo ? stateInfo.activeIdx : 0]
+      const label = (activeStage ? activeStage.label : 'processing…')
+      badge.dataset.label = label
+      badge.textContent = label + ' · ' + formatElapsed(elapsedSeconds)
+    }
+
+    inFlightRow.appendChild(spinnerWrapper)
+    inFlightRow.appendChild(meta)
+    inFlightRow.appendChild(badge)
+    docList.appendChild(inFlightRow)
+
+    // Existing documents below the in-flight row
+    docList.appendChild(makeCompletedDocRow('Employee Handbook 2024.pdf', 'PDF', '142 chunks'))
+    docList.appendChild(makeCompletedDocRow('Product FAQ.md', 'Markdown', '38 chunks'))
+  }
+
+  function makeCompletedDocRow(titleText, type, chunks) {
+    const row = document.createElement('div')
+    row.className = 'doc-row'
+
+    const icon = document.createElement('div')
+    icon.className = 'doc-icon' + (type === 'PDF' ? ' pdf' : ' complete')
+    icon.textContent = type === 'PDF' ? '📄' : '📝'
+
+    const meta = document.createElement('div')
+    meta.className = 'doc-meta'
+    const typeTag = document.createElement('div')
+    typeTag.className = 'doc-type-tag'
+    typeTag.textContent = type
+    const title = document.createElement('div')
+    title.className = 'doc-title'
+    title.textContent = titleText
+    meta.appendChild(typeTag)
+    meta.appendChild(title)
+
+    const badge = document.createElement('span')
+    badge.className = 'progress-badge complete'
+    badge.textContent = chunks
+
+    row.appendChild(icon)
+    row.appendChild(meta)
+    row.appendChild(badge)
+    return row
+  }
+
+  // -------------------------------------------------------------------------
+  // Show stage — main entry point for state-switcher
+  // -------------------------------------------------------------------------
+  function showStage(stageKey) {
+    // Update nav buttons
+    document.querySelectorAll('.stage-btn').forEach(btn => btn.classList.remove('active'))
+    const allBtns = document.querySelectorAll('.stage-btn')
+    STAGE_KEYS.forEach((key, i) => {
+      if (key === stageKey) allBtns[i].classList.add('active')
+    })
+
+    // Reviewer info banner
+    const stateInfo = STAGE_STATE_MAP[stageKey]
+    const activeStage = stateInfo && stateInfo.activeIdx >= 0 ? STAGES[stateInfo.activeIdx] : null
+    const stageName = stageKey === 'idle' ? 'Idle — no job running'
+      : activeStage ? activeStage.event
+      : stageKey
+    const badgeLabel = activeStage ? activeStage.label : (stageKey === 'job.complete' ? 'Done!' : '—')
+
+    document.getElementById('stage-name-display').textContent = stageName
+    const badgeEl = document.getElementById('badge-label-display')
+    badgeEl.textContent = badgeLabel
+    badgeEl.className = 'state-label-display' + (stageKey === 'job.complete' || stageKey === 'ingestion.complete' ? ' complete' : '')
+
+    // Timeline
+    renderTimeline(stageKey)
+
+    // Start or stop elapsed timer
+    if (stageKey === 'idle' || stageKey === 'job.complete' || stageKey === 'ingestion.complete') {
+      stopElapsed()
+    } else {
+      if (!elapsedInterval) startElapsed()
+    }
+
+    // Document list
+    renderDocList(stageKey)
+  }
+
+  // -------------------------------------------------------------------------
+  // Initial render
+  // -------------------------------------------------------------------------
+  showStage('idle')
+</script>
+</body>
+</html>

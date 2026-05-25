@@ -632,7 +632,7 @@ def _make_iframe_snippet(agent_id: str) -> str:
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Celery task control DB writes — ORM or psycopg2?**
    - What we know: `run_red_team` writes to tenant DB via psycopg2. `checklist_runs` is in the control DB.

@@ -673,22 +673,22 @@ This is 4 plans, which matches the minimum viable wave structure for this scope.
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should `synthesize_retrieval_strategy` emit SSE events?**
    - What we know: Other pipeline tasks emit SSE events (parsing.started, embedding.complete, etc.)
    - What's unclear: Whether the admin UI or demo needs to show "strategy synthesis in progress"
-   - Recommendation: Emit a single `strategy.synthesized` event at completion — follows existing emit pattern, costs one Redis publish, useful for demo verification. The job that wraps the synthesis is the existing ingestion job, so use that `job_id` from the result dict.
+   - RESOLVED: Emit a single `strategy.synthesized` event at completion — follows existing emit pattern, costs one Redis publish, useful for demo verification. The job that wraps the synthesis is the existing ingestion job, so use that `job_id` from the result dict. Implemented in 09-02-PLAN.md T1.
 
 2. **Should `strategy_resynthesis_flagged` be cleared after synthesis?**
    - What we know: M5 sets this flag on repeated Auditor failures; M9 CONTEXT.md does not explicitly address clearing it
    - What's unclear: Should M9's synthesis automatically clear the flag, or leave it for operator review?
-   - Recommendation: Clear the flag after successful synthesis — otherwise it accumulates indefinitely. Add `agent.strategy_resynthesis_flagged = False` in the `db.commit()` block.
+   - RESOLVED: Clear the flag after successful synthesis — otherwise it accumulates indefinitely. Add `agent.strategy_resynthesis_flagged = False` in the `db.commit()` block. Implemented in 09-02-PLAN.md T1.
 
 3. **Does the STR-03 eval comparison require real Ragas scores, or is a score structure comparison sufficient?**
    - What we know: STR-03 says "measurably better Ragas metrics vs default config" — requires real numbers
    - What's unclear: The eval takes time (Neon branch creation, Ragas LLM calls); is the demo blocking on eval completion?
-   - Recommendation: `demo_m9.sh` triggers eval and polls until complete (matching `demo_m8.sh` polling pattern, up to 120 seconds). Both eval runs must complete before the script prints the comparison.
+   - RESOLVED: `demo_m9.sh` triggers eval and polls until complete (matching `demo_m8.sh` polling pattern, up to 120 seconds). Both eval runs must complete before the script prints the comparison. Implemented in 09-04-PLAN.md T1.
 
 ---
 

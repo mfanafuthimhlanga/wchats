@@ -1,0 +1,1451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Phase 8 — Deploy Tab: All UI States</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    /* ── Design Tokens ───────────────────────────────────────────────────── */
+    :root {
+      --bg: #F0E8E0;
+      --surface-1: #FFFCF9;
+      --surface-2: #F7F0EA;
+      --surface-3: #EDE3D8;
+      --border: #D9CCBE;
+      --border-soft: #EDE3D8;
+      --border-hard: #B8906A;
+      --accent: #7B1C3A;
+      --accent-hover: #5E1229;
+      --accent-deep: #3D0B1F;
+      --accent-dim: rgba(123, 28, 58, 0.08);
+      --gold: #B8860B;
+      --text-1: #1A0A0F;
+      --text-2: #4A2030;
+      --text-3: #8A6060;
+      --text-4: #C4A0A0;
+      --radius-xs: 8px;
+      --radius-sm: 14px;
+      --shadow-card: 0 1px 2px rgba(74,32,48,0.04), 0 4px 12px rgba(74,32,48,0.06);
+      --shadow-float: 0 8px 32px rgba(26,10,15,0.18), 0 2px 8px rgba(26,10,15,0.10);
+      --red: #B91C1C;
+      --red-bg: #FEF2F2;
+      --green: #166534;
+      --green-bg: #F0FDF4;
+      --green-solid: #16A34A;
+      --amber: #92400E;
+      --amber-bg: #FEF3C7;
+      --orange: #EA580C;
+      --font-sans: 'Inter', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+    }
+
+    @keyframes spin-cw { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    @keyframes picker-in { from { opacity: 0; transform: scale(0.95) translateY(-4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg);
+      color: var(--text-1);
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── State Switcher Bar ──────────────────────────────────────────────── */
+    .state-switcher {
+      position: sticky;
+      top: 0;
+      z-index: 300;
+      background: var(--accent-deep);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+      flex-wrap: wrap;
+    }
+    .state-switcher__label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.10em;
+      text-transform: uppercase;
+      color: rgba(255,255,255,0.45);
+      padding: 13px 12px 13px 0;
+      white-space: nowrap;
+    }
+    .state-btn {
+      padding: 13px 15px;
+      background: none;
+      border: none;
+      border-bottom: 3px solid transparent;
+      color: rgba(255,255,255,0.55);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: var(--font-sans);
+      transition: color 0.15s, border-color 0.15s;
+      white-space: nowrap;
+    }
+    .state-btn:hover { color: rgba(255,255,255,0.9); }
+    .state-btn.active { color: #fff; border-bottom-color: #E8A0B4; font-weight: 600; }
+
+    /* ── TopNav ──────────────────────────────────────────────────────────── */
+    .topnav {
+      height: 52px;
+      background: var(--text-1);
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      flex-shrink: 0;
+    }
+    .topnav-logo {
+      font-family: var(--font-mono);
+      font-size: 15px;
+      font-weight: 500;
+      color: #FFFCF9;
+      letter-spacing: -0.02em;
+    }
+    .topnav-logo span { color: var(--gold); }
+
+    /* ── Admin Shell ─────────────────────────────────────────────────────── */
+    .admin-shell { display: flex; flex: 1; min-height: 0; }
+
+    /* ── Sidebar ─────────────────────────────────────────────────────────── */
+    .sidebar {
+      width: 240px;
+      flex-shrink: 0;
+      background: var(--surface-1);
+      border-right: 1px solid var(--border);
+      padding: 24px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .sidebar-agent-name { font-size: 13px; font-weight: 700; color: var(--text-1); margin-bottom: 4px; padding: 0 8px; }
+    .sidebar-agent-role { font-size: 11px; color: var(--text-3); padding: 0 8px; margin-bottom: 20px; }
+    .step { display: flex; align-items: flex-start; gap: 12px; padding: 10px 8px; border-radius: 10px; cursor: pointer; transition: background 0.1s; }
+    .step:hover { background: var(--surface-2); }
+    .step.active { background: var(--accent-dim); }
+    .step-num {
+      width: 28px; height: 28px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 600; flex-shrink: 0;
+      border: 2px solid var(--border); color: var(--text-3); background: var(--surface-1);
+    }
+    .step.done .step-num { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .step.active .step-num { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .step-text { flex: 1; min-width: 0; }
+    .step-title { font-size: 13px; font-weight: 600; color: var(--text-1); }
+    .step-subtitle { font-size: 11px; color: var(--text-3); margin-top: 1px; }
+
+    /* ── Content Area ────────────────────────────────────────────────────── */
+    .content-area { flex: 1; overflow-y: auto; padding: 28px 36px; }
+    .back-link { font-size: 14px; color: var(--accent); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; margin-bottom: 20px; }
+    .page-title { font-size: 22px; font-weight: 700; color: var(--text-1); margin: 0 0 4px; }
+    .page-subtitle { font-size: 14px; color: var(--text-3); margin: 0 0 20px; }
+
+    /* ── Tab Nav ─────────────────────────────────────────────────────────── */
+    .tab-nav { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+    .tab-btn {
+      padding: 10px 20px;
+      border: none; border-bottom: 2px solid transparent;
+      background: none; color: var(--text-3); font-weight: 500; font-size: 14px;
+      cursor: pointer; font-family: var(--font-sans); margin-bottom: -1px;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .tab-btn:hover:not(.tab-active) { color: var(--text-2); }
+    .tab-btn.tab-active { border-bottom-color: var(--accent); color: var(--accent); font-weight: 600; cursor: default; }
+
+    /* ── Panels ──────────────────────────────────────────────────────────── */
+    .tab-panel { display: none; }
+    .tab-panel.visible { display: block; }
+    .state-panel { display: none; }
+    .state-panel.visible { display: block; }
+
+    /* ── Shared Form Input (surface-3 = recessed on surface-2 card) ─────── */
+    .form-input {
+      padding: 9px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xs);
+      background: var(--surface-3);
+      font-size: 14px;
+      color: var(--text-1);
+      font-family: var(--font-sans);
+      outline: none;
+      width: 100%;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .form-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(123,28,58,0.12); }
+    .form-input::placeholder { color: var(--text-4); }
+    textarea.form-input { resize: vertical; min-height: 76px; }
+
+    /* ── Buttons ─────────────────────────────────────────────────────────── */
+    .btn-primary {
+      padding: 10px 20px; background: var(--accent); color: #fff;
+      border: none; border-radius: var(--radius-xs); font-weight: 600; font-size: 14px;
+      cursor: pointer; font-family: var(--font-sans); display: inline-flex; align-items: center; gap: 8px;
+      transition: background 0.15s;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { background: var(--surface-3); color: var(--text-4); cursor: not-allowed; border: 1px solid var(--border); }
+    .btn-secondary {
+      padding: 9px 18px; background: var(--surface-2); color: var(--text-2);
+      border: 1px solid var(--border); border-radius: var(--radius-xs); font-weight: 500; font-size: 14px;
+      cursor: pointer; font-family: var(--font-sans); display: inline-flex; align-items: center; gap: 6px;
+      transition: background 0.15s;
+    }
+    .btn-secondary:hover { background: var(--surface-3); }
+
+    /* ── Spinner ─────────────────────────────────────────────────────────── */
+    .spinner { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin-cw 0.9s linear infinite; margin: 0 auto 20px; }
+
+    /* ── Banners ─────────────────────────────────────────────────────────── */
+    .banner { padding: 16px; border-radius: var(--radius-xs); margin-bottom: 20px; }
+    .banner--red { background: var(--red-bg); border: 1px solid rgba(185,28,28,0.25); border-left: 4px solid var(--red); }
+    .banner--amber { background: var(--amber-bg); border: 1px solid rgba(146,64,14,0.25); border-left: 4px solid var(--amber); }
+    .banner--green { background: var(--green-bg); border: 1px solid rgba(22,163,74,0.25); border-left: 4px solid var(--green-solid); }
+    .banner__heading { font-size: 15px; font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+    .banner--red .banner__heading { color: var(--red); }
+    .banner--amber .banner__heading { color: var(--amber); }
+    .banner--green .banner__heading { color: var(--green); }
+    .banner__body { font-size: 14px; color: var(--text-2); line-height: 1.55; }
+
+    /* ── Signal Cards ────────────────────────────────────────────────────── */
+    .signal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+    .signal-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 16px; box-shadow: var(--shadow-card); }
+    .signal-card__label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-3); padding-bottom: 10px; border-bottom: 1px solid var(--border-soft); margin-bottom: 12px; }
+    .signal-card__timestamp { font-size: 12px; color: var(--text-4); margin-bottom: 10px; }
+    .metric-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; font-size: 13px; }
+    .metric-row__label { color: var(--text-2); }
+    .metric-val { font-family: var(--font-mono); font-size: 13px; }
+    .metric-val--green { color: var(--green); }
+    .metric-val--amber { color: var(--amber); }
+    .metric-val--red { color: var(--red); }
+    .severity-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; font-size: 13px; }
+    .severity-label { color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .dot--red { background: var(--red); }
+    .dot--orange { background: var(--orange); }
+    .dot--amber { background: var(--amber); }
+    .dot--gray { background: var(--text-4); }
+    .badge-blocked { display: inline-block; padding: 2px 10px; border-radius: var(--radius-xs); font-size: 11px; font-weight: 600; background: var(--red-bg); color: var(--red); margin-bottom: 10px; }
+    .badge-ok { display: inline-block; padding: 2px 10px; border-radius: var(--radius-xs); font-size: 11px; font-weight: 600; background: var(--green-bg); color: var(--green); margin-bottom: 10px; }
+    .badge-warn { display: inline-block; padding: 2px 8px; border-radius: var(--radius-xs); font-size: 11px; font-weight: 500; background: var(--amber-bg); color: var(--amber); }
+    .failing-note { font-size: 12px; color: var(--red); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-soft); }
+
+    /* ── Warnings ────────────────────────────────────────────────────────── */
+    .warnings-section { margin-top: 24px; margin-bottom: 20px; }
+    .warnings-heading { font-size: 14px; font-weight: 600; color: var(--text-1); margin-bottom: 12px; }
+    .warning-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border-soft); }
+    .warning-row:last-child { border-bottom: none; }
+    .warning-checkbox { width: 16px; height: 16px; flex-shrink: 0; margin-top: 2px; accent-color: var(--accent); cursor: pointer; }
+    .warning-content { flex: 1; }
+    .cat-badge { display: inline-block; padding: 2px 8px; border-radius: var(--radius-xs); font-size: 11px; font-weight: 500; margin-right: 8px; vertical-align: middle; }
+    .cat-eval_quality { background: var(--amber-bg); color: var(--amber); }
+    .cat-security { background: var(--red-bg); color: var(--red); }
+    .cat-knowledge_depth { background: #EFF6FF; color: #1D4ED8; }
+    .warning-message { font-size: 14px; color: var(--text-1); display: inline; }
+    .approve-row { display: flex; justify-content: flex-end; padding-top: 16px; border-top: 1px solid var(--border-soft); }
+    .btn-approve { padding: 12px 24px; background: var(--accent); color: #fff; border: none; border-radius: var(--radius-xs); font-weight: 600; font-size: 14px; cursor: pointer; font-family: var(--font-sans); transition: background 0.15s; }
+    .btn-approve:hover { background: var(--accent-hover); }
+    .btn-approve:disabled { background: var(--surface-3); color: var(--text-4); cursor: not-allowed; border: 1px solid var(--border); }
+    .empty-card { border: 2px dashed var(--border); border-radius: var(--radius-sm); padding: 64px 40px; text-align: center; background: var(--surface-2); }
+    .empty-card__heading { font-size: 16px; font-weight: 600; color: var(--text-1); margin-bottom: 12px; }
+    .empty-card__body { font-size: 14px; color: var(--text-3); max-width: 420px; margin: 0 auto 28px; line-height: 1.6; }
+    .running-card { border: 2px dashed var(--border); border-radius: var(--radius-sm); padding: 64px 40px; text-align: center; background: var(--surface-2); }
+    .running-heading { font-size: 16px; font-weight: 600; color: var(--text-1); margin-bottom: 10px; }
+    .running-body { font-size: 14px; color: var(--text-3); max-width: 360px; margin: 0 auto; line-height: 1.6; }
+    .approved-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 48px 40px; text-align: center; box-shadow: var(--shadow-card); }
+    .live-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 16px; background: var(--green-bg); border: 1px solid rgba(22,163,74,0.3); border-radius: 9999px; color: var(--green); font-weight: 600; font-size: 13px; margin-bottom: 20px; }
+    .live-dot { width: 8px; height: 8px; background: var(--green-solid); border-radius: 50%; }
+    .approved-heading { font-size: 22px; font-weight: 700; color: var(--text-1); margin-bottom: 10px; }
+    .approved-body { font-size: 14px; color: var(--text-3); max-width: 400px; margin: 0 auto 16px; line-height: 1.6; }
+    .approved-nav { font-size: 14px; color: var(--text-3); }
+    .approved-nav a { color: var(--accent); text-decoration: none; font-weight: 500; }
+
+    /* ─────────────────────────────────────────────────────────────────────
+       CUSTOMIZE WIDGET TAB
+    ───────────────────────────────────────────────────────────────────── */
+
+    /* Two-column layout */
+    .customize-layout {
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      gap: 24px;
+      align-items: start;
+    }
+
+    /* Left: scrollable form column */
+    .customize-form { display: flex; flex-direction: column; gap: 14px; }
+
+    /* Right: sticky preview panel */
+    .preview-panel {
+      position: sticky;
+      top: 60px; /* below state-switcher */
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      box-shadow: var(--shadow-card);
+      overflow: hidden;
+    }
+    .preview-panel__header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-soft);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .preview-panel__label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-3);
+    }
+    .preview-live-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--green-solid);
+      box-shadow: 0 0 0 2px rgba(22,163,74,0.25);
+    }
+
+    /* Simulated browser chrome inside preview */
+    .preview-browser {
+      background: #D8D0C8;
+      padding: 10px 10px 0;
+    }
+    .preview-browser__bar {
+      background: #FFFCF9;
+      border-radius: 5px 5px 0 0;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      gap: 6px;
+    }
+    .browser-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .bd-red { background: #FC615D; }
+    .bd-amber { background: #FDBC40; }
+    .bd-green { background: #35CD4B; }
+    .browser-url { flex: 1; background: #EDE3D8; border-radius: 4px; height: 16px; margin-left: 8px; }
+
+    /* Simulated webpage */
+    .preview-webpage {
+      background: #F8F6F4;
+      min-height: 380px;
+      position: relative;
+      overflow: hidden;
+    }
+    /* Fake page content lines */
+    .preview-webpage__lines { padding: 20px 16px; display: flex; flex-direction: column; gap: 8px; }
+    .line { height: 8px; border-radius: 4px; background: #DDD5CB; }
+    .line--short { width: 45%; }
+    .line--med { width: 70%; }
+    .line--full { width: 95%; }
+    .line--title { height: 12px; width: 55%; background: #C8BCAF; }
+
+    /* Widget FAB in preview */
+    .preview-fab {
+      position: absolute;
+      bottom: 16px;
+      right: 16px;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+      cursor: pointer;
+      transition: transform 0.15s;
+      font-size: 20px;
+    }
+    .preview-fab:hover { transform: scale(1.06); }
+    .preview-fab.pos-left { right: auto; left: 16px; }
+
+    /* Widget chat window in preview */
+    .preview-chat {
+      position: absolute;
+      bottom: 76px;
+      right: 10px;
+      width: 240px;
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 8px 24px rgba(26,10,15,0.14);
+      overflow: hidden;
+      font-family: var(--font-sans);
+    }
+    .preview-chat.pos-left { right: auto; left: 10px; }
+    .preview-chat.size-compact { width: 210px; }
+    .preview-chat.size-large { width: 270px; }
+
+    .preview-chat__header {
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .preview-chat__avatar {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.25);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      color: #fff;
+      flex-shrink: 0;
+    }
+    .preview-chat__name {
+      font-size: 12px;
+      font-weight: 600;
+      color: #fff;
+      line-height: 1.2;
+    }
+    .preview-chat__sub {
+      font-size: 10px;
+      color: rgba(255,255,255,0.7);
+    }
+    .preview-chat__close {
+      margin-left: auto;
+      font-size: 14px;
+      color: rgba(255,255,255,0.7);
+      cursor: pointer;
+    }
+
+    .preview-chat__body { padding: 10px; background: #F7F3EF; min-height: 100px; }
+    .preview-chat__bubble {
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: 10px 10px 10px 2px;
+      padding: 8px 10px;
+      font-size: 11px;
+      color: var(--text-1);
+      line-height: 1.45;
+      max-width: 90%;
+      margin-bottom: 8px;
+    }
+
+    .preview-chat__input-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 10px;
+      border-top: 1px solid var(--border-soft);
+      background: var(--surface-1);
+    }
+    .preview-chat__input {
+      flex: 1;
+      font-size: 10px;
+      color: var(--text-4);
+      background: var(--surface-3);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 8px;
+    }
+    .preview-chat__send {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px;
+      color: #fff;
+      flex-shrink: 0;
+    }
+
+    .preview-powered {
+      text-align: center;
+      font-size: 9px;
+      color: var(--text-4);
+      padding: 4px;
+      background: var(--surface-1);
+    }
+
+    /* Form sections */
+    .form-section {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 0;
+      box-shadow: var(--shadow-card);
+      overflow: hidden;
+    }
+    .form-section__title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--text-3);
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--border-soft);
+      background: var(--surface-3);
+    }
+    .form-section__body { padding: 18px; display: flex; flex-direction: column; gap: 16px; }
+
+    .form-row { display: flex; flex-direction: column; gap: 5px; }
+    .form-label { font-size: 13px; font-weight: 500; color: var(--text-2); }
+    .form-hint { font-size: 11px; color: var(--text-4); line-height: 1.4; }
+
+    /* Toggle pill group */
+    .toggle-group { display: flex; background: var(--surface-3); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 2px; gap: 2px; }
+    .toggle-opt {
+      flex: 1;
+      padding: 7px 10px;
+      border: none;
+      border-radius: calc(var(--radius-xs) - 2px);
+      background: none;
+      color: var(--text-3);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: var(--font-sans);
+      text-align: center;
+      transition: background 0.12s, color 0.12s;
+      white-space: nowrap;
+    }
+    .toggle-opt.selected { background: var(--surface-1); color: var(--accent); font-weight: 600; box-shadow: 0 1px 3px rgba(26,10,15,0.08); }
+
+    /* Switch toggle */
+    .switch-row { display: flex; align-items: center; justify-content: space-between; }
+    .switch-row .form-label { margin-bottom: 0; }
+    .switch { position: relative; width: 36px; height: 20px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .switch-track {
+      position: absolute; inset: 0; cursor: pointer;
+      background: var(--border-hard); border-radius: 10px;
+      transition: background 0.2s;
+    }
+    .switch input:checked + .switch-track { background: var(--accent); }
+    .switch-track::after {
+      content: ''; position: absolute;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #fff; left: 3px; top: 3px;
+      transition: transform 0.2s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    .switch input:checked + .switch-track::after { transform: translateX(16px); }
+
+    /* ── Color Swatch Trigger ─────────────────────────────────────────────── */
+    .color-trigger-row { display: flex; align-items: center; gap: 10px; }
+    .color-swatch-btn {
+      width: 40px; height: 40px;
+      border-radius: var(--radius-xs);
+      border: 2px solid var(--border-hard);
+      cursor: pointer;
+      flex-shrink: 0;
+      position: relative;
+      overflow: hidden;
+      transition: border-color 0.15s;
+    }
+    .color-swatch-btn:hover { border-color: var(--accent); }
+    .color-swatch-btn::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, rgba(255,255,255,0.15) 0%, transparent 60%);
+    }
+    .color-hex-display {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--text-2);
+      background: var(--surface-3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xs);
+      padding: 9px 12px;
+      flex: 1;
+      cursor: pointer;
+    }
+    .color-hex-display:focus { outline: none; border-color: var(--accent); }
+
+    /* ── Photoshop Color Picker Popup ────────────────────────────────────── */
+    .cp-popup {
+      display: none;
+      position: fixed;
+      z-index: 500;
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      box-shadow: var(--shadow-float);
+      padding: 16px;
+      width: 260px;
+      animation: picker-in 0.15s ease;
+    }
+    .cp-popup.open { display: block; }
+
+    /* Gradient square */
+    .cp-gradient {
+      position: relative;
+      width: 100%;
+      height: 180px;
+      border-radius: 6px;
+      cursor: crosshair;
+      overflow: hidden;
+      margin-bottom: 12px;
+      user-select: none;
+    }
+    .cp-gradient__sat {
+      position: absolute; inset: 0;
+      background: linear-gradient(to right, #fff, transparent);
+      border-radius: inherit;
+    }
+    .cp-gradient__val {
+      position: absolute; inset: 0;
+      background: linear-gradient(to bottom, transparent, #000);
+      border-radius: inherit;
+    }
+    .cp-thumb {
+      position: absolute;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      border: 2px solid #fff;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.35), 0 1px 4px rgba(0,0,0,0.25);
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      will-change: left, top;
+    }
+
+    /* Hue slider */
+    .cp-hue-track {
+      position: relative;
+      height: 14px;
+      border-radius: 7px;
+      background: linear-gradient(to right,
+        hsl(0,100%,50%), hsl(30,100%,50%), hsl(60,100%,50%),
+        hsl(90,100%,50%), hsl(120,100%,50%), hsl(150,100%,50%),
+        hsl(180,100%,50%), hsl(210,100%,50%), hsl(240,100%,50%),
+        hsl(270,100%,50%), hsl(300,100%,50%), hsl(330,100%,50%),
+        hsl(360,100%,50%));
+      cursor: pointer;
+      margin-bottom: 14px;
+      user-select: none;
+    }
+    .cp-hue-thumb {
+      position: absolute;
+      width: 20px; height: 20px;
+      border-radius: 50%;
+      background: #fff;
+      border: 2px solid #fff;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+      top: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      will-change: left;
+    }
+
+    /* Hex row inside picker */
+    .cp-hex-row {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+    }
+    .cp-hex-label { font-size: 11px; font-weight: 600; color: var(--text-3); width: 24px; flex-shrink: 0; }
+    .cp-hex-input {
+      flex: 1;
+      font-family: var(--font-mono); font-size: 13px;
+      background: var(--surface-3); border: 1px solid var(--border);
+      border-radius: var(--radius-xs); padding: 7px 10px;
+      color: var(--text-1); outline: none;
+    }
+    .cp-hex-input:focus { border-color: var(--accent); }
+
+    /* Color preview strip */
+    .cp-preview-strip {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+    }
+    .cp-preview-new { width: 36px; height: 24px; border-radius: 4px; border: 1px solid var(--border); }
+    .cp-preview-label { font-size: 11px; color: var(--text-3); }
+
+    /* Picker actions */
+    .cp-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .cp-btn {
+      padding: 7px 14px; border-radius: var(--radius-xs); font-size: 13px; font-weight: 500;
+      border: 1px solid var(--border); cursor: pointer; font-family: var(--font-sans);
+    }
+    .cp-btn--cancel { background: var(--surface-2); color: var(--text-2); }
+    .cp-btn--cancel:hover { background: var(--surface-3); }
+    .cp-btn--apply { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .cp-btn--apply:hover { background: var(--accent-hover); }
+
+    /* Form actions bar */
+    .form-actions {
+      display: flex; justify-content: flex-end; gap: 10px;
+      padding-top: 4px;
+    }
+
+    /* ── Embed Code Tab ──────────────────────────────────────────────────── */
+    .embed-locked { border: 2px dashed var(--border); border-radius: var(--radius-sm); padding: 48px 40px; text-align: center; background: var(--surface-2); }
+    .embed-locked__icon { font-size: 32px; margin-bottom: 16px; }
+    .embed-locked__heading { font-size: 16px; font-weight: 600; color: var(--text-1); margin-bottom: 10px; }
+    .embed-locked__body { font-size: 14px; color: var(--text-3); max-width: 380px; margin: 0 auto; line-height: 1.6; }
+    .embed-code-wrap { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow-card); overflow: hidden; margin-bottom: 16px; }
+    .embed-code-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; border-bottom: 1px solid var(--border-soft); background: var(--surface-3); }
+    .embed-code-header__label { font-size: 12px; font-weight: 600; color: var(--text-2); font-family: var(--font-mono); }
+    .btn-copy { padding: 5px 12px; background: var(--surface-1); color: var(--accent); border: 1px solid var(--border); border-radius: var(--radius-xs); font-size: 12px; font-weight: 600; cursor: pointer; font-family: var(--font-sans); }
+    .btn-copy:hover { background: var(--accent-dim); border-color: var(--accent); }
+    .embed-code-body { padding: 20px; background: #1A0A0F; }
+    .embed-code-body pre { font-family: var(--font-mono); font-size: 13px; line-height: 1.7; color: #E8D8D8; white-space: pre; overflow-x: auto; }
+    .code-tag { color: #E8A0B4; }
+    .code-attr { color: #FFD4A0; }
+    .code-val { color: #A0FFD4; }
+    .code-comment { color: #6A4050; }
+    .embed-instructions { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 20px 24px; box-shadow: var(--shadow-card); }
+    .embed-instructions__title { font-size: 13px; font-weight: 600; color: var(--text-1); margin-bottom: 12px; }
+    .embed-instructions ol { padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
+    .embed-instructions li { font-size: 14px; color: var(--text-2); line-height: 1.5; }
+    .embed-instructions li code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-3); padding: 1px 5px; border-radius: 4px; color: var(--accent); }
+  </style>
+</head>
+<body>
+
+<!-- ── State Switcher ────────────────────────────────────────────────────── -->
+<nav class="state-switcher" aria-label="Pre-Deploy Check state switcher">
+  <span class="state-switcher__label">Pre-Deploy State:</span>
+  <button class="state-btn active" onclick="showState('no-run',this)">1. No Run</button>
+  <button class="state-btn" onclick="showState('running',this)">2. Running</button>
+  <button class="state-btn" onclick="showState('blocked',this)">3. Blocked</button>
+  <button class="state-btn" onclick="showState('ship-with-warnings',this)">4. Ship With Warnings</button>
+  <button class="state-btn" onclick="showState('approved',this)">5. Approved</button>
+</nav>
+
+<!-- ── TopNav ────────────────────────────────────────────────────────────── -->
+<div class="topnav">
+  <span class="topnav-logo">veridian<span>.</span></span>
+</div>
+
+<!-- ── Admin Shell ───────────────────────────────────────────────────────── -->
+<div class="admin-shell">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-agent-name">Acme Consulting</div>
+    <div class="sidebar-agent-role">Customer Service Agent</div>
+    <div class="step done">
+      <div class="step-num">✓</div>
+      <div class="step-text"><div class="step-title">Provision</div><div class="step-subtitle">Tenant database</div></div>
+    </div>
+    <div class="step done">
+      <div class="step-num">✓</div>
+      <div class="step-text"><div class="step-title">Configure</div><div class="step-subtitle">Soul + knowledge base</div></div>
+    </div>
+    <div class="step done">
+      <div class="step-num">✓</div>
+      <div class="step-text"><div class="step-title">Test</div><div class="step-subtitle">Evals + red team</div></div>
+    </div>
+    <div class="step active">
+      <div class="step-num">4</div>
+      <div class="step-text"><div class="step-title">Deploy</div><div class="step-subtitle">Customise → Check → Embed</div></div>
+    </div>
+  </aside>
+
+  <!-- Content Area -->
+  <main class="content-area">
+    <a href="#" class="back-link">← Back to journey</a>
+    <h1 class="page-title">Deploy</h1>
+    <p class="page-subtitle">Customise your widget, verify readiness, then copy your embed code.</p>
+
+    <div class="tab-nav" role="tablist">
+      <button role="tab" class="tab-btn tab-active" id="tab-customize" onclick="switchTab('customize',this)">Customise Widget</button>
+      <button role="tab" class="tab-btn" id="tab-predeploy" onclick="switchTab('predeploy',this)">Pre-Deploy Check</button>
+      <button role="tab" class="tab-btn" id="tab-embed" onclick="switchTab('embed',this)">Embed Code</button>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════
+         TAB 1: CUSTOMISE WIDGET
+    ═════════════════════════════════════════════════════════════════════ -->
+    <div id="tabpanel-customize" class="tab-panel visible">
+      <div class="customize-layout">
+
+        <!-- Left: form -->
+        <div class="customize-form">
+
+          <!-- Section: Chat Launcher -->
+          <div class="form-section">
+            <div class="form-section__title">Chat Launcher</div>
+            <div class="form-section__body">
+
+              <div class="form-row">
+                <label class="form-label">Brand colour</label>
+                <div class="color-trigger-row">
+                  <button class="color-swatch-btn" id="colorSwatchBtn" style="background:#7B1C3A;"
+                    onclick="openPicker(event)" aria-label="Open colour picker" title="Click to pick a colour"></button>
+                  <input type="text" class="color-hex-display" id="colorHexDisplay" value="#7B1C3A"
+                    readonly onclick="openPicker(event)" />
+                </div>
+                <span class="form-hint">Applied to button, header, links, and accent elements.</span>
+              </div>
+
+              <div class="form-row">
+                <label class="form-label">Button position</label>
+                <div class="toggle-group" id="posGroup">
+                  <button class="toggle-opt" onclick="selectToggle(this,'posGroup'); setProp('pos','left'); updatePreview()">Bottom left</button>
+                  <button class="toggle-opt selected" onclick="selectToggle(this,'posGroup'); setProp('pos','right'); updatePreview()">Bottom right</button>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="form-label">Launcher icon</label>
+                <div class="toggle-group" id="iconGroup">
+                  <button class="toggle-opt selected" onclick="selectToggle(this,'iconGroup'); setProp('icon','💬'); updatePreview()">💬 Chat</button>
+                  <button class="toggle-opt" onclick="selectToggle(this,'iconGroup'); setProp('icon','✉'); updatePreview()">✉ Message</button>
+                  <button class="toggle-opt" onclick="selectToggle(this,'iconGroup'); setProp('icon','?'); updatePreview()">? Help</button>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- Section: Chat Window -->
+          <div class="form-section">
+            <div class="form-section__title">Chat Window</div>
+            <div class="form-section__body">
+
+              <div class="form-row">
+                <label class="form-label">Window size</label>
+                <div class="toggle-group" id="sizeGroup">
+                  <button class="toggle-opt" onclick="selectToggle(this,'sizeGroup'); setProp('size','compact'); updatePreview()">Compact</button>
+                  <button class="toggle-opt selected" onclick="selectToggle(this,'sizeGroup'); setProp('size','standard'); updatePreview()">Standard</button>
+                  <button class="toggle-opt" onclick="selectToggle(this,'sizeGroup'); setProp('size','large'); updatePreview()">Large</button>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="form-label">Colour scheme</label>
+                <div class="toggle-group" id="themeGroup">
+                  <button class="toggle-opt selected" onclick="selectToggle(this,'themeGroup')">Light</button>
+                  <button class="toggle-opt" onclick="selectToggle(this,'themeGroup')">Dark</button>
+                  <button class="toggle-opt" onclick="selectToggle(this,'themeGroup')">Auto</button>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- Section: Header & Identity -->
+          <div class="form-section">
+            <div class="form-section__title">Header &amp; Identity</div>
+            <div class="form-section__body">
+
+              <div class="form-row">
+                <label class="form-label" for="agentName">Agent display name</label>
+                <input type="text" id="agentName" class="form-input" value="Acme Assistant"
+                  oninput="updatePreview()" />
+              </div>
+
+              <div class="form-row">
+                <label class="form-label" for="agentTagline">Tagline <span style="font-weight:400;color:var(--text-4);">(optional)</span></label>
+                <input type="text" id="agentTagline" class="form-input" value="Always here to help"
+                  oninput="updatePreview()" />
+                <span class="form-hint">Shown below the name in the chat header.</span>
+              </div>
+
+              <div class="form-row">
+                <label class="form-label">Avatar style</label>
+                <div class="toggle-group" id="avatarGroup">
+                  <button class="toggle-opt selected" onclick="selectToggle(this,'avatarGroup')">Initials</button>
+                  <button class="toggle-opt" onclick="selectToggle(this,'avatarGroup')">Icon</button>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- Section: Conversation -->
+          <div class="form-section">
+            <div class="form-section__title">Conversation</div>
+            <div class="form-section__body">
+
+              <div class="form-row">
+                <label class="form-label" for="greeting">Greeting message</label>
+                <textarea id="greeting" class="form-input" oninput="updatePreview()">Hi! I'm here to help with any questions about Acme Consulting. What can I do for you?</textarea>
+              </div>
+
+              <div class="form-row">
+                <label class="form-label" for="placeholder">Input placeholder</label>
+                <input type="text" id="placeholder" class="form-input" value="Type a message…"
+                  oninput="updatePreview()" />
+              </div>
+
+              <div class="form-row">
+                <div class="switch-row">
+                  <label class="form-label">Show "Powered by Veridian"</label>
+                  <label class="switch">
+                    <input type="checkbox" checked onchange="updatePreview()" id="poweredBy" />
+                    <span class="switch-track"></span>
+                  </label>
+                </div>
+                <span class="form-hint">Small attribution badge at the bottom of the chat window.</span>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- Section: Behaviour -->
+          <div class="form-section">
+            <div class="form-section__title">Behaviour</div>
+            <div class="form-section__body">
+
+              <div class="form-row">
+                <div class="switch-row">
+                  <label class="form-label">Auto-open on page load</label>
+                  <label class="switch">
+                    <input type="checkbox" />
+                    <span class="switch-track"></span>
+                  </label>
+                </div>
+                <span class="form-hint">Widget opens automatically when the page loads (not recommended for all sites).</span>
+              </div>
+
+              <div class="form-row">
+                <div class="switch-row">
+                  <label class="form-label">Sound notifications</label>
+                  <label class="switch">
+                    <input type="checkbox" checked />
+                    <span class="switch-track"></span>
+                  </label>
+                </div>
+                <span class="form-hint">Play a subtle sound when the agent sends a reply.</span>
+              </div>
+
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button class="btn-secondary">Discard changes</button>
+            <button class="btn-primary">Save changes</button>
+          </div>
+
+        </div><!-- /customize-form -->
+
+        <!-- Right: sticky preview panel -->
+        <div class="preview-panel">
+          <div class="preview-panel__header">
+            <span class="preview-panel__label">Live preview</span>
+            <span class="preview-live-dot"></span>
+          </div>
+
+          <!-- Simulated browser -->
+          <div class="preview-browser">
+            <div class="preview-browser__bar">
+              <span class="browser-dot bd-red"></span>
+              <span class="browser-dot bd-amber"></span>
+              <span class="browser-dot bd-green"></span>
+              <div class="browser-url"></div>
+            </div>
+          </div>
+
+          <!-- Simulated webpage with widget -->
+          <div class="preview-webpage" id="previewWebpage">
+            <div class="preview-webpage__lines">
+              <div class="line line--title"></div>
+              <div class="line line--full"></div>
+              <div class="line line--med"></div>
+              <div class="line line--short"></div>
+              <div class="line line--full" style="margin-top:8px;"></div>
+              <div class="line line--med"></div>
+              <div class="line line--full"></div>
+            </div>
+
+            <!-- Chat window (open state) -->
+            <div class="preview-chat" id="previewChat">
+              <div class="preview-chat__header" id="previewHeader">
+                <div class="preview-chat__avatar" id="previewAvatar">AA</div>
+                <div>
+                  <div class="preview-chat__name" id="previewName">Acme Assistant</div>
+                  <div class="preview-chat__sub" id="previewSub">Always here to help</div>
+                </div>
+                <div class="preview-chat__close">✕</div>
+              </div>
+              <div class="preview-chat__body">
+                <div class="preview-chat__bubble" id="previewBubble">
+                  Hi! I'm here to help with any questions about Acme Consulting. What can I do for you?
+                </div>
+              </div>
+              <div class="preview-chat__input-row">
+                <div class="preview-chat__input" id="previewPlaceholder">Type a message…</div>
+                <div class="preview-chat__send" id="previewSend">➤</div>
+              </div>
+              <div class="preview-powered" id="previewPowered">Powered by Veridian</div>
+            </div>
+
+            <!-- FAB button -->
+            <div class="preview-fab" id="previewFab" style="background:#7B1C3A;">💬</div>
+          </div>
+        </div><!-- /preview-panel -->
+
+      </div><!-- /customize-layout -->
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════
+         TAB 2: PRE-DEPLOY CHECK
+    ═════════════════════════════════════════════════════════════════════ -->
+    <div id="tabpanel-predeploy" class="tab-panel">
+
+      <!-- STATE 1: No Run -->
+      <div id="state-no-run" class="state-panel visible">
+        <div class="empty-card">
+          <div class="empty-card__heading">Ready to verify your agent?</div>
+          <p class="empty-card__body">Run the pre-deployment checklist to confirm your agent meets quality and security standards before going live. The check takes 1–2 minutes.</p>
+          <button class="btn-primary" onclick="alert('Would POST /api/v1/agents/{id}/checklist-runs')">▶ Run pre-deployment check</button>
+        </div>
+      </div>
+
+      <!-- STATE 2: Running -->
+      <div id="state-running" class="state-panel">
+        <div class="running-card" aria-live="polite">
+          <div class="spinner" aria-hidden="true"></div>
+          <div class="running-heading">Checking your agent's readiness…</div>
+          <p class="running-body">This usually takes 1–2 minutes. Results will appear here automatically.</p>
+          <p style="font-size:12px;color:var(--text-4);margin-top:16px;">Polling every 3 s — <code style="font-family:var(--font-mono);font-size:11px;">GET /checklist-runs/{runId}</code></p>
+        </div>
+      </div>
+
+      <!-- STATE 3: Blocked -->
+      <div id="state-blocked" class="state-panel">
+        <div class="banner banner--red" role="alert">
+          <div class="banner__heading">⊘ Deployment blocked</div>
+          <div class="banner__body">Your agent has critical security issues that must be resolved before deployment. One high-severity red team finding was detected, and two evaluation metrics are below the required 70% threshold.</div>
+        </div>
+        <div class="signal-grid">
+          <div class="signal-card">
+            <div class="signal-card__label">Eval Quality</div>
+            <div class="signal-card__timestamp">Last run: May 23, 2026 02:00 UTC</div>
+            <div class="metric-row"><span class="metric-row__label">Faithfulness</span><span class="metric-val metric-val--green">0.920</span></div>
+            <div class="metric-row"><span class="metric-row__label">Answer Relevance</span><span class="metric-val metric-val--amber">0.760</span></div>
+            <div class="metric-row"><span class="metric-row__label">Context Precision</span><span class="metric-val metric-val--red">0.610</span></div>
+            <div class="metric-row"><span class="metric-row__label">Context Recall</span><span class="metric-val metric-val--red">0.580</span></div>
+            <div class="failing-note">4 scenarios failed — below 0.70 threshold</div>
+          </div>
+          <div class="signal-card">
+            <div class="signal-card__label">Security (Red Team)</div>
+            <div class="signal-card__timestamp">Last run: May 23, 2026 03:00 UTC</div>
+            <div class="badge-blocked">DEPLOYMENT BLOCKED</div>
+            <div class="severity-row"><span class="severity-label"><span class="dot dot--red"></span>Critical</span><span class="metric-val metric-val--red">0 findings</span></div>
+            <div class="severity-row"><span class="severity-label"><span class="dot dot--orange"></span>High</span><span class="metric-val metric-val--red">1 finding</span></div>
+            <div class="severity-row"><span class="severity-label"><span class="dot dot--amber"></span>Medium</span><span class="metric-val metric-val--amber">3 findings</span></div>
+            <div class="severity-row"><span class="severity-label"><span class="dot dot--gray"></span>Low</span><span class="metric-val" style="color:var(--text-3);">2 findings</span></div>
+          </div>
+          <div class="signal-card">
+            <div class="signal-card__label">Corpus Coverage</div>
+            <div class="signal-card__timestamp">Last ingested: May 22, 2026 14:30 UTC</div>
+            <div class="metric-row"><span class="metric-row__label">Documents</span><span class="metric-val" style="color:var(--text-2);">3</span></div>
+            <div class="metric-row"><span class="metric-row__label">Chunks</span><span class="metric-val" style="color:var(--text-2);">142</span></div>
+          </div>
+          <div class="signal-card">
+            <div class="signal-card__label">Knowledge Depth</div>
+            <div class="metric-row"><span class="metric-row__label">Verified Q&amp;A pairs</span><span class="metric-val metric-val--amber">48 <span class="badge-warn">Below 50</span></span></div>
+            <div class="metric-row"><span class="metric-row__label">Avg faithfulness</span><span class="metric-val metric-val--green">0.940</span></div>
+            <div class="metric-row"><span class="metric-row__label">Avg relevance</span><span class="metric-val metric-val--green">0.910</span></div>
+            <div style="font-size:12px;color:var(--amber);margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft);">Upload more verified Q&amp;A pairs to improve grounding</div>
+          </div>
+        </div>
+        <div class="approve-row"><button class="btn-approve" disabled>Cannot approve — resolve issues above</button></div>
+      </div>
+
+      <!-- STATE 4: Ship With Warnings -->
+      <div id="state-ship-with-warnings" class="state-panel">
+        <div class="banner banner--amber" role="status">
+          <div class="banner__heading">⚠ Ready to deploy with warnings</div>
+          <div class="banner__body">Your agent is functional and safe to deploy, but there are quality concerns. Answer relevance is in the caution range and your verified Q&amp;A library is below 50 pairs. Acknowledge each concern below to proceed.</div>
+        </div>
+        <div class="signal-grid">
+          <div class="signal-card">
+            <div class="signal-card__label">Eval Quality</div>
+            <div class="signal-card__timestamp">Last run: May 23, 2026 02:00 UTC</div>
+            <div class="metric-row"><span class="metric-row__label">Faithfulness</span><span class="metric-val metric-val--green">0.920</span></div>
+            <div class="metric-row"><span class="metric-row__label">Answer Relevance</span><span class="metric-val metric-val--amber">0.760</span></div>
+            <div class="metric-row"><span class="metric-row__label">Context Precision</span><span class="metric-val metric-val--green">0.850</span></div>
+            <div class="metric-row"><span class="metric-row__label">Context Recall</span><span class="metric-val metric-val--green">0.900</span></div>
+            <div style="font-size:12px;color:var(--amber);margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft);">Answer relevance in caution range [0.70, 0.85)</div>
+          </div>
+          <div class="signal-card">
+            <div class="signal-card__label">Security (Red Team)</div>
+            <div class="signal-card__timestamp">Last run: May 23, 2026 03:00 UTC</div>
+            <div class="badge-ok">OK — NOT BLOCKED</div>
+            <div class="severity-row"><span class="severity-label"><span class="dot dot--red"></span>Critical</span><span class="metric-val metric-val--green">0 findings</span></div>
+            <div class="severity-row"><span class="severity-label"><span class="dot dot--orange"></span>High</span><span class="metric-val metric-val--green">0 findings</span></div>
+            <div class="severity-row"><span class="severity-label"><span class="dot dot--amber"></span>Medium</span><span class="metric-val metric-val--amber">3 findings</span></div>
+            <div class="severity-row"><span class="severity-label"><span class="dot dot--gray"></span>Low</span><span class="metric-val" style="color:var(--text-3);">1 finding</span></div>
+          </div>
+          <div class="signal-card">
+            <div class="signal-card__label">Corpus Coverage</div>
+            <div class="signal-card__timestamp">Last ingested: May 22, 2026 14:30 UTC</div>
+            <div class="metric-row"><span class="metric-row__label">Documents</span><span class="metric-val" style="color:var(--text-2);">3</span></div>
+            <div class="metric-row"><span class="metric-row__label">Chunks</span><span class="metric-val" style="color:var(--text-2);">142</span></div>
+          </div>
+          <div class="signal-card">
+            <div class="signal-card__label">Knowledge Depth</div>
+            <div class="metric-row"><span class="metric-row__label">Verified Q&amp;A pairs</span><span class="metric-val metric-val--amber">48 <span class="badge-warn">Below 50</span></span></div>
+            <div class="metric-row"><span class="metric-row__label">Avg faithfulness</span><span class="metric-val metric-val--green">0.940</span></div>
+            <div class="metric-row"><span class="metric-row__label">Avg relevance</span><span class="metric-val metric-val--green">0.910</span></div>
+          </div>
+        </div>
+        <div class="warnings-section">
+          <div class="warnings-heading">Acknowledge each warning to proceed</div>
+          <p style="font-size:13px;color:var(--text-3);margin-bottom:16px;">All warnings must be checked before the Approve button enables.</p>
+          <div class="warning-row">
+            <input type="checkbox" class="warning-checkbox" id="warn-1" onchange="checkApprove()" />
+            <label class="warning-content" for="warn-1"><span class="cat-badge cat-eval_quality">eval_quality</span><span class="warning-message">Answer relevance of 0.760 is in caution range (0.70–0.85). Monitor quality after deployment.</span></label>
+          </div>
+          <div class="warning-row">
+            <input type="checkbox" class="warning-checkbox" id="warn-2" onchange="checkApprove()" />
+            <label class="warning-content" for="warn-2"><span class="cat-badge cat-knowledge_depth">knowledge_depth</span><span class="warning-message">Only 48 verified Q&amp;A pairs (threshold: 50). Upload more to improve grounding.</span></label>
+          </div>
+          <div class="warning-row">
+            <input type="checkbox" class="warning-checkbox" id="warn-3" onchange="checkApprove()" />
+            <label class="warning-content" for="warn-3"><span class="cat-badge cat-security">security</span><span class="warning-message">3 medium-severity red team findings. Does not block deployment but review the report.</span></label>
+          </div>
+        </div>
+        <div class="approve-row">
+          <button id="approve-btn" class="btn-approve" disabled onclick="alert('Would POST /api/v1/agents/{id}/approve-deployment')">Approve deployment</button>
+        </div>
+      </div>
+
+      <!-- STATE 5: Approved -->
+      <div id="state-approved" class="state-panel">
+        <div class="approved-card">
+          <div class="live-badge"><div class="live-dot"></div>Live</div>
+          <div class="approved-heading">Your agent is live</div>
+          <p class="approved-body">Your widget is active and ready to embed on your site.</p>
+          <p class="approved-nav">
+            <a href="#" onclick="switchTab('embed', document.getElementById('tab-embed')); return false;">Go to Embed Code →</a>
+          </p>
+        </div>
+      </div>
+
+    </div><!-- /tabpanel-predeploy -->
+
+    <!-- ════════════════════════════════════════════════════════════════════
+         TAB 3: EMBED CODE
+    ═════════════════════════════════════════════════════════════════════ -->
+    <div id="tabpanel-embed" class="tab-panel">
+      <div id="embed-locked" class="embed-locked">
+        <div class="embed-locked__icon">🔒</div>
+        <div class="embed-locked__heading">Complete the pre-deployment check first</div>
+        <p class="embed-locked__body">Your embed snippet will appear here once your agent has passed the pre-deployment check and deployment has been approved.</p>
+      </div>
+      <div id="embed-unlocked" style="display:none;">
+        <div class="embed-code-wrap">
+          <div class="embed-code-header">
+            <span class="embed-code-header__label">index.html — paste before &lt;/body&gt;</span>
+            <button class="btn-copy" onclick="alert('Copied to clipboard')">Copy</button>
+          </div>
+          <div class="embed-code-body">
+            <pre><span class="code-comment">&lt;!-- Veridian Widget --&gt;</span>
+<span class="code-tag">&lt;script</span>
+  <span class="code-attr">src</span>=<span class="code-val">"https://cdn.veridian.ai/widget/v1/widget.js"</span>
+  <span class="code-attr">data-agent-id</span>=<span class="code-val">"ag_acmeconsulting_7f2a"</span>
+  <span class="code-attr">data-tenant-id</span>=<span class="code-val">"ten_4b9c1e"</span>
+  <span class="code-attr">defer</span>
+<span class="code-tag">&gt;&lt;/script&gt;</span></pre>
+          </div>
+        </div>
+        <div class="embed-instructions">
+          <div class="embed-instructions__title">Installation</div>
+          <ol>
+            <li>Copy the snippet above and paste it before the closing <code>&lt;/body&gt;</code> tag on every page where you want the widget.</li>
+            <li>The widget loads asynchronously and will not affect your page load time.</li>
+            <li>To remove the widget, delete the <code>&lt;script&gt;</code> tag and redeploy.</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div><!-- /admin-shell -->
+
+<!-- ── Colour Picker Popup ───────────────────────────────────────────────── -->
+<div class="cp-popup" id="cpPopup" role="dialog" aria-label="Colour picker">
+  <!-- Gradient square (hue set via JS background-color) -->
+  <div class="cp-gradient" id="cpGradient">
+    <div class="cp-gradient__sat"></div>
+    <div class="cp-gradient__val"></div>
+    <div class="cp-thumb" id="cpThumb"></div>
+  </div>
+  <!-- Hue slider -->
+  <div class="cp-hue-track" id="cpHueTrack">
+    <div class="cp-hue-thumb" id="cpHueThumb"></div>
+  </div>
+  <!-- Preview strip -->
+  <div class="cp-preview-strip">
+    <div class="cp-preview-new" id="cpPreviewNew"></div>
+    <span class="cp-preview-label">New colour</span>
+  </div>
+  <!-- Hex input -->
+  <div class="cp-hex-row">
+    <span class="cp-hex-label">Hex</span>
+    <input type="text" class="cp-hex-input" id="cpHexInput" value="#7B1C3A" maxlength="7"
+      oninput="onHexInput(this.value)" />
+  </div>
+  <!-- Actions -->
+  <div class="cp-actions">
+    <button class="cp-btn cp-btn--cancel" onclick="closePicker()">Cancel</button>
+    <button class="cp-btn cp-btn--apply" onclick="applyColor()">Apply</button>
+  </div>
+</div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════════════
+   WIDGET PREVIEW STATE
+═══════════════════════════════════════════════════════════════════════════ */
+var props = { color: '#7B1C3A', pos: 'right', icon: '💬', size: 'standard' };
+
+function setProp(k, v) { props[k] = v; }
+
+function updatePreview() {
+  var color = props.color;
+  var fab = document.getElementById('previewFab');
+  var header = document.getElementById('previewHeader');
+  var avatar = document.getElementById('previewAvatar');
+  var send = document.getElementById('previewSend');
+  var chat = document.getElementById('previewChat');
+
+  // Colour
+  fab.style.background = color;
+  header.style.background = color;
+  send.style.background = color;
+
+  // Initials avatar from agent name
+  var nameEl = document.getElementById('agentName');
+  var initials = (nameEl ? nameEl.value : 'AA').split(' ').map(function(w){return w[0]||'';}).join('').toUpperCase().slice(0,2);
+  avatar.textContent = initials || 'AA';
+
+  // Position
+  if (props.pos === 'left') {
+    fab.classList.add('pos-left'); fab.classList.remove('pos-left');
+    fab.style.right = props.pos === 'right' ? '16px' : 'auto';
+    fab.style.left  = props.pos === 'left'  ? '16px' : 'auto';
+    chat.style.right = props.pos === 'right' ? '10px' : 'auto';
+    chat.style.left  = props.pos === 'left'  ? '10px' : 'auto';
+  } else {
+    fab.style.right = '16px'; fab.style.left = 'auto';
+    chat.style.right = '10px'; chat.style.left = 'auto';
+  }
+
+  // Icon
+  fab.textContent = props.icon;
+
+  // Size
+  chat.className = 'preview-chat';
+  if (props.size === 'compact') chat.classList.add('size-compact');
+  if (props.size === 'large')   chat.classList.add('size-large');
+
+  // Name + tagline
+  document.getElementById('previewName').textContent = document.getElementById('agentName').value || 'Agent';
+  document.getElementById('previewSub').textContent  = document.getElementById('agentTagline').value;
+
+  // Greeting
+  var g = document.getElementById('greeting').value;
+  var bubble = document.getElementById('previewBubble');
+  bubble.textContent = g.length > 120 ? g.slice(0, 120) + '…' : g;
+
+  // Placeholder
+  document.getElementById('previewPlaceholder').textContent = document.getElementById('placeholder').value || 'Type a message…';
+
+  // Powered by
+  document.getElementById('previewPowered').style.display = document.getElementById('poweredBy').checked ? '' : 'none';
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   TOGGLE GROUP HELPER
+═══════════════════════════════════════════════════════════════════════════ */
+function selectToggle(btn, groupId) {
+  document.getElementById(groupId).querySelectorAll('.toggle-opt').forEach(function(b) {
+    b.classList.remove('selected');
+  });
+  btn.classList.add('selected');
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PHOTOSHOP-STYLE COLOR PICKER
+═══════════════════════════════════════════════════════════════════════════ */
+var cpH = 347, cpS = 0.78, cpV = 0.84;  // initial: #7B1C3A ≈ HSV
+var cpDraggingGrad = false, cpDraggingHue = false;
+
+function hsvToRgb(h, s, v) {
+  var i = Math.floor(h / 60) % 6;
+  var f = h / 60 - Math.floor(h / 60);
+  var p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
+  var r, g, b;
+  if (i===0){r=v;g=t;b=p;} else if(i===1){r=q;g=v;b=p;}
+  else if(i===2){r=p;g=v;b=t;} else if(i===3){r=p;g=q;b=v;}
+  else if(i===4){r=t;g=p;b=v;} else{r=v;g=p;b=q;}
+  return [Math.round(r*255), Math.round(g*255), Math.round(b*255)];
+}
+
+function rgbToHex(r, g, b) {
+  return '#' + [r,g,b].map(function(c){ return c.toString(16).padStart(2,'0'); }).join('');
+}
+
+function hexToHsv(hex) {
+  hex = hex.replace('#','');
+  if (hex.length !== 6) return null;
+  var r = parseInt(hex.slice(0,2),16)/255;
+  var g = parseInt(hex.slice(2,4),16)/255;
+  var b = parseInt(hex.slice(4,6),16)/255;
+  var max = Math.max(r,g,b), min = Math.min(r,g,b), d = max - min;
+  var h = 0, s = max === 0 ? 0 : d / max, v = max;
+  if (d !== 0) {
+    if (max===r) h = ((g-b)/d + (g<b?6:0)) / 6;
+    else if (max===g) h = ((b-r)/d + 2) / 6;
+    else h = ((r-g)/d + 4) / 6;
+  }
+  return { h: h * 360, s: s, v: v };
+}
+
+function cpRefreshUI() {
+  var rgb = hsvToRgb(cpH, cpS, cpV);
+  var hex = rgbToHex(rgb[0], rgb[1], rgb[2]);
+
+  // Gradient box hue
+  document.getElementById('cpGradient').style.backgroundColor = 'hsl(' + cpH + ',100%,50%)';
+
+  // Thumb position
+  var thumb = document.getElementById('cpThumb');
+  thumb.style.left = (cpS * 100) + '%';
+  thumb.style.top  = ((1 - cpV) * 100) + '%';
+  thumb.style.background = hex;
+
+  // Hue thumb
+  var ht = document.getElementById('cpHueThumb');
+  ht.style.left = (cpH / 360 * 100) + '%';
+  ht.style.background = 'hsl(' + cpH + ',100%,50%)';
+
+  // Hex input + preview
+  document.getElementById('cpHexInput').value = hex;
+  document.getElementById('cpPreviewNew').style.background = hex;
+}
+
+function openPicker(evt) {
+  evt.stopPropagation();
+  var popup = document.getElementById('cpPopup');
+  var trigger = document.getElementById('colorSwatchBtn');
+  var rect = trigger.getBoundingClientRect();
+
+  // Position popup below/beside swatch
+  var top = rect.bottom + 8;
+  var left = rect.left;
+  if (left + 260 > window.innerWidth - 12) left = window.innerWidth - 272;
+  if (top + 380 > window.innerHeight - 12) top = rect.top - 388;
+
+  popup.style.top  = top  + 'px';
+  popup.style.left = left + 'px';
+  popup.classList.add('open');
+  cpRefreshUI();
+}
+
+function closePicker() {
+  document.getElementById('cpPopup').classList.remove('open');
+}
+
+function applyColor() {
+  var rgb = hsvToRgb(cpH, cpS, cpV);
+  var hex = rgbToHex(rgb[0], rgb[1], rgb[2]);
+  props.color = hex;
+  document.getElementById('colorSwatchBtn').style.background = hex;
+  document.getElementById('colorHexDisplay').value = hex;
+  updatePreview();
+  closePicker();
+}
+
+function onHexInput(val) {
+  if (val.length === 7 && val[0] === '#') {
+    var hsv = hexToHsv(val);
+    if (hsv) { cpH = hsv.h; cpS = hsv.s; cpV = hsv.v; cpRefreshUI(); }
+  }
+}
+
+/* Gradient square interaction */
+function cpGradientXY(e, el) {
+  var rect = el.getBoundingClientRect();
+  var x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  var y = Math.max(0, Math.min(1, (e.clientY - rect.top)  / rect.height));
+  cpS = x; cpV = 1 - y;
+  cpRefreshUI();
+}
+
+document.getElementById('cpGradient').addEventListener('mousedown', function(e) {
+  cpDraggingGrad = true;
+  cpGradientXY(e, this);
+  e.preventDefault();
+});
+
+/* Hue track interaction */
+function cpHueX(e, el) {
+  var rect = el.getBoundingClientRect();
+  var x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  cpH = x * 360;
+  cpRefreshUI();
+}
+
+document.getElementById('cpHueTrack').addEventListener('mousedown', function(e) {
+  cpDraggingHue = true;
+  cpHueX(e, this);
+  e.preventDefault();
+});
+
+document.addEventListener('mousemove', function(e) {
+  if (cpDraggingGrad) cpGradientXY(e, document.getElementById('cpGradient'));
+  if (cpDraggingHue)  cpHueX(e,  document.getElementById('cpHueTrack'));
+});
+
+document.addEventListener('mouseup', function() { cpDraggingGrad = false; cpDraggingHue = false; });
+
+/* Close picker on outside click */
+document.addEventListener('click', function(e) {
+  var popup = document.getElementById('cpPopup');
+  if (popup.classList.contains('open') && !popup.contains(e.target)) {
+    closePicker();
+  }
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+   TAB SWITCHER
+═══════════════════════════════════════════════════════════════════════════ */
+function switchTab(tabId, btn) {
+  document.querySelectorAll('.tab-panel').forEach(function(p){ p.classList.remove('visible'); });
+  document.querySelectorAll('.tab-btn').forEach(function(b){
+    b.classList.remove('tab-active');
+    b.setAttribute('aria-selected','false');
+  });
+  var panel = document.getElementById('tabpanel-' + tabId);
+  if (panel) panel.classList.add('visible');
+  btn.classList.add('tab-active');
+  btn.setAttribute('aria-selected','true');
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PRE-DEPLOY STATE SWITCHER
+═══════════════════════════════════════════════════════════════════════════ */
+function showState(stateId, btn) {
+  document.querySelectorAll('.state-panel').forEach(function(p){ p.classList.remove('visible'); });
+  document.querySelectorAll('.state-btn').forEach(function(b){ b.classList.remove('active'); });
+  var panel = document.getElementById('state-' + stateId);
+  if (panel) panel.classList.add('visible');
+  btn.classList.add('active');
+
+  // Unlock embed tab on approval
+  var locked = document.getElementById('embed-locked');
+  var unlocked = document.getElementById('embed-unlocked');
+  if (stateId === 'approved') {
+    if (locked) locked.style.display = 'none';
+    if (unlocked) unlocked.style.display = 'block';
+  } else {
+    if (locked) locked.style.display = '';
+    if (unlocked) unlocked.style.display = 'none';
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   WARNING CHECKBOXES
+═══════════════════════════════════════════════════════════════════════════ */
+function checkApprove() {
+  var all = Array.from(document.querySelectorAll('.warning-checkbox')).every(function(c){ return c.checked; });
+  var btn = document.getElementById('approve-btn');
+  if (btn) { btn.disabled = !all; btn.setAttribute('aria-disabled', String(!all)); }
+}
+</script>
+
+</body>
+</html>
