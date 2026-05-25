@@ -21,13 +21,20 @@ if ($Stop) {
     Write-Host "Stopping all dev services..."
     Get-Process -Name "redis-server","uvicorn","celery","node","cmd" -ErrorAction SilentlyContinue |
         Stop-Process -Force -ErrorAction SilentlyContinue
+    # Also catch workers launched as "python -m celery" (register as python.exe)
+    Get-WmiObject Win32_Process -Filter "Name like '%python%'" |
+        Where-Object { $_.CommandLine -like '*celery*' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Write-Host "Done."
     exit 0
 }
 
-# Kill any stale processes from a previous run
+# Kill any stale processes from a previous run (including python.exe celery zombies)
 Get-Process -Name "redis-server","uvicorn","celery" -ErrorAction SilentlyContinue |
     Stop-Process -Force -ErrorAction SilentlyContinue
+Get-WmiObject Win32_Process -Filter "Name like '%python%'" |
+    Where-Object { $_.CommandLine -like '*celery*' } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
 Write-Host "Starting dev services (logs -> $logs)..."
 
