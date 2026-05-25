@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     SMTP_PORT: int = 587
     SMTP_FROM: str | None = None
     OWNER_EMAIL: str | None = None
+    # M10: SMTP authentication credentials (required by all production SMTP providers)
+    SMTP_USER: str | None = None
+    SMTP_PASSWORD: str | None = None
 
     # M4.1: Tenant daily budget ceiling (global default; per-tenant override in M5 admin UI)
     TENANT_DAILY_BUDGET_USD: float = 5.0
