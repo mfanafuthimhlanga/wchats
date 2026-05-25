@@ -1,27 +1,19 @@
 """
-M9 Strategy service: corpus-signal-driven retrieval strategy synthesizer (Claude Agent SDK Sonnet).
+M9 Strategy service: corpus-signal-driven retrieval strategy synthesizer (direct Anthropic API).
 
 Architecture notes:
-- Corpus signals are collected synchronously (psycopg2) BEFORE calling the Agent SDK.
-- Agent calls generate_strategy as a side-effect tool; runner captures ToolUseBlock
-  and writes to result_container. No tool result sent back (same as submit_report pattern).
-- claude-agent-sdk==0.1.81 PINNED — do not upgrade without testing.
-- asyncio.run(asyncio.wait_for(..., timeout=60.0)) bridge in Celery task.
+- Corpus signals are collected synchronously (psycopg2) BEFORE calling the Anthropic API.
+- Direct Anthropic messages.create with tool_use — captures generate_strategy ToolUseBlock.
+- Synchronous — no asyncio bridge needed; safe in Celery pipeline tasks.
 - Connection strings NEVER logged (CTL-08).
 """
 from __future__ import annotations
 
-import asyncio
 import json
 
+import anthropic
 import psycopg2
 import structlog
-from claude_agent_sdk import (
-    ClaudeAgentOptions,
-    ClaudeSDKClient,
-    AssistantMessage,
-    ToolUseBlock,
-)
 from app.core.config import settings
 
 SONNET_MODEL = "claude-sonnet-4-6"
@@ -189,57 +181,31 @@ _TOOL_GENERATE_STRATEGY = {
 
 
 # ---------------------------------------------------------------------------
-# Agent SDK strategist loop
+# Direct Anthropic API strategist (synchronous — safe in Celery pipeline tasks)
 # ---------------------------------------------------------------------------
 
 
-async def _run_strategist_loop(
-    signals_json: str,
-    result_container: dict,
-) -> None:
-    """Async Agent SDK loop that calls generate_strategy as a side-effect tool.
-
-    Captures the first ToolUseBlock(name='generate_strategy') into result_container
-    and returns immediately. No tool result is sent back to the agent
-    (same side-effect pattern as submit_report in deployment_service.py).
-    """
-    options = ClaudeAgentOptions(
-        model=SONNET_MODEL,
-        system_prompt=_STRATEGIST_SYSTEM_PROMPT,
-        max_turns=3,
-    )
-    async with ClaudeSDKClient(options=options) as client:
-        await client.query(
-            f"Corpus signals:\n\n{signals_json}\n\nCall generate_strategy."
-        )
-        async for msg in client.receive_response():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if (
-                        isinstance(block, ToolUseBlock)
-                        and block.name == "generate_strategy"
-                    ):
-                        result_container["strategy"] = block.input
-                        # Side-effect only — no tool result sent back
-                        return
-
-
 def run_strategist(signals_json: str, result_container: dict) -> None:
-    """Synchronous bridge called from the Celery task (Wave 2).
+    """Call Claude directly via the Anthropic API to synthesize a retrieval strategy.
 
-    Uses asyncio.run(asyncio.wait_for(..., timeout=60.0)) to guard against
-    runaway Sonnet calls. Logs and swallows exceptions so the task can mark
-    the run as failed rather than crashing the worker.
-
-    NOTE: No _call_orchestrator_async shim — Wave 2 task calls
-    _run_strategist_loop directly via asyncio.run.
+    Uses tool_use to reliably extract structured parameters. Logs and swallows
+    exceptions so the Celery task falls back to RetrievalStrategy() defaults.
     """
     try:
-        asyncio.run(
-            asyncio.wait_for(
-                _run_strategist_loop(signals_json, result_container),
-                timeout=60.0,
-            )
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model=SONNET_MODEL,
+            max_tokens=500,
+            system=_STRATEGIST_SYSTEM_PROMPT,
+            tools=[_TOOL_GENERATE_STRATEGY],
+            messages=[{
+                "role": "user",
+                "content": f"Corpus signals:\n\n{signals_json}\n\nCall generate_strategy.",
+            }],
         )
+        for block in response.content:
+            if block.type == "tool_use" and block.name == "generate_strategy":
+                result_container["strategy"] = block.input
+                return
     except Exception as exc:
         log.warning("run_strategist.failed", error=str(exc))

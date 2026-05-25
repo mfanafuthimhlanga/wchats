@@ -7,7 +7,7 @@ De-xfailed in Phase 09-03. Tests cover:
     test_resynthesis_flag_bypasses_guard — strategy_resynthesis_flagged=True bypasses idempotency guard
 
 Mock strategy (follows test_deployment_task.py exactly):
-    - app.worker.tasks.pipeline.strategy.asyncio.run patched at module boundary
+    - app.worker.tasks.pipeline.strategy.run_strategist patched at module boundary
     - app.worker.tasks.pipeline.strategy.get_sync_db patched as context manager
     - app.worker.tasks.pipeline.strategy.fernet_decrypt patched to return plain conn_str
     - app.worker.tasks.pipeline.strategy._fetch_corpus_signals_sync patched
@@ -107,8 +107,7 @@ def test_strategy_written_to_db():
         "app.worker.tasks.pipeline.strategy._fetch_corpus_signals_sync",
         return_value=_FAKE_SIGNALS,
     ), patch(
-        "app.worker.tasks.pipeline.strategy.asyncio.run",
-        side_effect=lambda coro: coro.close(),
+        "app.worker.tasks.pipeline.strategy.run_strategist",
     ), patch(
         "app.worker.tasks.pipeline.strategy.emit",
     ):
@@ -160,8 +159,7 @@ def test_receives_embed_result_dict():
         "app.worker.tasks.pipeline.strategy._fetch_corpus_signals_sync",
         return_value=_FAKE_SIGNALS,
     ), patch(
-        "app.worker.tasks.pipeline.strategy.asyncio.run",
-        side_effect=lambda coro: coro.close(),
+        "app.worker.tasks.pipeline.strategy.run_strategist",
     ), patch(
         "app.worker.tasks.pipeline.strategy.emit",
     ):
@@ -220,8 +218,8 @@ def test_idempotency_skip():
     ), patch(
         "app.worker.tasks.pipeline.strategy._fetch_corpus_signals_sync",
     ) as mock_signals, patch(
-        "app.worker.tasks.pipeline.strategy.asyncio.run",
-    ) as mock_asyncio_run:
+        "app.worker.tasks.pipeline.strategy.run_strategist",
+    ) as mock_run_strategist:
         synthesize_retrieval_strategy.run(
             result={
                 "tenant_id": "t1",
@@ -233,7 +231,7 @@ def test_idempotency_skip():
 
     # Neither corpus fetch nor strategist should have been invoked
     mock_signals.assert_not_called()
-    mock_asyncio_run.assert_not_called()
+    mock_run_strategist.assert_not_called()
     # Strategy value untouched (no DB write expected on idempotent skip)
     assert mock_agent.retrieval_strategy == {"vector_k": 20}
 
@@ -269,9 +267,8 @@ def test_resynthesis_flag_bypasses_guard():
         "app.worker.tasks.pipeline.strategy._fetch_corpus_signals_sync",
         return_value=_FAKE_SIGNALS,
     ), patch(
-        "app.worker.tasks.pipeline.strategy.asyncio.run",
-        side_effect=lambda coro: coro.close(),
-    ) as mock_asyncio_run, patch(
+        "app.worker.tasks.pipeline.strategy.run_strategist",
+    ) as mock_run_strategist, patch(
         "app.worker.tasks.pipeline.strategy.emit",
     ):
         synthesize_retrieval_strategy.run(
@@ -283,8 +280,8 @@ def test_resynthesis_flag_bypasses_guard():
             }
         )
 
-    # asyncio.run MUST have been called (strategist ran despite existing strategy)
-    mock_asyncio_run.assert_called_once()
+    # run_strategist MUST have been called (strategist ran despite existing strategy)
+    mock_run_strategist.assert_called_once()
 
     # strategy_resynthesis_flagged must be cleared
     assert mock_agent.strategy_resynthesis_flagged is False

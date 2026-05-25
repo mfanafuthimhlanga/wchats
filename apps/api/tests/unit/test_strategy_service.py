@@ -147,14 +147,28 @@ def test_strategy_validate_string_inputs():
     assert result.query_expansion is True
 
 
-def test_run_strategist_calls_asyncio_run():
-    """run_strategist calls asyncio.run at the module boundary (not global asyncio.run)."""
+def test_run_strategist_calls_anthropic_api():
+    """run_strategist uses the direct Anthropic API (messages.create with tool_use)."""
     result_container = {}
 
-    with patch("app.services.strategy_service.asyncio.run") as mock_asyncio_run:
+    mock_block = MagicMock()
+    mock_block.type = "tool_use"
+    mock_block.name = "generate_strategy"
+    mock_block.input = {"vector_k": 15, "bm25_k": 15, "final_k": 3,
+                        "rerank_threshold": 0.1, "query_expansion": False,
+                        "metadata_filters": []}
+
+    mock_response = MagicMock()
+    mock_response.content = [mock_block]
+
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_response
+
+    with patch("app.services.strategy_service.anthropic.Anthropic", return_value=mock_client):
         run_strategist("{}", result_container)
 
-    mock_asyncio_run.assert_called_once()
+    mock_client.messages.create.assert_called_once()
+    assert result_container["strategy"]["vector_k"] == 15
 
 
 # ---------------------------------------------------------------------------

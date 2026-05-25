@@ -7,7 +7,7 @@ Position in M3 chain (5th of 5):
 
 This task runs after embedding is complete. It:
 1. Fetches corpus signals from the tenant DB (psycopg2).
-2. Calls the Strategist Agent SDK loop to select optimized retrieval parameters.
+2. Calls the direct Anthropic API (run_strategist) to select optimized retrieval parameters.
 3. Validates the result via RetrievalStrategy.model_validate (Pydantic).
 4. Writes agent.retrieval_strategy to the control DB.
 5. Emits 'strategy.synthesized' SSE event.
@@ -29,7 +29,6 @@ acks_late=True + idempotency: both are always required (CLAUDE.md rule 5).
 
 from __future__ import annotations
 
-import asyncio
 import json
 import ssl
 import structlog
@@ -42,7 +41,7 @@ from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.services.events import emit
 from app.services.retrieval_service import RetrievalStrategy
-from app.services.strategy_service import _fetch_corpus_signals_sync, _run_strategist_loop
+from app.services.strategy_service import _fetch_corpus_signals_sync, run_strategist
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
@@ -154,18 +153,13 @@ def synthesize_retrieval_strategy(self, result: dict) -> dict:
     signals_json = json.dumps(signals)
 
     # ------------------------------------------------------------------
-    # Step 4 — Call Strategist Agent SDK loop (60s timeout)
+    # Step 4 — Call direct Anthropic API (run_strategist — synchronous)
     # Strategist failures are not retried — fall through to validation
     # with empty result_container so defaults are applied.
     # ------------------------------------------------------------------
     result_container: dict = {}
     try:
-        asyncio.run(
-            asyncio.wait_for(
-                _run_strategist_loop(signals_json, result_container),
-                timeout=60.0,
-            )
-        )
+        run_strategist(signals_json, result_container)
     except Exception as exc:
         log.error(
             "synthesize_retrieval_strategy.strategist_failed",
