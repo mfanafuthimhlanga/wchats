@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     # M8: Deployment checklist configuration
     DEP_BLOCK_ON_HIGH_RED_TEAM: bool = True  # when True, high_count > 0 triggers block (DEP-03)
 
+    # M10: Maintenance + Observability thresholds and flags
+    ALERT_FAITHFULNESS_THRESHOLD: float = 0.6
+    ALERT_RED_TEAM_CRITICAL_COUNT: int = 1
+    DIGEST_ENABLED: bool = True
+
     MAX_UPLOAD_SIZE_MB: int = 50
 
     def __repr__(self) -> str:  # T-01-01, T-01-02: never leak field values

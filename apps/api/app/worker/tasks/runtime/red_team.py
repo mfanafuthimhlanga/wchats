@@ -142,9 +142,9 @@ def _build_probe_fn(agent: "Agent", conn_str: str):
     name="app.worker.tasks.runtime.red_team.run_red_team_beat",
 )
 def run_red_team_beat(self) -> dict:
-    """Beat-triggered dispatcher: find all status='ready' agents and dispatch run_red_team per agent.
+    """Beat-triggered dispatcher: find all deployed agents and dispatch run_red_team per agent.
 
-    Queries the control DB for agents with status='ready' and fans out one
+    Queries the control DB for agents with is_deployed=True and fans out one
     run_red_team task per agent. No conn_str is passed — the per-agent task
     fetches and decrypts at runtime (CTL-08).
 
@@ -156,7 +156,7 @@ def run_red_team_beat(self) -> dict:
     """
     with get_sync_db() as db:
         agents = db.execute(
-            select(Agent).where(Agent.status == "ready")
+            select(Agent).where(Agent.is_deployed == True)  # noqa: E712
         ).scalars().all()
 
     dispatched = 0
