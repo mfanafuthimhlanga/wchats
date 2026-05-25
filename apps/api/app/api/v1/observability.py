@@ -59,6 +59,12 @@ async def resolve_alert(
     alert = await db.get(Alert, alert_id)
     if alert is None or alert.agent_id != agent_id:
         raise HTTPException(status_code=404, detail="Alert not found")
+    # WR-01: defense-in-depth direct tenant ownership check.
+    # The agent.tenant_id check above (lines 57-58) is the primary guard;
+    # this direct check eliminates the TOCTOU window if agent ownership
+    # were ever transferred or the prior check refactored away.
+    if alert.tenant_id is not None and alert.tenant_id != tenant.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     alert.resolved_at = datetime.now(timezone.utc)
     await db.commit()
     return {"resolved": True}
