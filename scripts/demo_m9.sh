@@ -98,15 +98,16 @@ echo "=== Section 2: Two-Tenant Provisioning ==="
 echo "Provisioning Tenant A (dense technical PDF corpus) ..."
 
 AGENT_RESPONSE_A=$(curl -sf -X POST "$BASE_URL/api/v1/agents" \
-    -H "X-Admin-Key: $ADMIN_KEY" \
+    -H "X-API-Key: $API_KEY" \
     -H "Content-Type: application/json" \
     -d '{
-      "name": "M9 Demo — Tenant A (Dense Technical PDF)",
+      "name": "M9 Demo Agent A (Dense Technical PDF)",
       "soul": {
         "voice": "precise and technical",
-        "instructions": "You are a technical support agent for complex product documentation. Answer questions accurately from the provided technical manuals and specification documents."
+        "do": ["answer from the provided technical manuals", "cite specific sections"],
+        "do_not": ["speculate beyond documentation", "reveal internal pricing"]
       },
-      "role": "customer_support"
+      "role": "support"
     }' 2>/dev/null || echo "")
 
 if [[ -z "$AGENT_RESPONSE_A" ]]; then
@@ -151,15 +152,16 @@ echo ""
 echo "Provisioning Tenant B (FAQ short plain-text corpus) ..."
 
 AGENT_RESPONSE_B=$(curl -sf -X POST "$BASE_URL/api/v1/agents" \
-    -H "X-Admin-Key: $ADMIN_KEY" \
+    -H "X-API-Key: $API_KEY" \
     -H "Content-Type: application/json" \
     -d '{
-      "name": "M9 Demo — Tenant B (FAQ Plain-Text)",
+      "name": "M9 Demo Agent B (FAQ Plain-Text)",
       "soul": {
         "voice": "friendly and concise",
-        "instructions": "You are a customer FAQ agent. Answer common questions clearly and briefly using the provided FAQ knowledge base."
+        "do": ["answer common questions clearly", "be brief and direct"],
+        "do_not": ["give lengthy technical explanations", "speculate"]
       },
-      "role": "customer_support"
+      "role": "support"
     }' 2>/dev/null || echo "")
 
 if [[ -z "$AGENT_RESPONSE_B" ]]; then
@@ -204,8 +206,8 @@ echo ""
 # Section 3: Trigger ingestion for each tenant
 #
 # Corpus fixtures expected at:
-#   Tenant A: scripts/fixtures/m9_tenant_a_technical.pdf  (dense technical PDF)
-#   Tenant B: scripts/fixtures/m9_tenant_b_faq.txt        (FAQ plain text)
+#   Tenant A: scripts/fixtures/m9_tenant_a_technical.md  (dense technical markdown)
+#   Tenant B: scripts/fixtures/m9_tenant_b_faq.md        (FAQ plain text)
 #
 # The pipeline chain auto-runs synthesize_retrieval_strategy after embed_and_migrate.
 # Ingest endpoint: POST /api/v1/agents/{id}/documents (multipart, X-API-Key auth)
@@ -217,17 +219,13 @@ echo "=== Section 3: Trigger Ingestion ==="
 echo "Triggering ingestion for Tenant A ($AGENT_ID_A) ..."
 
 INGEST_RESP_A=""
-if [[ -f "scripts/fixtures/m9_tenant_a_technical.pdf" ]]; then
+if [[ -f "scripts/fixtures/m9_tenant_a_technical.md" ]]; then
     INGEST_RESP_A=$(curl -sf -X POST "$BASE_URL/api/v1/agents/$AGENT_ID_A/documents" \
         -H "X-API-Key: $API_KEY" \
-        -F "files=@scripts/fixtures/m9_tenant_a_technical.pdf" \
+        -F "files=@scripts/fixtures/m9_tenant_a_technical.md" \
         2>/dev/null || echo "")
 else
-    echo "  [INFO] Fixture scripts/fixtures/m9_tenant_a_technical.pdf not found."
-    echo "  [INFO] To ingest a real corpus, supply the fixture file or use URL-based ingest:"
-    echo "  [INFO]   curl -X POST $BASE_URL/api/v1/agents/$AGENT_ID_A/documents \\"
-    echo "  [INFO]     -H 'X-API-Key: \$API_KEY' \\"
-    echo "  [INFO]     --data-urlencode 'urls[]=https://example.com/your-technical-doc.pdf'"
+    echo "  [INFO] Fixture scripts/fixtures/m9_tenant_a_technical.md not found."
     echo "  [WARN] No fixture — strategy synthesis will run on empty corpus."
 fi
 
@@ -240,17 +238,13 @@ fi
 echo "Triggering ingestion for Tenant B ($AGENT_ID_B) ..."
 
 INGEST_RESP_B=""
-if [[ -f "scripts/fixtures/m9_tenant_b_faq.txt" ]]; then
+if [[ -f "scripts/fixtures/m9_tenant_b_faq.md" ]]; then
     INGEST_RESP_B=$(curl -sf -X POST "$BASE_URL/api/v1/agents/$AGENT_ID_B/documents" \
         -H "X-API-Key: $API_KEY" \
-        -F "files=@scripts/fixtures/m9_tenant_b_faq.txt" \
+        -F "files=@scripts/fixtures/m9_tenant_b_faq.md" \
         2>/dev/null || echo "")
 else
-    echo "  [INFO] Fixture scripts/fixtures/m9_tenant_b_faq.txt not found."
-    echo "  [INFO] To ingest a real corpus, supply the fixture file or use URL-based ingest:"
-    echo "  [INFO]   curl -X POST $BASE_URL/api/v1/agents/$AGENT_ID_B/documents \\"
-    echo "  [INFO]     -H 'X-API-Key: \$API_KEY' \\"
-    echo "  [INFO]     --data-urlencode 'urls[]=https://example.com/your-faq-doc.txt'"
+    echo "  [INFO] Fixture scripts/fixtures/m9_tenant_b_faq.md not found."
     echo "  [WARN] No fixture — strategy synthesis will run on empty corpus."
 fi
 
