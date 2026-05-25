@@ -85,6 +85,8 @@ celery_app.conf.update(
         "app.worker.tasks.runtime.red_team",
         # M8: deployment checklist task (runtime queue)
         "app.worker.tasks.runtime.deployment",
+        # M9: retrieval strategy synthesis (pipeline queue)
+        "app.worker.tasks.pipeline.strategy",
     ],
 
     # --- Queue topology -------------------------------------------------
@@ -123,6 +125,30 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     # Result expiry (F5: broker now carries PII — purge results after 5 min)
     result_expires=300,
+
+    # --- Broker transport options (Upstash idle-connection fix) ----------
+    # Upstash Redis (TLS) drops idle TCP connections after ~10 minutes with no
+    # FIN — the worker's BLPOP socket becomes half-open. Workers appear alive
+    # in the process list but receive zero tasks. socket_keepalive enables TCP
+    # keepalive probes; socket_timeout causes a blocked socket op to raise after
+    # 30 s so Kombu reconnects. retry_on_timeout retries BLPOP instead of
+    # propagating the timeout exception. visibility_timeout must exceed the
+    # longest expected task runtime (provision + migrations can take ~60 s;
+    # 3600 s is a safe ceiling). On Windows, TCP_KEEPIDLE/INTVL/CNT are set
+    # at the OS level and socket_keepalive_options is ignored — but
+    # socket_keepalive=True and retry_on_timeout=True still apply.
+    broker_transport_options={
+        "socket_timeout": 30,
+        "socket_connect_timeout": 10,
+        "socket_keepalive": True,
+        "socket_keepalive_options": {
+            "TCP_KEEPIDLE": 60,
+            "TCP_KEEPINTVL": 10,
+            "TCP_KEEPCNT": 5,
+        },
+        "visibility_timeout": 3600,
+        "retry_on_timeout": True,
+    },
 
     # --- Celery beat schedule (M6: nightly eval) ------------------------
     # D-19 LOCKED: 'eval-nightly' runs run_eval_suite_beat at 02:00 UTC daily.

@@ -54,7 +54,7 @@ class RetrievalStrategy(BaseModel):
     bm25_k: int = 20             # candidates from BM25 ts_rank_cd search
     final_k: int = 5             # results after rerank
     rerank_threshold: float = 0.0  # minimum rerank score to include (0.0 = include all)
-    query_expansion: bool = False  # deferred to M9; always False in M3
+    query_expansion: bool = False
     metadata_filters: list[dict] = []  # entity-based filters (M4+); empty in M3
 
 
@@ -367,6 +367,118 @@ def rrf_fuse(
         "fused": fused_rows,
         "vector_candidates": vector_cands,
         "bm25_candidates": bm25_cands,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Query expansion + expansion-aware RRF fusion (M9)
+# ---------------------------------------------------------------------------
+
+
+def _expand_query(query_text: str) -> list[str]:
+    """Generate 2 alternative phrasings of the query using Claude Haiku (lazy import).
+
+    Lazy `import anthropic` inside the function body matches the lazy `import cohere`
+    pattern used in _cohere_rerank — keeps the module loadable even if the package
+    is absent or the API key is not set.
+
+    Args:
+        query_text: The raw user query string.
+
+    Returns:
+        List of up to 3 queries: [original] + up to 2 generated variants.
+    """
+    import anthropic  # lazy import — only loaded when query_expansion=True
+
+    client = anthropic.Anthropic()
+    msg = client.messages.create(
+        model="claude-haiku-4-5",
+        max_tokens=200,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "Generate 2 alternative phrasings of this search query for a "
+                    "customer service knowledge base. Return ONLY the 2 queries, "
+                    f"one per line, no numbering:\n\n{query_text}"
+                ),
+            }
+        ],
+    )
+    variants = [
+        line.strip()
+        for line in msg.content[0].text.strip().split("\n")
+        if line.strip()
+    ]
+    return [query_text] + variants[:2]
+
+
+def rrf_fuse_with_expansion(
+    conn_str: str,
+    query_vector: list[float],
+    query_text: str,
+    strategy: RetrievalStrategy,
+) -> dict:
+    """RRF fusion with optional query expansion (M9).
+
+    When strategy.query_expansion is False, delegates directly to rrf_fuse
+    (passthrough — no performance cost).
+
+    When True:
+      1. Generate up to 2 alternative query phrasings via Claude Haiku.
+      2. Batch-embed ALL variants in a single Voyage call (NOT 3 sequential calls).
+      3. Run rrf_fuse for each (variant, variant_vector) pair.
+      4. Merge results keeping the highest rrf_score per chunk_id.
+      5. Return top final_k results in the same shape as rrf_fuse.
+
+    Args:
+        conn_str:      Decrypted tenant DB connection string.
+        query_vector:  1024-dim float vector for the original query.
+        query_text:    The raw user query string.
+        strategy:      Per-tenant retrieval config.
+
+    Returns:
+        Dict with keys "fused", "vector_candidates", "bm25_candidates" —
+        same shape as rrf_fuse.
+    """
+    if not strategy.query_expansion:
+        return rrf_fuse(conn_str, query_vector, query_text, strategy)
+
+    # Generate alternative phrasings
+    variants = _expand_query(query_text)
+
+    # Batch-embed ALL variants in ONE Voyage call
+    all_embeddings = _get_vo().embed(
+        variants, model="voyage-3", input_type="query"
+    ).embeddings
+
+    # Merge RRF results across all variants
+    all_fused: dict[str, dict] = {}
+    for variant_text, variant_vector in zip(variants, all_embeddings):
+        result = rrf_fuse(conn_str, variant_vector, variant_text, strategy)
+        for chunk in result["fused"]:
+            chunk_id = chunk["chunk_id"]
+            existing_score = all_fused.get(chunk_id, {}).get("rrf_score")
+            new_score = chunk.get("rrf_score")
+            if chunk_id not in all_fused:
+                all_fused[chunk_id] = chunk
+            else:
+                # Keep highest rrf_score (treat None as -inf)
+                existing = existing_score if existing_score is not None else float("-inf")
+                incoming = new_score if new_score is not None else float("-inf")
+                if incoming > existing:
+                    all_fused[chunk_id] = chunk
+
+    merged = sorted(
+        all_fused.values(),
+        key=lambda r: (r["rrf_score"] if r["rrf_score"] is not None else float("-inf")),
+        reverse=True,
+    )[: strategy.final_k]
+
+    return {
+        "fused": merged,
+        "vector_candidates": [],
+        "bm25_candidates": [],
     }
 
 
