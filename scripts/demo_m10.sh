@@ -243,10 +243,11 @@ echo "=== Section 5: Verify Celery Beat Registration (OPS-02/OPS-04) ==="
 
 BEATS_OUTPUT=$(cd apps/api && celery -A app.worker.celery_app inspect registered 2>/dev/null || echo "")
 
-if echo "$BEATS_OUTPUT" | grep -q "digest-weekly" && echo "$BEATS_OUTPUT" | grep -q "alert-daily"; then
+if echo "$BEATS_OUTPUT" | grep -q "run_weekly_digest_beat" && echo "$BEATS_OUTPUT" | grep -q "run_alert_check_beat"; then
     echo "[PASS] OPS-02/OPS-04: beats registered"
 else
     echo "[FAIL] OPS-02/OPS-04: beats not found in celery inspect"
+    echo "  (celery inspect registered lists task function names, not beat schedule keys)"
     echo "  (Ensure Celery worker is running: cd apps/api && celery -A app.worker.celery_app worker --queues pipeline,runtime)"
     if [[ -n "$BEATS_OUTPUT" ]]; then
         echo "  Registered tasks output (first 10 lines):"
