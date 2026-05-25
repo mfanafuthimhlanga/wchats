@@ -44,6 +44,7 @@ const EVENT_LABELS: Record<string, string> = {
   'metadata.complete': 'Metadata extracted',
   'embedding.started': 'Generating embeddings...',
   'embedding.complete': 'Embeddings done',
+  'strategy.synthesized': 'Optimising retrieval strategy...',
   'ingestion.complete': 'Processing complete',
   'job.complete': 'Done!',
   'job.failed': 'Failed',
