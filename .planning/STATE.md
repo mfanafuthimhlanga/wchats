@@ -3,23 +3,23 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: complete
-last_updated: "2026-05-24T00:00:00.000Z"
+last_updated: "2026-05-25T14:30:00.000Z"
 progress:
-  total_phases: 10
-  completed_phases: 9
-  total_plans: 72
-  completed_plans: 64
-  percent: 89
+  total_phases: 12
+  completed_phases: 11
+  total_plans: 73
+  completed_plans: 73
+  percent: 92
 ---
 
 # Project State
 
 ## Current Status
 
-**Active Milestone:** M8 — Pre-deployment Checklist (7/7 plans complete)
-**Milestone Phase:** Phase 8 COMPLETE — 7 plans, 6 waves, DEP-01–DEP-08 mapped; all plans complete (2026-05-24)
-**Current Position:** Phase 8, Plan 7 (complete) — Phase 8 complete; awaiting human-verify checkpoint
-**Last updated:** 2026-05-24
+**Active Milestone:** M9 — Retrieval Strategy Synthesis (4/4 plans complete)
+**Milestone Phase:** Phase 9 COMPLETE — 4 plans, 4 waves, STR-01–STR-03 satisfied; human checkpoint approved (2026-05-25)
+**Current Position:** Phase 9 complete — Phase 10 (Maintenance + Observability) or Phase 11 (UI Overhaul) next
+**Last updated:** 2026-05-25
 
 ## Project Reference
 
@@ -39,9 +39,9 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | M4 | Reasoning Engine + Widget | ✓ Complete (10/10 plans) | `prd-M4.md` ✓ |
 | M5 | Validation Chain | ✓ Complete (5/5 plans) | `prd-M5.md` ✓ |
 | M6 | Eval System | ✓ Complete (9/9 plans) | `prd-M6.md` ✓ |
-| M7 | Red Team | ○ Pending | `prd-M7.md` (TBD) |
-| M8 | Pre-deployment Checklist | ○ Pending | `prd-M8.md` (TBD) |
-| M9 | Retrieval Strategy Synthesis | ○ Pending | `prd-M9.md` (TBD) |
+| M7 | Red Team | ✓ Complete (6/6 plans) | `prd-M7.md` ✓ |
+| M8 | Pre-deployment Checklist | ✓ Complete (7/7 plans) | `prd-M8.md` ✓ |
+| M9 | Retrieval Strategy Synthesis | ✓ Complete (4/4 plans) | `prd-M9.md` ✓ |
 | M10 | Maintenance + Observability | ○ Pending | `prd-M10.md` (TBD) |
 
 ## Key Decisions
@@ -205,3 +205,5 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [08-06] Celery Retry exception caught with broad except in failure-path test — CELERY_TASK_ALWAYS_EAGER=True causes self.retry() to raise Retry; important assertion is db.commit() was called before retry
 - [08-06] deployment router was missing from main.py — Rule 1 auto-fix; all route tests returned 404 until fix applied
 - [08-06] Pre-existing unit test failures in test_agent_chat_routes, test_agents_patch, test_chunking_service, etc. logged to .planning/deferred-items.md; not introduced by 08-06
+- Last session: 2026-05-25 — Phase 9 COMPLETE: bug fix (strategy_service used Agent SDK instead of direct Anthropic API — tool_use blocks never generated); replaced with anthropic.Anthropic().messages.create(); demo_m9.sh approved; all STR-01–STR-03 satisfied — fix commit b108441
+- [09] ClaudeSDKClient (claude-agent-sdk) does NOT support custom JSON tool schemas — it is a code-execution agent. Always use direct Anthropic API (anthropic.Anthropic().messages.create) for tool_use patterns in services.
