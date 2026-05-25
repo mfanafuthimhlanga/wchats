@@ -327,7 +327,20 @@ Plans:
 **PRD:** `prd-M9.md` (TBD)
 **Requirements:** STR-01 through STR-03
 **Depends on:** M2, M3
-**Phases:** Defined when M9 becomes active
+**Phases:** Planned — 4 plans, 4 waves
+
+Plans:
+- [ ] 09-01-PLAN.md — strategy_service.py (corpus signals + Sonnet strategist) + query_expansion path in retrieval_service.py + celery_app include + 9 xfail test stubs
+- [ ] 09-02-PLAN.md — synthesize_retrieval_strategy Celery pipeline task (acks_late, idempotency + resynthesis bypass, SSE emit) + documents.py 5th chain link
+- [ ] 09-03-PLAN.md — De-xfail 9 unit tests (test_strategy_service.py + test_strategy_task.py); suite-green regression check
+- [ ] 09-04-PLAN.md — scripts/demo_m9.sh (two-tenant strategy diff + STR-03 eval comparison) + guarded test_strategy_e2e.py + human-verify checkpoint
+
+| Wave | Plan | Objective | Status |
+|------|------|-----------|--------|
+| Wave 1 | 09-01 | strategy_service.py + query expansion path + celery include + xfail stubs | Pending |
+| Wave 2 | 09-02 | synthesize_retrieval_strategy task + documents.py chain extension | Pending |
+| Wave 3 | 09-03 | De-xfail unit tests (service + task layers) | Pending |
+| Wave 4 | 09-04 | demo_m9.sh + guarded E2E + human-verify checkpoint | Pending |
 
 **Success Criteria:**
 1. New agent after M9 receives auto-generated strategy — no manual JSON editing required.
