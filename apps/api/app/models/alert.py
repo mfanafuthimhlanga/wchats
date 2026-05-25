@@ -4,7 +4,8 @@ import uuid
 from datetime import datetime
 from sqlalchemy import String, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID, TIMESTAMPTZ
+from sqlalchemy import DateTime
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from app.models.base import Base
 
 
@@ -16,8 +17,8 @@ class Alert(Base):
     alert_type: Mapped[str] = mapped_column(String(50), nullable=False)
     severity: Mapped[str] = mapped_column(String(20), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
-    triggered_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
-    resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("alerts_agent_id_idx", "agent_id"),
