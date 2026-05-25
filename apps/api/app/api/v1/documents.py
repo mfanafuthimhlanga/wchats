@@ -66,6 +66,7 @@ from app.worker.tasks.pipeline.chunk import chunk_documents
 from app.worker.tasks.pipeline.embed import embed_and_migrate
 from app.worker.tasks.pipeline.metadata import generate_metadata
 from app.worker.tasks.pipeline.parse import parse_documents
+from app.worker.tasks.pipeline.strategy import synthesize_retrieval_strategy
 
 log = structlog.get_logger(__name__)
 
@@ -245,6 +246,7 @@ async def upload_documents(
         chunk_documents.s(),
         generate_metadata.s(),
         embed_and_migrate.s(),
+        synthesize_retrieval_strategy.s(),
     ).apply_async(
         queue="pipeline",
         headers={"request_id": ctx.get("request_id", "")},
