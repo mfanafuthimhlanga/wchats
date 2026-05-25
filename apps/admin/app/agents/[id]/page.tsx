@@ -348,7 +348,7 @@ export default function AgentJourneyPage({
         </div>
       )}
 
-      <AlertsBanner agentId={id} />
+      {isLoaded && isSignedIn && agent && <AlertsBanner agentId={id} />}
 
       {panel}
 
