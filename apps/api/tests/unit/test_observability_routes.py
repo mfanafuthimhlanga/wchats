@@ -22,7 +22,6 @@ os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 import pytest
 
 
-@pytest.mark.xfail(strict=True, reason="observability routes not yet implemented — de-xfail in 10-05")
 @pytest.mark.asyncio
 async def test_get_alerts_returns_list():
     """GET /api/v1/agents/{id}/alerts returns 200 with a JSON list."""
@@ -44,9 +43,12 @@ async def test_get_alerts_returns_list():
     mock_agent.id = agent_id
     mock_agent.tenant_id = tenant_id
 
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+
     mock_db = AsyncMock()
     mock_db.get.return_value = mock_agent
-    mock_db.execute.return_value.scalars.return_value.all.return_value = []
+    mock_db.execute.return_value = mock_result
 
     app.dependency_overrides[get_current_tenant] = lambda: mock_tenant
     app.dependency_overrides[get_async_db] = lambda: mock_db
@@ -63,7 +65,6 @@ async def test_get_alerts_returns_list():
         app.dependency_overrides.clear()
 
 
-@pytest.mark.xfail(strict=True, reason="observability routes not yet implemented — de-xfail in 10-05")
 @pytest.mark.asyncio
 async def test_get_alerts_idor_guard():
     """Wrong tenant returns 401 or 403 — IDOR guard."""
