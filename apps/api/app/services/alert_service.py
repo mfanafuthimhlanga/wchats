@@ -14,6 +14,7 @@ import smtplib
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 
+import psycopg2
 import structlog
 from sqlalchemy import text
 
@@ -23,32 +24,69 @@ from app.models.alert import Alert
 log = structlog.get_logger(__name__)
 
 
-def _get_latest_faithfulness(agent_id: str, db) -> float | None:
-    row = db.execute(
-        text(
-            "SELECT aggregate_scores FROM eval_runs "
-            "WHERE agent_id = :agent_id AND status = 'complete' "
-            "ORDER BY started_at DESC LIMIT 1"
-        ),
-        {"agent_id": agent_id},
-    ).fetchone()
-    if row and row[0]:
-        return row[0].get("faithfulness")
-    return None
+def _get_latest_faithfulness(agent_id: str, conn_str: str) -> float | None:
+    """Fetch latest faithfulness score from the TENANT DB eval_results table.
+
+    Must query the tenant DB (not control DB) — eval_runs/eval_results only
+    exist in per-tenant Neon DBs. conn_str must NOT be logged (CTL-08).
+    """
+    try:
+        conn = psycopg2.connect(conn_str, connect_timeout=10)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT AVG(er.score)
+                    FROM eval_results er
+                    JOIN eval_runs r ON er.eval_run_id = r.id
+                    WHERE r.kind = %s
+                      AND r.status = 'complete'
+                      AND er.metric = 'faithfulness'
+                      AND r.started_at = (
+                          SELECT MAX(started_at) FROM eval_runs
+                          WHERE kind = %s AND status = 'complete'
+                      )
+                    """,
+                    (f"m6:{agent_id}", f"m6:{agent_id}"),
+                )
+                row = cur.fetchone()
+                return float(row[0]) if row and row[0] is not None else None
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("alert_service.faithfulness_fetch_failed", agent_id=agent_id, error=str(exc))
+        return None
 
 
-def _get_latest_critical_count(agent_id: str, db) -> int:
-    row = db.execute(
-        text(
-            "SELECT findings FROM red_team_runs "
-            "WHERE agent_id = :agent_id "
-            "ORDER BY started_at DESC LIMIT 1"
-        ),
-        {"agent_id": agent_id},
-    ).fetchone()
-    if row and row[0]:
-        return sum(1 for f in row[0] if f.get("severity") == "critical")
-    return 0
+def _get_latest_critical_count(agent_id: str, conn_str: str) -> int:
+    """Fetch critical red team finding count from the TENANT DB red_team_runs table.
+
+    Must query the tenant DB — red_team_runs only exists in per-tenant Neon DBs.
+    Filters by kind = 'm7:{agent_id}' (no agent_id column in the tenant schema).
+    conn_str must NOT be logged (CTL-08).
+    """
+    try:
+        conn = psycopg2.connect(conn_str, connect_timeout=10)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT findings FROM red_team_runs
+                    WHERE kind = %s
+                    ORDER BY started_at DESC LIMIT 1
+                    """,
+                    (f"m7:{agent_id}",),
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    findings = row[0] if isinstance(row[0], list) else []
+                    return sum(1 for f in findings if f.get("severity") == "critical")
+                return 0
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("alert_service.critical_count_fetch_failed", agent_id=agent_id, error=str(exc))
+        return 0
 
 
 def _active_alert_exists(agent_id: str, alert_type: str, db) -> bool:
@@ -62,13 +100,16 @@ def _active_alert_exists(agent_id: str, alert_type: str, db) -> bool:
     return row is not None
 
 
-def _write_alert(agent_id: str, alert_type: str, severity: str, message: str, db) -> Alert:
+def _write_alert(
+    agent_id: str, alert_type: str, severity: str, message: str, db, tenant_id: str | None = None
+) -> Alert:
     alert = Alert(
         agent_id=agent_id,
         alert_type=alert_type,
         severity=severity,
         message=message,
         triggered_at=datetime.now(timezone.utc),
+        tenant_id=tenant_id,
     )
     db.add(alert)
     db.commit()
@@ -93,6 +134,8 @@ def send_alert_email(agent_name: str, agent_id: str, alert_type: str, message: s
     try:
         with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT or 587, timeout=5) as server:
             server.starttls()
+            if settings.SMTP_USER and settings.SMTP_PASSWORD:
+                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
             server.sendmail(settings.SMTP_FROM, [settings.OWNER_EMAIL], msg.as_string())
         log.info("alert_service.email_sent", agent_id=agent_id, alert_type=alert_type)
     except Exception as exc:
@@ -101,36 +144,51 @@ def send_alert_email(agent_name: str, agent_id: str, alert_type: str, message: s
 
 def check_and_write_alerts(
     agent_id: str,
+    conn_str: str | None = None,
     faithfulness: float | None = None,
     critical_red_team_count: int | None = None,
     agent_name: str = "",
+    tenant_id: str | None = None,
     db=None,
 ) -> list[Alert]:
-    """Evaluate thresholds and write new alerts. Returns list of newly created alerts."""
+    """Evaluate thresholds and write new alerts. Returns list of newly created alerts.
+
+    conn_str: decrypted tenant DB connection string; required for DB-path (when db is not None
+    and pre-computed values are not supplied). Must NOT be logged (CTL-08).
+    """
     new_alerts: list[Alert] = []
 
-    # Resolve values from DB if not passed directly (task path passes db; test path passes values)
-    if db is not None and faithfulness is None:
-        faithfulness = _get_latest_faithfulness(agent_id, db)
-    if db is not None and critical_red_team_count is None:
-        critical_red_team_count = _get_latest_critical_count(agent_id, db)
+    # Resolve values from tenant DB if not passed directly.
+    # conn_str is required when db is not None and values are not pre-supplied.
+    if db is not None and faithfulness is None and conn_str:
+        faithfulness = _get_latest_faithfulness(agent_id, conn_str)
+    if db is not None and critical_red_team_count is None and conn_str:
+        critical_red_team_count = _get_latest_critical_count(agent_id, conn_str)
 
-    # Check eval regression
+    # Check eval regression — email fires only after successful DB commit (CR-02)
     if faithfulness is not None and faithfulness < settings.ALERT_FAITHFULNESS_THRESHOLD:
         if db is None or not _active_alert_exists(agent_id, "eval_regression", db):
             msg = f"Faithfulness {faithfulness:.2f} is below threshold {settings.ALERT_FAITHFULNESS_THRESHOLD}."
             if db is not None:
-                alert = _write_alert(agent_id, "eval_regression", "warning", msg, db)
+                alert = _write_alert(agent_id, "eval_regression", "warning", msg, db, tenant_id=tenant_id)
                 new_alerts.append(alert)
-            send_alert_email(agent_name, agent_id, "eval_regression", msg)
+                # Email only after row is committed (inside _write_alert above)
+                send_alert_email(agent_name, agent_id, "eval_regression", msg)
+            else:
+                # Test path: no DB, send email directly
+                send_alert_email(agent_name, agent_id, "eval_regression", msg)
 
-    # Check red team critical
+    # Check red team critical — email fires only after successful DB commit (CR-02)
     if critical_red_team_count is not None and critical_red_team_count >= settings.ALERT_RED_TEAM_CRITICAL_COUNT:
         if db is None or not _active_alert_exists(agent_id, "red_team_critical", db):
             msg = f"{critical_red_team_count} critical red team finding(s) detected."
             if db is not None:
-                alert = _write_alert(agent_id, "red_team_critical", "critical", msg, db)
+                alert = _write_alert(agent_id, "red_team_critical", "critical", msg, db, tenant_id=tenant_id)
                 new_alerts.append(alert)
-            send_alert_email(agent_name, agent_id, "red_team_critical", msg)
+                # Email only after row is committed (inside _write_alert above)
+                send_alert_email(agent_name, agent_id, "red_team_critical", msg)
+            else:
+                # Test path: no DB, send email directly
+                send_alert_email(agent_name, agent_id, "red_team_critical", msg)
 
     return new_alerts
