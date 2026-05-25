@@ -76,8 +76,11 @@ def run_weekly_digest(self, agent_id: str) -> dict:
                 return {"status": "skipped_no_agent"}
             conn_str = fernet_decrypt(agent.neon_connection_string)
             stats = _collect_digest_stats(agent_id, conn_str, db)
-            send_digest_email(agent.name, agent_id, stats)
 
+            # WR-02: commit the digest_runs row FIRST as the idempotency anchor.
+            # If send_digest_email fails, the committed row prevents duplicate sends
+            # on retry (the idempotency guard at the top of this function fires).
+            # Email is fire-and-forget; the row ensures at-most-once delivery.
             db.execute(
                 text(
                     "INSERT INTO digest_runs (agent_id, payload) "
@@ -86,6 +89,7 @@ def run_weekly_digest(self, agent_id: str) -> dict:
                 {"agent_id": agent_id, "payload": json.dumps(stats)},
             )
             db.commit()
+            send_digest_email(agent.name, agent_id, stats)
     except Exception as exc:
         log.error("run_weekly_digest.failed", agent_id=agent_id, error=str(exc))
         if self.request.retries >= self.max_retries:
