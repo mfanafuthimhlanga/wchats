@@ -89,6 +89,8 @@ celery_app.conf.update(
         "app.worker.tasks.pipeline.strategy",
         # M10: weekly digest (runtime queue)
         "app.worker.tasks.runtime.digest",
+        # M10: daily alert check (runtime queue)
+        "app.worker.tasks.runtime.alert",
     ],
 
     # --- Queue topology -------------------------------------------------
@@ -169,6 +171,10 @@ celery_app.conf.update(
         "digest-weekly": {
             "task": "app.worker.tasks.runtime.digest.run_weekly_digest_beat",
             "schedule": crontab(hour=6, minute=0, day_of_week=0),  # Sunday 06:00 UTC
+        },
+        "alert-daily": {
+            "task": "app.worker.tasks.runtime.alert.run_alert_check_beat",
+            "schedule": crontab(hour=4, minute=0),  # Daily 04:00 UTC
         },
     },
 
