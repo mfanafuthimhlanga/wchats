@@ -1,49 +1,46 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-26T23:30:00+02:00",
+  "timestamp": "2026-05-26T19:20:00+02:00",
   "phase": "11",
   "phase_name": "ui-overhaul",
   "phase_dir": ".planning/phases/11-ui-overhaul",
-  "plan": null,
-  "task": null,
-  "total_tasks": null,
+  "plan": 6,
+  "task": 2,
+  "total_tasks": 2,
   "status": "paused",
   "completed_tasks": [
-    {"id": 1, "name": "UI audit all 4 mockups (6-pillar)", "status": "done", "commit": "da3a75c"},
-    {"id": 2, "name": "Round 1+2 mockup polish — transparent navs, modal fixes, tab-first header, widget customizer", "status": "done", "commit": "88b8cac"},
-    {"id": 3, "name": "Round 3 mockup polish — greeting strip, card redesign, agents-id restructure, interactive widget, deploy sub-tab flow", "status": "done", "commit": "745197f"},
-    {"id": 4, "name": "Fix agents-home nested anchor / card footer escape bug", "status": "done", "commit": "11c3ef7"},
-    {"id": 5, "name": "agents-new nav center→right, widget customizer sticky 2-col layout, eval button consistency, veil 0.72→0.45 all pages", "status": "done", "commit": "pending"}
+    {"id": "11-01", "name": "Token foundation + background + nav", "status": "done", "commit": "f090f21"},
+    {"id": "11-02", "name": "Landing page rebuild", "status": "done", "commit": "67b385b"},
+    {"id": "11-03", "name": "Agents dashboard + AgentCard", "status": "done", "commit": "e91ea79"},
+    {"id": "11-04", "name": "Agent journey screens", "status": "done", "commit": "963c16f"},
+    {"id": "11-05", "name": "Eval/deploy/settings", "status": "done", "commit": "fa54646"},
+    {"id": "11-06-task-1", "name": "Auth pages + UserAvatar + SignOutTab icon", "status": "done", "commit": "ef20eec"}
   ],
   "remaining_tasks": [
-    {"id": 6, "name": "Run /gsd-plan-phase 11", "status": "not_started"},
-    {"id": 7, "name": "Execute Wave 1 — token foundation + background + nav", "status": "not_started"},
-    {"id": 8, "name": "Execute Wave 2 — landing page rebuild", "status": "not_started"},
-    {"id": 9, "name": "Execute Wave 3 — agents dashboard + AgentCard", "status": "not_started"},
-    {"id": 10, "name": "Execute Wave 4 — agent journey screens", "status": "not_started"},
-    {"id": 11, "name": "Execute Wave 5 — eval/deploy/settings/AlertsBanner", "status": "not_started"},
-    {"id": 12, "name": "Execute Wave 6 — auth pages + QA", "status": "not_started"}
+    {
+      "id": "11-06-task-2",
+      "name": "Visual QA audit — Playwright screenshots of all screens",
+      "status": "not_started",
+      "note": "Use installed Playwright CLI with chromium-1200. Do NOT ask user to manually browse. Screenshot all 6 screen regions, compare against reference mockup, report diff findings to user, then get approval."
+    },
+    {"id": "11-06-summary", "name": "Create 11-06-SUMMARY.md and commit", "status": "not_started"},
+    {"id": "11-phase-verify", "name": "Spawn gsd-verifier — phase 11 goal achievement", "status": "not_started"},
+    {"id": "11-roadmap-update", "name": "Mark phase 11 complete in ROADMAP + STATE", "status": "not_started"}
   ],
   "blockers": [],
-  "human_actions_pending": [],
+  "human_actions_pending": [
+    {
+      "action": "Review Playwright screenshots and approve or flag issues",
+      "context": "After automated Playwright QA pass, user confirms screens match Hillbrow at Dusk design before phase closes",
+      "blocking": true
+    }
+  ],
   "decisions": [
-    {"decision": "agents-id: KB tab is first (default), Analytics second", "rationale": "KB + Soul are the primary configuration surface; analytics is observational", "phase": "11"},
-    {"decision": "Soul editor: tab removed, now a modal triggered from KB tab", "rationale": "Reduces tab count; Soul logically belongs alongside KB config", "phase": "11"},
-    {"decision": "Red Team merged into Eval tab as subsection", "rationale": "Both share streaming canvas; separate tab was bloaty and would need duplicate canvas", "phase": "11"},
-    {"decision": "New Widget tab in agents-id for post-deployment customization", "rationale": "View widget button removed from header; deserves full tab surface", "phase": "11"},
-    {"decision": "Deploy sub-tab flow: Widget→Next, Pre-deploy→Next, Embed→Deploy", "rationale": "Forces sequential completion before deploy; each sub-tab is a required step", "phase": "11"},
-    {"decision": "--surface-1 canonical value is #140E2A (from CONTEXT.md), not #1E1638 (mockup)", "rationale": "CONTEXT.md migration table is authoritative", "phase": "11"},
-    {"decision": "Widget customizer: sticky 2-column layout (form left, preview right 300px)", "rationale": "Avoids split-within-split awkwardness; preview is a constrained companion card, not a second panel", "phase": "11"},
-    {"decision": "Eval tab buttons: coral solid (Run eval suite) + plain outline x2 (Trigger red team, Schedule eval)", "rationale": "Remove inline coral override from Schedule eval — equal secondary weight", "phase": "11"},
-    {"decision": "Body::before veil opacity: 0.45 (was 0.72)", "rationale": "0.72 required screen brightness increase to see natural skyline; 0.45 restores natural lighting", "phase": "11"}
+    {"decision": "Visual QA uses Playwright CLI (chromium-1200), not manual browsing", "rationale": "User explicitly requested automation for visual review", "phase": "11"},
+    {"decision": "Celery socket_keepalive_options: string keys replaced with getattr(socket,...) integer constants", "rationale": "redis-py 6.4.0 passes dict keys directly to setsockopt(); strings cause TypeError on Python 3.12 — fixed in d68950d", "phase": "11"},
+    {"decision": "Celery local dev: REDIS_URL=redis://localhost:6379 must be set before starting worker", "rationale": ".env contains Upstash cloud URL; local Redis override required for dev", "phase": "11"}
   ],
-  "uncommitted_files": [
-    ".planning/STATE.md",
-    ".planning/phases/11-ui-overhaul/mockup/01-landing.html",
-    ".planning/phases/11-ui-overhaul/mockup/02-agents-home.html",
-    ".planning/phases/11-ui-overhaul/mockup/03-agents-new.html",
-    ".planning/phases/11-ui-overhaul/mockup/04-agents-id.html"
-  ],
-  "next_action": "Run /gsd-plan-phase 11 — all pre-planning artifacts ready (CONTEXT.md, RESEARCH.md, 4 polished mockups). Clear context first with /clear.",
-  "context_notes": "Four final mockup fixes applied this session: (1) agents-new nav right-aligned, (2) widget customizer sticky 2-col in both agents-new step 4 and agents-id widget tab, (3) eval button consistency, (4) veil lightened across all pages. Mockups are now the final design contract. Python playwright uses chromium-1200 (never install new browsers). Use: python -c with sync_playwright, executable_path=r'C:\\Users\\Bantu\\AppData\\Local\\ms-playwright\\chromium-1200\\chrome-win64\\chrome.exe'"
+  "uncommitted_files": [],
+  "next_action": "Use Playwright (chromium-1200) to screenshot: landing (localhost:3000), agents dashboard (/agents), sign-in (/sign-in), agent detail JourneyStepper, eval tab glass tiles, AgentCard hover. Compare against .claude/skills/wchats-design/reference/wchats-hillbrow-at-dusk.html. Then complete 11-06 SUMMARY, verify phase, close.",
+  "context_notes": "Waves 1-5 fully executed and SUMMARY committed. Wave 6 Task 1 committed ef20eec. Visual QA checkpoint blocked on automated Playwright review. Celery had setsockopt bug (string keepalive keys) — fixed and committed d68950d. Dev services: Redis already running on :6379, uvicorn on :8000, Next.js on :3000, Celery needs REDIS_URL override."
 }
