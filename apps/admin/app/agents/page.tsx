@@ -32,39 +32,13 @@ function getTimeGreeting(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Inline style constants
-// ---------------------------------------------------------------------------
-
-const primaryButtonInline: React.CSSProperties = {
-  background: 'var(--accent)',
-  color: '#0B0717',
-  padding: '10px 18px',
-  borderRadius: 'var(--radius-sm)',
-  fontWeight: 600,
-  fontSize: '14px',
-  textDecoration: 'none',
-  display: 'inline-block',
-}
-
-const secondaryButtonInline: React.CSSProperties = {
-  background: 'transparent',
-  color: 'var(--text-2)',
-  padding: '8px 14px',
-  borderRadius: 'var(--radius-xs)',
-  fontWeight: 500,
-  fontSize: '13px',
-  border: '1px solid var(--border)',
-  cursor: 'pointer',
-  display: 'inline-block',
-}
-
-// ---------------------------------------------------------------------------
 // AgentsDashboardPage
 // ---------------------------------------------------------------------------
 
 export default function AgentsDashboardPage() {
   const { getToken, isLoaded, isSignedIn } = useAuth()
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ''
+  const isDemoMode = process.env.NEXT_PUBLIC_DEMO === 'true'
 
   const agentsQuery = useQuery({
     queryKey: ['agents'],
@@ -112,7 +86,7 @@ export default function AgentsDashboardPage() {
       }
       return data.agents as AgentSummary[]
     },
-    enabled: isLoaded && !!isSignedIn,
+    enabled: !isDemoMode && isLoaded && !!isSignedIn,
     staleTime: 30_000,
   })
 
@@ -136,14 +110,14 @@ export default function AgentsDashboardPage() {
   }
 
   // Derive display state from the query
-  const isLoading = agentsQuery.isPending || !isLoaded
+  const isLoading = !isDemoMode && (agentsQuery.isPending || !isLoaded)
   const agents = agentsQuery.data ?? []
 
   // Compute human-friendly error message
   let loadError: string | null = null
-  if (isLoaded && !isSignedIn) {
+  if (!isDemoMode && isLoaded && !isSignedIn) {
     loadError = 'Not authenticated. Please sign in.'
-  } else if (agentsQuery.isError) {
+  } else if (!isDemoMode && agentsQuery.isError) {
     const msg = agentsQuery.error?.message ?? ''
     const isNetworkError =
       agentsQuery.error instanceof TypeError && msg.toLowerCase().includes('fetch')
@@ -158,100 +132,102 @@ export default function AgentsDashboardPage() {
 
   return (
     <div style={{ background: 'transparent' }}>
-      {/* Greeting strip — full-width band with radial gradients */}
+      {/* Header bar — greeting left, CTA right */}
       <div
         style={{
-          background: 'var(--bg)',
           backgroundImage: `
-            radial-gradient(ellipse 60% 40% at 80% 0%, rgba(244,116,140,0.08) 0%, transparent 50%),
-            radial-gradient(ellipse 40% 30% at 0% 60%, rgba(183,154,224,0.06) 0%, transparent 50%)`,
-          padding: '32px 32px 24px',
+            radial-gradient(ellipse 40% 80% at 100% 50%, rgba(244, 116, 140, 0.08) 0%, transparent 60%),
+            radial-gradient(ellipse 30% 60% at 0% 0%, rgba(183, 154, 224, 0.06) 0%, transparent 60%)`,
+          padding: '40px 48px 32px',
+          position: 'relative',
         }}
       >
-        <p
-          style={{
-            fontSize: '10.5px',
-            fontWeight: 600,
-            letterSpacing: '0.12em',
-            textTransform: 'uppercase',
-            color: 'var(--text-3)',
-            margin: '0 0 8px 0',
-          }}
-        >
-          {greeting.split(' ')[0].toUpperCase()} · {agents.length} {agents.length === 1 ? 'AGENT' : 'AGENTS'}
-        </p>
-        <h1
-          style={{
-            fontFamily: 'var(--font-display)',
-            fontWeight: 400,
-            fontVariationSettings: '"opsz" 144, "SOFT" 30',
-            fontSize: '32px',
-            letterSpacing: '-0.025em',
-            lineHeight: 1.1,
-            color: 'var(--text-1)',
-            margin: 0,
-          }}
-        >
-          {greeting},{' '}
-          <em
-            style={{
-              fontStyle: 'italic',
-              fontWeight: 300,
-              color: 'var(--accent)',
-              fontVariationSettings: '"opsz" 144, "SOFT" 100',
-            }}
-          >
-            there
-          </em>
-        </h1>
+        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: '32px', maxWidth: '1400px' }}>
+          <div>
+            <p style={{ fontSize: '10.5px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 6px 0' }}>
+              {greeting.split(' ')[0].toUpperCase()} · {agents.length} {agents.length === 1 ? 'AGENT' : 'AGENTS'}
+            </p>
+            <h1 style={{ fontFamily: 'var(--font-display)', fontWeight: 400, fontVariationSettings: '"opsz" 144, "SOFT" 50', fontSize: '34px', letterSpacing: '-0.022em', lineHeight: 1.1, color: 'var(--text-1)', margin: 0 }}>
+              {greeting},{' '}
+              <em style={{ fontStyle: 'italic', fontWeight: 300, color: 'var(--accent)', fontVariationSettings: '"opsz" 144, "SOFT" 100' }}>
+                there
+              </em>
+            </h1>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+            <button
+              onClick={() => agentsQuery.refetch()}
+              disabled={agentsQuery.isFetching}
+              style={{
+                background: 'transparent',
+                color: 'var(--text-2)',
+                padding: '8px 14px',
+                borderRadius: 'var(--radius-xs)',
+                fontWeight: 500,
+                fontSize: '13px',
+                border: '1px solid var(--border)',
+                cursor: 'pointer',
+                opacity: agentsQuery.isFetching ? 0.6 : 1,
+              }}
+            >
+              {agentsQuery.isFetching ? 'Refreshing…' : 'Refresh'}
+            </button>
+            <Link
+              href="/agents/new"
+              style={{
+                background: 'var(--accent)',
+                color: '#0B0717',
+                padding: '10px 18px',
+                borderRadius: 'var(--radius-sm)',
+                fontWeight: 600,
+                fontSize: '14px',
+                textDecoration: 'none',
+                display: 'inline-block',
+              }}
+            >
+              New agent
+            </Link>
+          </div>
+        </div>
+      </div>
+
+      {/* Glass stat cards row */}
+      <div style={{ padding: '0 48px 32px', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', maxWidth: '1400px' }}>
+        {[
+          { label: 'Total agents', value: agents.length.toString(), unit: '', color: 'var(--accent)' },
+          { label: 'Avg faithfulness', value: '—', unit: '', color: 'var(--lilac)' },
+          { label: '7d conversations', value: '—', unit: '', color: 'var(--cyan)' },
+          { label: 'Red team blocks', value: '0', unit: '', color: 'var(--amber)' },
+        ].map(({ label, value, color }) => (
+          <div key={label} style={{
+            background: 'var(--glass-bg)',
+            backdropFilter: 'var(--glass-blur)',
+            WebkitBackdropFilter: 'var(--glass-blur)',
+            border: '1px solid var(--glass-border)',
+            borderRadius: 'var(--radius-md)',
+            padding: '22px 24px',
+            position: 'relative',
+            overflow: 'hidden',
+          }}>
+            <div style={{ position: 'absolute', top: 0, right: 0, width: '80px', height: '80px', background: `radial-gradient(circle at 100% 0%, ${color}22 0%, transparent 70%)`, pointerEvents: 'none' }} />
+            <p style={{ fontSize: '10.5px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 12px 0', position: 'relative', zIndex: 1 }}>
+              {label}
+            </p>
+            <p style={{ fontFamily: 'var(--font-mono)', fontSize: '30px', fontWeight: 600, color: 'var(--text-1)', letterSpacing: '-0.025em', lineHeight: 1, margin: 0, position: 'relative', zIndex: 1 }}>
+              {value}
+            </p>
+          </div>
+        ))}
       </div>
 
       {/* Content area */}
-      <div
-        style={{
-          padding: '32px 32px',
-          maxWidth: '1180px',
-          margin: '0 auto',
-        }}
-      >
-        {/* Action row */}
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'flex-end',
-            alignItems: 'center',
-            marginBottom: '24px',
-            gap: '10px',
-          }}
-        >
-          <button
-            onClick={() => agentsQuery.refetch()}
-            disabled={agentsQuery.isFetching}
-            style={{
-              ...secondaryButtonInline,
-              opacity: agentsQuery.isFetching ? 0.6 : 1,
-            }}
-          >
-            {agentsQuery.isFetching ? 'Refreshing…' : 'Refresh'}
-          </button>
-          <Link href="/agents/new" style={primaryButtonInline}>
-            Create agent
-          </Link>
-        </div>
-
-        {/* Error alert — exact pattern from soul/page.tsx lines 337-351 */}
+      <div style={{ padding: '0 48px 56px', maxWidth: '1400px' }}>
+        {/* Error alert */}
         {loadError && (
           <div
             role="alert"
-            style={{
-              padding: '12px 16px',
-              marginBottom: '20px',
-              background: 'var(--red-bg)',
-              border: '1px solid rgba(192,57,43,0.3)',
-              borderRadius: 'var(--radius-xs)',
-              fontSize: '14px',
-              color: 'var(--red)',
-            }}
+            style={{ padding: '12px 16px', marginBottom: '20px', background: 'var(--red-bg)', border: '1px solid rgba(192,57,43,0.3)', borderRadius: 'var(--radius-xs)', fontSize: '14px', color: 'var(--red)' }}
           >
             {loadError}
           </div>
@@ -265,77 +241,25 @@ export default function AgentsDashboardPage() {
         {/* Empty state */}
         {!isLoading && agents.length === 0 && !loadError && (
           <div style={{ textAlign: 'center', padding: '80px 0' }}>
-            {/* Coral eyebrow pill */}
-            <div
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                background: 'var(--glass-bg)',
-                backdropFilter: 'var(--glass-blur)',
-                border: '1px solid var(--glass-border)',
-                borderRadius: 'var(--radius-pill)',
-                padding: '4px 14px',
-                marginBottom: '20px',
-              }}
-            >
-              <span
-                style={{
-                  fontSize: '10.5px',
-                  fontWeight: 600,
-                  letterSpacing: '0.12em',
-                  textTransform: 'uppercase',
-                  color: 'var(--text-3)',
-                }}
-              >
-                NO AGENTS YET
-              </span>
+            <div style={{ display: 'inline-flex', alignItems: 'center', background: 'var(--glass-bg)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--radius-pill)', padding: '4px 14px', marginBottom: '20px' }}>
+              <span style={{ fontSize: '10.5px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)' }}>NO AGENTS YET</span>
             </div>
-            <h2
-              style={{
-                fontFamily: 'var(--font-display)',
-                fontWeight: 400,
-                fontVariationSettings: '"opsz" 144, "SOFT" 30',
-                fontSize: '24px',
-                color: 'var(--text-1)',
-                margin: '0 0 8px 0',
-              }}
-            >
+            <h2 style={{ fontFamily: 'var(--font-display)', fontWeight: 400, fontVariationSettings: '"opsz" 144, "SOFT" 30', fontSize: '24px', color: 'var(--text-1)', margin: '0 0 8px 0' }}>
               Build your first{' '}
-              <em
-                style={{
-                  fontStyle: 'italic',
-                  fontWeight: 300,
-                  color: 'var(--accent)',
-                  fontVariationSettings: '"opsz" 144, "SOFT" 100',
-                }}
-              >
-                agent
-              </em>
+              <em style={{ fontStyle: 'italic', fontWeight: 300, color: 'var(--accent)', fontVariationSettings: '"opsz" 144, "SOFT" 100' }}>agent</em>
             </h2>
-            <p
-              style={{
-                color: 'var(--text-3)',
-                marginBottom: '24px',
-                fontSize: '15px',
-              }}
-            >
+            <p style={{ color: 'var(--text-3)', marginBottom: '24px', fontSize: '15px' }}>
               Create a customer service agent and deploy it in minutes.
             </p>
-            <Link href="/agents/new" style={primaryButtonInline}>
-              Create agent
+            <Link href="/agents/new" style={{ background: 'var(--accent)', color: '#0B0717', padding: '10px 18px', borderRadius: 'var(--radius-sm)', fontWeight: 600, fontSize: '14px', textDecoration: 'none', display: 'inline-block' }}>
+              New agent
             </Link>
           </div>
         )}
 
         {/* Agent grid */}
         {!isLoading && agents.length > 0 && (
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(3, 1fr)',
-              gap: '16px',
-            }}
-          >
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
             {agents.map((a) => (
               <AgentCard key={a.id} {...a} onDelete={handleDelete} />
             ))}
