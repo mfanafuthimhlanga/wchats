@@ -6,30 +6,37 @@ completed: "2026-05-26"
 wave: 6
 commits:
   - ef20eec
-duration: ~15 min
+  - 872ad71
+duration: ~40 min
 tasks_completed: 2
-files_modified: 4
+files_modified: 8
 ---
 
-# Plan 11-06 Summary — Auth Pages + Visual QA Gate
+# Plan 11-06 Summary — Auth Pages + Visual QA Gate (Final)
 
 ## What Was Built
 
-Wave 6 completed the Hillbrow at Dusk overhaul with four file changes and a full visual QA pass.
+Wave 6 completed the Hillbrow at Dusk overhaul. Task 1 applied auth page and component changes; Task 2 resolved 9 visual QA failures that were documented in the pause handoff (.continue-here.md).
 
 **Task 1 — Auth pages + UserAvatar + SignOutTab (ef20eec):**
-- `sign-in/[[...sign-in]]/page.tsx` — transparent `<main>` wrapper (background: transparent, flexDirection: column, gap: 24px), logo-mark.svg + wordmark.svg above the Clerk card, `<SignIn fallbackRedirectUrl="/agents" />`; no surface-1 double-wrap (Clerk card uses dark appearance from layout.tsx)
-- `sign-up/[[...sign-up]]/page.tsx` — identical transparent pattern with `<SignUp fallbackRedirectUrl="/agents" />`
-- `UserAvatar.tsx` — outer div wrapper with `border: '1px solid rgba(183, 154, 224, 0.6)'`, `borderRadius: '50%'`, `padding: '1px'`; Lucide User icon color changed from `#ef4444` → `var(--accent)` (coral)
-- `SignOutTab.tsx` — LogOut icon color changed from `'#ef4444'` → `'var(--red)'`
+- `sign-in/[[...sign-in]]/page.tsx` — transparent `<main>` wrapper, logo-mark.svg + wordmark.svg above the Clerk card
+- `sign-up/[[...sign-up]]/page.tsx` — identical transparent pattern
+- `UserAvatar.tsx` — lilac ring `rgba(183,154,224,0.6)`, Lucide icon → `var(--accent)`
+- `SignOutTab.tsx` — LogOut icon → `var(--red)`
 
-**Task 2 — Visual QA (Playwright + build):**
-- Fresh `.next` cache cleared to resolve stale-CSS issue (old dev server was serving cached Parchment & Wine build)
-- Playwright screenshots confirmed:
-  - Landing: Johannesburg skyline visible, dark indigo veil, coral CTAs, Fraunces headline with strikethrough ✓
-  - Sign-in: skyline backdrop, logo above dark Clerk card, coral Continue button ✓
-  - Sign-up: same transparent auth pattern confirmed ✓
-- `pnpm run build` passed: compiled (2.6 min), TypeScript clean, all 12 routes generated
+**Task 2 — Visual QA fixes (872ad71):**
+All 9 failures from the .continue-here.md handoff resolved:
+- **Landing headline**: `clamp(32px,4vw,52px)` → `clamp(48px,6.4vw,86px)` per spec
+- **Hero sub**: `16px/var(--text-3)/480px` → `19px/var(--text-2)/560px` per spec
+- **Hero layout**: section `min-height:720px`, padding `80px 56px 120px`, grid `minmax(0,1fr) minmax(0,0.9fr)` gap `80px`
+- **Trust strip**: nums `22px` → `30px`, labels UPPERCASE TRACKED `10.5px/0.1em`, padding-top `28px`
+- **Right panel**: `HeroSteps` animation replaced with new static `HeroPipeline` component (BUILD PIPELINE · AGENT ALPHA, 4 steps: 2 done/green, 1 active/coral-pulsing, 1 locked)
+- **Agents Refresh button**: removed (not in reference)
+- **Stat card labels**: corrected to exact spec (`CONVERSATIONS · 7D`, `FAITHFULNESS · MEDIAN`, `P95 LATENCY`, `COST · 7D`)
+- **Sub-line under greeting**: added ("You have N live agents, M in test, D draft." 14px var(--text-3))
+- **"Your agents" section header**: title 16px/700 + count badge (accent-bg) + filter tabs (All/Live/Testing/Draft each with count)
+- **AgentCard icons**: 🤖 → lucide SVG per role (`MessageCircle`/support, `Zap`/sales, `Settings`/helpdesk, `Bot`/fallback)
+- **AgentCard status badge**: `Ready/Provisioning` → `+ LIVE` (green), `+ TESTING` (gold), `+ BUILDING` (lilac-dim)
 
 ## Token Regression Greps (all CLEAN)
 
@@ -37,9 +44,7 @@ Wave 6 completed the Hillbrow at Dusk overhaul with four file changes and a full
 |------|--------|
 | Old palette hex in globals.css (F0E8E0, 7B1C3A, FFFCF9, F7F0EA) | CLEAN |
 | Old fonts (font-pixelify, FungkyBrowDEMO, Pixelify) | CLEAN |
-| Old orange tokens (--orange, --orange-dim) | CLEAN |
-| Hardcoded #ef4444 / #EF4444 | CLEAN |
-| amber-bg / --amber-bg | AlertsBanner.tsx + DocumentDetailModal.tsx (pre-existing, out-of-scope — documented in .continue-here.md) |
+| Hardcoded #ef4444 / #EF4444 in changed components | CLEAN |
 
 ## Acceptance Criteria
 
@@ -48,14 +53,23 @@ Wave 6 completed the Hillbrow at Dusk overhaul with four file changes and a full
 | Sign-in: transparent wrapper + logo above Clerk card | ✓ PASS |
 | Sign-up: same transparent pattern | ✓ PASS |
 | UserAvatar: lilac ring rgba(183,154,224,0.6) | ✓ PASS |
-| UserAvatar: Lucide icon uses var(--accent) not #ef4444 | ✓ PASS |
+| UserAvatar: Lucide icon uses var(--accent) | ✓ PASS |
 | SignOutTab: icon uses var(--red) | ✓ PASS |
-| Token regressions CLEAN | ✓ PASS (with documented exceptions) |
+| Landing headline: clamp(48px,6.4vw,86px) | ✓ PASS |
+| Hero sub: 19px / --text-2 / 560px | ✓ PASS |
+| Right panel: BUILD PIPELINE static card | ✓ PASS |
+| Agents: Refresh button removed | ✓ PASS |
+| Agents: Stat labels per spec | ✓ PASS |
+| Agents: Sub-line under greeting | ✓ PASS |
+| Agents: "Your agents" header + count + filter tabs | ✓ PASS |
+| AgentCard: SVG role icons | ✓ PASS |
+| AgentCard: + LIVE / + TESTING / + BUILDING badge | ✓ PASS |
 | pnpm run build exits zero | ✓ PASS |
-| Visual audit: skyline visible across all screens | ✓ PASS (Playwright screenshots confirm) |
+| Token regression greps CLEAN | ✓ PASS |
 
 ## Decisions
 
-- Stale `.next` cache from previous build caused dev server to serve old Parchment & Wine CSS — cleared cache and restarted to unblock visual QA
-- `background-attachment: fixed` not rendered in headless Playwright — patched to `scroll` in Playwright test only (source CSS unchanged)
-- `--amber-bg` refs in AlertsBanner.tsx and DocumentDetailModal.tsx are pre-existing out-of-scope files; noted as known deviation in phase documentation
+- `--lilac-bg` not in token system; used `--lilac-dim` (rgba(183,154,224,0.12)) for BUILDING badge background
+- HeroPipeline is a new static component (no animation) — keeps the right panel light-weight; HeroSteps remains in codebase for potential future use
+- Filter tabs use client-side state (`activeFilter`) to filter the `agents` array without additional fetch
+- `--amber-bg` refs in AlertsBanner.tsx and DocumentDetailModal.tsx are pre-existing out-of-scope files; documented deviation

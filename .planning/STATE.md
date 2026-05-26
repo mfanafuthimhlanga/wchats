@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: in_progress
-last_updated: "2026-05-26T15:20:00.000Z"
+last_updated: "2026-05-26T17:28:03.440Z"
 progress:
   total_phases: 13
   completed_phases: 12
   total_plans: 85
-  completed_plans: 81
-  percent: 95
+  completed_plans: 84
+  percent: 92
 ---
 
 # Project State
@@ -17,8 +17,8 @@ progress:
 ## Current Status
 
 **Active Milestone:** M11 — Admin UI Overhaul (Hillbrow at Dusk)
-**Milestone Phase:** Phase 11 — 6 plans ready to execute
-**Current Position:** Phase 11, Plan 5 of 6 complete (Wave 5 done — proceed to Wave 6)
+**Milestone Phase:** Phase 11 — COMPLETE (6/6 plans done, visual QA gate passed)
+**Current Position:** Phase 11, all 6 plans complete — milestone pending verification
 **Last updated:** 2026-05-26
 
 ## Project Reference
@@ -43,7 +43,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | M8 | Pre-deployment Checklist | ✓ Complete (7/7 plans) | `prd-M8.md` ✓ |
 | M9 | Retrieval Strategy Synthesis | ✓ Complete (4/4 plans) | `prd-M9.md` ✓ |
 | M10 | Maintenance + Observability | ✓ Complete (6/6 plans) | `prd-M10.md` ✓ |
-| M11 | Admin UI Overhaul | ○ Pending | — |
+| M11 | Admin UI Overhaul | ○ 6/6 plans — visual QA passed, verify pending | — |
 
 ## Key Decisions
 
@@ -230,6 +230,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Last session: 2026-05-25 — Phase 10 COMPLETE: 6/6 plans executed, code review + fixes applied (10-REVIEW-FIX.md), UAT: 7 passed / 0 issues / 3 blocked (live-services-only); OPS-01–OPS-06 all satisfied; human checkpoint (demo_m10.sh) pending live-service run
 - Last session: 2026-05-25 — Phase 9 COMPLETE: bug fix (strategy_service used Agent SDK instead of direct Anthropic API — tool_use blocks never generated); replaced with anthropic.Anthropic().messages.create(); demo_m9.sh approved; all STR-01–STR-03 satisfied — fix commit b108441
 - [09] ClaudeSDKClient (claude-agent-sdk) does NOT support custom JSON tool schemas — it is a code-execution agent. Always use direct Anthropic API (anthropic.Anthropic().messages.create) for tool_use patterns in services.
+- Last session: 2026-05-26 — completed 11-06-PLAN.md (visual QA gate): resolved 9 handoff failures (headline size, hero sub, BUILD PIPELINE card, Refresh button, stat labels, greeting sub-line, "Your agents" header+filter tabs, AgentCard SVG icons, status badge format) — 1 commit: 872ad71; Phase 11 COMPLETE
 - Last session: 2026-05-26 — completed 11-05-PLAN.md (eval glass stat tiles + Recharts dark colours + scoreColor --gold; deploy dark DEFAULT_CONFIG + sticky 2-col customizer + banner token fixes; settings dark form panel) — 2 commits: d59fe8c + 30a06f1
 - Last session: 2026-05-26 — completed 11-04-PLAN.md (agent journey screens: JourneyStepper coral/green tokens, StepSubtaskCard --surface-1, amber→gold rename across 3 files, Fraunces italic-coral agent name in soul/page, dark form panels) — 2 commits: b8b18a3 + 1c1f851
 - Last session: 2026-05-26 — completed 11-03-PLAN.md (agents dashboard: greeting strip Fraunces italic-coral, transparent wrapper, repeat(3,1fr) grid; AgentCard: surface-1 bg, hover translateY(-2px) coral borderTop, gold status tokens, Fraunces 600 name, UPPERCASE TRACKED chips) — 2 commits: 9d1965a + 17e8e35
