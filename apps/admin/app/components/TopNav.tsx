@@ -16,7 +16,7 @@ export default function TopNav() {
     <nav
       style={{
         height: '56px',
-        background: 'var(--surface-1)',
+        background: 'var(--bg-elev)',
         borderBottom: '1px solid var(--border-soft)',
         display: 'flex',
         alignItems: 'center',
@@ -29,9 +29,7 @@ export default function TopNav() {
       {/* Logo */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginRight: '32px' }}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/logo-mark.svg" alt="W Chats" style={{ width: '30px', height: '30px' }} />
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/wordmark.svg" alt="w.chats" style={{ height: '20px' }} />
+        <img src="/wordmark.svg" alt="w.chats" style={{ height: '24px' }} />
       </div>
 
       {/* Nav links */}

@@ -135,73 +135,97 @@ export default function AgentCard({ id, name, role, status, created_at, onDelete
         style={{
           display: 'block',
           textDecoration: 'none',
-          padding: '20px 20px 12px 20px',
+          padding: '22px 22px 0 22px',
           color: 'var(--text-1)',
         }}
       >
-        {/* Top row: name + status chip */}
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'flex-start',
-            marginBottom: '6px',
-          }}
-        >
-          <h3
-            style={{
-              fontFamily: 'var(--font-display)',
-              fontSize: '17px',
-              fontWeight: 600,
-              fontVariationSettings: '"opsz" 144, "SOFT" 30',
-              color: 'var(--text-1)',
-              margin: 0,
-            }}
-          >
-            {name}
-          </h3>
-          <span
-            style={{
-              padding: '3px 10px',
-              borderRadius: 'var(--radius-pill)',
-              fontSize: '10.5px',
-              fontWeight: 600,
-              letterSpacing: '0.12em',
-              textTransform: 'uppercase',
-              background: c.bg,
-              color: c.fg,
-              whiteSpace: 'nowrap',
-            }}
-          >
+        {/* ac-top: icon-box + name/status */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '14px' }}>
+          <div style={{
+            width: '44px', height: '44px',
+            background: 'linear-gradient(135deg, var(--surface-2) 0%, var(--surface-3) 100%)',
+            border: '1px solid var(--border-soft)',
+            borderRadius: 'var(--radius-xs)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: '20px',
+            flexShrink: 0,
+          }}>
+            🤖
+          </div>
+          <span style={{
+            padding: '3px 10px',
+            borderRadius: 'var(--radius-pill)',
+            fontSize: '10.5px',
+            fontWeight: 600,
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+            background: c.bg,
+            color: c.fg,
+            whiteSpace: 'nowrap',
+          }}>
             {c.label}
           </span>
         </div>
 
-        {/* Subtitle: role — UPPERCASE TRACKED micro-label */}
-        <p
-          style={{
-            fontSize: '10.5px',
-            fontWeight: 600,
-            letterSpacing: '0.12em',
-            textTransform: 'uppercase',
-            color: 'var(--text-3)',
-            margin: '0 0 12px 0',
-          }}
-        >
+        {/* ac-name */}
+        <h3 style={{
+          fontFamily: 'var(--font-display)',
+          fontSize: '16px',
+          fontWeight: 700,
+          fontVariationSettings: '"opsz" 144, "SOFT" 30',
+          color: 'var(--text-1)',
+          margin: '0 0 4px 0',
+          letterSpacing: '-0.01em',
+        }}>
+          {name}
+        </h3>
+
+        {/* ac-role */}
+        <p style={{
+          fontSize: '12px',
+          color: 'var(--text-3)',
+          margin: '0 0 16px 0',
+          lineHeight: 1.4,
+        }}>
           {role}
         </p>
 
-        {/* Created date */}
-        <p
-          style={{
-            fontSize: '12px',
-            fontFamily: 'var(--font-mono)',
-            color: 'var(--text-4)',
-            margin: 0,
-          }}
-        >
-          Created {formattedDate}
-        </p>
+        {/* ac-metrics: 3-column mini stat grid */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr 1fr',
+          gap: '12px',
+          paddingTop: '14px',
+          paddingBottom: '14px',
+          borderTop: '1px solid var(--border-soft)',
+          borderBottom: '1px solid var(--border-soft)',
+          marginBottom: '14px',
+        }}>
+          {[
+            { label: '7d Conv', val: '—' },
+            { label: 'Faith', val: '—' },
+            { label: 'W/L', val: '—' },
+          ].map(({ label, val }) => (
+            <div key={label}>
+              <div style={{ fontSize: '9.5px', fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-4)', marginBottom: '4px' }}>
+                {label}
+              </div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '13.5px', fontWeight: 600, color: 'var(--text-1)' }}>
+                {val}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* ac-footer */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: '16px' }}>
+          <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)' }}>
+            {formattedDate}
+          </span>
+          <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+            Open →
+          </span>
+        </div>
       </Link>
 
       {/* Action footer — delete controls live here, outside the link */}
@@ -211,7 +235,7 @@ export default function AgentCard({ id, name, role, status, created_at, onDelete
             display: 'flex',
             flexDirection: 'column',
             gap: '8px',
-            padding: '0 20px 16px 20px',
+            padding: '0 22px 16px 22px',
             marginTop: 'auto',
           }}
         >
