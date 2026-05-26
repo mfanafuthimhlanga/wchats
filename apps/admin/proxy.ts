@@ -1,7 +1,11 @@
 import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
 
-// All /sign-in and /sign-up routes are public; everything else requires auth
-const isPublicRoute = createRouteMatcher(['/sign-in(.*)', '/sign-up(.*)', '/'])
+// In demo mode all routes are public; otherwise only landing + auth pages
+const isPublicRoute = createRouteMatcher(
+  process.env.NEXT_PUBLIC_DEMO === 'true'
+    ? ['(.*)']
+    : ['/sign-in(.*)', '/sign-up(.*)', '/']
+)
 
 export default clerkMiddleware(async (auth, req) => {
   if (!isPublicRoute(req)) {
