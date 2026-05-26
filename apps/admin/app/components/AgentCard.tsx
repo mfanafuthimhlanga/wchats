@@ -1,6 +1,7 @@
 'use client'
 import { useState } from 'react'
 import Link from 'next/link'
+import { MessageCircle, Zap, Settings, Bot } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,10 +25,25 @@ export interface AgentCardProps {
 // ---------------------------------------------------------------------------
 
 const STATUS_COLORS: Record<string, { bg: string; fg: string; label: string }> = {
-  ready: { bg: 'var(--green-bg)', fg: 'var(--green)', label: 'Ready' },
-  pending: { bg: 'var(--gold-bg)', fg: 'var(--gold)', label: 'Provisioning' },
-  provisioning: { bg: 'var(--gold-bg)', fg: 'var(--gold)', label: 'Provisioning' },
+  ready: { bg: 'var(--green-bg)', fg: 'var(--green)', label: '+ LIVE' },
+  testing: { bg: 'var(--gold-bg)', fg: 'var(--gold)', label: '+ TESTING' },
+  pending: { bg: 'var(--lilac-dim)', fg: 'var(--lilac)', label: '+ BUILDING' },
+  provisioning: { bg: 'var(--lilac-dim)', fg: 'var(--lilac)', label: '+ BUILDING' },
   error: { bg: 'var(--red-bg)', fg: 'var(--red)', label: 'Error' },
+}
+
+function getRoleIcon(role: string) {
+  const r = role.toLowerCase()
+  if (r.includes('support') || r.includes('service') || r.includes('customer')) {
+    return <MessageCircle size={20} color="var(--accent)" strokeWidth={1.5} />
+  }
+  if (r.includes('sales') || r.includes('revenue')) {
+    return <Zap size={20} color="var(--gold)" strokeWidth={1.5} />
+  }
+  if (r.includes('helpdesk') || r.includes('help') || r.includes('tech')) {
+    return <Settings size={20} color="var(--lilac)" strokeWidth={1.5} />
+  }
+  return <Bot size={20} color="var(--text-3)" strokeWidth={1.5} />
 }
 
 function getStatusColor(status: string) {
@@ -147,10 +163,9 @@ export default function AgentCard({ id, name, role, status, created_at, onDelete
             border: '1px solid var(--border-soft)',
             borderRadius: 'var(--radius-xs)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: '20px',
             flexShrink: 0,
           }}>
-            🤖
+            {getRoleIcon(role)}
           </div>
           <span style={{
             padding: '3px 10px',

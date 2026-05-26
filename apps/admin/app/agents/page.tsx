@@ -1,6 +1,7 @@
 'use client'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
+import { useState } from 'react'
 import Link from 'next/link'
 
 import AgentCard from '../components/AgentCard'
@@ -129,6 +130,19 @@ export default function AgentsDashboardPage() {
   }
 
   const greeting = getTimeGreeting()
+  const [activeFilter, setActiveFilter] = useState<'All' | 'Live' | 'Testing' | 'Draft'>('All')
+
+  const liveCount = agents.filter(a => a.status === 'ready').length
+  const testingCount = agents.filter(a => a.status === 'testing').length
+  const draftCount = agents.filter(a => a.status !== 'ready' && a.status !== 'testing').length
+
+  const filteredAgents = activeFilter === 'All'
+    ? agents
+    : activeFilter === 'Live'
+    ? agents.filter(a => a.status === 'ready')
+    : activeFilter === 'Testing'
+    ? agents.filter(a => a.status === 'testing')
+    : agents.filter(a => a.status !== 'ready' && a.status !== 'testing')
 
   return (
     <div style={{ background: 'transparent' }}>
@@ -147,32 +161,23 @@ export default function AgentsDashboardPage() {
             <p style={{ fontSize: '10.5px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 6px 0' }}>
               {greeting.split(' ')[0].toUpperCase()} · {agents.length} {agents.length === 1 ? 'AGENT' : 'AGENTS'}
             </p>
-            <h1 style={{ fontFamily: 'var(--font-display)', fontWeight: 400, fontVariationSettings: '"opsz" 144, "SOFT" 50', fontSize: '34px', letterSpacing: '-0.022em', lineHeight: 1.1, color: 'var(--text-1)', margin: 0 }}>
+            <h1 style={{ fontFamily: 'var(--font-display)', fontWeight: 400, fontVariationSettings: '"opsz" 144, "SOFT" 50', fontSize: '34px', letterSpacing: '-0.022em', lineHeight: 1.1, color: 'var(--text-1)', margin: '0 0 6px 0' }}>
               {greeting},{' '}
               <em style={{ fontStyle: 'italic', fontWeight: 300, color: 'var(--accent)', fontVariationSettings: '"opsz" 144, "SOFT" 100' }}>
                 there
               </em>
             </h1>
+            <p style={{ fontSize: '14px', color: 'var(--text-3)', margin: 0 }}>
+              {(() => {
+                const live = agents.filter(a => a.status === 'ready').length
+                const inTest = agents.filter(a => a.status === 'testing').length
+                const draft = agents.filter(a => a.status !== 'ready' && a.status !== 'testing').length
+                return `You have ${live} live agent${live !== 1 ? 's' : ''}, ${inTest} in test, ${draft} draft.`
+              })()}
+            </p>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
-            <button
-              onClick={() => agentsQuery.refetch()}
-              disabled={agentsQuery.isFetching}
-              style={{
-                background: 'transparent',
-                color: 'var(--text-2)',
-                padding: '8px 14px',
-                borderRadius: 'var(--radius-xs)',
-                fontWeight: 500,
-                fontSize: '13px',
-                border: '1px solid var(--border)',
-                cursor: 'pointer',
-                opacity: agentsQuery.isFetching ? 0.6 : 1,
-              }}
-            >
-              {agentsQuery.isFetching ? 'Refreshing…' : 'Refresh'}
-            </button>
             <Link
               href="/agents/new"
               style={{
@@ -195,10 +200,10 @@ export default function AgentsDashboardPage() {
       {/* Glass stat cards row */}
       <div style={{ padding: '0 48px 32px', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', maxWidth: '1400px' }}>
         {[
-          { label: 'Total agents', value: agents.length.toString(), unit: '', color: 'var(--accent)' },
-          { label: 'Avg faithfulness', value: '—', unit: '', color: 'var(--lilac)' },
-          { label: '7d conversations', value: '—', unit: '', color: 'var(--cyan)' },
-          { label: 'Red team blocks', value: '0', unit: '', color: 'var(--amber)' },
+          { label: 'CONVERSATIONS · 7D', value: '—', color: 'var(--accent)' },
+          { label: 'FAITHFULNESS · MEDIAN', value: '—', color: 'var(--lilac)' },
+          { label: 'P95 LATENCY', value: '—', color: 'var(--cyan)' },
+          { label: 'COST · 7D', value: '—', color: 'var(--gold)' },
         ].map(({ label, value, color }) => (
           <div key={label} style={{
             background: 'var(--glass-bg)',
@@ -219,6 +224,62 @@ export default function AgentsDashboardPage() {
             </p>
           </div>
         ))}
+      </div>
+
+      {/* Your agents section header + filter tabs */}
+      <div style={{ padding: '0 48px 20px', maxWidth: '1400px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
+          <span style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-1)' }}>Your agents</span>
+          <span style={{
+            background: 'var(--accent)',
+            color: '#0B0717',
+            fontSize: '11px',
+            fontWeight: 700,
+            padding: '2px 8px',
+            borderRadius: 'var(--radius-pill)',
+            lineHeight: 1.4,
+          }}>
+            {agents.length}
+          </span>
+        </div>
+        <div style={{ display: 'flex', gap: '4px' }}>
+          {([
+            { label: 'All', count: agents.length },
+            { label: 'Live', count: liveCount },
+            { label: 'Testing', count: testingCount },
+            { label: 'Draft', count: draftCount },
+          ] as const).map(({ label, count }) => {
+            const isActive = activeFilter === label
+            return (
+              <button
+                key={label}
+                onClick={() => setActiveFilter(label)}
+                style={{
+                  background: isActive ? 'var(--surface-2)' : 'transparent',
+                  border: isActive ? '1px solid var(--border)' : '1px solid transparent',
+                  color: isActive ? 'var(--text-1)' : 'var(--text-3)',
+                  fontSize: '13px',
+                  fontWeight: isActive ? 600 : 500,
+                  padding: '5px 12px',
+                  borderRadius: 'var(--radius-xs)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+              >
+                {label}
+                <span style={{
+                  fontSize: '10px',
+                  fontFamily: 'var(--font-mono)',
+                  color: isActive ? 'var(--text-2)' : 'var(--text-4)',
+                }}>
+                  {count}
+                </span>
+              </button>
+            )
+          })}
+        </div>
       </div>
 
       {/* Content area */}
@@ -260,7 +321,7 @@ export default function AgentsDashboardPage() {
         {/* Agent grid */}
         {!isLoading && agents.length > 0 && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
-            {agents.map((a) => (
+            {filteredAgents.map((a) => (
               <AgentCard key={a.id} {...a} onDelete={handleDelete} />
             ))}
           </div>

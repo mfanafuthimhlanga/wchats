@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { HeroSteps } from './components/HeroSteps'
+import { HeroPipeline } from './components/HeroPipeline'
 
 export default function LandingPage() {
   const [scrolled, setScrolled] = useState(false)
@@ -73,14 +73,15 @@ export default function LandingPage() {
       <section
         style={{
           background: 'transparent',
-          padding: '80px 32px',
+          padding: '80px 56px 120px',
+          minHeight: '720px',
         }}
       >
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: '1fr 1fr',
-            gap: '64px',
+            gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 0.9fr)',
+            gap: '80px',
             alignItems: 'center',
             maxWidth: '1180px',
             margin: '0 auto',
@@ -123,7 +124,7 @@ export default function LandingPage() {
                 fontFamily: 'var(--font-display)',
                 fontWeight: 400,
                 fontVariationSettings: '"opsz" 144, "SOFT" 30',
-                fontSize: 'clamp(32px, 4vw, 52px)',
+                fontSize: 'clamp(48px, 6.4vw, 86px)',
                 letterSpacing: '-0.035em',
                 lineHeight: 0.98,
                 color: 'var(--text-1)',
@@ -157,11 +158,11 @@ export default function LandingPage() {
 
             <p
               style={{
-                fontSize: '16px',
-                lineHeight: 1.6,
-                color: 'var(--text-3)',
+                fontSize: '19px',
+                lineHeight: 1.55,
+                color: 'var(--text-2)',
                 marginBottom: '28px',
-                maxWidth: '480px',
+                maxWidth: '560px',
               }}
             >
               W Chats does the serious work — structure-aware ingestion, hybrid retrieval, continuous evaluation, weekly red teaming — so small business owners ship a customer service agent that is actually safe to deploy.
@@ -207,7 +208,7 @@ export default function LandingPage() {
                 gap: '32px',
                 flexWrap: 'wrap',
                 borderTop: '1px solid var(--glass-border)',
-                paddingTop: '24px',
+                paddingTop: '28px',
               }}
             >
               {[
@@ -219,7 +220,7 @@ export default function LandingPage() {
                   <span
                     style={{
                       fontFamily: 'var(--font-mono)',
-                      fontSize: '22px',
+                      fontSize: '30px',
                       fontWeight: 600,
                       color: 'var(--text-1)',
                       letterSpacing: '-0.02em',
@@ -229,8 +230,10 @@ export default function LandingPage() {
                   </span>
                   <span
                     style={{
-                      fontSize: '11px',
+                      fontSize: '10.5px',
                       fontWeight: 600,
+                      letterSpacing: '0.1em',
+                      textTransform: 'uppercase',
                       color: 'var(--text-3)',
                     }}
                   >
@@ -241,8 +244,8 @@ export default function LandingPage() {
             </div>
           </div>
 
-          {/* Right column — WorkflowCard glass animation */}
-          <HeroSteps />
+          {/* Right column — static BUILD PIPELINE card */}
+          <HeroPipeline />
         </div>
       </section>
     </main>
