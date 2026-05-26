@@ -26,7 +26,7 @@ export default function SignOutTab() {
       <LogOut
         size={18}
         strokeWidth={2.5}
-        style={{ transform: 'rotate(180deg)', color: '#ef4444' }}
+        style={{ transform: 'rotate(180deg)', color: 'var(--red)' }}
       />
     </button>
   )

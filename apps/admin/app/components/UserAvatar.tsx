@@ -17,25 +17,36 @@ export default function UserAvatar() {
   return (
     <div
       style={{
-        position: 'relative',
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
+        borderRadius: '50%',
+        border: '1px solid rgba(183, 154, 224, 0.6)',
+        padding: '1px',
       }}
     >
-      <UserButton />
       <div
         style={{
-          position: 'absolute',
-          inset: 0,
-          display: 'flex',
+          position: 'relative',
+          display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'center',
-          pointerEvents: 'none',
-          zIndex: 1,
         }}
       >
-        <User size={16} color="#ef4444" />
+        <UserButton />
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            pointerEvents: 'none',
+            zIndex: 1,
+          }}
+        >
+          <User size={16} color="var(--accent)" />
+        </div>
       </div>
     </div>
   )
