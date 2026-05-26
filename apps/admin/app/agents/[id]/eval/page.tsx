@@ -106,7 +106,7 @@ function getNextRunTime(): string {
 
 function scoreColor(score: number): string {
   if (score >= 0.9) return 'var(--green)'
-  if (score >= 0.7) return 'var(--amber)'
+  if (score >= 0.7) return 'var(--gold)'
   return 'var(--red)'
 }
 
@@ -584,6 +584,62 @@ export default function EvalPage({
       {/* Pass Rates tab */}
       {!isLoading && hasRuns && activeTab === 'passrates' && (
         <div>
+          {/* Glass aggregate stat tiles — approved glass use case (stat tiles only) */}
+          {latestRun && (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(4, 1fr)',
+                gap: '12px',
+                marginBottom: '24px',
+              }}
+            >
+              {(
+                [
+                  { key: 'faithfulness', value: latestRun.aggregate_scores.faithfulness },
+                  { key: 'answer_relevancy', value: latestRun.aggregate_scores.answer_relevancy },
+                  { key: 'context_precision', value: latestRun.aggregate_scores.context_precision },
+                  { key: 'context_recall', value: latestRun.aggregate_scores.context_recall },
+                ] as const
+              ).map(({ key, value }) => (
+                <div
+                  key={key}
+                  style={{
+                    background: 'var(--glass-bg)',
+                    backdropFilter: 'var(--glass-blur)',
+                    WebkitBackdropFilter: 'var(--glass-blur)',
+                    border: '1px solid var(--glass-border)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '16px 20px',
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: '10.5px',
+                      fontWeight: 600,
+                      letterSpacing: '0.12em',
+                      textTransform: 'uppercase',
+                      color: 'var(--text-3)',
+                      marginBottom: '8px',
+                    }}
+                  >
+                    {key.replace(/_/g, ' ')}
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '28px',
+                      fontWeight: 600,
+                      color: scoreColor(value),
+                    }}
+                  >
+                    {value.toFixed(2)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           <div style={chartCardStyle}>
             <div
               style={{
@@ -660,7 +716,7 @@ export default function EvalPage({
                 <Line
                   type="monotone"
                   dataKey="faithfulness"
-                  stroke="#B8860B"
+                  stroke="#FBBF24"
                   strokeWidth={2}
                   dot={{ r: 4 }}
                   name="Faithfulness"
@@ -668,7 +724,7 @@ export default function EvalPage({
                 <Line
                   type="monotone"
                   dataKey="answer_relevancy"
-                  stroke="#7B1C3A"
+                  stroke="#F4748C"
                   strokeWidth={2}
                   dot={{ r: 4 }}
                   name="Answer Relevancy"
@@ -676,7 +732,7 @@ export default function EvalPage({
                 <Line
                   type="monotone"
                   dataKey="context_precision"
-                  stroke="#4A7C59"
+                  stroke="#34D399"
                   strokeWidth={2}
                   dot={{ r: 4 }}
                   name="Context Precision"
@@ -684,7 +740,7 @@ export default function EvalPage({
                 <Line
                   type="monotone"
                   dataKey="context_recall"
-                  stroke="#4A6080"
+                  stroke="#B79AE0"
                   strokeWidth={2}
                   dot={{ r: 4 }}
                   name="Context Recall"
@@ -778,10 +834,10 @@ export default function EvalPage({
                   </th>
                   {/* Metric headers with color dots */}
                   {([
-                    { key: 'F', color: '#B8860B' },
-                    { key: 'AR', color: '#7B1C3A' },
-                    { key: 'CP', color: '#4A7C59' },
-                    { key: 'CR', color: '#4A6080' },
+                    { key: 'F', color: '#FBBF24' },
+                    { key: 'AR', color: '#F4748C' },
+                    { key: 'CP', color: '#34D399' },
+                    { key: 'CR', color: '#B79AE0' },
                   ] as const).map(({ key, color }) => (
                     <th
                       key={key}
@@ -897,12 +953,12 @@ export default function EvalPage({
                             letterSpacing: '0.02em',
                             background:
                               s.source === 'generated'
-                                ? 'var(--amber-bg)'
-                                : '#EFF6FF',
+                                ? 'var(--gold-bg)'
+                                : 'var(--lilac-dim)',
                             color:
                               s.source === 'generated'
-                                ? 'var(--amber)'
-                                : '#1D4ED8',
+                                ? 'var(--gold)'
+                                : 'var(--lilac)',
                           }}
                         >
                           {s.source}
