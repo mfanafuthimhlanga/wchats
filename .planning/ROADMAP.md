@@ -4,7 +4,7 @@
 **Mode:** Vertical MVP (per milestone)
 **Structure:** 10 milestones → each milestone broken into GSD phases when it becomes active
 **Coverage:** 84/84 v1 requirements mapped
-**Last updated:** 2026-05-16
+**Last updated:** 2026-05-26
 
 ---
 
@@ -25,6 +25,7 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 | M8 | Pre-deployment Checklist | Orchestrator agent + owner approval gate + journey validated | 8 | `prd-M8.md` | ✓ Complete (7/7 plans) |
 | M9 | Retrieval Strategy Synthesis | Strategist auto-generates per-tenant retrieval configs | 3 | `prd-M9.md` | ○ Pending |
 | M10 | Maintenance + Observability | Autonomous crons + digest email + Langfuse dashboards + alerting | 6 | `prd-M10.md` | ○ Pending |
+| M11 | Admin UI Overhaul | Parchment & Wine → Hillbrow at Dusk end-to-end visual rearchitecture | 12 (UI-01–UI-12) | — | ○ Planned (6 plans) |
 
 **Total v1 requirements:** 84 | **Mapped:** 84 ✓ | **Unmapped:** 0 ✓
 
@@ -371,6 +372,53 @@ Plans:
 
 ---
 
+### M11 — Admin UI Overhaul (Hillbrow at Dusk)
+
+**Goal:** Replace the Parchment & Wine light theme with the Hillbrow at Dusk dark design system end-to-end — token system, typography, logo, background surface, component vocabulary — across every screen of the admin UI.
+**PRD:** — (context drop at `.planning/phases/11-ui-overhaul/11-CONTEXT.md`)
+**Requirements:** UI-01 through UI-12
+**Depends on:** None (pure UI — no backend changes)
+**Plans:** 6 plans, 6 waves
+
+Plans:
+- [ ] 11-01-PLAN.md — Wave 1: Token foundation + background (globals.css :root replacement, skyline body background, Fraunces font, logo SVG assets, TopNav dark, agents/[id]/layout.tsx transparent)
+- [ ] 11-02-PLAN.md — Wave 2: Landing page rebuild (transparent hero, glass nav, Fraunces headline strikethrough, coral CTA, trust strip, WorkflowCard animation)
+- [ ] 11-03-PLAN.md — Wave 3: Agents dashboard + AgentCard (greeting strip, 3-column grid, --surface-1 cards, gold status chips, hover effects)
+- [ ] 11-04-PLAN.md — Wave 4: Agent journey screens (JourneyStepper coral active state, StepSubtaskCard elevation, new/soul/ingest dark form panels)
+- [ ] 11-05-PLAN.md — Wave 5: Eval + Deploy + Settings (glass stat tiles, Recharts palette, dark DEFAULT_CONFIG, settings form panel)
+- [ ] 11-06-PLAN.md — Wave 6: Auth pages + QA pass (sign-in/up transparent + logo, UserAvatar lilac ring, token regression greps, human visual audit)
+
+**Cross-cutting constraints:**
+- Backend API: zero changes
+- Widget (apps/widget/): zero changes
+- Route structure: unchanged
+- No glass on dense data UI (tables, KB rows, eval tables, code blocks) — solid --surface-1 only
+- Skyline PNG used as background (never recreated as CSS)
+- Coral is primary; cyan max 2 per screen
+- Violet-tinted shadows always
+- Sentence case for buttons/labels; UPPERCASE TRACKED for micro-labels
+- prefers-reduced-motion respected
+- Veil opacity: rgba(11,7,23,0.45) — not 0.72
+
+**Success Criteria:**
+1. Johannesburg skyline photograph is visible behind every route.
+2. All Parchment & Wine values absent from globals.css :root.
+3. --font-pixelify and FungkyBrowDEMO absent from the codebase.
+4. Fraunces loads via Google Fonts link tag.
+5. Logo mark is the coral SVG square with no spin animation.
+6. pnpm run build && pnpm run lint exit zero in apps/admin.
+7. Landing page renders Fraunces headline with strikethrough, trust strip, WorkflowCard animation.
+8. Agent cards use --surface-1 with no glass, correct gold/green/red status chips.
+9. Eval page stat tiles use glass (--glass-bg + backdrop-filter: blur).
+10. Sign-in / sign-up: skyline behind the dark Clerk card.
+11. All inline hex from Parchment palette replaced.
+12. Cross-screen visual audit against reference/wchats-hillbrow-at-dusk.html passes.
+
+**Design system:** `.claude/skills/wchats-design/`
+**UI hint:** yes (pure UI milestone)
+
+---
+
 ## Dependency Graph
 
 ```
@@ -378,6 +426,7 @@ M1 → M2 → M3 → M4 → M5 → M6 ┐
                               ├─→ M8 → M10
                     M4 → M7 ──┘
                     M2, M3 → M9 (independent, after M3)
+M11 (independent — pure UI, no backend dependency)
 ```
 
 M6 and M7 are parallelizable — both only require M4 to be complete.
@@ -397,4 +446,4 @@ When starting a new milestone: write `prd-MN.md` first, then run `/gsd-discuss-p
 ---
 
 *Roadmap created: 2026-05-12*
-*Last updated: 2026-05-24 — 08-06 COMPLETE: 15 unit tests de-xfailed (DEP-01–DEP-06); deployment router added to main.py (Rule 1 fix); 6/7 M8 plans done*
+*Last updated: 2026-05-26 — M11 Admin UI Overhaul planned: 6 plans (11-01 through 11-06), 6 waves, UI-01–UI-12 covered*
