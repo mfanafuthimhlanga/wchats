@@ -37,8 +37,8 @@ interface AgentDocument {
 
 const STATUS_COLORS: Record<string, { bg: string; fg: string; label: string }> = {
   ready: { bg: 'var(--green-bg)', fg: 'var(--green)', label: 'Ready' },
-  pending: { bg: 'var(--amber-bg)', fg: 'var(--amber)', label: 'Provisioning' },
-  provisioning: { bg: 'var(--amber-bg)', fg: 'var(--amber)', label: 'Provisioning' },
+  pending: { bg: 'var(--gold-bg)', fg: 'var(--gold)', label: 'Provisioning' },
+  provisioning: { bg: 'var(--gold-bg)', fg: 'var(--gold)', label: 'Provisioning' },
   error: { bg: 'var(--red-bg)', fg: 'var(--red)', label: 'Error' },
 }
 

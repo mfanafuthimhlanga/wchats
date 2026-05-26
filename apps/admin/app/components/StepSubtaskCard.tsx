@@ -52,7 +52,7 @@ export default function StepSubtaskCard({
         alignItems: 'center',
         gap: '16px',
         padding: '16px 20px',
-        background: 'var(--surface-2)',
+        background: 'var(--surface-1)',
         border: '1px solid var(--border-soft)',
         borderRadius: 'var(--radius-xs)',
         borderLeft:

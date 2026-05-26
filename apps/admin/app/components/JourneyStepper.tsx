@@ -49,7 +49,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
         flexShrink: 0,
         borderRight: '1px solid var(--border-soft)',
         padding: '32px 24px',
-        background: 'var(--bg)',
+        background: 'var(--surface-1)',
       }}
     >
       {/* Agent header */}
@@ -90,9 +90,9 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
           borderRadius: 'var(--radius-xs)',
           marginBottom: '8px',
           ...(visualState === 'active'
-            ? { background: 'rgba(217,119,6,0.08)', border: '1px solid rgba(217,119,6,0.2)' }
+            ? { background: 'var(--accent-dim)', border: '1px solid var(--border-hard)' }
             : visualState === 'done'
-            ? { background: 'var(--green-bg)', border: '1px solid rgba(22,163,74,0.2)' }
+            ? { background: 'var(--green-bg)', border: '1px solid rgba(52,211,153,0.25)' }
             : { background: 'transparent', border: '1px solid transparent', opacity: 0.45 }),
         }
 
@@ -107,9 +107,9 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
           fontWeight: 600,
           flexShrink: 0,
           ...(visualState === 'done'
-            ? { background: '#16A34A', color: '#fff' }
+            ? { background: 'var(--green)', color: '#fff' }
             : visualState === 'active'
-            ? { background: 'transparent', border: '2px solid #D97706', color: '#D97706' }
+            ? { background: 'transparent', border: '2px solid var(--accent)', color: 'var(--accent)' }
             : { background: 'var(--surface-3)', border: '1px solid var(--border)', color: 'var(--text-4)' }),
         }
 
@@ -185,7 +185,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
                   top: '52px',
                   bottom: '-8px',
                   width: '2px',
-                  background: visualState === 'done' ? '#16A34A' : 'var(--border-soft)',
+                  background: visualState === 'done' ? 'var(--green)' : 'var(--border-soft)',
                   opacity: visualState === 'done' ? 0.4 : 1,
                 }}
               />
