@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: in_progress
-last_updated: "2026-05-26T14:00:00.000Z"
+last_updated: "2026-05-26T15:20:00.000Z"
 progress:
   total_phases: 13
   completed_phases: 12
   total_plans: 85
-  completed_plans: 80
-  percent: 94
+  completed_plans: 81
+  percent: 95
 ---
 
 # Project State
@@ -18,7 +18,7 @@ progress:
 
 **Active Milestone:** M11 — Admin UI Overhaul (Hillbrow at Dusk)
 **Milestone Phase:** Phase 11 — 6 plans ready to execute
-**Current Position:** Phase 11, Plan 4 of 6 complete (Wave 4 done — proceed to Wave 5)
+**Current Position:** Phase 11, Plan 5 of 6 complete (Wave 5 done — proceed to Wave 6)
 **Last updated:** 2026-05-26
 
 ## Project Reference
@@ -47,6 +47,10 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Key Decisions
 
+- [11-05] scoreColor: --amber → --gold for mid-range scores (0.7-0.9) — amber = building warmth (#E8A87C) in Hillbrow system, not a status warning token
+- [11-05] Recharts hex per plan spec (#FBBF24 gold) rather than PATTERNS.md (#F0C674) — plan spec must_haves are acceptance criteria target
+- [11-05] Widget customizer layout: 3-column grid (255px 310px 1fr) → flex 2-column (form flex:1, preview 300px sticky top:80px) per .continue-here.md decision
+- [11-05] Glass stat tiles render only when latestRun is truthy — no fallback for empty aggregate_scores state
 - [11-04] Done-step border in JourneyStepper uses rgba(52,211,153,0.25) — literal green at 25% opacity; --green-border is not a defined token in globals.css
 - [11-04] soul/page form panel uses margin:32px on the panel div — preserves existing flex-row layout with preview panel while applying dark card treatment
 - [11-04] pnpm run lint pre-existing broken (same inherited issue from 11-01) — build passes, lint skip documented
@@ -100,6 +104,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|
+| 11 | 05 | ~20 min | 2 | 3 |
 | 11 | 04 | ~20 min | 2 | 6 |
 | 11 | 03 | ~15 min | 2 | 2 |
 | 11 | 02 | ~20 min | 2 | 2 |
@@ -225,6 +230,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Last session: 2026-05-25 — Phase 10 COMPLETE: 6/6 plans executed, code review + fixes applied (10-REVIEW-FIX.md), UAT: 7 passed / 0 issues / 3 blocked (live-services-only); OPS-01–OPS-06 all satisfied; human checkpoint (demo_m10.sh) pending live-service run
 - Last session: 2026-05-25 — Phase 9 COMPLETE: bug fix (strategy_service used Agent SDK instead of direct Anthropic API — tool_use blocks never generated); replaced with anthropic.Anthropic().messages.create(); demo_m9.sh approved; all STR-01–STR-03 satisfied — fix commit b108441
 - [09] ClaudeSDKClient (claude-agent-sdk) does NOT support custom JSON tool schemas — it is a code-execution agent. Always use direct Anthropic API (anthropic.Anthropic().messages.create) for tool_use patterns in services.
+- Last session: 2026-05-26 — completed 11-05-PLAN.md (eval glass stat tiles + Recharts dark colours + scoreColor --gold; deploy dark DEFAULT_CONFIG + sticky 2-col customizer + banner token fixes; settings dark form panel) — 2 commits: d59fe8c + 30a06f1
 - Last session: 2026-05-26 — completed 11-04-PLAN.md (agent journey screens: JourneyStepper coral/green tokens, StepSubtaskCard --surface-1, amber→gold rename across 3 files, Fraunces italic-coral agent name in soul/page, dark form panels) — 2 commits: b8b18a3 + 1c1f851
 - Last session: 2026-05-26 — completed 11-03-PLAN.md (agents dashboard: greeting strip Fraunces italic-coral, transparent wrapper, repeat(3,1fr) grid; AgentCard: surface-1 bg, hover translateY(-2px) coral borderTop, gold status tokens, Fraunces 600 name, UPPERCASE TRACKED chips) — 2 commits: 9d1965a + 17e8e35
 - Last session: 2026-05-26 — completed 11-02-PLAN.md (landing page rebuild: transparent hero, glass nav scroll-reactive, Fraunces headline strikethrough+italic-coral, coral CTA, trust strip, HeroSteps.tsx token migration --orange→--accent, --green-solid→--green) — 2 commits: 32fa8b7 + ce7a61b
