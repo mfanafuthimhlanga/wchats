@@ -16,7 +16,7 @@ export default function TopNav() {
     <nav
       style={{
         height: '56px',
-        background: 'var(--bg)',
+        background: 'var(--surface-1)',
         borderBottom: '1px solid var(--border-soft)',
         display: 'flex',
         alignItems: 'center',
@@ -29,14 +29,9 @@ export default function TopNav() {
       {/* Logo */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginRight: '32px' }}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src="/w-chats-lettermann.png"
-          alt="Chats logo"
-          style={{ width: '30px', height: '30px', objectFit: 'contain', animation: 'spin-cw 4s linear infinite' }}
-        />
-        <span style={{ fontFamily: 'var(--font-pixelify)', fontSize: '20px', color: 'var(--text-1)' }}>
-          Chats
-        </span>
+        <img src="/logo-mark.svg" alt="W Chats" style={{ width: '30px', height: '30px' }} />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/wordmark.svg" alt="w.chats" style={{ height: '20px' }} />
       </div>
 
       {/* Nav links */}

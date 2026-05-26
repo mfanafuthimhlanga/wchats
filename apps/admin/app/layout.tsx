@@ -1,6 +1,5 @@
 import type { Metadata } from 'next'
 import { Inter, JetBrains_Mono } from 'next/font/google'
-import localFont from 'next/font/local'
 import { ClerkProvider } from '@clerk/nextjs'
 import QueryProvider from './components/QueryProvider'
 import SignOutTab from './components/SignOutTab'
@@ -8,43 +7,42 @@ import './globals.css'
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter' })
 const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono-loaded' })
-const fungkyBrow = localFont({ src: '../public/fonts/FungkyBrowDEMO.otf', variable: '--font-pixelify' })
 
 // Plain module-level constant — Server Component, no hooks, no CSS vars at runtime.
 const clerkAppearance = {
   variables: {
-    colorPrimary: '#7B1C3A',
-    colorBackground: '#FFFCF9',
-    colorNeutral: '#4A2030',
-    colorText: '#1A0A0F',
-    colorTextSecondary: '#4A2030',
-    colorInputBackground: '#F7F0EA',
-    colorInputText: '#1A0A0F',
-    colorDanger: '#B91C1C',
+    colorPrimary: '#F4748C',
+    colorBackground: '#140E2A',
+    colorNeutral: '#C4B8D8',
+    colorText: '#F0EBF8',
+    colorTextSecondary: '#C4B8D8',
+    colorInputBackground: '#1E1638',
+    colorInputText: '#F0EBF8',
+    colorDanger: '#F87171',
     borderRadius: '14px',
     fontFamily: 'Inter, system-ui, sans-serif',
   },
   elements: {
     card: {
-      background: '#FFFCF9',
-      border: '1px solid #D9CCBE',
-      boxShadow: '0 1px 2px rgba(74,32,48,0.04), 0 4px 12px rgba(74,32,48,0.06)',
+      background: '#140E2A',
+      border: '1px solid rgba(196,154,232,0.18)',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.35), 0 24px 48px rgba(11,7,23,0.6)',
       borderRadius: '20px',
     },
     formButtonPrimary: {
-      background: '#7B1C3A',
-      color: '#ffffff',
+      background: '#F4748C',
+      color: '#0B0717',
     },
     formFieldInput: {
-      background: '#F7F0EA',
-      border: '1px solid #D9CCBE',
-      color: '#1A0A0F',
+      background: '#1E1638',
+      border: '1px solid rgba(196,154,232,0.18)',
+      color: '#F0EBF8',
       borderRadius: '8px',
     },
     userButtonAvatarBox: {
       width: '32px',
       height: '32px',
-      background: '#1A0A0F',
+      background: '#1E1638',
       borderRadius: '8px',
       overflow: 'hidden',
     },
@@ -52,20 +50,19 @@ const clerkAppearance = {
       opacity: '0',
     },
     userButtonTrigger: {
-      background: '#1A0A0F',
+      background: '#1E1638',
       borderRadius: '8px',
       padding: '4px',
     },
     userButtonPopoverCard: {
-      background: '#FFFCF9',
-      border: '1px solid #D9CCBE',
-      boxShadow: '0 4px 16px rgba(26,10,15,0.12)',
+      background: '#1E1638',
+      border: '1px solid rgba(196,154,232,0.18)',
     },
     userButtonPopoverActionButton: {
-      color: '#4A2030',
+      color: '#C4B8D8',
     },
     userButtonPopoverFooter: {
-      borderTop: '1px solid #EDE3D8',
+      borderTop: '1px solid rgba(196,154,232,0.10)',
     },
     avatarBox: {
       width: '32px',
@@ -96,7 +93,15 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${inter.variable} ${mono.variable} ${fungkyBrow.variable}`}>
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..800,0..100,0..1&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+          rel="stylesheet"
+        />
+      </head>
+      <body className={`${inter.variable} ${mono.variable}`}>
         <ClerkProvider appearance={clerkAppearance}>
           <QueryProvider>
             {children}

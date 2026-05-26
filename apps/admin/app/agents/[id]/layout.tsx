@@ -201,7 +201,7 @@ export default function AgentDetailLayout({
         display: 'flex',
         minHeight: 'calc(100vh - 56px)',
         fontFamily: 'var(--font-sans)',
-        background: 'var(--bg)',
+        background: 'transparent',
       }}
     >
       <JourneyStepper
