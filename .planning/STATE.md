@@ -2,24 +2,24 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: complete
-last_updated: "2026-05-25T14:30:00.000Z"
+status: in_progress
+last_updated: "2026-05-26T00:00:00.000Z"
 progress:
-  total_phases: 12
-  completed_phases: 11
-  total_plans: 79
-  completed_plans: 73
-  percent: 92
+  total_phases: 13
+  completed_phases: 12
+  total_plans: 85
+  completed_plans: 79
+  percent: 93
 ---
 
 # Project State
 
 ## Current Status
 
-**Active Milestone:** M10 — Maintenance + Observability
-**Milestone Phase:** Phase 10 PLANNED — 6 plans, 6 waves, OPS-01–OPS-06 mapped; ready to execute
-**Current Position:** Phase 10, Plan 1 (ready to execute)
-**Last updated:** 2026-05-25
+**Active Milestone:** M11 — Admin UI Overhaul (Hillbrow at Dusk)
+**Milestone Phase:** Phase 11 — 6 plans ready to execute
+**Current Position:** Phase 11, Plan 0 of 6 (ready to execute — Wave 1 first)
+**Last updated:** 2026-05-26
 
 ## Project Reference
 
@@ -42,7 +42,8 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | M7 | Red Team | ✓ Complete (6/6 plans) | `prd-M7.md` ✓ |
 | M8 | Pre-deployment Checklist | ✓ Complete (7/7 plans) | `prd-M8.md` ✓ |
 | M9 | Retrieval Strategy Synthesis | ✓ Complete (4/4 plans) | `prd-M9.md` ✓ |
-| M10 | Maintenance + Observability | ○ Pending | `prd-M10.md` (TBD) |
+| M10 | Maintenance + Observability | ✓ Complete (6/6 plans) | `prd-M10.md` ✓ |
+| M11 | Admin UI Overhaul | ○ Pending | — |
 
 ## Key Decisions
 
@@ -205,5 +206,6 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [08-06] Celery Retry exception caught with broad except in failure-path test — CELERY_TASK_ALWAYS_EAGER=True causes self.retry() to raise Retry; important assertion is db.commit() was called before retry
 - [08-06] deployment router was missing from main.py — Rule 1 auto-fix; all route tests returned 404 until fix applied
 - [08-06] Pre-existing unit test failures in test_agent_chat_routes, test_agents_patch, test_chunking_service, etc. logged to .planning/deferred-items.md; not introduced by 08-06
+- Last session: 2026-05-25 — Phase 10 COMPLETE: 6/6 plans executed, code review + fixes applied (10-REVIEW-FIX.md), UAT: 7 passed / 0 issues / 3 blocked (live-services-only); OPS-01–OPS-06 all satisfied; human checkpoint (demo_m10.sh) pending live-service run
 - Last session: 2026-05-25 — Phase 9 COMPLETE: bug fix (strategy_service used Agent SDK instead of direct Anthropic API — tool_use blocks never generated); replaced with anthropic.Anthropic().messages.create(); demo_m9.sh approved; all STR-01–STR-03 satisfied — fix commit b108441
 - [09] ClaudeSDKClient (claude-agent-sdk) does NOT support custom JSON tool schemas — it is a code-execution agent. Always use direct Anthropic API (anthropic.Anthropic().messages.create) for tool_use patterns in services.
