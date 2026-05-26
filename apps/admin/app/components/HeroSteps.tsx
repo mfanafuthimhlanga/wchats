@@ -312,12 +312,12 @@ export function HeroSteps() {
       transition: 'all 0.5s ease',
       background: isUpcoming ? 'var(--surface-2)' : 'var(--surface-1)',
       border: isActive
-        ? '1.5px solid var(--orange)'
+        ? '1.5px solid var(--accent)'
         : isDone
-          ? '1px solid var(--green-solid)'
+          ? '1px solid var(--green)'
           : '1px solid var(--border-soft)',
       boxShadow: isActive
-        ? 'var(--shadow-lift), 0 0 0 3px var(--orange-dim)'
+        ? 'var(--shadow-lift), 0 0 0 3px var(--accent-dim)'
         : isDone
           ? 'var(--shadow-card)'
           : 'none',
@@ -336,12 +336,12 @@ export function HeroSteps() {
       fontSize: 12,
       transition: 'background 0.5s ease, color 0.5s ease, border-color 0.5s ease',
       ...(isDone
-        ? { background: 'var(--green-solid)', color: '#fff', border: 'none' }
+        ? { background: 'var(--green)', color: '#fff', border: 'none' }
         : isActive
           ? {
-              background: 'var(--orange-dim)',
-              color: 'var(--orange)',
-              border: '2px solid var(--orange)',
+              background: 'var(--accent-dim)',
+              color: 'var(--accent)',
+              border: '2px solid var(--accent)',
               animation: 'pulse-ring 1.6s ease-out infinite',
             }
           : {
@@ -352,9 +352,9 @@ export function HeroSteps() {
     }
 
     const subColor = isActive
-      ? 'var(--orange)'
+      ? 'var(--accent)'
       : isDone
-        ? 'var(--green-solid)'
+        ? 'var(--green)'
         : 'var(--text-3)'
 
     const subText = isActive ? label.activeSub : label.doneSub
@@ -385,7 +385,7 @@ export function HeroSteps() {
             width: 7,
             height: 7,
             borderRadius: '50%',
-            background: 'var(--orange)',
+            background: 'var(--accent)',
             flexShrink: 0,
             opacity: isActive ? 1 : 0,
             animation: isActive ? 'blink-dot 1.1s ease-in-out infinite' : 'none',
@@ -397,7 +397,7 @@ export function HeroSteps() {
             width: 2,
             height: 10,
             marginLeft: 13,
-            background: prevDone || isDone ? 'var(--green-solid)' : 'var(--border)',
+            background: prevDone || isDone ? 'var(--green)' : 'var(--border)',
             transition: 'background 0.5s ease',
             borderRadius: 1,
           }} />
@@ -412,7 +412,7 @@ export function HeroSteps() {
       {chips.map((c, i) => (
         <span key={i} style={{
           background: 'var(--accent-dim)',
-          border: '1px solid rgba(123,28,58,0.15)',
+          border: '1px solid rgba(244,116,140,0.15)',
           borderRadius: 100,
           padding: '2px 8px',
           fontSize: 10,
@@ -458,7 +458,7 @@ export function HeroSteps() {
       alignItems: 'center',
       gap: 5,
       background: 'var(--green-bg)',
-      border: '1px solid rgba(22,163,74,0.25)',
+      border: '1px solid rgba(52,211,153,0.25)',
       color: 'var(--green)',
       borderRadius: 100,
       padding: '4px 12px',
@@ -522,7 +522,7 @@ export function HeroSteps() {
         </div>
         <div style={{
           padding: 9,
-          background: s.paid ? 'var(--green-solid)' : 'var(--accent)',
+          background: s.paid ? 'var(--green)' : 'var(--accent)',
           color: '#fff',
           borderRadius: 8,
           fontSize: 13,
@@ -687,8 +687,8 @@ export function HeroSteps() {
               width: 8,
               height: 8,
               borderRadius: '50%',
-              background: 'var(--green-solid)',
-              boxShadow: '0 0 6px rgba(22,163,74,0.6)',
+              background: 'var(--green)',
+              boxShadow: '0 0 6px rgba(52,211,153,0.6)',
               animation: 'blink-dot 1.4s ease-in-out infinite',
               flexShrink: 0,
             }} />
