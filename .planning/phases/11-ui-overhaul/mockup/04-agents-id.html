@@ -28,7 +28,7 @@
       --radius-sm:8px;--radius-xs:6px;--radius-md:14px;--radius-lg:20px;--radius-xl:28px;--radius-pill:100px;
     }
     body{font-family:var(--font-sans);background-image:url('../../../../.claude/skills/wchats-design/assets/skyline-w-chats.png');background-size:cover;background-position:center;background-attachment:fixed;background-color:var(--bg-deep);color:var(--text-1);min-height:100vh;}
-    body::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;background:radial-gradient(ellipse 60% 40% at 80% 0%,rgba(244,116,140,0.07) 0%,transparent 50%),radial-gradient(ellipse 40% 30% at 0% 60%,rgba(183,154,224,0.05) 0%,transparent 50%),rgba(11,7,23,0.72);}
+    body::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;background:radial-gradient(ellipse 60% 40% at 80% 0%,rgba(244,116,140,0.07) 0%,transparent 50%),radial-gradient(ellipse 40% 30% at 0% 60%,rgba(183,154,224,0.05) 0%,transparent 50%),rgba(11,7,23,0.45);}
     body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;opacity:0.025;mix-blend-mode:overlay;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");}
     #root{position:relative;z-index:1;}
 
@@ -342,7 +342,7 @@
             Run eval suite
           </button>
           <button class="btn-sm-outline" onclick="runEvalCanvas('redteam')">Trigger red team</button>
-          <button class="btn-sm-outline" onclick="scheduleEvalModal()" style="border-color:var(--border-hard);color:var(--accent);">Schedule eval</button>
+          <button class="btn-sm-outline" onclick="scheduleEvalModal()">Schedule eval</button>
         </div>
       </div>
 
@@ -372,62 +372,121 @@
     <!-- WIDGET TAB -->
     <div class="tab-panel" id="tab-widget">
 
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;">
         <div class="section-title" style="margin-bottom:0;">Widget customization</div>
         <span style="font-family:var(--font-mono);font-size:10px;font-weight:600;padding:3px 9px;border-radius:40px;background:var(--green-bg);color:var(--green);border:1px solid var(--green-border);letter-spacing:0.12em;text-transform:uppercase;">● Live</span>
       </div>
-      <p style="font-size:13px;color:var(--text-3);margin-bottom:24px;max-width:480px;">Changes save immediately. Hover any element to see what it controls. Click to edit inline.</p>
 
-      <div style="max-width:400px;margin:0 auto 32px;">
-        <div style="background:var(--bg-deep);border:1px solid var(--border-soft);border-radius:var(--radius-md);overflow:visible;display:flex;flex-direction:column;position:relative;">
+      <div style="display:flex;gap:48px;align-items:flex-start;">
 
-          <div class="w-edit-zone" data-hint="Agent name" onclick="openWEdit('agentName',this)">
-            <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--accent);border-radius:var(--radius-md) var(--radius-md) 0 0;">
-              <div style="width:28px;height:28px;border-radius:50%;background:rgba(11,7,23,0.3);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--text-on-accent);flex-shrink:0;" id="wcp-initials">AS</div>
-              <div style="flex:1;">
-                <div id="wcp-name" style="font-size:13px;font-weight:600;color:var(--text-on-accent);">Acme Support</div>
-                <div style="font-size:10px;color:rgba(11,7,23,0.7);">● Online</div>
-              </div>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(11,7,23,0.6)" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        <!-- Left: form fields -->
+        <div style="flex:1;min-width:0;">
+          <div class="field">
+            <label class="field-label">Agent display name</label>
+            <input class="field-input" type="text" value="Acme Support" oninput="document.getElementById('wcp-name').textContent=this.value||'Agent';document.getElementById('wcp-initials').textContent=(this.value||'A').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()">
+          </div>
+          <div class="field">
+            <label class="field-label">Welcome message</label>
+            <input class="field-input" type="text" value="Hi there! How can I help you today?" oninput="document.getElementById('wcp-welcome').textContent=this.value||'…'">
+          </div>
+          <div class="field">
+            <label class="field-label">Input placeholder</label>
+            <input class="field-input" type="text" value="Type a message…" oninput="document.getElementById('wcp-placeholder').textContent=this.value||'Type a message…'">
+          </div>
+          <div class="field">
+            <label class="field-label">Widget label</label>
+            <input class="field-input" type="text" value="Chat with us">
+          </div>
+          <div class="field">
+            <label class="field-label">Accent colour</label>
+            <div style="display:flex;gap:10px;align-items:center;">
+              <input class="field-input" type="text" value="#F4748C" style="flex:1;">
+              <div style="width:40px;height:40px;border-radius:var(--radius-xs);background:#F4748C;border:1px solid var(--border-soft);flex-shrink:0;"></div>
             </div>
-            <div class="w-edit-badge">Agent name</div>
           </div>
-
-          <div style="padding:12px;display:flex;flex-direction:column;gap:8px;background:var(--bg-deep);">
-            <div class="w-edit-zone" data-hint="Welcome message" onclick="openWEdit('welcome',this)" style="align-self:flex-start;max-width:82%;">
-              <div id="wcp-welcome" style="background:var(--surface-2);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-2);">Hi there! How can I help you today?</div>
-              <div class="w-edit-badge">Welcome message</div>
-            </div>
-            <div style="align-self:flex-end;background:var(--accent);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-on-accent);max-width:82%;">I need help with my invoice.</div>
-            <div style="align-self:flex-start;background:var(--surface-2);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-2);max-width:82%;">Sure! Can you share your invoice number?</div>
+          <div class="field">
+            <label class="field-label">Position</label>
+            <select class="field-input" style="cursor:pointer;"><option>Bottom right</option><option>Bottom left</option></select>
           </div>
-
-          <div class="w-edit-zone" data-hint="Input placeholder" onclick="openWEdit('placeholder',this)">
-            <div style="padding:8px 10px;border-top:1px solid var(--border-soft);display:flex;align-items:center;gap:8px;background:var(--surface-1);">
-              <div id="wcp-placeholder" style="flex:1;font-size:12px;color:var(--text-4);padding:6px 10px;background:var(--surface-2);border-radius:var(--radius-xs);border:1px solid var(--border-soft);">Type a message…</div>
-              <div style="width:28px;height:28px;border-radius:var(--radius-xs);background:var(--accent);display:flex;align-items:center;justify-content:center;">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-              </div>
-            </div>
-            <div class="w-edit-badge">Input placeholder</div>
+          <div class="field">
+            <label class="field-label">Allowed origins</label>
+            <input class="field-input" type="text" value="*.acme.com">
+            <div class="field-hint">Comma-separated CORS glob patterns.</div>
           </div>
-
-          <div class="w-edit-zone" data-hint="Toggle branding" onclick="toggleWBranding()">
-            <div id="wcp-branding" style="padding:6px 14px;border-top:1px solid var(--border-soft);text-align:center;font-size:10px;color:var(--text-4);">Powered by w.chats</div>
-            <div class="w-edit-badge">Show branding</div>
+          <div class="field">
+            <label class="field-label">Open on page load</label>
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+              <input type="checkbox" style="width:16px;height:16px;accent-color:var(--accent);">
+              <span style="font-size:13.5px;color:var(--text-2);">Automatically open chat when page loads</span>
+            </label>
           </div>
-
+          <div class="field">
+            <label class="field-label">Show branding</label>
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+              <input type="checkbox" id="wcp-branding-toggle" checked style="width:16px;height:16px;accent-color:var(--accent);" onchange="document.getElementById('wcp-branding').style.display=this.checked?'block':'none'">
+              <span style="font-size:13.5px;color:var(--text-2);">Show "Powered by w.chats" footer</span>
+            </label>
+          </div>
+          <div style="margin-top:8px;">
+            <button class="btn-save" style="padding:10px 24px;">Save changes</button>
+          </div>
         </div>
 
-        <div id="wcp-edit-popover" style="display:none;margin-top:16px;background:var(--surface-2);border:1px solid var(--border-hard);border-radius:var(--radius-md);padding:14px 16px;">
-          <div id="wcp-edit-label" style="font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:8px;"></div>
-          <input id="wcp-edit-input" class="field-input" type="text" style="width:100%;margin-bottom:10px;" oninput="previewWField()">
-          <div style="display:flex;gap:8px;justify-content:flex-end;">
-            <button class="btn-sm-outline" onclick="closeWEdit()" style="padding:8px 16px;font-size:13px;">Cancel</button>
-            <button class="btn-save" onclick="applyWEdit()" style="padding:8px 18px;font-size:13px;">Save</button>
+        <!-- Right: sticky live preview -->
+        <div style="width:300px;flex-shrink:0;position:sticky;top:20px;">
+          <div style="font-size:10.5px;font-weight:600;color:var(--text-4);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:10px;">Live preview</div>
+
+          <div style="background:var(--bg-deep);border:1px solid var(--border-soft);border-radius:var(--radius-md);overflow:visible;display:flex;flex-direction:column;position:relative;">
+
+            <div class="w-edit-zone" data-hint="Agent name" onclick="openWEdit('agentName',this)">
+              <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--accent);border-radius:var(--radius-md) var(--radius-md) 0 0;">
+                <div style="width:28px;height:28px;border-radius:50%;background:rgba(11,7,23,0.3);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--text-on-accent);flex-shrink:0;" id="wcp-initials">AS</div>
+                <div style="flex:1;">
+                  <div id="wcp-name" style="font-size:13px;font-weight:600;color:var(--text-on-accent);">Acme Support</div>
+                  <div style="font-size:10px;color:rgba(11,7,23,0.7);">● Online</div>
+                </div>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(11,7,23,0.6)" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </div>
+              <div class="w-edit-badge">Agent name</div>
+            </div>
+
+            <div style="padding:12px;display:flex;flex-direction:column;gap:8px;background:var(--bg-deep);">
+              <div class="w-edit-zone" data-hint="Welcome message" onclick="openWEdit('welcome',this)" style="align-self:flex-start;max-width:82%;">
+                <div id="wcp-welcome" style="background:var(--surface-2);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-2);">Hi there! How can I help you today?</div>
+                <div class="w-edit-badge">Welcome message</div>
+              </div>
+              <div style="align-self:flex-end;background:var(--accent);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-on-accent);max-width:82%;">I need help with my invoice.</div>
+              <div style="align-self:flex-start;background:var(--surface-2);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-2);max-width:82%;">Sure! Can you share your invoice number?</div>
+            </div>
+
+            <div class="w-edit-zone" data-hint="Input placeholder" onclick="openWEdit('placeholder',this)">
+              <div style="padding:8px 10px;border-top:1px solid var(--border-soft);display:flex;align-items:center;gap:8px;background:var(--surface-1);">
+                <div id="wcp-placeholder" style="flex:1;font-size:12px;color:var(--text-4);padding:6px 10px;background:var(--surface-2);border-radius:var(--radius-xs);border:1px solid var(--border-soft);">Type a message…</div>
+                <div style="width:28px;height:28px;border-radius:var(--radius-xs);background:var(--accent);display:flex;align-items:center;justify-content:center;">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                </div>
+              </div>
+              <div class="w-edit-badge">Input placeholder</div>
+            </div>
+
+            <div class="w-edit-zone" data-hint="Toggle branding" onclick="toggleWBranding()">
+              <div id="wcp-branding" style="padding:6px 14px;border-top:1px solid var(--border-soft);text-align:center;font-size:10px;color:var(--text-4);">Powered by w.chats</div>
+              <div class="w-edit-badge">Show branding</div>
+            </div>
+
+          </div>
+
+          <div id="wcp-edit-popover" style="display:none;margin-top:16px;background:var(--surface-2);border:1px solid var(--border-hard);border-radius:var(--radius-md);padding:14px 16px;">
+            <div id="wcp-edit-label" style="font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:8px;"></div>
+            <input id="wcp-edit-input" class="field-input" type="text" style="width:100%;margin-bottom:10px;" oninput="previewWField()">
+            <div style="display:flex;gap:8px;justify-content:flex-end;">
+              <button class="btn-sm-outline" onclick="closeWEdit()" style="padding:8px 16px;font-size:13px;">Cancel</button>
+              <button class="btn-save" onclick="applyWEdit()" style="padding:8px 18px;font-size:13px;">Save</button>
+            </div>
           </div>
         </div>
-      </div>
+
+      </div><!-- /flex row -->
 
     </div>
 

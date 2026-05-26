@@ -40,7 +40,7 @@
       background:
         radial-gradient(ellipse 60% 40% at 80% 0%,rgba(244,116,140,0.07) 0%,transparent 50%),
         radial-gradient(ellipse 40% 30% at 0% 60%,rgba(183,154,224,0.05) 0%,transparent 50%),
-        rgba(11,7,23,0.72);
+        rgba(11,7,23,0.45);
     }
     body::after{
       content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
@@ -65,14 +65,13 @@
     .logo-mark svg{width:16px;height:16px;}
     .logo-name{font-family:var(--font-display);font-weight:500;font-variation-settings:"opsz" 144,"SOFT" 30;font-size:18px;color:var(--text-1);}
     .logo-name .dot{color:var(--accent);}
-    .nav-center{flex:1;display:flex;align-items:center;justify-content:center;gap:4px;}
     .nav-link{
       font-size:13.5px;color:var(--text-3);text-decoration:none;
       padding:7px 14px;border-radius:var(--radius-xs);transition:color 0.15s,background 0.15s;
     }
     .nav-link:hover{color:var(--text-1);}
     .nav-link.active{background:var(--accent-dim);color:var(--accent);}
-    .nav-right{flex-shrink:0;display:flex;align-items:center;}
+    .nav-right{margin-left:auto;display:flex;align-items:center;gap:4px;}
     .avatar{
       width:32px;height:32px;border-radius:50%;
       background:linear-gradient(135deg,var(--lilac),var(--surface-3));
@@ -533,13 +532,11 @@
       </div>
       <span class="logo-name">w<span class="dot">.</span>chats</span>
     </a>
-    <div class="nav-center">
+    <div class="nav-right">
       <a href="/agents" class="nav-link active">Agents</a>
       <a href="/docs" class="nav-link">Docs</a>
       <a href="/settings" class="nav-link">Settings</a>
-    </div>
-    <div class="nav-right">
-      <div class="avatar">B</div>
+      <div class="avatar" style="margin-left:8px;">B</div>
     </div>
   </nav>
 
@@ -729,80 +726,22 @@
   <!-- Tab 1: Widget customisation -->
   <div class="deploy-tab-panel active" id="dtabpanel1">
 
-  <p style="font-size:13px;color:var(--text-3);margin-bottom:20px;">Hover any element to see what it controls. Click to edit inline.</p>
+  <div style="display:flex;gap:48px;align-items:flex-start;">
 
-  <!-- Interactive widget card -->
-  <div style="max-width:400px;margin:0 auto 32px;">
-    <div style="background:var(--bg-deep);border:1px solid var(--border-soft);border-radius:var(--radius-md);overflow:visible;display:flex;flex-direction:column;position:relative;">
-
-      <!-- Header zone — editable: agent name -->
-      <div class="w-edit-zone" data-hint="Agent name" onclick="openWidgetEdit('agentName',this)">
-        <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--accent);border-radius:var(--radius-md) var(--radius-md) 0 0;">
-          <div style="width:28px;height:28px;border-radius:50%;background:rgba(11,7,23,0.3);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--text-on-accent);flex-shrink:0;" id="wpreview-initials">AS</div>
-          <div style="flex:1;">
-            <div id="wpreview-name" style="font-size:13px;font-weight:600;color:var(--text-on-accent);">Acme Support</div>
-            <div style="font-size:10px;color:rgba(11,7,23,0.7);">● Online</div>
-          </div>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(11,7,23,0.6)" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </div>
-        <div class="w-edit-badge">Agent name</div>
+    <!-- Left: form fields -->
+    <div style="flex:1;min-width:0;">
+      <div class="field">
+        <label class="field-label">Agent display name</label>
+        <input class="field-input" type="text" value="Acme Support" oninput="document.getElementById('wpreview-name').textContent=this.value||'Agent';document.getElementById('wpreview-initials').textContent=(this.value||'A').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()">
       </div>
-
-      <!-- Chat body: welcome bubble — editable -->
-      <div style="padding:12px;display:flex;flex-direction:column;gap:8px;background:var(--bg-deep);">
-        <div class="w-edit-zone" data-hint="Welcome message" onclick="openWidgetEdit('welcome',this)" style="align-self:flex-start;max-width:82%;">
-          <div id="wpreview-welcome" style="background:var(--surface-2);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-2);">Hi there! How can I help you today?</div>
-          <div class="w-edit-badge">Welcome message</div>
-        </div>
-        <div style="align-self:flex-end;background:var(--accent);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-on-accent);max-width:82%;">I need help with my invoice.</div>
-        <div style="align-self:flex-start;background:var(--surface-2);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-2);max-width:82%;">Sure, I can help with that. Can you share your invoice number?</div>
+      <div class="field">
+        <label class="field-label">Welcome message</label>
+        <input class="field-input" type="text" value="Hi there! How can I help you today?" oninput="document.getElementById('wpreview-welcome').textContent=this.value||'…'">
       </div>
-
-      <!-- Input row — editable: placeholder -->
-      <div class="w-edit-zone" data-hint="Input placeholder" onclick="openWidgetEdit('placeholder',this)">
-        <div style="padding:8px 10px;border-top:1px solid var(--border-soft);display:flex;align-items:center;gap:8px;background:var(--surface-1);">
-          <div id="wpreview-placeholder" style="flex:1;font-size:12px;color:var(--text-4);padding:6px 10px;background:var(--surface-2);border-radius:var(--radius-xs);border:1px solid var(--border-soft);">Type a message…</div>
-          <div style="width:28px;height:28px;border-radius:var(--radius-xs);background:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-          </div>
-        </div>
-        <div class="w-edit-badge">Input placeholder</div>
+      <div class="field">
+        <label class="field-label">Input placeholder</label>
+        <input class="field-input" type="text" value="Type a message…" oninput="document.getElementById('wpreview-placeholder').textContent=this.value||'Type a message…'">
       </div>
-
-      <!-- Branding footer — editable: toggle -->
-      <div class="w-edit-zone" data-hint="Toggle branding" onclick="toggleWidgetBranding(this)">
-        <div id="wpreview-branding" style="padding:6px 14px;border-top:1px solid var(--border-soft);text-align:center;font-size:10px;color:var(--text-4);">Powered by w.chats</div>
-        <div class="w-edit-badge">Show branding</div>
-      </div>
-
-    </div>
-
-    <!-- Floating trigger bubble (decorative) -->
-    <div style="display:flex;align-items:center;gap:10px;margin-top:16px;padding-left:12px;">
-      <div class="widget-bubble" style="width:44px;height:44px;">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-      </div>
-      <span id="wpreview-label" style="font-size:13px;font-weight:600;color:var(--text-2);">Chat with us</span>
-    </div>
-
-    <!-- Inline edit popover (hidden by default) -->
-    <div id="widget-edit-popover" style="display:none;margin-top:16px;background:var(--surface-2);border:1px solid var(--border-hard);border-radius:var(--radius-md);padding:14px 16px;">
-      <div id="widget-edit-label" style="font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:8px;"></div>
-      <input id="widget-edit-input" class="field-input" type="text" style="width:100%;margin-bottom:10px;" oninput="previewWidgetField()">
-      <div style="display:flex;gap:8px;justify-content:flex-end;">
-        <button class="btn-back" onclick="closeWidgetEdit()" style="padding:8px 16px;font-size:13px;">Cancel</button>
-        <button class="btn-next" onclick="applyWidgetEdit()" style="padding:8px 18px;font-size:13px;">Apply</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- All settings (collapsed) -->
-  <details style="border:1px solid var(--border-soft);border-radius:var(--radius-md);overflow:hidden;">
-    <summary style="padding:14px 18px;font-size:13px;font-weight:600;color:var(--text-3);cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;background:var(--surface-1);">
-      All widget settings
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-    </summary>
-    <div style="padding:20px 18px;background:var(--surface-1);border-top:1px solid var(--border-soft);">
       <div class="field">
         <label class="field-label">Widget label</label>
         <input class="field-input" type="text" value="Chat with us" oninput="document.getElementById('wpreview-label').textContent=this.value||'Chat with us'">
@@ -824,18 +763,6 @@
         <div class="field-hint">Comma-separated CORS glob patterns.</div>
       </div>
       <div class="field">
-        <label class="field-label">Agent display name</label>
-        <input class="field-input" type="text" value="Acme Support" oninput="document.getElementById('wpreview-name').textContent=this.value||'Agent';document.getElementById('wpreview-initials').textContent=(this.value||'A').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()">
-      </div>
-      <div class="field">
-        <label class="field-label">Welcome message</label>
-        <input class="field-input" type="text" value="Hi there! How can I help you today?" oninput="document.getElementById('wpreview-welcome').textContent=this.value||'…'">
-      </div>
-      <div class="field">
-        <label class="field-label">Input placeholder</label>
-        <input class="field-input" type="text" value="Type a message…" oninput="document.getElementById('wpreview-placeholder').textContent=this.value||'Type a message…'">
-      </div>
-      <div class="field">
         <label class="field-label">Open on page load</label>
         <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
           <input type="checkbox" style="width:16px;height:16px;accent-color:var(--accent);">
@@ -850,7 +777,72 @@
         </label>
       </div>
     </div>
-  </details>
+
+    <!-- Right: sticky live preview -->
+    <div style="width:300px;flex-shrink:0;position:sticky;top:20px;">
+      <div style="font-size:10.5px;font-weight:600;color:var(--text-4);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:10px;">Live preview</div>
+
+      <!-- Interactive widget card -->
+      <div style="background:var(--bg-deep);border:1px solid var(--border-soft);border-radius:var(--radius-md);overflow:visible;display:flex;flex-direction:column;position:relative;">
+
+        <div class="w-edit-zone" data-hint="Agent name" onclick="openWidgetEdit('agentName',this)">
+          <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--accent);border-radius:var(--radius-md) var(--radius-md) 0 0;">
+            <div style="width:28px;height:28px;border-radius:50%;background:rgba(11,7,23,0.3);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--text-on-accent);flex-shrink:0;" id="wpreview-initials">AS</div>
+            <div style="flex:1;">
+              <div id="wpreview-name" style="font-size:13px;font-weight:600;color:var(--text-on-accent);">Acme Support</div>
+              <div style="font-size:10px;color:rgba(11,7,23,0.7);">● Online</div>
+            </div>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(11,7,23,0.6)" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </div>
+          <div class="w-edit-badge">Agent name</div>
+        </div>
+
+        <div style="padding:12px;display:flex;flex-direction:column;gap:8px;background:var(--bg-deep);">
+          <div class="w-edit-zone" data-hint="Welcome message" onclick="openWidgetEdit('welcome',this)" style="align-self:flex-start;max-width:82%;">
+            <div id="wpreview-welcome" style="background:var(--surface-2);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-2);">Hi there! How can I help you today?</div>
+            <div class="w-edit-badge">Welcome message</div>
+          </div>
+          <div style="align-self:flex-end;background:var(--accent);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-on-accent);max-width:82%;">I need help with my invoice.</div>
+          <div style="align-self:flex-start;background:var(--surface-2);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-2);max-width:82%;">Sure, I can help with that. Can you share your invoice number?</div>
+        </div>
+
+        <div class="w-edit-zone" data-hint="Input placeholder" onclick="openWidgetEdit('placeholder',this)">
+          <div style="padding:8px 10px;border-top:1px solid var(--border-soft);display:flex;align-items:center;gap:8px;background:var(--surface-1);">
+            <div id="wpreview-placeholder" style="flex:1;font-size:12px;color:var(--text-4);padding:6px 10px;background:var(--surface-2);border-radius:var(--radius-xs);border:1px solid var(--border-soft);">Type a message…</div>
+            <div style="width:28px;height:28px;border-radius:var(--radius-xs);background:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            </div>
+          </div>
+          <div class="w-edit-badge">Input placeholder</div>
+        </div>
+
+        <div class="w-edit-zone" data-hint="Toggle branding" onclick="toggleWidgetBranding(this)">
+          <div id="wpreview-branding" style="padding:6px 14px;border-top:1px solid var(--border-soft);text-align:center;font-size:10px;color:var(--text-4);">Powered by w.chats</div>
+          <div class="w-edit-badge">Show branding</div>
+        </div>
+
+      </div>
+
+      <!-- Floating trigger bubble -->
+      <div style="display:flex;align-items:center;gap:10px;margin-top:16px;padding-left:4px;">
+        <div class="widget-bubble" style="width:44px;height:44px;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <span id="wpreview-label" style="font-size:13px;font-weight:600;color:var(--text-2);">Chat with us</span>
+      </div>
+
+      <!-- Inline edit popover -->
+      <div id="widget-edit-popover" style="display:none;margin-top:16px;background:var(--surface-2);border:1px solid var(--border-hard);border-radius:var(--radius-md);padding:14px 16px;">
+        <div id="widget-edit-label" style="font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:8px;"></div>
+        <input id="widget-edit-input" class="field-input" type="text" style="width:100%;margin-bottom:10px;" oninput="previewWidgetField()">
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button class="btn-back" onclick="closeWidgetEdit()" style="padding:8px 16px;font-size:13px;">Cancel</button>
+          <button class="btn-next" onclick="applyWidgetEdit()" style="padding:8px 18px;font-size:13px;">Apply</button>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /flex row -->
 
   </div>
 
