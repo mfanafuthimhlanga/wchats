@@ -1,32 +1,40 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-24T16:30:00.000Z",
-  "phase": "post-08",
-  "phase_name": "admin-ui-configure-bugs",
-  "phase_dir": ".planning",
-  "plan": 0,
-  "task": 0,
-  "total_tasks": 4,
+  "timestamp": "2026-05-26T21:00:00+02:00",
+  "phase": "11",
+  "phase_name": "ui-overhaul",
+  "phase_dir": ".planning/phases/11-ui-overhaul",
+  "plan": null,
+  "task": null,
+  "total_tasks": null,
   "status": "paused",
   "completed_tasks": [
-    {"id": 1, "name": "Identify BUG-1: soul state not persisting across sessions", "status": "done", "commit": "none"},
-    {"id": 2, "name": "Identify BUG-2: no next-step CTA after Configure completes", "status": "done", "commit": "none"},
-    {"id": 3, "name": "Analyse root causes in page.tsx / layout.tsx / soul/page.tsx", "status": "done", "commit": "none"}
+    {"id": 1, "name": "UI audit all 4 mockups (6-pillar)", "status": "done", "commit": "da3a75c"},
+    {"id": 2, "name": "Round 1+2 mockup polish — transparent navs, modal fixes, tab-first header, widget customizer", "status": "done", "commit": "88b8cac"},
+    {"id": 3, "name": "Round 3 mockup polish — greeting strip, card redesign, agents-id restructure, interactive widget, deploy sub-tab flow", "status": "done", "commit": "745197f"},
+    {"id": 4, "name": "Fix agents-home nested anchor / card footer escape bug", "status": "done", "commit": "11c3ef7"}
   ],
   "remaining_tasks": [
-    {"id": 4, "name": "Reproduce BUG-1: check soul/page.tsx PATCH call + API response for soul fields", "status": "not_started"},
-    {"id": 5, "name": "Fix BUG-1: ensure soul_voice/soul_do_list/soul_donot_list/soul_role written to DB via PATCH /agents/{id}", "status": "not_started"},
-    {"id": 6, "name": "Fix BUG-2: replace testPanel placeholder with real CTA to /agents/[id]/eval; add 'Go to Evals' button in configurePanel once configureDone", "status": "not_started"},
-    {"id": 7, "name": "Wire step3Done in layout.tsx: query eval-runs, derive step3Done = runs.length > 0; unlock Deploy step", "status": "not_started"}
+    {"id": 5, "name": "Run /gsd-plan-phase 11", "status": "not_started"},
+    {"id": 6, "name": "Execute Wave 1 — token foundation + background + nav", "status": "not_started"},
+    {"id": 7, "name": "Execute Wave 2 — landing page rebuild", "status": "not_started"},
+    {"id": 8, "name": "Execute Wave 3 — agents dashboard + AgentCard", "status": "not_started"},
+    {"id": 9, "name": "Execute Wave 4 — agent journey screens", "status": "not_started"},
+    {"id": 10, "name": "Execute Wave 5 — eval/deploy/settings/AlertsBanner", "status": "not_started"},
+    {"id": 11, "name": "Execute Wave 6 — auth pages + QA", "status": "not_started"}
   ],
   "blockers": [],
   "human_actions_pending": [],
   "decisions": [
-    {"decision": "configureDone definition is correct: soulSaved && hasDocs", "rationale": "Both conditions are necessary; gate is sound", "phase": "post-08"},
-    {"decision": "step3Done should derive from eval-runs query (runs.length > 0), not a passing-score threshold", "rationale": "M8 pre-deploy checklist is the real quality gate; stepper just needs to know a run was triggered", "phase": "post-08"},
-    {"decision": "Soul persist bug: PATCH call may be silently failing or soul fields absent from request body", "rationale": "Docs persist (separate endpoint) but soul does not — points to the PATCH /agents/{id} call in soul/page.tsx", "phase": "post-08"}
+    {"decision": "agents-id: KB tab is first (default), Analytics second", "rationale": "KB + Soul are the primary configuration surface; analytics is observational", "phase": "11"},
+    {"decision": "Soul editor: tab removed, now a modal triggered from KB tab", "rationale": "Reduces tab count; Soul logically belongs alongside KB config", "phase": "11"},
+    {"decision": "Red Team merged into Eval tab as subsection", "rationale": "Both share streaming canvas; separate tab was bloaty and would need duplicate canvas", "phase": "11"},
+    {"decision": "New Widget tab in agents-id for post-deployment customization", "rationale": "View widget button removed from header; deserves full tab surface", "phase": "11"},
+    {"decision": "Deploy sub-tab flow: Widget→Next, Pre-deploy→Next, Embed→Deploy", "rationale": "Forces sequential completion before deploy; each sub-tab is a required step", "phase": "11"},
+    {"decision": "Interactive widget customizer pattern: hover badges + click-to-edit inline popovers", "rationale": "User explicitly requested this instead of form+preview columns", "phase": "11"},
+    {"decision": "--surface-1 canonical value is #140E2A (from CONTEXT.md), not #1E1638 (mockup)", "rationale": "CONTEXT.md migration table is authoritative", "phase": "11"}
   ],
   "uncommitted_files": [],
-  "next_action": "Open apps/admin/app/agents/[id]/soul/page.tsx, find the save handler, log the PATCH request body and response in browser devtools to confirm whether soul fields are sent and whether the API writes them. Then check apps/api/app/api/v1/agents.py list_agents and patch_agent for soul field handling.",
-  "context_notes": "No active GSD phase — this is a live-testing bug-fix session discovered during M8 manual verification. The agent page layout is a two-panel design: left = JourneyStepper (layout.tsx), right = content panel (page.tsx child). The Configure step's done condition is correct but the downstream panel (testPanel) is a stale M6-era placeholder with no navigation. step3Done is hardcoded false in both layout.tsx:139 and page.tsx:139. Infrastructure: redis running (already was), uvicorn on :8000, Celery worker (pool=solo, bg process), Next.js on :3000. Migrations applied: control DB now at 0011 (was at 0009, applied 0010+0011 to fix agents.strategy_resynthesis_flagged 500 error)."
+  "next_action": "Run /gsd-plan-phase 11 — all pre-planning artifacts ready (CONTEXT.md, RESEARCH.md, 4 polished mockups at commits 88b8cac + 745197f + 11c3ef7)",
+  "context_notes": "Three sessions of mockup polish complete. All 4 HTML mockups represent the final design contract. The interactive widget pattern (hover-to-badge, click-to-edit popover) is now in both agents-new deploy step and agents-id widget tab. The nested-anchor bug pattern is documented as a constraint below."
 }
