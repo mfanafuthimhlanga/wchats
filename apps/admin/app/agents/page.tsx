@@ -21,14 +21,25 @@ type AgentSummary = {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function getTimeGreeting(): string {
+  const hour = new Date().getHours()
+  if (hour < 12) return 'Good morning'
+  if (hour < 18) return 'Good afternoon'
+  return 'Good evening'
+}
+
+// ---------------------------------------------------------------------------
 // Inline style constants
 // ---------------------------------------------------------------------------
 
 const primaryButtonInline: React.CSSProperties = {
   background: 'var(--accent)',
-  color: '#fff',
+  color: '#0B0717',
   padding: '10px 18px',
-  borderRadius: 'var(--radius-xs)',
+  borderRadius: 'var(--radius-sm)',
   fontWeight: 600,
   fontSize: '14px',
   textDecoration: 'none',
@@ -143,34 +154,76 @@ export default function AgentsDashboardPage() {
       : msg || 'Failed to load agents. Please refresh.'
   }
 
+  const greeting = getTimeGreeting()
+
   return (
-    <div
-      style={{
-        padding: '40px 32px',
-        maxWidth: '1180px',
-        margin: '0 auto',
-      }}
-    >
-      {/* Heading row */}
+    <div style={{ background: 'transparent' }}>
+      {/* Greeting strip — full-width band with radial gradients */}
       <div
         style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: '24px',
+          background: 'var(--bg)',
+          backgroundImage: `
+            radial-gradient(ellipse 60% 40% at 80% 0%, rgba(244,116,140,0.08) 0%, transparent 50%),
+            radial-gradient(ellipse 40% 30% at 0% 60%, rgba(183,154,224,0.06) 0%, transparent 50%)`,
+          padding: '32px 32px 24px',
         }}
       >
+        <p
+          style={{
+            fontSize: '10.5px',
+            fontWeight: 600,
+            letterSpacing: '0.12em',
+            textTransform: 'uppercase',
+            color: 'var(--text-3)',
+            margin: '0 0 8px 0',
+          }}
+        >
+          {greeting.split(' ')[0].toUpperCase()} · {agents.length} {agents.length === 1 ? 'AGENT' : 'AGENTS'}
+        </p>
         <h1
           style={{
-            fontSize: '24px',
-            fontWeight: 700,
+            fontFamily: 'var(--font-display)',
+            fontWeight: 400,
+            fontVariationSettings: '"opsz" 144, "SOFT" 30',
+            fontSize: '32px',
+            letterSpacing: '-0.025em',
+            lineHeight: 1.1,
             color: 'var(--text-1)',
             margin: 0,
           }}
         >
-          Your agents
+          {greeting},{' '}
+          <em
+            style={{
+              fontStyle: 'italic',
+              fontWeight: 300,
+              color: 'var(--accent)',
+              fontVariationSettings: '"opsz" 144, "SOFT" 100',
+            }}
+          >
+            there
+          </em>
         </h1>
-        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+      </div>
+
+      {/* Content area */}
+      <div
+        style={{
+          padding: '32px 32px',
+          maxWidth: '1180px',
+          margin: '0 auto',
+        }}
+      >
+        {/* Action row */}
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'flex-end',
+            alignItems: 'center',
+            marginBottom: '24px',
+            gap: '10px',
+          }}
+        >
           <button
             onClick={() => agentsQuery.refetch()}
             disabled={agentsQuery.isFetching}
@@ -182,66 +235,113 @@ export default function AgentsDashboardPage() {
             {agentsQuery.isFetching ? 'Refreshing…' : 'Refresh'}
           </button>
           <Link href="/agents/new" style={primaryButtonInline}>
-            + Create agent
+            Create agent
           </Link>
         </div>
-      </div>
 
-      {/* Error alert — exact pattern from soul/page.tsx lines 337-351 */}
-      {loadError && (
-        <div
-          role="alert"
-          style={{
-            padding: '12px 16px',
-            marginBottom: '20px',
-            background: 'var(--red-bg)',
-            border: '1px solid rgba(192,57,43,0.3)',
-            borderRadius: 'var(--radius-xs)',
-            fontSize: '14px',
-            color: 'var(--red)',
-          }}
-        >
-          {loadError}
-        </div>
-      )}
-
-      {/* Loading state */}
-      {isLoading && (
-        <p style={{ color: 'var(--text-3)' }}>Loading agents…</p>
-      )}
-
-      {/* Empty state */}
-      {!isLoading && agents.length === 0 && !loadError && (
-        <div style={{ textAlign: 'center', padding: '80px 0' }}>
-          <p
+        {/* Error alert — exact pattern from soul/page.tsx lines 337-351 */}
+        {loadError && (
+          <div
+            role="alert"
             style={{
-              color: 'var(--text-3)',
+              padding: '12px 16px',
               marginBottom: '20px',
-              fontSize: '15px',
+              background: 'var(--red-bg)',
+              border: '1px solid rgba(192,57,43,0.3)',
+              borderRadius: 'var(--radius-xs)',
+              fontSize: '14px',
+              color: 'var(--red)',
             }}
           >
-            No agents yet.
-          </p>
-          <Link href="/agents/new" style={primaryButtonInline}>
-            Create your first agent
-          </Link>
-        </div>
-      )}
+            {loadError}
+          </div>
+        )}
 
-      {/* Agent grid */}
-      {!isLoading && agents.length > 0 && (
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-            gap: '20px',
-          }}
-        >
-          {agents.map((a) => (
-            <AgentCard key={a.id} {...a} onDelete={handleDelete} />
-          ))}
-        </div>
-      )}
+        {/* Loading state */}
+        {isLoading && (
+          <p style={{ color: 'var(--text-3)' }}>Loading agents…</p>
+        )}
+
+        {/* Empty state */}
+        {!isLoading && agents.length === 0 && !loadError && (
+          <div style={{ textAlign: 'center', padding: '80px 0' }}>
+            {/* Coral eyebrow pill */}
+            <div
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                background: 'var(--glass-bg)',
+                backdropFilter: 'var(--glass-blur)',
+                border: '1px solid var(--glass-border)',
+                borderRadius: 'var(--radius-pill)',
+                padding: '4px 14px',
+                marginBottom: '20px',
+              }}
+            >
+              <span
+                style={{
+                  fontSize: '10.5px',
+                  fontWeight: 600,
+                  letterSpacing: '0.12em',
+                  textTransform: 'uppercase',
+                  color: 'var(--text-3)',
+                }}
+              >
+                NO AGENTS YET
+              </span>
+            </div>
+            <h2
+              style={{
+                fontFamily: 'var(--font-display)',
+                fontWeight: 400,
+                fontVariationSettings: '"opsz" 144, "SOFT" 30',
+                fontSize: '24px',
+                color: 'var(--text-1)',
+                margin: '0 0 8px 0',
+              }}
+            >
+              Build your first{' '}
+              <em
+                style={{
+                  fontStyle: 'italic',
+                  fontWeight: 300,
+                  color: 'var(--accent)',
+                  fontVariationSettings: '"opsz" 144, "SOFT" 100',
+                }}
+              >
+                agent
+              </em>
+            </h2>
+            <p
+              style={{
+                color: 'var(--text-3)',
+                marginBottom: '24px',
+                fontSize: '15px',
+              }}
+            >
+              Create a customer service agent and deploy it in minutes.
+            </p>
+            <Link href="/agents/new" style={primaryButtonInline}>
+              Create agent
+            </Link>
+          </div>
+        )}
+
+        {/* Agent grid */}
+        {!isLoading && agents.length > 0 && (
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, 1fr)',
+              gap: '16px',
+            }}
+          >
+            {agents.map((a) => (
+              <AgentCard key={a.id} {...a} onDelete={handleDelete} />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
