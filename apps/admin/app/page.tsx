@@ -32,18 +32,16 @@ export default function LandingPage() {
           position: 'sticky',
           top: 0,
           zIndex: 100,
-          background: scrolled ? 'var(--bg-elev)' : 'var(--glass-bg)',
+          background: scrolled ? 'var(--bg-elev)' : 'transparent',
           backdropFilter: scrolled ? 'none' : 'var(--glass-blur)',
           WebkitBackdropFilter: scrolled ? 'none' : 'var(--glass-blur)',
           transition: 'background 0.3s, backdrop-filter 0.3s',
-          borderBottom: scrolled ? '1px solid var(--border-soft)' : 'none',
+          borderBottom: scrolled ? '1px solid var(--border-soft)' : '1px solid var(--glass-border)',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo-mark.svg" alt="W Chats" style={{ width: '30px', height: '30px' }} />
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/wordmark.svg" alt="w.chats" style={{ height: '20px' }} />
+          <img src="/wordmark.svg" alt="w.chats" style={{ height: '24px' }} />
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -66,7 +64,7 @@ export default function LandingPage() {
               display: 'inline-block',
             }}
           >
-            Build your agent →
+            Start free →
           </Link>
         </div>
       </header>
@@ -157,6 +155,18 @@ export default function LandingPage() {
               </em>
             </h1>
 
+            <p
+              style={{
+                fontSize: '16px',
+                lineHeight: 1.6,
+                color: 'var(--text-3)',
+                marginBottom: '28px',
+                maxWidth: '480px',
+              }}
+            >
+              W Chats does the serious work — structure-aware ingestion, hybrid retrieval, continuous evaluation, weekly red teaming — so small business owners ship a customer service agent that is actually safe to deploy.
+            </p>
+
             {/* CTA row */}
             <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '40px' }}>
               <Link
@@ -172,7 +182,7 @@ export default function LandingPage() {
                   display: 'inline-block',
                 }}
               >
-                Build your agent →
+                Start free →
               </Link>
               <button
                 style={{
@@ -196,12 +206,14 @@ export default function LandingPage() {
                 display: 'flex',
                 gap: '32px',
                 flexWrap: 'wrap',
+                borderTop: '1px solid var(--glass-border)',
+                paddingTop: '24px',
               }}
             >
               {[
-                { value: '<30 min', label: 'SETUP TIME' },
-                { value: '>0.85', label: 'AVG RAGAS SCORE' },
-                { value: '0 critical', label: 'DEPLOYMENT BLOCKS' },
+                { value: '<30 min', label: 'Signup to deployed' },
+                { value: '>0.85', label: 'Faithfulness target' },
+                { value: '0 critical', label: 'Red team threshold' },
               ].map(({ value, label }) => (
                 <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   <span
@@ -217,10 +229,8 @@ export default function LandingPage() {
                   </span>
                   <span
                     style={{
-                      fontSize: '10.5px',
+                      fontSize: '11px',
                       fontWeight: 600,
-                      letterSpacing: '0.12em',
-                      textTransform: 'uppercase',
                       color: 'var(--text-3)',
                     }}
                   >
