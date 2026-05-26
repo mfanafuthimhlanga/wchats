@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: in_progress
-last_updated: "2026-05-26T00:00:00.000Z"
+last_updated: "2026-05-26T14:00:00.000Z"
 progress:
   total_phases: 13
   completed_phases: 12
   total_plans: 85
-  completed_plans: 79
-  percent: 93
+  completed_plans: 80
+  percent: 94
 ---
 
 # Project State
@@ -18,7 +18,7 @@ progress:
 
 **Active Milestone:** M11 — Admin UI Overhaul (Hillbrow at Dusk)
 **Milestone Phase:** Phase 11 — 6 plans ready to execute
-**Current Position:** Phase 11, Plan 0 of 6 (ready to execute — Wave 1 first)
+**Current Position:** Phase 11, Plan 1 of 6 complete (Wave 1 done — proceed to Wave 2)
 **Last updated:** 2026-05-26
 
 ## Project Reference
@@ -47,6 +47,10 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Key Decisions
 
+- [11-01] Veil opacity set to 0.45 per .continue-here.md canonical (not 0.72 from CONTEXT.md) — lighter veil lets more city show through
+- [11-01] --surface-1 set to #140E2A per .continue-here.md canonical (not #1E1638 from colors_and_type.css) — deeper card surface
+- [11-01] pnpm run lint pre-existing broken in admin (no ESLint config) — not introduced by this plan; build passes
+- [11-01] page.tsx logo fixed as Rule 2 deviation — --font-pixelify undefined after token removal required immediate fix
 - [04-01] Legacy soul JSONB + role TEXT preserved; new soul_voice/soul_do_list/soul_donot_list/soul_role are additive (D-Schema decision from CONTEXT.md)
 - [04-01] JWT_SECRET default is intentionally insecure 'dev-secret-change-in-production' — T-04-01-04 accept disposition; operator must override in production
 - [04-01] SMTP_* fields all optional (None default) so SMTP_HOST stays unset in tests, exercising fallback-to-structlog code paths
@@ -88,6 +92,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|
+| 11 | 01 | ~25 min | 2 | 9 |
 | 08 | 07 | ~25 min | 2 | 3 |
 | 08 | 06 | ~40 min | 2 | 4 |
 | 08 | 05 | ~20 min | 2 | 1 |
@@ -209,3 +214,4 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Last session: 2026-05-25 — Phase 10 COMPLETE: 6/6 plans executed, code review + fixes applied (10-REVIEW-FIX.md), UAT: 7 passed / 0 issues / 3 blocked (live-services-only); OPS-01–OPS-06 all satisfied; human checkpoint (demo_m10.sh) pending live-service run
 - Last session: 2026-05-25 — Phase 9 COMPLETE: bug fix (strategy_service used Agent SDK instead of direct Anthropic API — tool_use blocks never generated); replaced with anthropic.Anthropic().messages.create(); demo_m9.sh approved; all STR-01–STR-03 satisfied — fix commit b108441
 - [09] ClaudeSDKClient (claude-agent-sdk) does NOT support custom JSON tool schemas — it is a code-execution agent. Always use direct Anthropic API (anthropic.Anthropic().messages.create) for tool_use patterns in services.
+- Last session: 2026-05-26 — completed 11-01-PLAN.md (Hillbrow at Dusk token foundation: globals.css full replacement, skyline PNG background, Fraunces Google Fonts, Clerk dark appearance, SVG logo in TopNav, transparent layout wrapper) — 2 commits: 76e7a61 + 64e3986
