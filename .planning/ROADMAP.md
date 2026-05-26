@@ -25,7 +25,7 @@ Phases within a milestone are planned via `/gsd-discuss-phase` when the mileston
 | M8 | Pre-deployment Checklist | Orchestrator agent + owner approval gate + journey validated | 8 | `prd-M8.md` | ✓ Complete (7/7 plans) |
 | M9 | Retrieval Strategy Synthesis | Strategist auto-generates per-tenant retrieval configs | 3 | `prd-M9.md` | ○ Pending |
 | M10 | Maintenance + Observability | Autonomous crons + digest email + Langfuse dashboards + alerting | 6 | `prd-M10.md` | ○ Pending |
-| M11 | Admin UI Overhaul | Parchment & Wine → Hillbrow at Dusk end-to-end visual rearchitecture | 12 (UI-01–UI-12) | — | ◑ In Progress (3/6 plans) |
+| M11 | Admin UI Overhaul | Parchment & Wine → Hillbrow at Dusk end-to-end visual rearchitecture | 12 (UI-01–UI-12) | — | ◑ In Progress (4/6 plans) |
 
 **Total v1 requirements:** 84 | **Mapped:** 84 ✓ | **Unmapped:** 0 ✓
 
@@ -384,7 +384,7 @@ Plans:
 - [x] 11-01-PLAN.md — Wave 1: Token foundation + background (globals.css :root replacement, skyline body background, Fraunces font, logo SVG assets, TopNav dark, agents/[id]/layout.tsx transparent)
 - [x] 11-02-PLAN.md — Wave 2: Landing page rebuild (transparent hero, glass nav, Fraunces headline strikethrough, coral CTA, trust strip, WorkflowCard animation)
 - [x] 11-03-PLAN.md — Wave 3: Agents dashboard + AgentCard (greeting strip, 3-column grid, --surface-1 cards, gold status chips, hover effects)
-- [ ] 11-04-PLAN.md — Wave 4: Agent journey screens (JourneyStepper coral active state, StepSubtaskCard elevation, new/soul/ingest dark form panels)
+- [x] 11-04-PLAN.md — Wave 4: Agent journey screens (JourneyStepper coral active state, StepSubtaskCard elevation, new/soul/ingest dark form panels)
 - [ ] 11-05-PLAN.md — Wave 5: Eval + Deploy + Settings (glass stat tiles, Recharts palette, dark DEFAULT_CONFIG, settings form panel)
 - [ ] 11-06-PLAN.md — Wave 6: Auth pages + QA pass (sign-in/up transparent + logo, UserAvatar lilac ring, token regression greps, human visual audit)
 
