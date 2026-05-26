@@ -25,8 +25,8 @@ export interface AgentCardProps {
 
 const STATUS_COLORS: Record<string, { bg: string; fg: string; label: string }> = {
   ready: { bg: 'var(--green-bg)', fg: 'var(--green)', label: 'Ready' },
-  pending: { bg: 'var(--amber-bg)', fg: 'var(--amber)', label: 'Provisioning' },
-  provisioning: { bg: 'var(--amber-bg)', fg: 'var(--amber)', label: 'Provisioning' },
+  pending: { bg: 'var(--gold-bg)', fg: 'var(--gold)', label: 'Provisioning' },
+  provisioning: { bg: 'var(--gold-bg)', fg: 'var(--gold)', label: 'Provisioning' },
   error: { bg: 'var(--red-bg)', fg: 'var(--red)', label: 'Error' },
 }
 
@@ -87,6 +87,7 @@ export default function AgentCard({ id, name, role, status, created_at, onDelete
   const c = getStatusColor(status)
   const formattedDate = new Date(created_at).toLocaleDateString()
 
+  const [hovered, setHovered] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -109,15 +110,21 @@ export default function AgentCard({ id, name, role, status, created_at, onDelete
 
   return (
     <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         display: 'flex',
         flexDirection: 'column',
-        background: 'var(--bg)',
-        border: '1px solid var(--border-soft)',
-        borderRadius: 'var(--radius-xs)',
+        background: 'var(--surface-1)',
+        border: `1px solid ${hovered ? 'var(--border)' : 'var(--border-soft)'}`,
+        borderTop: `1px solid ${hovered ? 'var(--border-hard)' : 'var(--border-soft)'}`,
+        borderRadius: 'var(--radius-md)',
         boxShadow: 'var(--shadow-card)',
         color: 'var(--text-1)',
         overflow: 'hidden',
+        transform: hovered ? 'translateY(-2px)' : 'translateY(0)',
+        transition: 'transform 0.2s, box-shadow 0.2s, border-color 0.2s',
+        cursor: 'pointer',
       }}
     >
       {/* Navigable area — keep the delete controls OUTSIDE this anchor so we
@@ -143,8 +150,10 @@ export default function AgentCard({ id, name, role, status, created_at, onDelete
         >
           <h3
             style={{
-              fontSize: '16px',
-              fontWeight: 700,
+              fontFamily: 'var(--font-display)',
+              fontSize: '17px',
+              fontWeight: 600,
+              fontVariationSettings: '"opsz" 144, "SOFT" 30',
               color: 'var(--text-1)',
               margin: 0,
             }}
@@ -153,10 +162,12 @@ export default function AgentCard({ id, name, role, status, created_at, onDelete
           </h3>
           <span
             style={{
-              padding: '4px 10px',
-              borderRadius: '999px',
-              fontSize: '11px',
+              padding: '3px 10px',
+              borderRadius: 'var(--radius-pill)',
+              fontSize: '10.5px',
               fontWeight: 600,
+              letterSpacing: '0.12em',
+              textTransform: 'uppercase',
               background: c.bg,
               color: c.fg,
               whiteSpace: 'nowrap',
@@ -166,10 +177,13 @@ export default function AgentCard({ id, name, role, status, created_at, onDelete
           </span>
         </div>
 
-        {/* Subtitle: role */}
+        {/* Subtitle: role — UPPERCASE TRACKED micro-label */}
         <p
           style={{
-            fontSize: '13px',
+            fontSize: '10.5px',
+            fontWeight: 600,
+            letterSpacing: '0.12em',
+            textTransform: 'uppercase',
             color: 'var(--text-3)',
             margin: '0 0 12px 0',
           }}
