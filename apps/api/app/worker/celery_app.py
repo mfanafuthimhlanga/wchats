@@ -34,6 +34,7 @@ worker_pool = "solo" (Windows fix):
     concurrency loss.
 """
 
+import socket
 import ssl
 
 import structlog
@@ -146,9 +147,13 @@ celery_app.conf.update(
         "socket_connect_timeout": 10,
         "socket_keepalive": True,
         "socket_keepalive_options": {
-            "TCP_KEEPIDLE": 60,
-            "TCP_KEEPINTVL": 10,
-            "TCP_KEEPCNT": 5,
+            k: v
+            for k, v in [
+                (getattr(socket, "TCP_KEEPIDLE", None), 60),
+                (getattr(socket, "TCP_KEEPINTVL", None), 10),
+                (getattr(socket, "TCP_KEEPCNT", None), 5),
+            ]
+            if k is not None
         },
         "visibility_timeout": 3600,
         "retry_on_timeout": True,
