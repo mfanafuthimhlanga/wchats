@@ -73,9 +73,9 @@ const ROLE_OPTIONS = [
 const LABEL_STYLE: React.CSSProperties = {
   display: 'block',
   fontWeight: 600,
-  fontSize: '11px',
+  fontSize: '10.5px',
   textTransform: 'uppercase' as const,
-  letterSpacing: '0.08em',
+  letterSpacing: '0.12em',
   color: 'var(--text-3)',
   marginBottom: '6px',
 }
@@ -281,7 +281,16 @@ export default function SoulEditorPage({
     <div style={{ display: 'flex', flex: 1, overflow: 'hidden', fontFamily: 'var(--font-sans)' }}>
       {/* Two-column body — preview hidden below 1100px */}
       {/* Form Panel */}
-      <div style={{ flex: 1, padding: '32px', maxWidth: '600px', overflowY: 'auto' }}>
+      <div style={{
+        flex: 1,
+        padding: '32px',
+        maxWidth: '600px',
+        overflowY: 'auto',
+        background: 'var(--surface-1)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius-sm)',
+        margin: '32px',
+      }}>
         <h1
           style={{
             fontSize: '20px',
@@ -290,7 +299,18 @@ export default function SoulEditorPage({
             marginBottom: '24px',
           }}
         >
-          {agentQuery.data?.name ?? 'Agent'} — Soul
+          <span
+            style={{
+              fontFamily: 'var(--font-display)',
+              fontStyle: 'italic',
+              fontWeight: 300,
+              color: 'var(--accent)',
+              fontVariationSettings: '"opsz" 144, "SOFT" 100',
+            }}
+          >
+            {agentQuery.data?.name ?? 'Agent'}
+          </span>
+          {' '}— Soul
         </h1>
 
           {loadError && (
@@ -352,7 +372,7 @@ export default function SoulEditorPage({
               style={{
                 width: '100%',
                 padding: '10px 12px',
-                border: '1px solid var(--border)',
+                border: '1px solid var(--border-soft)',
                 borderRadius: 'var(--radius-xs)',
                 fontSize: '14px',
                 fontFamily: 'var(--font-sans)',
@@ -379,7 +399,7 @@ export default function SoulEditorPage({
               style={{
                 width: '100%',
                 padding: '10px 12px',
-                border: '1px solid var(--border)',
+                border: '1px solid var(--border-soft)',
                 borderRadius: 'var(--radius-xs)',
                 fontSize: '14px',
                 fontFamily: 'var(--font-sans)',
@@ -391,7 +411,7 @@ export default function SoulEditorPage({
               }}
             />
             {voiceWarning && (
-              <p style={{ fontSize: '12px', color: 'var(--amber)', marginTop: '4px' }}>
+              <p style={{ fontSize: '12px', color: 'var(--gold)', marginTop: '4px' }}>
                 A voice description improves agent consistency.
               </p>
             )}
@@ -429,7 +449,7 @@ export default function SoulEditorPage({
                   style={{
                     flex: 1,
                     padding: '10px 12px',
-                    border: '1px solid var(--border)',
+                    border: '1px solid var(--border-soft)',
                     borderRadius: 'var(--radius-xs)',
                     fontSize: '14px',
                     fontFamily: 'var(--font-sans)',
@@ -513,7 +533,7 @@ export default function SoulEditorPage({
                   style={{
                     flex: 1,
                     padding: '10px 12px',
-                    border: '1px solid var(--border)',
+                    border: '1px solid var(--border-soft)',
                     borderRadius: 'var(--radius-xs)',
                     fontSize: '14px',
                     fontFamily: 'var(--font-sans)',
@@ -578,7 +598,7 @@ export default function SoulEditorPage({
                   padding: '12px 32px',
                   minHeight: '44px',
                   background: saveStatus === 'saved' || canSave ? 'var(--accent)' : 'var(--surface-3)',
-                  color: saveStatus === 'saved' || canSave ? '#fff' : 'var(--text-4)',
+                  color: saveStatus === 'saved' || canSave ? '#0B0717' : 'var(--text-4)',
                   border: 'none',
                   borderRadius: 'var(--radius-sm)',
                   cursor: saveStatus === 'saved' || canSave ? 'pointer' : 'not-allowed',

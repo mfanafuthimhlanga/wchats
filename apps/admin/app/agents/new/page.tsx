@@ -141,7 +141,7 @@ export default function CreateAgentPage() {
   const inputStyle: React.CSSProperties = {
     width: '100%',
     padding: '10px 12px',
-    border: '1px solid var(--border)',
+    border: '1px solid var(--border-soft)',
     borderRadius: 'var(--radius-xs)',
     fontSize: '14px',
     fontFamily: 'var(--font-sans)',
@@ -154,9 +154,9 @@ export default function CreateAgentPage() {
   const labelStyle: React.CSSProperties = {
     display: 'block',
     fontWeight: 600,
-    fontSize: '11px',
+    fontSize: '10.5px',
     textTransform: 'uppercase',
-    letterSpacing: '0.08em',
+    letterSpacing: '0.12em',
     color: 'var(--text-3)',
     marginBottom: '6px',
   }
@@ -222,7 +222,13 @@ export default function CreateAgentPage() {
 
         {/* Form phase */}
         {phase === 'form' && (
-          <form onSubmit={handleSubmit} style={{ maxWidth: '480px' }}>
+          <form onSubmit={handleSubmit} style={{
+            maxWidth: '480px',
+            background: 'var(--surface-1)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '28px',
+          }}>
             {!name.trim() && mutation.isIdle ? null : null}
 
             {/* Agent name */}
@@ -265,7 +271,7 @@ export default function CreateAgentPage() {
                 padding: '12px 32px',
                 minHeight: '44px',
                 background: 'var(--accent)',
-                color: '#fff',
+                color: '#0B0717',
                 border: 'none',
                 borderRadius: 'var(--radius-sm)',
                 cursor: 'pointer',
@@ -337,7 +343,7 @@ export default function CreateAgentPage() {
                 padding: '12px 32px',
                 minHeight: '44px',
                 background: 'var(--accent)',
-                color: '#fff',
+                color: '#0B0717',
                 border: 'none',
                 borderRadius: 'var(--radius-sm)',
                 cursor: 'pointer',

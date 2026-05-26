@@ -53,8 +53,8 @@ const EVENT_LABELS: Record<string, string> = {
 const PARSE_STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
   complete: { bg: 'var(--green-bg)', fg: 'var(--green)' },
   parsed: { bg: 'var(--green-bg)', fg: 'var(--green)' },
-  pending: { bg: 'var(--amber-bg)', fg: 'var(--amber)' },
-  processing: { bg: 'var(--amber-bg)', fg: 'var(--amber)' },
+  pending: { bg: 'var(--gold-bg)', fg: 'var(--gold)' },
+  processing: { bg: 'var(--gold-bg)', fg: 'var(--gold)' },
   failed: { bg: 'var(--red-bg)', fg: 'var(--red)' },
 }
 
@@ -535,11 +535,11 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
         <div
           style={{
             padding: '24px',
-            background: 'var(--amber-bg)',
-            border: '1px solid rgba(180,120,0,0.2)',
+            background: 'var(--gold-bg)',
+            border: '1px solid rgba(240,198,116,0.25)',
             borderRadius: 'var(--radius-xs)',
             fontSize: '14px',
-            color: 'var(--amber)',
+            color: 'var(--gold)',
             marginBottom: '24px',
           }}
         >
@@ -646,9 +646,9 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   height: '160px',
                   marginBottom: '16px',
                   padding: '16px',
-                  border: `2px dashed ${isDragging ? 'var(--accent)' : 'var(--border-soft)'}`,
+                  border: `2px dashed ${isDragging ? 'var(--border-hard)' : 'var(--border)'}`,
                   borderRadius: 'var(--radius-sm)',
-                  background: isDragging ? 'var(--accent-dim)' : 'var(--surface-2)',
+                  background: isDragging ? 'var(--accent-dim)' : 'var(--surface-1)',
                   cursor: submitting ? 'not-allowed' : 'pointer',
                   transition: 'border-color 0.15s ease, background 0.15s ease',
                 }}
@@ -897,8 +897,8 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                     borderRadius: '999px',
                     fontSize: '11px',
                     fontWeight: 600,
-                    background: 'var(--amber-bg)',
-                    color: 'var(--amber)',
+                    background: 'var(--gold-bg)',
+                    color: 'var(--gold)',
                     whiteSpace: 'nowrap',
                     flexShrink: 0,
                   }}
@@ -972,7 +972,8 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                       style={{
                         fontSize: '13px',
                         fontWeight: 600,
-                        color: 'var(--text-1)',
+                        fontFamily: 'var(--font-mono)',
+                        color: 'var(--text-2)',
                         whiteSpace: 'nowrap',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
