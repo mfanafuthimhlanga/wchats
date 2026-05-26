@@ -52,9 +52,7 @@
     /* ── TOP NAV ── */
     nav{
       position:sticky;top:0;z-index:100;height:60px;
-      background:var(--glass-bg-strong);
-      backdrop-filter:blur(24px) saturate(140%);-webkit-backdrop-filter:blur(24px) saturate(140%);
-      border-bottom:1px solid var(--glass-border);
+      background:transparent;
       display:flex;align-items:center;padding:0 28px;
     }
     .logo{display:flex;align-items:center;gap:9px;text-decoration:none;flex-shrink:0;}
@@ -232,13 +230,6 @@
     .btn-sm.outline:hover{border-color:var(--border-hard);color:var(--text-1);}
 
     /* ── EVAL TEST PANEL (step 3) ── */
-    .eval-trigger{
-      text-align:center;padding:28px 20px;
-      background:var(--surface-1);border-radius:var(--radius-lg);
-      border:1px solid var(--border-soft);margin-bottom:20px;
-    }
-    .eval-trigger-title{font-size:16px;font-weight:600;color:var(--text-1);margin-bottom:6px;}
-    .eval-trigger-sub{font-size:13px;color:var(--text-3);margin-bottom:18px;}
     .btn-eval{
       display:inline-flex;align-items:center;gap:10px;
       background:var(--accent);color:var(--text-on-accent);
@@ -271,7 +262,7 @@
     .eval-stat-label{font-size:10px;font-weight:600;color:var(--text-4);letter-spacing:0.12em;text-transform:uppercase;margin-top:3px;}
 
     /* ── DEPLOY PANEL (step 4) ── */
-    .deploy-cols{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:28px;}
+    .deploy-cols{display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start;}
     .widget-preview{
       background:var(--bg-deep);border:1px solid var(--border-soft);
       border-radius:var(--radius-lg);padding:20px;
@@ -291,7 +282,7 @@
     .check-text{font-size:13.5px;color:var(--text-2);}
     .embed-block{
       background:var(--bg-deep);border:1px solid var(--border-soft);
-      border-radius:var(--radius-sm);padding:14px 16px;
+      border-radius:var(--radius-sm);padding:14px 16px;padding-right:80px;
       font-family:var(--font-mono);font-size:12px;color:var(--text-2);
       line-height:1.7;margin-top:16px;position:relative;
     }
@@ -342,22 +333,20 @@
     .config-card-arrow { color:var(--text-4); flex-shrink:0; transition:color 0.15s, transform 0.15s; }
     .config-card:hover .config-card-arrow { color:var(--accent); transform:translateX(2px); }
 
-    /* ── SLIDE-OVERS ── */
+    /* ── CENTERED MODALS (converted from slide-overs) ── */
     .slideover-backdrop {
-      position:fixed; inset:0; z-index:200;
-      background:rgba(11,7,23,0.45); backdrop-filter:blur(4px);
-      opacity:0; pointer-events:none; transition:opacity 0.25s;
+      position:fixed;inset:0;z-index:200;background:rgba(11,7,23,0.6);backdrop-filter:blur(4px);opacity:0;pointer-events:none;transition:opacity 0.2s;display:flex;align-items:center;justify-content:center;
     }
     .slideover-backdrop.open { opacity:1; pointer-events:all; }
     .slideover {
-      position:fixed; top:0; right:0; bottom:0; z-index:201;
-      width:520px; max-width:calc(100vw - 32px);
-      background:var(--bg-elev); border-left:1px solid var(--glass-border);
-      display:flex; flex-direction:column;
-      transform:translateX(100%); transition:transform 0.28s cubic-bezier(0.4,0,0.2,1);
-      box-shadow:-24px 0 64px rgba(11,7,23,0.6);
+      background:var(--bg-elev);border:1px solid var(--glass-border);
+      border-radius:var(--radius-lg);width:560px;max-width:calc(100vw - 40px);
+      max-height:85vh;display:flex;flex-direction:column;
+      box-shadow:var(--shadow-lift);
+      transform:scale(0.95) translateY(12px);
+      transition:transform 0.22s cubic-bezier(0.4,0,0.2,1);
     }
-    .slideover.open { transform:translateX(0); }
+    .slideover-backdrop.open .slideover { transform:scale(1) translateY(0); }
     .slideover-header {
       display:flex; align-items:flex-start; justify-content:space-between;
       padding:24px 28px 20px; border-bottom:1px solid var(--border-soft); flex-shrink:0;
@@ -589,6 +578,7 @@
         </div>
 
         <div class="panel-footer">
+          <span style="display:inline-block;width:110px;"></span><!-- spacer matches btn-back width -->
           <span class="step-count">Step 1 of 4</span>
           <button class="btn-next" onclick="showStep(2)">Continue →</button>
         </div>
@@ -653,17 +643,14 @@
       <!-- STEP 3: TEST -->
       <div class="panel" id="panel3">
         <div class="panel-eyebrow">Step 3 of 4</div>
-        <h1 class="panel-title">Test your agent</h1>
-        <p class="panel-sub">Run the automated eval suite against your knowledge base. The backend controls the full pipeline — you watch the output stream live.</p>
-
-        <div class="eval-trigger">
-          <div class="eval-trigger-title">Eval suite ready</div>
-          <div class="eval-trigger-sub">20 scenarios · faithfulness, answer relevance, context precision, context recall</div>
-          <button class="btn-eval" onclick="runEval()">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:8px;">
+          <h1 class="panel-title" style="margin-bottom:0;">Test your agent</h1>
+          <button class="btn-eval" onclick="runEval()" style="flex-shrink:0;margin-top:4px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
             Run eval suite
           </button>
         </div>
+        <p class="panel-sub">20 scenarios · faithfulness, answer relevance, context precision, context recall</p>
 
         <div class="sse-log" id="sseLog">
           <span class="sse-line-dim">[waiting for eval run…]</span>
@@ -732,19 +719,71 @@
           <input class="field-input" type="text" value="*.acme.com">
           <div class="field-hint">Comma-separated CORS glob patterns.</div>
         </div>
+        <div class="field">
+          <label class="field-label">Agent display name</label>
+          <input class="field-input" type="text" value="Acme Support" oninput="updateWidgetPreview(this.value,'name')">
+          <div class="field-hint">Shown in the widget header and chat bubble.</div>
+        </div>
+        <div class="field">
+          <label class="field-label">Welcome message</label>
+          <input class="field-input" type="text" value="Hi there! How can I help you today?" oninput="updateWidgetPreview(this.value,'welcome')">
+        </div>
+        <div class="field">
+          <label class="field-label">Input placeholder</label>
+          <input class="field-input" type="text" value="Type a message…">
+        </div>
+        <div class="field">
+          <label class="field-label">Open on page load</label>
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+            <input type="checkbox" style="width:16px;height:16px;accent-color:var(--accent);">
+            <span style="font-size:13.5px;color:var(--text-2);">Automatically open chat when page loads</span>
+          </label>
+        </div>
+        <div class="field">
+          <label class="field-label">Show branding</label>
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+            <input type="checkbox" checked style="width:16px;height:16px;accent-color:var(--accent);">
+            <span style="font-size:13.5px;color:var(--text-2);">Show "Powered by w.chats" footer</span>
+          </label>
+        </div>
       </div>
-      <div class="widget-preview">
-        <div style="flex:1;width:100%;background:var(--bg-deep);border-radius:var(--radius-sm);border:1px solid var(--border-soft);padding:12px;display:flex;flex-direction:column;gap:8px;min-height:140px;">
-          <div style="align-self:flex-start;background:var(--surface-2);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-2);max-width:80%;">Hi, how can I help you today?</div>
-          <div style="align-self:flex-end;background:var(--accent);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-on-accent);max-width:80%;">I need help with my invoice.</div>
-        </div>
-        <div style="display:flex;align-items:center;gap:10px;margin-top:4px;">
-          <div class="widget-bubble" style="width:44px;height:44px;">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      <div style="position:sticky;top:72px;">
+        <div class="widget-preview">
+          <div style="width:100%;background:var(--bg-deep);border:1px solid var(--border-soft);border-radius:var(--radius-md);overflow:hidden;display:flex;flex-direction:column;">
+            <!-- Widget header -->
+            <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--accent);color:var(--text-on-accent);">
+              <div style="width:28px;height:28px;border-radius:50%;background:rgba(11,7,23,0.3);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">AS</div>
+              <div>
+                <div id="preview-agent-name" style="font-size:13px;font-weight:600;">Acme Support</div>
+                <div style="font-size:10px;opacity:0.8;">● Online</div>
+              </div>
+              <div style="margin-left:auto;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </div>
+            </div>
+            <!-- Chat body -->
+            <div style="padding:12px;display:flex;flex-direction:column;gap:8px;min-height:130px;background:var(--bg-deep);">
+              <div id="preview-welcome" style="align-self:flex-start;background:var(--surface-2);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-2);max-width:82%;">Hi there! How can I help you today?</div>
+              <div style="align-self:flex-end;background:var(--accent);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-on-accent);max-width:82%;">I need help with my invoice.</div>
+              <div style="align-self:flex-start;background:var(--surface-2);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-2);max-width:82%;">Sure, I can help with that. Can you share your invoice number?</div>
+            </div>
+            <!-- Input -->
+            <div style="padding:8px 10px;border-top:1px solid var(--border-soft);display:flex;align-items:center;gap:8px;background:var(--surface-1);">
+              <div style="flex:1;font-size:12px;color:var(--text-4);padding:6px 10px;background:var(--surface-2);border-radius:var(--radius-xs);border:1px solid var(--border-soft);">Type a message…</div>
+              <div style="width:28px;height:28px;border-radius:var(--radius-xs);background:var(--accent);display:flex;align-items:center;justify-content:center;">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              </div>
+            </div>
           </div>
-          <span style="font-size:13px;font-weight:600;color:var(--text-2);">Chat with us</span>
+          <!-- Floating button -->
+          <div style="display:flex;align-items:center;gap:10px;margin-top:10px;">
+            <div class="widget-bubble" style="width:44px;height:44px;">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            </div>
+            <span style="font-size:13px;font-weight:600;color:var(--text-2);">Chat with us</span>
+          </div>
+          <div class="widget-preview-label">Live preview</div>
         </div>
-        <div class="widget-preview-label">Live preview</div>
       </div>
     </div>
   </div>
@@ -829,9 +868,9 @@
 
     </main>
 
-<!-- SOUL EDITOR SLIDE-OVER -->
-<div class="slideover-backdrop" id="backdropSoul" onclick="closePanel('soul')"></div>
-<div class="slideover" id="slideoverSoul">
+<!-- SOUL EDITOR MODAL -->
+<div class="slideover-backdrop" id="backdropSoul" onclick="closePanel('soul')">
+  <div class="slideover" id="slideoverSoul" onclick="event.stopPropagation()">
   <div class="slideover-header">
     <div>
       <div class="slideover-title">Soul editor</div>
@@ -877,11 +916,12 @@
     <button class="btn-back" onclick="closePanel('soul')">Cancel</button>
     <button class="btn-next" onclick="closePanel('soul')">Save soul</button>
   </div>
+  </div>
 </div>
 
-<!-- DOC INGEST SLIDE-OVER -->
-<div class="slideover-backdrop" id="backdropDocs" onclick="closePanel('docs')"></div>
-<div class="slideover" id="slideoverDocs">
+<!-- DOC INGEST MODAL -->
+<div class="slideover-backdrop" id="backdropDocs" onclick="closePanel('docs')">
+  <div class="slideover" id="slideoverDocs" onclick="event.stopPropagation()">
   <div class="slideover-header">
     <div>
       <div class="slideover-title">Document ingest</div>
@@ -944,6 +984,7 @@
   <div class="slideover-footer">
     <button class="btn-back" onclick="closePanel('docs')">Close</button>
     <button class="btn-next" onclick="closePanel('docs')">Done</button>
+  </div>
   </div>
 </div>
 
@@ -1014,7 +1055,7 @@
     document.querySelector('.step-main').scrollTop = 0;
   }
 
-  // ── SLIDE-OVER ──
+  // ── MODAL (converted from slide-over) ──
   function openPanel(id) {
     const key = id.charAt(0).toUpperCase() + id.slice(1);
     document.getElementById('slideover' + key).classList.add('open');
@@ -1077,6 +1118,16 @@
       log.scrollTop = log.scrollHeight;
       if (t === 6000) results.style.display = 'grid';
     }, t));
+  }
+
+  function updateWidgetPreview(val, field) {
+    if (field === 'name') {
+      const el = document.getElementById('preview-agent-name');
+      if (el) el.textContent = val || 'Agent';
+    } else if (field === 'welcome') {
+      const el = document.getElementById('preview-welcome');
+      if (el) el.textContent = val || '…';
+    }
   }
 </script>
 </body>
