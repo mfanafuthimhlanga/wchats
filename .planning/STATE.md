@@ -18,7 +18,7 @@ progress:
 
 **Active Milestone:** M11 — Admin UI Overhaul (Hillbrow at Dusk)
 **Milestone Phase:** Phase 11 — 6 plans ready to execute
-**Current Position:** Phase 11, Plan 2 of 6 complete (Wave 2 done — proceed to Wave 3)
+**Current Position:** Phase 11, Plan 3 of 6 complete (Wave 3 done — proceed to Wave 4)
 **Last updated:** 2026-05-26
 
 ## Project Reference
@@ -47,6 +47,8 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Key Decisions
 
+- [11-03] Greeting strip name uses 'there' placeholder — useUser() not imported on agents/page.tsx; adding new auth hook would violate data-fetching-only constraint; stub tracked in SUMMARY
+- [11-03] amber-bg in agents/[id]/ scope is Wave 4/5 work — agents/page.tsx and AgentCard.tsx are clean; other files untouched in Plan 03
 - [11-02] page.tsx converted to 'use client' — scroll listener for glass nav requires useEffect; no sub-component extraction needed
 - [11-02] Primary CTA color: #0B0717 (--text-on-accent) not '#fff' — dark text on coral fill per design system
 - [11-02] pnpm run lint pre-existing broken (inherited from 11-01) — build passes, lint skip documented
@@ -95,6 +97,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|
+| 11 | 03 | ~15 min | 2 | 2 |
 | 11 | 02 | ~20 min | 2 | 2 |
 | 11 | 01 | ~25 min | 2 | 9 |
 | 08 | 07 | ~25 min | 2 | 3 |
@@ -218,5 +221,6 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Last session: 2026-05-25 — Phase 10 COMPLETE: 6/6 plans executed, code review + fixes applied (10-REVIEW-FIX.md), UAT: 7 passed / 0 issues / 3 blocked (live-services-only); OPS-01–OPS-06 all satisfied; human checkpoint (demo_m10.sh) pending live-service run
 - Last session: 2026-05-25 — Phase 9 COMPLETE: bug fix (strategy_service used Agent SDK instead of direct Anthropic API — tool_use blocks never generated); replaced with anthropic.Anthropic().messages.create(); demo_m9.sh approved; all STR-01–STR-03 satisfied — fix commit b108441
 - [09] ClaudeSDKClient (claude-agent-sdk) does NOT support custom JSON tool schemas — it is a code-execution agent. Always use direct Anthropic API (anthropic.Anthropic().messages.create) for tool_use patterns in services.
+- Last session: 2026-05-26 — completed 11-03-PLAN.md (agents dashboard: greeting strip Fraunces italic-coral, transparent wrapper, repeat(3,1fr) grid; AgentCard: surface-1 bg, hover translateY(-2px) coral borderTop, gold status tokens, Fraunces 600 name, UPPERCASE TRACKED chips) — 2 commits: 9d1965a + 17e8e35
 - Last session: 2026-05-26 — completed 11-02-PLAN.md (landing page rebuild: transparent hero, glass nav scroll-reactive, Fraunces headline strikethrough+italic-coral, coral CTA, trust strip, HeroSteps.tsx token migration --orange→--accent, --green-solid→--green) — 2 commits: 32fa8b7 + ce7a61b
 - Last session: 2026-05-26 — completed 11-01-PLAN.md (Hillbrow at Dusk token foundation: globals.css full replacement, skyline PNG background, Fraunces Google Fonts, Clerk dark appearance, SVG logo in TopNav, transparent layout wrapper) — 2 commits: 76e7a61 + 64e3986
