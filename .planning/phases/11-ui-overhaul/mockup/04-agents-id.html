@@ -25,7 +25,7 @@
       --shadow-focus:0 0 0 3px rgba(244,116,140,0.28);
       --shadow-glow:0 0 32px rgba(244,116,140,0.18);
       --font-display:"Fraunces",Georgia,serif;--font-sans:"Inter",system-ui,sans-serif;--font-mono:"JetBrains Mono",monospace;
-      --radius-sm:8px;--radius-md:14px;--radius-lg:20px;--radius-xl:28px;--radius-pill:100px;
+      --radius-sm:8px;--radius-xs:6px;--radius-md:14px;--radius-lg:20px;--radius-xl:28px;--radius-pill:100px;
     }
     body{font-family:var(--font-sans);background-image:url('../../../../.claude/skills/wchats-design/assets/skyline-w-chats.png');background-size:cover;background-position:center;background-attachment:fixed;background-color:var(--bg-deep);color:var(--text-1);min-height:100vh;}
     body::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;background:radial-gradient(ellipse 60% 40% at 80% 0%,rgba(244,116,140,0.07) 0%,transparent 50%),radial-gradient(ellipse 40% 30% at 0% 60%,rgba(183,154,224,0.05) 0%,transparent 50%),rgba(11,7,23,0.72);}
@@ -160,6 +160,37 @@
         transition-duration: 0.01ms !important;
       }
     }
+
+    /* ── SUB-TABS (eval/redteam history) ── */
+    .sub-tab-btn {
+      padding:8px 16px;font-size:13px;font-weight:500;color:var(--text-3);
+      border:none;background:transparent;cursor:pointer;
+      border-bottom:2px solid transparent;transition:all 0.15s;
+    }
+    .sub-tab-btn:hover{color:var(--text-1);}
+    .sub-tab-btn.active{color:var(--accent);border-bottom-color:var(--accent);}
+
+    /* ── INTERACTIVE WIDGET ZONES ── */
+    .w-edit-zone {
+      position:relative;cursor:pointer;
+    }
+    .w-edit-zone:hover {
+      background:rgba(244,116,140,0.08);
+      outline:1px dashed rgba(244,116,140,0.35);
+      outline-offset:-1px;
+    }
+    .w-edit-badge {
+      position:absolute;top:-26px;left:50%;transform:translateX(-50%);
+      background:var(--surface-3);border:1px solid var(--border);border-radius:var(--radius-sm);
+      padding:3px 9px;font-family:var(--font-mono);font-size:10px;font-weight:600;
+      color:var(--text-1);white-space:nowrap;pointer-events:none;
+      opacity:0;transition:opacity 0.15s;z-index:20;letter-spacing:0.04em;
+    }
+    .w-edit-zone:hover .w-edit-badge { opacity:1; }
+
+    /* ── SOUL MODAL OPEN STATE ── */
+    #soul-modal-backdrop.open { opacity:1; pointer-events:all; }
+    #soul-modal-backdrop.open #soul-modal { transform:scale(1) translateY(0); }
   </style>
 </head>
 <body>
@@ -178,15 +209,6 @@
 
   <!-- AGENT HEADER -->
   <div class="agent-header">
-    <div class="tab-bar">
-      <button class="tab-btn active" onclick="showTab(event,'analytics')">Analytics</button>
-      <button class="tab-btn" onclick="showTab(event,'evals')">Evals</button>
-      <button class="tab-btn" onclick="showTab(event,'redteam')">Red Team</button>
-      <button class="tab-btn" onclick="showTab(event,'soul')">Soul</button>
-      <button class="tab-btn" onclick="showTab(event,'knowledge')">Knowledge Base</button>
-      <button class="tab-btn" onclick="showTab(event,'deploy')">Deploy</button>
-    </div>
-
     <div class="agent-header-row">
       <div class="agent-icon">
         <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -199,18 +221,53 @@
           <span class="meta-chip id">AGT-7f3a</span>
         </div>
       </div>
-      <div class="header-actions">
-        <button class="btn-sm-outline">View widget</button>
-        <button class="btn-sm-outline">Schedule eval</button>
-      </div>
+      <div class="header-actions"></div>
+    </div>
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="showTab(event,'knowledge')">Knowledge Base</button>
+      <button class="tab-btn" onclick="showTab(event,'analytics')">Analytics</button>
+      <button class="tab-btn" onclick="showTab(event,'evals')">Eval</button>
+      <button class="tab-btn" onclick="showTab(event,'widget')">Widget</button>
+      <button class="tab-btn" onclick="showTab(event,'deploy')">Deploy</button>
     </div>
   </div>
 
   <!-- CONTENT -->
   <div class="content">
 
+    <!-- KNOWLEDGE BASE -->
+    <div class="tab-panel active" id="tab-knowledge">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+        <div class="section-title" style="margin-bottom:0;">Knowledge &amp; Identity</div>
+        <button class="btn-sm-outline" onclick="openSoulModal()" style="display:inline-flex;align-items:center;gap:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a5 5 0 0 1 5 5c0 2.5-1.5 4.5-3.5 5.4V14h-3v-1.6C8.5 11.5 7 9.5 7 7a5 5 0 0 1 5-5z"/><path d="M9 14h6v2a3 3 0 0 1-6 0v-2z"/></svg>
+          Configure soul
+        </button>
+      </div>
+      <div class="card">
+        <div class="section-title">Indexed documents</div>
+        <div class="kb-doc-row"><span class="kb-doc-icon">📄</span><span class="kb-doc-name">acme-product-guide-v3.pdf</span><span class="kb-doc-size">2.4 MB</span><span class="kb-doc-status indexed">Indexed</span><button class="kb-doc-del" onclick="showKBDirty()" aria-label="Remove document">
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+</button></div>
+        <div class="kb-doc-row"><span class="kb-doc-icon">📄</span><span class="kb-doc-name">support-faq-2026.pdf</span><span class="kb-doc-size">880 KB</span><span class="kb-doc-status indexed">Indexed</span><button class="kb-doc-del" onclick="showKBDirty()" aria-label="Remove document">
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+</button></div>
+        <div class="kb-doc-row"><span class="kb-doc-icon">📄</span><span class="kb-doc-name">pricing-plans-q2.pdf</span><span class="kb-doc-size">120 KB</span><span class="kb-doc-status indexed">Indexed</span><button class="kb-doc-del" onclick="showKBDirty()" aria-label="Remove document">
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+</button></div>
+        <button class="btn-add-doc" onclick="showKBDirty()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+          Add document or URL
+        </button>
+        <div class="redeploy-note" id="kbNote">
+          Knowledge base changes require redeployment — the agent must be re-embedded and re-evaluated before serving live users.
+          <div style="margin-top:10px;"><button class="btn-save" style="font-size:13px;padding:9px 18px;">Save &amp; redeploy</button></div>
+        </div>
+      </div>
+    </div>
+
     <!-- ANALYTICS -->
-    <div class="tab-panel active" id="tab-analytics">
+    <div class="tab-panel" id="tab-analytics">
       <div class="stat-row">
         <div class="stat-tile">
           <div class="stat-val">247</div>
@@ -276,72 +333,102 @@
 
     <!-- EVALS -->
     <div class="tab-panel" id="tab-evals">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-        <div class="section-title">Eval runs</div>
-        <button class="btn-save" style="padding:9px 18px;font-size:13px;">Run eval now</button>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
+        <div class="section-title" style="margin-bottom:0;">Eval &amp; Red Team</div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn-save" style="padding:9px 18px;font-size:13px;" onclick="runEvalCanvas('eval')">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Run eval suite
+          </button>
+          <button class="btn-sm-outline" onclick="runEvalCanvas('redteam')">Trigger red team</button>
+          <button class="btn-sm-outline" onclick="scheduleEvalModal()" style="border-color:var(--border-hard);color:var(--accent);">Schedule eval</button>
+        </div>
       </div>
-      <div class="eval-run-row"><span class="eval-run-id">EVL-9a4f</span><span class="eval-run-date">Today at 02:00 — nightly auto</span><span class="eval-run-score">0.91 <span style="font-size:11px;color:var(--green)">↑</span></span><span class="verdict-chip pass" style="margin-left:8px;">Pass</span></div>
-      <div class="eval-run-row"><span class="eval-run-id">EVL-8b3e</span><span class="eval-run-date">Yesterday at 02:00 — nightly auto</span><span class="eval-run-score">0.88</span><span class="verdict-chip pass" style="margin-left:8px;">Pass</span></div>
-      <div class="eval-run-row"><span class="eval-run-id">EVL-7c2d</span><span class="eval-run-date">2 days ago — manual trigger</span><span class="eval-run-score">0.84</span><span class="verdict-chip pass" style="margin-left:8px;">Pass</span></div>
-      <div class="eval-run-row"><span class="eval-run-id">EVL-6d1c</span><span class="eval-run-date">3 days ago</span><span class="eval-run-score">0.76</span><span class="verdict-chip warn" style="margin-left:8px;">Warn</span></div>
+
+      <div id="eval-canvas" style="background:var(--bg-deep);border:1px solid var(--border-soft);border-radius:var(--radius-sm);padding:16px;font-family:var(--font-mono);font-size:12px;line-height:1.7;color:var(--text-3);min-height:180px;overflow-y:auto;margin-bottom:20px;">
+        <span style="color:var(--text-4);">[select a run type above to stream output…]</span>
+      </div>
+
+      <div style="display:flex;gap:0;border-bottom:1px solid var(--border-soft);margin-bottom:16px;">
+        <button class="sub-tab-btn active" id="stab-eval" onclick="showSubTab('eval')">Eval runs</button>
+        <button class="sub-tab-btn" id="stab-red" onclick="showSubTab('red')">Red team runs</button>
+      </div>
+
+      <div id="stab-panel-eval">
+        <div class="eval-run-row"><span class="eval-run-id">EVL-9a4f</span><span class="eval-run-date">Today at 02:00 — nightly auto</span><span class="eval-run-score">0.91 <span style="font-size:11px;color:var(--green)">↑</span></span><span class="verdict-chip pass" style="margin-left:8px;">Pass</span></div>
+        <div class="eval-run-row"><span class="eval-run-id">EVL-8b3e</span><span class="eval-run-date">Yesterday at 02:00 — nightly auto</span><span class="eval-run-score">0.88</span><span class="verdict-chip pass" style="margin-left:8px;">Pass</span></div>
+        <div class="eval-run-row"><span class="eval-run-id">EVL-7c2d</span><span class="eval-run-date">2 days ago — manual trigger</span><span class="eval-run-score">0.84</span><span class="verdict-chip pass" style="margin-left:8px;">Pass</span></div>
+        <div class="eval-run-row"><span class="eval-run-id">EVL-6d1c</span><span class="eval-run-date">3 days ago</span><span class="eval-run-score">0.76</span><span class="verdict-chip warn" style="margin-left:8px;">Warn</span></div>
+      </div>
+
+      <div id="stab-panel-red" style="display:none;">
+        <div class="eval-run-row"><span class="eval-run-id">RT-4a1f</span><span class="eval-run-date">Mon 03:00 — weekly auto</span><span style="font-family:var(--font-mono);font-size:13px;font-weight:600;color:var(--text-1);">0 crit · 1 low</span><span class="verdict-chip pass" style="margin-left:8px;">Clear</span></div>
+        <div class="eval-run-row"><span class="eval-run-id">RT-3b2e</span><span class="eval-run-date">Last Mon 03:00 — weekly auto</span><span style="font-family:var(--font-mono);font-size:13px;font-weight:600;color:var(--text-1);">0 crit · 2 low</span><span class="verdict-chip pass" style="margin-left:8px;">Clear</span></div>
+      </div>
+
     </div>
 
-    <!-- RED TEAM -->
-    <div class="tab-panel" id="tab-redteam">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-        <div class="section-title">Red team runs</div>
-        <button class="btn-save" style="padding:9px 18px;font-size:13px;">Trigger red team</button>
-      </div>
-      <div class="eval-run-row"><span class="eval-run-id">RT-4a1f</span><span class="eval-run-date">Mon 03:00 — weekly auto</span><span style="font-family:var(--font-mono);font-size:13px;font-weight:600;color:var(--text-1);">0 crit · 1 low</span><span class="verdict-chip pass" style="margin-left:8px;">Clear</span></div>
-      <div class="eval-run-row"><span class="eval-run-id">RT-3b2e</span><span class="eval-run-date">Last Mon 03:00 — weekly auto</span><span style="font-family:var(--font-mono);font-size:13px;font-weight:600;color:var(--text-1);">0 crit · 2 low</span><span class="verdict-chip pass" style="margin-left:8px;">Clear</span></div>
-    </div>
+    <!-- WIDGET TAB -->
+    <div class="tab-panel" id="tab-widget">
 
-    <!-- SOUL EDITOR -->
-    <div class="tab-panel" id="tab-soul">
-      <div class="redeploy-banner" id="redeployBanner">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--gold)" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-        <span class="redeploy-text">Soul changes require redeployment to take effect for live users.</span>
-        <button class="btn-redeploy">Save &amp; redeploy</button>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+        <div class="section-title" style="margin-bottom:0;">Widget customization</div>
+        <span style="font-family:var(--font-mono);font-size:10px;font-weight:600;padding:3px 9px;border-radius:40px;background:var(--green-bg);color:var(--green);border:1px solid var(--green-border);letter-spacing:0.12em;text-transform:uppercase;">● Live</span>
       </div>
-      <div class="card">
-        <div class="field">
-          <label class="field-label">Voice &amp; tone</label>
-          <textarea class="field-input field-textarea" oninput="markDirty()">Professional and concise. Empathetic but direct. Never dismissive.</textarea>
-        </div>
-        <div class="field">
-          <label class="field-label">Always do</label>
-          <textarea class="field-input field-textarea" oninput="markDirty()">Greet users by name. Cite sources. Escalate unresolved issues after 3 turns.</textarea>
-        </div>
-        <div class="field">
-          <label class="field-label">Never do</label>
-          <textarea class="field-input field-textarea" oninput="markDirty()">Share pricing not in the knowledge base. Make promises about timelines. Mention competitor products.</textarea>
-        </div>
-        <button class="btn-save" disabled onclick="markDirty()">Save changes</button>
-      </div>
-    </div>
+      <p style="font-size:13px;color:var(--text-3);margin-bottom:24px;max-width:480px;">Changes save immediately. Hover any element to see what it controls. Click to edit inline.</p>
 
-    <!-- KNOWLEDGE BASE -->
-    <div class="tab-panel" id="tab-knowledge">
-      <div class="card">
-        <div class="section-title">Indexed documents</div>
-        <div class="kb-doc-row"><span class="kb-doc-icon">📄</span><span class="kb-doc-name">acme-product-guide-v3.pdf</span><span class="kb-doc-size">2.4 MB</span><span class="kb-doc-status indexed">Indexed</span><button class="kb-doc-del" onclick="showKBDirty()" aria-label="Remove document">
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-</button></div>
-        <div class="kb-doc-row"><span class="kb-doc-icon">📄</span><span class="kb-doc-name">support-faq-2026.pdf</span><span class="kb-doc-size">880 KB</span><span class="kb-doc-status indexed">Indexed</span><button class="kb-doc-del" onclick="showKBDirty()" aria-label="Remove document">
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-</button></div>
-        <div class="kb-doc-row"><span class="kb-doc-icon">📄</span><span class="kb-doc-name">pricing-plans-q2.pdf</span><span class="kb-doc-size">120 KB</span><span class="kb-doc-status indexed">Indexed</span><button class="kb-doc-del" onclick="showKBDirty()" aria-label="Remove document">
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-</button></div>
-        <button class="btn-add-doc" onclick="showKBDirty()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
-          Add document or URL
-        </button>
-        <div class="redeploy-note" id="kbNote">
-          Knowledge base changes require redeployment — the agent must be re-embedded and re-evaluated before serving live users.
-          <div style="margin-top:10px;"><button class="btn-save" style="font-size:13px;padding:9px 18px;">Save &amp; redeploy</button></div>
+      <div style="max-width:400px;margin:0 auto 32px;">
+        <div style="background:var(--bg-deep);border:1px solid var(--border-soft);border-radius:var(--radius-md);overflow:visible;display:flex;flex-direction:column;position:relative;">
+
+          <div class="w-edit-zone" data-hint="Agent name" onclick="openWEdit('agentName',this)">
+            <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--accent);border-radius:var(--radius-md) var(--radius-md) 0 0;">
+              <div style="width:28px;height:28px;border-radius:50%;background:rgba(11,7,23,0.3);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--text-on-accent);flex-shrink:0;" id="wcp-initials">AS</div>
+              <div style="flex:1;">
+                <div id="wcp-name" style="font-size:13px;font-weight:600;color:var(--text-on-accent);">Acme Support</div>
+                <div style="font-size:10px;color:rgba(11,7,23,0.7);">● Online</div>
+              </div>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(11,7,23,0.6)" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </div>
+            <div class="w-edit-badge">Agent name</div>
+          </div>
+
+          <div style="padding:12px;display:flex;flex-direction:column;gap:8px;background:var(--bg-deep);">
+            <div class="w-edit-zone" data-hint="Welcome message" onclick="openWEdit('welcome',this)" style="align-self:flex-start;max-width:82%;">
+              <div id="wcp-welcome" style="background:var(--surface-2);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-2);">Hi there! How can I help you today?</div>
+              <div class="w-edit-badge">Welcome message</div>
+            </div>
+            <div style="align-self:flex-end;background:var(--accent);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-on-accent);max-width:82%;">I need help with my invoice.</div>
+            <div style="align-self:flex-start;background:var(--surface-2);border-radius:var(--radius-xs);padding:8px 12px;font-size:12px;color:var(--text-2);max-width:82%;">Sure! Can you share your invoice number?</div>
+          </div>
+
+          <div class="w-edit-zone" data-hint="Input placeholder" onclick="openWEdit('placeholder',this)">
+            <div style="padding:8px 10px;border-top:1px solid var(--border-soft);display:flex;align-items:center;gap:8px;background:var(--surface-1);">
+              <div id="wcp-placeholder" style="flex:1;font-size:12px;color:var(--text-4);padding:6px 10px;background:var(--surface-2);border-radius:var(--radius-xs);border:1px solid var(--border-soft);">Type a message…</div>
+              <div style="width:28px;height:28px;border-radius:var(--radius-xs);background:var(--accent);display:flex;align-items:center;justify-content:center;">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              </div>
+            </div>
+            <div class="w-edit-badge">Input placeholder</div>
+          </div>
+
+          <div class="w-edit-zone" data-hint="Toggle branding" onclick="toggleWBranding()">
+            <div id="wcp-branding" style="padding:6px 14px;border-top:1px solid var(--border-soft);text-align:center;font-size:10px;color:var(--text-4);">Powered by w.chats</div>
+            <div class="w-edit-badge">Show branding</div>
+          </div>
+
+        </div>
+
+        <div id="wcp-edit-popover" style="display:none;margin-top:16px;background:var(--surface-2);border:1px solid var(--border-hard);border-radius:var(--radius-md);padding:14px 16px;">
+          <div id="wcp-edit-label" style="font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:8px;"></div>
+          <input id="wcp-edit-input" class="field-input" type="text" style="width:100%;margin-bottom:10px;" oninput="previewWField()">
+          <div style="display:flex;gap:8px;justify-content:flex-end;">
+            <button class="btn-sm-outline" onclick="closeWEdit()" style="padding:8px 16px;font-size:13px;">Cancel</button>
+            <button class="btn-save" onclick="applyWEdit()" style="padding:8px 18px;font-size:13px;">Save</button>
+          </div>
         </div>
       </div>
+
     </div>
 
     <!-- DEPLOY -->
@@ -357,9 +444,61 @@
           <span style="color:var(--lilac)">&gt;&lt;/script&gt;</span>
         </div>
       </div>
+      <div class="card">
+        <div class="section-title">iframe embed (alternative)</div>
+        <p style="font-size:13px;color:var(--text-3);line-height:1.6;margin-bottom:16px;max-width:540px;">Use the iframe embed to host the full chat interface in a dedicated page or modal overlay.</p>
+        <div style="background:var(--bg-deep);border:1px solid var(--border-soft);border-radius:var(--radius-md);padding:14px 16px;padding-right:80px;font-family:var(--font-mono);font-size:12px;color:var(--text-2);line-height:1.7;position:relative;">
+          <button style="position:absolute;top:10px;right:10px;padding:4px 10px;background:var(--accent-dim);border:1px solid var(--border-hard);border-radius:var(--radius-sm);color:var(--accent);font-size:11px;font-weight:600;cursor:pointer;" onclick="this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)">Copy</button>
+          <span style="color:var(--lilac)">&lt;iframe</span><br>
+          &nbsp;&nbsp;<span style="color:var(--amber)">src</span>=<span style="color:var(--green)">"https://widget.wchats.io/AGT-7f3a"</span><br>
+          &nbsp;&nbsp;<span style="color:var(--amber)">width</span>=<span style="color:var(--green)">"400"</span><br>
+          &nbsp;&nbsp;<span style="color:var(--amber)">height</span>=<span style="color:var(--green)">"600"</span><br>
+          &nbsp;&nbsp;<span style="color:var(--amber)">frameborder</span>=<span style="color:var(--green)">"0"</span><br>
+          <span style="color:var(--lilac)">&gt;&lt;/iframe&gt;</span>
+        </div>
+      </div>
     </div>
 
   </div><!-- /content -->
+
+  <!-- SOUL EDITOR MODAL -->
+  <div id="soul-modal-backdrop" style="position:fixed;inset:0;z-index:200;background:rgba(11,7,23,0.6);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);opacity:0;pointer-events:none;transition:opacity 0.2s;display:flex;align-items:center;justify-content:center;" onclick="closeSoulModal()">
+    <div id="soul-modal" style="background:var(--bg-elev);border:1px solid var(--glass-border);border-radius:var(--radius-lg);width:560px;max-width:calc(100vw - 40px);max-height:85vh;display:flex;flex-direction:column;box-shadow:var(--shadow-lift);transform:scale(0.95) translateY(12px);transition:transform 0.22s cubic-bezier(0.4,0,0.2,1);" onclick="event.stopPropagation()">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;padding:24px 28px 20px;border-bottom:1px solid var(--border-soft);flex-shrink:0;">
+        <div>
+          <div style="font-family:var(--font-display);font-weight:400;font-variation-settings:'opsz' 144,'SOFT' 30;font-size:20px;color:var(--text-1);margin-bottom:3px;">Soul editor</div>
+          <div style="font-size:12px;color:var(--text-3);">Shapes every response your agent gives</div>
+        </div>
+        <button onclick="closeSoulModal()" style="width:32px;height:32px;border-radius:var(--radius-sm);background:var(--surface-1);border:1px solid var(--border-soft);color:var(--text-3);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:color 0.15s,border-color 0.15s;" onmouseenter="this.style.color='var(--text-1)';this.style.borderColor='var(--border-hard)'" onmouseleave="this.style.color='var(--text-3)';this.style.borderColor='var(--border-soft)'">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:24px 28px;">
+        <div class="redeploy-banner" id="soulModalBanner">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--gold)" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <span class="redeploy-text">Soul changes require redeployment to take effect for live users.</span>
+        </div>
+        <div class="field">
+          <label class="field-label">Voice &amp; tone</label>
+          <textarea class="field-input field-textarea" oninput="markDirty();document.getElementById('soulModalBanner').classList.add('visible')">Professional and concise. Empathetic but direct. Never dismissive.</textarea>
+          <div style="font-size:12px;color:var(--text-4);margin-top:5px;">How the agent speaks — personality, register, warmth level.</div>
+        </div>
+        <div class="field">
+          <label class="field-label">Always do</label>
+          <textarea class="field-input field-textarea" oninput="markDirty();document.getElementById('soulModalBanner').classList.add('visible')">Greet users by name. Cite sources. Escalate unresolved issues after 3 turns.</textarea>
+        </div>
+        <div class="field">
+          <label class="field-label">Never do</label>
+          <textarea class="field-input field-textarea" oninput="markDirty();document.getElementById('soulModalBanner').classList.add('visible')">Share pricing not in the knowledge base. Make promises about timelines. Mention competitor products.</textarea>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 28px 20px;border-top:1px solid var(--border-soft);flex-shrink:0;">
+        <button onclick="closeSoulModal()" style="padding:10px 22px;border-radius:var(--radius-md);font-size:14px;font-weight:600;border:1px solid var(--border);background:transparent;color:var(--text-2);cursor:pointer;">Cancel</button>
+        <button onclick="closeSoulModal()" class="btn-save" style="padding:10px 24px;font-size:14px;">Save &amp; redeploy</button>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -369,22 +508,108 @@
     document.getElementById('tab-'+id).classList.add('active');
     e.currentTarget.classList.add('active');
   }
+
   function markDirty() {
-    document.getElementById('redeployBanner').classList.add('visible');
-    document.querySelector('#tab-soul .btn-save').removeAttribute('disabled');
+    const banner = document.getElementById('redeployBanner');
+    if (banner) banner.classList.add('visible');
+    const saveBtn = document.querySelector('#tab-soul .btn-save');
+    if (saveBtn) saveBtn.removeAttribute('disabled');
   }
+
   function showKBDirty() {
     if (!confirm('Remove this document? The knowledge base will need to be re-evaluated before your changes go live.')) return;
-    document.getElementById('kbNote').classList.add('visible');
+    const note = document.getElementById('kbNote');
+    if (note) note.classList.add('visible');
   }
-  // Cost chart bars
+
+  function showSubTab(id) {
+    ['eval','red'].forEach(k => {
+      document.getElementById('stab-'+k).classList.toggle('active', k===id);
+      document.getElementById('stab-panel-'+k).style.display = k===id?'block':'none';
+    });
+  }
+
+  function openSoulModal() {
+    document.getElementById('soul-modal-backdrop').classList.add('open');
+  }
+  function closeSoulModal() {
+    document.getElementById('soul-modal-backdrop').classList.remove('open');
+  }
+
+  function runEvalCanvas(type) {
+    const canvas = document.getElementById('eval-canvas');
+    canvas.innerHTML = '';
+    const lines = type === 'eval' ? [
+      { t:0,   cls:'color:var(--lilac)',  txt:'[eval:start] run_id=EVL-9a4f · 20 scenarios' },
+      { t:400, cls:'color:var(--text-4)', txt:'[eval:scenario:01] running faithfulness…' },
+      { t:900, cls:'color:var(--text-4)', txt:'[eval:scenario:02] running answer_relevancy…' },
+      { t:1400,cls:'color:var(--green)',  txt:'[eval:scenario:01] faithfulness=0.94 ✓' },
+      { t:2400,cls:'color:var(--green)',  txt:'[eval:scenario:02] answer_relevancy=0.89 ✓' },
+      { t:4000,cls:'color:var(--text-4)', txt:'… 18 more scenarios …' },
+      { t:5200,cls:'color:var(--green)',  txt:'[eval:complete] 18/20 pass · 2 warn · 0 fail' },
+      { t:5600,cls:'color:var(--accent)', txt:'[eval:scores] F:0.91 AR:0.88 CP:0.86 CR:0.84' },
+      { t:6000,cls:'color:var(--green)',  txt:'[eval:gate] PASS — threshold 0.80 cleared ✓' },
+    ] : [
+      { t:0,   cls:'color:var(--lilac)',  txt:'[redteam:start] run_id=RT-4a1f · 42 attack probes' },
+      { t:500, cls:'color:var(--text-4)', txt:'[redteam:probe:01] prompt injection — jailbreak…' },
+      { t:1200,cls:'color:var(--green)',  txt:'[redteam:probe:01] BLOCKED ✓' },
+      { t:1800,cls:'color:var(--text-4)', txt:'[redteam:probe:07] data exfiltration attempt…' },
+      { t:2600,cls:'color:var(--green)',  txt:'[redteam:probe:07] BLOCKED ✓' },
+      { t:4000,cls:'color:var(--text-4)', txt:'… 38 more probes …' },
+      { t:5200,cls:'color:var(--gold)',   txt:'[redteam:finding] LOW: agent mentions competitor once' },
+      { t:5800,cls:'color:var(--green)',  txt:'[redteam:complete] 0 critical · 1 low · 41/42 clear' },
+    ];
+    lines.forEach(({ t, cls, txt }) => setTimeout(() => {
+      const d = document.createElement('div');
+      d.style.cssText = cls;
+      d.textContent = txt;
+      canvas.appendChild(d);
+      canvas.scrollTop = canvas.scrollHeight;
+    }, t));
+  }
+
+  function scheduleEvalModal() {
+    alert('Schedule eval — configure in settings (modal coming in full implementation)');
+  }
+
+  let _wField = null;
+  const _wFieldLabels = { agentName:'Agent name', welcome:'Welcome message', placeholder:'Input placeholder' };
+  const _wFieldIds = { agentName:'wcp-name', welcome:'wcp-welcome', placeholder:'wcp-placeholder' };
+  function openWEdit(field) {
+    _wField = field;
+    document.getElementById('wcp-edit-label').textContent = _wFieldLabels[field]||field;
+    const el = document.getElementById(_wFieldIds[field]);
+    document.getElementById('wcp-edit-input').value = el ? el.textContent : '';
+    document.getElementById('wcp-edit-popover').style.display = 'block';
+    document.getElementById('wcp-edit-input').focus();
+  }
+  function previewWField() {
+    if (!_wField) return;
+    const val = document.getElementById('wcp-edit-input').value;
+    const el = document.getElementById(_wFieldIds[_wField]);
+    if (el) el.textContent = val||'…';
+    if (_wField==='agentName') {
+      const init = document.getElementById('wcp-initials');
+      if (init) init.textContent=(val||'A').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+    }
+  }
+  function applyWEdit() { previewWField(); closeWEdit(); }
+  function closeWEdit() {
+    document.getElementById('wcp-edit-popover').style.display='none';
+    _wField=null;
+  }
+  function toggleWBranding() {
+    const el=document.getElementById('wcp-branding');
+    if(el) el.style.display=el.style.display==='none'?'block':'none';
+  }
+
   const chart = document.getElementById('costChart');
   const vals = [0.45,0.62,0.38,0.71,0.55,0.29,0.48];
   const max = Math.max(...vals);
-  vals.forEach((v,i)=>{
-    const bar = document.createElement('div');
-    bar.className = 'cost-bar';
-    bar.style.cssText = `height:${(v/max)*100}%;background:linear-gradient(to top,rgba(244,116,140,0.6),rgba(244,116,140,0.3));`;
+  vals.forEach((v)=>{
+    const bar=document.createElement('div');
+    bar.className='cost-bar';
+    bar.style.cssText=`height:${(v/max)*100}%;background:linear-gradient(to top,rgba(244,116,140,0.6),rgba(244,116,140,0.3));`;
     chart.appendChild(bar);
   });
 </script>
