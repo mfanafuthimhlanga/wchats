@@ -55,15 +55,15 @@ const DEFAULT_CONFIG: WidgetConfig = {
   appearance: 'floating-button',
   launcher_shape: 'circle',
   colors: {
-    widget_bg: '#FDF9F5',
-    header_bg: '#7B1C3A',
-    header_text: '#FFFFFF',
-    agent_bubble_bg: '#FDF9F5',
-    agent_bubble_text: '#4A2030',
-    user_bubble_bg: '#7B1C3A',
-    user_bubble_text: '#FFFFFF',
-    send_button: '#7B1C3A',
-    input_bg: '#F7F0EA',
+    widget_bg:          '#140E2A',  // --surface-1
+    header_bg:          '#F4748C',  // --accent (coral)
+    header_text:        '#0B0717',  // --text-on-accent
+    agent_bubble_bg:    '#1E1638',  // --surface-2
+    agent_bubble_text:  '#F0EBF8',  // --text-1
+    user_bubble_bg:     '#F4748C',  // --accent
+    user_bubble_text:   '#0B0717',  // --text-on-accent
+    send_button:        '#F4748C',  // --accent
+    input_bg:           '#1E1638',  // --surface-2
   },
   typography: {
     font_family: 'Inter',
@@ -214,7 +214,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
   // ---------------------------------------------------------------------------
 
   const scoreColor = (score: number) =>
-    score >= 0.9 ? 'var(--green)' : score >= 0.7 ? 'var(--amber)' : 'var(--red)'
+    score >= 0.9 ? 'var(--green)' : score >= 0.7 ? 'var(--gold)' : 'var(--red)'
 
   // ---------------------------------------------------------------------------
   // Polling useEffect for checklist runs
@@ -376,7 +376,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
             padding: '12px 16px',
             marginBottom: '20px',
             background: 'var(--red-bg)',
-            border: '1px solid rgba(185,28,28,0.3)',
+            border: '1px solid rgba(248,113,113,0.25)',
             borderRadius: 'var(--radius-xs)',
             fontSize: '14px',
             color: 'var(--red)',
@@ -468,7 +468,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
           id="panel-embed"
           aria-labelledby="tab-embed"
           style={{
-            background: 'var(--surface-2)',
+            background: 'var(--surface-1)',
             border: '1px solid var(--border-soft)',
             borderRadius: 'var(--radius-xs)',
             padding: '24px',
@@ -482,8 +482,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
           </p>
           <pre
             style={{
-              background: 'var(--accent-deep)',
-              color: 'rgba(255,255,255,0.92)',
+              background: 'var(--surface-2)',
+              border: '1px solid var(--border)',
+              color: 'var(--text-2)',
               padding: '16px',
               borderRadius: 'var(--radius-xs)',
               fontFamily: 'var(--font-mono)',
@@ -499,7 +500,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
             style={{
               padding: '10px 18px',
               background: 'var(--accent)',
-              color: '#fff',
+              color: '#0B0717',
               border: 'none',
               borderRadius: 'var(--radius-xs)',
               cursor: 'pointer',
@@ -533,7 +534,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                 padding: '12px 16px',
                 marginBottom: '20px',
                 background: 'var(--red-bg)',
-                border: '1px solid rgba(185,28,28,0.3)',
+                border: '1px solid rgba(248,113,113,0.25)',
                 borderRadius: 'var(--radius-xs)',
                 fontSize: '14px',
                 color: 'var(--red)',
@@ -575,7 +576,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                 }}
                 style={{
                   background: 'var(--accent)',
-                  color: '#fff',
+                  color: '#0B0717',
                   padding: '10px 18px',
                   borderRadius: 'var(--radius-xs)',
                   fontWeight: 600,
@@ -639,8 +640,8 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
               (rec === 'ship_with_warnings' && acknowledged.size === run.warnings.length && run.warnings.length > 0)
 
             const cardStyle = {
-              background: 'var(--surface-2)',
-              border: '1px solid var(--border)',
+              background: 'var(--surface-1)',
+              border: '1px solid var(--border-soft)',
               borderRadius: 'var(--radius-xs)',
               padding: '16px',
               boxShadow: 'var(--shadow-card)',
@@ -669,7 +670,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                     role="alert"
                     style={{
                       background: 'var(--red-bg)',
-                      border: '1px solid rgba(185,28,28,0.3)',
+                      border: '1px solid rgba(248,113,113,0.25)',
                       borderLeft: '4px solid var(--red)',
                       borderRadius: 'var(--radius-xs)',
                       padding: '16px',
@@ -688,15 +689,15 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                   <div
                     role="alert"
                     style={{
-                      background: 'var(--amber-bg)',
-                      border: '1px solid rgba(146,64,14,0.3)',
-                      borderLeft: '4px solid var(--amber)',
+                      background: 'var(--gold-bg)',
+                      border: '1px solid rgba(251,191,36,0.3)',
+                      borderLeft: '4px solid var(--gold)',
                       borderRadius: 'var(--radius-xs)',
                       padding: '16px',
                       marginBottom: '24px',
                     }}
                   >
-                    <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--amber)', marginBottom: '6px' }}>
+                    <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--gold)', marginBottom: '6px' }}>
                       ⚠ Ready to deploy with warnings
                     </div>
                     <div style={{ fontSize: '14px', color: 'var(--text-3)' }}>{report?.summary as string}</div>
@@ -706,8 +707,8 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                   <div
                     style={{
                       background: 'var(--green-bg)',
-                      border: '1px solid rgba(22,163,74,0.3)',
-                      borderLeft: '4px solid var(--green-solid)',
+                      border: '1px solid rgba(52,211,153,0.3)',
+                      borderLeft: '4px solid var(--green)',
                       borderRadius: 'var(--radius-xs)',
                       padding: '16px',
                       marginBottom: '24px',
@@ -769,7 +770,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                         <span style={{ color: 'var(--text-2)' }}>{sev.charAt(0).toUpperCase() + sev.slice(1)}</span>
                         <span style={{
                           fontFamily: 'var(--font-mono)',
-                          color: sev === 'critical' ? 'var(--red)' : sev === 'high' ? '#EA580C' : sev === 'medium' ? 'var(--amber)' : 'var(--text-3)',
+                          color: sev === 'critical' ? 'var(--red)' : sev === 'high' ? 'var(--gold)' : sev === 'medium' ? 'var(--gold)' : 'var(--text-3)',
                         }}>
                           {(severityCounts[sev] ?? 0)} finding{(severityCounts[sev] ?? 0) !== 1 ? 's' : ''}
                         </span>
@@ -820,8 +821,8 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                         fontWeight: 500,
                         padding: '2px 8px',
                         borderRadius: 'var(--radius-xs)',
-                        background: 'var(--amber-bg)',
-                        color: 'var(--amber)',
+                        background: 'var(--gold-bg)',
+                        color: 'var(--gold)',
                         display: 'inline-block',
                       }}>
                         Below 50 — agent answers more from scratch
@@ -838,9 +839,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                     </p>
                     {run.warnings.map((w) => {
                       const badgeColors: Record<string, { bg: string; color: string }> = {
-                        eval_quality: { bg: 'var(--amber-bg)', color: 'var(--amber)' },
+                        eval_quality: { bg: 'var(--gold-bg)', color: 'var(--gold)' },
                         security: { bg: 'var(--red-bg)', color: 'var(--red)' },
-                        knowledge_depth: { bg: '#EFF6FF', color: '#1D4ED8' },
+                        knowledge_depth: { bg: 'var(--lilac-dim)', color: 'var(--lilac)' },
                         corpus_coverage: { bg: 'var(--green-bg)', color: 'var(--green)' },
                       }
                       const badge = badgeColors[w.category] ?? { bg: 'var(--surface-3)', color: 'var(--text-3)' }
@@ -933,7 +934,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                       style={{
                         padding: '12px 24px',
                         background: isApprovable ? 'var(--accent)' : 'var(--surface-3)',
-                        color: isApprovable ? '#fff' : 'var(--text-4)',
+                        color: isApprovable ? '#0B0717' : 'var(--text-4)',
                         border: 'none',
                         borderRadius: 'var(--radius-xs)',
                         fontWeight: 600,
@@ -977,7 +978,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
               <div style={{
                 display: 'inline-block',
                 background: 'var(--green-bg)',
-                border: '1px solid rgba(22,163,74,0.3)',
+                border: '1px solid rgba(52,211,153,0.3)',
                 borderRadius: '9999px',
                 padding: '6px 16px',
                 color: 'var(--green)',
@@ -1013,14 +1014,16 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
 
       {activeTab === 'customize' && (
         <div role="tabpanel" id="panel-customize" aria-labelledby="tab-customize" style={{ padding: '0' }}>
-          {/* 3-column design panel */}
+          {/* Sticky 2-column: form left (flex:1), preview right (300px sticky) */}
           <div
             style={{
-              display: 'grid',
-              gridTemplateColumns: '255px 310px 1fr',
+              display: 'flex',
               gap: '24px',
+              alignItems: 'flex-start',
             }}
           >
+            {/* Left form panel — appearance + style pickers */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '24px' }}>
             {/* Column 1: Appearance Mode */}
             <div>
               <p
@@ -1052,7 +1055,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
             {/* Column 2: Style Pickers */}
             <div
               style={{
-                background: 'var(--surface-2)',
+                background: 'var(--surface-1)',
                 border: '1px solid var(--border-soft)',
                 borderRadius: 'var(--radius-xs)',
                 padding: '16px',
@@ -1226,14 +1229,21 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
               </div>
             </div>
 
-            {/* Column 3: Live Preview */}
+            </div>{/* end left form panel */}
+
+            {/* Right preview panel — sticky 300px */}
             <div
               style={{
-                background: 'var(--surface-2)',
+                width: '300px',
+                flexShrink: 0,
+                position: 'sticky',
+                top: '80px',
+                background: 'var(--surface-1)',
                 border: '1px solid var(--border-soft)',
                 borderRadius: 'var(--radius-xs)',
                 padding: '24px',
                 minHeight: '400px',
+                alignSelf: 'flex-start',
               }}
             >
               <p
@@ -1261,7 +1271,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                     background: widgetConfig.colors.widget_bg,
                     borderRadius: RADIUS_MAP[widgetConfig.typography.border_radius_preset],
                     border: '1px solid rgba(0,0,0,0.06)',
-                    boxShadow: '0 4px 8px rgba(74,32,48,0.04), 0 16px 32px rgba(74,32,48,0.08)',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.35), 0 24px 48px rgba(11,7,23,0.6)',
                     overflow: 'hidden',
                     fontFamily:
                       widgetConfig.typography.font_family === 'custom'
@@ -1420,7 +1430,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
               style={{
                 padding: '12px 24px',
                 background: 'var(--accent)',
-                color: '#fff',
+                color: '#0B0717',
                 border: 'none',
                 borderRadius: 'var(--radius-xs)',
                 fontWeight: 600,
@@ -1429,7 +1439,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                 fontFamily: 'var(--font-sans)',
               }}
             >
-              {saveStatus === 'saving' ? 'Saving…' : 'Save Design'}
+              {saveStatus === 'saving' ? 'Saving…' : 'Save design'}
             </button>
           </div>
         </div>
