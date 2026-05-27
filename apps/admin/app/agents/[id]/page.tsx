@@ -150,50 +150,33 @@ export default function AgentJourneyPage({
     <p style={{ fontSize: '14px', color: 'var(--text-3)' }}>Loading agent…</p>
   )
 
-  // ---- Right-panel: provisioning status card (step1 not yet done) ----------
+  // ---- Right-panel: provisioning status (step1 not yet done) ----------------
   const provisioningPanel = (
-    <div
-      style={{
-        padding: '24px',
-        background: 'var(--surface-2)',
-        border: '1px solid var(--border-soft)',
-        borderRadius: 'var(--radius-xs)',
-        maxWidth: '480px',
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: '12px',
-        }}
-      >
-        <h2 style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-1)', margin: 0 }}>
-          Provisioning
-        </h2>
+    <div style={{ maxWidth: '560px' }}>
+      <p style={{
+        fontFamily: 'var(--font-mono)', fontSize: '10px', fontWeight: 600,
+        letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-4)', marginBottom: '8px',
+      }}>Step 1 of 4</p>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '8px' }}>
+        <h1 style={{
+          fontFamily: 'var(--font-display)', fontWeight: 600,
+          fontVariationSettings: '"opsz" 144, "SOFT" 30',
+          fontSize: '24px', color: 'var(--text-1)', margin: 0,
+        }}>Provisioning your agent…</h1>
         {agent && (
-          <span
-            style={{
-              padding: '4px 10px',
-              borderRadius: '999px',
-              fontSize: '11px',
-              fontWeight: 600,
-              background: getStatusColor(agent.status).bg,
-              color: getStatusColor(agent.status).fg,
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {getStatusColor(agent.status).label}
-          </span>
+          <span style={{
+            padding: '4px 10px', borderRadius: '999px', fontSize: '11px', fontWeight: 600,
+            background: getStatusColor(agent.status).bg, color: getStatusColor(agent.status).fg,
+            whiteSpace: 'nowrap', flexShrink: 0,
+          }}>{getStatusColor(agent.status).label}</span>
         )}
       </div>
-      <p style={{ fontSize: '14px', color: 'var(--text-3)', marginBottom: '16px' }}>
-        Your dedicated database is being provisioned. This may take up to 60 seconds.
+      <p style={{ fontSize: '14px', color: 'var(--text-3)', lineHeight: 1.6, marginBottom: '16px' }}>
+        Setting up a dedicated database. This usually takes 30–60 seconds.
       </p>
       {agent && (
         <p style={{ fontSize: '12px', color: 'var(--text-4)', fontFamily: 'var(--font-mono)' }}>
-          Agent ID: {agent.id}
+          agent_id: {agent.id}
         </p>
       )}
     </div>
@@ -206,19 +189,17 @@ export default function AgentJourneyPage({
   // once the soul is saved.
   const configurePanel = (
     <>
-      <h1
-        style={{
-          fontSize: '22px',
-          fontWeight: 700,
-          color: 'var(--text-1)',
-          marginBottom: '8px',
-        }}
-      >
-        Configure your agent
-      </h1>
-      <p style={{ fontSize: '14px', color: 'var(--text-3)', marginBottom: '24px' }}>
-        Define the soul and ingest your knowledge base. Configure is complete once
-        both are done.
+      <p style={{
+        fontFamily: 'var(--font-mono)', fontSize: '10px', fontWeight: 600,
+        letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-4)', marginBottom: '8px',
+      }}>Step 2 of 4</p>
+      <h1 style={{
+        fontFamily: 'var(--font-display)', fontWeight: 600,
+        fontVariationSettings: '"opsz" 144, "SOFT" 30',
+        fontSize: '24px', color: 'var(--text-1)', marginBottom: '8px',
+      }}>Configure your agent</h1>
+      <p style={{ fontSize: '14px', color: 'var(--text-3)', lineHeight: 1.6, maxWidth: '520px', marginBottom: '24px' }}>
+        Shape the agent&apos;s voice and ground it with your business knowledge. Both sub-processes feed directly into the system prompt.
       </p>
 
       <div
@@ -267,19 +248,17 @@ export default function AgentJourneyPage({
   // M6 eval harness is live. Surface a CTA to the Evals page.
   const testPanel = (
     <>
-      <h1
-        style={{
-          fontSize: '22px',
-          fontWeight: 700,
-          color: 'var(--text-1)',
-          marginBottom: '8px',
-        }}
-      >
-        Test your agent
-      </h1>
-      <p style={{ fontSize: '14px', color: 'var(--text-3)', marginBottom: '24px' }}>
-        Run evaluations and adversarial probes before deploying. Deploy unlocks once
-        at least one eval run is complete.
+      <p style={{
+        fontFamily: 'var(--font-mono)', fontSize: '10px', fontWeight: 600,
+        letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-4)', marginBottom: '8px',
+      }}>Step 3 of 4</p>
+      <h1 style={{
+        fontFamily: 'var(--font-display)', fontWeight: 600,
+        fontVariationSettings: '"opsz" 144, "SOFT" 30',
+        fontSize: '24px', color: 'var(--text-1)', marginBottom: '8px',
+      }}>Test your agent</h1>
+      <p style={{ fontSize: '14px', color: 'var(--text-3)', lineHeight: 1.6, maxWidth: '520px', marginBottom: '24px' }}>
+        Run evaluations and adversarial probes before deploying. Deploy unlocks once at least one eval run is complete.
       </p>
 
       <div style={{ marginTop: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -329,7 +308,7 @@ export default function AgentJourneyPage({
   }
 
   return (
-    <div style={{ padding: '32px 40px' }}>
+    <div style={{ padding: '40px 48px' }}>
       {/* Error alert */}
       {loadError && (
         <div
