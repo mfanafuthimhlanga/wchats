@@ -488,6 +488,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
       style={{
         padding: '32px 40px',
         maxWidth: '720px',
+        margin: '0 auto',
         fontFamily: 'var(--font-sans)',
       }}
     >

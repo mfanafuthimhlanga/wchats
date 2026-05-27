@@ -39,9 +39,27 @@ export default function LandingPage() {
           borderBottom: scrolled ? '1px solid var(--border-soft)' : '1px solid var(--glass-border)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginRight: 0 }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/wordmark.svg" alt="w.chats" style={{ height: '24px' }} />
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '2px', flex: 1, justifyContent: 'center' }}>
+          {['Product', 'How it works', 'Pricing', 'Docs', 'Changelog'].map(label => (
+            <span
+              key={label}
+              style={{
+                padding: '7px 14px',
+                fontSize: '13.5px',
+                fontWeight: 500,
+                color: 'var(--text-2)',
+                borderRadius: 'var(--radius-xs)',
+                cursor: 'pointer',
+              }}
+            >
+              {label}
+            </span>
+          ))}
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -89,36 +107,7 @@ export default function LandingPage() {
         >
           {/* Left column — copy */}
           <div>
-            {/* Eyebrow pill */}
-            <div
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '8px',
-                background: 'var(--glass-bg)',
-                backdropFilter: 'var(--glass-blur)',
-                WebkitBackdropFilter: 'var(--glass-blur)',
-                border: '1px solid var(--glass-border)',
-                borderRadius: 'var(--radius-pill)',
-                padding: '4px 14px',
-                marginBottom: '28px',
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: '10.5px',
-                  fontWeight: 600,
-                  letterSpacing: '0.12em',
-                  textTransform: 'uppercase',
-                  color: 'var(--text-3)',
-                }}
-              >
-                OPEN SOURCE · v0.4.2 · M8
-              </span>
-            </div>
-
-            {/* Fraunces headline with strikethrough + italic-coral */}
+            {/* Fraunces headline */}
             <h1
               style={{
                 fontFamily: 'var(--font-display)',
@@ -132,18 +121,7 @@ export default function LandingPage() {
                 marginTop: 0,
               }}
             >
-              The chat widget{' '}
-              <span
-                style={{
-                  textDecoration: 'line-through',
-                  textDecorationColor: 'var(--accent)',
-                  textDecorationThickness: '3px',
-                  color: 'var(--text-3)',
-                }}
-              >
-                is the hard part.
-              </span>
-              {' '}
+              Ship a customer support agent that is{' '}
               <em
                 style={{
                   fontStyle: 'italic',
@@ -152,8 +130,9 @@ export default function LandingPage() {
                   fontVariationSettings: '"opsz" 144, "SOFT" 100',
                 }}
               >
-                The layer underneath is.
+                defensible
               </em>
+              {' '}— grounded, evaluated, and red-teamed before it goes live.
             </h1>
 
             <p
@@ -165,7 +144,7 @@ export default function LandingPage() {
                 maxWidth: '560px',
               }}
             >
-              W Chats does the serious work — structure-aware ingestion, hybrid retrieval, continuous evaluation, weekly red teaming — so small business owners ship a customer service agent that is actually safe to deploy.
+              W Chats wires a <strong style={{ color: 'var(--text-1)', fontWeight: 600 }}>Claude Agent SDK</strong> reasoning engine to your business documents, evaluates every answer, and ships a <strong style={{ color: 'var(--text-1)', fontWeight: 600 }}>20kb widget</strong> for any page.
             </p>
 
             {/* CTA row */}

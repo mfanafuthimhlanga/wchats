@@ -47,9 +47,11 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
       style={{
         width: '320px',
         flexShrink: 0,
-        borderRight: '1px solid var(--border-soft)',
+        borderRight: '1px solid var(--glass-border)',
         padding: '32px 24px',
-        background: 'var(--surface-1)',
+        background: 'var(--glass-bg-strong)',
+        backdropFilter: 'var(--glass-blur)',
+        WebkitBackdropFilter: 'var(--glass-blur)',
       }}
     >
       {/* Agent header */}

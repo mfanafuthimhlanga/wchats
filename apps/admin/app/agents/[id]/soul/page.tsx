@@ -286,9 +286,12 @@ export default function SoulEditorPage({
         padding: '32px',
         maxWidth: '600px',
         overflowY: 'auto',
-        background: 'var(--surface-1)',
-        border: '1px solid var(--border)',
-        borderRadius: 'var(--radius-sm)',
+        background: 'var(--glass-bg-strong)',
+        backdropFilter: 'var(--glass-blur)',
+        WebkitBackdropFilter: 'var(--glass-blur)',
+        border: '1px solid var(--glass-border)',
+        borderRadius: 'var(--radius-md)',
+        boxShadow: 'var(--shadow-lift)',
         margin: '32px',
       }}>
         <h1
@@ -636,8 +639,11 @@ export default function SoulEditorPage({
           style={{
             width: '400px',
             padding: '32px',
-            borderLeft: '1px solid var(--border)',
-            background: 'var(--surface-3)',
+            background: 'var(--glass-bg)',
+            backdropFilter: 'var(--glass-blur)',
+            WebkitBackdropFilter: 'var(--glass-blur)',
+            border: '1px solid var(--glass-border)',
+            borderLeft: '1px solid var(--glass-border)',
             overflowY: 'auto',
             flexShrink: 0,
           }}

@@ -158,9 +158,6 @@ export default function AgentsDashboardPage() {
       >
         <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: '32px', maxWidth: '1400px' }}>
           <div>
-            <p style={{ fontSize: '10.5px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 6px 0' }}>
-              {greeting.split(' ')[0].toUpperCase()} · {agents.length} {agents.length === 1 ? 'AGENT' : 'AGENTS'}
-            </p>
             <h1 style={{ fontFamily: 'var(--font-display)', fontWeight: 400, fontVariationSettings: '"opsz" 144, "SOFT" 50', fontSize: '34px', letterSpacing: '-0.022em', lineHeight: 1.1, color: 'var(--text-1)', margin: '0 0 6px 0' }}>
               {greeting},{' '}
               <em style={{ fontStyle: 'italic', fontWeight: 300, color: 'var(--accent)', fontVariationSettings: '"opsz" 144, "SOFT" 100' }}>
@@ -197,50 +194,10 @@ export default function AgentsDashboardPage() {
         </div>
       </div>
 
-      {/* Glass stat cards row */}
-      <div style={{ padding: '0 48px 32px', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', maxWidth: '1400px' }}>
-        {[
-          { label: 'CONVERSATIONS · 7D', value: '—', color: 'var(--accent)' },
-          { label: 'FAITHFULNESS · MEDIAN', value: '—', color: 'var(--lilac)' },
-          { label: 'P95 LATENCY', value: '—', color: 'var(--cyan)' },
-          { label: 'COST · 7D', value: '—', color: 'var(--gold)' },
-        ].map(({ label, value, color }) => (
-          <div key={label} style={{
-            background: 'var(--glass-bg)',
-            backdropFilter: 'var(--glass-blur)',
-            WebkitBackdropFilter: 'var(--glass-blur)',
-            border: '1px solid var(--glass-border)',
-            borderRadius: 'var(--radius-md)',
-            padding: '22px 24px',
-            position: 'relative',
-            overflow: 'hidden',
-          }}>
-            <div style={{ position: 'absolute', top: 0, right: 0, width: '80px', height: '80px', background: `radial-gradient(circle at 100% 0%, ${color}22 0%, transparent 70%)`, pointerEvents: 'none' }} />
-            <p style={{ fontSize: '10.5px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)', margin: '0 0 12px 0', position: 'relative', zIndex: 1 }}>
-              {label}
-            </p>
-            <p style={{ fontFamily: 'var(--font-mono)', fontSize: '30px', fontWeight: 600, color: 'var(--text-1)', letterSpacing: '-0.025em', lineHeight: 1, margin: 0, position: 'relative', zIndex: 1 }}>
-              {value}
-            </p>
-          </div>
-        ))}
-      </div>
-
       {/* Your agents section header + filter tabs */}
       <div style={{ padding: '0 48px 20px', maxWidth: '1400px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
           <span style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-1)' }}>Your agents</span>
-          <span style={{
-            background: 'var(--accent)',
-            color: '#0B0717',
-            fontSize: '11px',
-            fontWeight: 700,
-            padding: '2px 8px',
-            borderRadius: 'var(--radius-pill)',
-            lineHeight: 1.4,
-          }}>
-            {agents.length}
-          </span>
         </div>
         <div style={{ display: 'flex', gap: '4px' }}>
           {([

@@ -16,8 +16,10 @@ export default function TopNav() {
     <nav
       style={{
         height: '56px',
-        background: 'var(--bg-elev)',
-        borderBottom: '1px solid var(--border-soft)',
+        background: 'transparent',
+        backdropFilter: 'var(--glass-blur)',
+        WebkitBackdropFilter: 'var(--glass-blur)',
+        borderBottom: '1px solid var(--glass-border)',
         display: 'flex',
         alignItems: 'center',
         padding: '0 24px',
@@ -33,7 +35,7 @@ export default function TopNav() {
       </div>
 
       {/* Nav links */}
-      <div style={{ display: 'flex', gap: '4px', flex: 1 }}>
+      <div style={{ display: 'flex', gap: '4px', marginLeft: 'auto', marginRight: '12px' }}>
         {NAV_LINKS.map(({ href, label }) => {
           const active = pathname.startsWith(href)
           return (
