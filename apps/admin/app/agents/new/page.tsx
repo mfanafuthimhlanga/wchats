@@ -206,115 +206,149 @@ export default function CreateAgentPage() {
       <div
         style={{
           flex: 1,
-          padding: '32px 40px',
+          padding: '40px 48px',
+          overflowY: 'auto',
         }}
       >
-        <h1
-          style={{
-            fontSize: '24px',
-            fontWeight: 700,
-            color: 'var(--text-1)',
-            marginBottom: '24px',
-          }}
-        >
-          Create a new agent
-        </h1>
-
         {/* Form phase */}
         {phase === 'form' && (
-          <form onSubmit={handleSubmit} style={{
-            maxWidth: '480px',
-            background: 'var(--surface-1)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-sm)',
-            padding: '28px',
-          }}>
-            {!name.trim() && mutation.isIdle ? null : null}
+          <form onSubmit={handleSubmit} style={{ maxWidth: '560px' }}>
+            {/* Panel header */}
+            <p style={{
+              fontFamily: 'var(--font-mono)',
+              fontSize: '10px',
+              fontWeight: 600,
+              letterSpacing: '0.12em',
+              textTransform: 'uppercase',
+              color: 'var(--text-4)',
+              marginBottom: '8px',
+            }}>
+              Step 1 of 4
+            </p>
+            <h1 style={{
+              fontFamily: 'var(--font-display)',
+              fontWeight: 600,
+              fontVariationSettings: '"opsz" 144, "SOFT" 30',
+              fontSize: '24px',
+              color: 'var(--text-1)',
+              marginBottom: '8px',
+            }}>
+              Provision your agent
+            </h1>
+            <p style={{
+              fontSize: '14px',
+              color: 'var(--text-3)',
+              lineHeight: 1.6,
+              maxWidth: '520px',
+              marginBottom: '32px',
+            }}>
+              Give your agent a name and define its primary role. This sets the context for all downstream configuration.
+            </p>
 
             {/* Agent name */}
             <div style={{ marginBottom: '20px' }}>
-              <label htmlFor="agentName" style={labelStyle}>
-                Agent Name <span style={{ color: 'var(--red)' }}>*</span>
-              </label>
+              <label htmlFor="agentName" style={labelStyle}>Agent name</label>
               <input
                 id="agentName"
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. SupportBot"
+                placeholder="e.g. Acme Support, Hillbrow Realty Assistant"
                 maxLength={60}
                 style={inputStyle}
               />
             </div>
 
-            {/* Role select */}
-            <div style={{ marginBottom: '28px' }}>
-              <label htmlFor="agentRole" style={labelStyle}>
-                Role
-              </label>
+            {/* Primary role */}
+            <div style={{ marginBottom: '20px' }}>
+              <label htmlFor="agentRole" style={labelStyle}>Primary role</label>
               <select
                 id="agentRole"
                 value={role}
                 onChange={(e) => setRole(e.target.value as Role)}
                 style={{ ...inputStyle, cursor: 'pointer' }}
               >
-                <option value="support">Support</option>
-                <option value="sales">Sales</option>
-                <option value="helpdesk">Helpdesk</option>
+                <option value="support">Customer service agent</option>
+                <option value="sales">Sales agent</option>
+                <option value="helpdesk">Helpdesk agent</option>
               </select>
+              <p style={{ fontSize: '12px', color: 'var(--text-4)', marginTop: '5px' }}>
+                Used as the role context in the system prompt.
+              </p>
             </div>
 
-            {/* Submit */}
-            <button
-              type="submit"
-              style={{
-                padding: '12px 32px',
-                minHeight: '44px',
-                background: 'var(--accent)',
-                color: '#0B0717',
-                border: 'none',
-                borderRadius: 'var(--radius-sm)',
-                cursor: 'pointer',
-                fontSize: '15px',
-                fontWeight: 600,
-                fontFamily: 'var(--font-sans)',
-              }}
-            >
-              Create agent
-            </button>
+            {/* Panel footer */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginTop: '32px',
+              paddingTop: '24px',
+              borderTop: '1px solid var(--border-soft)',
+            }}>
+              <span style={{ display: 'inline-block', width: '110px' }} />
+              <span style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: '11px',
+                color: 'var(--text-4)',
+                letterSpacing: '0.08em',
+              }}>
+                Step 1 of 4
+              </span>
+              <button
+                type="submit"
+                style={{
+                  padding: '11px 28px',
+                  background: 'var(--accent)',
+                  color: '#0B0717',
+                  border: 'none',
+                  borderRadius: 'var(--radius-sm)',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: 600,
+                  fontFamily: 'var(--font-sans)',
+                  boxShadow: 'var(--shadow-glow)',
+                }}
+              >
+                Continue →
+              </button>
+            </div>
           </form>
         )}
 
         {/* Provisioning phase */}
         {phase === 'provisioning' && (
-          <div
-            style={{
-              padding: '32px',
-              background: 'var(--surface-2)',
-              border: '1px solid var(--border-soft)',
-              borderRadius: 'var(--radius-xs)',
-              maxWidth: '480px',
-            }}
-          >
-            <h2
-              style={{
-                fontSize: '18px',
-                fontWeight: 700,
-                color: 'var(--text-1)',
-                marginBottom: '12px',
-              }}
-            >
+          <div style={{ maxWidth: '560px' }}>
+            <p style={{
+              fontFamily: 'var(--font-mono)',
+              fontSize: '10px',
+              fontWeight: 600,
+              letterSpacing: '0.12em',
+              textTransform: 'uppercase',
+              color: 'var(--text-4)',
+              marginBottom: '8px',
+            }}>
+              Step 1 of 4
+            </p>
+            <h1 style={{
+              fontFamily: 'var(--font-display)',
+              fontWeight: 600,
+              fontVariationSettings: '"opsz" 144, "SOFT" 30',
+              fontSize: '24px',
+              color: 'var(--text-1)',
+              marginBottom: '8px',
+            }}>
               Provisioning your agent…
-            </h2>
-            <p style={{ fontSize: '14px', color: 'var(--text-3)', marginBottom: '16px' }}>
+            </h1>
+            <p style={{ fontSize: '14px', color: 'var(--text-3)', lineHeight: 1.6, marginBottom: '24px' }}>
               Setting up a dedicated database. This usually takes 30–60 seconds.
             </p>
             <p style={{ fontSize: '13px', color: 'var(--text-4)', fontFamily: 'var(--font-mono)' }}>
-              Status: {polledStatus || 'pending'}{polledStatus === 'ready' ? ' — redirecting…' : ' — working…'}
+              status: {polledStatus || 'pending'}{polledStatus === 'ready' ? ' — redirecting…' : ' — working…'}
             </p>
             {agentId && (
               <p style={{ fontSize: '12px', color: 'var(--text-4)', marginTop: '8px', fontFamily: 'var(--font-mono)' }}>
-                Agent ID: {agentId}
+                agent_id: {agentId}
               </p>
             )}
           </div>
