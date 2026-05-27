@@ -49,15 +49,14 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
         flexShrink: 0,
         borderRight: '1px solid var(--glass-border)',
         padding: '32px 24px',
-        background: 'var(--glass-bg-strong)',
-        backdropFilter: 'var(--glass-blur)',
-        WebkitBackdropFilter: 'var(--glass-blur)',
       }}
     >
       {/* Agent header */}
       <h2
         style={{
-          fontSize: '18px',
+          fontFamily: 'var(--font-display)',
+          fontVariationSettings: '"opsz" 144, "SOFT" 30',
+          fontSize: '16px',
           fontWeight: 700,
           color: 'var(--text-1)',
           marginBottom: '4px',

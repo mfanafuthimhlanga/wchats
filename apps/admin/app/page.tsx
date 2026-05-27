@@ -128,6 +128,7 @@ export default function LandingPage() {
                   fontWeight: 300,
                   color: 'var(--accent)',
                   fontVariationSettings: '"opsz" 144, "SOFT" 100',
+                  textDecoration: 'line-through',
                 }}
               >
                 defensible
@@ -162,7 +163,7 @@ export default function LandingPage() {
                   display: 'inline-block',
                 }}
               >
-                Start free →
+                Build your agent
               </Link>
               <button
                 style={{
@@ -191,9 +192,10 @@ export default function LandingPage() {
               }}
             >
               {[
-                { value: '<30 min', label: 'Signup to deployed' },
-                { value: '>0.85', label: 'Faithfulness target' },
-                { value: '0 critical', label: 'Red team threshold' },
+                { value: '>248+', label: 'Agents deployed' },
+                { value: '>0.91', label: 'Faithfulness median' },
+                { value: '>$0.17', label: 'Avg cost / session' },
+                { value: '0', label: 'Critical red team findings' },
               ].map(({ value, label }) => (
                 <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   <span

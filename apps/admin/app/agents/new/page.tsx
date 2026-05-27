@@ -15,6 +15,8 @@ export default function CreateAgentPage() {
   // Form fields
   const [name, setName] = useState('')
   const [role, setRole] = useState<Role>('support')
+  const [primaryRole, setPrimaryRole] = useState('')
+  const [businessDomain, setBusinessDomain] = useState('')
 
   // agentId is set after a successful mutation; drives polling
   const [agentId, setAgentId] = useState<string | null>(null)
@@ -135,14 +137,16 @@ export default function CreateAgentPage() {
     setAgentId(null)
     setName('')
     setRole('support')
+    setPrimaryRole('')
+    setBusinessDomain('')
   }
 
   // --- Styles ---
   const inputStyle: React.CSSProperties = {
     width: '100%',
-    padding: '10px 12px',
+    padding: '11px 14px',
     border: '1px solid var(--border-soft)',
-    borderRadius: 'var(--radius-xs)',
+    borderRadius: 'var(--radius-sm)',
     fontSize: '14px',
     fontFamily: 'var(--font-sans)',
     background: 'var(--surface-2)',
@@ -154,11 +158,11 @@ export default function CreateAgentPage() {
   const labelStyle: React.CSSProperties = {
     display: 'block',
     fontWeight: 600,
-    fontSize: '10.5px',
+    fontSize: '11px',
     textTransform: 'uppercase',
     letterSpacing: '0.12em',
     color: 'var(--text-3)',
-    marginBottom: '6px',
+    marginBottom: '7px',
   }
 
   // Left-panel journey steps
@@ -198,7 +202,7 @@ export default function CreateAgentPage() {
       {/* Left panel: journey stepper */}
       <JourneyStepper
         agentName="New Agent"
-        agentRole=""
+        agentRole={name}
         steps={steps}
       />
 
@@ -212,7 +216,7 @@ export default function CreateAgentPage() {
       >
         {/* Form phase */}
         {phase === 'form' && (
-          <form onSubmit={handleSubmit} style={{ maxWidth: '560px' }}>
+          <form onSubmit={handleSubmit}>
             {/* Panel header */}
             <p style={{
               fontFamily: 'var(--font-mono)',
@@ -261,20 +265,33 @@ export default function CreateAgentPage() {
 
             {/* Primary role */}
             <div style={{ marginBottom: '20px' }}>
-              <label htmlFor="agentRole" style={labelStyle}>Primary role</label>
-              <select
-                id="agentRole"
-                value={role}
-                onChange={(e) => setRole(e.target.value as Role)}
-                style={{ ...inputStyle, cursor: 'pointer' }}
-              >
-                <option value="support">Customer service agent</option>
-                <option value="sales">Sales agent</option>
-                <option value="helpdesk">Helpdesk agent</option>
-              </select>
+              <label htmlFor="agentPrimaryRole" style={labelStyle}>Primary role</label>
+              <input
+                id="agentPrimaryRole"
+                type="text"
+                value={primaryRole}
+                onChange={(e) => setPrimaryRole(e.target.value)}
+                placeholder="e.g. Customer service agent for Acme Consulting"
+                maxLength={120}
+                style={inputStyle}
+              />
               <p style={{ fontSize: '12px', color: 'var(--text-4)', marginTop: '5px' }}>
-                Used as the role context in the system prompt.
+                Used as the role context in the system prompt. Be specific.
               </p>
+            </div>
+
+            {/* Business domain */}
+            <div style={{ marginBottom: '20px' }}>
+              <label htmlFor="agentDomain" style={labelStyle}>Business domain</label>
+              <input
+                id="agentDomain"
+                type="text"
+                value={businessDomain}
+                onChange={(e) => setBusinessDomain(e.target.value)}
+                placeholder="e.g. SaaS company, property agency, e-commerce"
+                maxLength={120}
+                style={inputStyle}
+              />
             </div>
 
             {/* Panel footer */}

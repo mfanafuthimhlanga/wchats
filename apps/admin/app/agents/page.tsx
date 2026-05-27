@@ -41,6 +41,11 @@ export default function AgentsDashboardPage() {
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ''
   const isDemoMode = process.env.NEXT_PUBLIC_DEMO === 'true'
 
+  const DEMO_AGENTS: AgentSummary[] = [
+    { id: 'demo-1', tenant_id: 'demo', name: 'Acme Support', role: 'support', status: 'ready', neon_project_id: 'neon-1', schema_version: '1', created_at: '2026-05-01T00:00:00Z' },
+    { id: 'demo-2', tenant_id: 'demo', name: 'Hillbrow Realty', role: 'helpdesk', status: 'testing', neon_project_id: 'neon-2', schema_version: '1', created_at: '2026-05-15T00:00:00Z' },
+  ]
+
   const agentsQuery = useQuery({
     queryKey: ['agents'],
     queryFn: async () => {
@@ -112,7 +117,7 @@ export default function AgentsDashboardPage() {
 
   // Derive display state from the query
   const isLoading = !isDemoMode && (agentsQuery.isPending || !isLoaded)
-  const agents = agentsQuery.data ?? []
+  const agents = isDemoMode ? DEMO_AGENTS : (agentsQuery.data ?? [])
 
   // Compute human-friendly error message
   let loadError: string | null = null
@@ -165,12 +170,7 @@ export default function AgentsDashboardPage() {
               </em>
             </h1>
             <p style={{ fontSize: '14px', color: 'var(--text-3)', margin: 0 }}>
-              {(() => {
-                const live = agents.filter(a => a.status === 'ready').length
-                const inTest = agents.filter(a => a.status === 'testing').length
-                const draft = agents.filter(a => a.status !== 'ready' && a.status !== 'testing').length
-                return `You have ${live} live agent${live !== 1 ? 's' : ''}, ${inTest} in test, ${draft} draft.`
-              })()}
+              {liveCount} live · {testingCount} in test · {draftCount} draft
             </p>
           </div>
 
@@ -194,10 +194,21 @@ export default function AgentsDashboardPage() {
         </div>
       </div>
 
-      {/* Your agents section header + filter tabs */}
+      {/* Filter strip — count badge right, tabs left */}
       <div style={{ padding: '0 48px 20px', maxWidth: '1400px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
-          <span style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-1)' }}>Your agents</span>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: '14px' }}>
+          <span style={{
+            background: 'var(--accent-dim)',
+            color: 'var(--accent)',
+            border: '1px solid var(--border-hard)',
+            fontFamily: 'var(--font-mono)',
+            fontSize: '13px',
+            fontWeight: 700,
+            padding: '6px 14px',
+            borderRadius: 'var(--radius-pill)',
+          }}>
+            {agents.length} {agents.length === 1 ? 'agent' : 'agents'}
+          </span>
         </div>
         <div style={{ display: 'flex', gap: '4px' }}>
           {([
@@ -279,7 +290,7 @@ export default function AgentsDashboardPage() {
         {!isLoading && agents.length > 0 && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
             {filteredAgents.map((a) => (
-              <AgentCard key={a.id} {...a} onDelete={handleDelete} />
+              <AgentCard key={a.id} {...a} onDelete={isDemoMode ? undefined : handleDelete} />
             ))}
           </div>
         )}

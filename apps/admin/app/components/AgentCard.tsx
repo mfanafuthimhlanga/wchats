@@ -46,6 +46,14 @@ function getRoleIcon(role: string) {
   return <Bot size={20} color="var(--text-3)" strokeWidth={1.5} />
 }
 
+function getRoleIconBg(role: string): string {
+  const r = role.toLowerCase()
+  if (r.includes('helpdesk') || r.includes('help') || r.includes('tech')) {
+    return 'rgba(183,154,224,0.15)'
+  }
+  return 'var(--accent-dim)'
+}
+
 function getStatusColor(status: string) {
   return (
     STATUS_COLORS[status] ?? {
@@ -133,7 +141,7 @@ export default function AgentCard({ id, name, role, status, created_at, onDelete
         flexDirection: 'column',
         background: 'var(--surface-1)',
         border: `1px solid ${hovered ? 'var(--border)' : 'var(--border-soft)'}`,
-        borderTop: `1px solid ${hovered ? 'var(--border-hard)' : 'var(--border-soft)'}`,
+        borderTop: hovered ? '3px solid var(--accent)' : '1px solid var(--border-soft)',
         borderRadius: 'var(--radius-md)',
         boxShadow: 'var(--shadow-card)',
         color: 'var(--text-1)',
@@ -159,9 +167,8 @@ export default function AgentCard({ id, name, role, status, created_at, onDelete
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '14px' }}>
           <div style={{
             width: '44px', height: '44px',
-            background: 'linear-gradient(135deg, var(--surface-2) 0%, var(--surface-3) 100%)',
-            border: '1px solid var(--border-soft)',
-            borderRadius: 'var(--radius-xs)',
+            background: getRoleIconBg(role),
+            borderRadius: 'var(--radius-sm)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             flexShrink: 0,
           }}>
@@ -217,9 +224,9 @@ export default function AgentCard({ id, name, role, status, created_at, onDelete
           marginBottom: '14px',
         }}>
           {[
-            { label: '7d Conv', val: '—' },
-            { label: 'Faith', val: '—' },
-            { label: 'W/L', val: '—' },
+            { label: 'Conv · 7D', val: '—' },
+            { label: 'Faithfulness', val: '—' },
+            { label: 'Cost/Sess', val: '—' },
           ].map(({ label, val }) => (
             <div key={label}>
               <div style={{ fontSize: '9.5px', fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-4)', marginBottom: '4px' }}>
@@ -238,7 +245,7 @@ export default function AgentCard({ id, name, role, status, created_at, onDelete
             {formattedDate}
           </span>
           <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-            Open →
+            View details →
           </span>
         </div>
       </Link>
