@@ -21,21 +21,21 @@ const JOURNEY: Step[][] = [
   // Frame 1 — Provision done, Configure active
   [
     { label: 'Provision', meta: 'Tenant database ready', status: 'done' },
-    { label: 'Configure', meta: 'Ingesting 47 documents...', status: 'active' },
+    { label: 'Configure', meta: 'Ingesting docs...', status: 'active' },
     { label: 'Test', meta: 'Evals + red team', status: 'pending' },
     { label: 'Deploy', meta: 'Embed widget live', status: 'pending' },
   ],
   // Frame 2 — Provision + Configure done, Test active
   [
     { label: 'Provision', meta: 'Tenant database ready', status: 'done' },
-    { label: 'Configure', meta: 'Soul + 47 docs indexed', status: 'done' },
+    { label: 'Configure', meta: 'Docs ingested', status: 'done' },
     { label: 'Test', meta: 'Running evals — pass rate 0.91...', status: 'active' },
     { label: 'Deploy', meta: 'Embed widget live', status: 'pending' },
   ],
   // Frame 3 — All done, Deploy active
   [
     { label: 'Provision', meta: 'Tenant database ready', status: 'done' },
-    { label: 'Configure', meta: 'Soul + 47 docs indexed', status: 'done' },
+    { label: 'Configure', meta: 'Docs ingested', status: 'done' },
     { label: 'Test', meta: 'Evals passed · 0 critical findings', status: 'done' },
     { label: 'Deploy', meta: 'Widget live on your site', status: 'active' },
   ],
@@ -59,13 +59,9 @@ export function HeroPipeline() {
   return (
     <div
       style={{
-        background: 'var(--glass-bg)',
-        backdropFilter: 'var(--glass-blur)',
-        WebkitBackdropFilter: 'var(--glass-blur)',
         border: '1px solid var(--glass-border)',
         borderRadius: 'var(--radius-md)',
         overflow: 'hidden',
-        boxShadow: 'var(--shadow-lift)',
       }}
     >
       {/* Card header */}

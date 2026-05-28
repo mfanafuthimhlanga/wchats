@@ -91,17 +91,24 @@ export default function LandingPage() {
       <section
         style={{
           background: 'transparent',
-          padding: '120px 56px 64px',
+          position: 'relative',
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
         }}
       >
         <div
           style={{
+            position: 'relative',
+            zIndex: 2,
             display: 'grid',
             gridTemplateColumns: '1fr 0.72fr',
             gap: '56px',
             alignItems: 'center',
             maxWidth: '1280px',
             margin: '0 auto',
+            width: '100%',
+            padding: '48px 56px 64px',
           }}
         >
           {/* Left column — copy */}
@@ -113,10 +120,10 @@ export default function LandingPage() {
                 fontWeight: 400,
                 fontVariationSettings: '"opsz" 144, "SOFT" 30',
                 fontSize: 'clamp(32px, 3.4vw, 52px)',
-                letterSpacing: '-0.035em',
-                lineHeight: 0.98,
+                letterSpacing: '-0.022em',
+                lineHeight: 1.1,
                 color: 'var(--text-1)',
-                marginBottom: '28px',
+                marginBottom: '16px',
                 marginTop: 0,
               }}
             >
@@ -127,12 +134,11 @@ export default function LandingPage() {
                   fontWeight: 300,
                   color: 'var(--accent)',
                   fontVariationSettings: '"opsz" 144, "SOFT" 100',
-                  textDecoration: 'line-through',
                 }}
               >
                 defensible
               </em>
-              {' '}— grounded, evaluated, and red-teamed before it goes live.
+              , grounded, evaluated, and red-teamed before it goes live.
             </h1>
 
             <p
