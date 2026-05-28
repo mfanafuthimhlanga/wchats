@@ -33,8 +33,8 @@ export default function LandingPage() {
           top: 0,
           zIndex: 100,
           background: scrolled ? 'var(--bg-elev)' : 'transparent',
-          backdropFilter: scrolled ? 'none' : 'var(--glass-blur)',
-          WebkitBackdropFilter: scrolled ? 'none' : 'var(--glass-blur)',
+          backdropFilter: scrolled ? 'blur(20px) saturate(140%)' : 'none',
+          WebkitBackdropFilter: scrolled ? 'blur(20px) saturate(140%)' : 'none',
           transition: 'background 0.3s, backdrop-filter 0.3s',
           borderBottom: scrolled ? '1px solid var(--border-soft)' : '1px solid var(--glass-border)',
         }}
@@ -91,17 +91,16 @@ export default function LandingPage() {
       <section
         style={{
           background: 'transparent',
-          padding: '80px 56px 120px',
-          minHeight: '720px',
+          padding: '120px 56px 64px',
         }}
       >
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 0.9fr)',
-            gap: '80px',
+            gridTemplateColumns: '1fr 0.72fr',
+            gap: '56px',
             alignItems: 'center',
-            maxWidth: '1180px',
+            maxWidth: '1280px',
             margin: '0 auto',
           }}
         >
@@ -113,7 +112,7 @@ export default function LandingPage() {
                 fontFamily: 'var(--font-display)',
                 fontWeight: 400,
                 fontVariationSettings: '"opsz" 144, "SOFT" 30',
-                fontSize: 'clamp(48px, 6.4vw, 86px)',
+                fontSize: 'clamp(32px, 3.4vw, 52px)',
                 letterSpacing: '-0.035em',
                 lineHeight: 0.98,
                 color: 'var(--text-1)',
@@ -138,11 +137,11 @@ export default function LandingPage() {
 
             <p
               style={{
-                fontSize: '19px',
-                lineHeight: 1.55,
+                fontSize: '15px',
+                lineHeight: 1.6,
                 color: 'var(--text-2)',
-                marginBottom: '28px',
-                maxWidth: '560px',
+                marginBottom: '22px',
+                maxWidth: '480px',
               }}
             >
               W Chats wires a <strong style={{ color: 'var(--text-1)', fontWeight: 600 }}>Claude Agent SDK</strong> reasoning engine to your business documents, evaluates every answer, and ships a <strong style={{ color: 'var(--text-1)', fontWeight: 600 }}>20kb widget</strong> for any page.
@@ -185,10 +184,9 @@ export default function LandingPage() {
             <div
               style={{
                 display: 'flex',
-                gap: '32px',
-                flexWrap: 'wrap',
+                alignItems: 'center',
                 borderTop: '1px solid var(--glass-border)',
-                paddingTop: '28px',
+                paddingTop: '24px',
               }}
             >
               {[
@@ -196,22 +194,25 @@ export default function LandingPage() {
                 { value: '>0.91', label: 'Faithfulness median' },
                 { value: '>$0.17', label: 'Avg cost / session' },
                 { value: '0', label: 'Critical red team findings' },
-              ].map(({ value, label }) => (
-                <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              ].flatMap(({ value, label }, i) => [
+                ...(i > 0 ? [
+                  <div key={`sep-${i}`} style={{ width: '1px', height: '32px', background: 'var(--glass-border)', flexShrink: 0 }} />
+                ] : []),
+                <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: '2px', padding: i === 0 ? '0 28px 0 0' : '0 28px' }}>
                   <span
                     style={{
                       fontFamily: 'var(--font-mono)',
-                      fontSize: '30px',
+                      fontSize: '18px',
                       fontWeight: 600,
                       color: 'var(--text-1)',
-                      letterSpacing: '-0.02em',
+                      letterSpacing: '-0.01em',
                     }}
                   >
                     {value}
                   </span>
                   <span
                     style={{
-                      fontSize: '10.5px',
+                      fontSize: '9.5px',
                       fontWeight: 600,
                       letterSpacing: '0.1em',
                       textTransform: 'uppercase',
@@ -220,8 +221,8 @@ export default function LandingPage() {
                   >
                     {label}
                   </span>
-                </div>
-              ))}
+                </div>,
+              ])}
             </div>
           </div>
 
