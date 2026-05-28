@@ -36,7 +36,7 @@ export default function LandingPage() {
           backdropFilter: scrolled ? 'blur(20px) saturate(140%)' : 'none',
           WebkitBackdropFilter: scrolled ? 'blur(20px) saturate(140%)' : 'none',
           transition: 'background 0.3s, backdrop-filter 0.3s',
-          borderBottom: scrolled ? '1px solid var(--border-soft)' : '1px solid var(--glass-border)',
+          borderBottom: scrolled ? '1px solid var(--border-soft)' : 'none',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginRight: 0 }}>
