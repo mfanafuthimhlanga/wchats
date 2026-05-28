@@ -15,14 +15,11 @@ export default function TopNav() {
   return (
     <nav
       style={{
-        height: '56px',
+        height: '60px',
         background: 'transparent',
-        backdropFilter: 'var(--glass-blur)',
-        WebkitBackdropFilter: 'var(--glass-blur)',
-        borderBottom: '1px solid var(--glass-border)',
         display: 'flex',
         alignItems: 'center',
-        padding: '0 24px',
+        padding: '0 28px',
         position: 'sticky',
         top: 0,
         zIndex: 100,

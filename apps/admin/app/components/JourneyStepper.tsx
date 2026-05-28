@@ -45,7 +45,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
   return (
     <aside
       style={{
-        width: '320px',
+        width: '280px',
         flexShrink: 0,
         borderRight: '1px solid var(--glass-border)',
         padding: '32px 24px',

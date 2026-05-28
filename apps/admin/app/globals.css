@@ -3,10 +3,10 @@
 :root {
   /* Surfaces */
   --bg-deep:    #0B0717;
-  --bg:         #0E0B1E;
+  --bg:         #110C24;
   --bg-elev:    #181232;
-  --surface-1:  #140E2A;
-  --surface-2:  #1E1638;
+  --surface-1:  #1E1638;
+  --surface-2:  #2A1E4A;
   --surface-3:  #382860;
 
   /* Glass */
@@ -37,10 +37,10 @@
   --amber: #E8A87C;
 
   /* Text */
-  --text-1: #F0EBF8;
-  --text-2: #C4B8D8;
-  --text-3: #7B6B98;
-  --text-4: #4A3D62;
+  --text-1: #F4EDE5;
+  --text-2: #C4BCD0;
+  --text-3: #8A82A0;
+  --text-4: #5A5470;
   --text-on-accent: #0B0717;
 
   /* Status */

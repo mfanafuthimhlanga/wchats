@@ -198,7 +198,7 @@ export default function CreateAgentPage() {
   ]
 
   return (
-    <div style={{ display: 'flex', minHeight: 'calc(100vh - 56px)', fontFamily: 'var(--font-sans)' }}>
+    <div style={{ display: 'flex', minHeight: 'calc(100vh - 60px)', fontFamily: 'var(--font-sans)' }}>
       {/* Left panel: journey stepper */}
       <JourneyStepper
         agentName="New Agent"

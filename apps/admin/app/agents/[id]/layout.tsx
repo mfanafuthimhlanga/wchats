@@ -199,7 +199,7 @@ export default function AgentDetailLayout({
     <div
       style={{
         display: 'flex',
-        minHeight: 'calc(100vh - 56px)',
+        minHeight: 'calc(100vh - 60px)',
         fontFamily: 'var(--font-sans)',
         background: 'transparent',
       }}
