@@ -91,7 +91,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
           borderRadius: 'var(--radius-xs)',
           marginBottom: '8px',
           ...(visualState === 'active'
-            ? { background: 'var(--accent-dim)', border: '1px solid var(--border-hard)' }
+            ? { background: 'rgba(244,116,140,0.28)', border: '1px solid var(--accent)', boxShadow: '0 0 0 3px rgba(244,116,140,0.12)' }
             : visualState === 'done'
             ? { background: 'var(--green-bg)', border: '1px solid rgba(52,211,153,0.25)' }
             : { background: 'transparent', border: '1px solid transparent', opacity: 0.65 }),
@@ -110,7 +110,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
           ...(visualState === 'done'
             ? { background: 'var(--green)', color: '#fff' }
             : visualState === 'active'
-            ? { background: 'transparent', border: '2px solid var(--accent)', color: 'var(--accent)' }
+            ? { background: 'rgba(244,116,140,0.22)', border: '2px solid var(--accent)', color: 'var(--accent)' }
             : { background: 'var(--surface-3)', border: '1px solid var(--border)', color: 'var(--text-4)' }),
         }
 
@@ -127,7 +127,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
                 style={{
                   fontSize: '14px',
                   fontWeight: 600,
-                  color: visualState === 'locked' ? 'var(--text-2)' : 'var(--text-1)',
+                  color: 'var(--text-1)',
                 }}
               >
                 {step.title}
@@ -135,7 +135,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
               <div
                 style={{
                   fontSize: '12px',
-                  color: visualState === 'locked' ? 'var(--text-3)' : 'var(--text-3)',
+                  color: 'var(--text-2)',
                 }}
               >
                 {step.subtitle}

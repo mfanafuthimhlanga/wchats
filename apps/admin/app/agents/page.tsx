@@ -157,11 +157,11 @@ export default function AgentsDashboardPage() {
           backgroundImage: `
             radial-gradient(ellipse 40% 80% at 100% 50%, rgba(244, 116, 140, 0.08) 0%, transparent 60%),
             radial-gradient(ellipse 30% 60% at 0% 0%, rgba(183, 154, 224, 0.06) 0%, transparent 60%)`,
-          padding: '40px 48px 32px',
+          padding: '40px 48px 16px',
           position: 'relative',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: '32px', maxWidth: '1400px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '32px', maxWidth: '1400px' }}>
           <div>
             <h1 style={{ fontFamily: 'var(--font-display)', fontWeight: 400, fontVariationSettings: '"opsz" 144, "SOFT" 50', fontSize: '34px', letterSpacing: '-0.022em', lineHeight: 1.1, color: 'var(--text-1)', margin: '0 0 6px 0' }}>
               {greeting},{' '}
@@ -169,7 +169,7 @@ export default function AgentsDashboardPage() {
                 there
               </em>
             </h1>
-            <p style={{ fontSize: '14px', color: 'var(--text-3)', margin: 0 }}>
+            <p style={{ fontSize: '14px', color: 'var(--text-2)', margin: 0 }}>
               {liveCount} live · {testingCount} in test · {draftCount} draft
             </p>
           </div>
@@ -194,22 +194,8 @@ export default function AgentsDashboardPage() {
         </div>
       </div>
 
-      {/* Filter strip — count badge right, tabs left */}
-      <div style={{ padding: '0 48px 20px', maxWidth: '1400px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: '14px' }}>
-          <span style={{
-            background: 'var(--accent-dim)',
-            color: 'var(--accent)',
-            border: '1px solid var(--border-hard)',
-            fontFamily: 'var(--font-mono)',
-            fontSize: '13px',
-            fontWeight: 700,
-            padding: '6px 14px',
-            borderRadius: 'var(--radius-pill)',
-          }}>
-            {agents.length} {agents.length === 1 ? 'agent' : 'agents'}
-          </span>
-        </div>
+      {/* Filter strip */}
+      <div style={{ padding: '0 48px 12px', maxWidth: '1400px' }}>
         <div style={{ display: 'flex', gap: '4px' }}>
           {([
             { label: 'All', count: agents.length },
@@ -225,7 +211,7 @@ export default function AgentsDashboardPage() {
                 style={{
                   background: isActive ? 'var(--surface-2)' : 'transparent',
                   border: isActive ? '1px solid var(--border)' : '1px solid transparent',
-                  color: isActive ? 'var(--text-1)' : 'var(--text-3)',
+                  color: isActive ? 'var(--text-1)' : 'var(--text-2)',
                   fontSize: '13px',
                   fontWeight: isActive ? 600 : 500,
                   padding: '5px 12px',
@@ -240,7 +226,7 @@ export default function AgentsDashboardPage() {
                 <span style={{
                   fontSize: '10px',
                   fontFamily: 'var(--font-mono)',
-                  color: isActive ? 'var(--text-2)' : 'var(--text-4)',
+                  color: isActive ? 'var(--text-2)' : 'var(--text-3)',
                 }}>
                   {count}
                 </span>
@@ -290,7 +276,7 @@ export default function AgentsDashboardPage() {
         {!isLoading && agents.length > 0 && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
             {filteredAgents.map((a) => (
-              <AgentCard key={a.id} {...a} onDelete={isDemoMode ? undefined : handleDelete} />
+              <AgentCard key={a.id} {...a} onDelete={isDemoMode ? undefined : handleDelete} disableNavigation={isDemoMode} />
             ))}
           </div>
         )}

@@ -13,10 +13,7 @@ export interface AgentCardProps {
   role: string
   status: string
   created_at: string
-  /**
-   * Deletes the agent. Resolves on success (the parent removes it from the
-   * list); rejects with an Error whose message is shown inline by this card.
-   */
+  disableNavigation?: boolean
   onDelete?: (id: string) => Promise<void>
 }
 
@@ -107,7 +104,7 @@ const cancelButton: React.CSSProperties = {
 // AgentCard
 // ---------------------------------------------------------------------------
 
-export default function AgentCard({ id, name, role, status, created_at, onDelete }: AgentCardProps) {
+export default function AgentCard({ id, name, role, status, created_at, disableNavigation, onDelete }: AgentCardProps) {
   const c = getStatusColor(status)
   const formattedDate = new Date(created_at).toLocaleDateString()
 
@@ -154,65 +151,58 @@ export default function AgentCard({ id, name, role, status, created_at, onDelete
       {/* Navigable area — keep the delete controls OUTSIDE this anchor so we
           never nest interactive elements inside a link (invalid HTML + would
           otherwise trigger navigation when clicking Delete). */}
-      <Link
-        href={`/agents/${id}`}
-        style={{
-          display: 'block',
-          textDecoration: 'none',
-          padding: '22px 22px 0 22px',
-          color: 'var(--text-1)',
-        }}
-      >
-        {/* ac-top: icon-box + name/status */}
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '14px' }}>
-          <div style={{
-            width: '44px', height: '44px',
-            background: getRoleIconBg(role),
-            borderRadius: 'var(--radius-sm)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            flexShrink: 0,
-          }}>
-            {getRoleIcon(role)}
-          </div>
-          <span style={{
-            padding: '3px 10px',
-            borderRadius: 'var(--radius-pill)',
-            fontSize: '10.5px',
-            fontWeight: 600,
-            letterSpacing: '0.08em',
-            textTransform: 'uppercase',
-            background: c.bg,
-            color: c.fg,
-            whiteSpace: 'nowrap',
-          }}>
-            {c.label}
-          </span>
-        </div>
+      {(() => {
+        const cardContent = (
+          <>
+            {/* ac-top: [icon + name/role] left, status chip right */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '14px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
+                <div style={{
+                  width: '40px', height: '40px',
+                  background: getRoleIconBg(role),
+                  borderRadius: 'var(--radius-sm)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  flexShrink: 0,
+                }}>
+                  {getRoleIcon(role)}
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <h3 style={{
+                    fontFamily: 'var(--font-display)',
+                    fontSize: '15px',
+                    fontWeight: 700,
+                    fontVariationSettings: '"opsz" 144, "SOFT" 30',
+                    color: 'var(--text-1)',
+                    margin: '0 0 2px 0',
+                    letterSpacing: '-0.01em',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}>
+                    {name}
+                  </h3>
+                  <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: 0, lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {role}
+                  </p>
+                </div>
+              </div>
+              <span style={{
+                padding: '3px 10px',
+                borderRadius: 'var(--radius-pill)',
+                fontSize: '10.5px',
+                fontWeight: 600,
+                letterSpacing: '0.08em',
+                textTransform: 'uppercase',
+                background: c.bg,
+                color: c.fg,
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+              }}>
+                {c.label}
+              </span>
+            </div>
 
-        {/* ac-name */}
-        <h3 style={{
-          fontFamily: 'var(--font-display)',
-          fontSize: '16px',
-          fontWeight: 700,
-          fontVariationSettings: '"opsz" 144, "SOFT" 30',
-          color: 'var(--text-1)',
-          margin: '0 0 4px 0',
-          letterSpacing: '-0.01em',
-        }}>
-          {name}
-        </h3>
-
-        {/* ac-role */}
-        <p style={{
-          fontSize: '12px',
-          color: 'var(--text-3)',
-          margin: '0 0 16px 0',
-          lineHeight: 1.4,
-        }}>
-          {role}
-        </p>
-
-        {/* ac-metrics: 3-column mini stat grid */}
+            {/* ac-metrics: 3-column mini stat grid */}
         <div style={{
           display: 'grid',
           gridTemplateColumns: '1fr 1fr 1fr',
@@ -244,11 +234,24 @@ export default function AgentCard({ id, name, role, status, created_at, onDelete
           <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)' }}>
             {formattedDate}
           </span>
-          <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-            View details →
-          </span>
+          {!disableNavigation && (
+            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              View details →
+            </span>
+          )}
         </div>
-      </Link>
+          </>
+        )
+        const sharedStyle: React.CSSProperties = {
+          display: 'block',
+          textDecoration: 'none',
+          padding: '22px 22px 0 22px',
+          color: 'var(--text-1)',
+        }
+        return disableNavigation
+          ? <div style={sharedStyle}>{cardContent}</div>
+          : <Link href={`/agents/${id}`} style={sharedStyle}>{cardContent}</Link>
+      })()}
 
       {/* Action footer — delete controls live here, outside the link */}
       {onDelete && (

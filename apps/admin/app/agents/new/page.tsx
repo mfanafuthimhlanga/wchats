@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '@clerk/nextjs'
 import { useRouter } from 'next/navigation'
 import { useMutation, useQuery } from '@tanstack/react-query'
@@ -20,6 +20,9 @@ export default function CreateAgentPage() {
 
   // agentId is set after a successful mutation; drives polling
   const [agentId, setAgentId] = useState<string | null>(null)
+  // Elapsed seconds counter — shown during provisioning
+  const [elapsed, setElapsed] = useState(0)
+  const elapsedRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // --- Mutation: provision + create agent ---
   const mutation = useMutation({
@@ -76,6 +79,7 @@ export default function CreateAgentPage() {
     },
     enabled: !!agentId,
     refetchInterval: (query) => {
+      if (query.state.error) return false
       const s = query.state.data?.status
       if (s === 'ready' || s === 'error' || s === 'failed') return false
       return 2000
@@ -107,6 +111,17 @@ export default function CreateAgentPage() {
       : agentId
       ? 'provisioning'
       : 'form'
+
+  // Start/stop elapsed counter tied to provisioning phase
+  useEffect(() => {
+    if (phase === 'provisioning') {
+      setElapsed(0)
+      elapsedRef.current = setInterval(() => setElapsed(s => s + 1), 1000)
+    } else {
+      if (elapsedRef.current) clearInterval(elapsedRef.current)
+    }
+    return () => { if (elapsedRef.current) clearInterval(elapsedRef.current) }
+  }, [phase])
 
   // --- Error message ---
   let errorMessage: string | null = null
@@ -161,7 +176,7 @@ export default function CreateAgentPage() {
     fontSize: '11px',
     textTransform: 'uppercase',
     letterSpacing: '0.12em',
-    color: 'var(--text-3)',
+    color: '#F4EDE5',
     marginBottom: '7px',
   }
 
@@ -212,6 +227,8 @@ export default function CreateAgentPage() {
           flex: 1,
           padding: '40px 48px',
           overflowY: 'auto',
+          display: 'flex',
+          flexDirection: 'column',
         }}
       >
         {/* Form phase */}
@@ -224,7 +241,7 @@ export default function CreateAgentPage() {
               fontWeight: 600,
               letterSpacing: '0.12em',
               textTransform: 'uppercase',
-              color: 'var(--text-3)',
+              color: '#C4BCD0',
               marginBottom: '8px',
             }}>
               Step 1 of 4
@@ -234,14 +251,14 @@ export default function CreateAgentPage() {
               fontWeight: 600,
               fontVariationSettings: '"opsz" 144, "SOFT" 30',
               fontSize: '24px',
-              color: 'var(--text-1)',
+              color: '#F4EDE5',
               marginBottom: '8px',
             }}>
               Provision your agent
             </h1>
             <p style={{
               fontSize: '14px',
-              color: 'var(--text-3)',
+              color: '#F4EDE5',
               lineHeight: 1.6,
               maxWidth: '520px',
               marginBottom: '32px',
@@ -275,7 +292,7 @@ export default function CreateAgentPage() {
                 maxLength={120}
                 style={inputStyle}
               />
-              <p style={{ fontSize: '12px', color: 'var(--text-4)', marginTop: '5px' }}>
+              <p style={{ fontSize: '12px', color: '#C4BCD0', marginTop: '5px' }}>
                 Used as the role context in the system prompt. Be specific.
               </p>
             </div>
@@ -307,7 +324,7 @@ export default function CreateAgentPage() {
               <span style={{
                 fontFamily: 'var(--font-mono)',
                 fontSize: '11px',
-                color: 'var(--text-3)',
+                color: '#C4BCD0',
                 letterSpacing: '0.08em',
               }}>
                 Step 1 of 4
@@ -335,40 +352,68 @@ export default function CreateAgentPage() {
 
         {/* Provisioning phase */}
         {phase === 'provisioning' && (
-          <div style={{ maxWidth: '560px' }}>
-            <p style={{
-              fontFamily: 'var(--font-mono)',
-              fontSize: '10px',
-              fontWeight: 600,
-              letterSpacing: '0.12em',
-              textTransform: 'uppercase',
-              color: 'var(--text-3)',
-              marginBottom: '8px',
-            }}>
-              Step 1 of 4
-            </p>
-            <h1 style={{
-              fontFamily: 'var(--font-display)',
-              fontWeight: 600,
-              fontVariationSettings: '"opsz" 144, "SOFT" 30',
-              fontSize: '24px',
-              color: 'var(--text-1)',
-              marginBottom: '8px',
-            }}>
-              Provisioning your agent…
-            </h1>
-            <p style={{ fontSize: '14px', color: 'var(--text-3)', lineHeight: 1.6, marginBottom: '24px' }}>
-              Setting up a dedicated database. This usually takes 30–60 seconds.
-            </p>
-            <p style={{ fontSize: '13px', color: 'var(--text-4)', fontFamily: 'var(--font-mono)' }}>
-              status: {polledStatus || 'pending'}{polledStatus === 'ready' ? ' — redirecting…' : ' — working…'}
-            </p>
-            {agentId && (
-              <p style={{ fontSize: '12px', color: 'var(--text-4)', marginTop: '8px', fontFamily: 'var(--font-mono)' }}>
-                agent_id: {agentId}
+          <>
+            <style dangerouslySetInnerHTML={{ __html: `
+              @keyframes prov-spin { to { transform: rotate(360deg); } }
+              @keyframes prov-pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+              .prov-spinner {
+                width: 48px; height: 48px;
+                border: 3px solid rgba(244,116,140,0.15);
+                border-top-color: #F4748C;
+                border-radius: 50%;
+                animation: prov-spin 0.85s linear infinite;
+              }
+            `}} />
+            {/* Header */}
+            <div style={{ maxWidth: '560px' }}>
+              <p style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: '10px',
+                fontWeight: 600,
+                letterSpacing: '0.12em',
+                textTransform: 'uppercase',
+                color: 'var(--text-3)',
+                marginBottom: '8px',
+              }}>
+                Step 1 of 4
               </p>
-            )}
-          </div>
+              <h1 style={{
+                fontFamily: 'var(--font-display)',
+                fontWeight: 600,
+                fontVariationSettings: '"opsz" 144, "SOFT" 30',
+                fontSize: '24px',
+                color: 'var(--text-1)',
+                marginBottom: '8px',
+              }}>
+                Provisioning your agent…
+              </h1>
+              <p style={{ fontSize: '14px', color: 'var(--text-2)', lineHeight: 1.6, marginBottom: 0 }}>
+                Setting up a dedicated database. This usually takes 30–60 seconds.
+              </p>
+            </div>
+            {/* Centered status block */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '18px' }}>
+              <div className="prov-spinner" />
+              <p style={{
+                fontSize: '13px',
+                color: 'var(--text-1)',
+                fontFamily: 'var(--font-mono)',
+                margin: 0,
+                textAlign: 'center',
+                animation: 'prov-pulse 2s ease-in-out infinite',
+              }}>
+                status: {polledStatus || 'pending'}{polledStatus === 'ready' ? ' — redirecting…' : ' — working…'}
+              </p>
+              {agentId && (
+                <p style={{ fontSize: '11px', color: 'var(--text-2)', margin: 0, fontFamily: 'var(--font-mono)', textAlign: 'center' }}>
+                  agent_id: {agentId}
+                </p>
+              )}
+              <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: 0, fontFamily: 'var(--font-mono)', textAlign: 'center' }}>
+                {elapsed}s elapsed
+              </p>
+            </div>
+          </>
         )}
 
         {/* Error phase */}

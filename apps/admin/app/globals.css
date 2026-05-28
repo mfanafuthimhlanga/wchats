@@ -173,6 +173,12 @@ textarea:focus-visible {
   box-shadow: var(--shadow-focus);
 }
 
+input::placeholder,
+textarea::placeholder {
+  color: rgba(244, 237, 229, 0.45);
+  opacity: 1;
+}
+
 @media (prefers-reduced-motion: reduce) {
   [style*="spin-cw"] {
     animation: none !important;
