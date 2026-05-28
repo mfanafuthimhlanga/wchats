@@ -155,7 +155,7 @@ export default function AgentJourneyPage({
     <div style={{ maxWidth: '560px' }}>
       <p style={{
         fontFamily: 'var(--font-mono)', fontSize: '10px', fontWeight: 600,
-        letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-4)', marginBottom: '8px',
+        letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '8px',
       }}>Step 1 of 4</p>
       <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '8px' }}>
         <h1 style={{
@@ -191,7 +191,7 @@ export default function AgentJourneyPage({
     <>
       <p style={{
         fontFamily: 'var(--font-mono)', fontSize: '10px', fontWeight: 600,
-        letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-4)', marginBottom: '8px',
+        letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '8px',
       }}>Step 2 of 4</p>
       <h1 style={{
         fontFamily: 'var(--font-display)', fontWeight: 600,
@@ -250,7 +250,7 @@ export default function AgentJourneyPage({
     <>
       <p style={{
         fontFamily: 'var(--font-mono)', fontSize: '10px', fontWeight: 600,
-        letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-4)', marginBottom: '8px',
+        letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '8px',
       }}>Step 3 of 4</p>
       <h1 style={{
         fontFamily: 'var(--font-display)', fontWeight: 600,

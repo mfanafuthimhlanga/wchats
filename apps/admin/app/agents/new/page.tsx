@@ -224,7 +224,7 @@ export default function CreateAgentPage() {
               fontWeight: 600,
               letterSpacing: '0.12em',
               textTransform: 'uppercase',
-              color: 'var(--text-4)',
+              color: 'var(--text-3)',
               marginBottom: '8px',
             }}>
               Step 1 of 4
@@ -307,7 +307,7 @@ export default function CreateAgentPage() {
               <span style={{
                 fontFamily: 'var(--font-mono)',
                 fontSize: '11px',
-                color: 'var(--text-4)',
+                color: 'var(--text-3)',
                 letterSpacing: '0.08em',
               }}>
                 Step 1 of 4
@@ -342,7 +342,7 @@ export default function CreateAgentPage() {
               fontWeight: 600,
               letterSpacing: '0.12em',
               textTransform: 'uppercase',
-              color: 'var(--text-4)',
+              color: 'var(--text-3)',
               marginBottom: '8px',
             }}>
               Step 1 of 4

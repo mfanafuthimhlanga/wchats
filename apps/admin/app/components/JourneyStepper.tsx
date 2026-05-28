@@ -94,7 +94,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
             ? { background: 'var(--accent-dim)', border: '1px solid var(--border-hard)' }
             : visualState === 'done'
             ? { background: 'var(--green-bg)', border: '1px solid rgba(52,211,153,0.25)' }
-            : { background: 'transparent', border: '1px solid transparent', opacity: 0.45 }),
+            : { background: 'transparent', border: '1px solid transparent', opacity: 0.65 }),
         }
 
         const circleStyle: React.CSSProperties = {
@@ -127,7 +127,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
                 style={{
                   fontSize: '14px',
                   fontWeight: 600,
-                  color: visualState === 'locked' ? 'var(--text-4)' : 'var(--text-1)',
+                  color: visualState === 'locked' ? 'var(--text-2)' : 'var(--text-1)',
                 }}
               >
                 {step.title}
@@ -135,7 +135,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
               <div
                 style={{
                   fontSize: '12px',
-                  color: visualState === 'locked' ? 'var(--text-4)' : 'var(--text-3)',
+                  color: visualState === 'locked' ? 'var(--text-3)' : 'var(--text-3)',
                 }}
               >
                 {step.subtitle}
