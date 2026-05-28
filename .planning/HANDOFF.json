@@ -1,46 +1,42 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-26T19:20:00+02:00",
+  "timestamp": "2026-05-28T14:10:50Z",
   "phase": "11",
-  "phase_name": "ui-overhaul",
+  "phase_name": "Admin UI Overhaul (Hillbrow at Dusk) — Visual QA",
   "phase_dir": ".planning/phases/11-ui-overhaul",
   "plan": 6,
-  "task": 2,
-  "total_tasks": 2,
+  "task": "visual-qa-iteration",
   "status": "paused",
   "completed_tasks": [
-    {"id": "11-01", "name": "Token foundation + background + nav", "status": "done", "commit": "f090f21"},
-    {"id": "11-02", "name": "Landing page rebuild", "status": "done", "commit": "67b385b"},
-    {"id": "11-03", "name": "Agents dashboard + AgentCard", "status": "done", "commit": "e91ea79"},
-    {"id": "11-04", "name": "Agent journey screens", "status": "done", "commit": "963c16f"},
-    {"id": "11-05", "name": "Eval/deploy/settings", "status": "done", "commit": "fa54646"},
-    {"id": "11-06-task-1", "name": "Auth pages + UserAvatar + SignOutTab icon", "status": "done", "commit": "ef20eec"}
+    {"id": "landing-qa", "name": "Landing page visual QA", "status": "done", "commit": "45f91e5"},
+    {"id": "agents-qa", "name": "Agents dashboard layout + contrast fixes", "status": "done", "commit": "b253a50"},
+    {"id": "stepper-contrast", "name": "JourneyStepper active highlight + subtitle colors", "status": "done", "commit": "b253a50"},
+    {"id": "provision-form-text", "name": "Provision form text literal hex fix", "status": "done", "commit": "b253a50"},
+    {"id": "provision-spinner", "name": "Provisioning phase spinner + elapsed counter", "status": "done", "commit": "b253a50"},
+    {"id": "demo-422-fix", "name": "Demo card disableNavigation — fix 422 on /agents/demo-2", "status": "done", "commit": "b253a50"}
   ],
   "remaining_tasks": [
-    {
-      "id": "11-06-task-2",
-      "name": "Visual QA audit — Playwright screenshots of all screens",
-      "status": "not_started",
-      "note": "Use installed Playwright CLI with chromium-1200. Do NOT ask user to manually browse. Screenshot all 6 screen regions, compare against reference mockup, report diff findings to user, then get approval."
-    },
-    {"id": "11-06-summary", "name": "Create 11-06-SUMMARY.md and commit", "status": "not_started"},
-    {"id": "11-phase-verify", "name": "Spawn gsd-verifier — phase 11 goal achievement", "status": "not_started"},
-    {"id": "11-roadmap-update", "name": "Mark phase 11 complete in ROADMAP + STATE", "status": "not_started"}
+    {"id": "provision-confirm", "name": "User confirms /agents/new provision panel readable in browser", "status": "not_started"},
+    {"id": "ui-review", "name": "Run /gsd-ui-review — full-app typography audit (font size, weight, case, color)", "status": "not_started"},
+    {"id": "scrollbar-component", "name": "Remove default browser scrollbar, create reusable custom scrollbar component, apply globally", "status": "not_started"},
+    {"id": "typography-fixes", "name": "Fix typography violations found by ui-review across all admin screens", "status": "not_started"},
+    {"id": "verify-work", "name": "Run /gsd-verify-work 11 once all pages approved", "status": "not_started"}
   ],
   "blockers": [],
   "human_actions_pending": [
     {
-      "action": "Review Playwright screenshots and approve or flag issues",
-      "context": "After automated Playwright QA pass, user confirms screens match Hillbrow at Dusk design before phase closes",
+      "action": "Check localhost:3000/agents/new in browser and confirm provision panel text is now readable",
+      "context": "Playwright cannot screenshot this page — requires Clerk auth. User must verify manually.",
       "blocking": true
     }
   ],
   "decisions": [
-    {"decision": "Visual QA uses Playwright CLI (chromium-1200), not manual browsing", "rationale": "User explicitly requested automation for visual review", "phase": "11"},
-    {"decision": "Celery socket_keepalive_options: string keys replaced with getattr(socket,...) integer constants", "rationale": "redis-py 6.4.0 passes dict keys directly to setsockopt(); strings cause TypeError on Python 3.12 — fixed in d68950d", "phase": "11"},
-    {"decision": "Celery local dev: REDIS_URL=redis://localhost:6379 must be set before starting worker", "rationale": ".env contains Upstash cloud URL; local Redis override required for dev", "phase": "11"}
+    {"decision": "Veil locked at rgba(11,7,23,0.45)", "rationale": "Matches reference mockup", "phase": "11"},
+    {"decision": "--text-3/--text-4 banned as foreground on skyline — use #F4EDE5 or #C4BCD0 literals", "rationale": "Tokens designed for card surfaces, not open skyline", "phase": "11"},
+    {"decision": "Demo cards disableNavigation=true", "rationale": "IDs demo-1/demo-2 cause 422 on backend UUID validation", "phase": "11"},
+    {"decision": "Placeholder: rgba(244,237,229,0.45) in globals.css", "rationale": "Semi-transparent off-white visible but clearly secondary", "phase": "11"}
   ],
-  "uncommitted_files": [],
-  "next_action": "Use Playwright (chromium-1200) to screenshot: landing (localhost:3000), agents dashboard (/agents), sign-in (/sign-in), agent detail JourneyStepper, eval tab glass tiles, AgentCard hover. Compare against .claude/skills/wchats-design/reference/wchats-hillbrow-at-dusk.html. Then complete 11-06 SUMMARY, verify phase, close.",
-  "context_notes": "Waves 1-5 fully executed and SUMMARY committed. Wave 6 Task 1 committed ef20eec. Visual QA checkpoint blocked on automated Playwright review. Celery had setsockopt bug (string keepalive keys) — fixed and committed d68950d. Dev services: Redis already running on :6379, uvicorn on :8000, Next.js on :3000, Celery needs REDIS_URL override."
+  "uncommitted_files": [".planning/STATE.md", "apps/admin/tsconfig.json"],
+  "next_action": "Ask user to confirm /agents/new provision panel in browser, then run /gsd-ui-review for full typography audit, then build custom scrollbar component",
+  "context_notes": "Root cause of all repeated text-too-dark failures: --text-3 (#8A82A0) designed for dark card surfaces not skyline. Typography audit (/gsd-ui-review) covers font size, weight, case, color systematically. Custom scrollbar to replace browser default — make reusable component."
 }
