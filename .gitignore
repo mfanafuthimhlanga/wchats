@@ -17,6 +17,7 @@ build/
 venv/
 env/
 .env
+.claude
 
 # pytest
 .pytest_cache/
@@ -76,3 +77,35 @@ apps/admin/tsconfig.tsbuildinfo
 .claude/worktrees/
 .claude/projects/
 .claude/todos/
+
+# E2E test scratch harnesses + saved IDs/secrets (see E2E-RESUME.md)
+apps/api/_runlogs/
+
+# --- Scratch / QA artifacts: screenshots, images, logs, caches, test files ---
+# Images & screenshots (scratch). Committed assets re-included via negations below.
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+screencapture-*
+!apps/admin/public/**
+!assets/**
+apps/admin/verify_screenshots/
+
+# Logs
+*.log
+
+# Caches
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.tsbuildinfo
+
+# Archives / scratch test scripts (one-off QA — scoped so scripts/ stays tracked)
+*.zip
+/audit_all_pages.py
+/verify_*.py
+apps/admin/take_screenshot.py
+apps/admin/verify_*.py
