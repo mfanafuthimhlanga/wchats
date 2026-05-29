@@ -524,3 +524,106 @@ def test_validators_not_dispatched_on_idempotency_skip():
 
     assert result == {"status": "already_complete", "job_id": job_id}
     mock_celery_chain.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Phase 12 — D-10 retrieve cap + D-11 wall-clock guard regression tests
+# (Plan 12-01, 2026-05-29)
+# ---------------------------------------------------------------------------
+
+def test_max_turns_capped_to_three():
+    """D-10 regression: ClaudeAgentOptions must be constructed with max_turns=3."""
+    from app.worker.tasks.runtime.agent import run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    agent = _make_agent(str(agent_id))
+    job = _make_job(job_id)
+    local_conv_id = "00000000-0000-0000-0000-000000000020"
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None  # no idempotency row
+    mock_db.get.side_effect = [agent, job]
+
+    options_kwargs_captured: list[dict] = []
+
+    class FakeClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            options_kwargs_captured.append(kwargs)
+
+    with (
+        patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
+        patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
+        patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
+        patch("app.worker.tasks.runtime.agent._persist_messages"),
+        patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
+        patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys prompt"),
+        patch("app.worker.tasks.runtime.agent.ClaudeAgentOptions", side_effect=FakeClaudeAgentOptions),
+        patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_RESULT_WITH_CITATION),
+        patch("app.worker.tasks.runtime.agent.emit"),
+    ):
+        run_agent_turn.run(
+            job_id=job_id,
+            agent_id=agent_id,
+            message="What is the return policy?",
+            conversation_id=None,
+        )
+
+    assert len(options_kwargs_captured) == 1, (
+        "ClaudeAgentOptions must be instantiated exactly once per turn"
+    )
+    assert options_kwargs_captured[0]["max_turns"] == 3, (
+        f"D-10 regression: expected max_turns=3, got max_turns={options_kwargs_captured[0].get('max_turns')}"
+    )
+
+
+def test_wall_clock_guard_is_ninety_seconds():
+    """D-11 regression: asyncio.wait_for must be called with timeout=90."""
+    import asyncio as _asyncio
+
+    from app.worker.tasks.runtime.agent import run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    agent = _make_agent(str(agent_id))
+    job = _make_job(job_id)
+    local_conv_id = "00000000-0000-0000-0000-000000000021"
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None  # no idempotency row
+    mock_db.get.side_effect = [agent, job]
+
+    wait_for_kwargs: list[dict] = []
+
+    async def fake_wait_for(coro, timeout):
+        wait_for_kwargs.append({"timeout": timeout})
+        # Close the passed coroutine to avoid ResourceWarning; return the canned result.
+        coro.close()
+        return _CANNED_RESULT_WITH_CITATION
+
+    with (
+        patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
+        patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
+        patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
+        patch("app.worker.tasks.runtime.agent._persist_messages"),
+        patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
+        patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys prompt"),
+        # Patch wait_for but keep asyncio.run real so it drives the fake coroutine.
+        patch("app.worker.tasks.runtime.agent.asyncio.wait_for", side_effect=fake_wait_for),
+        patch("app.worker.tasks.runtime.agent.emit"),
+    ):
+        run_agent_turn.run(
+            job_id=job_id,
+            agent_id=agent_id,
+            message="What is the return policy?",
+            conversation_id=None,
+        )
+
+    assert len(wait_for_kwargs) == 1, (
+        "asyncio.wait_for must be called exactly once per turn"
+    )
+    assert wait_for_kwargs[0]["timeout"] == 90, (
+        f"D-11 regression: expected timeout=90, got timeout={wait_for_kwargs[0].get('timeout')}"
+    )

@@ -281,7 +281,7 @@ async def _run_sdk_turn(
     """Run one Claude Agent SDK turn and collect all streaming output.
 
     Opened and closed by the async context manager — do NOT close the client
-    manually. Called via asyncio.run(asyncio.wait_for(_run_sdk_turn(...), timeout=30)).
+    manually. Called via asyncio.run(asyncio.wait_for(_run_sdk_turn(...), timeout=90)).
 
     Returns:
         dict with keys:
@@ -507,6 +507,16 @@ def run_agent_turn(
 
             system_prompt = build_system_prompt(agent)
 
+            # D-10 retrieve cap: belt-and-suspenders dual guard alongside max_turns=3.
+            # Instructs the agent to call retrieve AT MOST ONCE per response so a single
+            # turn cannot exhaust the Voyage 3 RPM free tier (6 retrieve calls was the
+            # actual 2026-05-29 live failure that prompted this guard).
+            system_prompt += (
+                "\n\nIMPORTANT: Call the `retrieve` tool AT MOST ONCE per response. "
+                "After receiving retrieve results, synthesize an answer immediately. "
+                "Do not call retrieve again."
+            )
+
             # R-05: allowed_tools use full MCP namespace mcp__customer-tools__*
             options = ClaudeAgentOptions(
                 model="claude-haiku-4-5-20251001",
@@ -519,15 +529,17 @@ def run_agent_turn(
                     "mcp__customer-tools__clarify",
                 ],
                 resume=sdk_resume,
-                max_turns=10,
+                max_turns=3,   # D-10: caps retrieve loop; was 10 (T-04-03-06 DoS guard)
                 max_budget_usd=0.05,
             )
 
             # --------------------------------------------------------------
             # Bridge async SDK into sync Celery worker.
             # asyncio.run() is the required pattern for Python 3.12 (see CLAUDE.md).
-            # Wall-clock safety: asyncio.wait_for(timeout=30) is inside the run()
-            # call. T-04-03-06 DoS guard: max_turns=10, max_budget_usd=0.05.
+            # Wall-clock safety: asyncio.wait_for(timeout=90) is inside the run()
+            # call. T-04-03-06 DoS guard: max_turns=3, max_budget_usd=0.05.
+            # D-11: raised from 30s to 90s — warm-but-not-hot Agent SDK subprocess
+            # needs up to 90s on slower ARM VMs; SSE layer retains 120s (30s headroom).
             # --------------------------------------------------------------
             result = asyncio.run(
                 asyncio.wait_for(
@@ -540,7 +552,7 @@ def run_agent_turn(
                         db=db,
                         redis=_redis,
                     ),
-                    timeout=30,
+                    timeout=90,
                 )
             )
 
