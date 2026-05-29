@@ -1,0 +1,43 @@
+# deploy/caddy/Caddyfile
+#
+# W Chats TLS-terminating reverse proxy — Caddy with DuckDNS DNS-01
+#
+# IMPORTANT: This file is stored in the repo at deploy/caddy/Caddyfile.
+# Plan 05 copies it to /etc/caddy/Caddyfile on the VM.
+# The real DuckDNS subdomain is chosen during VM provisioning (plan 05).
+# Replace wchats-api.duckdns.org below with the subdomain you registered.
+#
+# Requirements:
+#   1. Caddy MUST be built with the caddy-dns/duckdns plugin:
+#        xcaddy build --with github.com/caddy-dns/duckdns
+#      Standard apt Caddy does NOT include the DuckDNS DNS provider plugin.
+#      Alternatively, download a custom build from https://caddyserver.com/download
+#      with the "github.com/caddy-dns/duckdns" DNS provider selected.
+#
+#   2. DUCKDNS_TOKEN must be in Caddy's own systemd environment — NOT in the
+#      app .env file. Add it to the Caddy service drop-in:
+#        sudo mkdir -p /etc/systemd/system/caddy.service.d
+#        sudo tee /etc/systemd/system/caddy.service.d/override.conf <<EOF
+#        [Service]
+#        Environment=DUCKDNS_TOKEN=<your-duckdns-token>
+#        EOF
+#        sudo systemctl daemon-reload && sudo systemctl restart caddy
+#
+# Why DNS-01 (not HTTP-01)?
+#   Oracle Cloud iptables blocks port 80 by default. DNS-01 ACME never touches
+#   port 80 — only port 443 needs to be open in both the OCI Security List and
+#   host iptables. See deploy/README.md for the iptables command.
+#
+# {env.DUCKDNS_TOKEN} is Caddy's env-var interpolation syntax — the token is
+# read from Caddy's environment at startup, never hard-coded here.
+
+wchats-api.duckdns.org {
+    tls {
+        dns duckdns {env.DUCKDNS_TOKEN}
+    }
+    encode gzip
+    reverse_proxy 127.0.0.1:8000 {
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Real-IP {remote_host}
+    }
+}

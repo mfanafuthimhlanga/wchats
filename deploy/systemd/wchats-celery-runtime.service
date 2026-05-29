@@ -1,0 +1,41 @@
+# deploy/systemd/wchats-celery-runtime.service
+#
+# W Chats Celery Runtime Worker — systemd unit
+#
+# Install to VM:
+#   sudo cp deploy/systemd/wchats-celery-runtime.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now wchats-celery-runtime
+#
+# Key differences from scripts/start_native.ps1 line 58:
+#   - --pool=solo --concurrency=1 MUST be explicit (agent_tools.py uses module-level
+#     globals _conn_str / _agent_id that are only safe for the solo pool — STATE.md [04-02]).
+#     Do not rely solely on celery_app.py worker_pool="solo" config; CLI flags make it
+#     unambiguous and prevent silent override by a stale environment variable.
+#   - --queues=runtime ONLY: the pipeline worker is NOT hosted (D-03).
+#   - Restart=always + RestartSec=10 keeps the worker warm (D-12) so the Agent SDK
+#     subprocess is never cold on the first chat request.
+#   - %%h is the systemd-escaped form of %h (Celery hostname expansion).
+#   - Secrets come from EnvironmentFile, never inlined in this unit.
+
+[Unit]
+Description=W Chats Celery Runtime Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wchats
+WorkingDirectory=/opt/wchats/apps/api
+EnvironmentFile=/opt/wchats/apps/api/.env
+Environment=PYTHONPATH=/opt/wchats/apps/api
+ExecStart=/opt/wchats/venv/bin/celery -A app.worker.celery_app worker \
+    --queues=runtime \
+    --hostname=runtime@%%h \
+    --loglevel=info \
+    --pool=solo --concurrency=1
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
