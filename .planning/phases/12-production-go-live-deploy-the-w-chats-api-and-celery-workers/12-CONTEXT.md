@@ -126,7 +126,40 @@ Make **W Chats** publicly reachable and embeddable so a hiring manager can open 
 None — todo cross-reference not run; no pending todos matched.
 </deferred>
 
+<decision_revision>
+## Decision Revision (2026-05-29) — No-Card Pivot
+
+**Trigger:** At Wave 2 execution (plan 12-05, Task 1), the user confirmed they have **no credit card**. Oracle Cloud Always-Free signup requires a card ($1 hold) — verified in 12-RESEARCH.md. Every always-on cloud free tier (Oracle / GCP e2-micro / AWS / Azure / Fly.io / Railway) requires a card. This makes the originally chosen VM host infeasible.
+
+**New host decision (user-selected):** **Run the existing local stack on the user's PC + expose it over HTTPS via a Cloudflare Tunnel (`cloudflared`)**, live on demand (during portfolio/demo windows). No card, no new hardware, no NAT/port-forwarding (cloudflared connects outbound). Reuses Neon (sa-east-1) + Upstash unchanged.
+
+**Superseded decisions:**
+- **D-01 (Oracle ARM Always-Free VM)** → SUPERSEDED. Host = the user's local Windows PC (the existing `scripts/start_native.ps1` stack: uvicorn + `runtime` Celery worker, solo pool).
+- **D-02 (systemd services on a VM)** → SUPERSEDED. Process management = the existing local native-process pattern (`start_native.ps1`), extended to also launch `cloudflared`. No systemd, no Linux VM.
+- **D-05 (Caddy + DuckDNS Let's Encrypt TLS on a VM)** → SUPERSEDED. TLS is terminated at the **Cloudflare edge** by the tunnel — no Caddy, no DuckDNS, no Let's Encrypt management.
+
+**Retained / revised:**
+- **D-04 (reuse Neon + Upstash via env)** → RETAINED, now via the local `.env` (already present for dev).
+- **D-12 (warm worker)** → RETAINED, now satisfied by the always-running local runtime worker (warm SDK) while the demo window is up.
+- **D-14 (env-only seam)** → RETAINED, unchanged.
+- **D-09/D-10/D-11/D-13 (live-answer hardening, plan 12-01)** → UNCHANGED and already complete on `main`. The Voyage 3 RPM cap, 90s guard, and query-embed cache apply regardless of host.
+- **D-06/D-07/D-08 (widget on Vercel, plan 12-02)** → UNCHANGED and already complete; `data-api` now points at the tunnel URL instead of a DuckDNS host.
+- **D-15 (cloud-native AWS cutover ADR, plan 12-03)** → UNCHANGED and complete; note the AWS target it documents is itself card-gated, so that future cutover is blocked until the no-card constraint changes.
+
+**Impact on existing plan artifacts (drive the re-plan):**
+- **12-04 (deploy artifacts)** — its `deploy/systemd/*.service`, `deploy/caddy/Caddyfile`, and the Oracle-VM `deploy/README.md` runbook are now **superseded** (keep in-repo as the documented AWS-VM path the ADR references, or remove). `scripts/smoke_vm.sh` is still useful — re-target it at the tunnel URL.
+- **12-05 (was: provision Oracle VM)** — **re-plan** to: install `cloudflared` on Windows, a "start demo" runbook/script that launches the local stack + tunnel, and records the live HTTPS tunnel base URL.
+- **12-06 (final E2E gate)** — `data-api` host = the tunnel URL; otherwise unchanged (run smoke, hiring-manager Q&A).
+
+**Open research questions for the re-plan (warrant `--research`):**
+1. **Stable URL:** quick tunnel (`cloudflared tunnel --url`) yields a random `*.trycloudflare.com` URL per run → the Vercel widget snippet's `data-api` would change each session. Resolve: named tunnel (needs a domain on Cloudflare — user has none) vs. a runtime-config approach where the widget reads the API base from an editable `wchats/config.json` on Vercel (no redeploy) vs. accept per-session URL update. **This is the key design question.**
+2. **SSE through cloudflared within the 90s turn budget** — confirm Cloudflare's edge streaming/timeout (the ~100s limit flagged in 12-RESEARCH.md for the orange-cloud proxy) does not cut SSE before `agent.response`; D-11's 90s guard sits just under it.
+3. **`cloudflared` on Windows** — install (winget/standalone), run alongside uvicorn + celery (extend `start_native.ps1`), keep-warm behavior.
+4. **CV/portfolio honesty** — "live on demand" (PC + tunnel up) vs. "always-on production" framing.
+</decision_revision>
+
 ---
 
 *Phase: 12-Production Go-Live*
 *Context gathered: 2026-05-29*
+*Revised: 2026-05-29 — no-card pivot: Oracle VM (D-01/D-02/D-05) → Cloudflare Tunnel from local PC*

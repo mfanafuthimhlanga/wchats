@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: Executing Phase 12
-last_updated: "2026-05-29T14:20:45.736Z"
+last_updated: "2026-05-29T17:08:48.158Z"
 progress:
   total_phases: 1
   completed_phases: 0
@@ -17,8 +17,8 @@ progress:
 ## Current Status
 
 **Active Milestone:** Phase 12 — Production Go-Live (W Chats)
-**Milestone Phase:** Phase 12 — In Progress (Wave 1 complete: 4/6 plans). Waves 2–3 await MANUAL infra work.
-**Current Position:** Phase 12 Wave 1 done (12-01 agent hardening, 12-02 widget published, 12-03 cutover ADR, 12-04 deploy artifacts). NEXT = Wave 2 / Plan 12-05 (autonomous:false) — human must provision the Oracle ARM Always-Free VM, install runtime + claude-agent-sdk, set up the two systemd services, and Caddy+DuckDNS TLS, following `deploy/README.md` + `12-05-PLAN.md`. Then Wave 3 / 12-06 (wire live `data-api` host into the widget snippet, run `scripts/smoke_vm.sh`, do the live hiring-manager Q&A). Resume with `/gsd-execute-phase 12 --wave 2` after the VM is reachable over HTTPS. Precondition: Oracle signup requires a credit card ($1 hold, not charged) — the one tension with the "$0, no card" constraint.
+**Milestone Phase:** Phase 12 — In Progress (Wave 1 complete: 4/6 plans). Wave 2 BLOCKED + re-decided (no-card pivot).
+**Current Position:** Phase 12 Wave 1 done & committed (12-01 agent hardening, 12-02 widget published, 12-03 cutover ADR, 12-04 deploy artifacts). Wave 2 (12-05 Oracle VM) BLOCKED at Task 1: user has no credit card → Oracle/all always-on cloud free tiers infeasible. **DECISION REVISED** (see 12-CONTEXT.md `<decision_revision>`): host = local PC + Cloudflare Tunnel (`cloudflared`), live on demand; D-01/D-02/D-05 superseded; 12-04's systemd/Caddy artifacts superseded; 12-05 must be re-planned; 12-06 data-api = tunnel URL. NEXT = re-plan Wave 2 around the tunnel: `/gsd-plan-phase 12 --research` (research targets: stable tunnel URL strategy, SSE-through-cloudflared within the 90s guard, cloudflared-on-Windows). Wave 1 code/widget/ADR all stand.
 **Last updated:** 2026-05-29
 
 ## Project Reference
