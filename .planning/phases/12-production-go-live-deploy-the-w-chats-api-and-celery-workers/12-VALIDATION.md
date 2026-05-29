@@ -5,14 +5,16 @@ status: draft
 nyquist_compliant: true
 wave_0_complete: false
 created: 2026-05-29
+revised: 2026-05-29
 ---
 
-# Phase 12 — Validation Strategy
+# Phase 12 — Validation Strategy (revised: Cloudflare Tunnel pivot)
 
-> Per-phase validation contract for feedback sampling during execution.
-> Phase 12 has no formal REQ-IDs — coverage is driven by LOCKED decisions D-01…D-15
-> (see 12-CONTEXT.md) and the end-to-end success bar: a real hiring-manager Q&A
-> through the public widget on bantuson.vercel.app.
+> Per-phase validation contract. Phase 12 has no formal REQ-IDs — coverage is the
+> LOCKED decisions D-01…D-15 (see 12-CONTEXT.md, as amended by `<decision_revision>`).
+> **Host pivot:** Oracle VM (D-01/02/05) superseded by **local PC + Cloudflare Tunnel**.
+> The success bar is unchanged: a real hiring-manager Q&A through the public widget on
+> bantuson.vercel.app → tunnel → local agent, live during a demo window.
 
 ---
 
@@ -20,65 +22,57 @@ created: 2026-05-29
 
 | Property | Value |
 |----------|-------|
-| **Framework** | pytest 7.x (already in `apps/api` dev extras) |
+| **Framework** | pytest 7.x (existing) + a bash smoke script (`scripts/smoke_vm.sh`, honors `API_HOST`) |
 | **Config file** | `apps/api/pyproject.toml` (`[tool.pytest.ini_options]`) |
 | **Quick run command** | `cd apps/api && pytest tests/unit/test_agent_task.py -x -q` |
 | **Full suite command** | `cd apps/api && pytest tests/ -q` |
-| **Estimated runtime** | ~30 seconds (unit only; no live services) |
+| **Live smoke** | `API_HOST=https://<tunnel-url> bash scripts/smoke_vm.sh` (run during a demo window) |
 
-Note: Most of Phase 12 is infrastructure (VM, systemd, TLS, Vercel publish, ADR)
-which is verified by **scripts + manual checkpoints**, not pytest. Only the two
-in-repo code changes (D-10 retrieve cap, D-11 wall-clock guard) carry unit tests.
+The two in-repo code changes (D-10/D-11/D-13) are unit-tested and already green (12-01).
+Everything host-related is verified by the smoke script against the live tunnel + a manual
+Q&A gate — there is no VM/systemd to check anymore.
 
 ---
 
 ## Sampling Rate
 
-- **After every task commit:** Run `cd apps/api && pytest tests/unit/test_agent_task.py -x -q` (the file already exists; plan 01 extends it)
-- **After every plan wave:** Run `cd apps/api && pytest tests/ -q`
-- **Before `/gsd-verify-work`:** Full suite green + manual E2E Q&A checkpoint passed
-- **Max feedback latency:** ~30 seconds (unit); infra checks are script/manual
+- **After every task commit:** `cd apps/api && pytest tests/unit/test_agent_task.py -x -q`
+- **After every plan wave:** `cd apps/api && pytest tests/ -q`
+- **Phase gate:** live tunnel smoke (`smoke_vm.sh` against the tunnel URL) + manual hiring-manager Q&A, before `/gsd-verify-work`
+- **Max feedback latency:** ~30s (unit); live smoke bounded by the 90s turn guard (single `--max-time 95` SSE curl)
 
 ---
 
-## Per-Task Verification Map
+## Per-Decision Verification Map
 
-> Task IDs are assigned after planning; rows below are keyed by the LOCKED decision
-> each task must satisfy. The planner/executor should backfill the Task ID column.
+| Decision | Behavior to verify | Test Type | Command / Method | Status |
+|----------|--------------------|-----------|------------------|--------|
+| D-10 | `max_turns=3` in `run_agent_turn` | unit | `pytest tests/unit/test_agent_task.py -k max_turns -x` | ✅ done (12-01) |
+| D-11 | `asyncio.wait_for(..., timeout=90)` | unit | `pytest tests/unit/test_agent_task.py -k timeout -x` | ✅ done (12-01) |
+| D-13 | query-embed cache key in `agent_tools.py` | source | `grep "qembed:" apps/api/app/services/agent_tools.py` | ✅ done (12-01) |
+| D-06 | widget loader reachable on Vercel | smoke | `curl -sfI https://bantuson.vercel.app/wchats/widget.js` (200) | ✅ done (12-02) |
+| D-15 | cutover ADR exists | file | `test -f docs/adr/0001-cloud-native-cutover.md` | ✅ done (12-03) |
+| D-01R | tunnel up + API reachable over external HTTPS | smoke | `API_HOST=https://<tunnel-url> bash scripts/smoke_vm.sh` §1 | ⬜ replan (12-05) |
+| D-02R | local stack launches (uvicorn + runtime worker + cloudflared) | script | `scripts/start_demo.ps1` brings all three up | ⬜ replan (12-05) |
+| CORS | `Access-Control-Allow-Origin: *` on widget routes via tunnel | smoke | `curl -I <tunnel-url>/widget/<agent>/config` | ⬜ replan (12-05) |
+| SSE | `agent.response` arrives within ~95s (buffered-flush through quick tunnel) | smoke | `smoke_vm.sh` §5 (single `--max-time 95` curl) | ⬜ replan (12-05) |
+| D-10 runtime | ≤2 retrieve calls in the live turn | smoke | `smoke_vm.sh` §6 | ⬜ replan (12-06) |
+| D-12 | warm worker — 2nd turn < ~20s | manual | send a follow-up message, measure latency | ⬜ replan (12-06) |
+| D-14 | no secrets in committed code | grep | `grep -rn "sk-ant\|voyage-\|postgresql://" apps/api/app/` (0) | ✅ existing |
+| D-07 | widget `data-api` points at the live tunnel URL | manual/source | the per-session api-base value = current tunnel URL | ⬜ replan (12-06) |
+| **End-to-end** | **hiring-manager Q&A live (PHASE SUCCESS GATE)** | manual (human) | open bantuson.vercel.app → chat → ask a Bantuson question → grounded, cited answer, no error | ⬜ replan (12-06) |
 
-| Decision | Behavior to verify | Test Type | Automated Command | File Exists | Status |
-|----------|--------------------|-----------|-------------------|-------------|--------|
-| D-10 | `max_turns=3` (≤2 retrieve calls/turn) in `run_agent_turn` ClaudeAgentOptions | unit | `pytest tests/unit/test_agent_task.py -k max_turns -x` | ✅ exists (extended in 12-01) | ⬜ pending |
-| D-11 | `asyncio.wait_for(..., timeout=90)` in `run_agent_turn` | unit | `pytest tests/unit/test_agent_task.py -k timeout -x` | ✅ exists (extended in 12-01) | ⬜ pending |
-| D-02 | both systemd services active on VM | script (on VM) | `systemctl is-active wchats-api wchats-celery-runtime` | authored 12-04 / run 12-05 | ⬜ pending |
-| D-02 | uvicorn responds locally on VM | script | `curl -sf http://127.0.0.1:8000/health` | run 12-05 | ⬜ pending |
-| D-05 | API health reachable over external HTTPS w/ valid cert | script | `curl -sfI https://<api-host>/health` (expect 200) | smoke_vm.sh (12-04) / run 12-06 | ⬜ pending |
-| D-06 | widget loader reachable on Vercel | script | `curl -sfI https://bantuson.vercel.app/wchats/widget.js` (expect 200) | smoke_vm.sh (12-04) / run 12-06 | ⬜ pending |
-| D-08 | bundle rebuild is byte-stable (pnpm) | script (pre-deploy) | `pnpm --filter veridian-widget build` then diff sizes | n/a | ⬜ pending |
-| D-09 | one chat turn completes with no Voyage rate-limit | smoke | observe SSE: `agent.response` received, no `agent.failed` | smoke_vm.sh (12-04) / run 12-06 | ⬜ pending |
-| D-14 | no secrets committed in code | grep (existing pattern) | `grep -rn "sk-ant\|voyage-\|postgresql://" apps/api/app/` (expect none) | ✅ | ⬜ pending |
-| D-15 | cutover ADR file written | file check | `test -f docs/adr/0001-cloud-native-cutover.md` | authored 12-03 | ⬜ pending |
-
-*Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+*Status: ⬜ pending · ✅ green/done · ❌ red*
 
 ---
 
-## Wave 0 Requirements
+## Wave 0 Requirements (for the re-plan)
 
-- [x] `apps/api/tests/unit/test_agent_task.py` — ALREADY EXISTS (~527 lines, 8 tests).
-      No true Wave 0 scaffold is needed; Wave 1 plan 01 EXTENDS it (per the
-      "if the test file already exists, extend it" rule below) with two parametric
-      assertions on `ClaudeAgentOptions` construction in `run_agent_turn`:
-      `max_turns == 3` (D-10) and the `asyncio.wait_for` timeout `== 90` (D-11).
-      The SDK is mocked at the boundary (per [04-03]/[04-07] convention — SDK
-      subprocess never spawned). Delivery: extended in Wave 1 (plan 01), not a Wave 0 dependency.
-- [x] `scripts/smoke_vm.sh` — curl-based deployment smoke test: API `/health` over
-      HTTPS (D-05), `widget.js` reachable on Vercel (D-06), and a single end-to-end
-      `POST /widget/{id}/chat` → SSE `agent.response` (D-09). AUTHORED in Wave 1 (plan 04,
-      `bash -n` syntax-checked there) and CONSUMED/run-live in Wave 3 (plan 06) — a valid
-      author→consume chain, not a true Wave 0 prerequisite. Not a pytest test.
+- [ ] `scripts/start_demo.ps1` — launches uvicorn + `runtime` celery worker (solo) + `cloudflared` quick tunnel; prints the tunnel URL. Authored in 12-05. (Analog: existing `scripts/start_native.ps1`.)
+- [ ] `scripts/smoke_vm.sh` §5 adaptation — replace the per-poll `--max-time 6` with a single `--max-time 95` SSE curl to accommodate the quick-tunnel buffered-flush behavior. Adapted in 12-05 (or authored as `scripts/smoke_tunnel.sh`).
+- [ ] api-base wiring — the widget reads its API base from a per-session-updatable value (the planner locates the `data-api` source in `apps/admin/` via `grep -r "data-agent"`). Wired in 12-06.
 
-*If the agent task test file already exists, extend it rather than creating a new one.* (It does — see above.)
+*Already satisfied: `apps/api/tests/unit/test_agent_task.py` exists and is green (12-01); `scripts/smoke_vm.sh` exists and honors `API_HOST` (12-04).*
 
 ---
 
@@ -86,23 +80,22 @@ in-repo code changes (D-10 retrieve cap, D-11 wall-clock guard) carry unit tests
 
 | Behavior | Decision | Why Manual | Test Instructions |
 |----------|----------|------------|-------------------|
-| VM SSH access | D-01 | VM must exist first; OCI capacity timing is unpredictable | `ssh ubuntu@<vm-ip>` succeeds; `systemctl status` shows both services |
-| No mixed-content block | D-05 | Requires a real browser on the https Vercel page | Open bantuson.vercel.app → DevTools console → no mixed-content errors when widget calls the API |
-| data-api wiring | D-07 | Requires inspecting live network traffic | Open widget → Network tab → first `/widget/.../config` request targets the HTTPS API host |
-| Worker stays warm | D-12 | Latency comparison across two real turns | Send a second chat message; response latency < ~20s (SDK already resident) |
-| **Live hiring-manager Q&A (PHASE SUCCESS GATE)** | end-to-end | The whole point — a human asking a real question | Open bantuson.vercel.app; click chat launcher; ask "What is W Chats?" / a Bantuson-portfolio question; receive a **grounded** answer with citations; no error. This is the canonical success criterion. |
+| SSE not severed before 90s | D-11/SSE | quick-tunnel timeout for in-flight streams is undocumented (research A1) | Start `start_demo.ps1`, send a chat message, confirm `agent.response` arrives (no `onerror`). If it fails early, lower D-11 to ~55s or switch to serveo/localhost.run |
+| No mixed-content block | D-05R | needs a real browser on the https Vercel page | Open bantuson.vercel.app → DevTools → no mixed-content errors when the widget calls the tunnel |
+| Worker stays warm | D-12 | latency comparison across two real turns | second message responds < ~20s |
+| **Live hiring-manager Q&A (PHASE SUCCESS GATE)** | end-to-end | the whole point — a human asking a real question | open bantuson.vercel.app, click chat, ask "What is W Chats?" / a Bantuson question, receive a grounded answer with citations, no error |
 
 ---
 
 ## Validation Sign-Off
 
-- [x] All in-repo code tasks (D-10, D-11) have `<automated>` verify or Wave 0 dependencies (test file pre-exists; plan 01 extends it with automated unit tests)
-- [x] Infra tasks have a script (`smoke_vm.sh`) or an explicit manual checkpoint (smoke_vm.sh authored W1/plan 04, run live W3/plan 06; plus the manual phase-success-gate checkpoint)
-- [x] Sampling continuity: no 3 consecutive in-repo code tasks without automated verify (only two in-repo code tasks total, both unit-tested)
-- [x] Wave 0 covers `test_agent_task.py` + `smoke_vm.sh` (test file pre-exists/extended W1; smoke script authored W1, consumed W3 — valid author→consume chain, no true Wave 0 gap)
+- [x] In-repo code tasks (D-10/D-11/D-13) have automated unit verify — green (12-01)
+- [x] Host tasks have a script (`smoke_vm.sh` against the tunnel) or an explicit manual checkpoint
 - [x] No watch-mode flags
-- [x] Feedback latency < 30s (unit)
-- [x] `nyquist_compliant: true` set in frontmatter
+- [x] `nyquist_compliant: true` set in frontmatter (strategy defined; live gates are inherently manual)
+- [ ] `scripts/start_demo.ps1` authored (12-05)
+- [ ] Live tunnel smoke passes against the real tunnel URL (12-06)
+- [ ] SSE-through-tunnel empirically confirmed within the 90s guard (12-05/12-06)
 - [ ] Live Q&A human gate passed before milestone sign-off
 
-**Approval:** pending (live Q&A human gate is the only remaining sign-off item — runs in plan 06)
+**Approval:** pending (live tunnel smoke + hiring-manager Q&A are the remaining gates — run in 12-05/12-06 during a demo window)
