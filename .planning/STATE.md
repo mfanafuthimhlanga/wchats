@@ -17,8 +17,8 @@ progress:
 ## Current Status
 
 **Active Milestone:** Phase 12 — Production Go-Live (W Chats)
-**Milestone Phase:** Phase 12 — In Progress (2/6 plans done)
-**Current Position:** Phase 12, Plan 02 complete — widget embed published to apps/admin/public/wchats/ (D-06, D-07, D-08)
+**Milestone Phase:** Phase 12 — In Progress (Wave 1 complete: 4/6 plans). Waves 2–3 await MANUAL infra work.
+**Current Position:** Phase 12 Wave 1 done (12-01 agent hardening, 12-02 widget published, 12-03 cutover ADR, 12-04 deploy artifacts). NEXT = Wave 2 / Plan 12-05 (autonomous:false) — human must provision the Oracle ARM Always-Free VM, install runtime + claude-agent-sdk, set up the two systemd services, and Caddy+DuckDNS TLS, following `deploy/README.md` + `12-05-PLAN.md`. Then Wave 3 / 12-06 (wire live `data-api` host into the widget snippet, run `scripts/smoke_vm.sh`, do the live hiring-manager Q&A). Resume with `/gsd-execute-phase 12 --wave 2` after the VM is reachable over HTTPS. Precondition: Oracle signup requires a credit card ($1 hold, not charged) — the one tension with the "$0, no card" constraint.
 **Last updated:** 2026-05-29
 
 ## Project Reference
