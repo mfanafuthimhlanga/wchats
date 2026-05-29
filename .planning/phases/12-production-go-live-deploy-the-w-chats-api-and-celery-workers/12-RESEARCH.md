@@ -664,17 +664,15 @@ fi
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Exact location of the embed snippet in `apps/admin/`**
+1. **Exact location of the embed snippet in `apps/admin/`** — RESOLVED: there is no public embed today (the `deploy/page.tsx` snippet is behind auth and points at a dead CDN). Plan 12-05 Task 1 adds the live embed to the public landing page **`apps/admin/app/page.tsx`** via an editable `WCHATS_TUNNEL_API_BASE` constant.
    - What we know: The `<script data-agent data-api>` tag is in the Next.js admin app source (not `public/wchats/index.html`). The admin app is under `apps/admin/`.
-   - What's unclear: The exact file (`pages/index.jsx`, `app/page.tsx`, a dedicated page, etc.).
    - Recommendation: Planner locates this file as the first step in plan 12-05 Task 1. Look for `data-agent="fe230a9d"` in `apps/admin/`.
 
-2. **cloudflared quick-tunnel connection timeout for non-idle SSE**
+2. **cloudflared quick-tunnel connection timeout for non-idle SSE** — RESOLVED (as a gated empirical check, assumption A1): not pre-answerable from docs; verified empirically in **plan 12-05 Task 2's blocking checkpoint** (send a real turn, confirm `agent.response` arrives within 90s). Documented fallback if it severs early: lower the D-11 guard toward ~55s, or switch the tunnel to serveo.net / localhost.run (SSH-based, SSE-friendly).
    - What we know: SSE is buffered and flushed at stream close. The server closes the stream at ≤90s.
-   - What's unclear: Does cloudflared itself impose a connection timeout (e.g., 60s) before the stream closes?
-   - Recommendation: Empirically test in plan 12-05 Task 1 by running a local end-to-end smoke test through the tunnel immediately after authoring `start_demo.ps1`.
+   - What's unclear at plan time: Does cloudflared itself impose a connection timeout (e.g., 60s) before the stream closes? Answered at execution by the 12-05 Task 2 gate.
 
 ---
 
