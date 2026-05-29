@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Ready to execute
-last_updated: "2026-05-29T13:10:58.711Z"
+status: Executing Phase 12
+last_updated: "2026-05-29T13:57:45.090Z"
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 6
-  completed_plans: 0
+  completed_plans: 1
   percent: 0
 ---
 
@@ -16,17 +16,17 @@ progress:
 
 ## Current Status
 
-**Active Milestone:** M11 — Admin UI Overhaul (Hillbrow at Dusk)
-**Milestone Phase:** Phase 11 — COMPLETE (6/6 plans done, visual QA gate passed)
-**Current Position:** Phase 11, all 6 plans complete — milestone pending verification
-**Last updated:** 2026-05-26
+**Active Milestone:** Phase 12 — Production Go-Live (W Chats)
+**Milestone Phase:** Phase 12 — In Progress (1/6 plans done)
+**Current Position:** Phase 12, Plan 01 complete — D-10/D-11/D-13 agent hardening done
+**Last updated:** 2026-05-29
 
 ## Project Reference
 
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** Start M4 — Claude Agent SDK + Preact widget + public demo
+**Current focus:** Phase 12 — Production Go-Live (W Chats)
 **Previous:** M3 (Hybrid Retrieval) ✓ Complete — demo_m3.sh passed, notebook 4 DataFrames verified, RET-01–RET-08 satisfied (2026-05-16)
 
 ## Milestone Progress
@@ -130,6 +130,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | 01 | 06 | ~25 min | 2 | 11 |
 | 01 | 07 | ~20 min | 2 | 6 |
 | 01 | 08 | ~5 min | 2 | 6 |
+| Phase 12 P01 | ~12 min | 2 tasks | 3 files |
 
 ### Quick Tasks Completed
 
@@ -236,3 +237,10 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Last session: 2026-05-26 — completed 11-03-PLAN.md (agents dashboard: greeting strip Fraunces italic-coral, transparent wrapper, repeat(3,1fr) grid; AgentCard: surface-1 bg, hover translateY(-2px) coral borderTop, gold status tokens, Fraunces 600 name, UPPERCASE TRACKED chips) — 2 commits: 9d1965a + 17e8e35
 - Last session: 2026-05-26 — completed 11-02-PLAN.md (landing page rebuild: transparent hero, glass nav scroll-reactive, Fraunces headline strikethrough+italic-coral, coral CTA, trust strip, HeroSteps.tsx token migration --orange→--accent, --green-solid→--green) — 2 commits: 32fa8b7 + ce7a61b
 - Last session: 2026-05-26 — completed 11-01-PLAN.md (Hillbrow at Dusk token foundation: globals.css full replacement, skyline PNG background, Fraunces Google Fonts, Clerk dark appearance, SVG logo in TopNav, transparent layout wrapper) — 2 commits: 76e7a61 + 64e3986
+- Last session: 2026-05-29 — completed 12-01-PLAN.md (D-10 max_turns=3 + retrieve-at-most-once prompt, D-11 timeout=90s, D-13 Redis qembed cache) — 2 commits: 15468e2 + 61d8ced; all 10 agent-task tests pass; acks_late + idempotency invariants verified intact
+
+## Decisions
+
+- [Phase ?]: [12-01] D-10 dual guard: max_turns=3 + system-prompt AT MOST ONCE instruction
+- [Phase ?]: [12-01] D-11 timeout raised 30s to 90s - SDK subprocess warm-up on ARM VM requires more headroom; SSE layer retains 120s
+- [Phase ?]: [12-01] D-13 included: lazy Redis qembed cache with try/except fallback - cache is optimisation, never correctness dependency
