@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# smoke_vm.sh — W Chats VM Deployment Smoke Test
+# smoke_vm.sh — W Chats Deployment Smoke Test
 #
-# Verifies the live production deployment on the Oracle Cloud VM:
+# Verifies the live deployment via the local stack + Cloudflare Quick Tunnel:
 #   (1) TLS health: API reachable over HTTPS with valid cert (D-05)
 #   (2) Widget loader: widget.js reachable on Vercel (D-06)
 #   (3) Widget JWT: POST /widget/{id}/config mints a JWT token
 #   (4) Chat dispatch: POST /widget/{id}/chat returns a job_id (D-09)
-#   (5) SSE poll: GET /widget/jobs/{job_id}/events emits agent.response within 90s (D-09)
+#   (5) SSE single-curl: GET /widget/jobs/{job_id}/events holds the connection
+#       for up to 95s (buffered-flush — quick tunnel batches events and delivers
+#       them all at once when the server closes the stream); agent.response
+#       must be present in the flushed stream (D-09)
 #   (6) Retrieve cap: count retrieve tool_call events in the SSE stream; assert <= 2 (D-10)
 #
 # Prerequisites (run by plan 06 against the live host — NOT run locally):
-#   - VM is provisioned, systemd units active (wchats-api, wchats-celery-runtime)
-#   - Caddy is running with a valid DuckDNS TLS cert
+#   - scripts/start_demo.ps1 has been run on the local PC (uvicorn + runtime worker
+#     + cloudflared quick tunnel are running)
+#   - API_HOST is set to the https://<random>.trycloudflare.com URL from start_demo.ps1
 #   - Widget files are deployed to bantuson.vercel.app/wchats/
 #
 # Required env vars: none (defaults target the live deployment)
@@ -22,7 +26,7 @@
 #
 # Usage:
 #   bash scripts/smoke_vm.sh
-#   API_HOST=https://my-host.duckdns.org bash scripts/smoke_vm.sh
+#   API_HOST=https://<tunnel>.trycloudflare.com bash scripts/smoke_vm.sh
 #
 # Exit codes:
 #   0 — all six sections passed
@@ -185,49 +189,40 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
-# Section 5: SSE poll — poll /widget/jobs/{job_id}/events until agent.response
-# Budget: 18 polls * 5s sleep = 90s (aligned to D-11 wall-clock guard).
-# Also checks for agent.failed (early exit on failure).
+# Section 5: SSE single-curl (buffered-flush) — hold the SSE connection for
+# up to 95s with a single curl call.
+#
+# Cloudflare Quick Tunnel buffers all SSE events and delivers them all at once
+# when the server closes the stream (cloudflare/cloudflared issue #1449).
+# The old 18 x --max-time 6 poll loop returned nothing per poll and always
+# failed under buffered SSE. The new approach: one --max-time 95 curl holds
+# the connection open for the full agent turn duration (D-11 guard = 90s) and
+# captures the complete event stream when cloudflared flushes it at stream close.
+# Section 6 reads SSE_STREAM from this section unchanged.
 # ---------------------------------------------------------------------------
 
-echo "=== Section 5: SSE Poll (agent.response within 90s) ==="
+echo "=== Section 5: SSE (buffered-flush — single 95s curl) ==="
 
 AGENT_RESPONSE=false
 SSE_STREAM=""
 
 if [[ -z "$JOB_ID" ]]; then
-    echo "[SKIP] SSE poll: skipped (no job_id from section 4)"
+    echo "[SKIP] SSE: skipped (no job_id from section 4)"
     ALL_PASSED=false
 else
-    echo "  Polling /widget/jobs/$JOB_ID/events (up to 90s, 18 attempts x 5s)..."
+    echo "  Holding SSE connection on /widget/jobs/$JOB_ID/events (up to 95s)..."
 
-    for i in $(seq 1 18); do
-        CHUNK=$(curl -s --max-time 6 -N \
-            "$API_HOST/widget/jobs/$JOB_ID/events" 2>/dev/null || echo "")
+    SSE_STREAM=$(curl -s --max-time 95 -N \
+        "$API_HOST/widget/jobs/$JOB_ID/events" 2>/dev/null || echo "")
 
-        SSE_STREAM="$SSE_STREAM
-$CHUNK"
-
-        if echo "$CHUNK" | grep -q '"event_type":"agent.response"'; then
-            AGENT_RESPONSE=true
-            echo "  [OK] agent.response received on poll $i/$((18))"
-            break
-        fi
-
-        if echo "$CHUNK" | grep -q '"event_type":"agent.failed"'; then
-            echo "[FAIL] SSE poll: agent.failed event received on poll $i"
-            ALL_PASSED=false
-            break
-        fi
-
-        echo "  [Poll $i/18] waiting..."
-        sleep 5
-    done
-
-    if [[ "$AGENT_RESPONSE" == "true" ]]; then
-        echo "[PASS] SSE poll: agent.response received within 90s"
-    elif [[ "$ALL_PASSED" == "true" ]]; then
-        echo "[FAIL] SSE poll: agent.response not received within 90s (timeout)"
+    if echo "$SSE_STREAM" | grep -q '"event_type":"agent.response"'; then
+        AGENT_RESPONSE=true
+        echo "[PASS] SSE: agent.response received"
+    elif echo "$SSE_STREAM" | grep -q '"event_type":"agent.failed"'; then
+        echo "[FAIL] SSE: agent.failed event received"
+        ALL_PASSED=false
+    else
+        echo "[FAIL] SSE: agent.response not received within 95s"
         ALL_PASSED=false
     fi
 fi

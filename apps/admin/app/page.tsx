@@ -2,7 +2,16 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import Script from 'next/script'
 import { HeroPipeline } from './components/HeroPipeline'
+
+// demo: set to the current https://<random>.trycloudflare.com URL from
+// scripts/start_demo.ps1, then: git add apps/admin/app/page.tsx &&
+// git commit -m "demo: set tunnel URL" && git push
+// Leave empty between demo sessions (widget renders but chat is offline).
+// The host lives ONLY in this constant → the data-api attribute (D-07);
+// it is never baked into widget.js, widget.iife.js, or index.html.
+const WCHATS_TUNNEL_API_BASE = '' // demo: set to https://<random>.trycloudflare.com
 
 export default function LandingPage() {
   const [scrolled, setScrolled] = useState(false)
@@ -86,6 +95,16 @@ export default function LandingPage() {
           </Link>
         </div>
       </header>
+
+      {/* ── Live W Chats widget embed ──────────────────────────────────── */}
+      {/* data-api reads WCHATS_TUNNEL_API_BASE — host lives ONLY here (D-07).  */}
+      {/* Update the constant above per demo session, commit, push → Vercel.    */}
+      <Script
+        src="/wchats/widget.js"
+        data-agent="fe230a9d-09f0-4043-b2f1-4506a2ef0059"
+        data-api={WCHATS_TUNNEL_API_BASE}
+        strategy="afterInteractive"
+      />
 
       {/* ── Hero — transparent, city shows through ─────────────────────── */}
       <section
