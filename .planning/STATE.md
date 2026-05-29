@@ -17,8 +17,8 @@ progress:
 ## Current Status
 
 **Active Milestone:** Phase 12 — Production Go-Live (W Chats)
-**Milestone Phase:** Phase 12 — In Progress (Wave 1 complete: 4/6 plans). Wave 2 BLOCKED + re-decided (no-card pivot).
-**Current Position:** Phase 12 Wave 1 done & committed (12-01 agent hardening, 12-02 widget published, 12-03 cutover ADR, 12-04 deploy artifacts). Wave 2 (12-05 Oracle VM) BLOCKED at Task 1: user has no credit card → Oracle/all always-on cloud free tiers infeasible. **DECISION REVISED** (see 12-CONTEXT.md `<decision_revision>`): host = local PC + Cloudflare Tunnel (`cloudflared`), live on demand; D-01/D-02/D-05 superseded; 12-04's systemd/Caddy artifacts superseded; 12-05 must be re-planned; 12-06 data-api = tunnel URL. NEXT = re-plan Wave 2 around the tunnel: `/gsd-plan-phase 12 --research` (research targets: stable tunnel URL strategy, SSE-through-cloudflared within the 90s guard, cloudflared-on-Windows). Wave 1 code/widget/ADR all stand.
+**Milestone Phase:** Phase 12 — In Progress (Wave 1 complete: 4/6 plans). Wave 2–3 RE-PLANNED for the Cloudflare Tunnel pivot; ready to resume.
+**Current Position:** Phase 12 Wave 1 done & committed (12-01 agent hardening, 12-02 widget published, 12-03 cutover ADR, 12-04 deploy artifacts — VM artifacts retained as the AWS/ADR reference). No-card pivot complete: 12-05 + 12-06 re-planned (re-research `64eee6f`, plans `63282cf`, warning fixes committed) for **local PC + Cloudflare quick tunnel** (D-01/02/05 superseded; D-04/12/14 retained). Plan-checker: VERIFICATION PASSED, D-01..D-15 covered. NEXT = resume execution: `/gsd-execute-phase 12` (starts at Wave 2 / 12-05). 12-05 Task 1 = autonomous in-repo authoring (`scripts/start_demo.ps1`, smoke §5 single 95s SSE curl, embed on `apps/admin/app/page.tsx` via editable `WCHATS_TUNNEL_API_BASE`); 12-05 Task 2 + all of 12-06 = autonomous:false (need the PC running `start_demo.ps1` + a browser during a demo window). Key risk gated empirically in 12-05 Task 2: SSE survival through the quick tunnel within the 90s guard (fallback: lower D-11 or serveo/localhost.run).
 **Last updated:** 2026-05-29
 
 ## Project Reference
