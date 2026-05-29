@@ -28,14 +28,19 @@ Design decisions:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import re
+import ssl
 from typing import Any
 
 import psycopg2
+import redis as redis_lib
 import structlog
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
+from app.core.config import settings
 from app.services.retrieval_service import (
     RetrievalStrategy,
     embed_query,
@@ -44,6 +49,33 @@ from app.services.retrieval_service import (
 )
 
 log = structlog.get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# D-13: Module-level sync Redis client for query-embedding cache.
+# Reuses the same Upstash rediss:// connection as agent.py (lines 77-79).
+# Built lazily to avoid import-time failures in test environments where
+# REDIS_URL may not be set.
+# ---------------------------------------------------------------------------
+
+_qembed_redis: redis_lib.Redis | None = None
+
+
+def _get_qembed_redis() -> redis_lib.Redis:
+    """Return (and lazily create) the module-level sync Redis client."""
+    global _qembed_redis
+    if _qembed_redis is None:
+        _url_clean = (
+            settings.REDIS_URL.split("?")[0]
+            if "?" in settings.REDIS_URL
+            else settings.REDIS_URL
+        )
+        _ssl_opts: dict = (
+            {"ssl_cert_reqs": ssl.CERT_NONE}
+            if _url_clean.startswith("rediss://")
+            else {}
+        )
+        _qembed_redis = redis_lib.from_url(_url_clean, **_ssl_opts)
+    return _qembed_redis
 
 # ---------------------------------------------------------------------------
 # Module-level constants
@@ -197,8 +229,32 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     # Run blocking retrieval calls in executor to keep the async tool cooperative.
     loop = asyncio.get_event_loop()
 
+    # D-13: Redis read-through cache for query embeddings.
+    # Key: qembed:<sha256-hex-of-query-utf8>  |  TTL: 3600s (1 hour)
+    # Repeat questions cost zero Voyage calls (supports D-09 $0 path).
+    # Any cache error falls back to a direct embed_query call — the cache is
+    # an optimisation, never a correctness dependency.
+    def _embed_with_cache(q: str) -> list[float]:
+        cache_key = "qembed:" + hashlib.sha256(q.encode("utf-8")).hexdigest()
+        try:
+            rc = _get_qembed_redis()
+            cached = rc.get(cache_key)
+            if cached is not None:
+                log.debug("retrieve_tool.cache_hit", key_prefix="qembed:")
+                return json.loads(cached)
+            vector = embed_query(q)
+            rc.setex(cache_key, 3600, json.dumps(vector))
+            return vector
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "retrieve_tool.cache_error",
+                exc=str(exc),
+                note="falling back to direct embed_query",
+            )
+            return embed_query(q)
+
     query_vector: list[float] = await loop.run_in_executor(
-        None, lambda: embed_query(query)
+        None, lambda: _embed_with_cache(query)
     )
     rrf_result: dict = await loop.run_in_executor(
         None, lambda: rrf_fuse(_conn_str, query_vector, query, strategy)
