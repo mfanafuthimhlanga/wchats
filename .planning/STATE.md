@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: Executing Phase 12
-last_updated: "2026-05-29T13:57:45.090Z"
+last_updated: "2026-05-29T14:04:49.630Z"
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 6
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -17,8 +17,8 @@ progress:
 ## Current Status
 
 **Active Milestone:** Phase 12 — Production Go-Live (W Chats)
-**Milestone Phase:** Phase 12 — In Progress (1/6 plans done)
-**Current Position:** Phase 12, Plan 01 complete — D-10/D-11/D-13 agent hardening done
+**Milestone Phase:** Phase 12 — In Progress (2/6 plans done)
+**Current Position:** Phase 12, Plan 02 complete — widget embed published to apps/admin/public/wchats/ (D-06, D-07, D-08)
 **Last updated:** 2026-05-29
 
 ## Project Reference
@@ -131,6 +131,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | 01 | 07 | ~20 min | 2 | 6 |
 | 01 | 08 | ~5 min | 2 | 6 |
 | Phase 12 P01 | ~12 min | 2 tasks | 3 files |
+| 12 | 02 | ~10 min | 2 | 7 |
 
 ### Quick Tasks Completed
 
@@ -238,9 +239,12 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - Last session: 2026-05-26 — completed 11-02-PLAN.md (landing page rebuild: transparent hero, glass nav scroll-reactive, Fraunces headline strikethrough+italic-coral, coral CTA, trust strip, HeroSteps.tsx token migration --orange→--accent, --green-solid→--green) — 2 commits: 32fa8b7 + ce7a61b
 - Last session: 2026-05-26 — completed 11-01-PLAN.md (Hillbrow at Dusk token foundation: globals.css full replacement, skyline PNG background, Fraunces Google Fonts, Clerk dark appearance, SVG logo in TopNav, transparent layout wrapper) — 2 commits: 76e7a61 + 64e3986
 - Last session: 2026-05-29 — completed 12-01-PLAN.md (D-10 max_turns=3 + retrieve-at-most-once prompt, D-11 timeout=90s, D-13 Redis qembed cache) — 2 commits: 15468e2 + 61d8ced; all 10 agent-task tests pass; acks_late + idempotency invariants verified intact
+- Last session: 2026-05-29 — completed 12-02-PLAN.md (pnpm bundle rebuild + sync embed/; apps/admin/public/wchats/ created with 4 byte-identical embed files) — 2 commits: 9d8ab27 + ab943a1; gzip 8,087 B < 20,480 B gate passed; D-06 D-07 D-08 satisfied
 
 ## Decisions
 
 - [Phase ?]: [12-01] D-10 dual guard: max_turns=3 + system-prompt AT MOST ONCE instruction
 - [Phase ?]: [12-01] D-11 timeout raised 30s to 90s - SDK subprocess warm-up on ARM VM requires more headroom; SSE layer retains 120s
 - [Phase ?]: [12-01] D-13 included: lazy Redis qembed cache with try/except fallback - cache is optimisation, never correctness dependency
+- [Phase ?]: [12-02] Bundle sizes differ from RESEARCH.md baseline: pnpm v11 fresh install produced 20,835 B iife.js vs prior 17,833 B; gzip 8,087 B passes < 20,480 B gate; new sizes are authoritative
+- [Phase ?]: [12-02] pnpm-lock.yaml created in apps/widget/ — pnpm installed fresh, replacing prior npm node_modules; lock file committed to pin dependency versions
