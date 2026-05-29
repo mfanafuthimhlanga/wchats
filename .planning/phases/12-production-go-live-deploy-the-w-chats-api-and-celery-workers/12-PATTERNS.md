@@ -14,7 +14,7 @@
 | `apps/api/tests/unit/test_agent_task.py` | test (EXTEND) | — | self (existing file, 527 lines) | exact — appending to live test file |
 | `deploy/systemd/wchats-api.service` | config | request-response | `scripts/start_native.ps1` (uvicorn flags) | role-match |
 | `deploy/systemd/wchats-celery-runtime.service` | config | event-driven | `scripts/start_native.ps1` (celery runtime flags) | role-match |
-| `/etc/caddy/Caddyfile` | config | request-response | none | greenfield |
+| `deploy/caddy/Caddyfile` (repo) → `/etc/caddy/Caddyfile` (VM install, plan 05) | config | request-response | none | greenfield |
 | `scripts/smoke_vm.sh` | utility/script | request-response | `scripts/demo_m10.sh` | role-match (bash strict mode + curl + SSE poll) |
 | `docs/adr/0001-cloud-native-cutover.md` | documentation | — | none in repo | greenfield (use Nygard format per RESEARCH.md) |
 | `apps/admin/public/wchats/{widget.js,index.html,widget.iife.js,widget.css}` | static assets (COPY) | — | `apps/widget/embed/` (source of truth) | exact — copy operation |

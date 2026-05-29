@@ -6,11 +6,16 @@
 **Plans:** 6 plans, 3 waves
 
 Plans:
+**Wave 1**
 - [ ] 12-01-PLAN.md — Wave 1: Live-answer hardening (D-09/D-10/D-11/D-13) — max_turns=3 + retrieve-cap prompt + timeout=90 in agent.py, Redis query-embed cache, two regression tests
 - [ ] 12-02-PLAN.md — Wave 1: Widget publish (D-06/D-07/D-08) — pnpm bundle freshness + copy embed files to apps/admin/public/wchats/ for Vercel
 - [ ] 12-03-PLAN.md — Wave 1: Cloud-native cutover ADR (D-14/D-15) — docs/adr/0001-cloud-native-cutover.md (Nygard, AWS target + trigger threshold)
 - [ ] 12-04-PLAN.md — Wave 1: Deploy artifacts in-repo (D-02/D-05) — systemd units, Caddy DuckDNS DNS-01 Caddyfile, deploy/README runbook, scripts/smoke_vm.sh
+
+**Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 12-05-PLAN.md — Wave 2: VM provisioning + deploy (D-01/D-02/D-04/D-05/D-12, autonomous:false) — Oracle ARM VM, systemd services, Neon+Upstash reuse, Caddy TLS
+
+**Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 12-06-PLAN.md — Wave 3: Final E2E gate (D-05/D-06/D-07/D-09/D-10/D-11/D-12, autonomous:false) — wire live snippet, run smoke_vm.sh, hiring-manager Q&A success gate
 
 ---

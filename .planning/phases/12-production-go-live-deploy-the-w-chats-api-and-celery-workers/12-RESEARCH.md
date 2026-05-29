@@ -583,19 +583,19 @@ Data migration (Neon → Aurora) is a separate task with pg_dump/restore.
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Caddy build with DuckDNS plugin**
+1. **Caddy build with DuckDNS plugin** — RESOLVED: plans 04 (authors deploy/caddy/Caddyfile + the build note in deploy/README.md) and 05 (builds Caddy with the duckdns plugin via xcaddy ARM64 on the VM).
    - What we know: Standard apt Caddy does NOT include the DuckDNS DNS provider plugin.
    - What's unclear: Is `xcaddy` available as an ARM64 binary, or must it be compiled? xcaddy is written in Go and has ARM64 prebuilt releases.
    - Recommendation: Plan Wave 0 includes downloading the xcaddy ARM64 binary and building `caddy` with `--with github.com/caddy-dns/duckdns`. Alternatively, download a pre-built custom Caddy binary from caddyserver.com/download with the DuckDNS plugin selected.
 
-2. **OCI VM provisioning wait time**
+2. **OCI VM provisioning wait time** — RESOLVED: the wave graph parallelizes around it — plans 01 (code), 02 (widget), 03 (ADR), 04 (deploy artifacts) all run in Wave 1 independent of the VM; only plan 05 (VM provision) and plan 06 (live gate) wait on capacity.
    - What we know: Capacity errors are common in US regions. EU regions are better.
    - What's unclear: How long the retry loop will take in practice.
    - Recommendation: Plan must NOT block all other work on VM provisioning. Waves for widget delivery (Vercel) and code changes (D-10, D-11) should proceed in parallel.
 
-3. **widget.iife.js bundle freshness**
+3. **widget.iife.js bundle freshness** — RESOLVED: plan 02 rebuilds with pnpm --filter veridian-widget build and syncs dist/ to embed/ before copying to apps/admin/public/wchats/.
    - What we know: `apps/widget/embed/widget.iife.js` exists at 17.8 KB. `apps/widget/dist/widget.iife.js` also exists.
    - What's unclear: Whether the `embed/` bundle is current with `dist/`. The `README.md` says to `cp ../dist/widget.iife.js ../dist/widget.css .` after build.
    - Recommendation: Plan Wave 0 includes `pnpm --filter veridian-widget build` + sync from dist/ to embed/ before copying to public/wchats/.
