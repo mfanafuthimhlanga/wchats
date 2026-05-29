@@ -443,6 +443,16 @@ M6 and M7 are parallelizable — both only require M4 to be complete.
 Each milestone uses its own PRD file as the source of truth for phase decomposition.
 When starting a new milestone: write `prd-MN.md` first, then run `/gsd-discuss-phase`.
 
+### Phase 12: Production Go-Live: deploy the W Chats API and Celery workers to a public managed host and publish the embeddable widget so a hiring manager can chat with the live agent on bantuson.vercel.app; env and interface driven for a later cloud-native AWS flip
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 11
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 12 to break down)
+
 ---
 
 *Roadmap created: 2026-05-12*
