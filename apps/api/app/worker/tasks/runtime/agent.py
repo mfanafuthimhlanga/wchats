@@ -507,10 +507,10 @@ def run_agent_turn(
 
             system_prompt = build_system_prompt(agent)
 
-            # D-10 retrieve cap: belt-and-suspenders dual guard alongside max_turns=3.
-            # Instructs the agent to call retrieve AT MOST ONCE per response so a single
-            # turn cannot exhaust the Voyage 3 RPM free tier (6 retrieve calls was the
-            # actual 2026-05-29 live failure that prompted this guard).
+            # D-10 retrieve cap: prompt-level guard (belt); tool-level guard (suspenders)
+            # in agent_tools.retrieve_tool blocks the 3rd+ call per turn.
+            # This prevents exhausting the Voyage 3 RPM free tier (6 retrieve calls in
+            # a single turn was the actual 2026-05-29 live failure that prompted D-10).
             system_prompt += (
                 "\n\nIMPORTANT: Call the `retrieve` tool AT MOST ONCE per response. "
                 "After receiving retrieve results, synthesize an answer immediately. "
@@ -518,6 +518,15 @@ def run_agent_turn(
             )
 
             # R-05: allowed_tools use full MCP namespace mcp__customer-tools__*
+            # D-10 fix (2026-06-01): max_turns raised from 3 to 6.
+            # Root cause: max_turns=3 cut the agent off after the retrieve tool
+            # round-trip (tool_use + tool_result = 2 turns), leaving no turn to
+            # compose the final text answer → empty response_text.
+            # The Voyage RPM guard is now enforced solely by the tool-level counter
+            # in agent_tools.retrieve_tool (blocks the 3rd call per turn), making
+            # max_turns free to cover the full retrieve → synthesis cycle.
+            # 6 turns is sufficient for: thinking + retrieve + synthesis + any
+            # clarify/escalate follow-ups while still bounding DoS risk (T-04-03-06).
             options = ClaudeAgentOptions(
                 model="claude-haiku-4-5-20251001",
                 system_prompt=system_prompt,
@@ -529,7 +538,7 @@ def run_agent_turn(
                     "mcp__customer-tools__clarify",
                 ],
                 resume=sdk_resume,
-                max_turns=3,   # D-10: caps retrieve loop; was 10 (T-04-03-06 DoS guard)
+                max_turns=6,   # D-10 fix: was 3 (too low — cut off synthesis after retrieve)
                 max_budget_usd=0.05,
             )
 
@@ -537,7 +546,7 @@ def run_agent_turn(
             # Bridge async SDK into sync Celery worker.
             # asyncio.run() is the required pattern for Python 3.12 (see CLAUDE.md).
             # Wall-clock safety: asyncio.wait_for(timeout=90) is inside the run()
-            # call. T-04-03-06 DoS guard: max_turns=3, max_budget_usd=0.05.
+            # call. T-04-03-06 DoS guard: max_turns=6, max_budget_usd=0.05.
             # D-11: raised from 30s to 90s — warm-but-not-hot Agent SDK subprocess
             # needs up to 90s on slower ARM VMs; SSE layer retains 120s (30s headroom).
             # --------------------------------------------------------------

@@ -13,6 +13,9 @@ Test coverage:
   5. test_clarify_returns_question_text
   6. test_build_tool_server_sets_globals
   7. test_allowed_lookup_tables_is_frozenset
+  ...
+  15. test_retrieve_tool_blocked_on_third_call  (D-10 suspenders)
+  16. test_retrieve_tool_counter_reset_by_build_tool_server  (D-10 suspenders)
 """
 
 from __future__ import annotations
@@ -139,7 +142,10 @@ def test_lookup_structured_accepts_allowlist_table():
 
 
 def test_retrieve_truncates_to_max_chunks():
-    """retrieve tool must return at most MAX_CHUNKS chunks, each content ≤ 2000 chars."""
+    """retrieve tool must return at most MAX_CHUNKS chunks, each content <= 2000 chars."""
+    # Reset counter so D-10 cap does not interfere.
+    agent_tools._retrieve_call_count = 0
+
     # Produce 20 chunks with 5000-char content each.
     long_content = "x" * 5000
     fake_chunks = [
@@ -175,7 +181,7 @@ def test_retrieve_truncates_to_max_chunks():
         f"Expected at most {MAX_CHUNKS} chunks, got {len(citations)}"
     )
 
-    # Each content string must be ≤ 2000 chars.
+    # Each content string must be <= 2000 chars.
     # The truncation is applied before returning; verify via the raw text length.
     # We use the "x"*5000 sentinel: if truncation works, it becomes "x"*2000.
     assert "x" * 2001 not in text, "Content was not truncated to 2000 chars"
@@ -450,7 +456,7 @@ def test_escalate_to_human_sanitises_reason():
 
 
 def test_escalate_to_human_reason_truncated_at_500():
-    """Reason longer than 500 chars must be truncated; notify_fn payload ≤ prefix + 500."""
+    """Reason longer than 500 chars must be truncated; notify_fn payload <= prefix + 500."""
     notify_fn = MagicMock()
 
     agent_tools._notify_fn = notify_fn
@@ -494,6 +500,9 @@ def test_escalate_to_human_reason_truncated_at_500():
 
 def test_retrieve_tool_logs_warning_on_unused_filters():
     """retrieve_tool must emit log.warning('retrieve_tool.filters_ignored') when filters given."""
+    # Reset counter so D-10 cap does not interfere.
+    agent_tools._retrieve_call_count = 0
+
     with (
         patch("app.services.agent_tools.embed_query", return_value=[0.1] * 1024),
         patch(
@@ -517,4 +526,71 @@ def test_retrieve_tool_logs_warning_on_unused_filters():
     ]
     assert len(warning_events) >= 1, (
         "Expected log.warning('retrieve_tool.filters_ignored') to be called"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 15: D-10 (suspenders) — retrieve_tool blocks on the 3rd call per turn
+# ---------------------------------------------------------------------------
+
+
+def test_retrieve_tool_blocked_on_third_call():
+    """D-10 suspenders: the 3rd retrieve call in a single turn must return is_error=True.
+
+    The tool-level counter (_retrieve_call_count) is incremented on each call
+    and blocks when it exceeds _RETRIEVE_CALLS_PER_TURN_MAX (2).  This ensures
+    at most 2 Voyage embed calls per agent turn regardless of max_turns setting.
+    """
+    # Directly set the counter to the max so the next call is the blocked one.
+    agent_tools._retrieve_call_count = agent_tools._RETRIEVE_CALLS_PER_TURN_MAX
+
+    with (
+        patch("app.services.agent_tools.embed_query") as mock_embed,
+        patch("app.services.agent_tools.rrf_fuse") as mock_rrf,
+        patch("app.services.agent_tools.rerank") as mock_rerank,
+    ):
+        result = _run(agent_tools.retrieve_tool({"query": "third call query"}))
+
+    # Must be blocked — embed/rrf/rerank must NOT have been called.
+    mock_embed.assert_not_called()
+    mock_rrf.assert_not_called()
+    mock_rerank.assert_not_called()
+
+    assert result.get("is_error") is True, (
+        f"Expected is_error=True on 3rd retrieve call, got: {result}"
+    )
+    content_text = result["content"][0]["text"]
+    assert "quota" in content_text.lower() or "cap" in content_text.lower() or "exceeded" in content_text.lower(), (
+        f"Expected quota/cap message in blocked retrieve result, got: {content_text!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 16: D-10 (suspenders) — build_tool_server resets the retrieve counter
+# ---------------------------------------------------------------------------
+
+
+def test_retrieve_tool_counter_reset_by_build_tool_server():
+    """D-10 suspenders: build_tool_server must reset _retrieve_call_count to 0.
+
+    This ensures each new run_agent_turn invocation starts with a fresh counter,
+    so the per-turn cap does not accumulate across multiple Celery task invocations.
+    """
+    from app.services.retrieval_service import RetrievalStrategy
+
+    # Simulate counter left over from a previous turn.
+    agent_tools._retrieve_call_count = 99
+
+    build_tool_server(
+        conn_str="postgresql://test:test@localhost/testdb",
+        agent_id="agent-reset-test",
+        agent_name="Reset Bot",
+        strategy=RetrievalStrategy.model_validate({}),
+        conversation_id="conv-reset-test",
+        notify_fn=None,
+    )
+
+    assert agent_tools._retrieve_call_count == 0, (
+        f"build_tool_server must reset _retrieve_call_count to 0, "
+        f"got {agent_tools._retrieve_call_count}"
     )

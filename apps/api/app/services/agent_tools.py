@@ -124,6 +124,14 @@ _strategy: RetrievalStrategy | None = None
 _conversation_id: str = ""
 _notify_fn = None
 
+# D-10 (suspenders): per-turn retrieve call counter.
+# Reset to 0 by build_tool_server() at the start of each run_agent_turn invocation.
+# retrieve_tool increments this and returns is_error on the 3rd+ call, enforcing
+# the Voyage 3 RPM free-tier guard without relying on max_turns (see D-10 fix comment
+# in agent.py — max_turns=3 was too low and caused empty responses after retrieval).
+_RETRIEVE_CALLS_PER_TURN_MAX: int = 2
+_retrieve_call_count: int = 0
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -208,7 +216,37 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
 
     Calls retrieval_service functions directly — no apply_async because this
     code already runs inside a Celery task.
+
+    D-10 (suspenders): blocks the call and returns is_error when the per-turn
+    counter exceeds _RETRIEVE_CALLS_PER_TURN_MAX (2). This enforces the Voyage
+    3 RPM free-tier limit regardless of how many agentic turns are allowed.
+    Counter is reset by build_tool_server() at the start of each task invocation.
     """
+    global _retrieve_call_count
+
+    _retrieve_call_count += 1
+    if _retrieve_call_count > _RETRIEVE_CALLS_PER_TURN_MAX:
+        log.warning(
+            "retrieve_tool.rate_cap_hit",
+            call_count=_retrieve_call_count,
+            max_allowed=_RETRIEVE_CALLS_PER_TURN_MAX,
+            conversation_id=_conversation_id,
+            note="D-10: retrieve call cap exceeded; blocking to protect Voyage RPM quota",
+        )
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "Retrieve quota exceeded for this turn "
+                        f"(max {_RETRIEVE_CALLS_PER_TURN_MAX} calls allowed). "
+                        "Please synthesize an answer from the results already retrieved."
+                    ),
+                }
+            ],
+            "is_error": True,
+        }
+
     query: str = args["query"]
     # F7: filters is a no-op. Emit warning so any LLM-supplied filter value is visible
     # in observability before it silently becomes load-bearing in a future change.
@@ -224,7 +262,7 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     # filters intentionally not applied — see AR-03-07 / TODO-RET-01
     strategy = _strategy or RetrievalStrategy.model_validate({})
 
-    log.debug("retrieve_tool.start", query=query[:80])
+    log.debug("retrieve_tool.start", query=query[:80], call_count=_retrieve_call_count)
 
     # Run blocking retrieval calls in executor to keep the async tool cooperative.
     loop = asyncio.get_event_loop()
@@ -501,6 +539,7 @@ def build_tool_server(
         MCP server object (create_sdk_mcp_server result) registering all four tools.
     """
     global _conn_str, _agent_id, _agent_name, _strategy, _conversation_id, _notify_fn
+    global _retrieve_call_count
 
     _conn_str = conn_str
     _agent_id = agent_id
@@ -508,6 +547,9 @@ def build_tool_server(
     _strategy = strategy
     _conversation_id = conversation_id
     _notify_fn = notify_fn
+
+    # D-10 (suspenders): reset per-turn retrieve counter for this new task invocation.
+    _retrieve_call_count = 0
 
     log.debug(
         "build_tool_server.ready",

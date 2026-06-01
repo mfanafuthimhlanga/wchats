@@ -528,11 +528,19 @@ def test_validators_not_dispatched_on_idempotency_skip():
 
 # ---------------------------------------------------------------------------
 # Phase 12 — D-10 retrieve cap + D-11 wall-clock guard regression tests
-# (Plan 12-01, 2026-05-29)
+# (Plan 12-01, 2026-05-29; D-10 fix 2026-06-01)
 # ---------------------------------------------------------------------------
 
-def test_max_turns_capped_to_three():
-    """D-10 regression: ClaudeAgentOptions must be constructed with max_turns=3."""
+def test_max_turns_allows_synthesis_after_retrieve():
+    """D-10 fix regression: ClaudeAgentOptions must use max_turns >= 6.
+
+    Root cause of the empty-answer bug: max_turns=3 cut the agent off after
+    the retrieve tool round-trip (tool_use + tool_result = ~2 CLI turns),
+    leaving no turn to compose the final text answer.  The fix raises
+    max_turns to 6 so the agent can always synthesize after one retrieve call.
+    The Voyage RPM guard is now enforced by the tool-level counter in
+    agent_tools.retrieve_tool instead of relying on max_turns.
+    """
     from app.worker.tasks.runtime.agent import run_agent_turn
 
     job_id = str(uuid.uuid4())
@@ -573,8 +581,11 @@ def test_max_turns_capped_to_three():
     assert len(options_kwargs_captured) == 1, (
         "ClaudeAgentOptions must be instantiated exactly once per turn"
     )
-    assert options_kwargs_captured[0]["max_turns"] == 3, (
-        f"D-10 regression: expected max_turns=3, got max_turns={options_kwargs_captured[0].get('max_turns')}"
+    actual_max_turns = options_kwargs_captured[0].get("max_turns")
+    assert actual_max_turns is not None and actual_max_turns >= 6, (
+        f"D-10 fix: max_turns must be >= 6 to allow synthesis after retrieve, "
+        f"got max_turns={actual_max_turns}. "
+        f"max_turns=3 caused empty response (bug: empty-answer-on-retrieve)."
     )
 
 
