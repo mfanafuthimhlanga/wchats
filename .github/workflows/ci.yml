@@ -80,11 +80,11 @@ jobs:
       postgres:
         image: postgres:17-alpine
         env:
-          POSTGRES_USER: veridian
-          POSTGRES_PASSWORD: veridian
-          POSTGRES_DB: veridian_control
+          POSTGRES_USER: wchats
+          POSTGRES_PASSWORD: wchats
+          POSTGRES_DB: wchats_control
         options: >-
-          --health-cmd "pg_isready -U veridian -d veridian_control"
+          --health-cmd "pg_isready -U wchats -d wchats_control"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -100,8 +100,8 @@ jobs:
         ports:
           - 6379:6379
     env:
-      CONTROL_DB_URL: postgresql+asyncpg://veridian:veridian@localhost:5432/veridian_control
-      CONTROL_DB_SYNC_URL: postgresql://veridian:veridian@localhost:5432/veridian_control
+      CONTROL_DB_URL: postgresql+asyncpg://wchats:wchats@localhost:5432/wchats_control
+      CONTROL_DB_SYNC_URL: postgresql://wchats:wchats@localhost:5432/wchats_control
       REDIS_URL: redis://localhost:6379/0
       NEON_API_KEY: test
       ADMIN_KEY: vrd_admin_test

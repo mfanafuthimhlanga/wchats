@@ -2,7 +2,7 @@
 Guarded E2E tests for retrieval strategy synthesis (STR-01/STR-02/STR-03).
 
 Guard: STRATEGY_E2E_ENABLED=1 required. Uses a real tenant with an ingested
-corpus and a locally running Veridian API + Celery worker.
+corpus and a locally running W Chats API + Celery worker.
 
 Not run in CI by default — requires:
   - STRATEGY_E2E_ENABLED=1

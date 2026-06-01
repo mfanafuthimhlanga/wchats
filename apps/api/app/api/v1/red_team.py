@@ -1,4 +1,4 @@
-"""Red team routes for Veridian M7.
+"""Red team routes for W Chats M7.
 
 Queries tenant DB (red_team_runs) for run history and per-run findings.
 All routes require X-API-Key auth via get_current_tenant.

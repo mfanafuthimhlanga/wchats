@@ -1,5 +1,5 @@
 """
-Neon API service helpers for Veridian.
+Neon API service helpers for W Chats.
 
 Provides:
     NeonHTTPError        — raised by create_neon_project when the Neon API

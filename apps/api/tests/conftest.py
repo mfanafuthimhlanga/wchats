@@ -1,5 +1,5 @@
 """
-Shared pytest fixtures for Veridian API unit and integration tests.
+Shared pytest fixtures for W Chats API unit and integration tests.
 
 Environment variables are set at module level, BEFORE any app modules
 are imported, to prevent pydantic-settings validation errors.
@@ -37,11 +37,11 @@ os.environ.setdefault(
 )
 os.environ.setdefault(
     "CONTROL_DB_URL",
-    "postgresql+asyncpg://test:test@localhost:5432/test_veridian",
+    "postgresql+asyncpg://test:test@localhost:5432/test_wchats",
 )
 os.environ.setdefault(
     "CONTROL_DB_SYNC_URL",
-    "postgresql://test:test@localhost:5432/test_veridian",
+    "postgresql://test:test@localhost:5432/test_wchats",
 )
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/1")
 os.environ.setdefault("ADMIN_KEY", "vrd_admin_test_key_for_tests_only")

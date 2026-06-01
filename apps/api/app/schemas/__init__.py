@@ -1,4 +1,4 @@
-"""Pydantic v2 schema package for Veridian API."""
+"""Pydantic v2 schema package for W Chats API."""
 
 from app.schemas.agent import AgentCreate, AgentCreateResponse, AgentResponse, SoulSchema
 from app.schemas.job import JobEventResponse, JobResponse

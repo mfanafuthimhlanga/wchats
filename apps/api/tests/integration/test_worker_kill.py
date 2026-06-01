@@ -42,7 +42,7 @@ _TESTS_ENABLED = os.environ.get("INTEGRATION_TESTS_ENABLED", "0") == "1"
 
 _INTEGRATION_DB_URL = os.environ.get(
     "INTEGRATION_DB_URL",
-    "postgresql://veridian:veridian@localhost:5432/veridian_control",
+    "postgresql://wchats:wchats@localhost:5432/wchats_control",
 )
 
 

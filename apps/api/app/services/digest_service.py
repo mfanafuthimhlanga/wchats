@@ -125,10 +125,10 @@ def send_digest_email(agent_name: str, agent_id: str, stats: dict) -> None:
         f"Escalations (7 days):   {stats['escalation_count']}\n"
         f"Latest faithfulness:    {faith_str}\n"
         f"Critical red team hits: {stats['critical_red_team_count']}\n\n"
-        f"Review your agent at your Veridian dashboard.\n"
+        f"Review your agent at your W Chats dashboard.\n"
     )
     msg = MIMEText(body)
-    msg["Subject"] = f"[Veridian] Weekly Digest: {agent_name}"
+    msg["Subject"] = f"[W Chats] Weekly Digest: {agent_name}"
     msg["From"] = settings.SMTP_FROM
     msg["To"] = settings.OWNER_EMAIL
 

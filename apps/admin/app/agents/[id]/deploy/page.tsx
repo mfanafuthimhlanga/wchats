@@ -112,7 +112,7 @@ const COLOR_FIELDS: { key: keyof WidgetConfig['colors']; label: string }[] = [
 ]
 
 function EMBED_SNIPPET(id: string): string {
-  return '<script src="https://widget.veridian.app/widget.js" data-agent="' + id + '" async></script>'
+  return '<script src="https://widget.wchats.app/widget.js" data-agent="' + id + '" async></script>'
 }
 
 // ---------------------------------------------------------------------------

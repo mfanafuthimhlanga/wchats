@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# demo_m6.sh — Veridian M6 Eval System demo script
+# demo_m6.sh — W Chats M6 Eval System demo script
 #
 # D-32 LOCKED: local processes only — no Docker.
 #
@@ -55,7 +55,7 @@ if [[ -z "$API_KEY" ]]; then
     exit 1
 fi
 
-echo "=== Veridian M6 Demo: Eval System ==="
+echo "=== W Chats M6 Demo: Eval System ==="
 echo "Agent:    $AGENT_ID"
 echo "Base URL: $BASE_URL"
 echo ""

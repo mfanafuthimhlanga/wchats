@@ -7,7 +7,7 @@ static host and the one-line snippet works.
 embed/
 ├── widget.js        ← loader the customer pastes (reads data-agent / data-api, injects launcher + iframe)
 ├── index.html       ← iframe host page (loads the bundle, reads ?agent_id=&api=)
-├── widget.iife.js   ← built Preact widget (17.8 KB)  [from `pnpm --filter veridian-widget build`]
+├── widget.iife.js   ← built Preact widget (17.8 KB)  [from `pnpm --filter wchats-widget build`]
 └── widget.css       ← widget styles
 ```
 
@@ -28,7 +28,7 @@ embed/
 
 ## Deploy
 
-1. Rebuild the bundle if the widget source changed: `pnpm --filter veridian-widget build`,
+1. Rebuild the bundle if the widget source changed: `pnpm --filter wchats-widget build`,
    then `cp ../dist/widget.iife.js ../dist/widget.css .`
 2. Publish this folder under a stable path on a static host (e.g. Vercel `public/wchats/`,
    or S3 + CloudFront). All four files must sit in the same folder.

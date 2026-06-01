@@ -1,4 +1,4 @@
-"""Eval routes for Veridian M6.
+"""Eval routes for W Chats M6.
 
 Queries tenant DB (eval_runs, eval_results, eval_scenarios) for eval run history
 and per-scenario results. All routes require X-API-Key auth via get_current_tenant.

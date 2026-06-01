@@ -25,7 +25,7 @@ from sqlalchemy import text
 
 pytestmark = pytest.mark.integration
 
-_EXPECTED_LOCAL_DB = "postgresql://veridian:veridian@localhost:5432/veridian_control"
+_EXPECTED_LOCAL_DB = "postgresql://wchats:wchats@localhost:5432/wchats_control"
 
 
 def _register_neon_routes(project_id: str, local_db_url: str, respx_mock):

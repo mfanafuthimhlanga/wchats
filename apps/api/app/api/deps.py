@@ -1,5 +1,5 @@
 """
-FastAPI dependency functions for Veridian API authentication.
+FastAPI dependency functions for W Chats API authentication.
 
 get_current_tenant  — validates Clerk JWT (Bearer) first, falls back to X-API-Key; returns authenticated Tenant
 get_admin           — validates X-Admin-Key header against settings.ADMIN_KEY

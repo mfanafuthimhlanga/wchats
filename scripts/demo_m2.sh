@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# demo_m2.sh — Veridian M2 ingestion pipeline demo
+# demo_m2.sh — W Chats M2 ingestion pipeline demo
 #
 # Prerequisites:
 #   - docker-compose services running (docker compose up -d)
@@ -41,7 +41,7 @@ PDF_PATH="${PDF_PATH:-apps/api/tests/fixtures/demo_business.pdf}"
 # SSE_TIMEOUT: allow override via env var; default 3600s (1 hour) for slow CPU / first run
 SSE_TIMEOUT="${SSE_TIMEOUT:-3600}"
 
-echo "=== Veridian M2 Ingestion Demo ==="
+echo "=== W Chats M2 Ingestion Demo ==="
 echo "API: $API"
 echo "PDF: $PDF_PATH"
 

@@ -1,5 +1,5 @@
 """
-Widget routes for Veridian M4.
+Widget routes for W Chats M4.
 
 GET    /widget/{agent_id}/config            — public config + JWT for embedded widget
 POST   /widget/{agent_id}/chat              — Bearer JWT authenticated chat dispatch

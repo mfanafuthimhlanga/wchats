@@ -161,7 +161,7 @@ def test_full_chain_completes(celery_worker, test_agent_and_job, db_session):
     import os
     local_db_url = os.environ.get(
         "INTEGRATION_DB_URL",
-        "postgresql://veridian:veridian@localhost:5432/veridian_control",
+        "postgresql://wchats:wchats@localhost:5432/wchats_control",
     )
 
     fake_project_id = f"test-project-{uuid.uuid4().hex[:8]}"
@@ -214,7 +214,7 @@ def test_event_sequence_in_order(celery_worker, test_agent_and_job, db_session):
     import os
     local_db_url = os.environ.get(
         "INTEGRATION_DB_URL",
-        "postgresql://veridian:veridian@localhost:5432/veridian_control",
+        "postgresql://wchats:wchats@localhost:5432/wchats_control",
     )
     fake_project_id = f"test-project-{uuid.uuid4().hex[:8]}"
 

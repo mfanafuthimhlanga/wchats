@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# demo_m9.sh — Veridian M9 Retrieval Strategy Synthesis demo
+# demo_m9.sh — W Chats M9 Retrieval Strategy Synthesis demo
 #
 # Demonstrates STR-01/STR-02/STR-03: two tenants with different corpora receive
 # meaningfully different RetrievalStrategy configs; an eval comparison confirms
@@ -60,7 +60,7 @@ if [[ -z "$API_KEY" ]]; then
     exit 1
 fi
 
-echo "=== Veridian M9 Demo: Retrieval Strategy Synthesis ==="
+echo "=== W Chats M9 Demo: Retrieval Strategy Synthesis ==="
 echo "Base URL: $BASE_URL"
 echo ""
 

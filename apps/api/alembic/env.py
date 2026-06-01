@@ -1,5 +1,5 @@
 """
-Alembic env.py for the Veridian control DB.
+Alembic env.py for the W Chats control DB.
 
 Supports two modes:
 1. CLI mode: uses engine_from_config with NullPool (no connection pooling for

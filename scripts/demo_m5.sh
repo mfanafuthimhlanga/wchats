@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# demo_m5.sh — Veridian M5 validation chain smoke test
+# demo_m5.sh — W Chats M5 validation chain smoke test
 #
 # Prerequisites (ALL local — no Docker):
 #   1. Redis:    redis-server

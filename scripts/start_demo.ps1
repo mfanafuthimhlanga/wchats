@@ -114,7 +114,7 @@ Write-Host "Started: localhost.run Tunnel (URL will appear in TUNNEL WINDOW)"
 
 # ---------------------------------------------------------------------------
 # Next-steps instructions — no secret value is printed here or anywhere above.
-# The embed lives in the portfolio-dashboard repo (sibling of veridian); the
+# The embed lives in the portfolio-dashboard repo (sibling of wchats); the
 # per-session URL goes in wchats/config.json (NOT apps/admin/app/page.tsx).
 # ---------------------------------------------------------------------------
 $Portfolio = Join-Path (Split-Path $Root -Parent) "portfolio-dashboard"

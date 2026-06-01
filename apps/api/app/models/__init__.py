@@ -1,4 +1,4 @@
-"""ORM models for the Veridian control DB."""
+"""ORM models for the W Chats control DB."""
 
 from app.models.agent import Agent
 from app.models.base import Base

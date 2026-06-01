@@ -302,7 +302,7 @@ class TestApproveDeployment:
         body = response.json()
         assert body["deployed"] is True
         assert "iframe_snippet" in body
-        assert "widget.veridian.app" in body["iframe_snippet"]
+        assert "widget.wchats.app" in body["iframe_snippet"]
 
     async def test_approve_rejects_blocked(self):
         """POST /approve-deployment returns 422 with 'blocked' in detail for blocked runs (DEP-06)."""

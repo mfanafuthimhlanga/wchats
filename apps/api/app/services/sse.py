@@ -1,5 +1,5 @@
 """
-SSE event generator for Veridian job status streams.
+SSE event generator for W Chats job status streams.
 
 event_generator — async generator yielding ServerSentEvent objects.
 

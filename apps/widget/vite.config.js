@@ -5,7 +5,7 @@ export default defineConfig({
   build: {
     lib: {
       entry: 'src/index.jsx',
-      name: 'VeridianWidget',
+      name: 'WChatsWidget',
       fileName: 'widget',
       formats: ['iife']
     },

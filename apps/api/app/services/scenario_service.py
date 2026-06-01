@@ -1,5 +1,5 @@
 """
-Scenario services for Veridian M6 eval system.
+Scenario services for W Chats M6 eval system.
 
 Generates eval scenarios from tenant knowledge chunks via Claude Haiku (EVL-02)
 and mines production conversations with Gatekeeper/Auditor failures into new

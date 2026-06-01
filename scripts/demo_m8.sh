@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# demo_m8.sh — Veridian M8 Pre-deployment Checklist demo
+# demo_m8.sh — W Chats M8 Pre-deployment Checklist demo
 #
 # Demonstrates DEP-07 + DEP-08: owner runs pre-deployment checklist,
 # reads report, acknowledges warnings, approves deployment, sees iframe snippet.
@@ -50,7 +50,7 @@ if [[ -z "$API_KEY" ]]; then
     exit 1
 fi
 
-echo "=== Veridian M8 Demo: Pre-deployment Checklist ==="
+echo "=== W Chats M8 Demo: Pre-deployment Checklist ==="
 echo "Base URL: $BASE_URL"
 echo ""
 

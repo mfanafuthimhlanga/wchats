@@ -45,7 +45,7 @@ from dotenv import load_dotenv  # noqa: E402 — must come after sys.path insert
 
 load_dotenv(REPO_ROOT / ".env")
 
-BASE_URL = os.environ.get("VERIDIAN_BASE_URL", "http://localhost:8000")
+BASE_URL = os.environ.get("WCHATS_BASE_URL", "http://localhost:8000")
 ADMIN_KEY = os.environ["ADMIN_KEY"]
 VOYAGE_API_KEY = os.environ["VOYAGE_API_KEY"]
 

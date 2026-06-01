@@ -1,5 +1,5 @@
 """
-Query routes for Veridian M3 hybrid retrieval.
+Query routes for W Chats M3 hybrid retrieval.
 
 POST /agents/{agent_id}/query   — dispatch a hybrid retrieval job (202 Accepted)
 GET  /agents/{agent_id}/queries — list the 50 most-recent query jobs for an agent

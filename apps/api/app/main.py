@@ -1,5 +1,5 @@
 """
-Veridian FastAPI application factory.
+W Chats FastAPI application factory.
 
 Provides:
     app — FastAPI instance with lifespan, middleware, CORS, and all v1 routers.
@@ -92,7 +92,7 @@ def _validate_jwks_on_startup() -> None:
 _is_production = settings.ENVIRONMENT == "production"
 
 app = FastAPI(
-    title="Veridian Control Plane",
+    title="W Chats Control Plane",
     version="1.0.0",
     # Disable interactive API docs in production to reduce attack surface (WR-04).
     # Set ENVIRONMENT=production in the deployment environment to suppress /docs and /redoc.

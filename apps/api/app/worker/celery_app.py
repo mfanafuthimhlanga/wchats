@@ -1,5 +1,5 @@
 """
-Celery application factory for Veridian.
+Celery application factory for W Chats.
 
 Provides:
     celery_app — Celery instance with two queues (pipeline, runtime) and
@@ -48,7 +48,7 @@ from app.core.config import settings
 # Celery application instance
 # ---------------------------------------------------------------------------
 
-celery_app = Celery("veridian")
+celery_app = Celery("wchats")
 
 _redis_url = settings.REDIS_URL
 # Strip ssl_cert_reqs from URL — configured explicitly via broker_use_ssl /

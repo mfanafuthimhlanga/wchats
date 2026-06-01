@@ -1,4 +1,4 @@
-# Veridian — M1: Control Plane Skeleton
+# W Chats — M1: Control Plane Skeleton
 
 M1 proves the foundational plumbing: a FastAPI control plane dispatches an agent-creation request to a Celery pipeline, provisions a dedicated Neon project for the tenant, runs schema migrations programmatically, and streams live status back to the caller via Server-Sent Events. By the end, a single curl command creates a tenant, triggers a real Celery chain, and a browser watches a real Neon project come into existence in real time.
 
@@ -95,8 +95,8 @@ The API starts with uvicorn `--reload` on http://localhost:8000. OpenAPI docs at
 | `NEON_API_KEY` | Yes | Neon API key for provisioning per-tenant projects. Get from https://console.neon.tech/app/settings/api-keys |
 | `NEON_REGION` | No | Neon region for new tenant projects (default: `aws-us-east-1`). Run `neon regions list` to see options |
 | `NEON_ENCRYPTION_KEY` | Yes | Fernet key for encrypting tenant connection strings. Generate: `python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"` |
-| `CONTROL_DB_URL` | Yes | Async SQLAlchemy URL for the control DB. Example: `postgresql+asyncpg://veridian:veridian@localhost:5432/veridian_control` |
-| `CONTROL_DB_SYNC_URL` | Yes | Sync psycopg2 URL for Alembic and Celery workers. Example: `postgresql://veridian:veridian@localhost:5432/veridian_control` |
+| `CONTROL_DB_URL` | Yes | Async SQLAlchemy URL for the control DB. Example: `postgresql+asyncpg://wchats:wchats@localhost:5432/wchats_control` |
+| `CONTROL_DB_SYNC_URL` | Yes | Sync psycopg2 URL for Alembic and Celery workers. Example: `postgresql://wchats:wchats@localhost:5432/wchats_control` |
 | `REDIS_URL` | Yes | Redis connection URL. Example: `redis://localhost:6379/0` |
 | `ADMIN_KEY` | Yes | Admin key for `POST /tenants` endpoint (`X-Admin-Key` header). Generate: `python -c "import secrets; print('vrd_admin_'+secrets.token_urlsafe(32))"` |
 | `CORS_ORIGINS` | No | JSON array of allowed CORS origins (default: `["http://localhost:3000"]`) |

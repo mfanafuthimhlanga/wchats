@@ -282,7 +282,7 @@ def main() -> None:
 
     overwrite = "--overwrite" in sys.argv
 
-    print(f"Veridian M4 — Eval Response Capture")
+    print(f"W Chats M4 — Eval Response Capture")
     print(f"Agent: {AGENT_ID or '(unset)'}")
     print(f"Base URL: {AGENT_BASE_URL}")
     print(f"Responses dir: {RESPONSES_DIR}")

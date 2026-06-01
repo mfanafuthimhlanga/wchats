@@ -1,4 +1,4 @@
-"""Shared declarative base for all Veridian control DB ORM models."""
+"""Shared declarative base for all W Chats control DB ORM models."""
 
 from sqlalchemy.orm import DeclarativeBase
 

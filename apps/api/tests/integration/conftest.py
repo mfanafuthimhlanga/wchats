@@ -1,5 +1,5 @@
 """
-Integration test fixtures for Veridian API.
+Integration test fixtures for W Chats API.
 
 These fixtures use a REAL local Postgres (not mocked) for DB operations.
 They do NOT set CELERY_TASK_ALWAYS_EAGER=True — integration tests require
@@ -9,7 +9,7 @@ The global conftest.py sets CELERY_TASK_ALWAYS_EAGER=True via setdefault().
 This module explicitly overrides it to "False" for integration tests BEFORE
 any app module imports happen.
 
-DB URL: postgresql://veridian:veridian@localhost:5432/veridian_control
+DB URL: postgresql://wchats:wchats@localhost:5432/wchats_control
 Each test creates unique tenant/agent/job rows (UUID-keyed) and tears them
 down in finally blocks (T-07-01 mitigation).
 
@@ -35,7 +35,7 @@ from sqlalchemy.orm import Session, sessionmaker
 # ---------------------------------------------------------------------------
 _INTEGRATION_DB_URL = os.environ.get(
     "INTEGRATION_DB_URL",
-    "postgresql://veridian:veridian@localhost:5432/veridian_control",
+    "postgresql://wchats:wchats@localhost:5432/wchats_control",
 )
 _INTEGRATION_DB_SYNC_URL = _INTEGRATION_DB_URL  # already sync (psycopg2)
 _INTEGRATION_DB_ASYNC_URL = _INTEGRATION_DB_URL.replace(

@@ -1,6 +1,6 @@
 """Deterministic chunk UUID utility — ING-05 idempotency contract.
 
-Every chunk in the Veridian ingestion pipeline is identified by a UUID derived
+Every chunk in the W Chats ingestion pipeline is identified by a UUID derived
 deterministically from (document_id, ordinal). This ensures that:
 
   1. Re-ingesting the same document with the same content produces the same chunk
@@ -23,7 +23,7 @@ PITFALLS.md §8 — Why Not uuid4:
 
 import uuid
 
-# Namespace for Veridian chunk IDs.
+# Namespace for W Chats chunk IDs.
 # This is uuid.NAMESPACE_URL (RFC 4122 well-known namespace).
 # VALUE MUST NEVER CHANGE ACROSS DEPLOYMENTS — see module docstring above.
 CHUNK_UUID_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# demo_m7.sh — Veridian M7 Red Team demo script
+# demo_m7.sh — W Chats M7 Red Team demo script
 #
 # Demonstrates RED-08: intentionally weak agent fails pre-deployment red team
 # with a captured prompt injection trace showing severity=critical and deployment_blocked=true.
@@ -53,7 +53,7 @@ if [[ -z "$API_KEY" ]]; then
     exit 1
 fi
 
-echo "=== Veridian M7 Demo: Red Team ==="
+echo "=== W Chats M7 Demo: Red Team ==="
 echo "Base URL: $BASE_URL"
 echo ""
 

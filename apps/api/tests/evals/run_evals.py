@@ -1,5 +1,5 @@
 """
-Eval harness for Veridian M4 — runs all 20 scenarios through deterministic and
+Eval harness for W Chats M4 — runs all 20 scenarios through deterministic and
 LLM-judged evaluation dimensions.
 
 Modes:
@@ -470,7 +470,7 @@ def main() -> None:
         capture_main()
         print()
 
-    print("# Veridian M4 Eval Report\n")
+    print("# W Chats M4 Eval Report\n")
     print(f"Scenarios directory: {SCENARIOS_DIR}")
     print(f"Responses directory: {RESPONSES_DIR}")
     print(f"Widget bundle: {WIDGET_BUNDLE}\n")

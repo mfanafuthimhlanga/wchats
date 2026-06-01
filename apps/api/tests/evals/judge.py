@@ -1,5 +1,5 @@
 """
-LLM judge wrapper for Veridian M4 eval harness.
+LLM judge wrapper for W Chats M4 eval harness.
 
 Model: claude-sonnet-4-5-20251001 (AI-SPEC.md §5.2)
   - NOT claude-haiku-4-5-20251001 (the agent model) — self-evaluation bias

@@ -1,4 +1,4 @@
-"""Deployment checklist routes for Veridian M8.
+"""Deployment checklist routes for W Chats M8.
 
 Manages the pre-deployment checklist lifecycle for agents.
 All routes require X-API-Key or Bearer auth via get_current_tenant.

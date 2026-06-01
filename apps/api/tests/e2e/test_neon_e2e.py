@@ -4,7 +4,7 @@ Nightly E2E test — real Neon provisioning.
 This test creates a REAL Neon project via the Neon API (no respx mock).
 It requires:
   - NEON_API_KEY env var pointing to a real Neon test account key
-  - A running local Postgres (veridian_control, with migrations applied)
+  - A running local Postgres (wchats_control, with migrations applied)
   - A running local Redis
 
 Teardown always deletes the Neon project in a finally block (T-08-02 mitigation).
@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session, sessionmaker
 # ---------------------------------------------------------------------------
 _E2E_DB_SYNC_URL = os.environ.get(
     "CONTROL_DB_SYNC_URL",
-    "postgresql://veridian:veridian@localhost:5432/veridian_control",
+    "postgresql://wchats:wchats@localhost:5432/wchats_control",
 )
 
 _REQUIRED_TENANT_TABLES = [

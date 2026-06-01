@@ -1,5 +1,5 @@
 """
-Validation service for Veridian M5 validation chain.
+Validation service for W Chats M5 validation chain.
 
 Provides three synchronous Haiku judge functions (Gatekeeper, Auditor, Strategist)
 and Pydantic verdict models with locked enums. All Haiku calls use the Anthropic

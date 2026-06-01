@@ -1,5 +1,5 @@
 """
-Agent chat routes for Veridian M4.
+Agent chat routes for W Chats M4.
 
 POST /agents/{agent_id}/chat         — dispatch a single agent turn (202 Accepted)
 GET  /agents/{agent_id}/conversations — list recent conversations for an agent

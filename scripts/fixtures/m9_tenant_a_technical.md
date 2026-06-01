@@ -1,8 +1,8 @@
-# Veridian Platform — Technical Architecture & Integration Guide
+# W Chats Platform — Technical Architecture & Integration Guide
 
 ## Overview
 
-The Veridian Platform is an enterprise-grade conversational AI infrastructure that enables organizations to deploy custom, knowledge-grounded customer service agents. This guide covers the complete technical architecture, deployment procedures, API integration patterns, configuration management, and operational runbooks for platform administrators and integrating development teams.
+The W Chats Platform is an enterprise-grade conversational AI infrastructure that enables organizations to deploy custom, knowledge-grounded customer service agents. This guide covers the complete technical architecture, deployment procedures, API integration patterns, configuration management, and operational runbooks for platform administrators and integrating development teams.
 
 The platform is built on a multi-tenant architecture where each organization (tenant) receives an isolated Neon PostgreSQL database instance with dedicated vector storage for embedding-based retrieval. The core retrieval pipeline combines hybrid search strategies (dense vector similarity via pgvector HNSW indices and sparse keyword matching via native PostgreSQL tsvector) with LLM-powered reranking and contextual answer synthesis.
 
@@ -89,7 +89,7 @@ The Claude Sonnet strategist analyzes corpus shape signals to generate optimized
 
 ### Threat Model Summary
 
-The Veridian platform was designed with the STRIDE threat model applied at every API boundary, Celery task boundary, and data store boundary. Critical mitigations include:
+The W Chats platform was designed with the STRIDE threat model applied at every API boundary, Celery task boundary, and data store boundary. Critical mitigations include:
 
 **Information Disclosure:**
 - Connection strings are Fernet-encrypted at rest in the control database. Celery tasks receive only agent_id and fetch the encrypted connection string at runtime, decrypting in-memory. Connection strings never appear in task arguments, logs, SSE events, or API responses.

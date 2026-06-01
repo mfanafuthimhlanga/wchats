@@ -69,7 +69,7 @@ sudo mkdir -p /opt/wchats
 sudo chown wchats:wchats /opt/wchats
 
 sudo -u wchats bash -c "
-  git clone https://github.com/bantuson/veridian.git /opt/wchats/apps/api
+  git clone https://github.com/bantuson/wchats.git /opt/wchats/apps/api
   cd /opt/wchats/apps/api
   python3 -m venv /opt/wchats/venv
   /opt/wchats/venv/bin/pip install uv

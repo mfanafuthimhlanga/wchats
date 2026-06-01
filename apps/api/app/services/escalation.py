@@ -58,7 +58,7 @@ def send_escalation_email(agent, reason: str, context: str) -> None:
         f"Context:\n{context}"
     )
     msg = MIMEText(body)
-    msg["Subject"] = f"[Veridian] Escalation: {agent.name}"
+    msg["Subject"] = f"[W Chats] Escalation: {agent.name}"
     msg["From"] = settings.SMTP_FROM
     msg["To"] = settings.OWNER_EMAIL
 

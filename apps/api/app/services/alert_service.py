@@ -126,7 +126,7 @@ def send_alert_email(agent_name: str, agent_id: str, alert_type: str, message: s
         "eval_regression": "Eval Regression Detected",
         "red_team_critical": "Critical Red Team Finding",
     }
-    subject = f"[Veridian] {subject_map.get(alert_type, 'Alert')}: {agent_name}"
+    subject = f"[W Chats] {subject_map.get(alert_type, 'Alert')}: {agent_name}"
     msg = MIMEText(f"Alert for agent: {agent_name}\n\n{message}\n")
     msg["Subject"] = subject
     msg["From"] = settings.SMTP_FROM

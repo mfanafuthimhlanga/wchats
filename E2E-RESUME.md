@@ -28,7 +28,7 @@ Drove the entire backend workflow **from the command line** against the real clo
 | Eval run | `a7af2018-1b3b-4429-8f53-3076d355f6d9` — faithfulness **0.978**, answer_relevancy **0.965**, context_precision **0.92** |
 | Checklist run | `6c7e9905-ae1d-4e6c-bddd-21943d47668e` — **ship_with_warnings** (3 warnings acknowledged) |
 | Deployment | `is_deployed = True` |
-| Embed snippet emitted | `<script src="https://widget.veridian.app/widget.js" data-agent="fe230a9d-…" async></script>` — ⚠️ placeholder domain, NOT live (see §5) |
+| Embed snippet emitted | `<script src="https://widget.wchats.app/widget.js" data-agent="fe230a9d-…" async></script>` — ⚠️ placeholder domain, NOT live (see §5) |
 
 State file with IDs + API key: **`apps/api/_runlogs/state.env`**
 
@@ -73,7 +73,7 @@ Run from repo root with env loaded (`set -a; source ./.env; set +a`) and `PYTHON
 
 ## 5. Why it isn't "live" yet (the gap to close)
 
-- The emitted snippet points at **`widget.veridian.app`**, which **isn't deployed**.
+- The emitted snippet points at **`widget.wchats.app`**, which **isn't deployed**.
 - The **real** widget is the iframe form at `apps/widget/embed/` (drafted this session: `widget.js` loader + `index.html` host + `widget.iife.js` + `widget.css` + README). It reads `?agent_id=&api=`.
 - For a browser on `bantuson.vercel.app` to reach the agent, the **API must be public over HTTPS** (it's `localhost:8000` now). Widget routes already send `Access-Control-Allow-Origin: *`, so the Vercel origin is fine.
 - The live agent additionally needs the **Voyage rate limit** addressed (blocker #1).

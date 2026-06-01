@@ -42,8 +42,8 @@ V1_TABLES = frozenset(
 
 # Admin connection URL for creating/dropping test databases
 # Using template1 (or postgres) to run CREATE DATABASE commands
-_ADMIN_DB_URL = "postgresql://veridian:veridian@localhost:5432/postgres"
-_LOCAL_BASE = "postgresql://veridian:veridian@localhost:5432"
+_ADMIN_DB_URL = "postgresql://wchats:wchats@localhost:5432/postgres"
+_LOCAL_BASE = "postgresql://wchats:wchats@localhost:5432"
 
 
 def _create_test_database(db_name: str) -> str:
@@ -138,7 +138,7 @@ def test_apply_migrations_creates_v1_schema():
     from app.services.migrations import run_tenant_migrations
 
     # Use a unique DB name to avoid conflicts between parallel test runs
-    db_name = f"veridian_test_{uuid.uuid4().hex[:12]}"
+    db_name = f"wchats_test_{uuid.uuid4().hex[:12]}"
     conn_url = None
 
     try:
@@ -198,7 +198,7 @@ def test_apply_migrations_idempotent():
     """
     from app.services.migrations import run_tenant_migrations
 
-    db_name = f"veridian_test_idem_{uuid.uuid4().hex[:12]}"
+    db_name = f"wchats_test_idem_{uuid.uuid4().hex[:12]}"
     conn_url = None
 
     try:

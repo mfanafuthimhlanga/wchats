@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# demo_m3.sh — Veridian M3 hybrid retrieval smoke test
+# demo_m3.sh — W Chats M3 hybrid retrieval smoke test
 #
 # Prerequisites:
 #   - docker-compose services running (docker compose up -d) with M2 data ingested

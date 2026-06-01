@@ -1,4 +1,4 @@
-# Veridian FAQ
+# W Chats FAQ
 
 ## Q: How do I reset my password?
 A: Click "Forgot Password" on the login page. Enter your email. Check inbox for reset link.

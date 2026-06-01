@@ -1,4 +1,4 @@
-# Veridian — Project Guide
+# W Chats — Project Guide
 
 ## Project Context
 

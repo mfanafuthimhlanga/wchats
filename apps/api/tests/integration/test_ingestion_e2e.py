@@ -124,7 +124,7 @@ def _get_control_db_url() -> str:
     """Return the control DB URL for direct psycopg2 queries in E2E tests."""
     return os.getenv(
         "INTEGRATION_DB_URL",
-        "postgresql://veridian:veridian@localhost:5432/veridian_control",
+        "postgresql://wchats:wchats@localhost:5432/wchats_control",
     )
 
 

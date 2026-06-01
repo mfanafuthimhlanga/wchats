@@ -139,7 +139,7 @@ _TOOL_SUBMIT_REPORT = {
 def _make_iframe_snippet(agent_id: str) -> str:
     """Return the embeddable widget script tag for the given agent."""
     return (
-        f'<script src="https://widget.veridian.app/widget.js" '
+        f'<script src="https://widget.wchats.app/widget.js" '
         f'data-agent="{agent_id}" async></script>'
     )
 

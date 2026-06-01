@@ -2,7 +2,7 @@
 Guarded E2E tests for observability endpoints (OPS-04/OPS-05).
 
 Guard: OPS_E2E_ENABLED=1 required. Uses a real tenant with a locally running
-Veridian API + Celery worker.
+W Chats API + Celery worker.
 
 Not run in CI by default — requires:
   - OPS_E2E_ENABLED=1

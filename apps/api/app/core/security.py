@@ -1,5 +1,5 @@
 """
-Security helpers for Veridian control plane.
+Security helpers for W Chats control plane.
 
 Provides:
     fernet_encrypt  — encrypt a plaintext str → bytes (for BYTEA storage)

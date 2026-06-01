@@ -1,4 +1,4 @@
-# start_native.ps1 — Run Veridian without Docker on Windows
+# start_native.ps1 — Run W Chats without Docker on Windows
 #
 # Prerequisites:
 #   1. Python 3.12 installed
@@ -46,7 +46,7 @@ function Start-Service($Title, $Cmd) {
 }
 
 Write-Host ""
-Write-Host "Starting Veridian services (native)..."
+Write-Host "Starting W Chats services (native)..."
 Write-Host ""
 
 Start-Service "API" "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"

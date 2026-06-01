@@ -1,5 +1,5 @@
 """
-Programmatic Alembic migration service for Veridian tenant DBs.
+Programmatic Alembic migration service for W Chats tenant DBs.
 
 Provides:
     run_tenant_migrations         — run alembic upgrade head against a tenant DB.

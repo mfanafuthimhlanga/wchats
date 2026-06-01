@@ -1,4 +1,4 @@
-"""Ragas 0.4.x eval harness for Veridian M6.
+"""Ragas 0.4.x eval harness for W Chats M6.
 
 Measures Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall per scenario.
 Runs against a Neon branch connection string (never production — D-10).

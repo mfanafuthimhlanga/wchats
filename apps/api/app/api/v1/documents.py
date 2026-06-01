@@ -1,5 +1,5 @@
 """
-Document routes for Veridian M2 ingestion pipeline.
+Document routes for W Chats M2 ingestion pipeline.
 
 POST   /agents/{agent_id}/documents — upload files and/or URLs; dispatches Celery chain
 GET    /agents/{agent_id}/documents — list all documents for agent from tenant DB

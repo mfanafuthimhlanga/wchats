@@ -10,7 +10,7 @@ Test strategy:
     (The integration conftest.py sets it to False for M1 worker tests; we
     override it back to True via celery_app.conf.update per test using the
     eager_celery fixture below.)
-  - Real Postgres: The local Veridian control DB is used; tenant-schema tables
+  - Real Postgres: The local W Chats control DB is used; tenant-schema tables
     (documents, chunks, chunk_metadata, embeddings, entities, chunk_entities)
     are created via the 0002 migration fixture.
   - Mocked external services: voyageai.Client, anthropic.Anthropic, and
@@ -22,8 +22,8 @@ Requirements verified:
   - Security: No connection string logged during chain execution.
 
 Infra requirements (local development only):
-  - Local Postgres running on port 5432 with user/pass: veridian/veridian
-  - Database: veridian_control (with M1 control schema already applied)
+  - Local Postgres running on port 5432 with user/pass: wchats/wchats
+  - Database: wchats_control (with M1 control schema already applied)
   - Redis not required for ALWAYS_EAGER tests (events are written directly to
     job_events table via emit(); Redis publish is a best-effort side-effect)
 
@@ -121,7 +121,7 @@ def ready_agent_with_tenant_db(db_session, test_tenant):
     # reuse local Postgres with per-test table cleanup)
     tenant_db_url = os.environ.get(
         "INTEGRATION_DB_URL",
-        "postgresql://veridian:veridian@localhost:5432/veridian_control",
+        "postgresql://wchats:wchats@localhost:5432/wchats_control",
     )
 
     # Encrypt the tenant DB URL as if it were a real Neon connection string

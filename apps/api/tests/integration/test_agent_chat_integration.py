@@ -69,7 +69,7 @@ def seed_tenant_agent():
 
     sync_url = os.environ.get(
         "CONTROL_DB_SYNC_URL",
-        "postgresql://test:test@localhost:5432/test_veridian",
+        "postgresql://test:test@localhost:5432/test_wchats",
     )
 
     # Strip asyncpg driver prefix if present
@@ -152,7 +152,7 @@ async def test_post_agent_chat_emits_thinking_then_response_via_eager_task(seed_
 
     sync_url = os.environ.get(
         "CONTROL_DB_SYNC_URL",
-        "postgresql://test:test@localhost:5432/test_veridian",
+        "postgresql://test:test@localhost:5432/test_wchats",
     ).replace("postgresql+asyncpg://", "postgresql://")
 
     sentinel_conversation_id = str(uuid.uuid4())
@@ -242,7 +242,7 @@ def test_post_agent_chat_idempotent_on_retry():
 
     sync_url = os.environ.get(
         "CONTROL_DB_SYNC_URL",
-        "postgresql://test:test@localhost:5432/test_veridian",
+        "postgresql://test:test@localhost:5432/test_wchats",
     ).replace("postgresql+asyncpg://", "postgresql://")
 
     job_id = str(uuid.uuid4())

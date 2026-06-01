@@ -44,7 +44,7 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 _INTEGRATION_DB_URL = os.environ.get(
     "INTEGRATION_DB_URL",
-    "postgresql://veridian:veridian@localhost:5432/veridian_control",
+    "postgresql://wchats:wchats@localhost:5432/wchats_control",
 )
 _INTEGRATION_DB_ASYNC_URL = _INTEGRATION_DB_URL.replace(
     "postgresql://", "postgresql+asyncpg://"

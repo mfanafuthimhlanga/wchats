@@ -1,5 +1,5 @@
 """
-Event emission helper for Veridian Celery tasks.
+Event emission helper for W Chats Celery tasks.
 
 emit() is the single function called at every Celery task checkpoint.
 Order (WR-05: publish before commit to prevent duplicate-event retries):

@@ -1,7 +1,7 @@
 [project]
-name = "veridian-api"
+name = "wchats-api"
 version = "0.1.0"
-description = "Veridian control plane API"
+description = "W Chats control plane API"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi==0.136.1",

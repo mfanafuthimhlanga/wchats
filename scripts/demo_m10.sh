@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# demo_m10.sh — Veridian M10 Maintenance + Observability Demo
+# demo_m10.sh — W Chats M10 Maintenance + Observability Demo
 #
 # Demonstrates OPS-02/OPS-04: alert check Celery task triggers alerts which are
 # readable via the alerts endpoint; digest beat tasks are registered in Celery.
@@ -50,7 +50,7 @@ if [[ -z "$API_KEY" ]]; then
     exit 1
 fi
 
-echo "=== Veridian M10 Demo: Maintenance + Observability ==="
+echo "=== W Chats M10 Demo: Maintenance + Observability ==="
 echo "Base URL: $BASE_URL"
 echo ""
 

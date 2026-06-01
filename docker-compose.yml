@@ -7,15 +7,15 @@ services:
   postgres:
     image: pgvector/pgvector:pg17
     environment:
-      POSTGRES_USER: veridian
-      POSTGRES_PASSWORD: veridian
-      POSTGRES_DB: veridian_control
+      POSTGRES_USER: wchats
+      POSTGRES_PASSWORD: wchats
+      POSTGRES_DB: wchats_control
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U veridian -d veridian_control"]
+      test: ["CMD-SHELL", "pg_isready -U wchats -d wchats_control"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -45,8 +45,8 @@ services:
     env_file: .env
     environment:
       # Override local .env values to point at internal service hostnames
-      CONTROL_DB_URL: postgresql+asyncpg://veridian:veridian@postgres:5432/veridian_control
-      CONTROL_DB_SYNC_URL: postgresql://veridian:veridian@postgres:5432/veridian_control
+      CONTROL_DB_URL: postgresql+asyncpg://wchats:wchats@postgres:5432/wchats_control
+      CONTROL_DB_SYNC_URL: postgresql://wchats:wchats@postgres:5432/wchats_control
       REDIS_URL: redis://redis:6379/0
     volumes:
       # Mount source for live reload (--reload flag on uvicorn)
@@ -71,8 +71,8 @@ services:
       --loglevel=info
     env_file: .env
     environment:
-      CONTROL_DB_URL: postgresql+asyncpg://veridian:veridian@postgres:5432/veridian_control
-      CONTROL_DB_SYNC_URL: postgresql://veridian:veridian@postgres:5432/veridian_control
+      CONTROL_DB_URL: postgresql+asyncpg://wchats:wchats@postgres:5432/wchats_control
+      CONTROL_DB_SYNC_URL: postgresql://wchats:wchats@postgres:5432/wchats_control
       REDIS_URL: redis://redis:6379/0
       LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
       HF_HUB_DISABLE_XET_ENDPOINT: "1"
@@ -95,8 +95,8 @@ services:
       --loglevel=info
     env_file: .env
     environment:
-      CONTROL_DB_URL: postgresql+asyncpg://veridian:veridian@postgres:5432/veridian_control
-      CONTROL_DB_SYNC_URL: postgresql://veridian:veridian@postgres:5432/veridian_control
+      CONTROL_DB_URL: postgresql+asyncpg://wchats:wchats@postgres:5432/wchats_control
+      CONTROL_DB_SYNC_URL: postgresql://wchats:wchats@postgres:5432/wchats_control
       REDIS_URL: redis://redis:6379/0
     volumes:
       - ./apps/api:/app

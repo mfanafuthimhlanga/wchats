@@ -124,8 +124,8 @@ def test_deployment_checklist_completes():
     data = approve_resp.json()
     assert data["deployed"] is True, "deployed must be True after approval"
     assert "iframe_snippet" in data, "iframe_snippet must be present in approval response"
-    assert "widget.veridian.app" in data["iframe_snippet"], (
-        f"iframe_snippet must contain 'widget.veridian.app', got: {data['iframe_snippet']}"
+    assert "widget.wchats.app" in data["iframe_snippet"], (
+        f"iframe_snippet must contain 'widget.wchats.app', got: {data['iframe_snippet']}"
     )
 
     # 4c. Confirm is_deployed flag flipped on the agent

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# demo_m1.sh — Veridian M1 end-to-end demo
+# demo_m1.sh — W Chats M1 end-to-end demo
 #
 # Prerequisites:
 #   - docker-compose services running (docker compose up -d)
@@ -19,7 +19,7 @@ set -euo pipefail
 API="${API_BASE:-http://localhost:8000}"
 ADMIN_KEY="${ADMIN_KEY:?ADMIN_KEY env var required — see .env.example}"
 
-echo "=== Veridian M1 Demo ==="
+echo "=== W Chats M1 Demo ==="
 echo "API: $API"
 
 # ------------------------------------------------------------------------------

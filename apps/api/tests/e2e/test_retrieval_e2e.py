@@ -2,7 +2,7 @@
 E2E test for full hybrid retrieval chain against real Voyage API.
 
 Guard: RETRIEVAL_E2E_ENABLED=1 required. Uses a real M2 tenant DB with
-ingested data and a deployed (or locally running) Veridian API service.
+ingested data and a deployed (or locally running) W Chats API service.
 
 Not run in CI by default — requires:
   - RETRIEVAL_E2E_ENABLED=1
