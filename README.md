@@ -67,6 +67,18 @@ export ADMIN_KEY=<your ADMIN_KEY from .env>
 bash scripts/demo_m1.sh
 ```
 
+## Git hooks (secret guard)
+
+After cloning, enable the dependency-free pre-commit secret guard once:
+
+```bash
+git config core.hooksPath scripts/git-hooks
+```
+
+It blocks commits whose staged changes contain real-format secrets (API keys, webhook
+signing secrets, DB credentials), while ignoring placeholders and local-dev defaults.
+Bypass deliberately with `git commit --no-verify`.
+
 The demo bootstraps a tenant, creates an agent, streams 6 SSE events live, and prints the final state including `neon_project_id`, `schema_version`, and `status: ready`.
 
 ## Local Development (dev-light)

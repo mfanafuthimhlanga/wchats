@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# W Chats pre-commit secret guard (dependency-free).
+#
+# Blocks a commit when staged changes contain a real-looking secret. Born from the
+# 2026-06-01 incident where a live ADMIN_KEY + agent key were pasted into a .planning
+# handoff doc and pushed to the public repo. See memory: feedback_secret_hygiene.
+#
+# Enable (once per clone):   git config core.hooksPath scripts/git-hooks
+# Bypass (rare, deliberate): git commit --no-verify
+set -u
+
+# Only the ADDED lines of the staged diff.
+added=$(git diff --cached -U0 --no-color 2>/dev/null | grep -E '^\+' | grep -vE '^\+\+\+')
+[ -z "$added" ] && exit 0
+
+# Real-secret signatures.
+PAT='sk-ant-[A-Za-z0-9_-]{20,}'
+PAT="$PAT"'|whsec_[A-Za-z0-9]{20,}'
+PAT="$PAT"'|vrd_live_[A-Za-z0-9._-]{20,}'
+PAT="$PAT"'|sk_live_[A-Za-z0-9]{16,}'
+PAT="$PAT"'|AKIA[0-9A-Z]{16}'
+PAT="$PAT"'|ghp_[A-Za-z0-9]{30,}'
+PAT="$PAT"'|ADMIN_KEY[=:][[:space:]"'\'']*[A-Za-z0-9._/+-]{24,}'
+PAT="$PAT"'|(postgres(ql)?|rediss?)://[^:@/ ]+:[^@/ ]+@'
+
+# Lines that look like placeholders / local-dev defaults are not secrets.
+EXCLUDE='\.\.\.|x{3,}|placeholder|your[-_]|change(me|-in)|example|redacted|mask|<[a-z._-]+>|test_clerk_secret|user:password|user:pass@|localhost|127\.0\.0\.1'
+
+hits=$(printf '%s\n' "$added" | grep -nE "$PAT" | grep -viE "$EXCLUDE")
+
+if [ -n "$hits" ]; then
+  echo "==================================================================="
+  echo " ✋ pre-commit secret guard: BLOCKED"
+  echo " Staged changes look like they contain a REAL secret:"
+  echo "==================================================================="
+  printf '%s\n' "$hits" | sed -E 's/(sk-ant-|whsec_|vrd_live_|sk_live_|ghp_)[A-Za-z0-9._/-]+/\1***REDACTED***/g'
+  echo "-------------------------------------------------------------------"
+  echo " • If it is a placeholder, use an obvious dummy (…, your-key, <redacted>)."
+  echo " • If it is real, do NOT commit it — put it in .env (gitignored)."
+  echo " • To bypass intentionally: git commit --no-verify"
+  echo "==================================================================="
+  exit 1
+fi
+exit 0
