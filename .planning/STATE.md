@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: Executing Phase 12
-last_updated: "2026-05-29T17:08:48.158Z"
+last_updated: "2026-06-01T14:30:00.000Z"
 progress:
   total_phases: 1
   completed_phases: 0
@@ -17,7 +17,8 @@ progress:
 ## Current Status
 
 **Active Milestone:** Phase 12 — Production Go-Live (W Chats)
-**Milestone Phase:** Phase 12 — In Progress. **DEMO PATH PROVEN END-TO-END LIVE** (localhost.run + grounded answer). Empty-answer bug RESOLVED (`132f529` + `9572f01`). Remaining: 12-06 (adopt localhost.run in start_demo.ps1, wire URL into Vercel page, push, do the human demo).
+**Milestone Phase:** Phase 12 — In Progress. **DEMO PATH PROVEN END-TO-END LIVE** (localhost.run + grounded answer). Empty-answer bug RESOLVED (`132f529` + `9572f01`).
+**✓ PORTFOLIO EMBED DONE (2026-06-01 session 2):** W Chats widget integrated into the `portfolio-dashboard` repo (sibling; deploys to bantuson.vercel.app) — 4 embed files byte-identical in `wchats/`, runtime `wchats/config.json` (`apiBase`), bootstrap in root `index.html` that mounts the launcher ONLY when apiBase is non-empty (no dead-widget risk). STAGED, NOT committed/pushed. ⚠️ portfolio index.html had ~772 lines of pre-existing uncommitted WIP before this session — commit boundary is the user's call. Remaining (human-gated): start stack → `ssh -R 80:localhost:8000 nokey@localhost.run` → put `*.lhr.life` in config.json → commit+push → manual test. Also still open: swap `scripts/start_demo.ps1` tunnel cloudflared→localhost.run.
 **✓ LIVE PROOF 2026-06-01 (job `fdf93abd`):** "What is W Chats and who is Bantuson?" through localhost.run → **1741-char grounded answer + 1 citation**, SSE streamed. Instrumented: `subtype=success num_turns=2 total_cost_usd=0.063`. Empty-answer root cause was TWO compounding caps from 12-01 D-10: `max_turns=3` (fixed→6) AND `max_budget_usd=0.05` (fixed→settings.AGENT_MAX_BUDGET_USD=0.50) — the $0.063 turn cost proved the $0.05 cap was the final binding constraint. Transport: Cloudflare quick tunnel can't do SSE; **localhost.run does** (`ssh -R 80:localhost:8000 nokey@localhost.run`).
 **Empty-answer bug (RESOLVED `132f529`, debug `empty-answer-on-retrieve`):** root cause = `max_turns=3` (12-01 D-10) counts tool iterations, so the retrieve round-trip exhausted the budget → CLI `error_max_turns` → empty `agent.response.text` (no exception). Fix: `max_turns` 3→6 + tool-level per-turn retrieve cap (`_retrieve_call_count` in agent_tools.py, reset by build_tool_server, blocks 3rd call) so the Voyage 3 RPM guard holds independent of turns. 26/26 unit tests pass. NOT yet live-verified — the real proof (a non-empty grounded answer to "who is Bantuson?" through localhost.run) is the next step.
 **Checkpoint (resume here):** 12-05 Task 1 committed `8124035`. Task 2 verification was AUTOMATED on this PC across two tunnels, then torn down. **TWO FINDINGS:**
