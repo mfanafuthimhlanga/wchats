@@ -57,7 +57,7 @@ os.environ.setdefault("LANGFUSE_HOST", "http://localhost:3000")
 os.environ.setdefault("VOYAGE_API_KEY", "test_voyage_key")
 os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret-for-tests-only")
-os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "whsec_test123456789abcdefghijklmnop")
+os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 
 # M4.1: Clerk JWKS URL — must be set explicitly to prevent the config default
 # (https://api.clerk.com/v1/jwks) from being used. The default generic URL
