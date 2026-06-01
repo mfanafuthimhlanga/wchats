@@ -1,6 +1,6 @@
 ---
 slug: empty-answer-on-retrieve
-status: investigating
+status: resolved
 trigger: "Phase 12 deployed agent fe230a9d returns an empty agent.response (text=\"\") when it must retrieve to answer; no-retrieve questions answer fine"
 created: 2026-06-01
 updated: 2026-06-01
@@ -60,7 +60,7 @@ So the agent breaks specifically **after it makes a retrieve tool call** -- it d
 
 - root_cause: TWO causes. (1) `max_turns=3` in cycle 1 (fixed in commit `132f529`). (2) `max_budget_usd=0.05` is too low for a turn with extended thinking (~38s) + retrieve + synthesis on Sonnet -- the budget is exhausted before the model emits final text. The CLI emits `result{subtype:error_max_budget, is_error:true}` -> `receive_response()` terminates -> `response_text=""` with no exception raised.
 - fix: Three-part fix across two commits. (1) `max_turns` 3->6. (2) Tool-level retrieve cap in `agent_tools.py`. (3) `max_budget_usd` raised from 0.05 to `settings.AGENT_MAX_BUDGET_USD` (default 0.50, env-configurable); added `AGENT_MAX_BUDGET_USD` to `Settings`; added `_run_sdk_turn.result` diagnostic log line to permanently surface the SDK stop reason.
-- verification: 28 unit tests pass. **Status: awaiting live verification.** Do not mark `status: resolved` until a live turn produces non-empty `agent.response.text` with >=1 citation AND the worker log shows `_run_sdk_turn.result subtype=success`.
+- verification: 28 unit tests pass. **LIVE-VERIFIED 2026-06-01 (job `fdf93abd`, via localhost.run tunnel):** "What is W Chats and who is Bantuson?" → `agent.response.text` length=**1741**, citations=**1** (grounded answer about Bantuson + W Chats). Instrumented line: `_run_sdk_turn.result subtype=success is_error=False num_turns=2 stop_reason=end_turn response_length=1741 total_cost_usd=0.0629784`. **The $0.063 cost > the old $0.05 cap — definitive confirmation that `max_budget_usd=0.05` was the binding constraint** (and num_turns=2 confirms max_turns=6 had headroom). Both fixes (max_turns + budget) were required. RESOLVED.
 - files_changed:
   - `apps/api/app/worker/tasks/runtime/agent.py` -- ResultMessage instrumentation (log subtype/is_error/num_turns/total_cost_usd); max_budget_usd -> settings.AGENT_MAX_BUDGET_USD; updated comments
   - `apps/api/app/core/config.py` -- added AGENT_MAX_BUDGET_USD: float = 0.50
