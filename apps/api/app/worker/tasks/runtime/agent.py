@@ -353,6 +353,32 @@ async def _run_sdk_turn(
 
             elif isinstance(msg, ResultMessage):
                 sdk_session_id_out = msg.session_id
+                # D-10 fix phase 2: log the full stop reason so we can distinguish
+                # error_max_turns / error_max_budget / error_during_execution / success.
+                # These fields are the ONLY reliable disambiguator when response_text
+                # is empty — all stop paths produce the same empty-text signature.
+                # (See ResultMessage dataclass in claude_agent_sdk; field names are stable
+                # in 0.1.81 and confirmed by inspection of the installed package.)
+                log.info(
+                    "_run_sdk_turn.result",
+                    job_id=job_id,
+                    subtype=msg.subtype,
+                    is_error=msg.is_error,
+                    num_turns=msg.num_turns,
+                    total_cost_usd=msg.total_cost_usd,
+                    stop_reason=msg.stop_reason,
+                    api_error_status=msg.api_error_status,
+                    response_length=len(response_text),
+                )
+                if msg.is_error:
+                    log.warning(
+                        "_run_sdk_turn.sdk_error",
+                        job_id=job_id,
+                        subtype=msg.subtype,
+                        is_error=msg.is_error,
+                        num_turns=msg.num_turns,
+                        total_cost_usd=msg.total_cost_usd,
+                    )
 
     return {
         "response_text": response_text,
@@ -518,15 +544,25 @@ def run_agent_turn(
             )
 
             # R-05: allowed_tools use full MCP namespace mcp__customer-tools__*
-            # D-10 fix (2026-06-01): max_turns raised from 3 to 6.
-            # Root cause: max_turns=3 cut the agent off after the retrieve tool
-            # round-trip (tool_use + tool_result = 2 turns), leaving no turn to
-            # compose the final text answer → empty response_text.
-            # The Voyage RPM guard is now enforced solely by the tool-level counter
-            # in agent_tools.retrieve_tool (blocks the 3rd call per turn), making
-            # max_turns free to cover the full retrieve → synthesis cycle.
-            # 6 turns is sufficient for: thinking + retrieve + synthesis + any
-            # clarify/escalate follow-ups while still bounding DoS risk (T-04-03-06).
+            # D-10 fix phase 1 (2026-06-01): max_turns raised from 3 to 6.
+            #   Root cause: max_turns=3 cut the agent off after the retrieve tool
+            #   round-trip (tool_use + tool_result = 2 turns), leaving no turn to
+            #   compose the final text answer → empty response_text.
+            #   The Voyage RPM guard is now enforced solely by the tool-level counter
+            #   in agent_tools.retrieve_tool (blocks the 3rd call per turn), making
+            #   max_turns free to cover the full retrieve → synthesis cycle.
+            #   6 turns is sufficient for: thinking + retrieve + synthesis + any
+            #   clarify/escalate follow-ups while still bounding DoS risk (T-04-03-06).
+            # D-10 fix phase 2 (2026-06-01): max_budget_usd raised from 0.05 to
+            #   settings.AGENT_MAX_BUDGET_USD (default 0.50).
+            #   Root cause (additional): the 0.05 USD cap was too tight for a
+            #   turn that uses extended thinking (~38s) + retrieved context + synthesis.
+            #   A Sonnet thinking+retrieve+synthesis turn can easily exceed $0.05.
+            #   When the budget is exceeded the CLI emits result{subtype:error_max_budget,
+            #   is_error:true} → receive_response() terminates → response_text stays ""
+            #   with no exception raised (identical empty-text signature to max_turns).
+            #   0.50 USD gives headroom while still serving as a DoS guardrail.
+            #   Configure via AGENT_MAX_BUDGET_USD env var for tighter prod limits.
             options = ClaudeAgentOptions(
                 model="claude-haiku-4-5-20251001",
                 system_prompt=system_prompt,
@@ -539,14 +575,14 @@ def run_agent_turn(
                 ],
                 resume=sdk_resume,
                 max_turns=6,   # D-10 fix: was 3 (too low — cut off synthesis after retrieve)
-                max_budget_usd=0.05,
+                max_budget_usd=settings.AGENT_MAX_BUDGET_USD,  # D-10 fix phase 2: was 0.05 (too low for thinking+retrieve+synthesis)
             )
 
             # --------------------------------------------------------------
             # Bridge async SDK into sync Celery worker.
             # asyncio.run() is the required pattern for Python 3.12 (see CLAUDE.md).
             # Wall-clock safety: asyncio.wait_for(timeout=90) is inside the run()
-            # call. T-04-03-06 DoS guard: max_turns=6, max_budget_usd=0.05.
+            # call. T-04-03-06 DoS guard: max_turns=6, max_budget_usd=settings.AGENT_MAX_BUDGET_USD.
             # D-11: raised from 30s to 90s — warm-but-not-hot Agent SDK subprocess
             # needs up to 90s on slower ARM VMs; SSE layer retains 120s (30s headroom).
             # --------------------------------------------------------------

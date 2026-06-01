@@ -11,7 +11,7 @@ Tests validate:
   - Missing CITATIONS block: citations==[] and structlog.warning called
 
 Mock strategy: patch asyncio.run at 'app.worker.tasks.runtime.agent.asyncio.run'
-with a canned dict return value. Do NOT use AsyncMock for SDK — the task uses
+with a canned dict return value. Do NOT use AsyncMock for SDK -- the task uses
 asyncio.run() as the sync/async bridge; we mock that boundary only.
 
 IMPORTANT: claude_agent_sdk must be monkeypatched before any import of agent.py
@@ -103,7 +103,7 @@ def _make_db_ctx(db: MagicMock) -> MagicMock:
     return ctx
 
 
-# Canned SDK result — happy path with one citation
+# Canned SDK result -- happy path with one citation
 _CANNED_RESULT_WITH_CITATION = {
     "response_text": (
         "You can return items within 14 days.\n\n"
@@ -203,7 +203,7 @@ def test_agent_not_found():
 
 
 # ---------------------------------------------------------------------------
-# Test 3: First turn — creates conversation, stores sdk_session_id, returns citations
+# Test 3: First turn -- creates conversation, stores sdk_session_id, returns citations
 # ---------------------------------------------------------------------------
 
 def test_first_turn_creates_conversation_and_stores_sdk_session_id():
@@ -265,7 +265,7 @@ def test_first_turn_creates_conversation_and_stores_sdk_session_id():
 
 
 # ---------------------------------------------------------------------------
-# Test 4: Subsequent turn — resume= gets the stored sdk_session_id
+# Test 4: Subsequent turn -- resume= gets the stored sdk_session_id
 # ---------------------------------------------------------------------------
 
 def test_subsequent_turn_resumes_with_stored_sdk_session_id():
@@ -318,7 +318,7 @@ def test_subsequent_turn_resumes_with_stored_sdk_session_id():
 
 
 # ---------------------------------------------------------------------------
-# Test 5: Escalation — emits agent.escalated before agent.response
+# Test 5: Escalation -- emits agent.escalated before agent.response
 # ---------------------------------------------------------------------------
 
 def test_escalation_emits_agent_escalated_event():
@@ -369,7 +369,7 @@ def test_escalation_emits_agent_escalated_event():
 
 
 # ---------------------------------------------------------------------------
-# Test 6: Missing CITATIONS block — empty list + structlog.warning
+# Test 6: Missing CITATIONS block -- empty list + structlog.warning
 # ---------------------------------------------------------------------------
 
 def test_citations_missing_returns_empty_list_and_warns():
@@ -424,7 +424,7 @@ def test_citations_missing_returns_empty_list_and_warns():
 
 
 # ---------------------------------------------------------------------------
-# M5 — VAL chain dispatch from run_agent_turn (Plan 05-04)
+# M5 -- VAL chain dispatch from run_agent_turn (Plan 05-04)
 # ---------------------------------------------------------------------------
 
 # Canned result with a retrieve tool call carrying a captured result
@@ -449,7 +449,7 @@ _CANNED_RESULT_WITH_RETRIEVE = {
 
 
 def test_validators_dispatched():
-    """run_agent_turn dispatches the Gatekeeper→Auditor→Strategist chain after agent.response."""
+    """run_agent_turn dispatches the Gatekeeper->Auditor->Strategist chain after agent.response."""
     from app.worker.tasks.runtime.agent import run_agent_turn
 
     job_id = str(uuid.uuid4())
@@ -505,7 +505,7 @@ def test_validators_not_dispatched_on_idempotency_skip():
     agent_id = str(uuid.uuid4())
 
     mock_db = MagicMock()
-    # Idempotency row exists — triggers early return
+    # Idempotency row exists -- triggers early return
     mock_db.execute.return_value.fetchone.return_value = MagicMock()
 
     mock_celery_chain = MagicMock(name="celery_chain")
@@ -527,7 +527,7 @@ def test_validators_not_dispatched_on_idempotency_skip():
 
 
 # ---------------------------------------------------------------------------
-# Phase 12 — D-10 retrieve cap + D-11 wall-clock guard regression tests
+# Phase 12 -- D-10 retrieve cap + D-11 wall-clock guard regression tests
 # (Plan 12-01, 2026-05-29; D-10 fix 2026-06-01)
 # ---------------------------------------------------------------------------
 
@@ -637,4 +637,184 @@ def test_wall_clock_guard_is_ninety_seconds():
     )
     assert wait_for_kwargs[0]["timeout"] == 90, (
         f"D-11 regression: expected timeout=90, got timeout={wait_for_kwargs[0].get('timeout')}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 12 -- D-10 fix phase 2: budget config + ResultMessage instrumentation
+# (Debug session: empty-answer-on-retrieve, re-opened 2026-06-01)
+# ---------------------------------------------------------------------------
+
+def test_max_budget_uses_settings_not_hardcoded():
+    """D-10 fix phase 2 regression: ClaudeAgentOptions must use settings.AGENT_MAX_BUDGET_USD.
+
+    Root cause (additional to max_turns): max_budget_usd=0.05 was too low for a
+    turn using extended thinking + retrieved context + synthesis on Sonnet.
+    When the budget is exceeded, the CLI emits result{subtype:error_max_budget,
+    is_error:true} and receive_response() terminates with response_text="".
+    The fix raises the default to 0.50 and makes it env-configurable via
+    settings.AGENT_MAX_BUDGET_USD so it can be tuned without code changes.
+    """
+    from app.worker.tasks.runtime.agent import run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    agent = _make_agent(str(agent_id))
+    job = _make_job(job_id)
+    local_conv_id = "00000000-0000-0000-0000-000000000022"
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None  # no idempotency row
+    mock_db.get.side_effect = [agent, job]
+
+    options_kwargs_captured: list[dict] = []
+
+    class FakeClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            options_kwargs_captured.append(kwargs)
+
+    with (
+        patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
+        patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
+        patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
+        patch("app.worker.tasks.runtime.agent._persist_messages"),
+        patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
+        patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys prompt"),
+        patch("app.worker.tasks.runtime.agent.ClaudeAgentOptions", side_effect=FakeClaudeAgentOptions),
+        patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_RESULT_WITH_CITATION),
+        patch("app.worker.tasks.runtime.agent.emit"),
+    ):
+        run_agent_turn.run(
+            job_id=job_id,
+            agent_id=agent_id,
+            message="Who is Bantuson?",
+            conversation_id=None,
+        )
+
+    assert len(options_kwargs_captured) == 1, (
+        "ClaudeAgentOptions must be instantiated exactly once per turn"
+    )
+    actual_budget = options_kwargs_captured[0].get("max_budget_usd")
+    # Must not be the old hardcoded 0.05 value
+    assert actual_budget is not None and actual_budget > 0.05, (
+        f"D-10 fix phase 2: max_budget_usd must be > 0.05 (old hardcoded value was too low "
+        f"for thinking+retrieve+synthesis), got max_budget_usd={actual_budget}"
+    )
+    # The default from Settings is 0.50
+    assert actual_budget >= 0.50, (
+        f"D-10 fix phase 2: default max_budget_usd must be >= 0.50, got {actual_budget}. "
+        f"The 0.05 cap was exhausted by extended-thinking + retrieve + synthesis on Sonnet."
+    )
+
+
+def test_result_message_stop_reason_logged():
+    """D-10 fix phase 2: _run_sdk_turn must log ResultMessage diagnostic fields.
+
+    The ResultMessage subtype/is_error/num_turns/total_cost_usd fields are the
+    ONLY reliable disambiguator when response_text is empty (error_max_turns,
+    error_max_budget, and error_during_execution all produce the same empty-text
+    signature with no exception). This test verifies the info and warning log
+    lines are emitted when the SDK returns an error ResultMessage.
+
+    Strategy: call _run_sdk_turn directly with a fake async SDK client that yields
+    only a fake ResultMessage (with is_error=True / subtype=error_max_budget).
+    The isinstance() check in _run_sdk_turn uses the patched ResultMessage class.
+    """
+    import asyncio as _asyncio
+    from unittest.mock import AsyncMock
+
+    # Import the private helper directly (module-level async function)
+    from app.worker.tasks.runtime.agent import _run_sdk_turn
+
+    # Minimal fake ResultMessage with is_error=True (budget-exceeded scenario)
+    class _FakeResultMessage:
+        session_id = "sess-budget-test"
+        subtype = "error_max_budget"
+        is_error = True
+        num_turns = 3
+        total_cost_usd = 0.062
+        stop_reason = None
+        api_error_status = None
+
+    fake_rm = _FakeResultMessage()
+
+    # Fake async SDK client
+    fake_client = MagicMock()
+    fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+    fake_client.__aexit__ = AsyncMock(return_value=False)
+    fake_client.query = AsyncMock()
+
+    async def _fake_receive():
+        yield fake_rm
+
+    fake_client.receive_response = _fake_receive
+
+    log_calls_info: list[dict] = []
+    log_calls_warn: list[dict] = []
+
+    def _capture_info(event, **kwargs):
+        log_calls_info.append({"event": event, **kwargs})
+
+    def _capture_warn(event, **kwargs):
+        log_calls_warn.append({"event": event, **kwargs})
+
+    # Dummy types so that isinstance() calls in _run_sdk_turn do not raise
+    # TypeError: isinstance() arg 2 must be a type.
+    # The module-level AssistantMessage/ToolUseBlock/ToolResultBlock are MagicMock
+    # instances (from the fake SDK stub), which are not valid isinstance targets.
+    # We patch them to trivial classes that the fake ResultMessage instance won't match.
+    class _DummyAssistantMessage:
+        pass
+
+    class _DummyToolUseBlock:
+        pass
+
+    class _DummyToolResultBlock:
+        pass
+
+    with (
+        patch("app.worker.tasks.runtime.agent.ClaudeSDKClient", return_value=fake_client),
+        # Patch ResultMessage to the fake class so isinstance() resolves correctly
+        patch("app.worker.tasks.runtime.agent.ResultMessage", _FakeResultMessage),
+        # Patch these to proper types so isinstance() does not raise TypeError
+        patch("app.worker.tasks.runtime.agent.AssistantMessage", _DummyAssistantMessage),
+        patch("app.worker.tasks.runtime.agent.ToolUseBlock", _DummyToolUseBlock),
+        patch("app.worker.tasks.runtime.agent.ToolResultBlock", _DummyToolResultBlock),
+        patch("app.worker.tasks.runtime.agent.log") as mock_log,
+    ):
+        mock_log.info.side_effect = _capture_info
+        mock_log.warning.side_effect = _capture_warn
+
+        _asyncio.run(
+            _run_sdk_turn(
+                message="test",
+                options=MagicMock(),
+                job_id="job-diag-001",
+                local_conversation_id="conv-diag-001",
+                conn_str="postgresql://fake",
+                db=MagicMock(),
+                redis=MagicMock(),
+            )
+        )
+
+    # _run_sdk_turn.result info log must have been emitted with stop-reason fields
+    result_logs = [c for c in log_calls_info if c.get("event") == "_run_sdk_turn.result"]
+    assert len(result_logs) >= 1, (
+        f"Expected _run_sdk_turn.result log line -- not found. log_calls_info={log_calls_info}"
+    )
+    rl = result_logs[0]
+    assert rl.get("subtype") == "error_max_budget", (
+        f"subtype must be logged; expected error_max_budget, got: {rl}"
+    )
+    assert rl.get("is_error") is True, f"is_error must be logged: {rl}"
+    assert rl.get("num_turns") == 3, f"num_turns must be logged: {rl}"
+    assert rl.get("total_cost_usd") == 0.062, f"total_cost_usd must be logged: {rl}"
+    assert "response_length" in rl, f"response_length must be logged: {rl}"
+
+    # _run_sdk_turn.sdk_error warning must be emitted on is_error=True path
+    error_logs = [c for c in log_calls_warn if c.get("event") == "_run_sdk_turn.sdk_error"]
+    assert len(error_logs) >= 1, (
+        f"Expected _run_sdk_turn.sdk_error warning for is_error=True. "
+        f"log_calls_warn={log_calls_warn}"
     )

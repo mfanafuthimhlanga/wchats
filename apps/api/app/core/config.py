@@ -109,6 +109,13 @@ class Settings(BaseSettings):
 
     MAX_UPLOAD_SIZE_MB: int = 50
 
+    # M4 Runtime agent budget — per-turn USD ceiling for ClaudeAgentOptions.
+    # D-10 fix phase 2: raised from 0.05 (too low for thinking+retrieve+synthesis).
+    # 0.50 gives headroom for a Sonnet extended-thinking+retrieve+synthesis turn
+    # while still acting as a DoS guardrail (T-04-03-06).
+    # Set AGENT_MAX_BUDGET_USD in .env to override (e.g. tighter in production).
+    AGENT_MAX_BUDGET_USD: float = 0.50
+
     def __repr__(self) -> str:  # T-01-01, T-01-02: never leak field values
         return f"Settings(LOG_LEVEL={self.LOG_LEVEL!r})"
 
