@@ -1,42 +1,33 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-28T14:10:50Z",
-  "phase": "11",
-  "phase_name": "Admin UI Overhaul (Hillbrow at Dusk) — Visual QA",
-  "phase_dir": ".planning/phases/11-ui-overhaul",
-  "plan": 6,
-  "task": "visual-qa-iteration",
+  "timestamp": "2026-06-01T10:46:42.968Z",
+  "phase": "12",
+  "phase_name": "Production Go-Live (W Chats)",
+  "phase_dir": ".planning/phases/12-production-go-live-deploy-the-w-chats-api-and-celery-workers",
   "status": "paused",
+  "next_task": "cross-repo: integrate the W Chats widget embed into the portfolio-dashboard repo and push for a manual live test",
   "completed_tasks": [
-    {"id": "landing-qa", "name": "Landing page visual QA", "status": "done", "commit": "45f91e5"},
-    {"id": "agents-qa", "name": "Agents dashboard layout + contrast fixes", "status": "done", "commit": "b253a50"},
-    {"id": "stepper-contrast", "name": "JourneyStepper active highlight + subtitle colors", "status": "done", "commit": "b253a50"},
-    {"id": "provision-form-text", "name": "Provision form text literal hex fix", "status": "done", "commit": "b253a50"},
-    {"id": "provision-spinner", "name": "Provisioning phase spinner + elapsed counter", "status": "done", "commit": "b253a50"},
-    {"id": "demo-422-fix", "name": "Demo card disableNavigation — fix 422 on /agents/demo-2", "status": "done", "commit": "b253a50"}
+    {"id": "12-01..04", "name": "agent hardening, widget published, cutover ADR, deploy artifacts", "status": "done"},
+    {"id": "12-05-T1", "name": "start_demo.ps1 + smoke §5 + page.tsx embed scaffold", "status": "done", "commit": "8124035"},
+    {"id": "12-05-T2", "name": "live transport verify — localhost.run streams SSE (cloudflare quick tunnel does NOT)", "status": "done"},
+    {"id": "debug:empty-answer-on-retrieve", "name": "empty answer on retrieval — RESOLVED + live-verified (job fdf93abd: 1741-char grounded answer)", "status": "done", "commit": "132f529,9572f01,3991cd6"}
   ],
   "remaining_tasks": [
-    {"id": "provision-confirm", "name": "User confirms /agents/new provision panel readable in browser", "status": "not_started"},
-    {"id": "ui-review", "name": "Run /gsd-ui-review — full-app typography audit (font size, weight, case, color)", "status": "not_started"},
-    {"id": "scrollbar-component", "name": "Remove default browser scrollbar, create reusable custom scrollbar component, apply globally", "status": "not_started"},
-    {"id": "typography-fixes", "name": "Fix typography violations found by ui-review across all admin screens", "status": "not_started"},
-    {"id": "verify-work", "name": "Run /gsd-verify-work 11 once all pages approved", "status": "not_started"}
+    {"id": "portfolio-embed", "name": "In C:/Users/Bantu/mzansi-agentive/portfolio-dashboard (separate git repo, has index.html, deploys to bantuson.vercel.app): copy apps/widget/embed/* into a wchats/ folder + add <script data-agent data-api> to index.html; wire data-api to the live *.lhr.life tunnel URL (prefer a runtime wchats/config.json); commit + push to GitHub.", "status": "not_started"},
+    {"id": "12-06-reconcile", "name": "Reconcile: embed lives in portfolio-dashboard, not apps/admin/app/page.tsx. Swap start_demo.ps1 tunnel cloudflared->localhost.run.", "status": "not_started"}
   ],
-  "blockers": [],
+  "blockers": [
+    {"description": "Cloudflare quick tunnel does NOT deliver SSE; use localhost.run (ssh -R 80:localhost:8000 nokey@localhost.run -> *.lhr.life)", "type": "technical", "workaround": "localhost.run streams SSE (verified)"},
+    {"description": "Free tunnel URL changes each session; data-api must be updated per demo", "type": "technical", "workaround": "runtime-fetched wchats/config.json, or one-line commit+redeploy per session"}
+  ],
   "human_actions_pending": [
-    {
-      "action": "Check localhost:3000/agents/new in browser and confirm provision panel text is now readable",
-      "context": "Playwright cannot screenshot this page — requires Clerk auth. User must verify manually.",
-      "blocking": true
-    }
+    {"action": "Run the manual demo test on bantuson.vercel.app after the portfolio is pushed", "context": "user explicitly wants to test the deployed portfolio themselves", "blocking": false}
   ],
   "decisions": [
-    {"decision": "Veil locked at rgba(11,7,23,0.45)", "rationale": "Matches reference mockup", "phase": "11"},
-    {"decision": "--text-3/--text-4 banned as foreground on skyline — use #F4EDE5 or #C4BCD0 literals", "rationale": "Tokens designed for card surfaces, not open skyline", "phase": "11"},
-    {"decision": "Demo cards disableNavigation=true", "rationale": "IDs demo-1/demo-2 cause 422 on backend UUID validation", "phase": "11"},
-    {"decision": "Placeholder: rgba(244,237,229,0.45) in globals.css", "rationale": "Semi-transparent off-white visible but clearly secondary", "phase": "11"}
+    {"decision": "Host = local PC + localhost.run tunnel", "rationale": "$0/no-card; quick-tunnel SSE is broken, localhost.run streams it", "phase": "12"},
+    {"decision": "Empty-answer fix = max_turns 3->6 AND max_budget_usd 0.05->settings(0.50) + instrument SDK ResultMessage", "rationale": "two compounding D-10 caps; $0.063 live turn proved the $0.05 cap was the final binding constraint", "phase": "12"}
   ],
-  "uncommitted_files": [".planning/STATE.md", "apps/admin/tsconfig.json"],
-  "next_action": "Ask user to confirm /agents/new provision panel in browser, then run /gsd-ui-review for full typography audit, then build custom scrollbar component",
-  "context_notes": "Root cause of all repeated text-too-dark failures: --text-3 (#8A82A0) designed for dark card surfaces not skyline. Typography audit (/gsd-ui-review) covers font size, weight, case, color systematically. Custom scrollbar to replace browser default — make reusable component."
+  "uncommitted_files": [".planning/phases/12-production-go-live-deploy-the-w-chats-api-and-celery-workers/.continue-here.md", ".planning/HANDOFF.json"],
+  "next_action": "ls C:/Users/Bantu/mzansi-agentive/portfolio-dashboard; read its index.html; drop the wchats/ embed + the data-agent/data-api snippet; design data-api wiring (prefer runtime config.json); then bring the stack live (start_demo.ps1 + localhost.run), set data-api, commit+push portfolio for the manual test.",
+  "context_notes": "Portfolio assistant is shipped + proven working live this session (real grounded cited answer about Bantuson via localhost.run). Last mile = embed it into the portfolio-dashboard repo (parent-level sibling of veridian) and push so the user can manually test bantuson.vercel.app. Read .continue-here.md BLOCKING CONSTRAINTS first."
 }
