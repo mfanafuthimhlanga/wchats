@@ -36,6 +36,8 @@ dependencies = [
     "svix==1.93.0",
     # M7: Red Team — pyrit for attack prompt seed datasets only (no PyRIT orchestrators)
     "pyrit>=0.6.0",
+    # P13-02: Bedrock embeddings — AWS first-party SDK (boto3 approved in research Package Legitimacy Audit)
+    "boto3>=1.34,<2.0",
 ]
 
 [project.optional-dependencies]

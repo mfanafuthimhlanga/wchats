@@ -109,6 +109,14 @@ class Settings(BaseSettings):
 
     MAX_UPLOAD_SIZE_MB: int = 50
 
+    # P13-02: Bedrock embedding provider seam (D-14 env-selectable; "bedrock" | "voyage")
+    # EMBEDDING_PROVIDER selects the embedding backend at startup:
+    #   "bedrock" → Amazon Bedrock Titan Text Embeddings v2 (IAM-authed, no RPM cap)
+    #   "voyage"  → Voyage AI voyage-3 (legacy; retained as fallback behind the seam)
+    EMBEDDING_PROVIDER: str = "bedrock"
+    AWS_REGION: str = "us-east-1"
+    BEDROCK_EMBED_MODEL_ID: str = "amazon.titan-embed-text-v2:0"
+
     # M4 Runtime agent budget — per-turn USD ceiling for ClaudeAgentOptions.
     # D-10 fix phase 2: raised from 0.05 (too low for thinking+retrieve+synthesis).
     # 0.50 gives headroom for a Sonnet extended-thinking+retrieve+synthesis turn
