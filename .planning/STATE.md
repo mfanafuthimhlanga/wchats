@@ -2,7 +2,7 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Executing Phase 12
+status: Phase 12 ✓ complete; Phase 13 not planned (next - /gsd-plan-phase 13)
 last_updated: "2026-06-01T14:30:00.000Z"
 progress:
   total_phases: 1
@@ -16,7 +16,8 @@ progress:
 
 ## Current Status
 
-**Active Milestone:** Phase 12 — Production Go-Live (W Chats)
+**Active Milestone:** Phase 13 — Production Hosting & Durable Deployment (planning next). **Phase 12 ✓ COMPLETE 2026-06-28** — demo path proven live end-to-end (job `fdf93abd`, 1741-char grounded + cited answer via localhost.run); portfolio embed integrated. The local-PC + ephemeral-tunnel hosting was a deliberate $0 demo compromise; its durable, always-on production replacement is Phase 13. The historical Phase 12 narrative below is retained as record.
+**[prior] Active Milestone:** Phase 12 — Production Go-Live (W Chats)
 **Milestone Phase:** Phase 12 — In Progress. **DEMO PATH PROVEN END-TO-END LIVE** (localhost.run + grounded answer). Empty-answer bug RESOLVED (`132f529` + `9572f01`).
 **✓ PORTFOLIO EMBED DONE (2026-06-01 session 2):** W Chats widget integrated into the `portfolio-dashboard` repo (sibling; deploys to bantuson.vercel.app) — 4 embed files byte-identical in `wchats/`, runtime `wchats/config.json` (`apiBase`), bootstrap in root `index.html` that mounts the launcher ONLY when apiBase is non-empty (no dead-widget risk). STAGED, NOT committed/pushed. ⚠️ portfolio index.html had ~772 lines of pre-existing uncommitted WIP before this session — commit boundary is the user's call. Remaining (human-gated): start stack → `ssh -R 80:localhost:8000 nokey@localhost.run` → put `*.lhr.life` in config.json → commit+push → manual test. Also still open: swap `scripts/start_demo.ps1` tunnel cloudflared→localhost.run.
 **✓ LIVE PROOF 2026-06-01 (job `fdf93abd`):** "What is W Chats and who is Bantuson?" through localhost.run → **1741-char grounded answer + 1 citation**, SSE streamed. Instrumented: `subtype=success num_turns=2 total_cost_usd=0.063`. Empty-answer root cause was TWO compounding caps from 12-01 D-10: `max_turns=3` (fixed→6) AND `max_budget_usd=0.05` (fixed→settings.AGENT_MAX_BUDGET_USD=0.50) — the $0.063 turn cost proved the $0.05 cap was the final binding constraint. Transport: Cloudflare quick tunnel can't do SSE; **localhost.run does** (`ssh -R 80:localhost:8000 nokey@localhost.run`).
@@ -28,6 +29,10 @@ progress:
   NEXT: (1) `/gsd-debug` the empty-answer bug (highest priority — demo is about Bantuson); (2) edit `start_demo.ps1` tunnel → localhost.run; (3) then 12-06 (wire URL, push, live Q&A). Do NOT `git push` 8124035 until a working tunnel + a non-empty grounded answer are confirmed.
 **Current Position:** Phase 12 Wave 1 done & committed (12-01 agent hardening, 12-02 widget published, 12-03 cutover ADR, 12-04 deploy artifacts — VM artifacts retained as the AWS/ADR reference). No-card pivot complete: 12-05 + 12-06 re-planned (re-research `64eee6f`, plans `63282cf`, warning fixes committed) for **local PC + Cloudflare quick tunnel** (D-01/02/05 superseded; D-04/12/14 retained). Plan-checker: VERIFICATION PASSED, D-01..D-15 covered. NEXT = resume execution: `/gsd-execute-phase 12` (starts at Wave 2 / 12-05). 12-05 Task 1 = autonomous in-repo authoring (`scripts/start_demo.ps1`, smoke §5 single 95s SSE curl, embed on `apps/admin/app/page.tsx` via editable `WCHATS_TUNNEL_API_BASE`); 12-05 Task 2 + all of 12-06 = autonomous:false (need the PC running `start_demo.ps1` + a browser during a demo window). Key risk gated empirically in 12-05 Task 2: SSE survival through the quick tunnel within the 90s guard (fallback: lower D-11 or serveo/localhost.run).
 **Last updated:** 2026-05-29
+
+## Roadmap Evolution
+
+- 2026-06-28 — **Phase 13 added: Production Hosting and Durable Deployment** (depends on Phase 12). Scope = the production gap beyond the portfolio demo: durable always-on managed hosting for API + warm runtime worker + Redis (kills the local-PC + tunnel + 108–144s cold start), CDN-hosted widget with a *working* self-serve embed snippet (real `src` + `data-api`, removes the "CDN not yet live" placeholder), object storage for uploads (S3 replaces local `UPLOADS_DIR`), and concurrency-safe horizontal runtime workers (`agent_tools` globals → `ContextVar`). Four waves, PROD-01..PROD-15. Executes the ADR-0001 D-14 env seam onto always-on infra. **Out of scope:** Neon project-cap/Aurora migration (not a constraint at current scale — per user) and the Post-M10 transactional/A2A/MCP/security layers (separate milestone). Not planned yet → `/gsd-plan-phase 13`.
 
 ## Project Reference
 
