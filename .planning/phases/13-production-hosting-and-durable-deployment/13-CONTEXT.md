@@ -35,9 +35,12 @@ Turn "deploy" from a control-DB boolean (`Agent.is_deployed=true` + a non-functi
 - **Per-tenant Neon projects are retained. NO Aurora migration in this phase** (Neon project cap is not a constraint at current scale — user). 
 - Add pooling on the per-turn runtime path via **Neon's pooled connection endpoint** (replace the fresh `psycopg2.connect()` per Celery task in `runtime/agent.py`). RDS Proxy is not applicable (Neon, not RDS).
 
-### Embeddings (PROD-06)
-- **Amazon Bedrock embeddings** replace Voyage for query embeddings, removing the 3 RPM free-tier cap and the 2-retrieve-per-turn throttle (`agent_tools.py`). IAM-auth; D-14 env seam (`AWS_REGION` + IAM role) per ADR-0001.
+### Embeddings (PROD-06) — RESOLVED: Bedrock + full re-embed (Option A)
+- **Amazon Bedrock `Titan Text Embeddings v2` (1024-dim, matches the existing `VECTOR(1024)` HNSW schema)** replaces Voyage `voyage-3` for **BOTH document AND query embedding.** Research proved that moving only the query side is mathematically broken — query and document vectors must come from the same model or retrieval silently breaks (different vector spaces).
+- **One-time per-tenant re-embed / backfill** of the existing Voyage-embedded corpus is IN SCOPE for this phase (Wave 1). Must be idempotent + acks_late (CLAUDE.md rule) and safe to resume. Validate retrieval quality after re-embed (no silent regression).
+- Removes the Voyage 3 RPM free-tier cap and the 2-retrieve-per-turn throttle (`agent_tools.py`) permanently. IAM-auth via the D-14 env seam (`AWS_REGION` + IAM role) per ADR-0001. `voyageai` is demoted/removed as the primary embedder (keep behind the interface only if trivially cheap; not required).
 - **Agent turns, validators, and red-team Claude calls STAY on the direct Anthropic API** for this phase. Routing Claude through Bedrock is out of scope — only the embedding client moves.
+- Bedrock region: **us-east-1** (aligns with `NEON_REGION = aws-us-east-1`).
 
 ### Widget delivery + working embed (PROD-08, PROD-09, PROD-10, PROD-11)
 - The <20KB widget bundle (`apps/admin/public/wchats/`) is hosted on **S3 + CloudFront** at a stable, cache-correct URL / custom domain.
@@ -53,8 +56,8 @@ Turn "deploy" from a control-DB boolean (`Agent.is_deployed=true` + a non-functi
 - Run the runtime worker at **concurrency > 1 and/or as multiple Fargate tasks**, verified correct under concurrent multi-tenant load (replacing the `--pool=solo --concurrency=1` constraint).
 
 ### Claude's Discretion (research to recommend)
-- Exact Bedrock embedding model: **Amazon Titan Text Embeddings v2** vs **Cohere Embed v3 on Bedrock** — MUST match the existing **1024-dim** pgvector HNSW schema, or the plan MUST include a re-embed/backfill + index note. This is a hard correctness gate.
-- IaC tool: **Terraform vs AWS CDK vs Copilot/console** — prefer reproducible IaC; research to recommend.
+- Embedding model RESOLVED above: **Titan Text Embeddings v2 @ 1024-dim, both sides, with re-embed** (Option A). Not open.
+- IaC tool: **Terraform** (research recommendation — declarative, AWS provider covers all Phase 13 resources, solo-dev friendly, no compile step).
 - `data-api` topology for the "stable per-agent endpoint" (PROD-10): a **single shared API host with `agent_id` in the path** already satisfies "stable" — per-tenant subdomains are optional polish, only if cheap/correct.
 - S3 read pattern for ingestion: presigned URLs vs server-side `boto3` fetch.
 - Whether to keep the `voyageai`/`cohere` clients behind the embedding interface as a fallback, or remove them once Bedrock is primary.
