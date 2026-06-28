@@ -1,4 +1,196 @@
-# W Chats — VM Deployment Runbook
+# W Chats — Deployment Runbook
+
+---
+
+## Fargate production deployment (Phase 13)
+
+This section documents the durable AWS serving substrate introduced in Phase 13
+(plan 13-01). It replaces the Phase 12 local-PC + ephemeral tunnel with always-on
+ECS Fargate services behind a stable Route53 domain.
+
+### Prerequisites
+
+- AWS account with billing enabled (resolves the Phase 12 no-credit-card constraint)
+- Terraform >= 1.5 installed: https://developer.hashicorp.com/terraform/downloads
+- AWS CLI v2 installed and configured (`aws configure`)
+- Docker Desktop (or Engine) with buildx support
+- Bedrock model access: in the AWS console, request access to
+  `amazon.titan-embed-text-v2:0` in us-east-1 before deploying
+
+### Required Terraform variables
+
+Create a `deploy/terraform/terraform.tfvars` file (do NOT commit — it contains domain names):
+
+```hcl
+aws_region                    = "us-east-1"
+api_domain                    = "api.wchats.app"            # your Route53 domain
+widget_domain                 = "widget.wchats.app"         # your Route53 domain
+route53_zone_id               = "Z0123456789ABCDEFGHIJK"    # your hosted zone ID
+acm_certificate_arn           = "arn:aws:acm:us-east-1:..."  # covers api.wchats.app
+acm_certificate_arn_us_east_1 = "arn:aws:acm:us-east-1:..."  # covers widget.wchats.app (MUST be us-east-1)
+api_image_tag                 = "latest"
+pipeline_image_tag            = "latest"
+```
+
+> **Note on ACM certs:** `acm_certificate_arn` is for the ALB (any region).
+> `acm_certificate_arn_us_east_1` is for CloudFront — AWS requires this cert to be
+> in `us-east-1` regardless of your deployment region (Pitfall 2 in RESEARCH.md).
+
+### Step 1 — Build and push Docker images to ECR
+
+Both images must be built for `linux/amd64` (Fargate default architecture).
+Building without `--platform linux/amd64` on Windows produces an incompatible image.
+
+```bash
+# Authenticate with ECR (run after terraform apply to get the repo URLs)
+aws ecr get-login-password --region us-east-1 | \
+  docker login --username AWS --password-stdin <account_id>.dkr.ecr.us-east-1.amazonaws.com
+
+# API image (used for both API service and runtime worker)
+docker buildx build --platform linux/amd64 \
+  -t <account_id>.dkr.ecr.us-east-1.amazonaws.com/wchats-api:latest \
+  -f apps/api/Dockerfile apps/api/
+docker push <account_id>.dkr.ecr.us-east-1.amazonaws.com/wchats-api:latest
+
+# Pipeline image (Docling + torch CPU-only)
+docker buildx build --platform linux/amd64 \
+  -t <account_id>.dkr.ecr.us-east-1.amazonaws.com/wchats-pipeline:latest \
+  -f apps/api/Dockerfile.pipeline apps/api/
+docker push <account_id>.dkr.ecr.us-east-1.amazonaws.com/wchats-pipeline:latest
+```
+
+### Step 2 — Provision infrastructure with Terraform
+
+```bash
+cd deploy/terraform
+
+# Initialize providers (no backend = local state; configure S3 backend for production)
+terraform init
+
+# Review the plan (no live changes yet)
+terraform plan -out=tfplan
+
+# Apply (provisions VPC, ECR, ELB, ElastiCache, ECS, S3, CloudFront, Route53)
+terraform apply tfplan
+```
+
+Terraform outputs after apply:
+
+| Output | Description |
+|--------|-------------|
+| `alb_dns_name` | ALB DNS (also the Route53 alias target) |
+| `api_url` | Stable API URL (use as `data-api` in embed snippet) |
+| `widget_cdn_url` | CloudFront CDN URL (use as script `src`) |
+| `ecr_api_repository_url` | ECR URL for Step 1 push |
+| `ecr_pipeline_repository_url` | ECR URL for Step 1 push |
+| `elasticache_primary_endpoint` | Redis endpoint (for the `wchats/redis-url` secret) |
+| `uploads_bucket_name` | S3 bucket name for `S3_UPLOADS_BUCKET` |
+| `widget_bucket_name` | S3 bucket for widget bundle upload |
+
+### Step 3 — Populate Secrets Manager values
+
+For each secret in `deploy/terraform/secrets.tf`, set its value via the AWS CLI or console.
+The Terraform apply created the secret containers; values are populated out-of-band.
+
+```bash
+# Example: set the ANTHROPIC_API_KEY secret
+aws secretsmanager put-secret-value \
+  --secret-id wchats/anthropic-api-key \
+  --secret-string "sk-ant-..."
+
+# Set all required secrets before starting ECS services:
+# wchats/neon-api-key              — Neon API key
+# wchats/neon-encryption-key       — Fernet key (base64url 32 bytes)
+# wchats/control-db-url            — postgresql+asyncpg://...
+# wchats/control-db-sync-url       — postgresql://...
+# wchats/redis-url                 — rediss://<elasticache_primary_endpoint>:6379/0
+# wchats/admin-key                 — random secret for X-Admin-Key header
+# wchats/anthropic-api-key         — sk-ant-...
+# wchats/voyage-api-key            — voyage API key (until 13-02 Bedrock migration)
+# wchats/jwt-secret                — random 32-byte hex for widget JWT HS256
+# wchats/clerk-webhook-signing-secret — from Clerk dashboard
+```
+
+### Step 4 — Upload widget bundle to S3
+
+```bash
+# Upload all widget files to the S3 bucket (CloudFront OAC serves these)
+aws s3 sync apps/admin/public/wchats/ \
+  s3://$(terraform -chdir=deploy/terraform output -raw widget_bucket_name)/ \
+  --delete
+
+# Invalidate CloudFront cache after upload
+aws cloudfront create-invalidation \
+  --distribution-id <distribution_id> \
+  --paths "/*"
+```
+
+### Step 5 — Post-apply smoke test
+
+```bash
+# API health check (validates Redis + DB probes)
+curl -I https://api.wchats.app/health
+
+# SSE stream survival check (must stay alive for >125s; agent.response before 120s)
+curl -N --max-time 125 https://api.wchats.app/widget/jobs/<job_id>/events
+
+# Widget bundle accessible from CDN
+curl -I https://widget.wchats.app/widget.js
+```
+
+### ECS service management
+
+```bash
+# Force new deployment (after image push)
+aws ecs update-service --cluster wchats --service wchats-api --force-new-deployment
+
+# Scale the runtime worker to zero (for maintenance)
+aws ecs update-service --cluster wchats --service wchats-runtime-worker --desired-count 0
+
+# View running tasks
+aws ecs list-tasks --cluster wchats --service-name wchats-api
+
+# Tail logs
+aws logs tail /ecs/wchats-api --follow
+```
+
+### Architecture reference
+
+```
+[Browser / Embed snippet]
+        |
+        | HTTPS (ACM cert)
+        v
+[Route53: api.wchats.app] → [ALB idle_timeout=4000s]
+                                      |
+                         ┌────────────┴────────────┐
+                         |                         |
+               [ECS Fargate: API #1]  [ECS Fargate: API #2]
+               uvicorn :8000           (HA — desired=2)
+                         |
+              [ElastiCache Redis] ← Celery broker + SSE pub/sub
+                         |
+            ┌────────────┴───────────┐
+            |                       |
+  [ECS Fargate:            [ECS Fargate Spot:
+   Runtime Worker]          Pipeline Worker]
+   always-on                acks_late + idempotent
+   runtime queue            pipeline queue
+            |                       |
+            v                       v
+   [Neon per-tenant DB]    [S3 wchats-uploads → parse → embed]
+
+[widget.wchats.app] → [CloudFront OAC] → [S3 wchats-widget]
+```
+
+---
+
+## AWS-VM reference runbook (superseded for Phase 13)
+
+> **Retained for reference only.** The Oracle Cloud Always Free ARM VM + Caddy + systemd
+> deployment below was the Phase 05–12 production host. Phase 13 replaces it with the
+> ECS Fargate setup above. The VM runbook remains useful for understanding the secrets
+> and process model that Fargate inherits.
 
 Ordered checklist for deploying the W Chats API and runtime Celery worker to an
 Oracle Cloud Always Free ARM (aarch64) VM. Plan 05 executes these steps.
