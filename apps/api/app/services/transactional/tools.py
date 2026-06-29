@@ -210,6 +210,21 @@ async def _execute_transactional_tool(
     if reservation.state == "args_mismatch":
         # WR-02 closed: same idempotency_key used with different business arguments.
         # Return an explicit error instead of silently replaying the stale result.
+        # AUD-01: this is a security-relevant rejection (suspicious key reuse) — audit it,
+        # matching the capability.denial / actor_block paths. (in_progress is NOT audited
+        # here: it is a concurrent-duplicate no-op; the reserved winner audits the real call.)
+        await write_audit_row(
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            skill=skill,
+            arguments=raw_args,
+            result=None,
+            actor_decision="",
+            actor_rationale="",
+            capability_snapshot=snapshot,
+            latency_ms=None,
+            error="idempotency.args_mismatch",
+        )
         return {
             "content": [
                 {

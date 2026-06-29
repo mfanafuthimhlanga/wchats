@@ -688,6 +688,34 @@ class TestArgsMismatch:
 
         assert result.get("is_error") is True
 
+    def test_args_mismatch_writes_exactly_one_audit_row(self):
+        """AUD-01 regression guard: args_mismatch is a security-relevant rejection and MUST
+        write one audit row with error='idempotency.args_mismatch'. The 14-08 dispatcher
+        rewrite originally returned on this path WITHOUT auditing — re-verification caught it.
+        """
+        _set_context()
+        audit_mock = AsyncMock()
+
+        with (
+            _p("check_capability_access", _mock_access_pass()),
+            _p("reserve_idempotency", _mock_reserve("args_mismatch")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.write_audit_row", audit_mock),
+            patch(f"{_T}.get_adapter", MagicMock()),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            asyncio.run(place_order_tool.handler(_valid_place_order_args()))
+
+        assert audit_mock.call_count == 1, (
+            f"Expected exactly 1 audit row on args_mismatch, got {audit_mock.call_count}"
+        )
+        error_val = audit_mock.call_args.kwargs.get("error", "")
+        assert error_val == "idempotency.args_mismatch", (
+            f"Expected error='idempotency.args_mismatch', got {error_val!r}"
+        )
+
     def test_args_mismatch_text_signals_key_reused(self):
         """Error message must indicate the key was reused with different arguments."""
         _set_context()
