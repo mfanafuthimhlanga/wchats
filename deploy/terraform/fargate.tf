@@ -4,7 +4,7 @@
 # Services:
 #   1. API (wchats-api): uvicorn, 0.5 vCPU / 1 GB, desired=2 (HA), ALB-attached
 #   2. Runtime worker (always-on): celery runtime queue, 2 vCPU / 4 GB, desired=1
-#      prefork+concurrency=1 (PROD-15 raise to 2 gated on 13-07 ContextVar refactor)
+#      prefork+concurrency=2 (PROD-15: raised from 1 after 13-07 ContextVar refactor)
 #   3. Pipeline worker (Fargate Spot): celery pipeline queue, 2 vCPU / 8 GB, desired=1
 #      acks_late=True + idempotency (CLAUDE.md) make Spot interruption safe
 #
@@ -192,8 +192,9 @@ resource "aws_ecs_service" "api" {
 
 # ---------------------------------------------------------------------------
 # Service 2: Runtime Celery worker — always-on, no ALB, runtime queue
-# concurrency=1 intentional: PROD-15 raise gated on 13-07 ContextVar refactor
-# Landmine 3: --pool=prefork overrides worker_pool="solo" from celery_app.py
+# concurrency=2 (PROD-15): safe now that 13-07 ContextVar refactor landed.
+# agent_tools.py globals replaced with ContextVars — no cross-request state bleed
+# at concurrency > 1.  --pool=prefork overrides worker_pool config in celery_app.py.
 # ---------------------------------------------------------------------------
 
 resource "aws_ecs_task_definition" "runtime_worker" {
@@ -215,7 +216,7 @@ resource "aws_ecs_task_definition" "runtime_worker" {
         "celery", "-A", "app.worker.celery_app", "worker",
         "--queues=runtime",
         "--pool=prefork",
-        "--concurrency=1",
+        "--concurrency=2",
         "--hostname=runtime@%h",
         "--loglevel=info",
       ]

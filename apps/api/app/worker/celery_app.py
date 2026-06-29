@@ -21,17 +21,27 @@ structlog integration (RESEARCH.md §Pattern 10, Pitfall 6):
     task_prerun signal clears contextvars before each task so a previous task's
     request_id cannot bleed into the next task's log lines.
 
-worker_pool = "solo" (Windows fix):
-    The billiard prefork pool (Celery's default) has a Windows bug where two
-    child processes share the same pipe_handle. When select.select() is called
-    on that handle, it returns an empty sequence instead of the expected
-    (readable, writable, exceptional) 3-tuple, raising:
-        ValueError: not enough values to unpack (expected 3, got 0)
-    This manifests as a FAILURE result with null traceback for any task
-    (including provision_neon) picked up from Redis. The solo pool runs tasks
-    in the worker's main process with no subprocess spawning, eliminating the
-    race condition. For local dev (one worker process per queue) there is no
-    concurrency loss.
+worker_pool — ENVIRONMENT-conditional (PROD-15 / Landmine 3):
+    "solo" on development / test (Windows billiard fix):
+        The billiard prefork pool (Celery's default) has a Windows bug where two
+        child processes share the same pipe_handle. When select.select() is called
+        on that handle, it returns an empty sequence instead of the expected
+        (readable, writable, exceptional) 3-tuple, raising:
+            ValueError: not enough values to unpack (expected 3, got 0)
+        This manifests as a FAILURE result with null traceback for any task
+        (including provision_neon) picked up from Redis. The solo pool runs tasks
+        in the worker's main process with no subprocess spawning, eliminating the
+        race condition. For local dev (one worker process per queue) there is no
+        concurrency loss.
+
+    "prefork" on production (Linux Fargate):
+        On Linux, prefork is safe and correct. The Fargate runtime worker CMD
+        passes --pool=prefork --concurrency=2 explicitly, which overrides this
+        setting. The ENVIRONMENT-conditional default ensures the config reflects
+        the correct pool for each environment, not just the CMD override.
+
+    Note: the --pool CLI flag passed in the Fargate task definition CMD is the
+    authoritative override; this setting is the application-level default.
 """
 
 import socket
@@ -194,16 +204,16 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
 
-    # --- Worker pool (Windows billiard fix) -----------------------------
-    # The billiard prefork pool raises "ValueError: not enough values to
-    # unpack (expected 3, got 0)" on Windows when two children share the
-    # same pipe_handle (billiard issue #299). The solo pool runs tasks in
-    # the worker main process — no subprocess spawning, no pipe race.
-    # For local dev this has no concurrency penalty (one worker per queue).
-    # CLI flag --pool=solo in start_native.ps1 is kept as an explicit
-    # override; this setting makes it the default so plain
-    # `celery -A app.worker.celery_app worker` also works on Windows.
-    worker_pool="solo",
+    # --- Worker pool (ENVIRONMENT-conditional, PROD-15) -----------------
+    # "solo"    — development / test: Windows billiard fix (see module docstring).
+    #             billiard prefork raises "ValueError: not enough values to unpack"
+    #             on Windows (billiard issue #299); solo eliminates the subprocess
+    #             pipe race.  Local dev has no concurrency penalty (one worker/queue).
+    # "prefork" — production (Linux Fargate): safe and correct on Linux; required
+    #             for real concurrency > 1.  The Fargate task CMD passes
+    #             --pool=prefork --concurrency=2 which takes authoritative precedence;
+    #             this default makes the config self-consistent with that CMD.
+    worker_pool="solo" if settings.ENVIRONMENT in ("development", "test") else "prefork",
 )
 
 

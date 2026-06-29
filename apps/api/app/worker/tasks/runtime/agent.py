@@ -534,15 +534,10 @@ def run_agent_turn(
 
             system_prompt = build_system_prompt(agent)
 
-            # D-10 retrieve cap: prompt-level guard (belt); tool-level guard (suspenders)
-            # in agent_tools.retrieve_tool blocks the 3rd+ call per turn.
-            # This prevents exhausting the Voyage 3 RPM free tier (6 retrieve calls in
-            # a single turn was the actual 2026-05-29 live failure that prompted D-10).
-            system_prompt += (
-                "\n\nIMPORTANT: Call the `retrieve` tool AT MOST ONCE per response. "
-                "After receiving retrieve results, synthesize an answer immediately. "
-                "Do not call retrieve again."
-            )
+            # D-10 note (13-07): The Voyage 3 RPM free-tier prompt-level retrieve-cap
+            # instruction was removed now that embeddings move to Bedrock (PROD-06).
+            # Bedrock has no comparable RPM constraint; the per-turn retrieve counter in
+            # agent_tools.retrieve_tool remains active as a DoS guard (ceiling raised to 8).
 
             # R-05: allowed_tools use full MCP namespace mcp__customer-tools__*
             # D-10 fix phase 1 (2026-06-01): max_turns raised from 3 to 6.
