@@ -559,15 +559,29 @@ def run_agent_turn(
             #   with no exception raised (identical empty-text signature to max_turns).
             #   0.50 USD gives headroom while still serving as a DoS guardrail.
             #   Configure via AGENT_MAX_BUDGET_USD env var for tighter prod limits.
+            # R-05: allowed_tools suppresses SDK permission prompts only.
+            # The capability envelope check inside each transactional tool handler
+            # is the real access gate (fail-closed) — T-14-04-03.
             options = ClaudeAgentOptions(
                 model="claude-haiku-4-5-20251001",
                 system_prompt=system_prompt,
                 mcp_servers={"customer-tools": tool_server},
                 allowed_tools=[
+                    # Original 4 tools — retained (TXN-04 requirement)
                     "mcp__customer-tools__retrieve",
                     "mcp__customer-tools__lookup_structured",
                     "mcp__customer-tools__escalate_to_human",
                     "mcp__customer-tools__clarify",
+                    # Phase 14 Plan 04 — 7 transactional tools
+                    # Listing here suppresses SDK permission prompts only;
+                    # the capability envelope in each handler is the real gate.
+                    "mcp__customer-tools__place_order",
+                    "mcp__customer-tools__cancel_order",
+                    "mcp__customer-tools__issue_refund",
+                    "mcp__customer-tools__update_subscription",
+                    "mcp__customer-tools__book_slot",
+                    "mcp__customer-tools__update_customer_record",
+                    "mcp__customer-tools__confirm_action",
                 ],
                 resume=sdk_resume,
                 max_turns=6,   # D-10 fix: was 3 (too low — cut off synthesis after retrieve)

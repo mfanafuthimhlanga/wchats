@@ -593,7 +593,10 @@ def build_tool_server(
         notify_fn:       Callable(reason: str, context: str) — fire-and-forget notification.
 
     Returns:
-        MCP server object (create_sdk_mcp_server result) registering all four tools.
+        MCP server object (create_sdk_mcp_server result) registering all 11 tools:
+        the original 4 (retrieve, lookup_structured, escalate_to_human, clarify) plus the
+        7 transactional tools added in Phase 14 Plan 04 (place_order, cancel_order,
+        issue_refund, update_subscription, book_slot, update_customer_record, confirm_action).
     """
     _conn_str_var.set(conn_str)
     _agent_id_var.set(agent_id)
@@ -612,8 +615,36 @@ def build_tool_server(
         conversation_id=conversation_id,
     )
 
+    # Phase 14 Plan 04: append the 7 transactional tools to the existing 4.
+    # The import is deferred to avoid circular-import issues at module level:
+    # tools.py imports _agent_id_var from this module at function call time, so
+    # importing tools here (after the ContextVar definitions above) is safe.
+    from app.services.transactional.tools import (  # noqa: PLC0415
+        place_order_tool,
+        cancel_order_tool,
+        issue_refund_tool,
+        update_subscription_tool,
+        book_slot_tool,
+        update_customer_record_tool,
+        confirm_action_tool,
+    )
+
     return create_sdk_mcp_server(
         name="customer-tools",
         version="1.0.0",
-        tools=[retrieve_tool, lookup_structured_tool, escalate_to_human_tool, clarify_tool],
+        tools=[
+            # Original 4 tools — must be retained (TXN-04 / PLAN.md prohibition)
+            retrieve_tool,
+            lookup_structured_tool,
+            escalate_to_human_tool,
+            clarify_tool,
+            # Phase 14 Plan 04 — 7 transactional tools
+            place_order_tool,
+            cancel_order_tool,
+            issue_refund_tool,
+            update_subscription_tool,
+            book_slot_tool,
+            update_customer_record_tool,
+            confirm_action_tool,
+        ],
     )

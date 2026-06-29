@@ -30,16 +30,25 @@ from uuid import uuid4
 import pytest
 
 # ---------------------------------------------------------------------------
-# ContextVar setup — must happen before any asyncio.run() call
+# ContextVar setup — must happen before any asyncio.run() call.
+# NOTE: the import is DEFERRED inside _set_context() to prevent module-level
+# import of agent_tools.py (which imports claude_agent_sdk) from running at
+# pytest collection time. test_agent_tools.py installs a fake claude_agent_sdk
+# via sys.modules monkeypatch only when the real SDK hasn't been imported yet;
+# an eager top-level import here would defeat that guard and break test_agent_tools.
 # ---------------------------------------------------------------------------
-from app.services.agent_tools import _agent_id_var, _conversation_id_var
 
 TEST_AGENT_ID = "agent-test-0001"
 TEST_CONV_ID = "conv-test-0001"
 
 
 def _set_context(agent_id: str = TEST_AGENT_ID, conv_id: str = TEST_CONV_ID) -> None:
-    """Set ContextVars in the current sync context so asyncio.run() copies them."""
+    """Set ContextVars in the current sync context so asyncio.run() copies them.
+
+    Imports _agent_id_var / _conversation_id_var lazily to avoid eagerly importing
+    agent_tools.py (and thus claude_agent_sdk) at test-module-load time.
+    """
+    from app.services.agent_tools import _agent_id_var, _conversation_id_var  # noqa: PLC0415
     _agent_id_var.set(agent_id)
     _conversation_id_var.set(conv_id)
 
@@ -735,7 +744,7 @@ class TestAgentPyAllowedTools:
             )
         )
         assert os.path.isfile(agent_py_path), f"agent.py not found at {agent_py_path}"
-        with open(agent_py_path) as f:
+        with open(agent_py_path, encoding="utf-8") as f:
             source = f.read()
 
         new_tools = [
@@ -759,7 +768,7 @@ class TestAgentPyAllowedTools:
                 "../../app/worker/tasks/runtime/agent.py",
             )
         )
-        with open(agent_py_path) as f:
+        with open(agent_py_path, encoding="utf-8") as f:
             source = f.read()
 
         retained_tools = [
