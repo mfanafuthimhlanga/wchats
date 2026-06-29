@@ -111,8 +111,16 @@ const COLOR_FIELDS: { key: keyof WidgetConfig['colors']; label: string }[] = [
   { key: 'input_bg', label: 'Input Field Background' },
 ]
 
+const WIDGET_CDN_BASE = process.env.NEXT_PUBLIC_WCHATS_WIDGET_CDN || 'https://widget.wchats.app'
+const WIDGET_API_BASE = process.env.NEXT_PUBLIC_WCHATS_API_BASE || ''
+
 function EMBED_SNIPPET(id: string): string {
-  return '<script src="https://widget.wchats.app/widget.js" data-agent="' + id + '" async></script>'
+  return (
+    '<script src="' + WIDGET_CDN_BASE + '/widget.js"' +
+    ' data-agent="' + id + '"' +
+    ' data-api="' + WIDGET_API_BASE + '"' +
+    ' async></script>'
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -511,16 +519,6 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
           >
             {copyStatus === 'copied' ? 'Copied!' : 'Copy snippet'}
           </button>
-          <p
-            style={{
-              fontSize: '12px',
-              color: 'var(--text-4)',
-              fontStyle: 'italic',
-              marginTop: '8px',
-            }}
-          >
-            Note: The CDN URL above is a preview placeholder. Widget CDN deployment is not yet live and will be activated in a future release.
-          </p>
         </div>
       )}
 
