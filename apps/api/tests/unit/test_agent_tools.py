@@ -5,6 +5,11 @@ Monkeypatches ``claude_agent_sdk`` before module import so tests run without
 the SDK binary present. The tool functions are async so each test uses
 ``asyncio.run()``.
 
+Updated for PROD-14 ContextVar refactor: module-level globals (_conn_str,
+_agent_id, etc.) are now ContextVars (_conn_str_var, _agent_id_var, etc.).
+Tests that previously set globals directly now call .set() on the ContextVars;
+assertions that previously read globals now call .get() on the ContextVars.
+
 Test coverage:
   1. test_lookup_structured_rejects_non_allowlist_table
   2. test_lookup_structured_accepts_allowlist_table
@@ -117,8 +122,8 @@ def test_lookup_structured_rejects_non_allowlist_table():
 
 def test_lookup_structured_accepts_allowlist_table():
     """Table 'chunks' IS in ALLOWED_LOOKUP_TABLES — psycopg2.connect must be called."""
-    # Set a dummy connection string so the code can try to connect.
-    agent_tools._conn_str = "postgresql://test:test@localhost/testdb"
+    # Set conn_str via ContextVar (PROD-14: replaced module global).
+    agent_tools._conn_str_var.set("postgresql://test:test@localhost/testdb")
 
     mock_conn = MagicMock()
     mock_cursor = MagicMock()
@@ -143,8 +148,8 @@ def test_lookup_structured_accepts_allowlist_table():
 
 def test_retrieve_truncates_to_max_chunks():
     """retrieve tool must return at most MAX_CHUNKS chunks, each content <= 2000 chars."""
-    # Reset counter so D-10 cap does not interfere.
-    agent_tools._retrieve_call_count = 0
+    # Reset counter so DoS guard does not interfere (PROD-14: ContextVar-backed).
+    agent_tools._retrieve_call_count_var.set(0)
 
     # Produce 20 chunks with 5000-char content each.
     long_content = "x" * 5000
@@ -196,10 +201,10 @@ def test_escalate_calls_notify_fn():
     """escalate_to_human must call _notify_fn with reason and context."""
     notify_fn = MagicMock()
 
-    # Set module globals directly (same as build_tool_server does).
-    agent_tools._notify_fn = notify_fn
-    agent_tools._conversation_id = "conv-test-123"
-    agent_tools._conn_str = "postgresql://test:test@localhost/testdb"
+    # Set module state via ContextVars (PROD-14: replaced module globals).
+    agent_tools._notify_fn_var.set(notify_fn)
+    agent_tools._conversation_id_var.set("conv-test-123")
+    agent_tools._conn_str_var.set("postgresql://test:test@localhost/testdb")
 
     mock_conn = MagicMock()
     mock_cursor = MagicMock()
@@ -235,12 +240,12 @@ def test_clarify_returns_question_text():
 
 
 # ---------------------------------------------------------------------------
-# Test 6: build_tool_server sets module globals
+# Test 6: build_tool_server sets ContextVars
 # ---------------------------------------------------------------------------
 
 
 def test_build_tool_server_sets_globals():
-    """build_tool_server must propagate all six arguments to module-level globals."""
+    """build_tool_server must propagate all six arguments to ContextVars (PROD-14)."""
     from app.services.retrieval_service import RetrievalStrategy
 
     sentinel_conn = "postgresql://sentinel:pass@host/db"
@@ -259,12 +264,13 @@ def test_build_tool_server_sets_globals():
         notify_fn=sentinel_notify,
     )
 
-    assert agent_tools._conn_str == sentinel_conn
-    assert agent_tools._agent_id == sentinel_agent_id
-    assert agent_tools._agent_name == sentinel_agent_name
-    assert agent_tools._strategy is sentinel_strategy
-    assert agent_tools._conversation_id == sentinel_conv_id
-    assert agent_tools._notify_fn is sentinel_notify
+    # Read back via ContextVar.get() (PROD-14: replaced direct module global reads).
+    assert agent_tools._conn_str_var.get() == sentinel_conn
+    assert agent_tools._agent_id_var.get() == sentinel_agent_id
+    assert agent_tools._agent_name_var.get() == sentinel_agent_name
+    assert agent_tools._strategy_var.get() is sentinel_strategy
+    assert agent_tools._conversation_id_var.get() == sentinel_conv_id
+    assert agent_tools._notify_fn_var.get() is sentinel_notify
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +311,7 @@ def test_lookup_structured_rejects_unknown_column():
 
 def test_lookup_structured_allows_known_columns():
     """Filters with known column names must reach the DB (no is_error)."""
-    agent_tools._conn_str = "postgresql://test:test@localhost/testdb"
+    agent_tools._conn_str_var.set("postgresql://test:test@localhost/testdb")
 
     mock_conn = MagicMock()
     mock_cursor = MagicMock()
@@ -334,7 +340,7 @@ def test_lookup_structured_sql_identifier_quoting():
     """Allowed columns must be quoted via pgsql.Identifier, not f-string interpolation."""
     from psycopg2 import sql as pgsql
 
-    agent_tools._conn_str = "postgresql://test:test@localhost/testdb"
+    agent_tools._conn_str_var.set("postgresql://test:test@localhost/testdb")
 
     # Track the sql arg passed to cur.execute
     executed_sqls = []
@@ -377,10 +383,10 @@ def test_escalate_to_human_idempotent():
     """Second escalation call on already-escalated conversation must not fire _notify_fn again."""
     notify_fn = MagicMock()
 
-    agent_tools._notify_fn = notify_fn
-    agent_tools._conversation_id = "conv-idempotent-1"
-    agent_tools._conn_str = "postgresql://test:test@localhost/testdb"
-    agent_tools._agent_id = "agent-abc"
+    agent_tools._notify_fn_var.set(notify_fn)
+    agent_tools._conversation_id_var.set("conv-idempotent-1")
+    agent_tools._conn_str_var.set("postgresql://test:test@localhost/testdb")
+    agent_tools._agent_id_var.set("agent-abc")
 
     mock_conn = MagicMock()
     mock_cursor = MagicMock()
@@ -423,10 +429,10 @@ def test_escalate_to_human_sanitises_reason():
     """Control characters in reason must be stripped before passing to _notify_fn."""
     notify_fn = MagicMock()
 
-    agent_tools._notify_fn = notify_fn
-    agent_tools._conversation_id = "conv-sanitise-1"
-    agent_tools._conn_str = "postgresql://test:test@localhost/testdb"
-    agent_tools._agent_id = "agent-abc"
+    agent_tools._notify_fn_var.set(notify_fn)
+    agent_tools._conversation_id_var.set("conv-sanitise-1")
+    agent_tools._conn_str_var.set("postgresql://test:test@localhost/testdb")
+    agent_tools._agent_id_var.set("agent-abc")
 
     mock_conn = MagicMock()
     mock_cursor = MagicMock()
@@ -459,10 +465,10 @@ def test_escalate_to_human_reason_truncated_at_500():
     """Reason longer than 500 chars must be truncated; notify_fn payload <= prefix + 500."""
     notify_fn = MagicMock()
 
-    agent_tools._notify_fn = notify_fn
-    agent_tools._conversation_id = "conv-truncate-1"
-    agent_tools._conn_str = "postgresql://test:test@localhost/testdb"
-    agent_tools._agent_id = "agent-abc"
+    agent_tools._notify_fn_var.set(notify_fn)
+    agent_tools._conversation_id_var.set("conv-truncate-1")
+    agent_tools._conn_str_var.set("postgresql://test:test@localhost/testdb")
+    agent_tools._agent_id_var.set("agent-abc")
 
     mock_conn = MagicMock()
     mock_cursor = MagicMock()
@@ -500,8 +506,8 @@ def test_escalate_to_human_reason_truncated_at_500():
 
 def test_retrieve_tool_logs_warning_on_unused_filters():
     """retrieve_tool must emit log.warning('retrieve_tool.filters_ignored') when filters given."""
-    # Reset counter so D-10 cap does not interfere.
-    agent_tools._retrieve_call_count = 0
+    # Reset counter so DoS guard does not interfere (PROD-14: ContextVar-backed).
+    agent_tools._retrieve_call_count_var.set(0)
 
     with (
         patch("app.services.agent_tools.embed_query", return_value=[0.1] * 1024),
@@ -530,26 +536,28 @@ def test_retrieve_tool_logs_warning_on_unused_filters():
 
 
 # ---------------------------------------------------------------------------
-# Test 15: D-10 (suspenders) — retrieve_tool blocks on the 3rd call per turn
+# Test 15: D-10 (suspenders) — retrieve_tool blocks when cap is exceeded
 # ---------------------------------------------------------------------------
 
 
 def test_retrieve_tool_blocked_on_third_call():
-    """D-10 suspenders: the 3rd retrieve call in a single turn must return is_error=True.
+    """D-10 suspenders: a retrieve call that exceeds _RETRIEVE_CALLS_PER_TURN_MAX must
+    return is_error=True.
 
-    The tool-level counter (_retrieve_call_count) is incremented on each call
-    and blocks when it exceeds _RETRIEVE_CALLS_PER_TURN_MAX (2).  This ensures
-    at most 2 Voyage embed calls per agent turn regardless of max_turns setting.
+    The tool-level counter (_retrieve_call_count_var) is incremented on each call
+    and blocks when it exceeds _RETRIEVE_CALLS_PER_TURN_MAX.  This ensures the DoS
+    ceiling is enforced regardless of max_turns setting.
     """
-    # Directly set the counter to the max so the next call is the blocked one.
-    agent_tools._retrieve_call_count = agent_tools._RETRIEVE_CALLS_PER_TURN_MAX
+    # Set the counter to the max so the next call is the blocked one.
+    # PROD-14: ContextVar-backed counter, set via .set() not direct assignment.
+    agent_tools._retrieve_call_count_var.set(agent_tools._RETRIEVE_CALLS_PER_TURN_MAX)
 
     with (
         patch("app.services.agent_tools.embed_query") as mock_embed,
         patch("app.services.agent_tools.rrf_fuse") as mock_rrf,
         patch("app.services.agent_tools.rerank") as mock_rerank,
     ):
-        result = _run(agent_tools.retrieve_tool({"query": "third call query"}))
+        result = _run(agent_tools.retrieve_tool({"query": "capped call query"}))
 
     # Must be blocked — embed/rrf/rerank must NOT have been called.
     mock_embed.assert_not_called()
@@ -557,7 +565,7 @@ def test_retrieve_tool_blocked_on_third_call():
     mock_rerank.assert_not_called()
 
     assert result.get("is_error") is True, (
-        f"Expected is_error=True on 3rd retrieve call, got: {result}"
+        f"Expected is_error=True on capped retrieve call, got: {result}"
     )
     content_text = result["content"][0]["text"]
     assert "quota" in content_text.lower() or "cap" in content_text.lower() or "exceeded" in content_text.lower(), (
@@ -571,15 +579,17 @@ def test_retrieve_tool_blocked_on_third_call():
 
 
 def test_retrieve_tool_counter_reset_by_build_tool_server():
-    """D-10 suspenders: build_tool_server must reset _retrieve_call_count to 0.
+    """D-10 suspenders: build_tool_server must reset _retrieve_call_count_var to 0.
 
     This ensures each new run_agent_turn invocation starts with a fresh counter,
-    so the per-turn cap does not accumulate across multiple Celery task invocations.
+    so the per-turn DoS guard does not accumulate across multiple Celery task
+    invocations.
     """
     from app.services.retrieval_service import RetrievalStrategy
 
     # Simulate counter left over from a previous turn.
-    agent_tools._retrieve_call_count = 99
+    # PROD-14: ContextVar-backed, so use .set() not direct assignment.
+    agent_tools._retrieve_call_count_var.set(99)
 
     build_tool_server(
         conn_str="postgresql://test:test@localhost/testdb",
@@ -590,7 +600,7 @@ def test_retrieve_tool_counter_reset_by_build_tool_server():
         notify_fn=None,
     )
 
-    assert agent_tools._retrieve_call_count == 0, (
-        f"build_tool_server must reset _retrieve_call_count to 0, "
-        f"got {agent_tools._retrieve_call_count}"
+    assert agent_tools._retrieve_call_count_var.get() == 0, (
+        f"build_tool_server must reset _retrieve_call_count_var to 0, "
+        f"got {agent_tools._retrieve_call_count_var.get()}"
     )

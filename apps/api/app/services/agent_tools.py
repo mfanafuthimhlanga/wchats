@@ -2,8 +2,8 @@
 agent_tools — Four MCP tool definitions + build_tool_server factory.
 
 Provides the tool layer that the Claude Agent SDK invokes inside a Celery task.
-All four tools are defined at module level and reference module-level globals
-for tenant-scoped state (safe for worker_pool=solo — sequential, single-process).
+All four tools are defined at module level and read per-task state from ContextVars
+for worker concurrency safety (PROD-14).
 
 Tools:
     retrieve            — embed → rrf_fuse → rerank → return top MAX_CHUNKS chunks
@@ -16,9 +16,14 @@ Security (G-04 hard block):
     Non-allowlisted tables receive is_error=True with NO SQL executed.
 
 Design decisions:
-    - Module-level globals (_conn_str, _agent_id, etc.) are a simple injection
-      mechanism for worker_pool=solo. If concurrency is ever raised above 1,
-      replace with contextvars.ContextVar.
+    - Per-task state (_conn_str, _agent_id, etc.) is stored in contextvars.ContextVar
+      so workers running multiple tasks concurrently carry no cross-request state bleed
+      (PROD-14).  build_tool_server() calls .set() on each ContextVar at the start of
+      every run_agent_turn invocation.
+    - retrieve_tool reads all ContextVars into local variables in the async body BEFORE
+      passing lambdas to run_in_executor — executor threads do not inherit the asyncio
+      context automatically, so ContextVar.get() calls inside executor lambdas would
+      read stale/empty values.
     - retrieve calls retrieval_service functions directly (never apply_async)
       because this code already runs inside a Celery task.
     - Content is truncated at 2000 chars (≈ MAX_CHUNK_TOKENS * 4) before
@@ -32,6 +37,7 @@ import hashlib
 import json
 import re
 import ssl
+from contextvars import ContextVar
 from typing import Any
 
 import psycopg2
@@ -114,23 +120,35 @@ MAX_CHUNK_TOKENS: int = 500  # approximate; character proxy = MAX_CHUNK_TOKENS *
 _CONTENT_CHAR_LIMIT: int = MAX_CHUNK_TOKENS * 4  # 2000 chars
 
 # ---------------------------------------------------------------------------
-# Module-level globals (injected by build_tool_server — safe for worker_pool=solo)
+# Per-task ContextVars — injected by build_tool_server (PROD-14)
+#
+# Replacing the former module-level globals (_conn_str, _agent_id, etc.) with
+# ContextVar gives per-task state isolation so a worker running multiple tasks
+# concurrently carries no cross-request state bleed.
+#
+# asyncio.run() propagation (RESEARCH.md Cluster 7, note A3):
+#   asyncio.run(coro) runs coro in a copy of the caller's context, so values
+#   set by build_tool_server (sync) are visible inside _run_sdk_turn (async).
+#
+# Executor-thread caveat:
+#   run_in_executor() threads do NOT automatically receive the asyncio context.
+#   All tools read ContextVars into local variables in the async body and pass
+#   those locals to the executor lambdas — not ContextVar.get() inside lambdas.
 # ---------------------------------------------------------------------------
 
-_conn_str: str = ""
-_agent_id: str = ""
-_agent_name: str = ""
-_strategy: RetrievalStrategy | None = None
-_conversation_id: str = ""
-_notify_fn = None
+_conn_str_var: ContextVar[str] = ContextVar("conn_str", default="")
+_agent_id_var: ContextVar[str] = ContextVar("agent_id", default="")
+_agent_name_var: ContextVar[str] = ContextVar("agent_name", default="")
+_strategy_var: ContextVar[RetrievalStrategy | None] = ContextVar("strategy", default=None)
+_conversation_id_var: ContextVar[str] = ContextVar("conversation_id", default="")
+_notify_fn_var: ContextVar = ContextVar("notify_fn", default=None)
 
-# D-10 (suspenders): per-turn retrieve call counter.
+# D-10 (suspenders): per-turn retrieve call counter — ContextVar for isolation.
 # Reset to 0 by build_tool_server() at the start of each run_agent_turn invocation.
-# retrieve_tool increments this and returns is_error on the 3rd+ call, enforcing
-# the Voyage 3 RPM free-tier guard without relying on max_turns (see D-10 fix comment
-# in agent.py — max_turns=3 was too low and caused empty responses after retrieval).
-_RETRIEVE_CALLS_PER_TURN_MAX: int = 2
-_retrieve_call_count: int = 0
+# Raised from 2 (Voyage 3 RPM free-tier guard) to 8 (DoS-only ceiling) now that
+# embeddings move to Bedrock which has no such RPM cap (PROD-06 throttle removal).
+_RETRIEVE_CALLS_PER_TURN_MAX: int = 8
+_retrieve_call_count_var: ContextVar[int] = ContextVar("retrieve_call_count", default=0)
 
 
 # ---------------------------------------------------------------------------
@@ -218,20 +236,32 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     code already runs inside a Celery task.
 
     D-10 (suspenders): blocks the call and returns is_error when the per-turn
-    counter exceeds _RETRIEVE_CALLS_PER_TURN_MAX (2). This enforces the Voyage
-    3 RPM free-tier limit regardless of how many agentic turns are allowed.
+    counter exceeds _RETRIEVE_CALLS_PER_TURN_MAX (now 8 — DoS guard only; was 2
+    to protect the Voyage 3 RPM free tier which Bedrock removes).
     Counter is reset by build_tool_server() at the start of each task invocation.
-    """
-    global _retrieve_call_count
 
-    _retrieve_call_count += 1
-    if _retrieve_call_count > _RETRIEVE_CALLS_PER_TURN_MAX:
+    Executor-thread safety: all ContextVars are read into local variables at the
+    TOP of this async body before any run_in_executor call.  Executor threads do
+    not inherit the asyncio context, so ContextVar.get() calls inside lambdas
+    would return default (empty/None) values instead of the task's values.
+    """
+    # Increment per-turn counter.  ContextVar-backed: mutations here are visible
+    # only in this task's context (no bleed across concurrent tasks).
+    count = _retrieve_call_count_var.get() + 1
+    _retrieve_call_count_var.set(count)
+
+    # Read remaining ContextVars into locals BEFORE any run_in_executor handoff.
+    conversation_id = _conversation_id_var.get()
+    conn_str = _conn_str_var.get()
+    strategy = _strategy_var.get() or RetrievalStrategy.model_validate({})
+
+    if count > _RETRIEVE_CALLS_PER_TURN_MAX:
         log.warning(
             "retrieve_tool.rate_cap_hit",
-            call_count=_retrieve_call_count,
+            call_count=count,
             max_allowed=_RETRIEVE_CALLS_PER_TURN_MAX,
-            conversation_id=_conversation_id,
-            note="D-10: retrieve call cap exceeded; blocking to protect Voyage RPM quota",
+            conversation_id=conversation_id,
+            note="DoS guard: retrieve call cap exceeded for this turn",
         )
         return {
             "content": [
@@ -256,13 +286,12 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
         log.warning(
             "retrieve_tool.filters_ignored",
             filter_count=len(filters),
-            conversation_id=_conversation_id,
+            conversation_id=conversation_id,
             note="filters parameter is not yet enforced; upgrade to M5 allowlist before activation",
         )
     # filters intentionally not applied — see AR-03-07 / TODO-RET-01
-    strategy = _strategy or RetrievalStrategy.model_validate({})
 
-    log.debug("retrieve_tool.start", query=query[:80], call_count=_retrieve_call_count)
+    log.debug("retrieve_tool.start", query=query[:80], call_count=count)
 
     # Run blocking retrieval calls in executor to keep the async tool cooperative.
     loop = asyncio.get_event_loop()
@@ -294,8 +323,10 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     query_vector: list[float] = await loop.run_in_executor(
         None, lambda: _embed_with_cache(query)
     )
+    # conn_str and strategy are locals captured from the async body — safe for
+    # executor threads (no ContextVar.get() calls inside the lambdas).
     rrf_result: dict = await loop.run_in_executor(
-        None, lambda: rrf_fuse(_conn_str, query_vector, query, strategy)
+        None, lambda: rrf_fuse(conn_str, query_vector, query, strategy)
     )
     reranked: list[dict] = await loop.run_in_executor(
         None, lambda: rerank(query, rrf_result["fused"], strategy)
@@ -355,6 +386,10 @@ async def lookup_structured_tool(args: dict[str, Any]) -> dict[str, Any]:
     Security (G-04): table is checked against ALLOWED_LOOKUP_TABLES BEFORE any
     SQL assembly. Non-allowlisted table → immediate is_error return, no SQL run.
     Filter values are passed as psycopg2 %s parameters — never f-string interpolated.
+
+    Executor-thread safety: conn_str is read from _conn_str_var into a local
+    before _run_query is defined — the nested function captures the local via
+    closure, not via ContextVar.get() inside the thread.
     """
     table: str = args.get("table", "")
     filters: dict = args.get("filters", {})
@@ -395,8 +430,13 @@ async def lookup_structured_tool(args: dict[str, Any]) -> dict[str, Any]:
 
     loop = asyncio.get_event_loop()
 
+    # Read conn_str from ContextVar into a local so the executor thread closure
+    # captures a plain string value — not a ContextVar.get() call that would
+    # run in the wrong context.
+    conn_str = _conn_str_var.get()
+
     def _run_query() -> list:
-        conn = psycopg2.connect(_conn_str, connect_timeout=5)
+        conn = psycopg2.connect(conn_str, connect_timeout=5)
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
@@ -446,11 +486,21 @@ async def escalate_to_human_tool(args: dict[str, Any]) -> dict[str, Any]:
       - _mark_conversation_escalated returns already_escalated=True on duplicate call;
         in that case _notify_fn is NOT called.
       - Notification payload is prefixed with [AGENT-DETECTED — UNVERIFIED].
+
+    Executor-thread safety: all ContextVars are read into locals before the
+    run_in_executor call so the executor closure captures plain values.
     """
     reason: str = _sanitise_escalation_field(args.get("reason", ""))
     context: str = _sanitise_escalation_field(args.get("context", ""))
 
     log.info("escalate_to_human_tool.called", reason=reason)
+
+    # Read ContextVars into locals BEFORE run_in_executor — executor threads do not
+    # inherit the asyncio context (PROD-14 executor-thread caveat).
+    conversation_id = _conversation_id_var.get()
+    agent_id = _agent_id_var.get()
+    conn_str = _conn_str_var.get()
+    notify_fn = _notify_fn_var.get()
 
     loop = asyncio.get_event_loop()
 
@@ -458,7 +508,7 @@ async def escalate_to_human_tool(args: dict[str, Any]) -> dict[str, Any]:
     result = await loop.run_in_executor(
         None,
         lambda: _mark_conversation_escalated(
-            _conversation_id, _agent_id, reason, context, _conn_str
+            conversation_id, agent_id, reason, context, conn_str
         ),
     )
 
@@ -467,9 +517,9 @@ async def escalate_to_human_tool(args: dict[str, Any]) -> dict[str, Any]:
 
     # Fire-and-forget notification (email / webhook / slack — injected by task).
     # Prefix with [AGENT-DETECTED — UNVERIFIED] so recipients know this is LLM-sourced.
-    if _notify_fn is not None:
+    if notify_fn is not None:
         prefixed_reason = f"[AGENT-DETECTED — UNVERIFIED] {reason}"
-        _notify_fn(prefixed_reason, context)
+        notify_fn(prefixed_reason, context)
 
     return {
         "content": [
@@ -522,10 +572,17 @@ def build_tool_server(
     conversation_id: str,
     notify_fn,
 ) -> object:
-    """Inject tenant-scoped state into module globals and return the MCP server.
+    """Inject tenant-scoped state into ContextVars and return the MCP server.
 
-    Called once per ``run_agent_turn`` invocation. The module globals are safe
-    because ``worker_pool=solo`` executes tasks sequentially in the main process.
+    Called once per ``run_agent_turn`` invocation in the sync Celery task body
+    (before asyncio.run()).  Sets all six ContextVars so they are visible inside
+    the async SDK turn and its tool callees (Python 3.7+ asyncio.run propagation
+    guarantee — see RESEARCH.md Cluster 7, note A3).
+
+    Concurrency safety (PROD-14):
+        ContextVar.set() mutates only the *current context's* copy of the variable.
+        With prefork concurrency > 1, each worker process has its own context per
+        task, so no cross-request state bleed occurs.
 
     Args:
         conn_str:        Decrypted tenant DB connection string.
@@ -538,18 +595,16 @@ def build_tool_server(
     Returns:
         MCP server object (create_sdk_mcp_server result) registering all four tools.
     """
-    global _conn_str, _agent_id, _agent_name, _strategy, _conversation_id, _notify_fn
-    global _retrieve_call_count
-
-    _conn_str = conn_str
-    _agent_id = agent_id
-    _agent_name = agent_name
-    _strategy = strategy
-    _conversation_id = conversation_id
-    _notify_fn = notify_fn
+    _conn_str_var.set(conn_str)
+    _agent_id_var.set(agent_id)
+    _agent_name_var.set(agent_name)
+    _strategy_var.set(strategy)
+    _conversation_id_var.set(conversation_id)
+    _notify_fn_var.set(notify_fn)
 
     # D-10 (suspenders): reset per-turn retrieve counter for this new task invocation.
-    _retrieve_call_count = 0
+    # ContextVar.set() ensures the reset is scoped to this task's context only.
+    _retrieve_call_count_var.set(0)
 
     log.debug(
         "build_tool_server.ready",
