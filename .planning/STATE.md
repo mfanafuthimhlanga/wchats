@@ -1,20 +1,22 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.1
-milestone_name: Transactional Capability
+milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
-last_updated: "2026-06-28T23:27:40.117Z"
+last_updated: "2026-06-29T15:36:34.194Z"
 progress:
-  total_phases: 2
+  total_phases: 6
   completed_phases: 0
-  total_plans: 17
-  completed_plans: 4
+  total_plans: 4
+  completed_plans: 1
   percent: 0
 ---
 
 # Project State
 
 ## Current Status
+
+**▶ RESUME MARKER (2026-06-29 session): Phase 14 EXECUTING — Plan 01 complete.** 14-01 (transactional substrate migration + ORM models) complete (commits `56f8d41` + `a91afed`, 11/12 tests pass). **Next:** 14-02 (typed tool contract — Pydantic schemas + TransactionalToolDef registry + StubProviderAdapter + actor_seam stub) and 14-03 (capability enforcement + idempotency + audit helpers). Wave 1 = 14-01 + 14-02 in parallel. Phase 13 (production hosting) remains a separate, paused track needing real AWS — see checkpoint below.
 
 **▶ CHECKPOINT — Phase 13 EXECUTING, paused at live AWS gates (2026-06-29):** 7/11 plans complete — **all autonomous code waves done**: 13-01 Terraform IaC (`deploy/terraform/`, 12 files), 13-02 Bedrock Titan v2 embedder (provider seam, both paths), 13-03 Neon connection pooling, 13-04 per-tenant re-embed task, 13-05 env-driven embed snippet, 13-06 S3 uploads, 13-07 ContextVar concurrency (prefork=2 in prod / solo in dev). 73 phase unit tests pass together; commits `e8b51fa`→`3560071` on `main`. **Paused at 13-08** (first `autonomous:false` live gate). Remaining 13-08/09/10/11 need a real **AWS account (billing + Bedrock Titan v2 model access in us-east-1)** plus `terraform` and `aws` CLIs — none present locally. `terraform validate`/`fmt` for 13-01 are deferred into 13-08. **Resume:** install terraform + awscli, configure AWS creds, request Bedrock Titan access, then `/gsd-execute-phase 13 --wave 3` (13-08 live bring-up + re-embed), then wave 4 (13-09/10/11). Per-plan detail in each `13-0X-SUMMARY.md`.
 
@@ -42,7 +44,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** Phase 13 — production-hosting-and-durable-deployment
+**Current focus:** Phase 14 — transactional-tool-contract-capability-audit-substrate-typed
 **Previous:** M3 (Hybrid Retrieval) ✓ Complete — demo_m3.sh passed, notebook 4 DataFrames verified, RET-01–RET-08 satisfied (2026-05-16)
 
 ## Milestone Progress
@@ -63,6 +65,11 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Key Decisions
 
+- [14-01] Migration 0014 uses op.execute() raw SQL with IF NOT EXISTS guards (consistent with 0013, safe re-run)
+- [14-01] tool_calls_audit.arguments and capability_snapshot are nullable (plan spec overrides PRD NOT NULL — capture may fail before validation)
+- [14-01] pending_confirmations.expires_at is nullable — NULL means no deadline configured (plan spec overrides PRD NOT NULL)
+- [14-01] actor_decision/actor_rationale are NOT NULL DEFAULT '' — Phase 14 writes empty; Phase 15 Actor fills them
+- [14-01] No ORM FK relationships declared (agent_id is plain UUID) — avoids cross-table teardown complexity in tests
 - [11-05] scoreColor: --amber → --gold for mid-range scores (0.7-0.9) — amber = building warmth (#E8A87C) in Hillbrow system, not a status warning token
 - [11-05] Recharts hex per plan spec (#FBBF24 gold) rather than PATTERNS.md (#F0C674) — plan spec must_haves are acceptance criteria target
 - [11-05] Widget customizer layout: 3-column grid (255px 310px 1fr) → flex 2-column (form flex:1, preview 300px sticky top:80px) per .continue-here.md decision
@@ -120,6 +127,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|
+| 14 | 01 | ~9 min | 2 | 7 |
 | 11 | 05 | ~20 min | 2 | 3 |
 | 11 | 04 | ~20 min | 2 | 6 |
 | 11 | 03 | ~15 min | 2 | 2 |
