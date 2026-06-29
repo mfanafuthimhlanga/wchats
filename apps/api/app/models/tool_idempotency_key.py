@@ -15,6 +15,33 @@ re-executing the mutation.
 
 The idempotency key is scoped to (agent_id, skill) so the same key value
 cannot accidentally replay a different skill for the same agent.
+
+--- Migration 0015 additions (CR-02 + WR-02 substrate) ---
+
+status (CR-02 substrate):
+  Reservation lifecycle column supporting atomic reserve-before-execute.
+  'pending'   — key claimed before the adapter runs; result is NULL.
+  'completed' — adapter finished; result is populated.
+  DEFAULT 'completed' is the fail-safe so any row created by the legacy
+  store_idempotency path (which writes directly to 'completed') and all
+  pre-existing rows are never mistaken for an in-progress reservation.
+  The reserve-before-execute engine that writes 'pending' is implemented
+  in plan 14-06.
+
+args_hash (WR-02 substrate):
+  sha256 hex of the canonicalized tool arguments that created this row.
+  Nullable so legacy store_idempotency rows (no hash) remain valid.
+  The argument-mismatch detection engine is implemented in plan 14-06/14-08.
+
+reserved_at:
+  TIMESTAMPTZ recording when the reservation was claimed (the INSERT
+  moment for the new reserve path; DEFAULT now() for legacy-path rows).
+  Used by 14-06 to reclaim a stale 'pending' row left by a crash so the
+  key cannot deadlock forever.
+
+result is now nullable:
+  A pending reservation has no result yet; nullability is relaxed so a
+  reserve INSERT can omit result and a finalize UPDATE can set it.
 """
 
 from datetime import datetime
@@ -40,7 +67,25 @@ class ToolIdempotencyKey(Base):
     # Client-provided UUID idempotency key, scoped to (agent_id, skill).
     idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
     # Full tool response dict: {"content": [...], "is_error": bool}.
-    result: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # Nullable as of migration 0015: a pending reservation has no result yet.
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Reservation lifecycle (migration 0015 / CR-02 substrate).
+    # DEFAULT 'completed' ensures legacy rows are never seen as pending.
+    status: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=text("'completed'"),
+    )
+    # sha256 hex of canonicalized tool arguments (migration 0015 / WR-02 substrate).
+    # Nullable so legacy rows without a hash remain valid.
+    args_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When the reservation was claimed (DEFAULT now() for legacy-path rows).
+    # Used by 14-06 stale-pending reclaim to prevent key deadlock after a crash.
+    reserved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
