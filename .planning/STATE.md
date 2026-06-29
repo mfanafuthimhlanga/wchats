@@ -1,8 +1,8 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-status: Phase 13 EXECUTING — 7/11 plans done (all code waves); paused at live AWS gates 13-08..11 (need AWS account + terraform/awscli)
+milestone: v1.1
+milestone_name: Transactional Capability
+status: v1.1 roadmap defined (phases 14-19), building in parallel; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
 last_updated: "2026-06-28T23:27:40.117Z"
 progress:
   total_phases: 2
@@ -35,6 +35,7 @@ progress:
 ## Roadmap Evolution
 
 - 2026-06-28 — **Phase 13 added: Production Hosting and Durable Deployment** (depends on Phase 12). Scope = the production gap beyond the portfolio demo: durable always-on managed hosting for API + warm runtime worker + Redis (kills the local-PC + tunnel + 108–144s cold start), CDN-hosted widget with a *working* self-serve embed snippet (real `src` + `data-api`, removes the "CDN not yet live" placeholder), object storage for uploads (S3 replaces local `UPLOADS_DIR`), and concurrency-safe horizontal runtime workers (`agent_tools` globals → `ContextVar`). Four waves, PROD-01..PROD-15. Executes the ADR-0001 D-14 env seam onto always-on infra. **Out of scope:** Neon project-cap/Aurora migration (not a constraint at current scale — per user) and the Post-M10 transactional/A2A/MCP/security layers (separate milestone). Not planned yet → `/gsd-plan-phase 13`.
+- 2026-06-29 — **Milestone v1.1 Transactional Capability started (safe parallel track).** Phases 14–19 appended to the roadmap; 43 requirements (TXN/CAP/ACT/INT/IDV/AUD/BLR/RTX/SEC/DOC/VER) per `Post-M10-PRD.md` §4 — agents move from answering to acting, with security layers L1–L3/L5/L6 (+partial L4) first-class. The standard new-milestone reset was deliberately NOT run (it would have cleared the paused Phase 13 dir + reset its checkpoint); Phase 13 stays paused & resumable. v1.1 is code-buildable now in parallel and does not depend on the Phase 13 production deploy. **Next: `/gsd-plan-phase 14`.**
 
 ## Project Reference
 

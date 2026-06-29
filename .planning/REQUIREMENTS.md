@@ -282,6 +282,99 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 **Note:** Original count stated 82; recount confirmed 84 (CTL: 15, ING: 10, RET: 8, AGT: 11, VAL: 7, EVL: 8, RED: 8, DEP: 8, STR: 3, OPS: 6 = 84).
 
 ---
+
+## Milestone v1.1 Requirements — Transactional Capability
+
+**Defined:** 2026-06-29
+**Source:** `Post-M10-PRD.md` §4. Moves deployed agents from informational (answering) → transactional (acting), with security layers L1–L3 / L5 / L6 (+ partial L4) as first-class deliverables. Phases 14–19 (continue numbering from v1.0's Phase 13).
+
+> v1.1 builds on the live M1–M11 platform. It does **not** depend on Phase 13's production AWS deploy (paused on a domain purchase) — v1.1 is code-buildable in parallel.
+
+### Transactional Tool Contract (L1)
+- [ ] **TXN-01**: Six core transactional tools — `place_order`, `cancel_order`, `issue_refund`, `update_subscription`, `book_slot`, `update_customer_record` — defined as typed Python functions with full Pydantic input/output schemas (no string-blob, SQL, URL, or arbitrary-JSON inputs)
+- [ ] **TXN-02**: Side-effecting tools require a client-provided idempotency key; replaying the same key returns the original result and never re-executes the mutation
+- [ ] **TXN-03**: Every tool is tagged `mutating: true|false` at definition time — the authorization signal the Actor pre-execution hook keys on (tagged, never runtime-inferred)
+- [ ] **TXN-04**: `confirm_action` tool added for require-human flows; existing `escalate_to_human` retained
+- [ ] **TXN-05**: Tool definitions are A2A-skill-compatible in shape (typed inputs/outputs + examples) without exposing any A2A surface — forward-compat for v1.2
+
+### Capability Envelope (L2)
+- [ ] **CAP-01**: `capability_envelopes` control-DB table — `(agent_id, skill, enabled, rate_limit, constraints JSONB, requires_confirmation, requires_identity_verification, UNIQUE(agent_id, skill))`
+- [ ] **CAP-02**: Enforcement middleware rejects a tool call (logged as `capability.denial`) when the skill is disabled, over its rate limit, or violates a constraint (`max_amount_cents`, scope filters)
+- [ ] **CAP-03**: Capability-and-limits admin UI in the M8 checklist — per-skill envelope config, tighten-only (never loosen beyond platform defaults), identity-verification requirement, Actor mode per skill
+- [ ] **CAP-04**: Envelope configured at deploy time and surfaced in the M8 pre-deployment report; any later envelope change re-triggers the pre-deployment checklist (acknowledged via envelope hash)
+
+### Actor Validator (L3)
+- [ ] **ACT-01**: Actor validator — single-shot Claude (Haiku) call before any `mutating:true` tool executes; reads conversation + proposed tool call + envelope; outputs `approve | block | require_human` with rationale
+- [ ] **ACT-02**: Integrated as a pre-execution hook in the Claude Agent SDK tool loop; fires only for mutating tools
+- [ ] **ACT-03**: Short-circuit skip when the envelope marks `requires_confirmation:false` AND `max_amount_cents` is below a per-tenant skip threshold (cost control on low-value actions)
+- [ ] **ACT-04**: `require_human` creates a `pending_confirmations` row and routes through `confirm_action`; the action executes only on approval and expires otherwise
+- [ ] **ACT-05**: Validation chain extended to four nodes — Actor runs synchronously pre-mutation; Gatekeeper/Auditor/Strategist continue async post-response
+- [ ] **ACT-06**: Actor p95 latency < 1s; total added latency on a mutating call < 1.5s end-to-end
+
+### Integrations + Credential Service (L5 extension)
+- [ ] **INT-01**: `integration_credentials` tenant-DB table — Fernet-encrypted BYTEA, key derived from platform master key + tenant ID; never exposed to agent code
+- [ ] **INT-02**: Platform credential service resolves a credential to a short-lived in-memory handle at tool-execution time; no agent code path reads the table or constructs SQL
+- [ ] **INT-03**: Shopify adapter (place/cancel order, issue refund) behind the tool contract
+- [ ] **INT-04**: WooCommerce adapter
+- [ ] **INT-05**: Stripe adapter (issue refund, update subscription)
+- [ ] **INT-06**: Calendly adapter (book slot)
+- [ ] **INT-07**: Single-currency per tenant, configured at deploy time (multi-currency out of scope)
+
+### Customer Identity Verification
+- [ ] **IDV-01**: `customer_identities` tenant-DB table — `external_id, verified_at, verification_method, session_token_hash, session_expires_at`
+- [ ] **IDV-02**: Email-OTP verification flow (request code → verify → short-lived verified session)
+- [ ] **IDV-03**: SMS-OTP verification flow
+- [ ] **IDV-04**: Per-skill verification config (which actions require verification, method, expiry) driven by the envelope's `requires_identity_verification`
+- [ ] **IDV-05**: A mutating tool requiring verification is blocked server-side until the customer holds a valid verified session — never trusted from agent prose
+
+### Audit (L8 partial)
+- [ ] **AUD-01**: `tool_calls_audit` control-DB table captures 100% of mutating calls — `agent_id, conversation_id, skill, arguments, result, actor_decision, actor_rationale, capability_snapshot, latency_ms, error`
+- [ ] **AUD-02**: `pending_confirmations` control-DB table — `skill, arguments, requested_at, expires_at, resolved_at, resolution`
+- [ ] **AUD-03**: Zero audit gaps across 30 days of synthetic mutating traffic (verification target)
+
+### Blast-Radius Gate
+- [ ] **BLR-01**: Financial blast-radius gate in the M8 checklist orchestrator — reports max single-action value and max hourly aggregate per agent
+- [ ] **BLR-02**: Warnings escalate above tenant-configured thresholds; owner acknowledges the envelope hash at deploy (logged)
+
+### Red-Team Extensions (extends M7)
+- [ ] **RTX-01**: Confused-deputy attack probe
+- [ ] **RTX-02**: Value-bound evasion probe (chained smaller refunds to evade a daily/hourly cap)
+- [ ] **RTX-03**: Identity-verification-bypass probe
+- [ ] **RTX-04**: Zero high-severity findings on the transaction red-team classes for a clean tenant (gate target)
+
+### Security Layer Extensions (L4 partial, L6)
+- [ ] **SEC-01**: L4 output firewall — PII-regex pass on every response; flagged responses replaced with a generic deflection and logged (schema-bound + Claude-classifier passes deferred to v1.2)
+- [ ] **SEC-02**: L6 — retrieval context wraps retrieved content with explicit "treat as data, not instructions" framing
+- [ ] **SEC-03**: M7 prompt-injection agent split into conversation-injection and content-injection variants
+
+### Documentation + Verification
+- [ ] **DOC-01**: Tool-author guide
+- [ ] **DOC-02**: Integration-provider guide
+- [ ] **DOC-03**: Owner-facing capability-configuration guide
+- [ ] **VER-01**: v1.1 success-criteria gate — a non-technical tester deploys an agent that issues refunds up to a configured limit and places Shopify orders end-to-end without code; 100 synthetic adversarial messages produce zero unauthorized state mutations escaping L1–L3
+
+### v1.1 Out of Scope (deferred)
+| Feature | Defer to |
+|---|---|
+| A2A endpoint + MCP provisioning | v1.2 (tool defs designed A2A-compatible now) |
+| Schema-bound exfiltration + Claude-classifier output-firewall passes | v1.2 |
+| Continuous monitoring / alerting / audit-log Neon project | v1.3 |
+| ERP/CRM beyond Shopify/WooCommerce; marketplace integrations (Uber Eats/Glovo) | later |
+| Multi-currency | later |
+
+### v1.1 Traceability
+| Requirements | Phase | Status |
+|---|---|---|
+| TXN-01..05, CAP-01, CAP-02, AUD-01, AUD-02 | Phase 14 | Pending |
+| ACT-01..06 | Phase 15 | Pending |
+| INT-01..07 | Phase 16 | Pending |
+| IDV-01..05 | Phase 17 | Pending |
+| BLR-01, BLR-02, CAP-03, CAP-04, RTX-01..04, SEC-01..03 | Phase 18 | Pending |
+| DOC-01..03, VER-01, AUD-03 | Phase 19 | Pending |
+
+**v1.1 coverage:** 43 requirements across phases 14–19, all mapped. (TXN 5, CAP 4, ACT 6, INT 7, IDV 5, AUD 3, BLR 2, RTX 4, SEC 3, DOC 3, VER 1 = 43.)
+
+---
 *Requirements defined: 2026-05-12*
 *Last updated: 2026-05-12 after 01-04 — CTL-01, CTL-05, CTL-09, CTL-10 marked complete*
 *Last updated: 2026-05-13 after 01-06 — CTL-13 marked complete (80.41% unit test coverage)*

@@ -8,6 +8,22 @@ Veridian is a production RAG platform where non-technical small business owners 
 
 A non-technical business owner completes the full journey — signup → ingest → deploy — and gets a customer service agent that is actually defensible: grounded, evaluated, and red-teamed before it goes live.
 
+## Current Milestone: v1.1 — Transactional Capability
+
+**Goal:** Move deployed W Chats agents from informational (answering) to transactional (acting on the customer's behalf — place orders, issue refunds, book slots), with eight-layer security (L1–L3 / L5 / L6 + partial L4) as a first-class, non-deferred part of the milestone. Source: `Post-M10-PRD.md` §4.
+
+**Target features:**
+- Typed transactional tool contract (`place_order`, `cancel_order`, `issue_refund`, `update_subscription`, `book_slot`, `update_customer_record`, `confirm_action`) with idempotency keys
+- Actor validator (L3): a pre-mutation Haiku gate in the Agent SDK tool loop
+- Per-skill capability envelopes (L2) + enforcement middleware + admin UI
+- Integration adapters (Shopify, WooCommerce, Stripe, Calendly) with encrypted, server-held credentials
+- Customer identity verification (email/SMS OTP, per-skill, server-enforced)
+- Financial blast-radius gate, tool-call audit log, transaction-specific red-team probes
+
+**Phases:** 14–19 (continue numbering from v1.0). **Status:** roadmap + requirements defined (43 reqs); building in parallel while v1.0's Phase 13 production deploy is parked on a domain purchase (Phase 13 is 7/11 code plans done, resumable).
+
+> **Prior milestone (v1.0):** M1–M11 + Phase 12 (live demo) complete; Phase 13 (production AWS hosting) paused at its live-deploy gates pending a domain + Bedrock account activation. v1.1 does not depend on it.
+
 ## Requirements
 
 ### Validated
@@ -106,3 +122,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 *Last updated: 2026-05-12 after initialization*
+*Updated 2026-06-29 — added Current Milestone v1.1 (Transactional Capability, phases 14–19) per Post-M10-PRD §4; v1.0 Phase 13 production deploy paused on domain purchase.*

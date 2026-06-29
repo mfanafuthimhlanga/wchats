@@ -79,6 +79,83 @@ Plans:
 
 ---
 
+## Milestone v1.1 — Transactional Capability (Phases 14–19)
+
+*Source: `Post-M10-PRD.md` §4. Agents move from answering to acting. Security layers L1–L3 / L5 / L6 (+ partial L4) are first-class deliverables, not a later hardening pass. Builds on the live M1–M11 platform; does NOT depend on Phase 13's production deploy (paused on a domain purchase) — v1.1 is code-buildable in parallel. Target: 6–8 weeks, parallelizable across the four integration adapters once the tool framework + Actor validator are stable.*
+
+### Phase 14: Transactional tool contract & capability/audit substrate — typed mutating tools with idempotency keys, the capability_envelopes table + enforcement middleware, and the tool_calls_audit / pending_confirmations tables (security L1 + L2 foundation)
+
+**Goal:** Establish the authorization substrate every transactional action rides on — six typed transactional tools tagged `mutating:true` with idempotency-key handling, the per-skill capability-envelope table + enforcement middleware, and the audit/confirmation tables — so no action can execute without a typed contract, a capability check, and an audit row.
+**Requirements:** TXN-01, TXN-02, TXN-03, TXN-04, TXN-05, CAP-01, CAP-02, AUD-01, AUD-02
+**Depends on:** M4 reasoning engine (the agent tool loop)
+**Success criteria:**
+1. The six transactional tools + `confirm_action` exist as typed Pydantic functions; no string-blob/SQL/URL inputs anywhere in the set
+2. A side-effecting tool replayed with the same idempotency key returns the original result and does not re-execute
+3. A disabled / over-limit / constraint-violating skill call is rejected and logged as `capability.denial`
+4. Every mutating tool call writes a complete `tool_calls_audit` row
+**Plans:** 0 — run `/gsd-plan-phase 14`
+
+### Phase 15: Actor validator (L3) + four-node validation chain — a pre-mutation Haiku gate in the Agent SDK tool loop
+
+**Goal:** Insert the Actor validator as a synchronous pre-execution gate before any mutating tool runs, catching the prompt-injection-to-action class where the conversation looks legitimate but the proposed action does not align with the customer's intent.
+**Requirements:** ACT-01, ACT-02, ACT-03, ACT-04, ACT-05, ACT-06
+**Depends on:** Phase 14
+**Success criteria:**
+1. Every `mutating:true` call routes through the Actor → `approve | block | require_human` with rationale; the hook never fires for non-mutating tools
+2. `require_human` creates a `pending_confirmations` row and routes through `confirm_action`; the action executes only on approval
+3. Low-value actions under the per-tenant skip threshold short-circuit the Actor (cost control)
+4. Gatekeeper/Auditor/Strategist still run async post-response; Actor p95 < 1s, total added latency on a mutating call < 1.5s
+**Plans:** 0 — run `/gsd-plan-phase 15`
+
+### Phase 16: Integration adapters + platform credential service (L5 extension) — Shopify, WooCommerce, Stripe, Calendly with encrypted, server-held credentials
+
+**Goal:** Wire the transactional tools to real providers via adapters backed by encrypted, agent-invisible credentials resolved through a platform credential service — so an agent can take real actions without any code path ever seeing a raw credential.
+**Requirements:** INT-01, INT-02, INT-03, INT-04, INT-05, INT-06, INT-07
+**Depends on:** Phase 14
+**Success criteria:**
+1. `integration_credentials` is Fernet-encrypted and never read by agent code; the credential service returns only short-lived in-memory handles
+2. Each of Shopify / WooCommerce / Stripe / Calendly performs its real action behind the typed tool contract
+3. Single-currency per tenant is enforced at deploy time
+**Plans:** 0 — run `/gsd-plan-phase 16`
+
+### Phase 17: Customer identity verification — email/SMS OTP, per-skill, server-enforced
+
+**Goal:** Require a verified customer identity before account-affecting actions, configurable per skill, enforced server-side and never inferred from agent prose.
+**Requirements:** IDV-01, IDV-02, IDV-03, IDV-04, IDV-05
+**Depends on:** Phase 14, Phase 16
+**Success criteria:**
+1. `customer_identities` table + email-OTP and SMS-OTP flows issue short-lived verified sessions
+2. Per-skill verification requirement is driven by the capability envelope
+3. A mutating tool requiring verification is blocked server-side until a valid verified session exists
+**Plans:** 0 — run `/gsd-plan-phase 17`
+
+### Phase 18: Blast-radius gate, capability admin UI, transaction red-team & injection-defense extensions
+
+**Goal:** Make the transactional posture owner-configurable and adversarially tested — the financial blast-radius gate + capability UI in the M8 checklist, transaction-specific red-team probes, and the L4 PII firewall + L6 ingestion-injection hardening.
+**Requirements:** BLR-01, BLR-02, CAP-03, CAP-04, RTX-01, RTX-02, RTX-03, RTX-04, SEC-01, SEC-02, SEC-03
+**Depends on:** Phase 14, Phase 15, Phase 16, Phase 17
+**Success criteria:**
+1. The M8 checklist reports max single-action value + max hourly aggregate; owner acknowledges the envelope hash at deploy; envelope changes re-trigger the checklist
+2. The capability UI lets owners tighten (never loosen) per-skill limits + verification + Actor mode
+3. Transaction red-team probes (confused-deputy, value-bound evasion, identity-bypass) run with zero high-severity findings on a clean tenant
+4. PII output-firewall pass live; retrieval "treat as data, not instructions" wrapper in place; injection agent split into conversation/content variants
+**Plans:** 0 — run `/gsd-plan-phase 18`
+
+### Phase 19: Documentation + v1.1 verification
+
+**Goal:** Ship the author/provider/owner guides and prove the milestone's success criteria end-to-end.
+**Requirements:** DOC-01, DOC-02, DOC-03, VER-01, AUD-03
+**Depends on:** Phase 14, Phase 15, Phase 16, Phase 17, Phase 18
+**Success criteria:**
+1. Tool-author, integration-provider, and owner capability-configuration guides published
+2. A non-technical tester deploys a refund + Shopify-order agent end-to-end without code
+3. 100 synthetic adversarial messages → zero unauthorized state mutations escape L1–L3; 30-day synthetic audit-gap test passes (zero gaps)
+**Plans:** 0 — run `/gsd-plan-phase 19`
+
+*v1.1 roadmap added 2026-06-29 (safe parallel track). The standard new-milestone reset was deliberately NOT run — it would have cleared the paused Phase 13 directory and reset its checkpoint. Phase 13 stays paused & resumable (`/gsd-execute-phase 13 --wave 3` once the domain + Bedrock are ready). 6 phases, 43 requirements, all mapped. Out of scope: A2A/MCP (v1.2), schema-bound exfiltration + classifier firewall (v1.2), continuous alerting/audit-infra (v1.3).*
+
+---
+
 *Roadmap created: 2026-05-12*
 *Last updated: 2026-05-29 — Phase 12 host pivot (no credit card): Oracle ARM VM + Caddy/DuckDNS TLS (D-01/D-02/D-05) superseded by local Windows PC + Cloudflare quick tunnel. 12-05/12-06 re-planned in place (tunnel bring-up + live gate); 12-01/02/03/04 unchanged. The VM/systemd/Caddy deploy artifacts (12-04) are retained as the AWS-VM reference for ADR 0001. Still 6 plans / 3 waves; all D-01..D-15 (as amended) covered.*
 *Updated 2026-06-28 — Phase 13 added (Production Hosting and Durable Deployment): turns "deploy" from a control-DB flag into a durable always-on multi-tenant serving substrate + working self-serve embed. Four waves (PROD-01..PROD-15): durable managed hosting, CDN widget + working embed snippet, object storage for uploads, concurrency-safe horizontal workers. Executes the ADR-0001 D-14 env seam onto always-on infra. Out of scope: Neon project-cap/Aurora migration and the Post-M10 transactional/A2A/MCP security layers. Not planned yet — run /gsd-plan-phase 13.*
