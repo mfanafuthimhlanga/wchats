@@ -28,6 +28,7 @@ Plans:
 **Requirements:** PROD-01 through PROD-15 (defined below; to be formalised by `/gsd-plan-phase 13`)
 
 *Wave 1 — Durable always-on hosting (Tier 0 compute):*
+
 - PROD-01 — API (FastAPI/uvicorn) runs on an always-on managed host at a stable HTTPS URL — not a local PC, not an ephemeral SSH/Cloudflare tunnel.
 - PROD-02 — One warm Celery `runtime` worker runs always-on; the 108–144s cold-start SDK/import penalty is off the request path (worker stays warm; `Restart=always`-equivalent supervision).
 - PROD-03 — Redis (Celery broker + SSE pub/sub) is a managed always-on instance.
@@ -37,16 +38,19 @@ Plans:
 - PROD-07 — The host swap is executed purely via the ADR-0001 D-14 env seam (`apps/api/app/core/config.py`) — config/secrets change only, no application source change to point at the managed host.
 
 *Wave 2 — Real widget delivery + working embed (Tier 1):*
+
 - PROD-08 — The <20KB widget bundle (`apps/admin/public/wchats/`) is hosted on a real CDN at a stable, cache-correct URL.
 - PROD-09 — `EMBED_SNIPPET` (`apps/admin/app/agents/[id]/deploy/page.tsx:114`) emits a real CDN `src` AND a real `data-api` pointing at the stable production API host; the "CDN not yet live" disclaimer (`deploy/page.tsx:522`) is removed.
 - PROD-10 — A stable production API domain (real DNS, not a tunnel) backs the embed so a pasted snippet survives across sessions — the "deploy on their system" contract.
 - PROD-11 — End-to-end self-serve proof: a real owner copies the snippet from Deploy → Embed and it works on an external third-party site with zero hand-editing.
 
 *Wave 3 — Object storage for uploads (Tier 1):*
+
 - PROD-12 — Document uploads are stored in S3/object storage instead of local-disk `UPLOADS_DIR` (default `/vrd-uploads`, `documents.py`); uploads survive worker restarts and are reachable from any host.
 - PROD-13 — The ingestion pipeline (parse → chunk → embed) reads source files from object storage with no local-disk dependency anywhere in the chain.
 
 *Wave 4 — Horizontal worker scaling (Tier 0 scaling):*
+
 - PROD-14 — The module-level globals in `apps/api/app/services/agent_tools.py` (`_conn_str`, `_agent_id`, `_retrieve_call_count`) are refactored to `ContextVar` (or equivalent per-task isolation) so worker concurrency > 1 carries no cross-request state bleed.
 - PROD-15 — The runtime worker runs at concurrency > 1 and/or as a horizontal fleet, verified correct under concurrent multi-tenant load (replacing the `--pool=solo --concurrency=1` constraint).
 
@@ -59,6 +63,7 @@ Plans:
 Plans:
 
 **ROADMAP Wave 1 — Durable always-on hosting + Bedrock embeddings + Neon pooling** *(PROD-01..PROD-07)*
+
 - [x] 13-01-PLAN.md — (exec wave 1) Terraform IaC: VPC, ECR, ElastiCache, 3 Fargate services, SSE-safe ALB (idle 4000), stable Route53 domain, private S3 buckets, widget CloudFront, least-privilege IAM — PROD-01,02,03,04,07,10
 - [x] 13-02-PLAN.md — (exec wave 1) Bedrock Titan v2 embedder swap (both doc + query paths) behind a provider seam; 1024-dim guard; boto3 — PROD-06
 - [x] 13-03-PLAN.md — (exec wave 1) Neon runtime connection pooling: collapse 4 per-turn psycopg2.connect → 1 pooled conn in agent.py — PROD-05
@@ -66,14 +71,17 @@ Plans:
 - [ ] 13-08-PLAN.md — (exec wave 3, autonomous:false) Live bring-up: terraform apply + ECR push + ECS deploy + ACM/Route53 + health & ALB SSE-survival smoke + live re-embed with retrieval regression — PROD-01,02,03,04,06,07
 
 **ROADMAP Wave 2 — Real widget delivery + working embed** *(PROD-08..PROD-11; depends on Wave 1 stable API host)*
+
 - [x] 13-05-PLAN.md — (exec wave 2) Fix `EMBED_SNIPPET` (env-driven real CloudFront src + `data-api` ALB domain); remove the CDN-disclaimer — PROD-09,10
 - [ ] 13-09-PLAN.md — (exec wave 4, autonomous:false) Publish widget bundle to CloudFront (OAC; bucket private) + external-site self-serve embed proof — PROD-08,11
 
 **ROADMAP Wave 3 — Object storage for uploads** *(PROD-12..PROD-13)*
+
 - [x] 13-06-PLAN.md — (exec wave 2) S3 uploads code: storage_service + tenant-scoped put_object; parse reads bytes from S3 (parse_document_from_bytes); fix hardcoded `/vrd-uploads` cleanup — PROD-12,13
 - [ ] 13-10-PLAN.md — (exec wave 4, autonomous:false) Live upload→S3→parse smoke (bucket private; no local-disk dependency) — PROD-12,13
 
 **ROADMAP Wave 4 — Horizontal worker scaling** *(PROD-14..PROD-15)*
+
 - [x] 13-07-PLAN.md — (exec wave 3) `agent_tools` globals → `ContextVar` (asyncio.run-propagation-verified); ENVIRONMENT-conditional worker_pool; prefork concurrency=2 CMD; lift Voyage-era retrieve throttle — PROD-14,15,06
 - [ ] 13-11-PLAN.md — (exec wave 4, autonomous:false) Live concurrency verify: prefork concurrency=2 with two concurrent multi-tenant turns, isolation proven — PROD-15
 
@@ -89,14 +97,24 @@ Plans:
 **Requirements:** TXN-01, TXN-02, TXN-03, TXN-04, TXN-05, CAP-01, CAP-02, AUD-01, AUD-02
 **Depends on:** M4 reasoning engine (the agent tool loop)
 **Success criteria:**
+
 1. The six transactional tools + `confirm_action` exist as typed Pydantic functions; no string-blob/SQL/URL inputs anywhere in the set
 2. A side-effecting tool replayed with the same idempotency key returns the original result and does not re-execute
 3. A disabled / over-limit / constraint-violating skill call is rejected and logged as `capability.denial`
 4. Every mutating tool call writes a complete `tool_calls_audit` row
+
 **Plans:** 4 plans
+**Wave 1**
+
 - [ ] 14-01-PLAN.md (wave 1) — migration 0014 + 4 control-DB tables + ORM models (CAP-01, AUD-01, AUD-02, TXN-02)
 - [ ] 14-02-PLAN.md (wave 1) — typed Pydantic schemas + TransactionalToolDef registry + StubProviderAdapter + actor_seam (TXN-01, TXN-03, TXN-05)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 14-03-PLAN.md (wave 2) — fail-closed capability enforcement + control-DB idempotency + audit writer (CAP-02, TXN-02, AUD-01)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 14-04-PLAN.md (wave 3) — 7 tool handlers + dispatcher + build_tool_server registration (TXN-01, TXN-02, TXN-03, TXN-04, AUD-01, AUD-02)
 
 ### Phase 15: Actor validator (L3) + four-node validation chain — a pre-mutation Haiku gate in the Agent SDK tool loop
@@ -105,10 +123,12 @@ Plans:
 **Requirements:** ACT-01, ACT-02, ACT-03, ACT-04, ACT-05, ACT-06
 **Depends on:** Phase 14
 **Success criteria:**
+
 1. Every `mutating:true` call routes through the Actor → `approve | block | require_human` with rationale; the hook never fires for non-mutating tools
 2. `require_human` creates a `pending_confirmations` row and routes through `confirm_action`; the action executes only on approval
 3. Low-value actions under the per-tenant skip threshold short-circuit the Actor (cost control)
 4. Gatekeeper/Auditor/Strategist still run async post-response; Actor p95 < 1s, total added latency on a mutating call < 1.5s
+
 **Plans:** 0 — run `/gsd-plan-phase 15`
 
 ### Phase 16: Integration adapters + platform credential service (L5 extension) — Shopify, WooCommerce, Stripe, Calendly with encrypted, server-held credentials
@@ -117,13 +137,17 @@ Plans:
 **Requirements:** INT-01, INT-02, INT-03, INT-04, INT-05, INT-06, INT-07
 **Depends on:** Phase 14
 **Build decisions (see `docs/adr/0002-agent-tool-and-provisioning-strategy.md`):**
+
 - **Call provider SDKs directly behind our typed tools — NOT provider MCP servers or vendor "agent toolkits" (e.g. the Stripe Agent Toolkit).** A provider MCP/toolkit hands raw provider operations to the LLM, bypassing the Actor validator + capability envelope + audit (L1–L3) AND dumping the provider's whole API into context (token bloat + degraded tool-selection). Our narrow, hand-curated tool set is both the security boundary and the context-efficiency win.
 - **Stripe (INT-05):** Refunds API (`issue_refund`), Subscriptions API (`update_subscription`), Checkout Session / Payment Link for `place_order` (no card handling). Pass the TXN-02 client idempotency key straight to Stripe's native `Idempotency-Key`. Provision a per-tenant **Stripe Restricted API Key** scoped to only the enabled skills — defense-in-depth at the Stripe layer mirroring the L2 envelope.
 - **Shopify / WooCommerce / Calendly:** same pattern — provider SDK/REST behind typed tools, with scope-restricted credentials. (Stripe Agent Toolkit / MCP kept only as a *reference* for which ops to expose.)
+
 **Success criteria:**
+
 1. `integration_credentials` is Fernet-encrypted and never read by agent code; the credential service returns only short-lived in-memory handles
 2. Each of Shopify / WooCommerce / Stripe / Calendly performs its real action behind the typed tool contract
 3. Single-currency per tenant is enforced at deploy time
+
 **Plans:** 0 — run `/gsd-plan-phase 16`
 
 ### Phase 17: Customer identity verification — email/SMS OTP, per-skill, server-enforced
@@ -132,9 +156,11 @@ Plans:
 **Requirements:** IDV-01, IDV-02, IDV-03, IDV-04, IDV-05
 **Depends on:** Phase 14, Phase 16
 **Success criteria:**
+
 1. `customer_identities` table + email-OTP and SMS-OTP flows issue short-lived verified sessions
 2. Per-skill verification requirement is driven by the capability envelope
 3. A mutating tool requiring verification is blocked server-side until a valid verified session exists
+
 **Plans:** 0 — run `/gsd-plan-phase 17`
 
 ### Phase 18: Blast-radius gate, capability admin UI, transaction red-team & injection-defense extensions
@@ -143,10 +169,12 @@ Plans:
 **Requirements:** BLR-01, BLR-02, CAP-03, CAP-04, RTX-01, RTX-02, RTX-03, RTX-04, SEC-01, SEC-02, SEC-03
 **Depends on:** Phase 14, Phase 15, Phase 16, Phase 17
 **Success criteria:**
+
 1. The M8 checklist reports max single-action value + max hourly aggregate; owner acknowledges the envelope hash at deploy; envelope changes re-trigger the checklist
 2. The capability UI lets owners tighten (never loosen) per-skill limits + verification + Actor mode
 3. Transaction red-team probes (confused-deputy, value-bound evasion, identity-bypass) run with zero high-severity findings on a clean tenant
 4. PII output-firewall pass live; retrieval "treat as data, not instructions" wrapper in place; injection agent split into conversation/content variants
+
 **Plans:** 0 — run `/gsd-plan-phase 18`
 
 ### Phase 19: Documentation + v1.1 verification
@@ -155,9 +183,11 @@ Plans:
 **Requirements:** DOC-01, DOC-02, DOC-03, VER-01, AUD-03
 **Depends on:** Phase 14, Phase 15, Phase 16, Phase 17, Phase 18
 **Success criteria:**
+
 1. Tool-author, integration-provider, and owner capability-configuration guides published
 2. A non-technical tester deploys a refund + Shopify-order agent end-to-end without code
 3. 100 synthetic adversarial messages → zero unauthorized state mutations escape L1–L3; 30-day synthetic audit-gap test passes (zero gaps)
+
 **Plans:** 0 — run `/gsd-plan-phase 19`
 
 *v1.1 roadmap added 2026-06-29 (safe parallel track). The standard new-milestone reset was deliberately NOT run — it would have cleared the paused Phase 13 directory and reset its checkpoint. Phase 13 stays paused & resumable (`/gsd-execute-phase 13 --wave 3` once the domain + Bedrock are ready). 6 phases, 43 requirements, all mapped. Out of scope: A2A/MCP (v1.2), schema-bound exfiltration + classifier firewall (v1.2), continuous alerting/audit-infra (v1.3).*
