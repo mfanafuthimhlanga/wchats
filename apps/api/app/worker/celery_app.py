@@ -74,6 +74,8 @@ celery_app.conf.update(
         "app.worker.tasks.pipeline.chunk",
         "app.worker.tasks.pipeline.metadata",
         "app.worker.tasks.pipeline.embed",
+        # P13-04: one-time per-tenant re-embed / backfill to Bedrock Titan v2 (PROD-06)
+        "app.worker.tasks.pipeline.reembed",
         # M3: hybrid retrieval task (runtime queue)
         "app.worker.tasks.runtime.retrieve",
         # M4: agent turn task (runtime queue)
