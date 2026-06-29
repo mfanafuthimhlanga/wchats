@@ -5,9 +5,23 @@ Provides:
     _parse_rate_limit(rate_str) -> tuple[int, int] | None
         Parse "N/<unit>" (e.g. "5/hour", "10/day") to (max_calls, window_secs).
 
+    check_capability_access(agent_id, skill) -> tuple[dict, str | None]
+        Side-effect-free authorization gate (14-07 split).
+        Reads the envelope row, coerces to JSON-safe snapshot, applies only the
+        fail-closed existence/enabled checks. NO Redis, NO INCR, NO side effects.
+        Returns (snapshot_dict, denial_reason).
+
+    apply_rate_and_constraint_checks(agent_id, skill, snapshot, args) -> str | None
+        Side-effecting half (14-07 split).
+        Executes the rate-limit Redis INCR+EXPIRE pipeline (IN-01) and the
+        max_amount_cents constraint check (IN-02). Returns denial_reason or None.
+
     check_capability_envelope(agent_id, skill, args) -> tuple[dict, str | None]
-        Fail-closed access-control gate. Returns (snapshot_dict, denial_reason).
-        denial_reason is None on a full pass; non-None on any denial.
+        Fail-closed access-control gate — RETAINED FACADE (14-07).
+        Calls check_capability_access first; on denial returns immediately.
+        Then calls apply_rate_and_constraint_checks. Returns (snapshot, denial_reason).
+        Same return contract as the monolithic function it replaces; the 14-04 dispatcher
+        and all existing tests call this function unchanged.
 
 Enforcement order (T-14-03-01 mitigations):
     1. No envelope row   → denial reason "no_envelope_row"
@@ -25,14 +39,28 @@ Redis usage:
     Redis is used ONLY for the rate-limit counter (INCR + TTL on a window-aligned key).
     Redis loss resets the rate-limit window counter — acceptable, not catastrophic.
     Redis is NOT used for idempotency (see idempotency.py).
+    Redis client verifies the server TLS certificate by default (WR-04); relaxation
+    requires REDIS_TLS_INSECURE=True in settings plus an explicit warning log.
 
 capability_snapshot isolation (T-14-03-03):
     The snapshot is the agent's own envelope row, scoped by agent_id + skill,
     converted to a plain dict. No ORM objects, no other agent's data.
+
+WR-03 offload:
+    Blocking get_sync_db reads and Redis pipeline calls are executed via
+    asyncio.to_thread so they do not stall the event loop.
+
+IN-01 (TTL-less key prevention):
+    INCR and EXPIRE are issued atomically in a single Redis pipeline.
+
+IN-02 (falsy-zero amount):
+    amount_cents=0 is a valid real amount; explicit None-check prevents the
+    falsy fallthrough to refund_amount_cents.
 """
 
 from __future__ import annotations
 
+import asyncio
 import ssl
 import time
 from datetime import date, datetime
@@ -56,7 +84,17 @@ _rate_limit_redis: redis_lib.Redis | None = None
 
 
 def _get_redis() -> redis_lib.Redis:
-    """Return (and lazily create) the module-level sync Redis client for rate limiting."""
+    """Return (and lazily create) the module-level sync Redis client for rate limiting.
+
+    WR-04: For rediss:// URLs, certificate verification is ON by default
+    (ssl_cert_reqs=ssl.CERT_REQUIRED, ssl_check_hostname=True). Disabling
+    verification requires REDIS_TLS_INSECURE=True in settings AND emits a
+    warning log on every factory call so the exposure is visible in logs.
+
+    Note: agent_tools._get_qembed_redis and agent.py use ssl.CERT_NONE for their
+    own Redis clients (a separate pre-existing issue). This factory hardens only the
+    rate-limit client; those are out of this plan's scope.
+    """
     global _rate_limit_redis
     if _rate_limit_redis is None:
         url_clean = (
@@ -64,11 +102,25 @@ def _get_redis() -> redis_lib.Redis:
             if "?" in settings.REDIS_URL
             else settings.REDIS_URL
         )
-        ssl_opts: dict = (
-            {"ssl_cert_reqs": ssl.CERT_NONE}
-            if url_clean.startswith("rediss://")
-            else {}
-        )
+        ssl_opts: dict = {}
+        if url_clean.startswith("rediss://"):
+            if settings.REDIS_TLS_INSECURE:
+                # Deliberate relaxation — log a warning so the exposure is visible
+                log.warning(
+                    "redis.tls_verification_disabled",
+                    url_prefix=url_clean[:40],
+                    note=(
+                        "REDIS_TLS_INSECURE=True disables TLS certificate verification "
+                        "on the rate-limit Redis connection (MITM exposure). "
+                        "Only acceptable for documented local/dev exceptions."
+                    ),
+                )
+                ssl_opts = {"ssl_cert_reqs": ssl.CERT_NONE}
+            else:
+                ssl_opts = {
+                    "ssl_cert_reqs": ssl.CERT_REQUIRED,
+                    "ssl_check_hostname": True,
+                }
         _rate_limit_redis = redis_lib.from_url(url_clean, **ssl_opts)
     return _rate_limit_redis
 
@@ -130,54 +182,54 @@ def _parse_rate_limit(rate_str: str | None) -> tuple[int, int] | None:
 
 
 # ---------------------------------------------------------------------------
-# Main enforcement function
+# Split: check_capability_access — side-effect-free authorization
 # ---------------------------------------------------------------------------
 
 
-async def check_capability_envelope(
+async def check_capability_access(
     agent_id: Any,
     skill: str,
-    args: Any,
 ) -> tuple[dict, str | None]:
-    """Fail-closed capability envelope check.
+    """Side-effect-free authorization gate (14-07 split).
 
     Reads the capability_envelopes row for (agent_id, skill) from the control DB,
-    validates rate limits and constraints, and returns either:
-      - (snapshot_dict, None)           — all checks passed
-      - ({} or snapshot_dict, reason)   — denied; reason is a short string
+    coerces to a JSON-safe snapshot, and applies only the fail-closed checks:
+      no_envelope_row and disabled.
 
-    On every denial, logs structlog.warning("capability.denial", ...).
+    NO Redis, NO INCR, NO rate-limit side effects. The caller (14-08 dispatcher)
+    can run this first and defer apply_rate_and_constraint_checks to avoid
+    incrementing the rate counter on idempotent replays (WR-01 substrate).
+
+    WR-03: The blocking get_sync_db call is offloaded to asyncio.to_thread.
 
     Args:
-        agent_id: UUID of the calling agent (any uuid-like; serialised to str for the query).
+        agent_id: UUID of the calling agent.
         skill: Name of the tool/skill being invoked.
-        args: Validated Pydantic input model. Fields `amount_cents` and
-              `refund_amount_cents` are read for max_amount_cents enforcement.
 
     Returns:
-        (snapshot_dict, denial_reason) — denial_reason is None on pass-through.
-
-    Security:
-        - Missing or disabled envelope → fail-closed (denial, never pass).
-        - snapshot is always scoped to the calling agent_id only.
-        - Redis is used ONLY for the rate-limit counter, never for idempotency.
+        ({}, "no_envelope_row") when the row is absent (fail-closed).
+        (snapshot, "disabled") when enabled=False (fail-closed).
+        (snapshot, None) when the row exists and is enabled.
     """
     agent_id_str = str(agent_id)
 
     # ------------------------------------------------------------------
-    # 1. Read envelope row from control DB (scoped to this agent + skill)
+    # 1. Read envelope row (blocking DB call — offloaded to thread, WR-03)
     # ------------------------------------------------------------------
-    with get_sync_db() as db:
-        row = db.execute(
-            sa_text(
-                "SELECT id, agent_id, skill, enabled, rate_limit, constraints, "
-                "requires_confirmation, requires_identity_verification, updated_at "
-                "FROM capability_envelopes "
-                "WHERE agent_id = :a AND skill = :s "
-                "LIMIT 1"
-            ),
-            {"a": agent_id_str, "s": skill},
-        ).mappings().first()
+    def _read_envelope() -> Any:
+        with get_sync_db() as db:
+            return db.execute(
+                sa_text(
+                    "SELECT id, agent_id, skill, enabled, rate_limit, constraints, "
+                    "requires_confirmation, requires_identity_verification, updated_at "
+                    "FROM capability_envelopes "
+                    "WHERE agent_id = :a AND skill = :s "
+                    "LIMIT 1"
+                ),
+                {"a": agent_id_str, "s": skill},
+            ).mappings().first()
+
+    row = await asyncio.to_thread(_read_envelope)
 
     # ------------------------------------------------------------------
     # 2. Fail-closed: no row → denial
@@ -209,8 +261,48 @@ async def check_capability_envelope(
         )
         return snapshot, "disabled"
 
+    return snapshot, None
+
+
+# ---------------------------------------------------------------------------
+# Split: apply_rate_and_constraint_checks — side-effecting checks
+# ---------------------------------------------------------------------------
+
+
+async def apply_rate_and_constraint_checks(
+    agent_id: Any,
+    skill: str,
+    snapshot: dict,
+    args: Any,
+) -> str | None:
+    """Side-effecting rate-limit and constraint gate (14-07 split).
+
+    Executes the rate-limit Redis INCR+EXPIRE pipeline and the max_amount_cents
+    constraint check against the supplied snapshot and args.
+
+    IN-01: INCR and EXPIRE are issued atomically in a single Redis pipeline so
+    the key can never exist without a TTL (no key leak on process death between
+    the two commands).
+
+    IN-02: amount_cents=0 is a real amount; explicit None-check prevents the
+    falsy `or` fallthrough to refund_amount_cents.
+
+    WR-03: The blocking Redis pipeline call is offloaded to asyncio.to_thread.
+
+    Args:
+        agent_id: UUID of the calling agent.
+        skill: Name of the tool/skill being invoked.
+        snapshot: JSON-safe dict snapshot from check_capability_access.
+        args: Validated Pydantic input model. Fields amount_cents and
+              refund_amount_cents are read for max_amount_cents enforcement.
+
+    Returns:
+        denial_reason string on denial; None on full pass.
+    """
+    agent_id_str = str(agent_id)
+
     # ------------------------------------------------------------------
-    # 4. Rate-limit check (Redis INCR with window-aligned key)
+    # 4. Rate-limit check (Redis INCR+EXPIRE via pipeline, offloaded — WR-03, IN-01)
     # ------------------------------------------------------------------
     rate_limit_str: str | None = snapshot.get("rate_limit")
     parsed = _parse_rate_limit(rate_limit_str)
@@ -218,9 +310,17 @@ async def check_capability_envelope(
         max_calls, window_secs = parsed
         window_key = int(time.time()) // window_secs
         redis_key = f"ratelimit:{agent_id_str}:{skill}:{window_key}"
-        redis_client = _get_redis()
-        count = redis_client.incr(redis_key)
-        redis_client.expire(redis_key, window_secs + 1)
+
+        def _do_rate_limit_pipeline() -> tuple[int, Any]:
+            client = _get_redis()
+            pipe = client.pipeline()
+            pipe.incr(redis_key)
+            pipe.expire(redis_key, window_secs + 1)
+            return pipe.execute()  # returns [count, expire_result]
+
+        results = await asyncio.to_thread(_do_rate_limit_pipeline)
+        count = results[0]
+
         if count > max_calls:
             log.warning(
                 "capability.denial",
@@ -230,16 +330,21 @@ async def check_capability_envelope(
                 count=count,
                 max_calls=max_calls,
             )
-            return snapshot, "rate_limit"
+            return "rate_limit"
 
     # ------------------------------------------------------------------
-    # 5. Constraint check: max_amount_cents
+    # 5. Constraint check: max_amount_cents (IN-02: explicit None-check)
     # ------------------------------------------------------------------
     constraints: dict = snapshot.get("constraints") or {}
     max_amount_cents = constraints.get("max_amount_cents")
     if max_amount_cents is not None:
-        # Support both amount_cents (place_order) and refund_amount_cents (issue_refund)
-        amount = getattr(args, "amount_cents", None) or getattr(args, "refund_amount_cents", None)
+        # IN-02: Use explicit None-check so amount_cents=0 is treated as a real
+        # amount (not as "missing"), preventing fallthrough to refund_amount_cents.
+        # The old `or`-based selection treated 0 as falsy and wrongly consulted
+        # refund_amount_cents instead.
+        amount = getattr(args, "amount_cents", None)
+        if amount is None:
+            amount = getattr(args, "refund_amount_cents", None)
         if amount is not None and amount > max_amount_cents:
             log.warning(
                 "capability.denial",
@@ -249,7 +354,7 @@ async def check_capability_envelope(
                 amount=amount,
                 limit=max_amount_cents,
             )
-            return snapshot, "max_amount_cents"
+            return "max_amount_cents"
 
     # ------------------------------------------------------------------
     # 6. scope_filters — Phase-16 no-op (documented, not enforced yet)
@@ -258,7 +363,49 @@ async def check_capability_envelope(
     # accepted and stored but not yet validated. Phase 16 will add allowlist
     # enforcement here.
 
-    # ------------------------------------------------------------------
-    # All checks passed — return snapshot and no denial
-    # ------------------------------------------------------------------
-    return snapshot, None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Facade: check_capability_envelope — retained for backward compatibility
+# ---------------------------------------------------------------------------
+
+
+async def check_capability_envelope(
+    agent_id: Any,
+    skill: str,
+    args: Any,
+) -> tuple[dict, str | None]:
+    """Fail-closed capability envelope check — RETAINED FACADE (14-07).
+
+    Calls check_capability_access first (side-effect-free: exists + enabled).
+    If denied, returns immediately without touching Redis.
+    Otherwise calls apply_rate_and_constraint_checks (rate limit + constraints).
+
+    Same return contract as the pre-14-07 monolithic function:
+      - (snapshot_dict, None)           — all checks passed
+      - ({} or snapshot_dict, reason)   — denied; reason is a short string
+
+    The 14-04 dispatcher (tools.py) calls this function; it is not modified
+    until the 14-08 reorder plan. This facade keeps every current test green
+    during the transition.
+
+    Args:
+        agent_id: UUID of the calling agent (any uuid-like; serialised to str for the query).
+        skill: Name of the tool/skill being invoked.
+        args: Validated Pydantic input model. Fields amount_cents and
+              refund_amount_cents are read for max_amount_cents enforcement.
+
+    Returns:
+        (snapshot_dict, denial_reason) — denial_reason is None on pass-through.
+
+    Security:
+        - Missing or disabled envelope → fail-closed (denial, never pass).
+        - snapshot is always scoped to the calling agent_id only.
+        - Redis is used ONLY for the rate-limit counter, never for idempotency.
+    """
+    snapshot, denial = await check_capability_access(agent_id, skill)
+    if denial is not None:
+        return snapshot, denial
+    denial = await apply_rate_and_constraint_checks(agent_id, skill, snapshot, args)
+    return snapshot, denial

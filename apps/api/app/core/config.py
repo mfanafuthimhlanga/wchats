@@ -38,6 +38,12 @@ class Settings(BaseSettings):
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
+    # WR-04: disable TLS certificate verification for rediss:// connections.
+    # False (default) = verify the server certificate (ssl.CERT_REQUIRED + hostname check).
+    # True = allow CERT_NONE — exposes the connection to MITM attacks and MUST only be set
+    # for a documented local/dev exception (e.g. self-signed cert in a test environment).
+    # Never set True in production.
+    REDIS_TLS_INSECURE: bool = False
 
     # Observability
     LOG_LEVEL: str = "INFO"

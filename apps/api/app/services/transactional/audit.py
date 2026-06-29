@@ -25,6 +25,7 @@ AUDIT COVERAGE CONTRACT (T-14-03-04):
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from uuid import UUID
 
@@ -88,9 +89,15 @@ async def write_audit_row(
         error=error,
     )
 
-    with get_sync_db() as db:
-        db.add(row)
-        db.commit()
+    # WR-03: offload the blocking get_sync_db + commit to a thread so the event
+    # loop is not stalled during the tool audit write.  Capture `row` into the
+    # closure explicitly (not via ContextVar — row is a local created above).
+    def _sync_write() -> None:
+        with get_sync_db() as db:
+            db.add(row)
+            db.commit()
+
+    await asyncio.to_thread(_sync_write)
 
     log.info(
         "tool_calls_audit.written",

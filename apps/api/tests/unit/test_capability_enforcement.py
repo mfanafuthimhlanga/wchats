@@ -171,7 +171,11 @@ class TestCheckCapabilityEnvelope:
         assert call_args[0][0] == "capability.denial"
 
     def test_rate_limit_denial(self):
-        """Redis INCR over limit must yield a rate_limit denial."""
+        """Redis INCR over limit must yield a rate_limit denial.
+
+        Updated for IN-01 (14-07): INCR+EXPIRE now issued via a pipeline.
+        Use pipeline mock so pipe.execute() returns [count, expire_result] with count=3 > max=2.
+        """
         agent_id = uuid4()
         skill = "place_order"
         args = _make_args()
@@ -179,9 +183,10 @@ class TestCheckCapabilityEnvelope:
 
         mock_cm = _mock_db_session(row)
         mock_redis = MagicMock()
-        # Simulate count OVER limit: incr returns 3 (limit is 2)
-        mock_redis.incr.return_value = 3
-        mock_redis.expire.return_value = True
+        mock_pipe = MagicMock()
+        mock_redis.pipeline.return_value = mock_pipe
+        # count=3 > limit=2 → rate_limit denial
+        mock_pipe.execute.return_value = [3, 1]
 
         with (
             patch("app.services.transactional.enforcement.get_sync_db", mock_cm),
