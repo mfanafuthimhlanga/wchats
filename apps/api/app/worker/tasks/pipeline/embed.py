@@ -248,38 +248,14 @@ def embed_and_migrate(self, result: dict) -> dict:
                 )
 
                 total_chunks_embedded += chunk_count
-
-                # ----------------------------------------------------------
-                # Best-effort: delete local temp file for this document.
-                # Temp cleanup is non-essential — do NOT raise on failure.
-                # (T-02-05-07: best-effort, bounded disk risk)
-                # ----------------------------------------------------------
-                try:
-                    with tenant_conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT source_uri FROM documents WHERE id = %s",
-                            (doc_id,),
-                        )
-                        row = cur.fetchone()
-                    if row:
-                        source_uri = row[0]
-                        ext = Path(source_uri).suffix if source_uri else ""
-                        temp_path = (
-                            Path("/vrd-uploads")
-                            / agent_id
-                            / f"{doc_id}{ext}"
-                        )
-                        temp_path.unlink(missing_ok=True)
-                        log.debug(
-                            "embed_and_migrate.temp_deleted",
-                            path=str(temp_path),
-                        )
-                except OSError as os_err:
-                    log.warning(
-                        "embed_and_migrate.temp_delete_failed",
-                        document_id=doc_id,
-                        error=str(os_err),
-                    )
+                # Note: S3 source bytes are intentionally NOT deleted here.
+                # Retaining the upload object in S3 allows safe idempotent
+                # re-ingestion (e.g., backfill re-embed in 13-04) without
+                # needing to re-upload.  Documents deleted from the DB have
+                # their S3 object cleaned up by delete_document in documents.py.
+                # (Landmine 4 fix: the former hardcoded local-path cleanup block
+                # used a literal constant and is removed — it was a no-op once
+                # S3 replaced local disk for uploads per PROD-12, PROD-13.)
 
             # ------------------------------------------------------------------
             # REINDEX CONCURRENTLY — must run outside any transaction block.

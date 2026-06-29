@@ -117,6 +117,13 @@ class Settings(BaseSettings):
     AWS_REGION: str = "us-east-1"
     BEDROCK_EMBED_MODEL_ID: str = "amazon.titan-embed-text-v2:0"
 
+    # P13-06: S3 uploads bucket (PROD-12, PROD-13).
+    # Empty string default keeps local-dev imports working without real S3;
+    # set S3_UPLOADS_BUCKET in .env or ECS task definition for production.
+    # UPLOADS_DIR is retained below for backward-compat but is no longer on
+    # the upload/parse hot path after the S3 migration.
+    S3_UPLOADS_BUCKET: str = ""
+
     # M4 Runtime agent budget — per-turn USD ceiling for ClaudeAgentOptions.
     # D-10 fix phase 2: raised from 0.05 (too low for thinking+retrieve+synthesis).
     # 0.50 gives headroom for a Sonnet extended-thinking+retrieve+synthesis turn

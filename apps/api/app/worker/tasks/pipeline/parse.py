@@ -36,7 +36,6 @@ Threat mitigations:
 import hashlib
 import ssl
 import structlog
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,6 +49,7 @@ from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.models.job import Job
+from app.services import storage_service
 from app.services.docling_service import parse_document, parse_document_from_bytes
 from app.services.events import emit
 from app.worker.celery_app import celery_app
@@ -251,16 +251,15 @@ def parse_documents(
                         computed_hash = hashlib.sha256(content).hexdigest()
                         doc = parse_document_from_bytes(content, source_uri)
                     else:
-                        # File source (pdf, png, jpg, jpeg)
-                        # Determine extension from source_uri filename
+                        # File source (pdf, png, jpg, jpeg) — read bytes from S3
+                        # (PROD-13: no local-disk dependency; bytes survive worker restarts
+                        # and are reachable from any Fargate task).
                         ext = Path(source_uri).suffix or f".{source_type}"
-                        file_path = (
-                            Path(settings.UPLOADS_DIR)
-                            / agent_id
-                            / f"{doc_id}{ext}"
+                        content = storage_service.get_bytes(
+                            storage_service.upload_key(agent_id, doc_id, ext)
                         )
-                        computed_hash = _compute_source_hash(file_path)
-                        doc = parse_document(file_path)
+                        computed_hash = hashlib.sha256(content).hexdigest()
+                        doc = parse_document_from_bytes(content, source_uri)
 
                 except RuntimeError as exc:
                     # Fatal Docling parse error — mark failed, do NOT retry

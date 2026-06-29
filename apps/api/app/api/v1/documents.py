@@ -11,13 +11,19 @@ Security:
     - Requires X-API-Key on all routes (get_current_tenant dependency).
     - tenant_id sourced from authenticated Tenant (not request body) — T-04-04 pattern.
     - POST filters Agent by both Agent.id AND Agent.tenant_id — T-02-06-01.
-    - File-type whitelist enforced before writing to disk — T-02-06-03.
-    - File-size cap enforced before writing to disk — T-02-06-02.
+    - File-type whitelist enforced before writing to S3 — T-02-06-03.
+    - File-size cap enforced before writing to S3 — T-02-06-02.
     - Chain dispatch passes only IDs (tenant_id, agent_id, job_id, document_ids);
       connection strings NEVER in chain args — T-02-06-04, CLAUDE.md rule 4.
-    - Temp files stored at gettempdir()/vrd-uploads/{agent_id}/{doc_id}{ext};
+    - Files stored in S3 under tenant-scoped key {agent_id}/{doc_id}{ext};
       original filename NEVER used as a path component — T-02-06-05.
     - File contents NEVER logged; only source_uri (user-provided metadata) — T-02-06-08.
+
+P13-06 S3 migration (PROD-12, PROD-13):
+    Uploaded file bytes are stored in S3 via storage_service.put_bytes() instead of
+    local UPLOADS_DIR.  The ingestion chain (parse→chunk→embed) reads source bytes from
+    S3 — no local-disk dependency anywhere in the chain.  Documents deleted from the DB
+    trigger a best-effort storage_service.delete_object() cleanup on the S3 object.
 
 ARCHITECTURAL EXCEPTION NOTE (CLAUDE.md: FastAPI never does work inline):
     The psycopg2 INSERT in the POST route is an accepted exception to the
@@ -33,7 +39,6 @@ ARCHITECTURAL EXCEPTION NOTE (CLAUDE.md: FastAPI never does work inline):
 """
 
 import hashlib
-import tempfile
 import uuid
 from pathlib import Path
 from uuid import UUID
@@ -53,6 +58,7 @@ from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.models.job import Job
 from app.models.tenant import Tenant
+from app.services import storage_service
 from app.schemas.document import (
     ChunkDetailResponse,
     ChunkEntityResponse,
@@ -96,7 +102,8 @@ async def upload_documents(
     """Accept multipart file uploads and/or URL strings; dispatch ingestion chain.
 
     Validates agent ownership, file types, file sizes, then:
-      1. Saves files to local temp directory (bounded, uuid4 filename — T-02-06-05).
+      1. Writes each file to S3 under a tenant-scoped key via storage_service
+         (uuid4 doc_id — T-02-06-05; no local disk write — PROD-12).
       2. Creates document rows in tenant DB via synchronous psycopg2 (accepted
          architectural exception — see module docstring).
       3. Creates a job row in the control DB.
@@ -165,13 +172,11 @@ async def upload_documents(
     tenant_conn_str = fernet_decrypt(agent.neon_connection_string)
 
     # ------------------------------------------------------------------
-    # 5. Save files to temp dir + INSERT document rows in tenant DB
-    #    psycopg2.connect(connect_timeout=5) bounds blocking on the async
-    #    event loop thread to 5 seconds (T-02-06-09).
+    # 5. Upload files to S3 + INSERT document rows in tenant DB (PROD-12)
+    #    Each file is stored in S3 under a tenant-scoped key; no local-disk
+    #    write is performed.  psycopg2.connect(connect_timeout=5) bounds
+    #    blocking on the async event loop thread (T-02-06-09).
     # ------------------------------------------------------------------
-    upload_dir = Path(settings.UPLOADS_DIR) / str(agent.id)
-    upload_dir.mkdir(parents=True, exist_ok=True)
-
     document_ids: list[str] = []
 
     tenant_conn = psycopg2.connect(tenant_conn_str, connect_timeout=5)
@@ -180,11 +185,14 @@ async def upload_documents(
             for idx, f in enumerate(files):
                 doc_id = str(uuid.uuid4())
                 ext = Path(f.filename or "").suffix.lower()
-                local_path = upload_dir / f"{doc_id}{ext}"
-                # Write using cached content from the validation pass
-                local_path.write_bytes(cached_contents[idx])
+                # Upload to S3 under tenant-scoped key (T-02-06-05: uuid4 doc_id,
+                # never the original filename; T-13-06-01: agent_id prefix scope).
+                storage_service.put_bytes(
+                    storage_service.upload_key(str(agent.id), doc_id, ext),
+                    cached_contents[idx],
+                )
                 # source_uri stores the original filename for display/tracking;
-                # it is NEVER used as a filesystem path (T-02-06-05).
+                # it is NEVER used as a filesystem or S3 path (T-02-06-05).
                 cur.execute(
                     """
                     INSERT INTO documents (id, source_type, source_uri, title)
@@ -194,7 +202,7 @@ async def upload_documents(
                 )
                 document_ids.append(doc_id)
                 log.info(
-                    "upload_documents.file_saved",
+                    "upload_documents.file_uploaded_to_s3",
                     agent_id=str(agent.id),
                     document_id=doc_id,
                     source_uri=f.filename,
@@ -712,27 +720,19 @@ async def delete_document(
         tenant_conn.close()
 
     # ------------------------------------------------------------------
-    # 3. Best-effort removal of the staged upload file (T-02-06-05 layout:
-    #    UPLOADS_DIR/{agent_id}/{document_id}{ext}). URL-sourced documents
-    #    have no file on disk (source_type == 'url'). Never let a filesystem
-    #    error reverse a committed DB delete.
+    # 3. Best-effort removal of the S3 upload object (PROD-12 / PROD-13).
+    #    URL-sourced documents have no S3 object (source_type == 'url').
+    #    storage_service.delete_object() is best-effort — it never raises,
+    #    so a failed S3 delete can never reverse a committed DB delete.
     # ------------------------------------------------------------------
     if source_type and source_type != "url":
-        local_path = (
-            Path(settings.UPLOADS_DIR)
-            / str(agent.id)
-            / f"{document_id}.{source_type}"
-        )
-        try:
-            local_path.unlink(missing_ok=True)
-        except OSError as exc:
-            # Disk cleanup is non-authoritative; log and move on.
-            log.warning(
-                "delete_document.file_unlink_failed",
-                agent_id=str(agent.id),
-                document_id=str(document_id),
-                error=str(exc),
+        storage_service.delete_object(
+            storage_service.upload_key(
+                str(agent.id),
+                str(document_id),
+                "." + source_type,
             )
+        )
 
     log.info(
         "delete_document.success",

@@ -199,8 +199,12 @@ def test_parse_documents_idempotency_skips_parsed_doc(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_documents_returns_chain_dict(monkeypatch, tmp_path):
-    """parse_documents returns the expected chain dict after parsing a pending document."""
+def test_parse_documents_returns_chain_dict(monkeypatch):
+    """parse_documents returns the expected chain dict after parsing a pending document.
+
+    P13-06: file-source branch now reads bytes from S3 via storage_service.get_bytes
+    and parses via parse_document_from_bytes — no local-disk read.
+    """
     mock_db = MagicMock()
     mock_agent = _make_mock_agent("a1")
     mock_db.get.return_value = mock_agent
@@ -209,7 +213,7 @@ def test_parse_documents_returns_chain_dict(monkeypatch, tmp_path):
     mock_cursor = MagicMock()
     mock_cursor.fetchone.side_effect = [
         (1,),  # pre-check: 1 unparsed
-        (f"file://{doc_id}.pdf", "pdf", None, "pending"),  # document row
+        (f"{doc_id}.pdf", "pdf", None, "pending"),  # document row
     ]
     mock_conn = MagicMock()
     mock_conn.cursor.return_value = mock_cursor
@@ -227,18 +231,17 @@ def test_parse_documents_returns_chain_dict(monkeypatch, tmp_path):
         lambda conn_str: mock_conn,
     )
 
-    # Mock tempfile to return our tmp_path so file operations succeed.
-    # Task path: gettempdir() / "vrd-uploads" / agent_id / f"{doc_id}{ext}"
-    fake_file = tmp_path / "vrd-uploads" / "a1" / f"{doc_id}.pdf"
-    fake_file.parent.mkdir(parents=True)
-    fake_file.write_bytes(b"%PDF-1.4 fake")
-    monkeypatch.setattr("app.worker.tasks.pipeline.parse.tempfile.gettempdir", lambda: str(tmp_path))
+    # P13-06: mock S3 get_bytes to return fake PDF bytes (no local disk read)
+    monkeypatch.setattr(
+        "app.services.storage_service.get_bytes",
+        lambda key: b"%PDF-1.4 fake content from S3",
+    )
 
-    # Mock parse_document to return a DoclingDocument-like object
+    # Mock parse_document_from_bytes (file-source now uses bytes path, not file path)
     mock_doc = MagicMock()
     mock_doc.pages = {1: MagicMock()}  # 1 page
     mock_parse = MagicMock(return_value=mock_doc)
-    monkeypatch.setattr("app.worker.tasks.pipeline.parse.parse_document", mock_parse)
+    monkeypatch.setattr("app.worker.tasks.pipeline.parse.parse_document_from_bytes", mock_parse)
 
     mock_emit = MagicMock()
     monkeypatch.setattr("app.worker.tasks.pipeline.parse.emit", mock_emit)
@@ -246,8 +249,7 @@ def test_parse_documents_returns_chain_dict(monkeypatch, tmp_path):
     from app.worker.tasks.pipeline.parse import parse_documents
 
     # parse_documents.run is a bound method — call without self.
-    # The happy-path (pending → parsed) does not exercise retry logic,
-    # so no retry-context patching is needed.
+    # The happy-path (pending → parsed) does not exercise retry logic.
     result = parse_documents.run("t1", "a1", "j1", [doc_id])
 
     assert result == {
@@ -263,10 +265,13 @@ def test_parse_documents_returns_chain_dict(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_documents_emits_event_sequence(monkeypatch, tmp_path):
+def test_parse_documents_emits_event_sequence(monkeypatch):
     """parse_documents emits ingestion.started → parsing.started → parsing.complete in order.
 
     Each emit call's first positional arg must be job_id ("j1"), not agent_id.
+
+    P13-06: file-source branch now reads bytes from S3 via storage_service.get_bytes
+    and parses via parse_document_from_bytes — no local-disk read.
     """
     mock_db = MagicMock()
     mock_agent = _make_mock_agent("a1")
@@ -276,7 +281,7 @@ def test_parse_documents_emits_event_sequence(monkeypatch, tmp_path):
     mock_cursor = MagicMock()
     mock_cursor.fetchone.side_effect = [
         (1,),  # pre-check: 1 unparsed
-        (f"file://{doc_id}.pdf", "pdf", None, "pending"),  # document row
+        (f"{doc_id}.pdf", "pdf", None, "pending"),  # document row
     ]
     mock_conn = MagicMock()
     mock_conn.cursor.return_value = mock_cursor
@@ -294,17 +299,16 @@ def test_parse_documents_emits_event_sequence(monkeypatch, tmp_path):
         lambda conn_str: mock_conn,
     )
 
-    # Mock tempfile so file reads succeed.
-    # Task path: gettempdir() / "vrd-uploads" / agent_id / f"{doc_id}{ext}"
-    fake_file = tmp_path / "vrd-uploads" / "a1" / f"{doc_id}.pdf"
-    fake_file.parent.mkdir(parents=True)
-    fake_file.write_bytes(b"%PDF-1.4 fake")
-    monkeypatch.setattr("app.worker.tasks.pipeline.parse.tempfile.gettempdir", lambda: str(tmp_path))
+    # P13-06: mock S3 get_bytes (file-source reads from S3, not local disk)
+    monkeypatch.setattr(
+        "app.services.storage_service.get_bytes",
+        lambda key: b"%PDF-1.4 fake content from S3",
+    )
 
     mock_doc = MagicMock()
     mock_doc.pages = {1: MagicMock()}
     mock_parse = MagicMock(return_value=mock_doc)
-    monkeypatch.setattr("app.worker.tasks.pipeline.parse.parse_document", mock_parse)
+    monkeypatch.setattr("app.worker.tasks.pipeline.parse.parse_document_from_bytes", mock_parse)
 
     # Capture all emit() calls
     emitted_events = []

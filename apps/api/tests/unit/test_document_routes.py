@@ -122,6 +122,8 @@ class TestUploadDocumentsReturns202:
                 patch("app.api.v1.documents.fernet_decrypt", return_value="postgresql://fake/db"),
                 patch("app.api.v1.documents.psycopg2.connect") as mock_connect,
                 patch("app.api.v1.documents.chain") as mock_chain,
+                # P13-06: route now writes to S3 — mock put_bytes to avoid real AWS calls
+                patch("app.services.storage_service.put_bytes"),
             ):
                 # Mock psycopg2 cursor context manager
                 mock_conn = MagicMock()
@@ -360,6 +362,8 @@ class TestUploadDocumentsChainSignature:
                 patch("app.api.v1.documents.chunk_documents") as mock_chunk,
                 patch("app.api.v1.documents.generate_metadata") as mock_meta,
                 patch("app.api.v1.documents.embed_and_migrate") as mock_embed,
+                # P13-06: route now writes to S3 — mock put_bytes to avoid real AWS calls
+                patch("app.services.storage_service.put_bytes"),
             ):
                 mock_conn = MagicMock()
                 mock_connect.return_value = mock_conn
@@ -437,6 +441,8 @@ class TestUploadDocumentsNoConnStringInArgs:
                 patch("app.api.v1.documents.chunk_documents"),
                 patch("app.api.v1.documents.generate_metadata"),
                 patch("app.api.v1.documents.embed_and_migrate"),
+                # P13-06: route now writes to S3 — mock put_bytes to avoid real AWS calls
+                patch("app.services.storage_service.put_bytes"),
             ):
                 mock_conn = MagicMock()
                 mock_connect.return_value = mock_conn
