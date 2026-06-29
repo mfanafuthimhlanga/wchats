@@ -11,6 +11,13 @@ Tests:
 
 Patch target: app.services.embedding_service._vo
 (NOT voyageai.Client — always patch the symbol imported into the module under test)
+
+Provider seam note (P13-02):
+    EMBEDDING_PROVIDER defaults to "bedrock" in production (Settings). These tests
+    cover the Voyage fallback path. The `voyage_provider` autouse fixture patches
+    app.services.embedding_service.settings to force EMBEDDING_PROVIDER="voyage"
+    for every test in this module, ensuring embed_chunks routes to the Voyage client
+    (_vo) as these tests expect. Bedrock-path tests live in test_embedding_bedrock.py.
 """
 
 import os
@@ -40,6 +47,26 @@ os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
 
 import pytest
 from unittest.mock import MagicMock, patch
+
+
+# ---------------------------------------------------------------------------
+# Provider seam fixture — force Voyage path for all tests in this module
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def voyage_provider():
+    """Patch embedding_service.settings so EMBEDDING_PROVIDER='voyage' for every test.
+
+    These tests were written to cover the Voyage path. After P13-02 added a
+    provider seam, the default EMBEDDING_PROVIDER is 'bedrock'. This fixture
+    ensures embed_chunks dispatches to the Voyage client (_vo) as these tests
+    expect, without modifying the test bodies. Bedrock-path tests are in
+    test_embedding_bedrock.py.
+    """
+    with patch("app.services.embedding_service.settings") as mock_settings:
+        mock_settings.EMBEDDING_PROVIDER = "voyage"
+        yield
 
 
 # ---------------------------------------------------------------------------

@@ -1,23 +1,34 @@
 """
-embedding_service — Voyage AI batch embedding with pinned voyage-3 model.
+embedding_service — Batch embedding with provider seam (Bedrock primary, Voyage fallback).
 
-Model pinning decision:
-    EMBEDDING_MODEL = "voyage-3" is pinned permanently. DO NOT change to
-    any floating alias (PITFALLS.md §3). The tenant DB schema
+Provider seam (PROD-06 / P13-02):
+    EMBEDDING_PROVIDER env var selects the embedding backend:
+      "bedrock" (default) → Amazon Bedrock Titan Text Embeddings v2 via
+                            bedrock_embedding_service.embed_texts()
+      "voyage"            → Voyage AI voyage-3 (legacy path, retained as fallback)
+
+    Both embed_chunks() and embed_query() (retrieval_service) dispatch through
+    this seam. Query and document vectors MUST come from the same provider
+    (T-13-02-01 — mixed spaces break cosine similarity silently).
+
+Model pinning decision (Voyage fallback path):
+    EMBEDDING_MODEL = "voyage-3" is pinned permanently for the Voyage path.
+    DO NOT change to any floating alias (PITFALLS.md §3). The tenant DB schema
     stores embeddings in a VECTOR(1024) column — voyage-3 produces exactly
     1024-dimensional vectors. If the model were changed to a different dimension,
     all existing embeddings would become incompatible and retrieval would silently
     return wrong results until schema migration.
 
-128-item batch limit:
+128-item batch limit (Voyage path):
     The Voyage API hard limit is 128 items per embed() request (RESEARCH.md §7).
     BATCH_SIZE = 128 is the maximum allowed. Sending more than 128 items in a
     single request raises a Voyage API error. The embed_chunks() function splits
     any input list into batches of exactly BATCH_SIZE before calling the API.
+    (Bedrock Titan v2 loops per-text internally in bedrock_embedding_service.)
 
 Count-mismatch guard:
-    After collecting all batches, embed_chunks() asserts
-    len(all_embeddings) == len(texts). If the Voyage API returns a different
+    After collecting all embeddings, embed_chunks() asserts
+    len(all_embeddings) == len(texts). If the provider returns a different
     number of vectors than requested (a contract violation), RuntimeError is raised
     immediately so the caller (embed_and_migrate task) can fail cleanly rather than
     silently writing mismatched chunk_id ↔ vector pairs.
@@ -37,6 +48,9 @@ Lazy import rationale:
     container never triggers that path. The guard below ensures pkg_resources is
     in sys.modules before voyageai is imported, so the aiohttp path is skipped
     regardless of the calling environment.
+
+    bedrock_embedding_service is also imported lazily inside embed_chunks() so
+    this module remains importable in unit tests without boto3 or real AWS creds.
 """
 
 import sys
@@ -113,12 +127,18 @@ def _embed_batch(texts: list[str]) -> list[list[float]]:
 
 
 def embed_chunks(texts: list[str]) -> list[list[float]]:
-    """Embed a list of texts in 128-item batches.
+    """Embed a list of texts using the configured EMBEDDING_PROVIDER.
 
-    Splits texts into BATCH_SIZE-item batches, calls _embed_batch for each,
-    and concatenates the results. The count-mismatch guard at the end ensures
-    len(return_value) == len(texts) always — any API contract violation is
-    caught here rather than propagating as a silent mismatch.
+    When EMBEDDING_PROVIDER=bedrock (default): delegates to
+    bedrock_embedding_service.embed_texts(texts, "document"). Bedrock Titan v2
+    loops one call per text internally; no 128-item batching needed.
+
+    When EMBEDDING_PROVIDER=voyage (fallback): splits texts into BATCH_SIZE-item
+    batches, calls _embed_batch for each, and concatenates the results.
+
+    The count-mismatch guard at the end ensures len(return_value) == len(texts)
+    always — any provider contract violation is caught here rather than
+    propagating as a silent chunk_id ↔ vector mismatch.
 
     Args:
         texts: List of pre-sanitized chunk text strings.
@@ -129,17 +149,23 @@ def embed_chunks(texts: list[str]) -> list[list[float]]:
 
     Raises:
         RuntimeError: If the total number of embeddings returned does not
-                      match len(texts). This indicates a Voyage API contract
+                      match len(texts). This indicates a provider contract
                       violation and must not be silently ignored.
     """
     if not texts:
         return []
 
-    all_embeddings: list[list[float]] = []
-    for i in range(0, len(texts), BATCH_SIZE):
-        batch = texts[i : i + BATCH_SIZE]
-        log.debug("embedding_service.batch", batch_start=i, batch_size=len(batch))
-        all_embeddings.extend(_embed_batch(batch))
+    if settings.EMBEDDING_PROVIDER == "bedrock":
+        # Lazy import — keeps this module importable without boto3/AWS creds
+        import app.services.bedrock_embedding_service as _bedrock_svc  # noqa: PLC0415
+        all_embeddings = _bedrock_svc.embed_texts(texts, "document")
+    else:
+        # Voyage fallback path (unchanged from M2)
+        all_embeddings = []
+        for i in range(0, len(texts), BATCH_SIZE):
+            batch = texts[i : i + BATCH_SIZE]
+            log.debug("embedding_service.batch", batch_start=i, batch_size=len(batch))
+            all_embeddings.extend(_embed_batch(batch))
 
     if len(all_embeddings) != len(texts):
         raise RuntimeError(

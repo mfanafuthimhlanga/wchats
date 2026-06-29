@@ -63,11 +63,20 @@ class RetrievalStrategy(BaseModel):
 # ---------------------------------------------------------------------------
 
 def embed_query(query_text: str) -> list[float]:
-    """Embed a user query with Voyage voyage-3, input_type="query".
+    """Embed a user query using the configured EMBEDDING_PROVIDER.
 
-    CRITICAL: input_type="query" (NOT "document"). The Voyage model prepends a
-    different prompt for each type. Using "document" here would silently degrade
-    retrieval quality because all ingestion embeddings use "document".
+    When EMBEDDING_PROVIDER=bedrock (default): delegates to
+    bedrock_embedding_service.embed_texts([query_text], "query")[0].
+    Titan v2 has no document/query distinction but input_type is passed for
+    interface parity and future provider flexibility.
+
+    When EMBEDDING_PROVIDER=voyage (fallback): calls Voyage with
+    input_type="query" (CRITICAL — the Voyage model prepends a different prompt
+    for "query" vs "document"; using "document" here silently degrades retrieval).
+
+    INVARIANT: The provider used here MUST match the provider used in
+    embed_chunks() (embedding_service). Mixed-space vectors make cosine
+    similarity meaningless (T-13-02-01).
 
     Args:
         query_text: The raw user query string.
@@ -75,6 +84,10 @@ def embed_query(query_text: str) -> list[float]:
     Returns:
         1024-dimensional float vector (matches embeddings.vector VECTOR(1024) column).
     """
+    if settings.EMBEDDING_PROVIDER == "bedrock":
+        # Lazy import — keeps this module importable without boto3/AWS creds
+        import app.services.bedrock_embedding_service as _bedrock_svc  # noqa: PLC0415
+        return _bedrock_svc.embed_texts([query_text], "query")[0]
     return _get_vo().embed([query_text], model="voyage-3", input_type="query").embeddings[0]
 
 
@@ -447,10 +460,14 @@ def rrf_fuse_with_expansion(
     # Generate alternative phrasings
     variants = _expand_query(query_text)
 
-    # Batch-embed ALL variants in ONE Voyage call
-    all_embeddings = _get_vo().embed(
-        variants, model="voyage-3", input_type="query"
-    ).embeddings
+    # Batch-embed ALL variants through the provider seam (no direct Voyage call when bedrock)
+    if settings.EMBEDDING_PROVIDER == "bedrock":
+        import app.services.bedrock_embedding_service as _bedrock_svc  # noqa: PLC0415
+        all_embeddings = _bedrock_svc.embed_texts(variants, "query")
+    else:
+        all_embeddings = _get_vo().embed(
+            variants, model="voyage-3", input_type="query"
+        ).embeddings
 
     # Merge RRF results across all variants
     all_fused: dict[str, dict] = {}
