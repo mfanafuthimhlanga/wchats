@@ -135,7 +135,7 @@ class TestCheckCapabilityEnvelope:
             patch("app.services.transactional.enforcement.get_sync_db", mock_cm),
             patch("app.services.transactional.enforcement.log") as mock_log,
         ):
-            snapshot, denial = asyncio.get_event_loop().run_until_complete(
+            snapshot, denial = asyncio.run(
                 check_capability_envelope(agent_id, skill, args)
             )
 
@@ -158,7 +158,7 @@ class TestCheckCapabilityEnvelope:
             patch("app.services.transactional.enforcement.get_sync_db", mock_cm),
             patch("app.services.transactional.enforcement.log") as mock_log,
         ):
-            snapshot, denial = asyncio.get_event_loop().run_until_complete(
+            snapshot, denial = asyncio.run(
                 check_capability_envelope(agent_id, skill, args)
             )
 
@@ -186,7 +186,7 @@ class TestCheckCapabilityEnvelope:
             patch("app.services.transactional.enforcement._get_redis", return_value=mock_redis),
             patch("app.services.transactional.enforcement.log") as mock_log,
         ):
-            snapshot, denial = asyncio.get_event_loop().run_until_complete(
+            snapshot, denial = asyncio.run(
                 check_capability_envelope(agent_id, skill, args)
             )
 
@@ -211,7 +211,7 @@ class TestCheckCapabilityEnvelope:
             patch("app.services.transactional.enforcement.get_sync_db", mock_cm),
             patch("app.services.transactional.enforcement.log") as mock_log,
         ):
-            snapshot, denial = asyncio.get_event_loop().run_until_complete(
+            snapshot, denial = asyncio.run(
                 check_capability_envelope(agent_id, skill, args)
             )
 
@@ -241,7 +241,7 @@ class TestCheckCapabilityEnvelope:
             patch("app.services.transactional.enforcement._get_redis", return_value=mock_redis),
             patch("app.services.transactional.enforcement.log") as mock_log,
         ):
-            snapshot, denial = asyncio.get_event_loop().run_until_complete(
+            snapshot, denial = asyncio.run(
                 check_capability_envelope(agent_id, skill, args)
             )
 
@@ -262,7 +262,7 @@ class TestCheckCapabilityEnvelope:
             patch("app.services.transactional.enforcement.get_sync_db", mock_cm),
             patch("app.services.transactional.enforcement.log"),
         ):
-            snapshot, denial = asyncio.get_event_loop().run_until_complete(
+            snapshot, denial = asyncio.run(
                 check_capability_envelope(agent_id, skill, args)
             )
 
@@ -287,7 +287,7 @@ class TestCheckCapabilityEnvelope:
             patch("app.services.transactional.enforcement.get_sync_db", mock_cm),
             patch("app.services.transactional.enforcement.log") as mock_log,
         ):
-            snapshot, denial = asyncio.get_event_loop().run_until_complete(
+            snapshot, denial = asyncio.run(
                 check_capability_envelope(agent_id, skill, args)
             )
 
@@ -323,7 +323,7 @@ class TestWriteAuditRow:
             yield session
 
         with patch("app.services.transactional.audit.get_sync_db", mock_db):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 write_audit_row(
                     agent_id=agent_id,
                     conversation_id=conversation_id,
@@ -366,7 +366,7 @@ class TestWriteAuditRow:
             yield session
 
         with patch("app.services.transactional.audit.get_sync_db", mock_db):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 write_audit_row(
                     agent_id=agent_id,
                     conversation_id=conversation_id,
@@ -405,7 +405,7 @@ class TestWriteAuditRow:
             yield session
 
         with patch("app.services.transactional.audit.get_sync_db", mock_db):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 write_audit_row(
                     agent_id=agent_id,
                     conversation_id=conversation_id,
@@ -440,7 +440,7 @@ class TestWriteAuditRow:
             yield session
 
         with patch("app.services.transactional.audit.get_sync_db", mock_db):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 write_audit_row(
                     agent_id=agent_id,
                     conversation_id=conversation_id,

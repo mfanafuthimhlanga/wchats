@@ -90,7 +90,7 @@ class TestCheckIdempotency:
         mock_cm = _mock_db_returning(None)
 
         with patch("app.services.transactional.idempotency.get_sync_db", mock_cm):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 check_idempotency(uuid4(), "place_order", "key-001")
             )
 
@@ -102,7 +102,7 @@ class TestCheckIdempotency:
         mock_cm = _mock_db_returning(stored)
 
         with patch("app.services.transactional.idempotency.get_sync_db", mock_cm):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 check_idempotency(uuid4(), "place_order", "key-002")
             )
 
@@ -115,7 +115,7 @@ class TestCheckIdempotency:
         mock_cm = _mock_db_returning(None)
 
         with patch("app.services.transactional.idempotency.get_sync_db", mock_cm):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 check_idempotency(uuid4(), "place_order", "key-unseen")
             )
 
@@ -134,7 +134,7 @@ class TestStoreIdempotency:
         result = _make_result("ORD-NEW")
 
         with patch("app.services.transactional.idempotency.get_sync_db", mock_cm):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 store_idempotency(uuid4(), "place_order", "key-003", result)
             )
 
@@ -147,7 +147,7 @@ class TestStoreIdempotency:
         result = _make_result("ORD-CONFLICT")
 
         with patch("app.services.transactional.idempotency.get_sync_db", mock_cm):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 store_idempotency(uuid4(), "place_order", "key-004", result)
             )
 
@@ -168,11 +168,11 @@ class TestStoreIdempotency:
 
         with patch("app.services.transactional.idempotency.get_sync_db", mock_cm):
             # First call
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 store_idempotency(agent_id, skill, key, result)
             )
             # Second call — should not raise
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 store_idempotency(agent_id, skill, key, result)
             )
 
@@ -194,12 +194,12 @@ class TestStoreIdempotency:
         check_cm = _mock_db_returning(result)
 
         with patch("app.services.transactional.idempotency.get_sync_db", store_cm):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 store_idempotency(agent_id, skill, key, result)
             )
 
         with patch("app.services.transactional.idempotency.get_sync_db", check_cm):
-            replayed = asyncio.get_event_loop().run_until_complete(
+            replayed = asyncio.run(
                 check_idempotency(agent_id, skill, key)
             )
 
