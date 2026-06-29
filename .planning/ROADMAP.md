@@ -112,6 +112,10 @@ Plans:
 **Goal:** Wire the transactional tools to real providers via adapters backed by encrypted, agent-invisible credentials resolved through a platform credential service — so an agent can take real actions without any code path ever seeing a raw credential.
 **Requirements:** INT-01, INT-02, INT-03, INT-04, INT-05, INT-06, INT-07
 **Depends on:** Phase 14
+**Build decisions (see `docs/adr/0002-agent-tool-and-provisioning-strategy.md`):**
+- **Call provider SDKs directly behind our typed tools — NOT provider MCP servers or vendor "agent toolkits" (e.g. the Stripe Agent Toolkit).** A provider MCP/toolkit hands raw provider operations to the LLM, bypassing the Actor validator + capability envelope + audit (L1–L3) AND dumping the provider's whole API into context (token bloat + degraded tool-selection). Our narrow, hand-curated tool set is both the security boundary and the context-efficiency win.
+- **Stripe (INT-05):** Refunds API (`issue_refund`), Subscriptions API (`update_subscription`), Checkout Session / Payment Link for `place_order` (no card handling). Pass the TXN-02 client idempotency key straight to Stripe's native `Idempotency-Key`. Provision a per-tenant **Stripe Restricted API Key** scoped to only the enabled skills — defense-in-depth at the Stripe layer mirroring the L2 envelope.
+- **Shopify / WooCommerce / Calendly:** same pattern — provider SDK/REST behind typed tools, with scope-restricted credentials. (Stripe Agent Toolkit / MCP kept only as a *reference* for which ops to expose.)
 **Success criteria:**
 1. `integration_credentials` is Fernet-encrypted and never read by agent code; the credential service returns only short-lived in-memory handles
 2. Each of Shopify / WooCommerce / Stripe / Calendly performs its real action behind the typed tool contract
