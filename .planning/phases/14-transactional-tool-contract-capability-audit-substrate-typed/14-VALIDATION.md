@@ -1,8 +1,8 @@
 ---
 phase: 14
 slug: transactional-tool-contract-capability-audit-substrate-typed
-status: draft
-nyquist_compliant: false
+status: planned
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-06-29
 ---
@@ -39,12 +39,21 @@ created: 2026-06-29
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Created By | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-----------------|--------|
-| 14-01-01 | 01 | 1 | CAP-01, AUD-01, AUD-02 | T-14-01 | 4 control-DB tables; no tenant PII; fail-closed default | unit/migration | `pytest tests/unit/test_migration_0014.py -x -q` | task | ⬜ pending |
-| 14-02-01 | 02 | 1 | TXN-01, TXN-03 | T-14-02 | typed schemas reject string-blob/SQL/URL; mutating flag present | unit | `pytest tests/unit/test_transactional_tools.py -x -q` | task | ⬜ pending |
-| 14-03-01 | 03 | 2 | TXN-02 | T-14-03 | replay w/ same idempotency key returns stored result, no re-execute | unit | `pytest tests/unit/test_tool_idempotency.py -x -q` | task | ⬜ pending |
-| 14-04-01 | 04 | 2 | CAP-02 | T-14-04 | disabled/over-limit/constraint-violation → capability.denial; fail-closed | unit | `pytest tests/unit/test_capability_enforcement.py -x -q` | task | ⬜ pending |
+| 14-01-01 | 01 | 1 | CAP-01, AUD-01, AUD-02, TXN-02 | T-14-01-01/02/03/04 | migration 0014: 4 control-DB tables; enabled server_default false (fail-closed); UNIQUE(agent_id,skill) + UNIQUE(agent_id,skill,idempotency_key); down_revision 0013 | unit/migration | `cd apps/api && pytest tests/unit/test_migration_0014.py -x -q` | task | ⬜ pending |
+| 14-01-02 | 01 | 1 | CAP-01, AUD-01, AUD-02 | T-14-01-01/02 | 4 ORM models mirror migration constraints + fail-closed defaults; registered in app.models | unit | `cd apps/api && pytest tests/unit/test_migration_0014.py -x -q` | task | ⬜ pending |
+| 14-02-01 | 02 | 1 | TXN-01 | T-14-02-01 | 14 typed Pydantic models; idempotency_key required on all 6 mutating inputs; no blob/SQL/URL/open-dict fields | unit | `cd apps/api && pytest tests/unit/test_transactional_contract.py -x -q` | task | ⬜ pending |
+| 14-02-02 | 02 | 1 | TXN-03, TXN-05 | T-14-02-02 | definition-time mutating flags in TOOL_REGISTRY (6 True, confirm_action False); A2A metadata captured | unit | `cd apps/api && pytest tests/unit/test_transactional_contract.py -x -q` | task | ⬜ pending |
+| 14-02-03 | 02 | 1 | TXN-01 | T-14-02-03 | StubProviderAdapter offline ([STUB] outputs) behind ProviderAdapter ABC; call_actor_gate pass-through approve stub | unit | `cd apps/api && pytest tests/unit/test_transactional_contract.py -x -q` | task | ⬜ pending |
+| 14-03-01 | 03 | 2 | CAP-02 | T-14-03-01/05 | fail-closed denial on missing/disabled/over-limit/constraint-violation; capability.denial logged; Redis only for rate counter | unit | `cd apps/api && pytest tests/unit/test_capability_enforcement.py -x -q` | task | ⬜ pending |
+| 14-03-02 | 03 | 2 | TXN-02 | T-14-03-02 | replay served from control-DB tool_idempotency_keys (UNIQUE), ON CONFLICT DO NOTHING; not Redis; survives acks_late | unit | `cd apps/api && pytest tests/unit/test_tool_idempotency.py -x -q` | task | ⬜ pending |
+| 14-03-03 | 03 | 2 | AUD-01 | T-14-03-03/04 | one tool_calls_audit row per execution incl. error path; capability_snapshot plain dict; actor cols empty in P14 | unit | `cd apps/api && pytest tests/unit/test_capability_enforcement.py -x -q` | task | ⬜ pending |
+| 14-04-01 | 04 | 3 | TXN-01, TXN-02, TXN-03, AUD-01 | T-14-04-01/02 | dispatcher order capability→idempotency(short-circuit)→actor seam→execute(stub)→audit→store; seam unbypassable; replay no re-execute/no 2nd audit | unit | `cd apps/api && pytest tests/unit/test_transactional_tools.py -x -q` | task | ⬜ pending |
+| 14-04-02 | 04 | 3 | TXN-04, AUD-02 | T-14-04-05 | confirm_action writes pending_confirmations, no adapter, no idempotency key (mutating=False); registry sdk_tool attached | unit | `cd apps/api && pytest tests/unit/test_transactional_tools.py -x -q` | task | ⬜ pending |
+| 14-04-03 | 04 | 3 | TXN-01, TXN-04 | T-14-04-03/04 | 7 tools registered in build_tool_server + allowed_tools; existing 4 (incl. escalate_to_human) retained; envelope still gates | unit | `cd apps/api && pytest tests/unit/test_transactional_tools.py -x -q` | task | ⬜ pending |
 
-*Planner replaces these seed rows with the full per-task map.*
+**Open-question resolutions baked into the plans:**
+- (a) `confirm_action` is `mutating=False` — writes a pending_confirmations row, no provider action, no idempotency key. Duplicate-confirm dedup deferred to Phase 18; PRD §4.3 DDL unchanged.
+- (b) The idempotency lookup is hoisted above the Actor seam so replays short-circuit to the stored result before Actor+execute (no redundant Haiku call). Capability check still runs first on every call (fail-closed on replays); `call_actor_gate` still gates 100% of fresh executions.
 
 ---
 

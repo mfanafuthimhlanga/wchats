@@ -93,7 +93,11 @@ Plans:
 2. A side-effecting tool replayed with the same idempotency key returns the original result and does not re-execute
 3. A disabled / over-limit / constraint-violating skill call is rejected and logged as `capability.denial`
 4. Every mutating tool call writes a complete `tool_calls_audit` row
-**Plans:** 0 — run `/gsd-plan-phase 14`
+**Plans:** 4 plans
+- [ ] 14-01-PLAN.md (wave 1) — migration 0014 + 4 control-DB tables + ORM models (CAP-01, AUD-01, AUD-02, TXN-02)
+- [ ] 14-02-PLAN.md (wave 1) — typed Pydantic schemas + TransactionalToolDef registry + StubProviderAdapter + actor_seam (TXN-01, TXN-03, TXN-05)
+- [ ] 14-03-PLAN.md (wave 2) — fail-closed capability enforcement + control-DB idempotency + audit writer (CAP-02, TXN-02, AUD-01)
+- [ ] 14-04-PLAN.md (wave 3) — 7 tool handlers + dispatcher + build_tool_server registration (TXN-01, TXN-02, TXN-03, TXN-04, AUD-01, AUD-02)
 
 ### Phase 15: Actor validator (L3) + four-node validation chain — a pre-mutation Haiku gate in the Agent SDK tool loop
 
