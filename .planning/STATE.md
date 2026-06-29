@@ -3,21 +3,21 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
-stopped_at: Completed 14-02-PLAN.md — typed tool contract complete (50 tests passing)
-last_updated: "2026-06-29T16:03:18.522Z"
+stopped_at: Completed 14-04-PLAN.md — Phase 14 COMPLETE (all 4 plans done, 115 tests passing)
+last_updated: "2026-06-29T18:45:00Z"
 progress:
   total_phases: 6
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 4
-  completed_plans: 3
-  percent: 0
+  completed_plans: 4
+  percent: 17
 ---
 
 # Project State
 
 ## Current Status
 
-**▶ RESUME MARKER (2026-06-29 session): Phase 14 EXECUTING — Plan 01 complete.** 14-01 (transactional substrate migration + ORM models) complete (commits `56f8d41` + `a91afed`, 11/12 tests pass). **Next:** 14-02 (typed tool contract — Pydantic schemas + TransactionalToolDef registry + StubProviderAdapter + actor_seam stub) and 14-03 (capability enforcement + idempotency + audit helpers). Wave 1 = 14-01 + 14-02 in parallel. Phase 13 (production hosting) remains a separate, paused track needing real AWS — see checkpoint below.
+**✓ PHASE 14 COMPLETE (2026-06-29).** All 4 plans executed: 14-01 (transactional substrate), 14-02 (typed contract), 14-03 (enforcement + idempotency + audit), 14-04 (tool handlers + registration). 115 tests passing. Full enforcement path exercisable offline: capability envelope → idempotency → actor seam → stub execute → audit. 7 transactional tools registered in customer-agent MCP server. Phase 13 (production hosting) remains a separate, paused track needing real AWS — see checkpoint below.
 
 **▶ CHECKPOINT — Phase 13 EXECUTING, paused at live AWS gates (2026-06-29):** 7/11 plans complete — **all autonomous code waves done**: 13-01 Terraform IaC (`deploy/terraform/`, 12 files), 13-02 Bedrock Titan v2 embedder (provider seam, both paths), 13-03 Neon connection pooling, 13-04 per-tenant re-embed task, 13-05 env-driven embed snippet, 13-06 S3 uploads, 13-07 ContextVar concurrency (prefork=2 in prod / solo in dev). 73 phase unit tests pass together; commits `e8b51fa`→`3560071` on `main`. **Paused at 13-08** (first `autonomous:false` live gate). Remaining 13-08/09/10/11 need a real **AWS account (billing + Bedrock Titan v2 model access in us-east-1)** plus `terraform` and `aws` CLIs — none present locally. `terraform validate`/`fmt` for 13-01 are deferred into 13-08. **Resume:** install terraform + awscli, configure AWS creds, request Bedrock Titan access, then `/gsd-execute-phase 13 --wave 3` (13-08 live bring-up + re-embed), then wave 4 (13-09/10/11). Per-plan detail in each `13-0X-SUMMARY.md`.
 
@@ -70,6 +70,10 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [14-01] tool_calls_audit.arguments and capability_snapshot are nullable (plan spec overrides PRD NOT NULL — capture may fail before validation)
 - [14-01] pending_confirmations.expires_at is nullable — NULL means no deadline configured (plan spec overrides PRD NOT NULL)
 - [14-01] actor_decision/actor_rationale are NOT NULL DEFAULT '' — Phase 14 writes empty; Phase 15 Actor fills them
+- [14-04] confirm_action is mutating=False — writes pending_confirmations row (client-generated UUID), no provider adapter, no idempotency key; duplicate dedup deferred to Phase 18
+- [14-04] Idempotency lookup hoisted before actor seam — replay short-circuits before Haiku gate call; capability check still runs first on every call (T-14-04-03)
+- [14-04] AUD-01 symmetry: capability denial writes audit row with error=capability.denial:<reason> — 100% audit coverage
+- [14-04] Lazy import of agent_tools ContextVars inside dispatcher body avoids circular import (tools.py imports agent_tools ContextVars at call time, not module level)
 - [14-01] No ORM FK relationships declared (agent_id is plain UUID) — avoids cross-table teardown complexity in tests
 - [11-05] scoreColor: --amber → --gold for mid-range scores (0.7-0.9) — amber = building warmth (#E8A87C) in Hillbrow system, not a status warning token
 - [11-05] Recharts hex per plan spec (#FBBF24 gold) rather than PATTERNS.md (#F0C674) — plan spec must_haves are acceptance criteria target
