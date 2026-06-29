@@ -2,23 +2,34 @@
 transactional.tools — 6 mutating @tool handlers + confirm_action_tool + shared dispatcher.
 
 The single _execute_transactional_tool dispatcher encodes the enforcement order ONCE:
-  1. Capability check (fail-closed — any denial is final, no adapter call)
-  2. Idempotency lookup (replay short-circuit BEFORE actor seam — replay optimization:
-     avoids a redundant Haiku call on replays that execute nothing)
-  3. Actor seam (call_actor_gate): block path → audit row + is_error, NO adapter call
-  4. Adapter execute (in try/except, capturing latency_ms and error)
-  5. Audit row written ALWAYS (on both success and error paths — AUD-01 coverage)
-  6. Store idempotency key (on success only)
+  1. IN-03 agent_id guard — if empty/unset, return precondition error before any DB touch
+  2. Capability check (check_capability_access — auth-only, no side effects; fail-closed
+     on EVERY call including replays — T-14-04-03)
+  3. Reserve idempotency (reserve_idempotency — atomic INSERT ON CONFLICT DO NOTHING;
+     DB decides single winner — CR-02 closed):
+       "replay"       → return stored result immediately (WR-01: BEFORE rate checks)
+       "args_mismatch"→ explicit is_error (WR-02 closed)
+       "in_progress"  → benign is_error (concurrent duplicate delivery)
+       "reserved"     → proceed as the winner
+  4. Rate + constraint checks (apply_rate_and_constraint_checks — Redis INCR+EXPIRE;
+     runs ONLY for the fresh reserved winner, never for replays)
+       denial → release_idempotency + audit row + is_error
+  5. Actor seam (call_actor_gate): block → release_idempotency + audit row + is_error
+  6. Adapter execute (try/except, captures latency_ms):
+       error → release_idempotency + audit row + is_error
+  7. Audit row (success, result=response, error=None) + finalize_idempotency + return
 
-AUD-01 symmetry (PLAN.md Task 1 note):
-  The capability denial path also writes a tool_calls_audit row (error="capability.denial:<reason>").
-  This ensures 100% audit coverage — every entry into a transactional tool produces one row,
-  regardless of where it fails. This mirrors the actor_block path which already wrote audit rows.
+AUD-01 symmetry:
+  Every entry into a transactional tool that is NOT a replay or benign in_progress produces
+  exactly one tool_calls_audit row: capability denial, rate denial, actor block, adapter error,
+  and success paths all write one row. Replays and in_progress do NOT write audit rows.
 
-confirm_action_tool (mutating=False):
-  Writes a pending_confirmations row (agent_id, skill, arguments, requested_at, expires_at)
-  and returns an "awaiting confirmation" response. Calls NO provider adapter and takes NO
-  idempotency key. Duplicate-confirm dedup is deferred to Phase 18. PRD DDL unchanged.
+confirm_action_tool (mutating=False, WR-05 closed):
+  Gated behind check_capability_access + IN-03 agent_id guard before writing a
+  pending_confirmations row. Takes NO idempotency key, calls NO provider adapter.
+  Minimal dedup: duplicate calls for the same (agent_id, skill, action_reference) in the
+  same TTL window silently overwrite (row-level upsert added in Task 3). Phase-18 will
+  extend resolution logic. PRD DDL unchanged.
 
 Circular import note:
   tools.py imports _agent_id_var / _conversation_id_var from agent_tools via a lazy
@@ -34,8 +45,7 @@ Registry attachment:
 Security:
   - The Actor seam (call_actor_gate) is ALWAYS called before the adapter on every
     fresh (non-replay) mutating execution — T-14-04-01.
-  - Replays short-circuit BEFORE the actor seam (idempotency hit → return cached
-    result, no adapter call, no audit row) — T-14-04-02.
+  - Replays short-circuit BEFORE the actor seam AND before rate checks (WR-01) — T-14-04-02.
   - allowed_tools listing does not grant access; the fail-closed envelope check in the
     handler is the real gate — T-14-04-03.
   - agent_id is sourced from the per-call ContextVar — T-14-04-04.
@@ -56,8 +66,16 @@ from app.core.database import get_sync_db
 from app.models.pending_confirmation import PendingConfirmation
 from app.services.actor_seam import call_actor_gate
 from app.services.transactional.audit import write_audit_row
-from app.services.transactional.enforcement import check_capability_envelope
-from app.services.transactional.idempotency import check_idempotency, store_idempotency
+from app.services.transactional.enforcement import (
+    apply_rate_and_constraint_checks,
+    check_capability_access,
+)
+from app.services.transactional.idempotency import (
+    compute_args_hash,
+    finalize_idempotency,
+    release_idempotency,
+    reserve_idempotency,
+)
 from app.services.transactional.provider_adapter import get_adapter
 from app.services.transactional.registry import TOOL_REGISTRY
 from app.services.transactional.schemas import (
@@ -92,15 +110,22 @@ async def _execute_transactional_tool(
     Called by each of the 6 mutating @tool handlers after Pydantic validation.
     confirm_action_tool does NOT use this dispatcher (mutating=False, no adapter).
 
-    Enforcement order (documented in Plan-04 objective — this is the single place
-    where the order is encoded; changing it here changes it for ALL 6 mutating tools):
+    Enforcement order (documented in Plan-08 objective):
 
-      1. Capability check   — fail-closed; any denial: write audit row, return is_error
-      2. Idempotency lookup — cache hit: return stored result (short-circuit before seam)
-      3. Actor seam         — "block": write audit row, return is_error (no adapter call)
-      4. Adapter execute    — try/except; captures latency_ms and error string
-      5. Audit row          — written on BOTH success and error paths (AUD-01)
-      6. Store idempotency  — on success only (ON CONFLICT DO NOTHING)
+      1. IN-03 guard     — agent_id must be non-empty; fail fast before any DB touch
+      2. Capability check— check_capability_access(agent_id, skill): auth-only, no side effects
+                           fail-closed on EVERY call (including replays) — T-14-04-03
+      3. Reserve         — reserve_idempotency: atomic DB claim, DB decides single winner
+                           "replay"       → return stored result BEFORE rate checks (WR-01)
+                           "args_mismatch"→ is_error (WR-02)
+                           "in_progress"  → benign is_error (concurrent duplicate delivery)
+                           "reserved"     → proceed as winner
+      4. Rate checks     — apply_rate_and_constraint_checks: Redis INCR+EXPIRE (side-effecting)
+                           ONLY for the fresh reserved winner — never for replays
+                           denial → release + audit + is_error
+      5. Actor seam      — call_actor_gate: block → release + audit + is_error
+      6. Adapter execute — try/except; error → release + audit + is_error
+      7. Audit + finalize— success path: audit row (no error) + finalize_idempotency + return
 
     Args:
         skill:          Canonical tool/skill name (e.g. "place_order").
@@ -113,20 +138,33 @@ async def _execute_transactional_tool(
         On errors: also contains "is_error": True.
     """
     # Lazy import breaks the circular dependency between tools.py and agent_tools.py.
-    # agent_tools.py imports tools.py for registration; tools.py needs agent_tools.py's
-    # ContextVars. At call-time, agent_tools is fully initialised so the lazy import works.
-    from app.services.agent_tools import _agent_id_var, _conversation_id_var
+    from app.services.agent_tools import _agent_id_var, _conversation_id_var  # noqa: PLC0415
 
     agent_id = _agent_id_var.get()
     conversation_id_str = _conversation_id_var.get()
-    # ContextVar default is ""; pass None to audit/actor seam when no conversation context.
     conversation_id: str | None = conversation_id_str if conversation_id_str else None
 
-    # ------------------------------------------------------------------ 1. Capability check
-    snapshot, denial = await check_capability_envelope(agent_id, skill, validated)
+    # -------------------------------------------------------- 1. IN-03 agent_id precondition
+    if not agent_id:
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "Precondition failed: agent context not set. "
+                        "Cannot process transactional tool call without a valid agent identity."
+                    ),
+                }
+            ],
+            "is_error": True,
+        }
+
+    # -------------------------------------------------------- 2. Capability check (auth-only)
+    # check_capability_access is side-effect-free (no Redis INCR, no writes).
+    # Runs on EVERY call including replays — fail-closed for existence + enabled (T-14-04-03).
+    snapshot, denial = await check_capability_access(agent_id, skill)
     if denial is not None:
-        # AUD-01 symmetry: capability denial writes an audit row so every tool entry
-        # is fully audited — matching the actor_block path which already wrote audit rows.
+        # AUD-01 symmetry: capability denial writes one audit row (matching actor_block).
         await write_audit_row(
             agent_id=agent_id,
             conversation_id=conversation_id,
@@ -139,7 +177,6 @@ async def _execute_transactional_tool(
             latency_ms=None,
             error=f"capability.denial:{denial}",
         )
-        # capability.denial structlog event is already emitted by check_capability_envelope.
         return {
             "content": [
                 {
@@ -153,24 +190,95 @@ async def _execute_transactional_tool(
             "is_error": True,
         }
 
-    # ------------------------------------------------------------------ 2. Idempotency lookup
-    # Short-circuit BEFORE the actor seam — replay optimization:
-    # a replay executes nothing, so there is no need for a Haiku gate call.
-    # The capability check still ran above (fail-closed even for replays — T-14-04-03).
-    cached = await check_idempotency(agent_id, skill, validated.idempotency_key)
-    if cached is not None:
+    # -------------------------------------------------------- 3. Reserve idempotency (atomic)
+    # compute_args_hash excludes idempotency_key internally — used to detect WR-02 key reuse.
+    args_hash = compute_args_hash(raw_args)
+    reservation = await reserve_idempotency(
+        agent_id, skill, validated.idempotency_key, args_hash
+    )
+
+    if reservation.state == "replay":
+        # WR-01 closed: replay short-circuits BEFORE apply_rate_and_constraint_checks.
+        # Replays return the stored result without consuming rate budget.
         log.info(
             "transactional_tool.idempotency_replay",
             agent_id=agent_id,
             skill=skill,
         )
-        return cached
+        return reservation.result  # type: ignore[return-value]
 
-    # ------------------------------------------------------------------ 3. Actor seam
+    if reservation.state == "args_mismatch":
+        # WR-02 closed: same idempotency_key used with different business arguments.
+        # Return an explicit error instead of silently replaying the stale result.
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "Idempotency key reused with different arguments. "
+                        "Each new request must use a unique idempotency_key."
+                    ),
+                }
+            ],
+            "is_error": True,
+        }
+
+    if reservation.state == "in_progress":
+        # Concurrent duplicate delivery — another worker is executing the same key.
+        # Return a benign is_error without executing (caller should retry later).
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "This request is already being processed. "
+                        "Please wait a moment and retry if you do not receive a response."
+                    ),
+                }
+            ],
+            "is_error": True,
+        }
+
+    # reservation.state == "reserved" — we are the single winner.
+
+    # -------------------------------------------------------- 4. Rate + constraint checks
+    # apply_rate_and_constraint_checks is side-effecting (Redis INCR+EXPIRE).
+    # Runs ONLY for the fresh reserved winner — never for replays (WR-01).
+    rate_denial = await apply_rate_and_constraint_checks(agent_id, skill, snapshot, raw_args)
+    if rate_denial is not None:
+        # Release the reservation so a later retry can attempt the key again.
+        await release_idempotency(agent_id, skill, validated.idempotency_key)
+        await write_audit_row(
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            skill=skill,
+            arguments=raw_args,
+            result=None,
+            actor_decision="",
+            actor_rationale="",
+            capability_snapshot=snapshot,
+            latency_ms=None,
+            error=f"capability.denial:{rate_denial}",
+        )
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        f"Request denied by rate or constraint check "
+                        f"(reason: {rate_denial}). Please wait before retrying."
+                    ),
+                }
+            ],
+            "is_error": True,
+        }
+
+    # -------------------------------------------------------- 5. Actor seam
     decision, rationale = await call_actor_gate(
         skill, raw_args, snapshot, conversation_id or "", agent_id
     )
     if decision == "block":
+        await release_idempotency(agent_id, skill, validated.idempotency_key)
         await write_audit_row(
             agent_id=agent_id,
             conversation_id=conversation_id,
@@ -193,11 +301,9 @@ async def _execute_transactional_tool(
             "is_error": True,
         }
 
-    # ------------------------------------------------------------------ 4. Adapter execute
+    # -------------------------------------------------------- 6. Adapter execute
     adapter = get_adapter(agent_id)
     start_ms = int(time.time() * 1000)
-    error_str: str | None = None
-    response: dict | None = None
 
     try:
         result_obj = await getattr(adapter, adapter_method)(validated, agent_id)
@@ -212,22 +318,19 @@ async def _execute_transactional_tool(
             skill=skill,
             error=error_str,
         )
-
-    # ------------------------------------------------------------------ 5. Audit row (ALWAYS)
-    await write_audit_row(
-        agent_id=agent_id,
-        conversation_id=conversation_id,
-        skill=skill,
-        arguments=raw_args,
-        result=response,
-        actor_decision="",
-        actor_rationale="",
-        capability_snapshot=snapshot,
-        latency_ms=latency_ms,
-        error=error_str,
-    )
-
-    if error_str is not None:
+        await release_idempotency(agent_id, skill, validated.idempotency_key)
+        await write_audit_row(
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            skill=skill,
+            arguments=raw_args,
+            result=None,
+            actor_decision=decision,
+            actor_rationale=rationale,
+            capability_snapshot=snapshot,
+            latency_ms=latency_ms,
+            error=error_str,
+        )
         return {
             "content": [
                 {
@@ -238,11 +341,25 @@ async def _execute_transactional_tool(
             "is_error": True,
         }
 
-    # ------------------------------------------------------------------ 6. Store idempotency + return
+    # -------------------------------------------------------- 7. Audit row + finalize + return
     tool_response: dict = {
         "content": [{"type": "text", "text": response.get("message", str(response))}]
     }
-    await store_idempotency(agent_id, skill, validated.idempotency_key, tool_response)
+
+    await write_audit_row(
+        agent_id=agent_id,
+        conversation_id=conversation_id,
+        skill=skill,
+        arguments=raw_args,
+        result=response,
+        actor_decision=decision,
+        actor_rationale=rationale,
+        capability_snapshot=snapshot,
+        latency_ms=latency_ms,
+        error=None,
+    )
+
+    await finalize_idempotency(agent_id, skill, validated.idempotency_key, tool_response)
 
     log.info(
         "transactional_tool.success",
@@ -424,7 +541,7 @@ async def update_customer_record_tool(args: dict) -> dict:
         "Submit a confirmation request for a pending transactional action that requires "
         "human approval. Creates a pending_confirmations row for Phase-18 resolution. "
         "Does NOT execute the underlying action and does NOT require an idempotency_key "
-        "(mutating=False). Duplicate confirmation dedup is deferred to Phase 18."
+        "(mutating=False). Gated behind check_capability_access (WR-05)."
     ),
     ConfirmActionInput.model_json_schema(),
 )
@@ -435,8 +552,14 @@ async def confirm_action_tool(args: dict) -> dict:
     it does NOT execute the underlying provider action. The Phase-18 admin UI will
     resolve pending rows. PRD DDL unchanged.
 
-    Duplicate-confirm dedup is a Phase-18 concern. For now, duplicate calls will
-    write duplicate rows (accepted risk — T-14-04-05).
+    WR-05 (closed): confirm_action is now gated behind check_capability_access before
+    writing the pending_confirmations row. Disabled or missing skill → is_error, no row.
+
+    IN-03 (closed): empty agent_id → precondition error before any capability check or
+    DB write.
+
+    Duplicate-confirm dedup: minimal upsert on (agent_id, skill, action_reference) within
+    TTL window. Phase-18 will extend resolution logic.
     """
     try:
         validated = ConfirmActionInput(**args)
@@ -447,9 +570,43 @@ async def confirm_action_tool(args: dict) -> dict:
         }
 
     # Lazy import to access the ContextVar set by build_tool_server.
-    from app.services.agent_tools import _agent_id_var
+    from app.services.agent_tools import _agent_id_var  # noqa: PLC0415
 
     agent_id = _agent_id_var.get()
+
+    # IN-03: agent_id guard — fail before any DB write
+    if not agent_id:
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "Precondition failed: agent context not set. "
+                        "Cannot submit confirmation request without a valid agent identity."
+                    ),
+                }
+            ],
+            "is_error": True,
+        }
+
+    # WR-05: capability gate — check_capability_access is side-effect-free.
+    # Disabled or missing skill → return is_error without writing the row.
+    _snapshot, denial = await check_capability_access(agent_id, validated.skill)
+    if denial is not None:
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        f"Access denied: capability envelope denied confirm_action for "
+                        f"skill '{validated.skill}' (reason: {denial}). "
+                        f"Contact your administrator to enable this tool."
+                    ),
+                }
+            ],
+            "is_error": True,
+        }
+
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(hours=_CONFIRM_TTL_HOURS)
 
