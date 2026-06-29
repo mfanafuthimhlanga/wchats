@@ -103,7 +103,7 @@ Plans:
 3. A disabled / over-limit / constraint-violating skill call is rejected and logged as `capability.denial`
 4. Every mutating tool call writes a complete `tool_calls_audit` row
 
-**Plans:** 7/8 plans executed
+**Plans:** 8/8 plans complete
 **Wave 1**
 
 - [x] 14-01-PLAN.md (wave 1) — migration 0014 + 4 control-DB tables + ORM models (CAP-01, AUD-01, AUD-02, TXN-02)
@@ -122,7 +122,7 @@ Plans:
 - [x] 14-05-PLAN.md (wave 1) — migration 0015 + ORM: idempotency reservation columns (status/args_hash/reserved_at, nullable result) — substrate for CR-02/WR-02 (TXN-02)
 - [x] 14-06-PLAN.md (wave 2) — atomic reserve/finalize/release idempotency engine + arg fingerprint + executor offload; live-DB concurrency proof (CR-02, WR-02, WR-03) (TXN-02)
 - [x] 14-07-PLAN.md (wave 1) — capability-access/rate-constraint split + Redis TLS verify + pipelined INCR/EXPIRE + falsy-zero + enforcement/audit offload (WR-01 substrate, WR-04, WR-03, IN-01, IN-02) (CAP-02, AUD-01)
-- [ ] 14-08-PLAN.md (wave 3) — dispatcher rewrite to reserve-before-execute + confirm_action capability gate + agent_id precondition; live-DB e2e replay (CR-02, WR-01, WR-02, WR-05, IN-03) (TXN-02, CAP-02, AUD-01)
+- [x] 14-08-PLAN.md (wave 3) — dispatcher rewrite to reserve-before-execute + confirm_action capability gate + agent_id precondition; live-DB e2e replay (CR-02, WR-01, WR-02, WR-05, IN-03) (TXN-02, CAP-02, AUD-01)
 
 ### Phase 15: Actor validator (L3) + four-node validation chain — a pre-mutation Haiku gate in the Agent SDK tool loop
 
