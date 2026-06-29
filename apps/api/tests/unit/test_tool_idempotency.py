@@ -30,7 +30,8 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
-from unittest.mock import MagicMock, call, patch
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -233,3 +234,345 @@ class TestNoRedisUsage:
         assert "from redis" not in source, (
             "idempotency.py must not import from redis — idempotency uses control-DB table only"
         )
+
+
+# ---------------------------------------------------------------------------
+# Reservation engine mock helpers
+# ---------------------------------------------------------------------------
+
+
+def _first_result(value):
+    """Create a mock execute() result whose .first() returns value."""
+    r = MagicMock()
+    r.first.return_value = value
+    return r
+
+
+def _mappings_first_result(value):
+    """Create a mock execute() result whose .mappings().first() returns value."""
+    r = MagicMock()
+    r.mappings.return_value.first.return_value = value
+    return r
+
+
+def _make_reserve_session(*execute_returns):
+    """Build a session mock with an ordered side_effect for sequential execute() calls.
+
+    Returns (context_manager_factory, session_mock).
+    """
+    session = MagicMock()
+    session.execute.side_effect = list(execute_returns)
+    session.__enter__ = lambda s: s
+    session.__exit__ = MagicMock(return_value=False)
+
+    @contextmanager
+    def _ctx():
+        yield session
+
+    return _ctx, session
+
+
+# ---------------------------------------------------------------------------
+# TestReservationEngine
+# ---------------------------------------------------------------------------
+
+
+class TestReservationEngine:
+    """Tests for the atomic reserve/finalize/release engine (CR-02).
+
+    All test methods import the new symbols locally so that this class
+    produces clean ImportError failures in the TDD RED phase without
+    disturbing the existing TestCheckIdempotency / TestStoreIdempotency
+    / TestNoRedisUsage classes.
+    """
+
+    # ------------------------------------------------------------------
+    # compute_args_hash
+    # ------------------------------------------------------------------
+
+    def test_compute_args_hash_stable_across_key_order(self):
+        """Hash is stable regardless of dict key ordering."""
+        from app.services.transactional.idempotency import compute_args_hash  # ImportError in RED
+
+        a = {"product_id": "A", "quantity": 1}
+        b = {"quantity": 1, "product_id": "A"}
+        assert compute_args_hash(a) == compute_args_hash(b)
+
+    def test_compute_args_hash_excludes_idempotency_key(self):
+        """Two arg dicts differing only in idempotency_key produce the same hash."""
+        from app.services.transactional.idempotency import compute_args_hash
+
+        a = {"idempotency_key": "k1", "product_id": "A", "quantity": 1}
+        b = {"quantity": 1, "product_id": "A", "idempotency_key": "k2"}
+        assert compute_args_hash(a) == compute_args_hash(b), (
+            "idempotency_key must be excluded from the hash — same logical request, different keys"
+        )
+
+    def test_compute_args_hash_business_arg_sensitive(self):
+        """Different business args produce different hashes."""
+        from app.services.transactional.idempotency import compute_args_hash
+
+        a = {"idempotency_key": "k1", "product_id": "A", "quantity": 1}
+        c = {"idempotency_key": "k1", "product_id": "B", "quantity": 1}
+        assert compute_args_hash(a) != compute_args_hash(c), (
+            "product_id A vs B must produce different hashes"
+        )
+
+    def test_compute_args_hash_is_hex_string(self):
+        """compute_args_hash returns a hex string."""
+        from app.services.transactional.idempotency import compute_args_hash
+
+        h = compute_args_hash({"product_id": "A", "quantity": 1})
+        assert isinstance(h, str)
+        assert len(h) == 64, "sha256 hex is 64 chars"
+        int(h, 16)  # raises ValueError if not hex
+
+    # ------------------------------------------------------------------
+    # reserve_idempotency: winner path
+    # ------------------------------------------------------------------
+
+    def test_reserve_winner_returns_reserved_state(self):
+        """INSERT...RETURNING yields a row → state 'reserved', result None."""
+        from app.services.transactional.idempotency import reserve_idempotency
+
+        cm, session = _make_reserve_session(
+            _first_result(MagicMock()),  # INSERT...RETURNING returns a row (winner)
+        )
+        with patch("app.services.transactional.idempotency.get_sync_db", cm):
+            reservation = asyncio.run(
+                reserve_idempotency(uuid4(), "place_order", "key-r01", "hash-abc")
+            )
+
+        assert reservation.state == "reserved"
+        assert reservation.result is None
+
+    def test_reserve_winner_commits(self):
+        """Winner path commits the INSERT transaction."""
+        from app.services.transactional.idempotency import reserve_idempotency
+
+        cm, session = _make_reserve_session(
+            _first_result(MagicMock()),
+        )
+        with patch("app.services.transactional.idempotency.get_sync_db", cm):
+            asyncio.run(reserve_idempotency(uuid4(), "place_order", "key-r01b", "hash-abc"))
+
+        session.commit.assert_called_once()
+
+    # ------------------------------------------------------------------
+    # reserve_idempotency: replay path
+    # ------------------------------------------------------------------
+
+    def test_reserve_replay_returns_stored_result(self):
+        """INSERT conflict + status='completed' + matching hash → state 'replay' with result."""
+        from app.services.transactional.idempotency import reserve_idempotency
+
+        stored = {"content": [{"type": "text", "text": "Order placed"}], "is_error": False}
+        args_hash = "hash-completed"
+
+        cm, session = _make_reserve_session(
+            _first_result(None),  # INSERT ON CONFLICT → no row returned
+            _mappings_first_result({
+                "status": "completed",
+                "result": stored,
+                "args_hash": args_hash,
+                "reserved_at": datetime.now(timezone.utc),
+            }),
+        )
+        with patch("app.services.transactional.idempotency.get_sync_db", cm):
+            reservation = asyncio.run(
+                reserve_idempotency(uuid4(), "place_order", "key-r02", args_hash)
+            )
+
+        assert reservation.state == "replay"
+        assert reservation.result == stored
+
+    # ------------------------------------------------------------------
+    # reserve_idempotency: in_progress path
+    # ------------------------------------------------------------------
+
+    def test_reserve_in_progress_recent_pending(self):
+        """INSERT conflict + status='pending' + recent reserved_at → state 'in_progress'."""
+        from app.services.transactional.idempotency import reserve_idempotency
+
+        args_hash = "hash-in-progress"
+        cm, session = _make_reserve_session(
+            _first_result(None),
+            _mappings_first_result({
+                "status": "pending",
+                "result": None,
+                "args_hash": args_hash,
+                "reserved_at": datetime.now(timezone.utc),  # very recent
+            }),
+        )
+        with patch("app.services.transactional.idempotency.get_sync_db", cm):
+            reservation = asyncio.run(
+                reserve_idempotency(uuid4(), "place_order", "key-r03", args_hash)
+            )
+
+        assert reservation.state == "in_progress"
+        assert reservation.result is None
+
+    # ------------------------------------------------------------------
+    # reserve_idempotency: stale reclaim path
+    # ------------------------------------------------------------------
+
+    def test_reserve_stale_reclaim_returns_reserved(self):
+        """INSERT conflict + status='pending' + old reserved_at → reclaim UPDATE wins → state 'reserved'."""
+        from app.services.transactional.idempotency import reserve_idempotency, _RESERVATION_LEASE_SECONDS
+
+        args_hash = "hash-stale"
+        # reserved_at well past the lease window
+        old_ts = datetime.now(timezone.utc) - timedelta(seconds=_RESERVATION_LEASE_SECONDS + 60)
+
+        cm, session = _make_reserve_session(
+            _first_result(None),  # INSERT conflict
+            _mappings_first_result({
+                "status": "pending",
+                "result": None,
+                "args_hash": args_hash,
+                "reserved_at": old_ts,
+            }),
+            _first_result(MagicMock()),  # reclaim UPDATE RETURNING → row (this agent wins)
+        )
+        with patch("app.services.transactional.idempotency.get_sync_db", cm):
+            reservation = asyncio.run(
+                reserve_idempotency(uuid4(), "place_order", "key-r04", args_hash)
+            )
+
+        assert reservation.state == "reserved"
+
+    def test_reserve_stale_reclaim_lost_returns_in_progress(self):
+        """INSERT conflict + old reserved_at but reclaim UPDATE returns nothing → someone else reclaimed → in_progress."""
+        from app.services.transactional.idempotency import reserve_idempotency, _RESERVATION_LEASE_SECONDS
+
+        args_hash = "hash-stale2"
+        old_ts = datetime.now(timezone.utc) - timedelta(seconds=_RESERVATION_LEASE_SECONDS + 60)
+
+        cm, session = _make_reserve_session(
+            _first_result(None),
+            _mappings_first_result({
+                "status": "pending",
+                "result": None,
+                "args_hash": args_hash,
+                "reserved_at": old_ts,
+            }),
+            _first_result(None),  # reclaim UPDATE returns nothing (someone else reclaimed first)
+        )
+        with patch("app.services.transactional.idempotency.get_sync_db", cm):
+            reservation = asyncio.run(
+                reserve_idempotency(uuid4(), "place_order", "key-r05", args_hash)
+            )
+
+        assert reservation.state == "in_progress"
+
+    # ------------------------------------------------------------------
+    # reserve_idempotency: args_mismatch path
+    # ------------------------------------------------------------------
+
+    def test_reserve_args_mismatch(self):
+        """INSERT conflict + existing args_hash differs → state 'args_mismatch'."""
+        from app.services.transactional.idempotency import reserve_idempotency
+
+        incoming_hash = "hash-incoming"
+        stored_hash = "hash-different"  # different!
+
+        cm, session = _make_reserve_session(
+            _first_result(None),
+            _mappings_first_result({
+                "status": "completed",
+                "result": {"content": [{"type": "text", "text": "stale"}], "is_error": False},
+                "args_hash": stored_hash,
+                "reserved_at": datetime.now(timezone.utc),
+            }),
+        )
+        with patch("app.services.transactional.idempotency.get_sync_db", cm):
+            reservation = asyncio.run(
+                reserve_idempotency(uuid4(), "place_order", "key-r06", incoming_hash)
+            )
+
+        assert reservation.state == "args_mismatch"
+        assert reservation.result is None
+
+    def test_reserve_args_mismatch_null_stored_hash_treated_as_legacy(self):
+        """Existing row with args_hash=NULL (legacy) and completed → replay (hash not checked)."""
+        from app.services.transactional.idempotency import reserve_idempotency
+
+        stored = {"content": [{"type": "text", "text": "legacy"}], "is_error": False}
+        cm, session = _make_reserve_session(
+            _first_result(None),
+            _mappings_first_result({
+                "status": "completed",
+                "result": stored,
+                "args_hash": None,  # legacy row — no hash stored
+                "reserved_at": datetime.now(timezone.utc),
+            }),
+        )
+        with patch("app.services.transactional.idempotency.get_sync_db", cm):
+            reservation = asyncio.run(
+                reserve_idempotency(uuid4(), "place_order", "key-r07", "incoming-hash")
+            )
+
+        # A NULL stored hash means legacy row — treat as replay (hash check skipped)
+        assert reservation.state == "replay"
+        assert reservation.result == stored
+
+    # ------------------------------------------------------------------
+    # finalize_idempotency
+    # ------------------------------------------------------------------
+
+    def test_finalize_issues_update_and_commits(self):
+        """finalize_idempotency issues an UPDATE setting status='completed' and commits."""
+        from app.services.transactional.idempotency import finalize_idempotency
+
+        cm, session = _mock_db_for_store()
+        result = _make_result("ORD-FINALIZE")
+
+        with patch("app.services.transactional.idempotency.get_sync_db", cm):
+            asyncio.run(finalize_idempotency(uuid4(), "place_order", "key-f01", result))
+
+        session.execute.assert_called_once()
+        executed_sql = str(session.execute.call_args[0][0]).upper()
+        assert "UPDATE" in executed_sql, f"Expected UPDATE in SQL, got: {executed_sql}"
+        assert "COMPLETED" in executed_sql, "Expected 'completed' in finalize SQL"
+        session.commit.assert_called_once()
+
+    # ------------------------------------------------------------------
+    # release_idempotency
+    # ------------------------------------------------------------------
+
+    def test_release_issues_delete_scoped_to_pending(self):
+        """release_idempotency issues DELETE scoped to status='pending' and commits."""
+        from app.services.transactional.idempotency import release_idempotency
+
+        cm, session = _mock_db_for_store()
+
+        with patch("app.services.transactional.idempotency.get_sync_db", cm):
+            asyncio.run(release_idempotency(uuid4(), "place_order", "key-rl01"))
+
+        session.execute.assert_called_once()
+        executed_sql = str(session.execute.call_args[0][0]).upper()
+        assert "DELETE" in executed_sql, f"Expected DELETE in SQL, got: {executed_sql}"
+        assert "PENDING" in executed_sql, "release_idempotency must scope DELETE to status='pending'"
+        session.commit.assert_called_once()
+
+    # ------------------------------------------------------------------
+    # Reservation dataclass structure
+    # ------------------------------------------------------------------
+
+    def test_reservation_is_dataclass_or_namedtuple(self):
+        """Reservation has .state and .result attributes."""
+        from app.services.transactional.idempotency import Reservation
+
+        r = Reservation(state="reserved", result=None)
+        assert r.state == "reserved"
+        assert r.result is None
+
+        r2 = Reservation(state="replay", result={"content": [], "is_error": False})
+        assert r2.result is not None
+
+    def test_reservation_lease_constant_is_positive_int(self):
+        """_RESERVATION_LEASE_SECONDS is a positive integer."""
+        from app.services.transactional.idempotency import _RESERVATION_LEASE_SECONDS
+
+        assert isinstance(_RESERVATION_LEASE_SECONDS, int)
+        assert _RESERVATION_LEASE_SECONDS > 0
