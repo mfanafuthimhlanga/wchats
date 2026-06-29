@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Phase 12 ✓ complete; Phase 13 not planned (next - /gsd-plan-phase 13)
-last_updated: "2026-06-01T14:30:00.000Z"
+status: Phase 13 EXECUTING — 7/11 plans done (all code waves); paused at live AWS gates 13-08..11 (need AWS account + terraform/awscli)
+last_updated: "2026-06-28T23:27:40.117Z"
 progress:
-  total_phases: 1
+  total_phases: 2
   completed_phases: 0
-  total_plans: 6
+  total_plans: 17
   completed_plans: 4
   percent: 0
 ---
@@ -16,7 +16,9 @@ progress:
 
 ## Current Status
 
-**Active Milestone:** Phase 13 — Production Hosting & Durable Deployment (planning next). **Phase 12 ✓ COMPLETE 2026-06-28** — demo path proven live end-to-end (job `fdf93abd`, 1741-char grounded + cited answer via localhost.run); portfolio embed integrated. The local-PC + ephemeral-tunnel hosting was a deliberate $0 demo compromise; its durable, always-on production replacement is Phase 13. The historical Phase 12 narrative below is retained as record.
+**▶ CHECKPOINT — Phase 13 EXECUTING, paused at live AWS gates (2026-06-29):** 7/11 plans complete — **all autonomous code waves done**: 13-01 Terraform IaC (`deploy/terraform/`, 12 files), 13-02 Bedrock Titan v2 embedder (provider seam, both paths), 13-03 Neon connection pooling, 13-04 per-tenant re-embed task, 13-05 env-driven embed snippet, 13-06 S3 uploads, 13-07 ContextVar concurrency (prefork=2 in prod / solo in dev). 73 phase unit tests pass together; commits `e8b51fa`→`3560071` on `main`. **Paused at 13-08** (first `autonomous:false` live gate). Remaining 13-08/09/10/11 need a real **AWS account (billing + Bedrock Titan v2 model access in us-east-1)** plus `terraform` and `aws` CLIs — none present locally. `terraform validate`/`fmt` for 13-01 are deferred into 13-08. **Resume:** install terraform + awscli, configure AWS creds, request Bedrock Titan access, then `/gsd-execute-phase 13 --wave 3` (13-08 live bring-up + re-embed), then wave 4 (13-09/10/11). Per-plan detail in each `13-0X-SUMMARY.md`.
+
+**Active Milestone:** Phase 13 — Production Hosting & Durable Deployment (executing; see checkpoint above). **Phase 12 ✓ COMPLETE 2026-06-28** — demo path proven live end-to-end (job `fdf93abd`, 1741-char grounded + cited answer via localhost.run); portfolio embed integrated. The local-PC + ephemeral-tunnel hosting was a deliberate $0 demo compromise; its durable, always-on production replacement is Phase 13. The historical Phase 12 narrative below is retained as record.
 **[prior] Active Milestone:** Phase 12 — Production Go-Live (W Chats)
 **Milestone Phase:** Phase 12 — In Progress. **DEMO PATH PROVEN END-TO-END LIVE** (localhost.run + grounded answer). Empty-answer bug RESOLVED (`132f529` + `9572f01`).
 **✓ PORTFOLIO EMBED DONE (2026-06-01 session 2):** W Chats widget integrated into the `portfolio-dashboard` repo (sibling; deploys to bantuson.vercel.app) — 4 embed files byte-identical in `wchats/`, runtime `wchats/config.json` (`apiBase`), bootstrap in root `index.html` that mounts the launcher ONLY when apiBase is non-empty (no dead-widget risk). STAGED, NOT committed/pushed. ⚠️ portfolio index.html had ~772 lines of pre-existing uncommitted WIP before this session — commit boundary is the user's call. Remaining (human-gated): start stack → `ssh -R 80:localhost:8000 nokey@localhost.run` → put `*.lhr.life` in config.json → commit+push → manual test. Also still open: swap `scripts/start_demo.ps1` tunnel cloudflared→localhost.run.
@@ -39,7 +41,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** Phase 12 — Production Go-Live (W Chats)
+**Current focus:** Phase 13 — production-hosting-and-durable-deployment
 **Previous:** M3 (Hybrid Retrieval) ✓ Complete — demo_m3.sh passed, notebook 4 DataFrames verified, RET-01–RET-08 satisfied (2026-05-16)
 
 ## Milestone Progress

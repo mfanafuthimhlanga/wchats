@@ -59,22 +59,22 @@ Plans:
 Plans:
 
 **ROADMAP Wave 1 — Durable always-on hosting + Bedrock embeddings + Neon pooling** *(PROD-01..PROD-07)*
-- [ ] 13-01-PLAN.md — (exec wave 1) Terraform IaC: VPC, ECR, ElastiCache, 3 Fargate services, SSE-safe ALB (idle 4000), stable Route53 domain, private S3 buckets, widget CloudFront, least-privilege IAM — PROD-01,02,03,04,07,10
-- [ ] 13-02-PLAN.md — (exec wave 1) Bedrock Titan v2 embedder swap (both doc + query paths) behind a provider seam; 1024-dim guard; boto3 — PROD-06
-- [ ] 13-03-PLAN.md — (exec wave 1) Neon runtime connection pooling: collapse 4 per-turn psycopg2.connect → 1 pooled conn in agent.py — PROD-05
-- [ ] 13-04-PLAN.md — (exec wave 2) Per-tenant re-embed/backfill Celery task (acks_late, idempotent, resumable, tenant-isolated, direct-conn REINDEX) — PROD-06
+- [x] 13-01-PLAN.md — (exec wave 1) Terraform IaC: VPC, ECR, ElastiCache, 3 Fargate services, SSE-safe ALB (idle 4000), stable Route53 domain, private S3 buckets, widget CloudFront, least-privilege IAM — PROD-01,02,03,04,07,10
+- [x] 13-02-PLAN.md — (exec wave 1) Bedrock Titan v2 embedder swap (both doc + query paths) behind a provider seam; 1024-dim guard; boto3 — PROD-06
+- [x] 13-03-PLAN.md — (exec wave 1) Neon runtime connection pooling: collapse 4 per-turn psycopg2.connect → 1 pooled conn in agent.py — PROD-05
+- [x] 13-04-PLAN.md — (exec wave 2) Per-tenant re-embed/backfill Celery task (acks_late, idempotent, resumable, tenant-isolated, direct-conn REINDEX) — PROD-06
 - [ ] 13-08-PLAN.md — (exec wave 3, autonomous:false) Live bring-up: terraform apply + ECR push + ECS deploy + ACM/Route53 + health & ALB SSE-survival smoke + live re-embed with retrieval regression — PROD-01,02,03,04,06,07
 
 **ROADMAP Wave 2 — Real widget delivery + working embed** *(PROD-08..PROD-11; depends on Wave 1 stable API host)*
-- [ ] 13-05-PLAN.md — (exec wave 2) Fix `EMBED_SNIPPET` (env-driven real CloudFront src + `data-api` ALB domain); remove the CDN-disclaimer — PROD-09,10
+- [x] 13-05-PLAN.md — (exec wave 2) Fix `EMBED_SNIPPET` (env-driven real CloudFront src + `data-api` ALB domain); remove the CDN-disclaimer — PROD-09,10
 - [ ] 13-09-PLAN.md — (exec wave 4, autonomous:false) Publish widget bundle to CloudFront (OAC; bucket private) + external-site self-serve embed proof — PROD-08,11
 
 **ROADMAP Wave 3 — Object storage for uploads** *(PROD-12..PROD-13)*
-- [ ] 13-06-PLAN.md — (exec wave 2) S3 uploads code: storage_service + tenant-scoped put_object; parse reads bytes from S3 (parse_document_from_bytes); fix hardcoded `/vrd-uploads` cleanup — PROD-12,13
+- [x] 13-06-PLAN.md — (exec wave 2) S3 uploads code: storage_service + tenant-scoped put_object; parse reads bytes from S3 (parse_document_from_bytes); fix hardcoded `/vrd-uploads` cleanup — PROD-12,13
 - [ ] 13-10-PLAN.md — (exec wave 4, autonomous:false) Live upload→S3→parse smoke (bucket private; no local-disk dependency) — PROD-12,13
 
 **ROADMAP Wave 4 — Horizontal worker scaling** *(PROD-14..PROD-15)*
-- [ ] 13-07-PLAN.md — (exec wave 3) `agent_tools` globals → `ContextVar` (asyncio.run-propagation-verified); ENVIRONMENT-conditional worker_pool; prefork concurrency=2 CMD; lift Voyage-era retrieve throttle — PROD-14,15,06
+- [x] 13-07-PLAN.md — (exec wave 3) `agent_tools` globals → `ContextVar` (asyncio.run-propagation-verified); ENVIRONMENT-conditional worker_pool; prefork concurrency=2 CMD; lift Voyage-era retrieve throttle — PROD-14,15,06
 - [ ] 13-11-PLAN.md — (exec wave 4, autonomous:false) Live concurrency verify: prefork concurrency=2 with two concurrent multi-tenant turns, isolation proven — PROD-15
 
 ---
