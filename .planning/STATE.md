@@ -4,12 +4,12 @@ milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
 stopped_at: Phase 14 base plans executed (14-01..04); verifier human_needed; CR-01 fixed; gap plans 14-05..08 planned + checker PASSED — next /gsd-execute-phase 14 --gaps-only
-last_updated: "2026-06-29T19:45:00Z"
+last_updated: "2026-06-29T18:45:33.339Z"
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 8
-  completed_plans: 4
+  completed_plans: 5
   percent: 0
 ---
 
@@ -163,6 +163,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | 12 | 02 | ~10 min | 2 | 7 |
 | Phase 14 P02 | 7 min | 3 tasks | 6 files |
 | Phase 14 P03 | ~6 min | 3 tasks | 5 files |
+| Phase 14 P05 | 5 | 2 tasks | 3 files |
 
 ### Quick Tasks Completed
 
@@ -285,9 +286,10 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: [14-03] enforcement.py uses _get_redis() lazy singleton for rate-limit counter
 - [Phase ?]: [14-03] idempotency.py uses raw sa_text INSERT with ::jsonb cast — ON CONFLICT DO NOTHING, no Redis
 - [Phase ?]: [14-03] write_audit_row raises TypeError if capability_snapshot is not a plain dict (Pitfall 4 enforcement)
+- [Phase ?]: 14-05: status DEFAULT completed ensures legacy rows never appear as pending (fail-safe for CR-02 substrate)
 
 ## Session
 
-**Last session:** 2026-06-29T16:03:00.966Z
+**Last session:** 2026-06-29T18:45:25.964Z
 **Stopped at:** Completed 14-02-PLAN.md — typed tool contract complete (50 tests passing)
 **Resume file:** None
