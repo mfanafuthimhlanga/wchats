@@ -103,7 +103,7 @@ Plans:
 3. A disabled / over-limit / constraint-violating skill call is rejected and logged as `capability.denial`
 4. Every mutating tool call writes a complete `tool_calls_audit` row
 
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans complete
 **Wave 1**
 
 - [x] 14-01-PLAN.md (wave 1) — migration 0014 + 4 control-DB tables + ORM models (CAP-01, AUD-01, AUD-02, TXN-02)
@@ -115,7 +115,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 14-04-PLAN.md (wave 3) — 7 tool handlers + dispatcher + build_tool_server registration (TXN-01, TXN-02, TXN-03, TXN-04, AUD-01, AUD-02)
+- [x] 14-04-PLAN.md (wave 3) — 7 tool handlers + dispatcher + build_tool_server registration (TXN-01, TXN-02, TXN-03, TXN-04, AUD-01, AUD-02)
 
 ### Phase 15: Actor validator (L3) + four-node validation chain — a pre-mutation Haiku gate in the Agent SDK tool loop
 
