@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
-stopped_at: Phase 14 base plans executed (14-01..04); verifier human_needed; CR-01 fixed; gap plans 14-05..08 planned + checker PASSED — next /gsd-execute-phase 14 --gaps-only
-last_updated: "2026-06-29T19:41:04.373Z"
+stopped_at: Phase 14 gap-closure code-complete (14-05..08 all executed, 0e0a815); next /gsd-secure-phase 14 then /gsd-verify-work 14 (live-DB UAT items in 14-UAT.md)
+last_updated: "2026-06-29T21:00:00.000Z"
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 8
-  completed_plans: 7
+  completed_plans: 8
   percent: 0
 ---
 
@@ -17,7 +17,7 @@ progress:
 
 ## Current Status
 
-**▶ PHASE 14 — base plans EXECUTED; NOT yet verified-complete; gap-closure planned (2026-06-29).** Original 4 plans (14-01..04) executed + committed (sequential mode — worktrees auto-degraded, origin/HEAD unresolved). Full enforcement path exercisable offline: capability envelope → idempotency → actor seam → stub execute → audit; 7 transactional tools registered in the customer-agent MCP server. **Verifier = human_needed** (3/4; idempotency behavior-unverified pending live DB) → 2 integration items in `14-UAT.md` for `/gsd-verify-work 14`. **Code review (`14-REVIEW.md`) found 2 blockers + 5 warnings:** CR-01 (capability_snapshot not JSON-safe → audit write crashed) **FIXED** `61b45a0`; **CR-02** (idempotency double-execution under concurrency/crash) + WR-01..05 addressed by **gap plans 14-05..08** (committed `72a6927`, `gap_closure:true`) — independent gsd-plan-checker **PASSED** (0 blockers). Design: DB-enforced reserve-before-execute (migration 0015 + reservation cols) + capability/rate split + Redis TLS verify + executor offload, proven by real-Postgres concurrency tests. **NEXT:** `/gsd-execute-phase 14 --gaps-only` (wave 1: 14-05‖14-07 → wave 2: 14-06 → wave 3: 14-08), then `/gsd-secure-phase 14` (security capability active, no SECURITY.md yet), then `/gsd-verify-work 14` for the live-DB UAT items. Phase 13 (production hosting) remains a separate, paused track needing real AWS — see checkpoint below.
+**▶ PHASE 14 — gap-closure code-complete (2026-06-29).** All 8 plans executed: base plans 14-01..04 + gap-closure plans 14-05..08. Dispatcher fully rewired to reserve-before-execute (commit `0e0a815`): CR-02 closed (atomic `INSERT ON CONFLICT`), WR-01 closed (replay before rate checks), WR-02 closed (args_mismatch explicit error), WR-05 closed (confirm_action capability gate), IN-03 closed (agent_id guard). 66 unit tests pass; e2e integration test gated on `INTEGRATION_TESTS_ENABLED=1` (UAT item 2). Phase is code-complete but NOT yet securely reviewed or live-DB verified. **NEXT:** `/gsd-secure-phase 14` (SECURITY.md gap review), then `/gsd-verify-work 14` (live-DB UAT items in `14-UAT.md`). Phase 13 (production hosting) remains a separate, paused track needing real AWS — see checkpoint below.
 
 **▶ CHECKPOINT — Phase 13 EXECUTING, paused at live AWS gates (2026-06-29):** 7/11 plans complete — **all autonomous code waves done**: 13-01 Terraform IaC (`deploy/terraform/`, 12 files), 13-02 Bedrock Titan v2 embedder (provider seam, both paths), 13-03 Neon connection pooling, 13-04 per-tenant re-embed task, 13-05 env-driven embed snippet, 13-06 S3 uploads, 13-07 ContextVar concurrency (prefork=2 in prod / solo in dev). 73 phase unit tests pass together; commits `e8b51fa`→`3560071` on `main`. **Paused at 13-08** (first `autonomous:false` live gate). Remaining 13-08/09/10/11 need a real **AWS account (billing + Bedrock Titan v2 model access in us-east-1)** plus `terraform` and `aws` CLIs — none present locally. `terraform validate`/`fmt` for 13-01 are deferred into 13-08. **Resume:** install terraform + awscli, configure AWS creds, request Bedrock Titan access, then `/gsd-execute-phase 13 --wave 3` (13-08 live bring-up + re-embed), then wave 4 (13-09/10/11). Per-plan detail in each `13-0X-SUMMARY.md`.
 
@@ -74,6 +74,8 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [14-04] Idempotency lookup hoisted before actor seam — replay short-circuits before Haiku gate call; capability check still runs first on every call (T-14-04-03)
 - [14-04] AUD-01 symmetry: capability denial writes audit row with error=capability.denial:<reason> — 100% audit coverage
 - [14-04] Lazy import of agent_tools ContextVars inside dispatcher body avoids circular import (tools.py imports agent_tools ContextVars at call time, not module level)
+- [14-08] Dispatcher rewired to reserve-before-execute: auth (step 2) → atomic reserve (step 3) → rate checks (step 4); replay short-circuits between steps 3 and 4 (WR-01); args_mismatch returns explicit is_error (WR-02); release_idempotency on rate/actor/error paths
+- [14-08] confirm_action_tool gated behind check_capability_access (WR-05) + IN-03 agent_id guard; disabled/missing skill returns is_error before writing pending_confirmations row
 - [14-01] No ORM FK relationships declared (agent_id is plain UUID) — avoids cross-table teardown complexity in tests
 - [11-05] scoreColor: --amber → --gold for mid-range scores (0.7-0.9) — amber = building warmth (#E8A87C) in Hillbrow system, not a status warning token
 - [11-05] Recharts hex per plan spec (#FBBF24 gold) rather than PATTERNS.md (#F0C674) — plan spec must_haves are acceptance criteria target
