@@ -3,21 +3,21 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
-stopped_at: Completed 14-04-PLAN.md — Phase 14 COMPLETE (all 4 plans done, 115 tests passing)
-last_updated: "2026-06-29T18:45:00Z"
+stopped_at: Phase 14 base plans executed (14-01..04); verifier human_needed; CR-01 fixed; gap plans 14-05..08 planned + checker PASSED — next /gsd-execute-phase 14 --gaps-only
+last_updated: "2026-06-29T19:45:00Z"
 progress:
   total_phases: 6
-  completed_phases: 1
-  total_plans: 4
+  completed_phases: 0
+  total_plans: 8
   completed_plans: 4
-  percent: 17
+  percent: 0
 ---
 
 # Project State
 
 ## Current Status
 
-**✓ PHASE 14 COMPLETE (2026-06-29).** All 4 plans executed: 14-01 (transactional substrate), 14-02 (typed contract), 14-03 (enforcement + idempotency + audit), 14-04 (tool handlers + registration). 115 tests passing. Full enforcement path exercisable offline: capability envelope → idempotency → actor seam → stub execute → audit. 7 transactional tools registered in customer-agent MCP server. Phase 13 (production hosting) remains a separate, paused track needing real AWS — see checkpoint below.
+**▶ PHASE 14 — base plans EXECUTED; NOT yet verified-complete; gap-closure planned (2026-06-29).** Original 4 plans (14-01..04) executed + committed (sequential mode — worktrees auto-degraded, origin/HEAD unresolved). Full enforcement path exercisable offline: capability envelope → idempotency → actor seam → stub execute → audit; 7 transactional tools registered in the customer-agent MCP server. **Verifier = human_needed** (3/4; idempotency behavior-unverified pending live DB) → 2 integration items in `14-UAT.md` for `/gsd-verify-work 14`. **Code review (`14-REVIEW.md`) found 2 blockers + 5 warnings:** CR-01 (capability_snapshot not JSON-safe → audit write crashed) **FIXED** `61b45a0`; **CR-02** (idempotency double-execution under concurrency/crash) + WR-01..05 addressed by **gap plans 14-05..08** (committed `72a6927`, `gap_closure:true`) — independent gsd-plan-checker **PASSED** (0 blockers). Design: DB-enforced reserve-before-execute (migration 0015 + reservation cols) + capability/rate split + Redis TLS verify + executor offload, proven by real-Postgres concurrency tests. **NEXT:** `/gsd-execute-phase 14 --gaps-only` (wave 1: 14-05‖14-07 → wave 2: 14-06 → wave 3: 14-08), then `/gsd-secure-phase 14` (security capability active, no SECURITY.md yet), then `/gsd-verify-work 14` for the live-DB UAT items. Phase 13 (production hosting) remains a separate, paused track needing real AWS — see checkpoint below.
 
 **▶ CHECKPOINT — Phase 13 EXECUTING, paused at live AWS gates (2026-06-29):** 7/11 plans complete — **all autonomous code waves done**: 13-01 Terraform IaC (`deploy/terraform/`, 12 files), 13-02 Bedrock Titan v2 embedder (provider seam, both paths), 13-03 Neon connection pooling, 13-04 per-tenant re-embed task, 13-05 env-driven embed snippet, 13-06 S3 uploads, 13-07 ContextVar concurrency (prefork=2 in prod / solo in dev). 73 phase unit tests pass together; commits `e8b51fa`→`3560071` on `main`. **Paused at 13-08** (first `autonomous:false` live gate). Remaining 13-08/09/10/11 need a real **AWS account (billing + Bedrock Titan v2 model access in us-east-1)** plus `terraform` and `aws` CLIs — none present locally. `terraform validate`/`fmt` for 13-01 are deferred into 13-08. **Resume:** install terraform + awscli, configure AWS creds, request Bedrock Titan access, then `/gsd-execute-phase 13 --wave 3` (13-08 live bring-up + re-embed), then wave 4 (13-09/10/11). Per-plan detail in each `13-0X-SUMMARY.md`.
 
