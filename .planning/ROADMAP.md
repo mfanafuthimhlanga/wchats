@@ -103,11 +103,11 @@ Plans:
 3. A disabled / over-limit / constraint-violating skill call is rejected and logged as `capability.denial`
 4. Every mutating tool call writes a complete `tool_calls_audit` row
 
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
 **Wave 1**
 
 - [x] 14-01-PLAN.md (wave 1) — migration 0014 + 4 control-DB tables + ORM models (CAP-01, AUD-01, AUD-02, TXN-02)
-- [ ] 14-02-PLAN.md (wave 1) — typed Pydantic schemas + TransactionalToolDef registry + StubProviderAdapter + actor_seam (TXN-01, TXN-03, TXN-05)
+- [x] 14-02-PLAN.md (wave 1) — typed Pydantic schemas + TransactionalToolDef registry + StubProviderAdapter + actor_seam (TXN-01, TXN-03, TXN-05)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 

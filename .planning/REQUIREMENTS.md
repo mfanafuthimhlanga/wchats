@@ -297,11 +297,11 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 
 ### Transactional Tool Contract (L1)
 
-- [ ] **TXN-01**: Six core transactional tools — `place_order`, `cancel_order`, `issue_refund`, `update_subscription`, `book_slot`, `update_customer_record` — defined as typed Python functions with full Pydantic input/output schemas (no string-blob, SQL, URL, or arbitrary-JSON inputs)
+- [x] **TXN-01**: Six core transactional tools — `place_order`, `cancel_order`, `issue_refund`, `update_subscription`, `book_slot`, `update_customer_record` — defined as typed Python functions with full Pydantic input/output schemas (no string-blob, SQL, URL, or arbitrary-JSON inputs)
 - [x] **TXN-02**: Side-effecting tools require a client-provided idempotency key; replaying the same key returns the original result and never re-executes the mutation
-- [ ] **TXN-03**: Every tool is tagged `mutating: true|false` at definition time — the authorization signal the Actor pre-execution hook keys on (tagged, never runtime-inferred)
+- [x] **TXN-03**: Every tool is tagged `mutating: true|false` at definition time — the authorization signal the Actor pre-execution hook keys on (tagged, never runtime-inferred)
 - [ ] **TXN-04**: `confirm_action` tool added for require-human flows; existing `escalate_to_human` retained
-- [ ] **TXN-05**: Tool definitions are A2A-skill-compatible in shape (typed inputs/outputs + examples) without exposing any A2A surface — forward-compat for v1.2
+- [x] **TXN-05**: Tool definitions are A2A-skill-compatible in shape (typed inputs/outputs + examples) without exposing any A2A surface — forward-compat for v1.2
 
 ### Capability Envelope (L2)
 

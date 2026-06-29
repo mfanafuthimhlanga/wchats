@@ -3,12 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
-last_updated: "2026-06-29T15:36:34.194Z"
+stopped_at: Completed 14-02-PLAN.md — typed tool contract complete (50 tests passing)
+last_updated: "2026-06-29T15:50:38.506Z"
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 4
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -156,6 +157,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | 01 | 08 | ~5 min | 2 | 6 |
 | Phase 12 P01 | ~12 min | 2 tasks | 3 files |
 | 12 | 02 | ~10 min | 2 | 7 |
+| Phase 14 P02 | 7 min | 3 tasks | 6 files |
 
 ### Quick Tasks Completed
 
@@ -272,3 +274,12 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: [12-01] D-13 included: lazy Redis qembed cache with try/except fallback - cache is optimisation, never correctness dependency
 - [Phase ?]: [12-02] Bundle sizes differ from RESEARCH.md baseline: pnpm v11 fresh install produced 20,835 B iife.js vs prior 17,833 B; gzip 8,087 B passes < 20,480 B gate; new sizes are authoritative
 - [Phase ?]: [12-02] pnpm-lock.yaml created in apps/widget/ — pnpm installed fresh, replacing prior npm node_modules; lock file committed to pin dependency versions
+- [Phase ?]: [14-02] All 14 Pydantic model imports module-level in test file; all 3 impl modules needed before first test collection; TDD RED in one commit, GREEN per-task
+- [Phase ?]: [14-02] confirm_action mutating=False — writes pending_confirmations row but does not call provider; non-mutating per research Cluster 2
+- [Phase ?]: [14-02] actor_seam.py in services/ not transactional/ — Phase 15 imports it independently of transactional stack
+
+## Session
+
+**Last session:** 2026-06-29T15:50:38.460Z
+**Stopped at:** Completed 14-02-PLAN.md — typed tool contract complete (50 tests passing)
+**Resume file:** None
