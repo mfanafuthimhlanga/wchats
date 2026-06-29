@@ -43,13 +43,27 @@ The Stripe Agent Toolkit and Stripe MCP server remain useful as *references* (wh
 
 ### Part B — W Chats control-plane provisioning surface (v1.2)
 
-The control-plane **REST API is the single source of truth.** Provisioning is exposed in **three thin, composable surfaces — not MCP-only** — because the provisioning op set is small (~6 ops) and stable, but the *journey* is a multi-step playbook:
+The control-plane **REST API is the single source of truth.** Provisioning is exposed in **three thin, composable surfaces — not MCP-only** — because the operations are typed and governed, but the *journey* (and several individual operations) are multi-step.
 
-1. **A `wchats` CLI** wrapping the REST API — the most token-lean surface (~80 tokens vs. full schemas) and the natural **code-execution** path: a developer-agent scripts the multi-step flow and intermediate data never enters the model context. Doubles as the human/CI ergonomic path. **Primary lean path.**
-2. **A W Chats provisioning Skill** encoding the end-to-end playbook (`create_agent → ingest → wait → eval → pre-deploy checklist → approve`, plus the gotchas) — ~100 tokens at scan, full instructions on demand. The "judgment/procedure" layer that sits on top.
-3. **A thin, curated MCP server** exposing only the ~6 control operations (`create_agent`, `ingest_documents`, `check_deployment_status`, `get_eval_summary`, `approve_deployment`, `get_audit_log`) — for broad dev-tool compatibility (Claude Code, Cursor, OpenClaw all speak MCP). Curated and deferral-friendly; **never a kitchen-sink wrapper** of the whole API.
+**Representative operation set** — curated, one-to-one with existing REST endpoints; richer than the PRD's 6-op sketch, but still not the whole API. Grouped by journey stage:
+- *Create / configure:* `create_agent` (name + role + soul), `update_agent_soul`, `set_widget_config`
+- *Ingest:* `ingest_documents` (file uploads — PDF/PNG/JPG/MD) **and** `ingest_urls` (URL list) — the knowledge base spans both, so these are **separate, explicit verbs**; a single `ingest_documents` that silently also took URLs would misrepresent the capability. [future: `ingest_structured` for CSV/exports, ADV-02]
+- *Build / evaluate:* `trigger_eval`, `get_eval_summary`, `trigger_red_team`, `get_red_team_summary`
+- *Deploy:* `run_predeploy_checklist`, `check_deployment_status`, `approve_deployment`, `get_embed_snippet`
+- *Observe:* `get_audit_log`
 
-**Sequencing:** ship the **CLI + Skill first** (cheap, token-efficient, covers code-execution agents), then add the **thin MCP server** for ecosystem reach (honoring the PRD's "MCP-provisionable" promise). This reframes the PRD's "MCP provisioning" from *MCP-primary* to **REST-core / CLI+Skill-lean / MCP-for-reach.** At a 6-tool surface the bloat critique does not bite — but anchoring on the REST API keeps us free to add Tool Search / code-execution as the surface grows.
+The three surfaces:
+1. **A `wchats` CLI** over the REST API — most token-lean (~80 tokens vs. full schemas) and the natural **code-execution** path (the agent scripts the multi-step flow; intermediate data never enters model context). Also the human/CI ergonomic path.
+2. **A W Chats provisioning Skill** encoding the end-to-end playbook + every sub-step (see below) — ~100 tokens at scan, full body on demand. The "judgment/procedure" layer that sits on top.
+3. **A thin, curated MCP server** exposing the operation set above (not a kitchen-sink wrapper) — for broad dev-tool compatibility (Claude Code, Cursor, OpenClaw all speak MCP). Curated and deferral-friendly.
+
+**Rich inputs and sub-steps live in the Skill — not in tool sprawl or bloated descriptions.** The operations are not atomic one-liners: `create_agent` needs a name, a role, and a structured **soul** (voice + do-list + donot-list — the same `AgentSoulUpdate` shape the admin UI uses); ingest spans documents and URLs; deploy is a sequence (checklist → acknowledge each warning → approve). Two rules keep this clean:
+- **Tools stay typed and mirror the REST API.** `create_agent(name, role, soul:{voice, do_list, donot_list})` carries the full field contract in its JSON schema (or, equivalently, `create_agent(name, role)` + `update_agent_soul(...)` as two typed calls). The model fills typed fields; it never guesses shape from prose.
+- **The Skill carries the procedure and the judgment** — required fields, the right order (create → soul → ingest → eval → checklist → approve), *how to compose a good* role/voice/do/donot, when to poll an async job, how to read an eval summary before approving. This is the "Skills = the playbook on top of MCP" split: the nuance belongs in the Skill (loaded on demand), **never crammed into tool descriptions** (which would re-introduce the context bloat we are avoiding).
+
+So the three surfaces are not redundant: **MCP/CLI = typed access (the *what*); Skill = the playbook incl. every sub-step and required field (the *how*).**
+
+**Sequencing:** all three surfaces ship **together as part of v1.2** (owner decision, 2026-06-29) — not phased. The framing is **REST-core / CLI+Skill-lean / MCP-for-reach**, not MCP-only. At this curated (~14 typed-op) surface the bloat critique does not bite; anchoring on the REST API keeps Tool Search / code-execution available if it grows.
 
 ---
 
