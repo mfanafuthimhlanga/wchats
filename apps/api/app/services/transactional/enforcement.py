@@ -35,7 +35,9 @@ from __future__ import annotations
 
 import ssl
 import time
+from datetime import date, datetime
 from typing import Any
+from uuid import UUID
 
 import redis as redis_lib
 import structlog
@@ -69,6 +71,27 @@ def _get_redis() -> redis_lib.Redis:
         )
         _rate_limit_redis = redis_lib.from_url(url_clean, **ssl_opts)
     return _rate_limit_redis
+
+
+# ---------------------------------------------------------------------------
+# JSON-safe snapshot coercion
+# ---------------------------------------------------------------------------
+
+
+def _json_safe(value: Any) -> Any:
+    """Coerce a DB row value to a JSON-serializable form for the capability_snapshot JSONB column.
+
+    A text() SELECT returns native Python types: UUID columns as uuid.UUID and TIMESTAMPTZ
+    as datetime — neither of which stock json.dumps can serialise. The snapshot is written to
+    the tool_calls_audit.capability_snapshot JSONB column, so any non-serializable value would
+    raise TypeError at db.commit() (CR-01). Coerce UUID/datetime to strings; pass everything
+    else (str, bool, int, dict, None) through unchanged.
+    """
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +192,10 @@ async def check_capability_envelope(
         return {}, "no_envelope_row"
 
     # Convert to plain dict immediately — never pass ORM/mapping object downstream.
-    snapshot: dict = dict(row)
+    # Coerce UUID/datetime values to JSON-safe forms (CR-01): the snapshot is stored in the
+    # tool_calls_audit.capability_snapshot JSONB column, and stock json.dumps cannot serialise
+    # the UUID id/agent_id or the TIMESTAMPTZ updated_at this SELECT returns from a real DB.
+    snapshot: dict = {k: _json_safe(v) for k, v in dict(row).items()}
 
     # ------------------------------------------------------------------
     # 3. Fail-closed: disabled envelope → denial

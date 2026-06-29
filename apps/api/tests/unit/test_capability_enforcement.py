@@ -30,7 +30,9 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -293,6 +295,69 @@ class TestCheckCapabilityEnvelope:
 
         assert denial is not None, "Expected denial for refund_amount_cents exceeding max_amount_cents"
         mock_log.warning.assert_called_once()
+
+
+class TestSnapshotJsonSerializable:
+    """Regression guard for CR-01.
+
+    A real text() SELECT returns the envelope's UUID id/agent_id and TIMESTAMPTZ
+    updated_at as native uuid.UUID / datetime objects. The snapshot is written to the
+    tool_calls_audit.capability_snapshot JSONB column, where stock json.dumps would raise
+    TypeError on those types at db.commit() — defeating AUD-01 on every pass and disabled
+    denial path. The earlier fixtures used string values, masking the bug. These tests
+    drive check_capability_envelope with native UUID/datetime values and assert the
+    returned snapshot is json.dumps-able.
+    """
+
+    def _row_with_native_types(self, agent_id, skill, enabled=True):
+        return {
+            "id": uuid4(),
+            "agent_id": agent_id,
+            "skill": skill,
+            "enabled": enabled,
+            "rate_limit": None,
+            "constraints": {},
+            "requires_confirmation": False,
+            "requires_identity_verification": False,
+            "updated_at": datetime(2026, 6, 29, tzinfo=timezone.utc),
+        }
+
+    def test_pass_path_snapshot_is_json_serializable(self):
+        agent_id = uuid4()
+        skill = "place_order"
+        row = self._row_with_native_types(agent_id, skill, enabled=True)
+        mock_cm = _mock_db_session(row)
+
+        with (
+            patch("app.services.transactional.enforcement.get_sync_db", mock_cm),
+            patch("app.services.transactional.enforcement.log"),
+        ):
+            snapshot, denial = asyncio.run(
+                check_capability_envelope(agent_id, skill, _make_args())
+            )
+
+        assert denial is None
+        # Must not raise — this is the CR-01 regression guard (datetime + UUID coercion).
+        json.dumps(snapshot)
+
+    def test_disabled_denial_snapshot_is_json_serializable(self):
+        agent_id = uuid4()
+        skill = "place_order"
+        row = self._row_with_native_types(agent_id, skill, enabled=False)
+        mock_cm = _mock_db_session(row)
+
+        with (
+            patch("app.services.transactional.enforcement.get_sync_db", mock_cm),
+            patch("app.services.transactional.enforcement.log"),
+        ):
+            snapshot, denial = asyncio.run(
+                check_capability_envelope(agent_id, skill, _make_args())
+            )
+
+        assert denial == "disabled"
+        # The disabled-denial path returns the full row snapshot and write_audit_row
+        # serialises it — must not raise.
+        json.dumps(snapshot)
 
 
 # ---------------------------------------------------------------------------
