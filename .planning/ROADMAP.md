@@ -103,7 +103,7 @@ Plans:
 3. A disabled / over-limit / constraint-violating skill call is rejected and logged as `capability.denial`
 4. Every mutating tool call writes a complete `tool_calls_audit` row
 
-**Plans:** 2/4 plans executed
+**Plans:** 3/4 plans executed
 **Wave 1**
 
 - [x] 14-01-PLAN.md (wave 1) — migration 0014 + 4 control-DB tables + ORM models (CAP-01, AUD-01, AUD-02, TXN-02)
@@ -111,7 +111,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 14-03-PLAN.md (wave 2) — fail-closed capability enforcement + control-DB idempotency + audit writer (CAP-02, TXN-02, AUD-01)
+- [x] 14-03-PLAN.md (wave 2) — fail-closed capability enforcement + control-DB idempotency + audit writer (CAP-02, TXN-02, AUD-01)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 

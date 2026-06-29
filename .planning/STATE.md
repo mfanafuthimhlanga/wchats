@@ -4,12 +4,12 @@ milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
 stopped_at: Completed 14-02-PLAN.md — typed tool contract complete (50 tests passing)
-last_updated: "2026-06-29T15:50:38.506Z"
+last_updated: "2026-06-29T16:03:18.522Z"
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 4
-  completed_plans: 2
+  completed_plans: 3
   percent: 0
 ---
 
@@ -158,6 +158,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Phase 12 P01 | ~12 min | 2 tasks | 3 files |
 | 12 | 02 | ~10 min | 2 | 7 |
 | Phase 14 P02 | 7 min | 3 tasks | 6 files |
+| Phase 14 P03 | ~6 min | 3 tasks | 5 files |
 
 ### Quick Tasks Completed
 
@@ -277,9 +278,12 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: [14-02] All 14 Pydantic model imports module-level in test file; all 3 impl modules needed before first test collection; TDD RED in one commit, GREEN per-task
 - [Phase ?]: [14-02] confirm_action mutating=False — writes pending_confirmations row but does not call provider; non-mutating per research Cluster 2
 - [Phase ?]: [14-02] actor_seam.py in services/ not transactional/ — Phase 15 imports it independently of transactional stack
+- [Phase ?]: [14-03] enforcement.py uses _get_redis() lazy singleton for rate-limit counter
+- [Phase ?]: [14-03] idempotency.py uses raw sa_text INSERT with ::jsonb cast — ON CONFLICT DO NOTHING, no Redis
+- [Phase ?]: [14-03] write_audit_row raises TypeError if capability_snapshot is not a plain dict (Pitfall 4 enforcement)
 
 ## Session
 
-**Last session:** 2026-06-29T15:50:38.460Z
+**Last session:** 2026-06-29T16:03:00.966Z
 **Stopped at:** Completed 14-02-PLAN.md — typed tool contract complete (50 tests passing)
 **Resume file:** None
