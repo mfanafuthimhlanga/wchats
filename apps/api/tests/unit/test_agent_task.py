@@ -228,6 +228,7 @@ def test_first_turn_creates_conversation_and_stores_sdk_session_id():
     with (
         patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
         patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect") as mock_connect,
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
         patch("app.worker.tasks.runtime.agent._set_sdk_session_id") as mock_set_sdk,
         patch("app.worker.tasks.runtime.agent._persist_messages") as mock_persist,
@@ -243,9 +244,13 @@ def test_first_turn_creates_conversation_and_stores_sdk_session_id():
             conversation_id=None,
         )
 
-    # sdk_session_id must be stored
+    # PROD-05: exactly one tenant-DB connection opened per turn
+    mock_connect.assert_called_once_with("postgresql://tenant", connect_timeout=5)
+    mock_connect.return_value.close.assert_called_once()
+
+    # sdk_session_id must be stored — first arg is now the shared connection (not conn_str)
     mock_set_sdk.assert_called_once_with(
-        "postgresql://tenant", local_conv_id, "sdk-abc-123"
+        mock_connect.return_value, local_conv_id, "sdk-abc-123"
     )
 
     # agent.response must be emitted
@@ -292,6 +297,7 @@ def test_subsequent_turn_resumes_with_stored_sdk_session_id():
     with (
         patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
         patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
         patch(
             "app.worker.tasks.runtime.agent._validate_conversation_owner",
             return_value={"id": existing_conv_id, "metadata": {"sdk_session_id": stored_sdk_session_id}},
@@ -343,6 +349,7 @@ def test_escalation_emits_agent_escalated_event():
     with (
         patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
         patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
         patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
         patch("app.worker.tasks.runtime.agent._persist_messages"),
@@ -395,6 +402,7 @@ def test_citations_missing_returns_empty_list_and_warns():
     with (
         patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
         patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
         patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
         patch("app.worker.tasks.runtime.agent._persist_messages"),
@@ -469,6 +477,7 @@ def test_validators_dispatched():
     with (
         patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
         patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
         patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
         patch("app.worker.tasks.runtime.agent._persist_messages"),
@@ -562,6 +571,7 @@ def test_max_turns_allows_synthesis_after_retrieve():
     with (
         patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
         patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
         patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
         patch("app.worker.tasks.runtime.agent._persist_messages"),
@@ -616,6 +626,7 @@ def test_wall_clock_guard_is_ninety_seconds():
     with (
         patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
         patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
         patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
         patch("app.worker.tasks.runtime.agent._persist_messages"),
@@ -676,6 +687,7 @@ def test_max_budget_uses_settings_not_hardcoded():
     with (
         patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
         patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
         patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
         patch("app.worker.tasks.runtime.agent._persist_messages"),

@@ -89,11 +89,14 @@ _CITATION_ENTRY = re.compile(r"- Document: (.+) \| Section: (.+)")
 # Module-level helpers — tenant DB writes via psycopg2 (parameterised only)
 # ---------------------------------------------------------------------------
 
-def _create_conversation_row(conn_str: str, agent_id: str) -> str:
+def _create_conversation_row(conn, agent_id: str) -> str:
     """Insert a new conversations row and return its UUID as a string.
 
     Uses psycopg2 directly (not SQLAlchemy) because the tenant DB is a
     separate Neon project — not the control DB that get_sync_db() connects to.
+
+    The caller owns the connection lifecycle — this helper does NOT open or
+    close the connection (PROD-05: one pooled connection per turn).
 
     Returns:
         UUID string of the newly created conversation row.
@@ -103,19 +106,15 @@ def _create_conversation_row(conn_str: str, agent_id: str) -> str:
         INSERT INTO conversations (id, agent_id, created_at, metadata)
         VALUES (%s, %s, NOW(), %s::jsonb)
     """
-    conn = psycopg2.connect(conn_str, connect_timeout=5)
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, (new_id, agent_id, "{}"))
-        conn.commit()
-    finally:
-        conn.close()
+    with conn.cursor() as cur:
+        cur.execute(sql, (new_id, agent_id, "{}"))
+    conn.commit()
 
     log.debug("_create_conversation_row.done", conversation_id=new_id)
     return new_id
 
 
-def _validate_conversation_owner(conn_str: str, conv_id: str, agent_id: str) -> dict | None:
+def _validate_conversation_owner(conn, conv_id: str, agent_id: str) -> dict | None:
     """Fetch conversation row for (conv_id, agent_id) — ownership guard.
 
     Returns:
@@ -124,6 +123,8 @@ def _validate_conversation_owner(conn_str: str, conv_id: str, agent_id: str) -> 
 
     Security (T-04-03-01): The AND agent_id = %s clause prevents cross-agent
     conversation hijacking via a guessed UUID.
+    The caller owns the connection lifecycle — this helper does NOT open or
+    close the connection (PROD-05: one pooled connection per turn).
     """
     sql = """
         SELECT id, metadata
@@ -131,13 +132,9 @@ def _validate_conversation_owner(conn_str: str, conv_id: str, agent_id: str) -> 
         WHERE id = %s AND agent_id = %s
         LIMIT 1
     """
-    conn = psycopg2.connect(conn_str, connect_timeout=5)
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, (conv_id, agent_id))
-            row = cur.fetchone()
-    finally:
-        conn.close()
+    with conn.cursor() as cur:
+        cur.execute(sql, (conv_id, agent_id))
+        row = cur.fetchone()
 
     if row is None:
         return None
@@ -146,7 +143,7 @@ def _validate_conversation_owner(conn_str: str, conv_id: str, agent_id: str) -> 
     return {"id": str(row_id), "metadata": metadata or {}}
 
 
-def _set_sdk_session_id(conn_str: str, conv_id: str, sdk_session_id: str) -> None:
+def _set_sdk_session_id(conn, conv_id: str, sdk_session_id: str) -> None:
     """Store the SDK's internal session_id in conversations.metadata.
 
     Resolves R-02: SDK session_id captured from ResultMessage and persisted
@@ -154,6 +151,8 @@ def _set_sdk_session_id(conn_str: str, conv_id: str, sdk_session_id: str) -> Non
 
     Security (T-04-03-07): jsonb_set update uses parameterised %s values —
     sdk_session_id is never string-concatenated into SQL.
+    The caller owns the connection lifecycle — this helper does NOT open or
+    close the connection (PROD-05: one pooled connection per turn).
     """
     sql = """
         UPDATE conversations
@@ -164,19 +163,15 @@ def _set_sdk_session_id(conn_str: str, conv_id: str, sdk_session_id: str) -> Non
         )
         WHERE id = %s
     """
-    conn = psycopg2.connect(conn_str, connect_timeout=5)
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, (sdk_session_id, conv_id))
-        conn.commit()
-    finally:
-        conn.close()
+    with conn.cursor() as cur:
+        cur.execute(sql, (sdk_session_id, conv_id))
+    conn.commit()
 
     log.debug("_set_sdk_session_id.done", conversation_id=conv_id)
 
 
 def _persist_messages(
-    conn_str: str,
+    conn,
     conv_id: str,
     user_msg: str,
     assistant_msg: str,
@@ -184,54 +179,52 @@ def _persist_messages(
 ) -> None:
     """Insert user message, assistant message, and tool_call rows.
 
-    Inserts in a single connection:
+    Inserts in a single transaction:
       1. user message row in messages table
       2. assistant message row in messages table
       3. one tool_calls row per ToolUseBlock observed during the turn
 
     All values are passed as %s parameters (T-04-03-07).
+    The caller owns the connection lifecycle — this helper does NOT open or
+    close the connection (PROD-05: one pooled connection per turn).
     """
-    conn = psycopg2.connect(conn_str, connect_timeout=5)
-    try:
-        with conn.cursor() as cur:
-            # Insert user message
-            user_msg_id = str(uuid.uuid4())
+    with conn.cursor() as cur:
+        # Insert user message
+        user_msg_id = str(uuid.uuid4())
+        cur.execute(
+            """
+            INSERT INTO messages (id, conversation_id, role, content, created_at)
+            VALUES (%s, %s, 'user', %s, NOW())
+            """,
+            (user_msg_id, conv_id, user_msg),
+        )
+
+        # Insert assistant message
+        assistant_msg_id = str(uuid.uuid4())
+        cur.execute(
+            """
+            INSERT INTO messages (id, conversation_id, role, content, created_at)
+            VALUES (%s, %s, 'assistant', %s, NOW())
+            """,
+            (assistant_msg_id, conv_id, assistant_msg),
+        )
+
+        # Insert tool_calls rows (one per ToolUseBlock observed)
+        for tc in tool_calls_log:
             cur.execute(
                 """
-                INSERT INTO messages (id, conversation_id, role, content, created_at)
-                VALUES (%s, %s, 'user', %s, NOW())
+                INSERT INTO tool_calls (id, message_id, tool_name, arguments, result, created_at)
+                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, NOW())
                 """,
-                (user_msg_id, conv_id, user_msg),
+                (
+                    str(uuid.uuid4()),
+                    assistant_msg_id,
+                    tc.get("tool_name", ""),
+                    json.dumps(tc.get("input", {})),
+                    json.dumps(tc.get("result", {})),
+                ),
             )
-
-            # Insert assistant message
-            assistant_msg_id = str(uuid.uuid4())
-            cur.execute(
-                """
-                INSERT INTO messages (id, conversation_id, role, content, created_at)
-                VALUES (%s, %s, 'assistant', %s, NOW())
-                """,
-                (assistant_msg_id, conv_id, assistant_msg),
-            )
-
-            # Insert tool_calls rows (one per ToolUseBlock observed)
-            for tc in tool_calls_log:
-                cur.execute(
-                    """
-                    INSERT INTO tool_calls (id, message_id, tool_name, arguments, result, created_at)
-                    VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, NOW())
-                    """,
-                    (
-                        str(uuid.uuid4()),
-                        assistant_msg_id,
-                        tc.get("tool_name", ""),
-                        json.dumps(tc.get("input", {})),
-                        json.dumps(tc.get("result", {})),
-                    ),
-                )
-        conn.commit()
-    finally:
-        conn.close()
+    conn.commit()
 
     log.debug(
         "_persist_messages.done",
@@ -474,6 +467,14 @@ def run_agent_turn(
         # ------------------------------------------------------------------
         conn_str = fernet_decrypt(agent.neon_connection_string)
 
+        # PROD-05: open ONE pooled tenant-DB connection for all per-turn write
+        # helpers (_create_conversation_row, _validate_conversation_owner,
+        # _set_sdk_session_id, _persist_messages).  Reduces connection churn
+        # from 4 opens/closes per turn to 1.  Uses the pooled endpoint
+        # (agent.neon_connection_string) — PgBouncer transaction-mode
+        # compatible: no named prepared statements, no SET session vars.
+        # Closed in finally even when _run_sdk_turn raises.
+        tenant_conn = psycopg2.connect(conn_str, connect_timeout=5)
         try:
             # --------------------------------------------------------------
             # EVENT 1: agent.thinking — confirms task is running for this agent
@@ -490,7 +491,7 @@ def run_agent_turn(
 
             if conversation_id is None:
                 # First turn: create conversation row in tenant DB
-                local_conversation_id = _create_conversation_row(conn_str, agent_id)
+                local_conversation_id = _create_conversation_row(tenant_conn, agent_id)
                 log.debug(
                     "run_agent_turn.first_turn",
                     job_id=job_id,
@@ -498,7 +499,7 @@ def run_agent_turn(
                 )
             else:
                 # Subsequent turn: validate ownership (T-04-03-01)
-                conv_row = _validate_conversation_owner(conn_str, conversation_id, agent_id)
+                conv_row = _validate_conversation_owner(tenant_conn, conversation_id, agent_id)
                 if conv_row is None:
                     log.warning(
                         "run_agent_turn.conversation_not_found",
@@ -618,13 +619,13 @@ def run_agent_turn(
             # Only on first turn; only when sdk_session_id was returned
             # --------------------------------------------------------------
             if conversation_id is None and sdk_session_id_out:
-                _set_sdk_session_id(conn_str, local_conversation_id, sdk_session_id_out)
+                _set_sdk_session_id(tenant_conn, local_conversation_id, sdk_session_id_out)
 
             # --------------------------------------------------------------
             # Persist messages and tool calls to tenant DB
             # --------------------------------------------------------------
             _persist_messages(
-                conn_str=conn_str,
+                conn=tenant_conn,
                 conv_id=local_conversation_id,
                 user_msg=message,
                 assistant_msg=response_text,
@@ -716,5 +717,10 @@ def run_agent_turn(
             else:
                 countdown = 2 ** self.request.retries
                 raise self.retry(exc=exc, countdown=countdown)
+        finally:
+            # PROD-05: close the single pooled tenant-DB connection.
+            # Runs even when _run_sdk_turn raises or self.retry() re-raises,
+            # preventing connection leaks on the exception paths.
+            tenant_conn.close()
 
     return {}
