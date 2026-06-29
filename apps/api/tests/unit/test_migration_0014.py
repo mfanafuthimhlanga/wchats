@@ -143,4 +143,90 @@ def test_migration_db_roundtrip():
     )
 
 
-# Task 2 ORM tests will be appended here after the four ORM model files are created.
+# ---------------------------------------------------------------------------
+# Task 2 — ORM model imports + Base.metadata registration
+# ---------------------------------------------------------------------------
+
+
+def test_orm_imports():
+    """All four ORM models are importable from app.models with correct __tablename__."""
+    from app.models import (  # noqa: F401
+        CapabilityEnvelope,
+        PendingConfirmation,
+        ToolCallsAudit,
+        ToolIdempotencyKey,
+    )
+
+    assert CapabilityEnvelope.__tablename__ == "capability_envelopes"
+    assert ToolCallsAudit.__tablename__ == "tool_calls_audit"
+    assert PendingConfirmation.__tablename__ == "pending_confirmations"
+    assert ToolIdempotencyKey.__tablename__ == "tool_idempotency_keys"
+
+
+def test_orm_models_in_base_metadata():
+    """All four ORM models are registered in Base.metadata.tables."""
+    from app.models import Base  # noqa: F401  # importing models registers them
+
+    # Trigger registration by importing the four models
+    from app.models import (  # noqa: F401
+        CapabilityEnvelope,
+        PendingConfirmation,
+        ToolCallsAudit,
+        ToolIdempotencyKey,
+    )
+
+    table_names = set(Base.metadata.tables.keys())
+    for table in (
+        "capability_envelopes",
+        "tool_calls_audit",
+        "pending_confirmations",
+        "tool_idempotency_keys",
+    ):
+        assert table in table_names, (
+            f"'{table}' not found in Base.metadata.tables — "
+            "model must be imported in app/models/__init__.py"
+        )
+
+
+def test_capability_envelope_unique_constraint():
+    """CapabilityEnvelope declares UNIQUE(agent_id, skill) with the canonical name."""
+    from sqlalchemy import UniqueConstraint
+
+    from app.models import CapabilityEnvelope
+
+    uc_names = {
+        c.name
+        for c in CapabilityEnvelope.__table__.constraints
+        if isinstance(c, UniqueConstraint)
+    }
+    assert "uq_capability_envelopes_agent_skill" in uc_names, (
+        f"Expected UniqueConstraint 'uq_capability_envelopes_agent_skill', found: {uc_names}"
+    )
+
+
+def test_tool_idempotency_key_unique_constraint():
+    """ToolIdempotencyKey declares UNIQUE(agent_id, skill, idempotency_key)."""
+    from sqlalchemy import UniqueConstraint
+
+    from app.models import ToolIdempotencyKey
+
+    uc_names = {
+        c.name
+        for c in ToolIdempotencyKey.__table__.constraints
+        if isinstance(c, UniqueConstraint)
+    }
+    assert "uq_tool_idempotency_keys" in uc_names, (
+        f"Expected UniqueConstraint 'uq_tool_idempotency_keys', found: {uc_names}"
+    )
+
+
+def test_capability_envelope_enabled_default_false():
+    """CapabilityEnvelope.enabled server_default is 'false' (fail-closed at ORM level)."""
+    from app.models import CapabilityEnvelope
+
+    col = CapabilityEnvelope.__table__.c.enabled
+    assert col.server_default is not None, "CapabilityEnvelope.enabled has no server_default"
+    assert "false" in str(col.server_default.arg).lower(), (
+        f"CapabilityEnvelope.enabled server_default must be 'false', "
+        f"got: {col.server_default.arg!r}"
+    )
