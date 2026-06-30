@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; Phase 15 (Actor validator) EXECUTED — ACT-04/05 + injection live-verified, ACT-06 latency deferred to prod; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
-stopped_at: "Phase 16 Plan 02 executed 2026-06-30. Provider SDK supply-chain gate (T-16-SC) cleared: stripe==15.3.0 + ShopifyAPI==12.7.0 pinned; WooCommerce PyPI rejected (stale) — Plan 16-05 uses httpx + requests-oauthlib OAuth1. Import smoke OK (15.3.0). Next: /gsd-execute-phase 16 (plan 16-03 — Stripe adapter)"
-last_updated: "2026-06-30T16:46:21.920Z"
+stopped_at: "Phase 16 Plan 03 executed 2026-06-30. StripeAdapter implemented (INT-05/INT-07): issue_refund + update_subscription + place_order via stripe 15.3.0 StripeClient v1 namespace; idempotency_key forwarded via RequestOptions options dict; currency from config (INT-07); all 7 unit tests pass. Next: /gsd-execute-phase 16 (plan 16-04 — ShopifyAdapter)"
+last_updated: "2026-06-30T17:01:54Z"
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 18
-  completed_plans: 13
+  completed_plans: 14
   percent: 33
 ---
 
@@ -69,6 +69,10 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Key Decisions
 
+- [16-03] idempotency_key forwarded via Stripe RequestOptions dict (second positional arg) — stripe 15.3.0 v1 API signature is create(params, options), not keyword arg
+- [16-03] StripeClient constructed from json.loads(handle.use())["api_key"] — credential blob is JSON, not raw key; extraction inside asyncio.to_thread closure (Pitfall 2 prevention)
+- [16-03] place_order uses static success_url/cancel_url placeholders (T-16-02); Plan 16-07 will wire real deploy-time URLs
+- [16-03] unit_amount = amount_cents // quantity with quantity floored to 1 (guard against zero-div in Checkout line_items)
 - [16-02] WooCommerce PyPI package REJECTED (5-year stale, last released 2021) — Plan 16-05 WooCommerce adapter uses httpx + requests-oauthlib OAuth1 signing
 - [16-02] stripe==15.3.0 pinned (exact) — enables thread-safe StripeClient(api_key) multi-tenant pattern; ShopifyAPI==12.7.0 official SDK (Nov 2024)
 - [16-02] requests-oauthlib>=2.0 added as WooCommerce OAuth1-fallback dependency; httpx already a core dep (0.28.1)
