@@ -2,20 +2,22 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: — Transactional Capability
-status: v1.1 roadmap defined (phases 14-19), building in parallel; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
-stopped_at: Phase 14 gap-closure code-complete + re-verified (14-05..08 executed; SC4 args_mismatch audit regression fixed a18dd35; verifier human_needed); next /gsd-secure-phase 14 then /gsd-verify-work 14 (3 live-DB items in 14-UAT.md)
-last_updated: "2026-06-30T09:00:34.929Z"
+status: v1.1 roadmap defined (phases 14-19), building in parallel; Phase 15 (Actor validator) EXECUTED — ACT-04/05 + injection live-verified, ACT-06 latency deferred to prod; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
+stopped_at: Phase 15 executed 2026-06-30 (3/3 plans). ACT-04/ACT-05/T-15-01/T-15-02 proven LIVE against Neon (control DB migrated 0011->0016 head); ACT-06 p95<1s NOT met locally (4.66s, env-bound) -> deferred to prod re-measure. Found+fixed 2 bugs: per-call Langfuse flush on Actor sync path (967c3f4) + Phase-14 :r::jsonb idempotency SQL crash on real DB (ec88d79). Next: /gsd-verify-work 15 (ACT-06 prod latency) or /gsd-secure-phase 15
+last_updated: "2026-06-30T11:30:00.000Z"
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 11
-  completed_plans: 10
-  percent: 17
+  completed_plans: 11
+  percent: 33
 ---
 
 # Project State
 
 ## Current Status
+
+**▶ PHASE 15 — Actor validator (L3) EXECUTED + live-verified (2026-06-30).** 3/3 plans. Filled the `call_actor_gate()` seam (`actor_seam.py`): forced-tool-use Haiku judge (`claude-haiku-4-5`, verdict `approve|block|require_human`), skip-threshold short-circuit (`ACTOR_SKIP_MAX_AMOUNT_CENTS=500`), conversation-history fetch (`asyncio.to_thread`), Langfuse v4 latency log. Added the `require_human` dispatcher branch (release reservation → `pending_confirmations` row → audit → awaiting-approval, adapter not called) + `conn_str` wiring; four-node chain confirmed (agent.py unchanged). **LIVE verification against the Neon control DB** (migrated 0011→0016 head to install the Phase-14 substrate): **ACT-04, ACT-05, T-15-01 (injection→block), T-15-02 all PASS live (6/6 require_human integration tests).** **ACT-06 p95<1s NOT met on the local 4GB box** (p50=1596ms, p95=4660ms over 20 live Haiku calls — environment-bound; PRD targets 400-800ms p95 on prod) → **deferred to production-like infra** (mirrors Phase 13/14 live-gate deferral). **Two bugs found via the live gate + fixed:** (1) per-call `_langfuse.flush()` on the Actor's *sync* request path blocked ~30s/call against an unreachable Langfuse — removed (`967c3f4`; run 596s→52s); (2) **Phase-14 `:r::jsonb` idempotency SQL** crashed every *approved* mutating call on a real DB (SQLAlchemy text() skips the `:r` bind before a `::` cast) — fixed with `CAST(:r AS JSONB)` (`ec88d79`). Plan commits `6d0608e`→`ec88d79` on `main`; per-plan detail in `15-0X-SUMMARY.md`. **NEXT:** `/gsd-verify-work 15` (ACT-06 prod latency re-measure on the AWS runtime worker) and/or `/gsd-secure-phase 15` (security capability active, no SECURITY.md yet). Note: the Neon control DB is now at head (0016) — this also closes Phase 14's pending "migration 0014/0015 roundtrip" live-DB item.
 
 **▶ PHASE 14 — gap-closure code-complete + re-verified (2026-06-29).** All 8 plans executed: base 14-01..04 + gap-closure 14-05..08. Dispatcher rewired to reserve-before-execute (`0e0a815`): CR-02 closed (atomic `INSERT ON CONFLICT`), WR-01 (replay before rate), WR-02 (args_mismatch explicit error), WR-03 (asyncio.to_thread offload — except confirm_action's DB write, a tracked follow-up), WR-04 (Redis TLS verify default), WR-05 (confirm_action capability gate), IN-01/02/03. **CR-01 fixed earlier (`61b45a0`).** Post-gap **re-verification (gsd-verifier) caught a regression** the rewrite introduced — SC4/AUD-01: the new `args_mismatch` branch returned without an audit row — **fixed `a18dd35`** + regression test. Final verifier status = **human_needed** (SC1/SC3 verified, SC4 verified post-fix, SC2 idempotency present-behavior-unverified pending live DB). Full transactional suite 210 pass / 2 skip; customer-agent loop intact. **NEXT:** `/gsd-secure-phase 14` (no SECURITY.md yet — security capability active), then `/gsd-verify-work 14` for the 3 live-DB items in `14-UAT.md` (migration 0014+0015 roundtrip · concurrency exactly-once · e2e replay). Open follow-up: WR-03 confirm_action `get_sync_db` offload (non-blocking; fits Phase 18). Phase 13 (production hosting) remains a separate, paused track needing real AWS — see checkpoint below.
 

@@ -136,7 +136,7 @@ Plans:
 3. Low-value actions under the per-tenant skip threshold short-circuit the Actor (cost control)
 4. Gatekeeper/Auditor/Strategist still run async post-response; Actor p95 < 1s, total added latency on a mutating call < 1.5s
 
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 **Wave 1**
@@ -149,7 +149,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 15-03-PLAN.md — Live integration: require_human/four-node control-DB e2e + Actor p95 latency (autonomous: false) [ACT-04, ACT-05, ACT-06]
+- [x] 15-03-PLAN.md — Live integration: require_human/four-node control-DB e2e + Actor p95 latency (autonomous: false) [ACT-04, ACT-05, ACT-06]
 
 ### Phase 16: Integration adapters + platform credential service (L5 extension) — Shopify, WooCommerce, Stripe, Calendly with encrypted, server-held credentials
 
