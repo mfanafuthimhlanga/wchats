@@ -260,11 +260,17 @@ async def test_sync_offloaded() -> None:
 async def test_place_order_checkout_session() -> None:
     """place_order creates a Stripe Checkout Session in payment mode (no raw card handling).
 
+    WR-07 fix: uses a single line item with quantity=1 and unit_amount=args.amount_cents
+    to avoid integer-division remainder loss (e.g. 100 cents / 3 items = 33 * 3 = 99 billed).
+    The product name includes the quantity for customer clarity.
+
     Verifies:
     - checkout.sessions.create called with mode="payment"
     - currency == self._currency_code (from config, not args)
     - idempotency_key forwarded via options dict
-    - line_items contain product_id as name and quantity
+    - line_item quantity == 1 (single bundled item, WR-07)
+    - line_item unit_amount == args.amount_cents (total, not per-unit, WR-07)
+    - product name includes the original args.quantity for bundle clarity
     - Returns PlaceOrderOutput(status="pending_confirmation", order_id=<session.id>)
     - No card-number/CVC/expiry field in the params (PCI boundary preserved)
     """
@@ -281,7 +287,7 @@ async def test_place_order_checkout_session() -> None:
         quantity=2,
         customer_email="test@example.com",
         shipping_address="123 Main St, Cape Town, ZA",
-        amount_cents=4000,  # total: 4000 cents for 2 units = 2000 cents/unit
+        amount_cents=4000,  # total 4000 cents — must be billed as 4000, not 2000*2 via division
     )
 
     mock_session = MagicMock()
@@ -310,11 +316,26 @@ async def test_place_order_checkout_session() -> None:
     line_item = session_params["line_items"][0]
     assert line_item["price_data"]["currency"] == "eur"
 
-    # product_id used as the product name
-    assert line_item["price_data"]["product_data"]["name"] == "prod_widget_deluxe"
+    # WR-07: quantity must be 1 (single bundled line item to avoid integer-division loss)
+    assert line_item["quantity"] == 1, (
+        f"WR-07: quantity must be 1 (bundled line item); got {line_item['quantity']!r}. "
+        "Using quantity=N with floor-divided unit_amount silently undercharges."
+    )
 
-    # quantity preserved
-    assert line_item["quantity"] == 2
+    # WR-07: unit_amount must equal the FULL args.amount_cents (not per-unit)
+    assert line_item["price_data"]["unit_amount"] == 4000, (
+        f"WR-07: unit_amount must be 4000 (full total); got {line_item['price_data']['unit_amount']!r}. "
+        "Integer division 4000 // 2 = 2000 would undercharge by remainder."
+    )
+
+    # product name must include the original quantity for bundle clarity
+    product_name = line_item["price_data"]["product_data"]["name"]
+    assert "prod_widget_deluxe" in product_name, (
+        f"product name must include product_id; got {product_name!r}"
+    )
+    assert "2" in product_name, (
+        f"product name must include quantity for bundle clarity; got {product_name!r}"
+    )
 
     # idempotency_key forwarded
     assert session_options == {"idempotency_key": "idem-order-1"}

@@ -217,17 +217,23 @@ class StripeAdapter(ProviderAdapter):
         number, CVC, or expiry field is ever present in our tool schemas or API calls
         (T-16-02 PCI boundary preserved).
 
+        WR-07: The total amount is passed as a single line item with quantity=1
+        to avoid integer-division rounding. The old approach of args.amount_cents //
+        quantity could silently undercharge (e.g. 100 cents / 3 items = 33 cents per
+        item × 3 = 99 cents billed instead of 100), causing reconciliation failures.
+        The product name includes the quantity so the customer sees the correct bundle.
+
         Args:
             args.product_id: Product SKU used as the product_data name.
-            args.quantity: Number of units; combined with amount_cents to derive unit_amount.
-            args.amount_cents: Total amount in cents (divided by quantity for unit_amount).
+            args.quantity: Number of units; included in the product name for customer clarity.
+            args.amount_cents: Total amount in cents. Passed as unit_amount with quantity=1
+                               to avoid integer-division remainder loss (WR-07).
             args.idempotency_key: TXN-02 key forwarded to Stripe's Idempotency-Key.
 
         Returns:
             PlaceOrderOutput(order_id=<session.id>, status="pending_confirmation", message=...)
         """
         quantity = max(args.quantity, 1)
-        unit_amount = args.amount_cents // quantity  # per-unit cents
 
         def _sync() -> stripe.checkout.Session:
             client = stripe.StripeClient(json.loads(self._handle.use())["api_key"])
@@ -238,10 +244,13 @@ class StripeAdapter(ProviderAdapter):
                         {
                             "price_data": {
                                 "currency": self._currency_code,  # INT-07: from config
-                                "product_data": {"name": args.product_id},
-                                "unit_amount": unit_amount,
+                                # WR-07: single line item with full total as unit_amount,
+                                # quantity=1. This ensures billed total == args.amount_cents
+                                # with no integer-division remainder silently dropped.
+                                "product_data": {"name": f"{quantity}x {args.product_id}"},
+                                "unit_amount": args.amount_cents,
                             },
-                            "quantity": quantity,
+                            "quantity": 1,
                         }
                     ],
                     "success_url": _CHECKOUT_SUCCESS_URL,  # T-16-02: static, not from args
