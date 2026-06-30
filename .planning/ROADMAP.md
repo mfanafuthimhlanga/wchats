@@ -139,8 +139,16 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
+**Wave 1**
+
 - [ ] 15-01-PLAN.md — Settings skip-threshold + Actor seam body (forced-tool-use Haiku judge, history fetch, Langfuse v4) + unit tests [ACT-01, ACT-02, ACT-03, ACT-06]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 15-02-PLAN.md — require_human dispatcher branch + conn_str wiring + four-node structural test [ACT-02, ACT-04, ACT-05]
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 15-03-PLAN.md — Live integration: require_human/four-node control-DB e2e + Actor p95 latency (autonomous: false) [ACT-04, ACT-05, ACT-06]
 
 ### Phase 16: Integration adapters + platform credential service (L5 extension) — Shopify, WooCommerce, Stripe, Calendly with encrypted, server-held credentials

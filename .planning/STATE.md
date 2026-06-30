@@ -4,11 +4,11 @@ milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
 stopped_at: Phase 14 gap-closure code-complete + re-verified (14-05..08 executed; SC4 args_mismatch audit regression fixed a18dd35; verifier human_needed); next /gsd-secure-phase 14 then /gsd-verify-work 14 (3 live-DB items in 14-UAT.md)
-last_updated: "2026-06-29T21:00:00.000Z"
+last_updated: "2026-06-30T10:00:00.000Z"
 progress:
   total_phases: 6
   completed_phases: 0
-  total_plans: 8
+  total_plans: 11
   completed_plans: 8
   percent: 0
 ---
@@ -37,6 +37,7 @@ progress:
 
 ## Roadmap Evolution
 
+- 2026-06-30 — **Phase 15 planned: Actor validator (L3) + four-node validation chain** (v1.1 parallel track). 3 plans / 3 waves, all of ACT-01..06 covered; plan-checker **VERIFICATION PASSED** (2 non-blocking warnings fixed). Brownfield over Phase 14's substrate: fills the `call_actor_gate()` stub in `actor_seam.py` (dispatcher-level, NOT an SDK pre-tool hook — Phase 14 LANDMINE 1), reuses the `validation_service.py` Haiku + Langfuse-v4 analog, adds only `ACTOR_SKIP_MAX_AMOUNT_CENTS` to config (no new migration). Wave 1 (15-01) Actor core + skip threshold + ACT-06 logging; Wave 2 (15-02) `require_human` dispatcher branch + four-node structural test; Wave 3 (15-03, `autonomous:false`) live require_human/latency gates needing real `ANTHROPIC_API_KEY` + control DB. RESEARCH/PATTERNS/VALIDATION written. **NEXT →** `/gsd-execute-phase 15` (Waves 1–2 autonomous; Wave 3 gated on live creds).
 - 2026-06-28 — **Phase 13 added: Production Hosting and Durable Deployment** (depends on Phase 12). Scope = the production gap beyond the portfolio demo: durable always-on managed hosting for API + warm runtime worker + Redis (kills the local-PC + tunnel + 108–144s cold start), CDN-hosted widget with a *working* self-serve embed snippet (real `src` + `data-api`, removes the "CDN not yet live" placeholder), object storage for uploads (S3 replaces local `UPLOADS_DIR`), and concurrency-safe horizontal runtime workers (`agent_tools` globals → `ContextVar`). Four waves, PROD-01..PROD-15. Executes the ADR-0001 D-14 env seam onto always-on infra. **Out of scope:** Neon project-cap/Aurora migration (not a constraint at current scale — per user) and the Post-M10 transactional/A2A/MCP/security layers (separate milestone). Not planned yet → `/gsd-plan-phase 13`.
 - 2026-06-29 — **Milestone v1.1 Transactional Capability started (safe parallel track).** Phases 14–19 appended to the roadmap; 43 requirements (TXN/CAP/ACT/INT/IDV/AUD/BLR/RTX/SEC/DOC/VER) per `Post-M10-PRD.md` §4 — agents move from answering to acting, with security layers L1–L3/L5/L6 (+partial L4) first-class. The standard new-milestone reset was deliberately NOT run (it would have cleared the paused Phase 13 dir + reset its checkpoint); Phase 13 stays paused & resumable. v1.1 is code-buildable now in parallel and does not depend on the Phase 13 production deploy. **Next: `/gsd-plan-phase 14`.**
 
