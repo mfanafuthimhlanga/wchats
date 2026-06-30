@@ -190,6 +190,7 @@ Plans:
 **ROADMAP Wave 4 — Deploy-time provisioning + live proof** *(depends on wiring)*
 
 - [x] 16-07-PLAN.md — (exec wave 4, autonomous:false) deploy-time provisioning script + single-currency guard + operator runbook (Open Q3) + live Stripe test-mode refund gate — INT-07, INT-05
+  - **Live gate deferred:** Stripe test-mode refund + idempotency replay proof requires real test credentials (STRIPE_TEST_MODE_ENABLED=1 + STRIPE_TEST_API_KEY + STRIPE_TEST_CHARGE_ID). Test authored at `tests/integration/test_stripe_live.py`. See `16-UAT.md` for close-out runbook.
 
 ### Phase 17: Customer identity verification — email/SMS OTP, per-skill, server-enforced
 
