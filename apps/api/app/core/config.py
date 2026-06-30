@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     NEON_REGION: str = "aws-us-east-1"
     # Base64url-encoded 32 bytes; kept as str because Fernet accepts str
     NEON_ENCRYPTION_KEY: str
+    # Base64url-encoded 32 bytes; key material for HKDF per-tenant credential derivation (INT-01)
+    # Same encoding convention as NEON_ENCRYPTION_KEY. Set PLATFORM_CREDENTIAL_KEY in .env.
+    PLATFORM_CREDENTIAL_KEY: str
 
     # Database
     # postgresql+asyncpg:// — for FastAPI async engine
