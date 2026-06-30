@@ -146,37 +146,58 @@ class StripeAdapter(ProviderAdapter):
     ) -> UpdateSubscriptionOutput:
         """Update a Stripe subscription to a new plan (price ID).
 
+        Retrieves the current subscription first to obtain the existing item's id,
+        then updates using {"id": <existing_item_id>, "price": new_plan} so the plan
+        is REPLACED instead of a duplicate item being added on top of the old one.
+
+        Per Stripe's documented behavior: items without an id are created; existing
+        items are only modified when their id is provided. Without the existing item id,
+        update_subscription would add a second item and bill the customer for both plans.
+
         Args:
             args.subscription_id: Stripe subscription ID (sub_...) to modify.
             args.new_plan: Target price ID (price_...) for the subscription item.
             args.idempotency_key: TXN-02 key forwarded to Stripe's Idempotency-Key.
 
         Returns:
-            UpdateSubscriptionOutput(subscription_id=..., status="updated", message=...)
+            UpdateSubscriptionOutput(subscription_id=updated_sub.id, status="updated", ...)
+            subscription_id comes from the server response to confirm the update was applied.
+
+        Raises:
+            ValueError: If the subscription has no items to update.
         """
 
         def _sync() -> stripe.Subscription:
             client = stripe.StripeClient(json.loads(self._handle.use())["api_key"])
+            # Retrieve first to get the existing item id.
+            # Without the id, Stripe adds a NEW item on top of the existing one,
+            # double-billing the customer (CR-02).
+            sub = client.v1.subscriptions.retrieve(args.subscription_id)
+            existing_item_id = sub.items.data[0].id if sub.items.data else None
+            if existing_item_id is None:
+                raise ValueError(
+                    f"Subscription {args.subscription_id} has no items to update."
+                )
             return client.v1.subscriptions.update(
                 args.subscription_id,
-                {"items": [{"price": args.new_plan}]},
+                {"items": [{"id": existing_item_id, "price": args.new_plan}]},
                 {"idempotency_key": args.idempotency_key},
             )
 
-        await asyncio.to_thread(_sync)
+        updated_sub = await asyncio.to_thread(_sync)
 
         log.info(
             "stripe.subscription_updated",
-            subscription_id=args.subscription_id,
+            subscription_id=updated_sub.id,
             new_plan=args.new_plan,
             status="updated",
             agent_id=agent_id,
         )
         return UpdateSubscriptionOutput(
-            subscription_id=args.subscription_id,
+            subscription_id=updated_sub.id,  # server-confirmed ID (not just the input arg)
             status="updated",
             message=(
-                f"Subscription {args.subscription_id} updated to plan {args.new_plan!r} "
+                f"Subscription {updated_sub.id} updated to plan {args.new_plan!r} "
                 f"effective {args.effective_date}."
             ),
         )

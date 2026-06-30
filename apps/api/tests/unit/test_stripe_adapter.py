@@ -140,9 +140,14 @@ async def test_currency_from_config_not_args() -> None:
 
 
 async def test_update_subscription() -> None:
-    """update_subscription calls client.v1.subscriptions.update with subscription_id + new plan.
+    """update_subscription retrieves the existing item id then replaces it (CR-02 fix).
 
-    Returns UpdateSubscriptionOutput(subscription_id=..., status="updated").
+    Verifies that:
+    - subscriptions.retrieve is called first with the subscription_id
+    - subscriptions.update is called with {"id": <existing_item_id>, "price": new_plan}
+      so the plan is REPLACED (not a duplicate item added on top)
+    - idempotency_key is forwarded via options dict
+    - Returns UpdateSubscriptionOutput(subscription_id=updated_sub.id, status="updated")
     """
     from app.services.transactional.adapters.stripe_adapter import StripeAdapter
     from app.services.transactional.credential_service import CredentialHandle
@@ -158,25 +163,38 @@ async def test_update_subscription() -> None:
         effective_date="2026-07-01",
     )
 
-    mock_subscription = MagicMock()
-    mock_subscription.id = "sub_test456"
+    # Mock the existing subscription returned by retrieve()
+    mock_existing_item = MagicMock()
+    mock_existing_item.id = "si_existing_item_001"
+    mock_existing_sub = MagicMock()
+    mock_existing_sub.items = MagicMock()
+    mock_existing_sub.items.data = [mock_existing_item]
+
+    # Mock the updated subscription returned by update()
+    mock_updated_sub = MagicMock()
+    mock_updated_sub.id = "sub_test456"
 
     with patch("app.services.transactional.adapters.stripe_adapter.stripe") as mock_stripe:
         mock_client = mock_stripe.StripeClient.return_value
-        mock_client.v1.subscriptions.update.return_value = mock_subscription
+        mock_client.v1.subscriptions.retrieve.return_value = mock_existing_sub
+        mock_client.v1.subscriptions.update.return_value = mock_updated_sub
 
         result = await adapter.update_subscription(args, agent_id="agent-003")
 
     # StripeClient constructed with the raw api_key
     mock_stripe.StripeClient.assert_called_once_with("sk_test_sub")
 
-    # subscriptions.update called with subscription_id as first arg
+    # CR-02: retrieve called first to get the existing item id
+    mock_client.v1.subscriptions.retrieve.assert_called_once_with("sub_test456")
+
+    # CR-02: update called with {"id": existing_item_id, "price": new_plan} — REPLACE, not ADD
     mock_client.v1.subscriptions.update.assert_called_once_with(
         "sub_test456",
-        {"items": [{"price": "price_pro_monthly"}]},
+        {"items": [{"id": "si_existing_item_001", "price": "price_pro_monthly"}]},
         {"idempotency_key": "idem-sub-1"},
     )
 
+    # Return value uses server-confirmed id from updated_sub, not just the input arg
     assert result.subscription_id == "sub_test456"
     assert result.status == "updated"
 
