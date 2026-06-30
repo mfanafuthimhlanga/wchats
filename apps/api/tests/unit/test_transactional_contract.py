@@ -442,30 +442,54 @@ def test_get_adapter_returns_stub_provider_adapter():
 
 
 def test_call_actor_gate_returns_approve():
+    """Phase-15: skip short-circuit returns approve for low-value no-confirm skill.
+
+    Updated from Phase-14 stub contract (which always returned ("approve", ""))
+    to Phase-15 real implementation: use the skip short-circuit so no API call is made.
+    """
+    from unittest.mock import patch  # noqa: PLC0415
+
+    # Snapshot with requires_confirmation=False and max_amount_cents below the
+    # 500-cent threshold triggers the skip short-circuit without any Anthropic call.
+    snapshot = {
+        "enabled": True,
+        "requires_confirmation": False,
+        "constraints": {"max_amount_cents": 100},
+    }
     decision, rationale = asyncio.run(
         call_actor_gate(
             skill="place_order",
             arguments={"idempotency_key": "k1", "amount_cents": 100},
-            capability_snapshot={"enabled": True},
+            capability_snapshot=snapshot,
             conversation_id="conv-001",
             agent_id="agent-001",
         )
     )
     assert decision == "approve"
-    assert rationale == ""
+    assert "skip" in rationale  # Phase-15 skip short-circuit sets a skip: prefix
 
 
 def test_call_actor_gate_always_approve_regardless_of_args():
-    """Phase-14 stub always returns approve regardless of inputs."""
+    """Phase-15: low-value skills skip the Actor gate and return approve.
+
+    Updated from Phase-14 stub contract. Each mutating skill is tested with a
+    snapshot that triggers the skip short-circuit (requires_confirmation=False
+    AND max_amount_cents=0 < 500 threshold) — no Anthropic API call is made.
+    """
+    # All mutating skills: use a skip-eligible snapshot so no API call needed.
+    skip_snapshot = {
+        "requires_confirmation": False,
+        "constraints": {"max_amount_cents": 0},
+    }
     for skill in MUTATING_SKILLS:
         decision, rationale = asyncio.run(
             call_actor_gate(
                 skill=skill,
                 arguments={},
-                capability_snapshot={},
+                capability_snapshot=skip_snapshot,
                 conversation_id="conv-test",
                 agent_id="agent-test",
             )
         )
         assert decision == "approve", f"{skill}: expected approve, got {decision}"
-        assert rationale == ""
+        assert "skip" in rationale, f"{skill}: expected skip rationale, got {rationale!r}"
