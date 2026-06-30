@@ -136,12 +136,12 @@ Plans:
 3. Low-value actions under the per-tenant skip threshold short-circuit the Actor (cost control)
 4. Gatekeeper/Auditor/Strategist still run async post-response; Actor p95 < 1s, total added latency on a mutating call < 1.5s
 
-**Plans:** 3 plans
+**Plans:** 1/3 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 15-01-PLAN.md — Settings skip-threshold + Actor seam body (forced-tool-use Haiku judge, history fetch, Langfuse v4) + unit tests [ACT-01, ACT-02, ACT-03, ACT-06]
+- [x] 15-01-PLAN.md — Settings skip-threshold + Actor seam body (forced-tool-use Haiku judge, history fetch, Langfuse v4) + unit tests [ACT-01, ACT-02, ACT-03, ACT-06]
 
 **Wave 2** *(blocked on Wave 1 completion)*
 

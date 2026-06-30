@@ -300,7 +300,7 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 - [x] **TXN-01**: Six core transactional tools — `place_order`, `cancel_order`, `issue_refund`, `update_subscription`, `book_slot`, `update_customer_record` — defined as typed Python functions with full Pydantic input/output schemas (no string-blob, SQL, URL, or arbitrary-JSON inputs)
 - [x] **TXN-02**: Side-effecting tools require a client-provided idempotency key; replaying the same key returns the original result and never re-executes the mutation
 - [x] **TXN-03**: Every tool is tagged `mutating: true|false` at definition time — the authorization signal the Actor pre-execution hook keys on (tagged, never runtime-inferred)
-- [ ] **TXN-04**: `confirm_action` tool added for require-human flows; existing `escalate_to_human` retained
+- [x] **TXN-04**: `confirm_action` tool added for require-human flows; existing `escalate_to_human` retained
 - [x] **TXN-05**: Tool definitions are A2A-skill-compatible in shape (typed inputs/outputs + examples) without exposing any A2A surface — forward-compat for v1.2
 
 ### Capability Envelope (L2)
@@ -312,12 +312,12 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 
 ### Actor Validator (L3)
 
-- [ ] **ACT-01**: Actor validator — single-shot Claude (Haiku) call before any `mutating:true` tool executes; reads conversation + proposed tool call + envelope; outputs `approve | block | require_human` with rationale
-- [ ] **ACT-02**: Integrated as a pre-execution hook in the Claude Agent SDK tool loop; fires only for mutating tools
-- [ ] **ACT-03**: Short-circuit skip when the envelope marks `requires_confirmation:false` AND `max_amount_cents` is below a per-tenant skip threshold (cost control on low-value actions)
+- [x] **ACT-01**: Actor validator — single-shot Claude (Haiku) call before any `mutating:true` tool executes; reads conversation + proposed tool call + envelope; outputs `approve | block | require_human` with rationale
+- [x] **ACT-02**: Integrated as a pre-execution hook in the Claude Agent SDK tool loop; fires only for mutating tools
+- [x] **ACT-03**: Short-circuit skip when the envelope marks `requires_confirmation:false` AND `max_amount_cents` is below a per-tenant skip threshold (cost control on low-value actions)
 - [ ] **ACT-04**: `require_human` creates a `pending_confirmations` row and routes through `confirm_action`; the action executes only on approval and expires otherwise
 - [ ] **ACT-05**: Validation chain extended to four nodes — Actor runs synchronously pre-mutation; Gatekeeper/Auditor/Strategist continue async post-response
-- [ ] **ACT-06**: Actor p95 latency < 1s; total added latency on a mutating call < 1.5s end-to-end
+- [x] **ACT-06**: Actor p95 latency < 1s; total added latency on a mutating call < 1.5s end-to-end
 
 ### Integrations + Credential Service (L5 extension)
 

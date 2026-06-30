@@ -4,13 +4,13 @@ milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
 stopped_at: Phase 14 gap-closure code-complete + re-verified (14-05..08 executed; SC4 args_mismatch audit regression fixed a18dd35; verifier human_needed); next /gsd-secure-phase 14 then /gsd-verify-work 14 (3 live-DB items in 14-UAT.md)
-last_updated: "2026-06-30T10:00:00.000Z"
+last_updated: "2026-06-30T08:40:52.651Z"
 progress:
   total_phases: 6
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 11
-  completed_plans: 8
-  percent: 0
+  completed_plans: 9
+  percent: 17
 ---
 
 # Project State
@@ -46,7 +46,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** Phase 14 — transactional-tool-contract-capability-audit-substrate-typed
+**Current focus:** Phase 15 — actor-validator-l3-four-node-validation-chain-a-pre-mutation
 **Previous:** M3 (Hybrid Retrieval) ✓ Complete — demo_m3.sh passed, notebook 4 DataFrames verified, RET-01–RET-08 satisfied (2026-05-16)
 
 ## Milestone Progress
@@ -297,6 +297,6 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Session
 
-**Last session:** 2026-06-29T19:41:04.333Z
+**Last session:** 2026-06-30T08:40:52.598Z
 **Stopped at:** Completed 14-02-PLAN.md — typed tool contract complete (50 tests passing)
 **Resume file:** None
