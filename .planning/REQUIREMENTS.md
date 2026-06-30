@@ -322,7 +322,7 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 ### Integrations + Credential Service (L5 extension)
 
 - [ ] **INT-01**: `integration_credentials` tenant-DB table — Fernet-encrypted BYTEA, key derived from platform master key + tenant ID; never exposed to agent code
-- [ ] **INT-02**: Platform credential service resolves a credential to a short-lived in-memory handle at tool-execution time; no agent code path reads the table or constructs SQL
+- [x] **INT-02**: Platform credential service resolves a credential to a short-lived in-memory handle at tool-execution time; no agent code path reads the table or constructs SQL
 - [x] **INT-03**: Shopify adapter (place/cancel order, issue refund) behind the tool contract
 - [x] **INT-04**: WooCommerce adapter
 - [x] **INT-05**: Stripe adapter (issue refund, update subscription)

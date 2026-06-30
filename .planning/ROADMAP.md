@@ -168,7 +168,7 @@ Plans:
 2. Each of Shopify / WooCommerce / Stripe / Calendly performs its real action behind the typed tool contract
 3. Single-currency per tenant is enforced at deploy time
 
-**Plans:** 4/7 plans executed
+**Plans:** 6/7 plans executed
 
 Plans:
 
@@ -185,7 +185,7 @@ Plans:
 
 **ROADMAP Wave 3 — Credential resolution + dispatcher wiring** *(depends on all adapters)*
 
-- [ ] 16-06-PLAN.md — (exec wave 3) get_adapter_for_skill (decrypt + dispatch by provider_type) + tools.py step-6 change + dispatch unit test + env-gated e2e — INT-02
+- [x] 16-06-PLAN.md — (exec wave 3) get_adapter_for_skill (decrypt + dispatch by provider_type) + tools.py step-6 change + dispatch unit test + env-gated e2e — INT-02
 
 **ROADMAP Wave 4 — Deploy-time provisioning + live proof** *(depends on wiring)*
 

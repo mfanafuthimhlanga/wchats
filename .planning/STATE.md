@@ -4,13 +4,13 @@ milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; Phase 15 (Actor validator) EXECUTED — ACT-04/05 + injection live-verified, ACT-06 latency deferred to prod; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
 stopped_at: "Phase 16 Plan 05 executed 2026-06-30. WooCommerceAdapter (INT-04) and CalendlyAdapter (INT-06) complete: httpx+OAuth1 HMAC-SHA256 (WooCommerce), native async httpx Bearer PAT + config_data event_type mapping (Calendly); 8/8 unit tests pass. Next: /gsd-execute-phase 16 (plan 16-06 — provider dispatch wiring)"
-last_updated: "2026-06-30T17:37:00.000Z"
+last_updated: "2026-06-30T18:10:28.691Z"
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 18
-  completed_plans: 16
-  percent: 35
+  completed_plans: 17
+  percent: 33
 ---
 
 # Project State
@@ -314,6 +314,6 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Session
 
-**Last session:** 2026-06-30T17:23:00.251Z
+**Last session:** 2026-06-30T18:10:28.645Z
 **Stopped at:** Completed 14-02-PLAN.md — typed tool contract complete (50 tests passing)
 **Resume file:** None
