@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; Phase 15 (Actor validator) EXECUTED — ACT-04/05 + injection live-verified, ACT-06 latency deferred to prod; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
-stopped_at: "Phase 15 executed 2026-06-30 (3/3 plans). ACT-04/ACT-05/T-15-01/T-15-02 proven LIVE against Neon (control DB migrated 0011->0016 head); ACT-06 p95<1s NOT met locally (4.66s, env-bound) -> deferred to prod re-measure. Found+fixed 2 bugs: per-call Langfuse flush on Actor sync path (967c3f4) + Phase-14 :r::jsonb idempotency SQL crash on real DB (ec88d79). Next: /gsd-verify-work 15 (ACT-06 prod latency) or /gsd-secure-phase 15"
-last_updated: "2026-06-30T14:03:20.054Z"
+stopped_at: "Phase 16 Plan 01 executed 2026-06-30. Credential substrate complete: migration 0007 (integration_credentials tenant table), PLATFORM_CREDENTIAL_KEY setting, _tenant_id_var ContextVar wired in build_tool_server, credential_service.py (HKDF derive + CredentialHandle + _fetch_credential_config), adapters/__init__.py, 4 Wave-0 tests green. Next: /gsd-execute-phase 16 (plan 16-02 — Stripe adapter, INT-05)"
+last_updated: "2026-06-30T16:05:57.277Z"
 progress:
   total_phases: 6
-  completed_phases: 1
-  total_plans: 11
-  completed_plans: 11
+  completed_phases: 2
+  total_plans: 18
+  completed_plans: 12
   percent: 33
 ---
 
@@ -48,7 +48,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** Phase 15 — actor-validator-l3-four-node-validation-chain-a-pre-mutation
+**Current focus:** Phase 16 — integration-adapters-platform-credential-service-l5-extensio
 **Previous:** M3 (Hybrid Retrieval) ✓ Complete — demo_m3.sh passed, notebook 4 DataFrames verified, RET-01–RET-08 satisfied (2026-05-16)
 
 ## Milestone Progress
@@ -69,6 +69,11 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Key Decisions
 
+- [16-01] HKDF salt is tenant_id UUID string — per-tenant key uniqueness from shared PLATFORM_CREDENTIAL_KEY master key (INT-01)
+- [16-01] _tenant_id_var ContextVar supplies HKDF salt to credential_service — never passed as Celery task arg (T-16-06, CLAUDE.md rule 4)
+- [16-01] CredentialHandle frozen dataclass with redacted __repr__/__str__ — proven non-leaking by test_handle_repr_redacted (T-16-01)
+- [16-01] _fetch_credential_config returns None on empty conn_str (no raise) — callers raise ProviderNotConfiguredError on None result
+- [16-01] PLATFORM_CREDENTIAL_KEY has no default in Settings — fail-fast at startup enforces production hygiene (same convention as NEON_ENCRYPTION_KEY)
 - [14-01] Migration 0014 uses op.execute() raw SQL with IF NOT EXISTS guards (consistent with 0013, safe re-run)
 - [14-01] tool_calls_audit.arguments and capability_snapshot are nullable (plan spec overrides PRD NOT NULL — capture may fail before validation)
 - [14-01] pending_confirmations.expires_at is nullable — NULL means no deadline configured (plan spec overrides PRD NOT NULL)
@@ -299,6 +304,6 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Session
 
-**Last session:** 2026-06-30T09:00:34.884Z
+**Last session:** 2026-06-30T16:05:57.243Z
 **Stopped at:** Completed 14-02-PLAN.md — typed tool contract complete (50 tests passing)
 **Resume file:** None
