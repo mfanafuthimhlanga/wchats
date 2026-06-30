@@ -142,6 +142,8 @@ _agent_name_var: ContextVar[str] = ContextVar("agent_name", default="")
 _strategy_var: ContextVar[RetrievalStrategy | None] = ContextVar("strategy", default=None)
 _conversation_id_var: ContextVar[str] = ContextVar("conversation_id", default="")
 _notify_fn_var: ContextVar = ContextVar("notify_fn", default=None)
+# HKDF salt source for per-tenant credential derivation (INT-01)
+_tenant_id_var: ContextVar[str] = ContextVar("tenant_id", default="")
 
 # D-10 (suspenders): per-turn retrieve call counter — ContextVar for isolation.
 # Reset to 0 by build_tool_server() at the start of each run_agent_turn invocation.
@@ -571,6 +573,7 @@ def build_tool_server(
     strategy: RetrievalStrategy,
     conversation_id: str,
     notify_fn,
+    tenant_id: str = "",
 ) -> object:
     """Inject tenant-scoped state into ContextVars and return the MCP server.
 
@@ -600,6 +603,7 @@ def build_tool_server(
     """
     _conn_str_var.set(conn_str)
     _agent_id_var.set(agent_id)
+    _tenant_id_var.set(tenant_id)
     _agent_name_var.set(agent_name)
     _strategy_var.set(strategy)
     _conversation_id_var.set(conversation_id)

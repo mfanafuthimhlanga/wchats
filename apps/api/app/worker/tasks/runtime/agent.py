@@ -530,6 +530,7 @@ def run_agent_turn(
                 strategy=strategy,
                 conversation_id=str(local_conversation_id),
                 notify_fn=lambda r, c: send_escalation_email(agent, r, c),
+                tenant_id=str(agent.tenant_id),
             )
 
             system_prompt = build_system_prompt(agent)
