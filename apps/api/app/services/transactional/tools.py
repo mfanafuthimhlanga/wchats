@@ -141,9 +141,12 @@ async def _execute_transactional_tool(
         On errors: also contains "is_error": True.
     """
     # Lazy import breaks the circular dependency between tools.py and agent_tools.py.
-    from app.services.agent_tools import _agent_id_var, _conversation_id_var  # noqa: PLC0415
+    # _conn_str_var MUST stay inside the function body — module-level import causes a
+    # circular import (Pitfall 2 from 15-RESEARCH.md).
+    from app.services.agent_tools import _agent_id_var, _conn_str_var, _conversation_id_var  # noqa: PLC0415
 
     agent_id = _agent_id_var.get()
+    conn_str = _conn_str_var.get()
     conversation_id_str = _conversation_id_var.get()
     conversation_id: str | None = conversation_id_str if conversation_id_str else None
 
@@ -293,7 +296,7 @@ async def _execute_transactional_tool(
 
     # -------------------------------------------------------- 5. Actor seam
     decision, rationale = await call_actor_gate(
-        skill, raw_args, snapshot, conversation_id or "", agent_id
+        skill, raw_args, snapshot, conversation_id or "", agent_id, conn_str
     )
     if decision == "block":
         await release_idempotency(agent_id, skill, validated.idempotency_key)
@@ -317,6 +320,64 @@ async def _execute_transactional_tool(
                 }
             ],
             "is_error": True,
+        }
+
+    elif decision == "require_human":
+        # Pitfall 4 (15-RESEARCH.md): release reservation FIRST — the action will NOT
+        # proceed. Free the reservation so a later retry (after approval) can re-enter.
+        await release_idempotency(agent_id, skill, validated.idempotency_key)
+        now = datetime.now(timezone.utc)
+        confirmation_id = uuid4()
+        expires_at = now + timedelta(hours=_CONFIRM_TTL_HOURS)
+        row = PendingConfirmation(
+            id=confirmation_id,
+            agent_id=agent_id,
+            skill=skill,
+            arguments=raw_args,
+            requested_at=now,
+            expires_at=expires_at,
+        )
+        # Mirror confirm_action_tool's synchronous get_sync_db pattern exactly.
+        # WR-03 asyncio.to_thread offload is a tracked follow-up, out of scope here.
+        with get_sync_db() as db:
+            db.add(row)
+            try:
+                db.commit()
+            except IntegrityError:
+                # uq_pending_confirmations_unresolved race: a duplicate require_human for
+                # the same (agent_id, skill, action) already has an unresolved pending row.
+                # Silent dedup — consistent with confirm_action_tool (T-14-08-05).
+                db.rollback()
+                log.info(
+                    "actor_require_human.duplicate_suppressed",
+                    agent_id=agent_id,
+                    skill=skill,
+                )
+        await write_audit_row(
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            skill=skill,
+            arguments=raw_args,
+            result=None,
+            actor_decision=decision,
+            actor_rationale=rationale,
+            capability_snapshot=snapshot,
+            latency_ms=None,
+            error="actor_require_human",
+        )
+        # NON-error response (no is_error key) — the adapter (step 6) MUST NOT run.
+        # The action executes only after confirm_action approval resolves the row (Phase 18).
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        f"This action requires human approval before it can execute. "
+                        f"A confirmation request has been created (ID: {confirmation_id}). "
+                        f"The action will proceed only after an authorized approver confirms it."
+                    ),
+                }
+            ]
         }
 
     # -------------------------------------------------------- 6. Adapter execute
