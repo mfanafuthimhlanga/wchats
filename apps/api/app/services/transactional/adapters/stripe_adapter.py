@@ -117,7 +117,11 @@ class StripeAdapter(ProviderAdapter):
                     "charge": args.order_id,
                     "amount": args.refund_amount_cents,
                     "reason": "requested_by_customer",
-                    "currency": self._currency_code,  # INT-07: from config, never args
+                    # WR-01: currency is NOT passed for charge-based refunds.
+                    # Stripe derives the refund currency from the original charge;
+                    # passing currency returns 400 "unknown parameter: currency".
+                    # INT-07 is still enforced — currency is set per-tenant in
+                    # integration_credentials.currency_code but not forwarded here.
                 },
                 {"idempotency_key": args.idempotency_key},  # TXN-02 → Stripe Idempotency-Key
             )

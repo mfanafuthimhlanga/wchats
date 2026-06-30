@@ -54,7 +54,8 @@ async def test_issue_refund_idempotency_key() -> None:
     - StripeClient is constructed with json.loads(handle.use())["api_key"] (not the JSON blob)
     - refunds.create is called with the correct params dict
     - idempotency_key is forwarded via the options (second arg) dict
-    - currency == self._currency_code (from __init__, lowercased)
+    - currency is NOT in the params (WR-01: Stripe returns 400 for charge-based refunds
+      with a currency field; the currency is derived from the original charge)
     - Returns IssueRefundOutput(refund_id=<mock id>, status="refunded")
     """
     from app.services.transactional.adapters.stripe_adapter import StripeAdapter
@@ -84,12 +85,13 @@ async def test_issue_refund_idempotency_key() -> None:
     mock_stripe.StripeClient.assert_called_once_with("sk_test_xxx")
 
     # idempotency_key forwarded as the options dict (second positional arg)
+    # WR-01: currency must NOT appear — Stripe returns 400 for charge-based refunds with currency
     mock_client.v1.refunds.create.assert_called_once_with(
         {
             "charge": "ch_test123",
             "amount": 5000,
             "reason": "requested_by_customer",
-            "currency": "usd",  # lowercased from "USD"
+            # currency intentionally omitted (WR-01 fix)
         },
         {"idempotency_key": "idem-1"},
     )
@@ -99,18 +101,23 @@ async def test_issue_refund_idempotency_key() -> None:
 
 
 async def test_currency_from_config_not_args() -> None:
-    """Currency sent to Stripe equals the configured currency_code, not any arg value (INT-07).
+    """WR-01: currency is NOT passed in refund params for charge-based refunds (INT-07 / WR-01).
 
-    The IssueRefundInput schema has no currency field, but even if a stray value were present,
-    the adapter MUST only use self._currency_code from __init__. This test uses 'ZAR' to
-    prove it's independent of order_id, reason, or any other arg value.
+    Stripe derives the refund currency from the original charge — passing a 'currency' field
+    returns 400 "unknown parameter: currency". The adapter correctly omits currency from
+    the refund payload.
+
+    INT-07 is still enforced: the IssueRefundInput schema has no currency field, so there
+    is no path for user-controlled currency to reach the Stripe API. The adapter stores
+    self._currency_code from config but correctly does NOT forward it for charge-based refunds.
     """
     from app.services.transactional.adapters.stripe_adapter import StripeAdapter
     from app.services.transactional.credential_service import CredentialHandle
     from app.services.transactional.schemas import IssueRefundInput
 
     handle = CredentialHandle(_raw=json.dumps({"api_key": "sk_test_zzz"}))
-    # Configured with ZAR (South African Rand) — deliberately non-default
+    # Configured with ZAR (South African Rand) — deliberately non-default to show
+    # self._currency_code is NOT forwarded to the Stripe refund API
     adapter = StripeAdapter(handle=handle, currency_code="ZAR")
 
     args = IssueRefundInput(
@@ -129,12 +136,13 @@ async def test_currency_from_config_not_args() -> None:
 
         result = await adapter.issue_refund(args, agent_id="agent-002")
 
-    # Assert currency is 'zar' (lowercased from ZAR config), NOT any other value
+    # WR-01: 'currency' must NOT appear in refund params at all.
+    # Stripe returns 400 "unknown parameter: currency" for charge-based refunds.
     call_params = mock_client.v1.refunds.create.call_args
     assert call_params is not None
     params_dict = call_params[0][0]  # first positional arg (params dict)
-    assert params_dict["currency"] == "zar", (
-        f"Expected 'zar' from config, got {params_dict['currency']!r} — INT-07 violation"
+    assert "currency" not in params_dict, (
+        f"WR-01: 'currency' must NOT be in refund params; got params: {params_dict!r}"
     )
     assert result.refund_id == "re_zar_001"
 
