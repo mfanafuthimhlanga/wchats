@@ -168,7 +168,28 @@ Plans:
 2. Each of Shopify / WooCommerce / Stripe / Calendly performs its real action behind the typed tool contract
 3. Single-currency per tenant is enforced at deploy time
 
-**Plans:** 0 — run `/gsd-plan-phase 16`
+**Plans:** 7 plans (planned 2026-06-30; SDK-direct adapters per ADR-0002; execution waves 1–4 by dependency; package-legitimacy + live Stripe gates are autonomous:false). All INT-01..INT-07 covered.
+
+Plans:
+
+**ROADMAP Wave 1 — Credential substrate + SDK provisioning** *(INT-01, INT-02; INT-03/04/05 prerequisite)*
+
+- [ ] 16-01-PLAN.md — (exec wave 1) integration_credentials tenant migration 0007 + PLATFORM_CREDENTIAL_KEY + HKDF per-tenant Fernet + CredentialHandle + _fetch_credential_config + _tenant_id_var ContextVar (Open Q1) — INT-01, INT-02
+- [ ] 16-02-PLAN.md — (exec wave 1, autonomous:false) provider SDK legitimacy checkpoint + pin stripe/ShopifyAPI/WooCommerce (or httpx OAuth1 fallback) + install smoke — INT-03, INT-04, INT-05 (prereq)
+
+**ROADMAP Wave 2 — Provider adapters** *(depends on substrate + SDKs)*
+
+- [ ] 16-03-PLAN.md — (exec wave 2) StripeAdapter: refund + subscription + Checkout place_order; native Idempotency-Key; currency from config — INT-05, INT-07
+- [ ] 16-04-PLAN.md — (exec wave 2) ShopifyAdapter: place/cancel order + refund via Admin GraphQL mutations — INT-03
+- [ ] 16-05-PLAN.md — (exec wave 2) WooCommerceAdapter (wc/v3, HTTPS-only) + CalendlyAdapter (async httpx, config_data event_type mapping, Open Q2) — INT-04, INT-06
+
+**ROADMAP Wave 3 — Credential resolution + dispatcher wiring** *(depends on all adapters)*
+
+- [ ] 16-06-PLAN.md — (exec wave 3) get_adapter_for_skill (decrypt + dispatch by provider_type) + tools.py step-6 change + dispatch unit test + env-gated e2e — INT-02
+
+**ROADMAP Wave 4 — Deploy-time provisioning + live proof** *(depends on wiring)*
+
+- [ ] 16-07-PLAN.md — (exec wave 4, autonomous:false) deploy-time provisioning script + single-currency guard + operator runbook (Open Q3) + live Stripe test-mode refund gate — INT-07, INT-05
 
 ### Phase 17: Customer identity verification — email/SMS OTP, per-skill, server-enforced
 
