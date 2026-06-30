@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; Phase 15 (Actor validator) EXECUTED — ACT-04/05 + injection live-verified, ACT-06 latency deferred to prod; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
-stopped_at: "Phase 16 Plan 01 executed 2026-06-30. Credential substrate complete: migration 0007 (integration_credentials tenant table), PLATFORM_CREDENTIAL_KEY setting, _tenant_id_var ContextVar wired in build_tool_server, credential_service.py (HKDF derive + CredentialHandle + _fetch_credential_config), adapters/__init__.py, 4 Wave-0 tests green. Next: /gsd-execute-phase 16 (plan 16-02 — Stripe adapter, INT-05)"
-last_updated: "2026-06-30T16:05:57.277Z"
+stopped_at: "Phase 16 Plan 02 executed 2026-06-30. Provider SDK supply-chain gate (T-16-SC) cleared: stripe==15.3.0 + ShopifyAPI==12.7.0 pinned; WooCommerce PyPI rejected (stale) — Plan 16-05 uses httpx + requests-oauthlib OAuth1. Import smoke OK (15.3.0). Next: /gsd-execute-phase 16 (plan 16-03 — Stripe adapter)"
+last_updated: "2026-06-30T16:46:21.920Z"
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 18
-  completed_plans: 12
+  completed_plans: 13
   percent: 33
 ---
 
@@ -69,6 +69,9 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Key Decisions
 
+- [16-02] WooCommerce PyPI package REJECTED (5-year stale, last released 2021) — Plan 16-05 WooCommerce adapter uses httpx + requests-oauthlib OAuth1 signing
+- [16-02] stripe==15.3.0 pinned (exact) — enables thread-safe StripeClient(api_key) multi-tenant pattern; ShopifyAPI==12.7.0 official SDK (Nov 2024)
+- [16-02] requests-oauthlib>=2.0 added as WooCommerce OAuth1-fallback dependency; httpx already a core dep (0.28.1)
 - [16-01] HKDF salt is tenant_id UUID string — per-tenant key uniqueness from shared PLATFORM_CREDENTIAL_KEY master key (INT-01)
 - [16-01] _tenant_id_var ContextVar supplies HKDF salt to credential_service — never passed as Celery task arg (T-16-06, CLAUDE.md rule 4)
 - [16-01] CredentialHandle frozen dataclass with redacted __repr__/__str__ — proven non-leaking by test_handle_repr_redacted (T-16-01)
@@ -304,6 +307,6 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Session
 
-**Last session:** 2026-06-30T16:05:57.243Z
+**Last session:** 2026-06-30T16:46:21.836Z
 **Stopped at:** Completed 14-02-PLAN.md — typed tool contract complete (50 tests passing)
 **Resume file:** None

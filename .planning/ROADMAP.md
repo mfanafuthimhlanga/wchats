@@ -168,14 +168,14 @@ Plans:
 2. Each of Shopify / WooCommerce / Stripe / Calendly performs its real action behind the typed tool contract
 3. Single-currency per tenant is enforced at deploy time
 
-**Plans:** 1/7 plans executed
+**Plans:** 2/7 plans executed
 
 Plans:
 
 **ROADMAP Wave 1 — Credential substrate + SDK provisioning** *(INT-01, INT-02; INT-03/04/05 prerequisite)*
 
 - [x] 16-01-PLAN.md — (exec wave 1) integration_credentials tenant migration 0007 + PLATFORM_CREDENTIAL_KEY + HKDF per-tenant Fernet + CredentialHandle + _fetch_credential_config + _tenant_id_var ContextVar (Open Q1) — INT-01, INT-02
-- [ ] 16-02-PLAN.md — (exec wave 1, autonomous:false) provider SDK legitimacy checkpoint + pin stripe/ShopifyAPI/WooCommerce (or httpx OAuth1 fallback) + install smoke — INT-03, INT-04, INT-05 (prereq)
+- [x] 16-02-PLAN.md — (exec wave 1, autonomous:false) provider SDK legitimacy checkpoint + pin stripe/ShopifyAPI/WooCommerce (or httpx OAuth1 fallback) + install smoke — INT-03, INT-04, INT-05 (prereq)
 
 **ROADMAP Wave 2 — Provider adapters** *(depends on substrate + SDKs)*
 
