@@ -324,7 +324,7 @@ async def finalize_idempotency(
             db.execute(
                 sa_text(
                     "UPDATE tool_idempotency_keys "
-                    "SET result = :r::jsonb, status = 'completed' "
+                    "SET result = CAST(:r AS JSONB), status = 'completed' "
                     "WHERE agent_id = :a AND skill = :s "
                     "  AND idempotency_key = :k "
                     "  AND status = 'pending'"
@@ -474,7 +474,7 @@ async def store_idempotency(
                 sa_text(
                     "INSERT INTO tool_idempotency_keys "
                     "(agent_id, skill, idempotency_key, result) "
-                    "VALUES (:a, :s, :k, :r::jsonb) "
+                    "VALUES (:a, :s, :k, CAST(:r AS JSONB)) "
                     "ON CONFLICT (agent_id, skill, idempotency_key) DO NOTHING"
                 ),
                 {
