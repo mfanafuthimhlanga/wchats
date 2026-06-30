@@ -38,6 +38,14 @@ dependencies = [
     "pyrit>=0.6.0",
     # P13-02: Bedrock embeddings — AWS first-party SDK (boto3 approved in research Package Legitimacy Audit)
     "boto3>=1.34,<2.0",
+    # P16-02: Provider SDKs — supply-chain gate cleared (human checkpoint T-16-SC approved)
+    # stripe 15.3.0: official Stripe SDK (github.com/stripe/stripe-python), enables thread-safe StripeClient pattern
+    "stripe==15.3.0",
+    # ShopifyAPI 12.7.0: official Shopify SDK (github.com/Shopify/shopify_python_api), last release Nov 2024
+    "ShopifyAPI==12.7.0",
+    # requests-oauthlib>=2.0: WooCommerce OAuth1 fallback (WooCommerce PyPI package rejected — 5-year stale)
+    # Plan 16-05 WooCommerce adapter uses httpx + requests-oauthlib OAuth1 signing
+    "requests-oauthlib>=2.0",
 ]
 
 [project.optional-dependencies]
