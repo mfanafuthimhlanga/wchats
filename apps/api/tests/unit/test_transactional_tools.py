@@ -1669,3 +1669,389 @@ class TestAgentPyAllowedTools:
             assert tool_name in source, (
                 f"agent.py allowed_tools missing retained tool: {tool_name!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Phase-15-02 helper
+# ---------------------------------------------------------------------------
+
+
+def _mock_gate_require_human(rationale: str = "needs human approval") -> AsyncMock:
+    """call_actor_gate that always returns require_human."""
+    return AsyncMock(return_value=("require_human", rationale))
+
+
+# ===========================================================================
+# Actor require_human verdict — reservation released, pending_confirmations row
+# written, NON-error response, adapter NOT called (ACT-04)
+# ===========================================================================
+
+
+class TestActorRequireHuman:
+    """require_human path: release reservation, write PendingConfirmation row,
+    write one audit row, return NON-error response, adapter NOT called."""
+
+    def _run(
+        self,
+        db_cm,
+        session,
+        gate_mock,
+        release_mock,
+        audit_mock,
+        adapter_mock,
+        idem_key: str = "idem-rh-001",
+    ):
+        _set_context()
+        get_adapter_mock = MagicMock(return_value=adapter_mock)
+        with (
+            _p("check_capability_access", _mock_access_pass()),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("release_idempotency", release_mock),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", gate_mock),
+            patch(f"{_T}.write_audit_row", audit_mock),
+            patch(f"{_T}.get_sync_db", db_cm),
+            patch(f"{_T}.get_adapter", get_adapter_mock),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            result = asyncio.run(place_order_tool.handler(_valid_place_order_args(idem_key)))
+        return result, get_adapter_mock
+
+    def test_require_human_returns_no_is_error(self):
+        """NON-error awaiting-approval response: no is_error key in the return dict."""
+        db_cm, session = _mock_db_session()
+        result, _ = self._run(
+            db_cm,
+            session,
+            _mock_gate_require_human(),
+            _mock_release(),
+            AsyncMock(),
+            _mock_adapter(),
+        )
+        assert result.get("is_error") is not True, (
+            f"require_human must return a NON-error response; got is_error={result.get('is_error')}"
+        )
+        assert "content" in result
+
+    def test_require_human_response_mentions_confirmation(self):
+        """Response text must reference a confirmation ID."""
+        db_cm, session = _mock_db_session()
+        result, _ = self._run(
+            db_cm,
+            session,
+            _mock_gate_require_human(),
+            _mock_release(),
+            AsyncMock(),
+            _mock_adapter(),
+            idem_key="idem-rh-msg",
+        )
+        text = result["content"][0]["text"]
+        assert "confirmation" in text.lower(), (
+            f"require_human response must mention confirmation; got: {text!r}"
+        )
+
+    def test_require_human_releases_reservation(self):
+        """Pitfall 4: reservation is released before any pending_confirmations write."""
+        _set_context()
+        db_cm, session = _mock_db_session()
+        release_mock = _mock_release()
+
+        with (
+            _p("check_capability_access", _mock_access_pass()),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("release_idempotency", release_mock),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", _mock_gate_require_human()),
+            patch(f"{_T}.write_audit_row", AsyncMock()),
+            patch(f"{_T}.get_sync_db", db_cm),
+            patch(f"{_T}.get_adapter", MagicMock(return_value=_mock_adapter())),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            asyncio.run(place_order_tool.handler(_valid_place_order_args("idem-rh-002")))
+
+        release_mock.assert_called_once()
+
+    def test_require_human_writes_pending_confirmations_row(self):
+        """db.add called with a PendingConfirmation instance and db.commit called."""
+        _set_context()
+        db_cm, session = _mock_db_session()
+
+        with (
+            _p("check_capability_access", _mock_access_pass()),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("release_idempotency", _mock_release()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", _mock_gate_require_human()),
+            patch(f"{_T}.write_audit_row", AsyncMock()),
+            patch(f"{_T}.get_sync_db", db_cm),
+            patch(f"{_T}.get_adapter", MagicMock(return_value=_mock_adapter())),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            asyncio.run(place_order_tool.handler(_valid_place_order_args("idem-rh-003")))
+
+        session.add.assert_called_once()
+        session.commit.assert_called_once()
+        # Verify added object is a PendingConfirmation
+        from app.models.pending_confirmation import PendingConfirmation as PC  # noqa: PLC0415
+
+        added_obj = session.add.call_args[0][0]
+        assert isinstance(added_obj, PC), f"Expected PendingConfirmation, got {type(added_obj)}"
+
+    def test_require_human_writes_audit_row_with_actor_require_human_error(self):
+        """AUD-01 symmetry: one audit row with error='actor_require_human'."""
+        _set_context()
+        db_cm, session = _mock_db_session()
+        audit_mock = AsyncMock()
+
+        with (
+            _p("check_capability_access", _mock_access_pass()),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("release_idempotency", _mock_release()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", _mock_gate_require_human("needs approval")),
+            patch(f"{_T}.write_audit_row", audit_mock),
+            patch(f"{_T}.get_sync_db", db_cm),
+            patch(f"{_T}.get_adapter", MagicMock(return_value=_mock_adapter())),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            asyncio.run(place_order_tool.handler(_valid_place_order_args("idem-rh-004")))
+
+        assert audit_mock.call_count == 1, (
+            f"Expected exactly 1 audit row on require_human, got {audit_mock.call_count}"
+        )
+        call_kwargs = audit_mock.call_args.kwargs
+        assert call_kwargs.get("error") == "actor_require_human", (
+            f"Expected error='actor_require_human', got {call_kwargs.get('error')!r}"
+        )
+        assert call_kwargs.get("actor_decision") == "require_human", (
+            f"Expected actor_decision='require_human', got {call_kwargs.get('actor_decision')!r}"
+        )
+
+    def test_require_human_adapter_not_called(self):
+        """T-15-02: adapter must NOT execute when verdict is require_human."""
+        _set_context()
+        db_cm, session = _mock_db_session()
+        adapter_mock = _mock_adapter()
+        get_adapter_mock = MagicMock(return_value=adapter_mock)
+
+        with (
+            _p("check_capability_access", _mock_access_pass()),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("release_idempotency", _mock_release()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", _mock_gate_require_human()),
+            patch(f"{_T}.write_audit_row", AsyncMock()),
+            patch(f"{_T}.get_sync_db", db_cm),
+            patch(f"{_T}.get_adapter", get_adapter_mock),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            asyncio.run(place_order_tool.handler(_valid_place_order_args("idem-rh-005")))
+
+        get_adapter_mock.assert_not_called()
+        adapter_mock.place_order.assert_not_called()
+
+    def test_require_human_integrity_error_dedup_silent_rollback(self):
+        """uq_pending_confirmations_unresolved race: IntegrityError → rollback silently,
+        response is still NON-error (silent dedup — mirrors confirm_action_tool)."""
+        _set_context()
+        db_cm, session = _mock_db_session()
+        # Simulate the unique index rejecting a duplicate INSERT
+        session.commit.side_effect = IntegrityError("INSERT ...", {}, Exception("dup"))
+        audit_mock = AsyncMock()
+
+        with (
+            _p("check_capability_access", _mock_access_pass()),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("release_idempotency", _mock_release()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", _mock_gate_require_human()),
+            patch(f"{_T}.write_audit_row", audit_mock),
+            patch(f"{_T}.get_sync_db", db_cm),
+            patch(f"{_T}.get_adapter", MagicMock(return_value=_mock_adapter())),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            result = asyncio.run(place_order_tool.handler(_valid_place_order_args("idem-rh-006")))
+
+        # rollback called on IntegrityError
+        session.rollback.assert_called_once()
+        # Response is still NON-error (approver can still resolve the existing pending row)
+        assert result.get("is_error") is not True, (
+            f"IntegrityError dedup must return non-error response; got: {result}"
+        )
+        # audit row still written after the dedup path
+        assert audit_mock.call_count == 1, (
+            f"Expected 1 audit row even on IntegrityError dedup, got {audit_mock.call_count}"
+        )
+
+
+# ===========================================================================
+# ACT-02 — mutating-only gating: confirm_action (mutating=False) does NOT
+# call call_actor_gate; mutating tools DO (negative + positive assertion)
+# ===========================================================================
+
+
+class TestActorMutatingGating:
+    """ACT-02: Actor gate fires ONLY for mutating tools.
+
+    confirm_action_tool (mutating=False) has its own code path and NEVER invokes
+    call_actor_gate. A mutating tool (e.g. place_order) always does.
+    """
+
+    def test_confirm_action_does_not_call_actor_gate(self):
+        """confirm_action_tool (mutating=False) must NOT invoke call_actor_gate (ACT-02 SC1)."""
+        _set_context()
+        db_cm, session = _mock_db_session()
+        gate_mock = AsyncMock(return_value=("approve", ""))
+        access_mock = _mock_access_pass({"enabled": True, "skill": "place_order"})
+
+        with (
+            _p("check_capability_access", access_mock),
+            patch(f"{_T}.call_actor_gate", gate_mock),
+            patch(f"{_T}.get_sync_db", db_cm),
+        ):
+            from app.services.transactional.tools import confirm_action_tool
+
+            asyncio.run(
+                confirm_action_tool.handler(
+                    {"skill": "place_order", "action_reference": "idem-gate-001"}
+                )
+            )
+
+        assert not gate_mock.called, (
+            "confirm_action_tool (mutating=False) must NEVER call call_actor_gate"
+        )
+
+    def test_mutating_tool_calls_actor_gate(self):
+        """A mutating tool (place_order) MUST await call_actor_gate (ACT-02 positive)."""
+        _set_context()
+        db_cm, session = _mock_db_session()
+        gate_mock = _mock_gate_approve()
+        adapter_mock = _mock_adapter()
+
+        with (
+            _p("check_capability_access", _mock_access_pass()),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("finalize_idempotency", _mock_finalize()),
+            _p("release_idempotency", _mock_release()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", gate_mock),
+            patch(f"{_T}.write_audit_row", AsyncMock()),
+            patch(f"{_T}.get_sync_db", db_cm),
+            patch(f"{_T}.get_adapter", MagicMock(return_value=adapter_mock)),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            asyncio.run(place_order_tool.handler(_valid_place_order_args("idem-mut-001")))
+
+        gate_mock.assert_called_once()
+
+
+# ===========================================================================
+# ACT-05 — Four-node structural assertion: Actor synchronous pre-mutation,
+# Gatekeeper/Auditor/Strategist async post-response (agent.py unchanged)
+# ===========================================================================
+
+
+class TestFourNodeStructuralAssertion:
+    """ACT-05: Structural proof that the four-node validation chain is wired correctly.
+
+    Node 1 (synchronous pre-mutation): call_actor_gate awaited inside
+        _execute_transactional_tool, before get_adapter is called.
+    Nodes 2-4 (async post-response): celery_chain(run_gatekeeper,
+        run_auditor, run_strategist).apply_async(queue="runtime") in agent.py,
+        dispatched AFTER the response is emitted — agent.py UNCHANGED.
+    """
+
+    def _agent_src(self) -> str:
+        agent_path = os.path.normpath(
+            os.path.join(
+                os.path.dirname(__file__),
+                "../../app/worker/tasks/runtime/agent.py",
+            )
+        )
+        assert os.path.isfile(agent_path), f"agent.py not found at {agent_path}"
+        with open(agent_path, encoding="utf-8") as f:
+            return f.read()
+
+    def _tools_src(self) -> str:
+        tools_path = os.path.normpath(
+            os.path.join(
+                os.path.dirname(__file__),
+                "../../app/services/transactional/tools.py",
+            )
+        )
+        assert os.path.isfile(tools_path), f"tools.py not found at {tools_path}"
+        with open(tools_path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_agent_py_celery_chain_dispatch_unchanged(self):
+        """Nodes 2-4 still dispatched via celery_chain in agent.py (ACT-05)."""
+        src = self._agent_src()
+        assert "celery_chain(" in src, "agent.py must contain celery_chain("
+        assert "run_gatekeeper" in src, "agent.py must reference run_gatekeeper"
+        assert "run_auditor" in src, "agent.py must reference run_auditor"
+        assert "run_strategist" in src, "agent.py must reference run_strategist"
+        assert '.apply_async(queue="runtime")' in src, (
+            'agent.py must dispatch chain via .apply_async(queue="runtime")'
+        )
+
+    def test_agent_py_celery_chain_uses_si_chaining(self):
+        """Validators chained via .si() signature immutability (ACT-05)."""
+        src = self._agent_src()
+        assert "run_gatekeeper.si(" in src, "run_gatekeeper must use .si() for celery chain"
+        assert "run_auditor.si(" in src, "run_auditor must use .si() for celery chain"
+        assert "run_strategist.si(" in src, "run_strategist must use .si() for celery chain"
+
+    def test_actor_gate_called_before_get_adapter_in_dispatcher(self):
+        """Node 1 (Actor) is synchronous and runs before get_adapter (step 6).
+
+        Structural proof: in the source of _execute_transactional_tool, the
+        call_actor_gate call site appears before the get_adapter call site.
+        """
+        src = self._tools_src()
+        dispatcher_start = src.index("async def _execute_transactional_tool(")
+        # 14 000-char slice covers the full dispatcher body (steps 1-7 + require_human branch)
+        dispatcher_body = src[dispatcher_start : dispatcher_start + 14000]
+
+        call_actor_pos = dispatcher_body.index("call_actor_gate(")
+        get_adapter_pos = dispatcher_body.index("get_adapter(")
+
+        assert call_actor_pos < get_adapter_pos, (
+            f"call_actor_gate ({call_actor_pos}) must appear before get_adapter ({get_adapter_pos})"
+            " in _execute_transactional_tool source (Actor is synchronous pre-mutation node 1)"
+        )
+
+    def test_tools_py_contains_require_human_branch(self):
+        """Structural: require_human branch present between block branch and adapter step."""
+        src = self._tools_src()
+        assert 'elif decision == "require_human":' in src, (
+            'tools.py must contain elif decision == "require_human": branch'
+        )
+        assert 'error="actor_require_human"' in src, (
+            'require_human branch must write audit row with error="actor_require_human"'
+        )
+
+    def test_tools_py_conn_str_var_lazy_import_only(self):
+        """_conn_str_var import must NOT appear at module level (Pitfall 2 circular import)."""
+        src = self._tools_src()
+        # Find all lines with _conn_str_var
+        for lineno, line in enumerate(src.splitlines(), 1):
+            if "_conn_str_var" in line and "import" in line:
+                # Must be inside the function body — the import line must be indented
+                assert line.startswith("    "), (
+                    f"_conn_str_var import at line {lineno} is NOT indented (module-level import "
+                    "would cause circular import — Pitfall 2 from 15-RESEARCH.md)"
+                )
