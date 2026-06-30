@@ -239,6 +239,7 @@ def test_actor_total_added_latency_within_budget():
         mock_adapter.place_order = AsyncMock(
             return_value=PlaceOrderOutput(
                 order_id="LATENCY-STUB-ORDER-001",
+                status="placed",
                 message="[LATENCY-STUB] Order placed.",
             )
         )

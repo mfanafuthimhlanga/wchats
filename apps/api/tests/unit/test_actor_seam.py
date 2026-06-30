@@ -370,11 +370,13 @@ class TestHistoryFallback:
 
 
 class TestLangfuseLogging:
-    """ACT-06: Langfuse v4 start_as_current_generation + create_score + flush called."""
+    """ACT-06: Langfuse v4 start_as_current_generation + create_score logged; NO per-call flush."""
 
     def test_langfuse_logged_on_haiku_call(self):
-        """On an approve verdict, start_as_current_generation is called exactly once
-        and create_score + flush are each called once."""
+        """On an approve verdict, start_as_current_generation and create_score are each
+        called exactly once; flush is NOT called on the request path (ACT-06 — the Actor
+        is synchronous pre-mutation, so a per-call flush would add a Langfuse network
+        round-trip to every mutating call; the SDK background-flushes instead)."""
         approve_block = _make_tool_use_block("approve", "Aligned with intent.")
         api_mock = MagicMock(return_value=_make_api_response(approve_block))
 
@@ -405,14 +407,17 @@ class TestLangfuseLogging:
         assert call_kwargs.get("name") == "actor-gate"
         assert "verdict" in call_kwargs.get("output", {})
 
-        # create_score and flush each called once
+        # create_score called once
         langfuse_mock.create_score.assert_called_once()
         score_kwargs = langfuse_mock.create_score.call_args.kwargs
         assert score_kwargs.get("name") == "actor_decision"
         assert score_kwargs.get("data_type") == "CATEGORICAL"
         assert score_kwargs.get("trace_id") == _CONV_ID
 
-        langfuse_mock.flush.assert_called_once()
+        # ACT-06: flush() must NOT be called on the request path — the Actor runs
+        # synchronously pre-mutation; a per-call flush adds a Langfuse network round-trip
+        # to every mutating call. The SDK's background flusher + atexit deliver the data.
+        langfuse_mock.flush.assert_not_called()
 
     def test_langfuse_failure_does_not_block_gate(self):
         """If Langfuse raises during logging, the gate still returns the correct verdict."""

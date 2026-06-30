@@ -290,7 +290,12 @@ async def call_actor_gate(
                 trace_id=conversation_id,
                 data_type="CATEGORICAL",
             )
-            _langfuse.flush()
+            # ACT-06: do NOT flush() on the request path. The Actor runs synchronously
+            # pre-mutation, so a blocking per-call flush adds a Langfuse network round-trip
+            # to every mutating call (measured ~30s/call against a remote Langfuse host).
+            # The SDK's background flusher + atexit deliver the span/score from the
+            # long-lived worker. (The async judges in validation_service.py can afford a
+            # per-call flush because they run post-response, off the latency budget.)
         except Exception as exc:  # noqa: BLE001
             log.warning("langfuse.actor_log_failed", error=str(exc))
 
