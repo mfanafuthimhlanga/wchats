@@ -131,6 +131,17 @@ class CalendlyAdapter(ProviderAdapter):
         # Extract event_types mapping from config_data (Open Question 2 resolution)
         # Resolves service_type (human label) → Calendly event_type URI at call time
         self._event_types: dict = (config_data or {}).get("event_types", {})
+        # WR-06: validate that event_types is a dict, not a list.
+        # A list raises AttributeError: 'list' object has no attribute 'get' at call time,
+        # which escapes the ProviderNotConfiguredError handler. Raising ValueError here
+        # at construction time gives a clear error message and can be caught early.
+        if not isinstance(self._event_types, dict):
+            raise ValueError(
+                f"CalendlyAdapter: config_data['event_types'] must be a dict "
+                f"({{label: uri}}), got {type(self._event_types).__name__!r}. "
+                f"Provision with --config-json '{{\"event_types\": {{\"consultation\": "
+                f"\"https://api.calendly.com/event_types/<UUID>\"}}}}'"
+            )
 
     # -----------------------------------------------------------------------
     # book_slot — POST /invitees (Calendly Scheduling API)

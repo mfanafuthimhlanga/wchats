@@ -196,6 +196,29 @@ async def test_unknown_service_type_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
+# test_event_types_must_be_dict (WR-06)
+# ---------------------------------------------------------------------------
+
+
+def test_event_types_must_be_dict() -> None:
+    """WR-06: CalendlyAdapter raises ValueError if event_types is a list (not a dict).
+
+    The provisioning script docstring previously showed event_types as a list
+    (["uuid-1", "uuid-2"]) which would cause AttributeError at runtime when
+    book_slot calls self._event_types.get(service_type). The adapter now validates
+    the type at construction time so operators get a clear error at provision time,
+    not a silent AttributeError at runtime.
+    """
+    from app.services.transactional.adapters.calendly_adapter import CalendlyAdapter
+
+    with pytest.raises(ValueError, match="event_types"):
+        CalendlyAdapter(
+            handle=_make_handle(),
+            config_data={"event_types": ["uuid-1", "uuid-2"]},  # wrong type — must be dict
+        )
+
+
+# ---------------------------------------------------------------------------
 # test_unsupported_methods_raise — NotImplementedError stubs
 # ---------------------------------------------------------------------------
 

@@ -45,7 +45,10 @@ Usage examples:
       --credential-file /secure/calendly_creds.json \\
       --currency-code usd \\
       --enabled-skills book_slot \\
-      --config-json '{"event_types": ["uuid-1", "uuid-2"]}'
+      --config-json '{"event_types": {"consultation": "https://api.calendly.com/event_types/<UUID>", "demo": "https://api.calendly.com/event_types/<UUID2>"}}'
+  # NOTE: event_types MUST be a dict mapping service_type labels to Calendly event URIs,
+  #       NOT a list of UUIDs. CalendlyAdapter calls event_types.get(service_type) at
+  #       runtime — a list raises AttributeError: 'list' object has no attribute 'get'.
 
 Environment variables (required):
   PLATFORM_CREDENTIAL_KEY   URL-safe base64-encoded 32-byte master key (same key used
@@ -212,7 +215,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "Stripe: {} (no extra config needed for basic use). "
             "Shopify: {\"shop_url\": \"https://...\", \"api_version\": \"2025-04\"}. "
             "WooCommerce: {\"site_url\": \"https://...\"}. "
-            "Calendly: {\"event_types\": [\"uuid-1\", ...]}. "
+            "Calendly: {\"event_types\": {\"consultation\": \"https://api.calendly.com/event_types/<UUID>\", ...}} "
+            "(event_types MUST be a dict of {label: event_type_uri}, NOT a list — CalendlyAdapter calls .get()). "
             "Default: '{}'."
         ),
     )
