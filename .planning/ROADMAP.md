@@ -136,7 +136,12 @@ Plans:
 3. Low-value actions under the per-tenant skip threshold short-circuit the Actor (cost control)
 4. Gatekeeper/Auditor/Strategist still run async post-response; Actor p95 < 1s, total added latency on a mutating call < 1.5s
 
-**Plans:** 0 — run `/gsd-plan-phase 15`
+**Plans:** 3 plans
+
+Plans:
+- [ ] 15-01-PLAN.md — Settings skip-threshold + Actor seam body (forced-tool-use Haiku judge, history fetch, Langfuse v4) + unit tests [ACT-01, ACT-02, ACT-03, ACT-06]
+- [ ] 15-02-PLAN.md — require_human dispatcher branch + conn_str wiring + four-node structural test [ACT-02, ACT-04, ACT-05]
+- [ ] 15-03-PLAN.md — Live integration: require_human/four-node control-DB e2e + Actor p95 latency (autonomous: false) [ACT-04, ACT-05, ACT-06]
 
 ### Phase 16: Integration adapters + platform credential service (L5 extension) — Shopify, WooCommerce, Stripe, Calendly with encrypted, server-held credentials
 
