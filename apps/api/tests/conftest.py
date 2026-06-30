@@ -35,6 +35,11 @@ os.environ.setdefault(
     "NEON_ENCRYPTION_KEY",
     base64.urlsafe_b64encode(os.urandom(32)).decode(),
 )
+# INT-01: Platform master key for HKDF per-tenant credential derivation (required, no default)
+os.environ.setdefault(
+    "PLATFORM_CREDENTIAL_KEY",
+    base64.urlsafe_b64encode(os.urandom(32)).decode(),
+)
 os.environ.setdefault(
     "CONTROL_DB_URL",
     "postgresql+asyncpg://test:test@localhost:5432/test_wchats",
