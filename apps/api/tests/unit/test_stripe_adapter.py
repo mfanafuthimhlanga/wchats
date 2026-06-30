@@ -337,7 +337,6 @@ async def test_unsupported_methods_raise() -> None:
     )
     ucr_args = UpdateCustomerRecordInput(
         idempotency_key="idem-ucr",
-        customer_id="cus_test",
         field_name="email",
         new_value="newemail@example.com",
     )
