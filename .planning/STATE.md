@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; Phase 15 (Actor validator) EXECUTED — ACT-04/05 + injection live-verified, ACT-06 latency deferred to prod; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
-stopped_at: Phase 15 executed 2026-06-30 (3/3 plans). ACT-04/ACT-05/T-15-01/T-15-02 proven LIVE against Neon (control DB migrated 0011->0016 head); ACT-06 p95<1s NOT met locally (4.66s, env-bound) -> deferred to prod re-measure. Found+fixed 2 bugs: per-call Langfuse flush on Actor sync path (967c3f4) + Phase-14 :r::jsonb idempotency SQL crash on real DB (ec88d79). Next: /gsd-verify-work 15 (ACT-06 prod latency) or /gsd-secure-phase 15
-last_updated: "2026-06-30T11:30:00.000Z"
+stopped_at: "Phase 15 executed 2026-06-30 (3/3 plans). ACT-04/ACT-05/T-15-01/T-15-02 proven LIVE against Neon (control DB migrated 0011->0016 head); ACT-06 p95<1s NOT met locally (4.66s, env-bound) -> deferred to prod re-measure. Found+fixed 2 bugs: per-call Langfuse flush on Actor sync path (967c3f4) + Phase-14 :r::jsonb idempotency SQL crash on real DB (ec88d79). Next: /gsd-verify-work 15 (ACT-06 prod latency) or /gsd-secure-phase 15"
+last_updated: "2026-06-30T14:03:20.054Z"
 progress:
   total_phases: 6
   completed_phases: 1
