@@ -27,9 +27,12 @@ AUD-01 symmetry:
 confirm_action_tool (mutating=False, WR-05 closed):
   Gated behind check_capability_access + IN-03 agent_id guard before writing a
   pending_confirmations row. Takes NO idempotency key, calls NO provider adapter.
-  Minimal dedup: duplicate calls for the same (agent_id, skill, action_reference) in the
-  same TTL window silently overwrite (row-level upsert added in Task 3). Phase-18 will
-  extend resolution logic. PRD DDL unchanged.
+  Minimal dedup (T-14-08-05): the partial unique index
+  uq_pending_confirmations_unresolved (migration 0016) bounds OUTSTANDING
+  confirmations to one per (agent_id, skill, action_reference). A duplicate
+  confirm_action loses the unique-index race; the resulting IntegrityError is
+  caught and the existing pending row is returned instead of inserting a duplicate.
+  Phase-18 will extend resolution logic. PRD DDL unchanged.
 
 Circular import note:
   tools.py imports _agent_id_var / _conversation_id_var from agent_tools via a lazy
@@ -58,9 +61,9 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import structlog
-from pydantic import ValidationError
-
 from claude_agent_sdk import tool
+from pydantic import ValidationError
+from sqlalchemy.exc import IntegrityError
 
 from app.core.database import get_sync_db
 from app.models.pending_confirmation import PendingConfirmation
@@ -573,8 +576,13 @@ async def confirm_action_tool(args: dict) -> dict:
     IN-03 (closed): empty agent_id → precondition error before any capability check or
     DB write.
 
-    Duplicate-confirm dedup: minimal upsert on (agent_id, skill, action_reference) within
-    TTL window. Phase-18 will extend resolution logic.
+    Duplicate-confirm dedup (T-14-08-05 closed): the partial unique index
+    uq_pending_confirmations_unresolved (migration 0016) allows at most one
+    UNRESOLVED confirmation per (agent_id, skill, action_reference). The row is
+    inserted via the ORM; on the resulting IntegrityError the existing pending row
+    is returned instead of a duplicate, so an enabled agent cannot create unbounded
+    confirmation rows for the same action. Resolved rows (Phase-18) can be
+    re-requested because the index is scoped to resolved_at IS NULL.
     """
     try:
         validated = ConfirmActionInput(**args)
@@ -641,7 +649,46 @@ async def confirm_action_tool(args: dict) -> dict:
 
     with get_sync_db() as db:
         db.add(row)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            # T-14-08-05: a concurrent/duplicate confirm_action lost the
+            # uq_pending_confirmations_unresolved race. Do NOT insert a duplicate;
+            # return the existing unresolved confirmation so the caller still gets a
+            # coherent confirmation id without growing the table unbounded.
+            db.rollback()
+            existing = (
+                db.query(PendingConfirmation)
+                .filter(
+                    PendingConfirmation.agent_id == agent_id,
+                    PendingConfirmation.skill == validated.skill,
+                    PendingConfirmation.arguments["action_reference"].astext
+                    == validated.action_reference,
+                    PendingConfirmation.resolved_at.is_(None),
+                )
+                .order_by(PendingConfirmation.requested_at)
+                .first()
+            )
+            existing_id = existing.id if existing is not None else confirmation_id
+            log.info(
+                "confirm_action.duplicate_suppressed",
+                agent_id=agent_id,
+                skill=validated.skill,
+                confirmation_id=str(existing_id),
+                action_reference=validated.action_reference,
+            )
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            f"Confirmation request for '{validated.skill}' action "
+                            f"(reference: {validated.action_reference}) is already pending. "
+                            f"Awaiting human approval. Confirmation ID: {existing_id}."
+                        ),
+                    }
+                ]
+            }
 
     log.info(
         "confirm_action.pending_row_written",

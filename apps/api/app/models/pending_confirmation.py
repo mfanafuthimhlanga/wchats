@@ -42,4 +42,17 @@ class PendingConfirmation(Base):
 
     __table_args__ = (
         Index("pending_confirmations_agent_id_idx", "agent_id"),
+        # T-14-08-05: at most one UNRESOLVED confirmation per
+        # (agent_id, skill, action_reference). Mirrors migration 0016. The
+        # action_reference is stored inside the arguments JSONB, so the index is
+        # over the (arguments->>'action_reference') expression and is scoped to
+        # resolved_at IS NULL so resolved rows can be re-requested (Phase 18).
+        Index(
+            "uq_pending_confirmations_unresolved",
+            "agent_id",
+            "skill",
+            text("(arguments->>'action_reference')"),
+            unique=True,
+            postgresql_where=text("resolved_at IS NULL"),
+        ),
     )

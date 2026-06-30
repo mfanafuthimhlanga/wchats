@@ -37,6 +37,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 # ---------------------------------------------------------------------------
 # ContextVar setup — deferred import to avoid eagerly pulling in claude_agent_sdk
@@ -1438,6 +1439,56 @@ class TestConfirmActionTool:
         assert result.get("is_error") is True
         session.add.assert_not_called()
         access_mock.assert_not_called()
+
+    # --- T-14-08-05 dedup tests (partial unique index on unresolved rows) ---
+
+    def test_confirm_action_duplicate_returns_existing_pending_row(self):
+        """T-14-08-05: a unique-index conflict returns the existing pending row
+        instead of inserting a duplicate, and does not raise."""
+        _set_context()
+        db_cm, session = _mock_db_session()
+        access_mock = _mock_access_pass({"enabled": True, "skill": "place_order"})
+
+        # Simulate uq_pending_confirmations_unresolved rejecting the duplicate INSERT.
+        session.commit.side_effect = IntegrityError("INSERT ...", {}, Exception("dup"))
+        existing_row = MagicMock()
+        existing_row.id = "existing-pending-uuid"
+        (
+            session.query.return_value.filter.return_value.order_by.return_value.first
+        ).return_value = existing_row
+
+        with (
+            _p("check_capability_access", access_mock),
+            patch(f"{_T}.get_sync_db", db_cm),
+        ):
+            from app.services.transactional.tools import confirm_action_tool
+
+            result = asyncio.run(
+                confirm_action_tool.handler(
+                    {
+                        "skill": "place_order",
+                        "action_reference": "idem-001",
+                    }
+                )
+            )
+
+        assert result.get("is_error") is not True, f"duplicate confirm should not error: {result}"
+        session.rollback.assert_called_once()
+        body = result["content"][0]["text"]
+        assert "already pending" in body.lower()
+        assert "existing-pending-uuid" in body
+
+    def test_confirm_action_source_catches_integrity_error(self):
+        """T-14-08-05: confirm_action_tool must catch IntegrityError from the dedup index."""
+        impl_path = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), "../../app/services/transactional/tools.py")
+        )
+        with open(impl_path, encoding="utf-8") as f:
+            src = f.read()
+        confirm_seg = src[src.index("async def confirm_action_tool"):]
+        assert "IntegrityError" in confirm_seg, (
+            "confirm_action_tool must catch IntegrityError to dedupe duplicate confirmations"
+        )
 
 
 # ===========================================================================
