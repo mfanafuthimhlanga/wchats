@@ -127,14 +127,20 @@ class ShopifyAdapter(ProviderAdapter):
     async def issue_refund(self, args: IssueRefundInput, agent_id: str) -> IssueRefundOutput:
         """Issue a refund via Shopify Admin GraphQL refundCreate mutation.
 
+        Uses an amount-based refund via the RefundInput.transactions field.
+        This is the correct path for arbitrary-amount partial refunds — it creates
+        a REFUND transaction against the order's payment gateway for the requested
+        amount, rather than deriving the amount from line items.
+
         The session is activated inside the asyncio.to_thread closure and always
         cleared in a finally block (session-per-call pattern).
         Currency is self._currency_code — never from args (INT-07).
 
         Args:
             args.order_id: Shopify order GID (gid://shopify/Order/...) to refund against.
-            args.refund_amount_cents: Amount in cents to refund (informational; Shopify
-                                      derives amounts from refundLineItems).
+            args.refund_amount_cents: Amount in cents to refund. Converted to a decimal
+                                      string (e.g. 3500 → "35.00") for the transactions
+                                      field amount. Non-zero required for a real refund.
             args.reason: Reason for refund, forwarded as the note field.
 
         Returns:
@@ -148,12 +154,24 @@ class ShopifyAdapter(ProviderAdapter):
           }
         }
         """
+        # Convert cents to a decimal currency-major string (e.g. 3500 → "35.00")
+        # RefundInput.transactions.amount expects a currency-major string, not cents.
+        refund_amount_decimal = f"{args.refund_amount_cents / 100:.2f}"
         variables = {
             "input": {
                 "orderId": args.order_id,
                 "currency": self._currency_code,  # INT-07: from config, never args
-                "refundLineItems": [],
                 "note": args.reason,
+                # transactions-based refund: amount-based path for arbitrary partial refunds.
+                # An empty refundLineItems would create a $0 refund — always use transactions.
+                "transactions": [
+                    {
+                        "orderId": args.order_id,
+                        "kind": "REFUND",
+                        "gateway": "shopify_payments",
+                        "amount": refund_amount_decimal,
+                    }
+                ],
             }
         }
 

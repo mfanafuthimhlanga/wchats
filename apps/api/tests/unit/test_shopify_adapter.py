@@ -108,6 +108,28 @@ async def test_issue_refund_calls_refund_create() -> None:
         "variables must include currency_code"
     )
 
+    # CR-01 fix: amount-based refund via transactions, NOT empty refundLineItems.
+    # Empty refundLineItems would create a $0 refund (silent money failure).
+    input_vars = variables_kwarg.get("input", {})
+    assert "transactions" in input_vars, (
+        "variables.input must contain 'transactions' for amount-based refund (CR-01); "
+        "empty refundLineItems creates a $0 refund"
+    )
+    assert "refundLineItems" not in input_vars, (
+        "variables.input must NOT contain 'refundLineItems' — use transactions instead (CR-01)"
+    )
+    transactions = input_vars["transactions"]
+    assert len(transactions) == 1, (
+        f"Expected exactly 1 transaction entry; got {len(transactions)}"
+    )
+    assert transactions[0]["kind"] == "REFUND", (
+        f"Transaction kind must be 'REFUND'; got {transactions[0].get('kind')!r}"
+    )
+    # 3500 cents → "35.00"
+    assert transactions[0]["amount"] == "35.00", (
+        f"Transaction amount must be '35.00' for 3500 cents; got {transactions[0].get('amount')!r}"
+    )
+
     # Session hygiene: activate_session called, clear_session called
     mock_shopify.ShopifyResource.activate_session.assert_called_once()
     mock_shopify.ShopifyResource.clear_session.assert_called_once()
