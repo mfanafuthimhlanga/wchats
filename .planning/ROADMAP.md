@@ -168,7 +168,7 @@ Plans:
 2. Each of Shopify / WooCommerce / Stripe / Calendly performs its real action behind the typed tool contract
 3. Single-currency per tenant is enforced at deploy time
 
-**Plans:** 2/7 plans executed
+**Plans:** 4/7 plans executed
 
 Plans:
 
@@ -180,7 +180,7 @@ Plans:
 **ROADMAP Wave 2 — Provider adapters** *(depends on substrate + SDKs)*
 
 - [x] 16-03-PLAN.md — (exec wave 2) StripeAdapter: refund + subscription + Checkout place_order; native Idempotency-Key; currency from config — INT-05, INT-07
-- [ ] 16-04-PLAN.md — (exec wave 2) ShopifyAdapter: place/cancel order + refund via Admin GraphQL mutations — INT-03
+- [x] 16-04-PLAN.md — (exec wave 2) ShopifyAdapter: place/cancel order + refund via Admin GraphQL mutations — INT-03
 - [ ] 16-05-PLAN.md — (exec wave 2) WooCommerceAdapter (wc/v3, HTTPS-only) + CalendlyAdapter (async httpx, config_data event_type mapping, Open Q2) — INT-04, INT-06
 
 **ROADMAP Wave 3 — Credential resolution + dispatcher wiring** *(depends on all adapters)*

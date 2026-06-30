@@ -4,12 +4,12 @@ milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; Phase 15 (Actor validator) EXECUTED — ACT-04/05 + injection live-verified, ACT-06 latency deferred to prod; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
 stopped_at: "Phase 16 Plan 03 executed 2026-06-30. StripeAdapter implemented (INT-05/INT-07): issue_refund + update_subscription + place_order via stripe 15.3.0 StripeClient v1 namespace; idempotency_key forwarded via RequestOptions options dict; currency from config (INT-07); all 7 unit tests pass. Next: /gsd-execute-phase 16 (plan 16-04 — ShopifyAdapter)"
-last_updated: "2026-06-30T17:01:54Z"
+last_updated: "2026-06-30T17:23:00.286Z"
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 18
-  completed_plans: 14
+  completed_plans: 15
   percent: 33
 ---
 
@@ -311,6 +311,6 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Session
 
-**Last session:** 2026-06-30T16:46:21.836Z
+**Last session:** 2026-06-30T17:23:00.251Z
 **Stopped at:** Completed 14-02-PLAN.md — typed tool contract complete (50 tests passing)
 **Resume file:** None
