@@ -137,6 +137,14 @@ class Settings(BaseSettings):
     # Set AGENT_MAX_BUDGET_USD in .env to override (e.g. tighter in production).
     AGENT_MAX_BUDGET_USD: float = 0.50
 
+    # M15: Actor Validator skip threshold
+    # 500 = $5.00 — any skill whose envelope constraints.max_amount_cents ceiling is
+    # strictly below this value skips the Actor judge entirely (ACT-03 cost control).
+    # Rationale: a booking fee capped at $1.00 needs no Haiku security review;
+    # a purchase up to $50.00 should always be reviewed.
+    # Override via env var ACTOR_SKIP_MAX_AMOUNT_CENTS.
+    ACTOR_SKIP_MAX_AMOUNT_CENTS: int = 500
+
     def __repr__(self) -> str:  # T-01-01, T-01-02: never leak field values
         return f"Settings(LOG_LEVEL={self.LOG_LEVEL!r})"
 
