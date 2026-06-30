@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; Phase 15 (Actor validator) EXECUTED — ACT-04/05 + injection live-verified, ACT-06 latency deferred to prod; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
-stopped_at: "Phase 16 Plan 03 executed 2026-06-30. StripeAdapter implemented (INT-05/INT-07): issue_refund + update_subscription + place_order via stripe 15.3.0 StripeClient v1 namespace; idempotency_key forwarded via RequestOptions options dict; currency from config (INT-07); all 7 unit tests pass. Next: /gsd-execute-phase 16 (plan 16-04 — ShopifyAdapter)"
-last_updated: "2026-06-30T17:23:00.286Z"
+stopped_at: "Phase 16 Plan 05 executed 2026-06-30. WooCommerceAdapter (INT-04) and CalendlyAdapter (INT-06) complete: httpx+OAuth1 HMAC-SHA256 (WooCommerce), native async httpx Bearer PAT + config_data event_type mapping (Calendly); 8/8 unit tests pass. Next: /gsd-execute-phase 16 (plan 16-06 — provider dispatch wiring)"
+last_updated: "2026-06-30T17:37:00.000Z"
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 18
-  completed_plans: 15
-  percent: 33
+  completed_plans: 16
+  percent: 35
 ---
 
 # Project State
@@ -69,6 +69,9 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Key Decisions
 
+- [16-05] CalendlyAdapter resolves service_type → event_type URI from config_data["event_types"] (Open Question 2 closed) — keeps BookSlotInput.service_type provider-agnostic; ValueError on unknown service_type before HTTP call
+- [16-05] WooCommerceAdapter uses httpx + _WooOAuth1Auth(httpx.Auth) bridging requests-oauthlib OAuth1 HMAC-SHA256 — overrides plan text referencing rejected WooCommerce PyPI package (16-02 gate); HTTPS-only enforced in __init__
+- [16-05] Calendly POST /invitees requires paid plan (Pitfall 7) — raise_for_status() propagates 403; deploy-time prerequisite documented in 16-07 runbook
 - [16-03] idempotency_key forwarded via Stripe RequestOptions dict (second positional arg) — stripe 15.3.0 v1 API signature is create(params, options), not keyword arg
 - [16-03] StripeClient constructed from json.loads(handle.use())["api_key"] — credential blob is JSON, not raw key; extraction inside asyncio.to_thread closure (Pitfall 2 prevention)
 - [16-03] place_order uses static success_url/cancel_url placeholders (T-16-02); Plan 16-07 will wire real deploy-time URLs
