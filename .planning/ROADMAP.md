@@ -136,7 +136,7 @@ Plans:
 3. Low-value actions under the per-tenant skip threshold short-circuit the Actor (cost control)
 4. Gatekeeper/Auditor/Strategist still run async post-response; Actor p95 < 1s, total added latency on a mutating call < 1.5s
 
-**Plans:** 1/3 plans executed
+**Plans:** 2/3 plans executed
 
 Plans:
 **Wave 1**
@@ -145,7 +145,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 15-02-PLAN.md — require_human dispatcher branch + conn_str wiring + four-node structural test [ACT-02, ACT-04, ACT-05]
+- [x] 15-02-PLAN.md — require_human dispatcher branch + conn_str wiring + four-node structural test [ACT-02, ACT-04, ACT-05]
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
