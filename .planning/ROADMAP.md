@@ -168,7 +168,7 @@ Plans:
 2. Each of Shopify / WooCommerce / Stripe / Calendly performs its real action behind the typed tool contract
 3. Single-currency per tenant is enforced at deploy time
 
-**Plans:** 6/7 plans executed
+**Plans:** 7/7 plans complete
 
 Plans:
 
@@ -189,7 +189,7 @@ Plans:
 
 **ROADMAP Wave 4 — Deploy-time provisioning + live proof** *(depends on wiring)*
 
-- [ ] 16-07-PLAN.md — (exec wave 4, autonomous:false) deploy-time provisioning script + single-currency guard + operator runbook (Open Q3) + live Stripe test-mode refund gate — INT-07, INT-05
+- [x] 16-07-PLAN.md — (exec wave 4, autonomous:false) deploy-time provisioning script + single-currency guard + operator runbook (Open Q3) + live Stripe test-mode refund gate — INT-07, INT-05
 
 ### Phase 17: Customer identity verification — email/SMS OTP, per-skill, server-enforced
 

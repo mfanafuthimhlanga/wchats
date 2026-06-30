@@ -327,7 +327,7 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 - [x] **INT-04**: WooCommerce adapter
 - [x] **INT-05**: Stripe adapter (issue refund, update subscription)
 - [ ] **INT-06**: Calendly adapter (book slot)
-- [ ] **INT-07**: Single-currency per tenant, configured at deploy time (multi-currency out of scope)
+- [x] **INT-07**: Single-currency per tenant, configured at deploy time (multi-currency out of scope)
 
 ### Customer Identity Verification
 

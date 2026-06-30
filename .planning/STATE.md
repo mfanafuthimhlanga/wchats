@@ -4,13 +4,13 @@ milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; Phase 15 (Actor validator) EXECUTED — ACT-04/05 + injection live-verified, ACT-06 latency deferred to prod; v1.0 Phase 13 deploy paused at live AWS gates (7/11 done, needs domain)
 stopped_at: "Phase 16 Plan 05 executed 2026-06-30. WooCommerceAdapter (INT-04) and CalendlyAdapter (INT-06) complete: httpx+OAuth1 HMAC-SHA256 (WooCommerce), native async httpx Bearer PAT + config_data event_type mapping (Calendly); 8/8 unit tests pass. Next: /gsd-execute-phase 16 (plan 16-06 — provider dispatch wiring)"
-last_updated: "2026-06-30T18:10:28.691Z"
+last_updated: "2026-06-30T18:25:42.394Z"
 progress:
   total_phases: 6
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 18
-  completed_plans: 17
-  percent: 33
+  completed_plans: 18
+  percent: 50
 ---
 
 # Project State
@@ -185,6 +185,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Phase 14 P03 | ~6 min | 3 tasks | 5 files |
 | Phase 14 P05 | 5 | 2 tasks | 3 files |
 | Phase 14 P06 | 14 | 2 tasks | 3 files |
+| Phase 16 P07 | 573 | 2 tasks | 3 files |
 
 ### Quick Tasks Completed
 
@@ -311,9 +312,12 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: [14-06] DB decides winner: INSERT ON CONFLICT RETURNING; no check-then-act race (CR-02 fixed)
 - [Phase ?]: [14-06] args_hash excludes idempotency_key (WR-02); NULL stored hash treated as legacy replay
 - [Phase ?]: [14-06] asyncio.to_thread offload for all blocking DB calls; _RESERVATION_LEASE_SECONDS=120 stale-pending reclaim
+- [Phase ?]: Open Question 3 (Phase 16): deploy-time script + operator runbook, NOT admin API endpoints; Phase 18 owns self-serve credential UI
+- [Phase ?]: INT-07 single-currency guard: enforced at provisioning time — script aborts on conflicting currency_code
+- [Phase ?]: T-16-08 live gate: deferred to operator (Stripe test creds unavailable), mirroring Phase 13/15 pattern
 
 ## Session
 
-**Last session:** 2026-06-30T18:10:28.645Z
+**Last session:** 2026-06-30T18:25:21.970Z
 **Stopped at:** Completed 14-02-PLAN.md — typed tool contract complete (50 tests passing)
 **Resume file:** None
