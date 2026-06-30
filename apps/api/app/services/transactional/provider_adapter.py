@@ -278,18 +278,35 @@ async def get_adapter_for_skill(
     elif config.provider_type == "shopify":
         from app.services.transactional.adapters.shopify_adapter import ShopifyAdapter  # noqa: PLC0415
 
+        # CR-03: guard against missing shop_url so KeyError does not escape the
+        # idempotency handler in tools.py (ProviderNotConfiguredError is caught there;
+        # bare KeyError is not).
+        shop_url = config.config_data.get("shop_url")
+        if not shop_url:
+            raise ProviderNotConfiguredError(
+                "Shopify integration_credentials row is missing 'shop_url' in config_data. "
+                "Provision with --config-json '{\"shop_url\": \"mystore.myshopify.com\"}'."
+            )
         return ShopifyAdapter(
             handle=handle,
-            shop_url=config.config_data["shop_url"],  # T-16-02: from config, never from args
+            shop_url=shop_url,  # T-16-02: from config, never from args
             currency_code=config.currency_code,
         )
 
     elif config.provider_type == "woocommerce":
         from app.services.transactional.adapters.woocommerce_adapter import WooCommerceAdapter  # noqa: PLC0415
 
+        # CR-03: guard against missing site_url so KeyError does not escape the
+        # idempotency handler in tools.py.
+        site_url = config.config_data.get("site_url")
+        if not site_url:
+            raise ProviderNotConfiguredError(
+                "WooCommerce integration_credentials row is missing 'site_url' in config_data. "
+                "Provision with --config-json '{\"site_url\": \"https://mystore.example.com\"}'."
+            )
         return WooCommerceAdapter(
             handle=handle,
-            site_url=config.config_data["site_url"],  # T-16-02: from config, never from args
+            site_url=site_url,  # T-16-02: from config, never from args
             currency_code=config.currency_code,
         )
 

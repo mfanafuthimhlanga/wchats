@@ -302,3 +302,63 @@ async def test_unknown_provider_type_raises() -> None:
     with _dispatch_ctx(unknown_config):
         with pytest.raises(ProviderNotConfiguredError, match="Unknown provider_type"):
             await get_adapter_for_skill("issue_refund", _TEST_AGENT_ID, _TEST_CONN_STR)
+
+
+# ---------------------------------------------------------------------------
+# test_shopify_missing_shop_url_raises (CR-03)
+# ---------------------------------------------------------------------------
+
+
+async def test_shopify_missing_shop_url_raises() -> None:
+    """CR-03: Shopify config_data missing 'shop_url' raises ProviderNotConfiguredError.
+
+    A bare KeyError would escape the idempotency handler in tools.py (which only
+    catches ProviderNotConfiguredError and CredentialDecryptionError), leaving the
+    idempotency reservation permanently stuck. The fix converts missing shop_url
+    into ProviderNotConfiguredError so tools.py releases the reservation correctly.
+    """
+    from app.services.transactional.credential_service import (
+        ProviderNotConfiguredError,
+        _CredentialConfig,
+    )
+    from app.services.transactional.provider_adapter import get_adapter_for_skill
+
+    # Shopify config_data intentionally missing 'shop_url'
+    bad_config = _CredentialConfig(
+        provider_type="shopify",
+        credential_data=_encrypt({"access_token": "shpat_test"}),
+        config_data={},  # empty — no shop_url
+        currency_code="USD",
+    )
+    with _dispatch_ctx(bad_config):
+        with pytest.raises(ProviderNotConfiguredError, match="shop_url"):
+            await get_adapter_for_skill("issue_refund", _TEST_AGENT_ID, _TEST_CONN_STR)
+
+
+# ---------------------------------------------------------------------------
+# test_woocommerce_missing_site_url_raises (CR-03)
+# ---------------------------------------------------------------------------
+
+
+async def test_woocommerce_missing_site_url_raises() -> None:
+    """CR-03: WooCommerce config_data missing 'site_url' raises ProviderNotConfiguredError.
+
+    Same idempotency-reservation leak as the Shopify case. The bare KeyError must be
+    converted to ProviderNotConfiguredError so the tools.py handler catches it.
+    """
+    from app.services.transactional.credential_service import (
+        ProviderNotConfiguredError,
+        _CredentialConfig,
+    )
+    from app.services.transactional.provider_adapter import get_adapter_for_skill
+
+    # WooCommerce config_data intentionally missing 'site_url'
+    bad_config = _CredentialConfig(
+        provider_type="woocommerce",
+        credential_data=_encrypt({"consumer_key": "ck_test", "consumer_secret": "cs_test"}),
+        config_data={},  # empty — no site_url
+        currency_code="GBP",
+    )
+    with _dispatch_ctx(bad_config):
+        with pytest.raises(ProviderNotConfiguredError, match="site_url"):
+            await get_adapter_for_skill("issue_refund", _TEST_AGENT_ID, _TEST_CONN_STR)
