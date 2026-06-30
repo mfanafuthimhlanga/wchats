@@ -100,25 +100,18 @@ class ShopifyAdapter(ProviderAdapter):
         self._api_version = _API_VERSION
 
     # -----------------------------------------------------------------------
-    # Session management — session-per-call pattern (multi-tenant thread safety)
+    # Session management — Session.temp() per-call pattern (WR-02: thread safety)
     # -----------------------------------------------------------------------
-
-    def _make_session(self) -> None:
-        """Activate a per-call Shopify session inside the sync closure.
-
-        Extracts the access_token from the credential JSON blob (never logs it).
-        Pins the API version to _API_VERSION (Pitfall 6 prevention).
-
-        Must always be followed by _clear_session() in a finally block.
-        """
-        # T-16-01: token extracted only here, never stored in a variable outside the closure
-        token = json.loads(self._handle.use())["access_token"]
-        session = shopify.Session(self._shop_url, self._api_version, token)
-        shopify.ShopifyResource.activate_session(session)
-
-    def _clear_session(self) -> None:
-        """Clear the active Shopify session to prevent cross-tenant session bleed."""
-        shopify.ShopifyResource.clear_session()
+    # WR-02: The old _make_session() / _clear_session() pattern used
+    # ShopifyResource.activate_session() which stores the active session in a
+    # class-level attribute. Under concurrent asyncio.to_thread calls from
+    # different tenant requests in the same Celery worker, Thread A could
+    # overwrite Thread B's session, causing cross-tenant credential bleed.
+    #
+    # shopify.Session.temp() is a thread-safe context manager (ShopifyAPI >= 8.x)
+    # that scopes the session to the current thread's execution context.
+    # All sync closures use `with shopify.Session.temp(shop_url, version, token):`
+    # instead of the activate/clear pair.
 
     # -----------------------------------------------------------------------
     # issue_refund — Shopify refundCreate mutation
@@ -176,12 +169,16 @@ class ShopifyAdapter(ProviderAdapter):
         }
 
         def _sync() -> str:
-            """Sync Shopify call — runs in thread pool via asyncio.to_thread (Pitfall 3)."""
-            self._make_session()
-            try:
+            """Sync Shopify call — runs in thread pool via asyncio.to_thread (Pitfall 3).
+
+            WR-02: Session.temp() is thread-safe — scoped to this closure's execution
+            context. The token is extracted inside the closure (T-16-01: never logged).
+            """
+            # T-16-01: token extracted only here, never stored outside the closure
+            token = json.loads(self._handle.use())["access_token"]
+            with shopify.Session.temp(self._shop_url, self._api_version, token):
                 return shopify.GraphQL().execute(mutation, variables=variables)
-            finally:
-                self._clear_session()  # always clear — prevents cross-tenant bleed
+            # Session.temp() context manager clears the session on exit (even on exception)
 
         result_str = await asyncio.to_thread(_sync)
         data = json.loads(result_str)
@@ -254,12 +251,13 @@ class ShopifyAdapter(ProviderAdapter):
         }
 
         def _sync() -> str:
-            """Sync Shopify call — runs in thread pool via asyncio.to_thread (Pitfall 3)."""
-            self._make_session()
-            try:
+            """Sync Shopify call — runs in thread pool via asyncio.to_thread (Pitfall 3).
+
+            WR-02: Session.temp() scopes the session to this closure's thread context.
+            """
+            token = json.loads(self._handle.use())["access_token"]
+            with shopify.Session.temp(self._shop_url, self._api_version, token):
                 return shopify.GraphQL().execute(mutation, variables=variables)
-            finally:
-                self._clear_session()
 
         result_str = await asyncio.to_thread(_sync)
         data = json.loads(result_str)
@@ -325,12 +323,13 @@ class ShopifyAdapter(ProviderAdapter):
         }
 
         def _sync() -> str:
-            """Sync Shopify call — runs in thread pool via asyncio.to_thread (Pitfall 3)."""
-            self._make_session()
-            try:
+            """Sync Shopify call — runs in thread pool via asyncio.to_thread (Pitfall 3).
+
+            WR-02: Session.temp() scopes the session to this closure's thread context.
+            """
+            token = json.loads(self._handle.use())["access_token"]
+            with shopify.Session.temp(self._shop_url, self._api_version, token):
                 return shopify.GraphQL().execute(mutation, variables=variables)
-            finally:
-                self._clear_session()
 
         result_str = await asyncio.to_thread(_sync)
         data = json.loads(result_str)

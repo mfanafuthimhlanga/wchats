@@ -130,9 +130,12 @@ async def test_issue_refund_calls_refund_create() -> None:
         f"Transaction amount must be '35.00' for 3500 cents; got {transactions[0].get('amount')!r}"
     )
 
-    # Session hygiene: activate_session called, clear_session called
-    mock_shopify.ShopifyResource.activate_session.assert_called_once()
-    mock_shopify.ShopifyResource.clear_session.assert_called_once()
+    # WR-02 fix: Session.temp() used (thread-safe) instead of activate/clear pair
+    mock_shopify.Session.temp.assert_called_once()
+    temp_call_args = mock_shopify.Session.temp.call_args[0]
+    assert temp_call_args[0] == "teststore.myshopify.com", (
+        f"Session.temp shop_url must be the constructor value; got {temp_call_args[0]!r}"
+    )
 
     # Output shape
     assert result.status == "refunded"
@@ -203,9 +206,8 @@ async def test_place_order_calls_order_create() -> None:
     )
     assert "3" in variables_str, "variables must include quantity"
 
-    # Session activated and cleared
-    mock_shopify.ShopifyResource.activate_session.assert_called_once()
-    mock_shopify.ShopifyResource.clear_session.assert_called_once()
+    # WR-02 fix: Session.temp() used instead of activate/clear pair
+    mock_shopify.Session.temp.assert_called_once()
 
     # Output shape
     assert result.status in {"placed", "pending_confirmation"}, (
@@ -217,8 +219,11 @@ async def test_place_order_calls_order_create() -> None:
 async def test_shop_url_from_constructor() -> None:
     """shop_url comes from the constructor, NOT from tool args (T-16-02: SSRF prevention).
 
+    WR-02 fix: the session is now created via Session.temp() (thread-safe context manager)
+    rather than ShopifyResource.activate_session() (class-level state, not thread-safe).
+
     Verifies that:
-    - shopify.Session is constructed with self._shop_url (from constructor)
+    - shopify.Session.temp() is called with self._shop_url (from constructor)
     - The access token is extracted from json.loads(handle.use())["access_token"]
     - No field named shop_url or url is read from args
     """
@@ -258,18 +263,18 @@ async def test_shop_url_from_constructor() -> None:
 
         await adapter.issue_refund(args, agent_id="agent-shopify-ssrf")
 
-    # Session must be constructed with the constructor shop_url
-    session_call = mock_shopify.Session.call_args
-    assert session_call is not None, "shopify.Session must be constructed"
-    session_args = session_call[0]  # positional args
-    assert session_args[0] == constructor_shop_url, (
-        f"Session shop_url must be the constructor value '{constructor_shop_url}'; "
-        f"got {session_args[0]!r} — SSRF prevention requires shop_url from config only"
+    # WR-02: Session.temp() must be called (not Session() constructor directly)
+    session_temp_call = mock_shopify.Session.temp.call_args
+    assert session_temp_call is not None, "shopify.Session.temp must be called (WR-02 thread safety)"
+    temp_args = session_temp_call[0]  # positional args
+    assert temp_args[0] == constructor_shop_url, (
+        f"Session.temp shop_url must be the constructor value '{constructor_shop_url}'; "
+        f"got {temp_args[0]!r} — SSRF prevention requires shop_url from config only (T-16-02)"
     )
     # Token extracted from JSON blob (not raw JSON string)
-    assert session_args[2] == raw_token, (
-        f"Session token must be the bare access_token '{raw_token}'; "
-        f"got {session_args[2]!r} — must use json.loads(handle.use())[\"access_token\"]"
+    assert temp_args[2] == raw_token, (
+        f"Session.temp token must be the bare access_token '{raw_token}'; "
+        f"got {temp_args[2]!r} — must use json.loads(handle.use())[\"access_token\"]"
     )
 
 
@@ -339,9 +344,8 @@ async def test_cancel_order_calls_order_cancel() -> None:
         "variables must include args.order_id"
     )
 
-    # Session activated and cleared
-    mock_shopify.ShopifyResource.activate_session.assert_called_once()
-    mock_shopify.ShopifyResource.clear_session.assert_called_once()
+    # WR-02 fix: Session.temp() used instead of activate/clear pair
+    mock_shopify.Session.temp.assert_called_once()
 
     # Output shape
     assert result.order_id == "gid://shopify/Order/888777666"
