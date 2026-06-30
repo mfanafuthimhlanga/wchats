@@ -79,7 +79,11 @@ from app.services.transactional.idempotency import (
     release_idempotency,
     reserve_idempotency,
 )
-from app.services.transactional.provider_adapter import get_adapter
+from app.services.transactional.credential_service import (
+    CredentialDecryptionError,
+    ProviderNotConfiguredError,
+)
+from app.services.transactional.provider_adapter import get_adapter_for_skill
 from app.services.transactional.registry import TOOL_REGISTRY
 from app.services.transactional.schemas import (
     BookSlotInput,
@@ -381,7 +385,31 @@ async def _execute_transactional_tool(
         }
 
     # -------------------------------------------------------- 6. Adapter execute
-    adapter = get_adapter(agent_id)
+    # get_adapter_for_skill fetches + decrypts the tenant credential and returns
+    # the correct concrete adapter (INT-02). The raw credential never leaves this
+    # function scope — only a CredentialHandle (redacted repr) enters the adapter.
+    try:
+        adapter = await get_adapter_for_skill(skill, agent_id, conn_str)
+    except (ProviderNotConfiguredError, CredentialDecryptionError) as exc:
+        # The provider is not configured or the credential is corrupted.
+        # Release the idempotency reservation so a retry can re-enter (T-16-cfg).
+        await release_idempotency(agent_id, skill, validated.idempotency_key)
+        await write_audit_row(
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            skill=skill,
+            arguments=raw_args,
+            result=None,
+            actor_decision=decision,
+            actor_rationale=rationale,
+            capability_snapshot=snapshot,
+            latency_ms=None,
+            error=f"provider.not_configured:{exc}",
+        )
+        return {
+            "content": [{"type": "text", "text": str(exc)}],
+            "is_error": True,
+        }
     start_ms = int(time.time() * 1000)
 
     try:

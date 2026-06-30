@@ -188,12 +188,12 @@ class TestBadSchemaRejection:
         _set_context()
         access_mock = _mock_access_pass()
         audit_mock = AsyncMock()
-        get_adapter_mock = MagicMock()
+        get_adapter_mock = AsyncMock()
 
         with (
             _p("check_capability_access", access_mock),
             patch(f"{_T}.write_audit_row", audit_mock),
-            patch(f"{_T}.get_adapter", get_adapter_mock),
+            patch(f"{_T}.get_adapter_for_skill", get_adapter_mock),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -241,7 +241,7 @@ class TestCapabilityDenial:
             _p("reserve_idempotency", reserve_mock),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", audit_mock),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -252,14 +252,14 @@ class TestCapabilityDenial:
     def test_disabled_skill_no_adapter_call(self):
         _set_context()
         adapter_mock = _mock_adapter()
-        get_adapter_mock = MagicMock(return_value=adapter_mock)
+        get_adapter_mock = AsyncMock(return_value=adapter_mock)
 
         with (
             _p("check_capability_access", _mock_access_deny("disabled")),
             _p("reserve_idempotency", _mock_reserve("reserved")),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", get_adapter_mock),
+            patch(f"{_T}.get_adapter_for_skill", get_adapter_mock),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -277,7 +277,7 @@ class TestCapabilityDenial:
             _p("check_capability_access", _mock_access_deny("disabled")),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", audit_mock),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -299,7 +299,7 @@ class TestCapabilityDenial:
             _p("check_capability_access", _mock_access_deny("no_envelope_row")),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", audit_mock),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -349,7 +349,7 @@ class TestDispatcherHappyPath:
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock(return_value=adapter_mock)),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=adapter_mock)),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -372,7 +372,7 @@ class TestDispatcherHappyPath:
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock(return_value=_mock_adapter())),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=_mock_adapter())),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -394,7 +394,7 @@ class TestDispatcherHappyPath:
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
             patch(f"{_T}.write_audit_row", audit_mock),
-            patch(f"{_T}.get_adapter", MagicMock(return_value=_mock_adapter("ok"))),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=_mock_adapter("ok"))),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -419,7 +419,7 @@ class TestDispatcherHappyPath:
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock(return_value=_mock_adapter("Order confirmed"))),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=_mock_adapter("Order confirmed"))),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -451,7 +451,7 @@ class TestReplayShortCircuit:
             _p("finalize_idempotency", _mock_finalize()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -471,7 +471,7 @@ class TestReplayShortCircuit:
             _p("finalize_idempotency", _mock_finalize()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -482,7 +482,7 @@ class TestReplayShortCircuit:
     def test_replay_does_not_call_adapter(self):
         _set_context()
         adapter_mock = _mock_adapter()
-        get_adapter_mock = MagicMock(return_value=adapter_mock)
+        get_adapter_mock = AsyncMock(return_value=adapter_mock)
 
         with (
             _p("check_capability_access", _mock_access_pass()),
@@ -491,7 +491,7 @@ class TestReplayShortCircuit:
             _p("finalize_idempotency", _mock_finalize()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", get_adapter_mock),
+            patch(f"{_T}.get_adapter_for_skill", get_adapter_mock),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -512,7 +512,7 @@ class TestReplayShortCircuit:
             _p("finalize_idempotency", _mock_finalize()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", audit_mock),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -533,7 +533,7 @@ class TestReplayShortCircuit:
             _p("finalize_idempotency", finalize_mock),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -564,7 +564,7 @@ class TestReplayShortCircuit:
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock(return_value=adapter_mock)),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=adapter_mock)),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -602,7 +602,7 @@ class TestReplayShortCircuit:
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
             patch(f"{_T}.write_audit_row", audit_mock),
-            patch(f"{_T}.get_adapter", MagicMock(return_value=_mock_adapter())),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=_mock_adapter())),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -681,7 +681,7 @@ class TestArgsMismatch:
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -703,7 +703,7 @@ class TestArgsMismatch:
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", audit_mock),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -727,7 +727,7 @@ class TestArgsMismatch:
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -741,7 +741,7 @@ class TestArgsMismatch:
     def test_args_mismatch_adapter_not_called(self):
         _set_context()
         adapter_mock = _mock_adapter()
-        get_adapter_mock = MagicMock(return_value=adapter_mock)
+        get_adapter_mock = AsyncMock(return_value=adapter_mock)
 
         with (
             _p("check_capability_access", _mock_access_pass()),
@@ -749,7 +749,7 @@ class TestArgsMismatch:
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", get_adapter_mock),
+            patch(f"{_T}.get_adapter_for_skill", get_adapter_mock),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -770,7 +770,7 @@ class TestArgsMismatch:
             _p("release_idempotency", release_mock),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -796,7 +796,7 @@ class TestConcurrentInProgress:
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -814,7 +814,7 @@ class TestConcurrentInProgress:
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -828,7 +828,7 @@ class TestConcurrentInProgress:
     def test_in_progress_adapter_not_called(self):
         _set_context()
         adapter_mock = _mock_adapter()
-        get_adapter_mock = MagicMock(return_value=adapter_mock)
+        get_adapter_mock = AsyncMock(return_value=adapter_mock)
 
         with (
             _p("check_capability_access", _mock_access_pass()),
@@ -836,7 +836,7 @@ class TestConcurrentInProgress:
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", get_adapter_mock),
+            patch(f"{_T}.get_adapter_for_skill", get_adapter_mock),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -864,7 +864,7 @@ class TestRateDenialAfterReserve:
             _p("release_idempotency", _mock_release()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -883,7 +883,7 @@ class TestRateDenialAfterReserve:
             _p("release_idempotency", release_mock),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -894,7 +894,7 @@ class TestRateDenialAfterReserve:
     def test_rate_denial_adapter_not_called(self):
         _set_context()
         adapter_mock = _mock_adapter()
-        get_adapter_mock = MagicMock(return_value=adapter_mock)
+        get_adapter_mock = AsyncMock(return_value=adapter_mock)
 
         with (
             _p("check_capability_access", _mock_access_pass()),
@@ -903,7 +903,7 @@ class TestRateDenialAfterReserve:
             _p("release_idempotency", _mock_release()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", get_adapter_mock),
+            patch(f"{_T}.get_adapter_for_skill", get_adapter_mock),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -924,7 +924,7 @@ class TestRateDenialAfterReserve:
             _p("release_idempotency", _mock_release()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", audit_mock),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -956,7 +956,7 @@ class TestActorBlock:
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.call_actor_gate", _mock_gate_block("policy: amount too high")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -976,7 +976,7 @@ class TestActorBlock:
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.call_actor_gate", _mock_gate_block()),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -987,7 +987,7 @@ class TestActorBlock:
     def test_actor_block_adapter_not_called(self):
         _set_context()
         adapter_mock = _mock_adapter()
-        get_adapter_mock = MagicMock(return_value=adapter_mock)
+        get_adapter_mock = AsyncMock(return_value=adapter_mock)
 
         with (
             _p("check_capability_access", _mock_access_pass()),
@@ -997,7 +997,7 @@ class TestActorBlock:
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.call_actor_gate", _mock_gate_block()),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", get_adapter_mock),
+            patch(f"{_T}.get_adapter_for_skill", get_adapter_mock),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -1019,7 +1019,7 @@ class TestActorBlock:
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.call_actor_gate", _mock_gate_block("test block")),
             patch(f"{_T}.write_audit_row", audit_mock),
-            patch(f"{_T}.get_adapter", MagicMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -1056,7 +1056,7 @@ class TestAdapterError:
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock(return_value=self._erring_adapter())),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=self._erring_adapter())),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -1077,7 +1077,7 @@ class TestAdapterError:
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock(return_value=self._erring_adapter())),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=self._erring_adapter())),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -1098,7 +1098,7 @@ class TestAdapterError:
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
             patch(f"{_T}.write_audit_row", AsyncMock()),
-            patch(f"{_T}.get_adapter", MagicMock(return_value=self._erring_adapter())),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=self._erring_adapter())),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -1119,7 +1119,7 @@ class TestAdapterError:
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
             patch(f"{_T}.write_audit_row", audit_mock),
-            patch(f"{_T}.get_adapter", MagicMock(return_value=self._erring_adapter())),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=self._erring_adapter())),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -1299,13 +1299,13 @@ class TestConfirmActionTool:
     def test_confirm_action_does_not_call_provider_adapter(self):
         _set_context()
         db_cm, session = _mock_db_session()
-        get_adapter_mock = MagicMock()
+        get_adapter_mock = AsyncMock()
         access_mock = _mock_access_pass()
 
         with (
             _p("check_capability_access", access_mock),
             patch(f"{_T}.get_sync_db", db_cm),
-            patch(f"{_T}.get_adapter", get_adapter_mock),
+            patch(f"{_T}.get_adapter_for_skill", get_adapter_mock),
         ):
             from app.services.transactional.tools import confirm_action_tool
 
@@ -1702,7 +1702,7 @@ class TestActorRequireHuman:
         idem_key: str = "idem-rh-001",
     ):
         _set_context()
-        get_adapter_mock = MagicMock(return_value=adapter_mock)
+        get_adapter_mock = AsyncMock(return_value=adapter_mock)
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
@@ -1712,7 +1712,7 @@ class TestActorRequireHuman:
             patch(f"{_T}.call_actor_gate", gate_mock),
             patch(f"{_T}.write_audit_row", audit_mock),
             patch(f"{_T}.get_sync_db", db_cm),
-            patch(f"{_T}.get_adapter", get_adapter_mock),
+            patch(f"{_T}.get_adapter_for_skill", get_adapter_mock),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -1767,7 +1767,7 @@ class TestActorRequireHuman:
             patch(f"{_T}.call_actor_gate", _mock_gate_require_human()),
             patch(f"{_T}.write_audit_row", AsyncMock()),
             patch(f"{_T}.get_sync_db", db_cm),
-            patch(f"{_T}.get_adapter", MagicMock(return_value=_mock_adapter())),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=_mock_adapter())),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -1789,7 +1789,7 @@ class TestActorRequireHuman:
             patch(f"{_T}.call_actor_gate", _mock_gate_require_human()),
             patch(f"{_T}.write_audit_row", AsyncMock()),
             patch(f"{_T}.get_sync_db", db_cm),
-            patch(f"{_T}.get_adapter", MagicMock(return_value=_mock_adapter())),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=_mock_adapter())),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -1818,7 +1818,7 @@ class TestActorRequireHuman:
             patch(f"{_T}.call_actor_gate", _mock_gate_require_human("needs approval")),
             patch(f"{_T}.write_audit_row", audit_mock),
             patch(f"{_T}.get_sync_db", db_cm),
-            patch(f"{_T}.get_adapter", MagicMock(return_value=_mock_adapter())),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=_mock_adapter())),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -1840,7 +1840,7 @@ class TestActorRequireHuman:
         _set_context()
         db_cm, session = _mock_db_session()
         adapter_mock = _mock_adapter()
-        get_adapter_mock = MagicMock(return_value=adapter_mock)
+        get_adapter_mock = AsyncMock(return_value=adapter_mock)
 
         with (
             _p("check_capability_access", _mock_access_pass()),
@@ -1851,7 +1851,7 @@ class TestActorRequireHuman:
             patch(f"{_T}.call_actor_gate", _mock_gate_require_human()),
             patch(f"{_T}.write_audit_row", AsyncMock()),
             patch(f"{_T}.get_sync_db", db_cm),
-            patch(f"{_T}.get_adapter", get_adapter_mock),
+            patch(f"{_T}.get_adapter_for_skill", get_adapter_mock),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -1878,7 +1878,7 @@ class TestActorRequireHuman:
             patch(f"{_T}.call_actor_gate", _mock_gate_require_human()),
             patch(f"{_T}.write_audit_row", audit_mock),
             patch(f"{_T}.get_sync_db", db_cm),
-            patch(f"{_T}.get_adapter", MagicMock(return_value=_mock_adapter())),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=_mock_adapter())),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -1950,7 +1950,7 @@ class TestActorMutatingGating:
             patch(f"{_T}.call_actor_gate", gate_mock),
             patch(f"{_T}.write_audit_row", AsyncMock()),
             patch(f"{_T}.get_sync_db", db_cm),
-            patch(f"{_T}.get_adapter", MagicMock(return_value=adapter_mock)),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=adapter_mock)),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -2016,10 +2016,12 @@ class TestFourNodeStructuralAssertion:
         assert "run_strategist.si(" in src, "run_strategist must use .si() for celery chain"
 
     def test_actor_gate_called_before_get_adapter_in_dispatcher(self):
-        """Node 1 (Actor) is synchronous and runs before get_adapter (step 6).
+        """Node 1 (Actor) is synchronous and runs before get_adapter_for_skill (step 6).
 
         Structural proof: in the source of _execute_transactional_tool, the
-        call_actor_gate call site appears before the get_adapter call site.
+        call_actor_gate call site appears before the get_adapter_for_skill call site.
+
+        Phase 16 update: get_adapter() replaced by get_adapter_for_skill() (INT-02 wiring).
         """
         src = self._tools_src()
         dispatcher_start = src.index("async def _execute_transactional_tool(")
@@ -2027,10 +2029,10 @@ class TestFourNodeStructuralAssertion:
         dispatcher_body = src[dispatcher_start : dispatcher_start + 14000]
 
         call_actor_pos = dispatcher_body.index("call_actor_gate(")
-        get_adapter_pos = dispatcher_body.index("get_adapter(")
+        get_adapter_pos = dispatcher_body.index("get_adapter_for_skill(")
 
         assert call_actor_pos < get_adapter_pos, (
-            f"call_actor_gate ({call_actor_pos}) must appear before get_adapter ({get_adapter_pos})"
+            f"call_actor_gate ({call_actor_pos}) must appear before get_adapter_for_skill ({get_adapter_pos})"
             " in _execute_transactional_tool source (Actor is synchronous pre-mutation node 1)"
         )
 
