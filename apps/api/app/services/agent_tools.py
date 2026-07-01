@@ -303,7 +303,7 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     log.debug("retrieve_tool.start", query=query[:80], call_count=count)
 
     # Run blocking retrieval calls in executor to keep the async tool cooperative.
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     # D-13: Redis read-through cache for query embeddings.
     # Key: qembed:<sha256-hex-of-query-utf8>  |  TTL: 3600s (1 hour)
@@ -437,7 +437,7 @@ async def lookup_structured_tool(args: dict[str, Any]) -> dict[str, Any]:
 
     log.debug("lookup_structured.query", table=table, filter_count=len(filters))
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     # Read conn_str from ContextVar into a local so the executor thread closure
     # captures a plain string value — not a ContextVar.get() call that would
@@ -511,7 +511,7 @@ async def escalate_to_human_tool(args: dict[str, Any]) -> dict[str, Any]:
     conn_str = _conn_str_var.get()
     notify_fn = _notify_fn_var.get()
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     # Write escalation marker to conversations table (idempotency guard inside).
     result = await loop.run_in_executor(
