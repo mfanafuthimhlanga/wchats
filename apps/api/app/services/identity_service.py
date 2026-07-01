@@ -278,7 +278,11 @@ def _deliver_otp(method: str, external_id: str, code: str) -> None:
         provider = _get_sms_provider()
         ttl_minutes = settings.OTP_SMS_TTL_SECONDS // 60
         body = f"Your W Chats verification code is {code}. Valid for {ttl_minutes} minutes."
-        provider.send(external_id, body)
+        try:
+            provider.send(external_id, body)
+        except Exception as exc:  # noqa: BLE001
+            # Fire-and-forget: log but NEVER re-raise (mirrors email pattern, T-17-08)
+            log.warning("otp_sms.send_failed", error=str(exc), method=method)
     else:
         log.warning("otp_deliver.unknown_method", method=method)
 
