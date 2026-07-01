@@ -335,7 +335,7 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 - [ ] **IDV-02**: Email-OTP verification flow (request code → verify → short-lived verified session)
 - [ ] **IDV-03**: SMS-OTP verification flow
 - [ ] **IDV-04**: Per-skill verification config (which actions require verification, method, expiry) driven by the envelope's `requires_identity_verification`
-- [ ] **IDV-05**: A mutating tool requiring verification is blocked server-side until the customer holds a valid verified session — never trusted from agent prose
+- [x] **IDV-05**: A mutating tool requiring verification is blocked server-side until the customer holds a valid verified session — never trusted from agent prose
 
 ### Audit (L8 partial)
 

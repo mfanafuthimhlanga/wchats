@@ -203,12 +203,12 @@ Plans:
 2. Per-skill verification requirement is driven by the capability envelope
 3. A mutating tool requiring verification is blocked server-side until a valid verified session exists
 
-**Plans:** 1/6 plans executed
+**Plans:** 2/6 plans executed
 **Wave 1**
 
 - [x] 17-01-PLAN.md — Foundation: config settings + customer_identities migration 0008 + live tenant-DB apply/roundtrip (IDV-01) [wave 1]
 - [ ] 17-02-PLAN.md — Package legitimacy gate + twilio pin for SMS OTP (IDV-03) [wave 1, autonomous:false]
-- [ ] 17-03-PLAN.md — Enforcement plumbing: _verified_session_token_var ContextVar + task threading (IDV-05) [wave 1]
+- [x] 17-03-PLAN.md — Enforcement plumbing: _verified_session_token_var ContextVar + task threading (IDV-05) [wave 1]
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
