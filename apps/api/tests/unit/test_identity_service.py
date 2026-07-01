@@ -94,3 +94,75 @@ async def test_store_otp_challenge():
     assert payload["hash"] == fake_hash
     assert payload["attempts"] == 0
     assert kwargs.get("ex") == 600
+
+
+# ---------------------------------------------------------------------------
+# Task 2: Delivery seam — email SMTP + SMS provider abstraction
+# ---------------------------------------------------------------------------
+
+
+def test_send_otp_email_unconfigured_no_raise():
+    """SMTP unset → warning logged, returns None, no exception raised."""
+    with patch("app.services.identity_service.settings") as mock_settings:
+        mock_settings.SMTP_HOST = None
+        mock_settings.SMTP_FROM = None
+        mock_settings.SMTP_PORT = 587
+        mock_settings.SMTP_USER = None
+        mock_settings.SMTP_PASSWORD = None
+        mock_settings.OTP_EMAIL_TTL_SECONDS = 600
+
+        from app.services.identity_service import send_otp_email
+
+        # Must not raise regardless of SMTP being unconfigured
+        result = send_otp_email("user@test.com", "123456")
+        assert result is None
+
+
+def test_sms_provider_selection_twilio():
+    """SMS_PROVIDER=='twilio' with full creds returns a TwilioSmsProvider."""
+    from app.services.identity_service import TwilioSmsProvider
+
+    with patch("app.services.identity_service.settings") as mock_settings:
+        mock_settings.SMS_PROVIDER = "twilio"
+        mock_settings.TWILIO_ACCOUNT_SID = "ACtest123"
+        mock_settings.TWILIO_AUTH_TOKEN = "authtoken456"
+        mock_settings.TWILIO_FROM_NUMBER = "+15555550000"
+        mock_settings.AT_API_KEY = None
+        mock_settings.AT_USERNAME = None
+
+        from app.services.identity_service import _get_sms_provider
+
+        provider = _get_sms_provider()
+        assert isinstance(provider, TwilioSmsProvider)
+
+
+def test_sms_provider_called():
+    """_deliver_otp(method='sms',...) calls the resolved provider's send with dest + body."""
+    with patch("app.services.identity_service._get_sms_provider") as mock_get:
+        mock_provider = MagicMock()
+        mock_get.return_value = mock_provider
+
+        with patch("app.services.identity_service.settings") as mock_settings:
+            mock_settings.OTP_SMS_TTL_SECONDS = 300
+
+            from app.services.identity_service import _deliver_otp
+
+            _deliver_otp("sms", "+27123456789", "654321")
+
+        mock_provider.send.assert_called_once()
+        call_args = mock_provider.send.call_args
+        # First positional arg is the destination
+        to_arg = call_args[0][0]
+        assert to_arg == "+27123456789"
+        # Second positional arg is the body (must not be None)
+        body_arg = call_args[0][1]
+        assert body_arg is not None and len(body_arg) > 0
+
+
+def test_null_sms_provider_raises():
+    """NullSmsProvider.send raises ProviderNotConfiguredError."""
+    from app.services.identity_service import NullSmsProvider, ProviderNotConfiguredError
+
+    provider = NullSmsProvider()
+    with pytest.raises(ProviderNotConfiguredError):
+        provider.send("+27123456789", "Your code is 123456")
