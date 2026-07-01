@@ -166,3 +166,173 @@ def test_null_sms_provider_raises():
     provider = NullSmsProvider()
     with pytest.raises(ProviderNotConfiguredError):
         provider.send("+27123456789", "Your code is 123456")
+
+
+# ---------------------------------------------------------------------------
+# Task 3: request_otp / verify_otp / check_verified_session orchestration
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_psycopg2_conn(fetchone_return=None):
+    """Build a MagicMock psycopg2 connection with a working cursor context manager."""
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = fetchone_return
+    mock_cursor_ctx = MagicMock()
+    mock_cursor_ctx.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor_ctx.__exit__ = MagicMock(return_value=None)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor_ctx
+    return mock_conn, mock_cursor
+
+
+async def test_otp_verify_success():
+    """Correct code: Redis key deleted FIRST, then UPSERT writes session_token_hash."""
+    from app.services.identity_service import (
+        hash_otp_code,
+        hash_session_token,
+        verify_otp,
+    )
+
+    # Prepare a challenge with the correct hash stored
+    code = "247891"
+    code_hash = hash_otp_code(code)
+    challenge_json = json.dumps({"hash": code_hash, "attempts": 0})
+
+    redis = AsyncMock()
+    redis.get.return_value = challenge_json
+
+    call_order: list[str] = []
+
+    async def tracked_delete(*args, **kwargs):
+        call_order.append("redis_delete")
+
+    redis.delete.side_effect = tracked_delete
+
+    # Capture execute args so we can verify hash (not raw token) was stored
+    execute_calls: list[tuple] = []
+    mock_conn, mock_cursor = _make_mock_psycopg2_conn()
+
+    def tracked_execute(*args, **kwargs):
+        call_order.append("psycopg2_execute")
+        execute_calls.append(args)
+
+    mock_cursor.execute = tracked_execute
+
+    with patch("psycopg2.connect", return_value=mock_conn):
+        raw_token = await verify_otp(
+            redis, "agent-1", "user@example.com", code, "email", "postgresql://mock"
+        )
+
+    # Delete-first (T-17-05): Redis key deleted before UPSERT
+    assert call_order == ["redis_delete", "psycopg2_execute"], (
+        f"Expected delete before upsert, got: {call_order}"
+    )
+
+    # Raw token is returned
+    assert isinstance(raw_token, str)
+    assert len(raw_token) >= 43
+
+    # session_token_hash (not raw_token) was stored in the DB params
+    sql_params = execute_calls[0][1]  # (sql, params) → second element
+    assert raw_token not in sql_params, "Raw token must not be stored in DB"
+    expected_hash = hash_session_token(raw_token)
+    assert expected_hash in sql_params, "session_token_hash must be in UPSERT params"
+
+
+async def test_otp_wrong_code():
+    """Wrong code: OtpInvalid raised, attempts incremented, key NOT deleted."""
+    from app.services.identity_service import OtpInvalid, hash_otp_code, verify_otp
+
+    code_hash = hash_otp_code("123456")
+    challenge_json = json.dumps({"hash": code_hash, "attempts": 0})
+
+    redis = AsyncMock()
+    redis.get.return_value = challenge_json
+
+    with pytest.raises(OtpInvalid):
+        await verify_otp(
+            redis, "agent-1", "user@test.com", "999999", "email", "postgresql://mock"
+        )
+
+    # Key NOT deleted (T-17-05 — single-use only on correct code)
+    redis.delete.assert_not_called()
+    # Attempts counter persisted back
+    redis.set.assert_called_once()
+
+
+async def test_otp_expired():
+    """Absent/expired challenge returns OtpInvalid (no-oracle: same 400 as wrong code)."""
+    from app.services.identity_service import OtpInvalid, verify_otp
+
+    redis = AsyncMock()
+    redis.get.return_value = None  # key expired / never set
+
+    with pytest.raises(OtpInvalid):
+        await verify_otp(
+            redis, "agent-1", "user@test.com", "123456", "email", "postgresql://mock"
+        )
+
+
+async def test_otp_lockout():
+    """5th wrong attempt (attempts reaches OTP_MAX_ATTEMPTS=5) → OtpRateLimited."""
+    from app.services.identity_service import OtpRateLimited, hash_otp_code, verify_otp
+
+    # Challenge already has 4 failed attempts
+    code_hash = hash_otp_code("123456")
+    challenge_json = json.dumps({"hash": code_hash, "attempts": 4})
+
+    redis = AsyncMock()
+    redis.get.return_value = challenge_json
+
+    with pytest.raises(OtpRateLimited):
+        await verify_otp(
+            redis, "agent-1", "user@test.com", "999999", "email", "postgresql://mock"
+        )
+
+    # Key NOT deleted (T-17-05 — only deleted on correct code)
+    redis.delete.assert_not_called()
+
+
+async def test_check_verified_session():
+    """Valid token hash present in DB with future expiry → returns True."""
+    from app.services.identity_service import check_verified_session
+
+    mock_conn, mock_cursor = _make_mock_psycopg2_conn(fetchone_return=(1,))
+
+    with patch("psycopg2.connect", return_value=mock_conn):
+        result = await check_verified_session(
+            "agent-1", "valid_raw_session_token", "postgresql://mock"
+        )
+
+    assert result is True
+
+    # Verify agent_id is NOT in the SQL WHERE clause (OD-1 per-tenant, T-17-01)
+    sql = mock_cursor.execute.call_args[0][0]
+    assert "agent_id" not in sql.lower()
+
+
+async def test_session_expiry():
+    """No matching/non-expired row in DB → check_verified_session returns False."""
+    from app.services.identity_service import check_verified_session
+
+    mock_conn, mock_cursor = _make_mock_psycopg2_conn(fetchone_return=None)
+
+    with patch("psycopg2.connect", return_value=mock_conn):
+        result = await check_verified_session(
+            "agent-1", "expired_or_absent_token", "postgresql://mock"
+        )
+
+    assert result is False
+
+
+async def test_request_otp_send_limit():
+    """Exceeding OTP_SEND_MAX_PER_WINDOW raises OtpRateLimited."""
+    from app.services.identity_service import OtpRateLimited, request_otp
+    from app.core.config import settings
+
+    redis = AsyncMock()
+    # incr returns a count above the limit
+    redis.incr.return_value = settings.OTP_SEND_MAX_PER_WINDOW + 1
+
+    with pytest.raises(OtpRateLimited):
+        await request_otp(redis, "agent-1", "user@test.com", "email")
