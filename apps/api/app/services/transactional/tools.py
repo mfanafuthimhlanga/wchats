@@ -147,7 +147,12 @@ async def _execute_transactional_tool(
     # Lazy import breaks the circular dependency between tools.py and agent_tools.py.
     # _conn_str_var MUST stay inside the function body — module-level import causes a
     # circular import (Pitfall 2 from 15-RESEARCH.md).
-    from app.services.agent_tools import _agent_id_var, _conn_str_var, _conversation_id_var  # noqa: PLC0415
+    from app.services.agent_tools import (  # noqa: PLC0415
+        _agent_id_var,
+        _conn_str_var,
+        _conversation_id_var,
+        _verified_session_token_var,
+    )
 
     agent_id = _agent_id_var.get()
     conn_str = _conn_str_var.get()
@@ -199,6 +204,70 @@ async def _execute_transactional_tool(
             ],
             "is_error": True,
         }
+
+    # -------------------------------------------------------- 2.5 IDV gate (IDV-05)
+    # Runs AFTER capability check (2) and BEFORE reserve_idempotency (3) so that a
+    # blocked unverified call never consumes the idempotency slot (T-17-21).
+    # Driven by the capability envelope snapshot already fetched in Step 2 — no extra DB call.
+    # check_verified_session imported lazily (function-body import) to avoid circular import
+    # (Pitfall 7 from 17-RESEARCH.md). Token NEVER logged (T-04-03-05).
+    if snapshot.get("requires_identity_verification", False):
+        vst = _verified_session_token_var.get()
+        if not vst:
+            # No verified session token present — block before reservation.
+            await write_audit_row(
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+                skill=skill,
+                arguments=raw_args,
+                result=None,
+                actor_decision="",
+                actor_rationale="",
+                capability_snapshot=snapshot,
+                latency_ms=None,
+                error="identity_verification.required",
+            )
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "This action requires identity verification. "
+                            "Please verify your identity with a one-time code before proceeding."
+                        ),
+                    }
+                ],
+                "is_error": True,
+            }
+        from app.services.identity_service import check_verified_session  # noqa: PLC0415
+
+        session_valid = await check_verified_session(agent_id, vst, conn_str)
+        if not session_valid:
+            # Token present but expired or not found in tenant DB — block before reservation.
+            await write_audit_row(
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+                skill=skill,
+                arguments=raw_args,
+                result=None,
+                actor_decision="",
+                actor_rationale="",
+                capability_snapshot=snapshot,
+                latency_ms=None,
+                error="identity_verification.invalid_or_expired",
+            )
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Identity verification required or session expired. "
+                            "Please verify your identity again to proceed."
+                        ),
+                    }
+                ],
+                "is_error": True,
+            }
 
     # -------------------------------------------------------- 3. Reserve idempotency (atomic)
     # compute_args_hash excludes idempotency_key internally — used to detect WR-02 key reuse.
