@@ -304,15 +304,13 @@ async def request_otp(redis, agent_id: str, external_id: str, method: str) -> No
     # Normalize: lowercase for email; treat as-is (E.164) for SMS
     normalized = external_id.lower() if method == "email" else external_id
 
-    # Enforce per-external_id send rate limit
+    # Enforce per-external_id send rate limit (atomic: SET NX+EX first, then INCR)
     send_limit_key = f"otp_sendlimit:{agent_id}:{normalized.lower()}"
+    window_ttl = (
+        settings.OTP_EMAIL_TTL_SECONDS if method == "email" else settings.OTP_SMS_TTL_SECONDS
+    )
+    await redis.set(send_limit_key, 0, nx=True, ex=window_ttl)
     count = await redis.incr(send_limit_key)
-    if count == 1:
-        # First send in this window — set TTL on the counter key
-        window_ttl = (
-            settings.OTP_EMAIL_TTL_SECONDS if method == "email" else settings.OTP_SMS_TTL_SECONDS
-        )
-        await redis.expire(send_limit_key, window_ttl)
     if count > settings.OTP_SEND_MAX_PER_WINDOW:
         raise OtpRateLimited("Too many OTP requests for this address — try again later")
 

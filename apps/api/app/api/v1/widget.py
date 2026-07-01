@@ -101,9 +101,8 @@ async def _check_config_rate_limit(agent_id: str, client_ip: str, redis: Redis) 
     """
     bucket = int(time.time()) // 60
     key = f"rate:config:{client_ip}:{bucket}"
+    await redis.set(key, 0, nx=True, ex=120)
     count = await redis.incr(key)
-    if count == 1:
-        await redis.expire(key, 120)
     if count > 10:
         raise HTTPException(
             status_code=429,
@@ -351,9 +350,8 @@ async def post_widget_chat(
     # ------------------------------------------------------------------
     bucket = str(int(time.time()) // 60)
     key = f"rate:{agent_id}:{bucket}"
+    await redis_client.set(key, 0, nx=True, ex=60)
     count = await redis_client.incr(key)
-    if count == 1:
-        await redis_client.expire(key, 60)
     if count > 60:
         raise HTTPException(
             status_code=429,
@@ -578,9 +576,8 @@ async def post_widget_identity_request(
     # ------------------------------------------------------------------
     bucket_60s = str(int(time.time()) // 60)
     ip_key = f"otp_sendip:{request.client.host}:{bucket_60s}"
+    await redis_client.set(ip_key, 0, nx=True, ex=120)
     ip_count = await redis_client.incr(ip_key)
-    if ip_count == 1:
-        await redis_client.expire(ip_key, 120)
     if ip_count > 10:
         raise HTTPException(
             status_code=429,
