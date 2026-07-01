@@ -567,12 +567,9 @@ async def post_widget_identity_request(
     validate_widget_jwt(credentials.credentials, str(agent_id))
 
     # ------------------------------------------------------------------
-    # 2. CORS header (widget endpoint convention)
-    # ------------------------------------------------------------------
-    response.headers["Access-Control-Allow-Origin"] = _CORS_ALLOW_ORIGIN
-
-    # ------------------------------------------------------------------
-    # 3. Per-IP send rate limit: 10/min (T-17-18 cost guard)
+    # 2. Per-IP send rate limit: 10/min (T-17-18 cost guard)
+    # NOTE: CORS header is set on the returned PlainResponse object directly
+    # (FastAPI does not merge injected response headers into returned Response objs).
     # ------------------------------------------------------------------
     bucket_60s = str(int(time.time()) // 60)
     ip_key = f"otp_sendip:{request.client.host}:{bucket_60s}"
