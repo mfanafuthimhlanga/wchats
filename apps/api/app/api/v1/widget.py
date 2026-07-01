@@ -89,12 +89,13 @@ ESTIMATED_TURN_COST_USD = 0.01
 # ---------------------------------------------------------------------------
 
 
-async def _check_config_rate_limit(agent_id: str, client_ip: str, redis: Redis) -> None:
+async def _check_config_rate_limit(client_ip: str, redis: Redis) -> None:
     """Enforce 10 req/min per client IP on the config (JWT mint) endpoint.
 
     Key: rate:config:{client_ip}:{bucket}  (bucket = 60-second window)
     TTL: 120 seconds (two windows — belt-and-suspenders against clock drift)
     Ceiling: 10 requests per 60-second window.
+    Rate is per-IP only; agent_id is not in scope (WR-07).
 
     Raises:
         HTTPException 429 with Retry-After: 60 if ceiling exceeded.
@@ -265,7 +266,7 @@ async def get_widget_config(
             "config_rate_limit.x_forwarded_for_present",
             note="trusting request.client.host in M4.1; production should configure proxy",
         )
-    await _check_config_rate_limit(str(agent_id), request.client.host, redis_client)
+    await _check_config_rate_limit(request.client.host, redis_client)
 
     result = await db.execute(
         select(Agent).where(
