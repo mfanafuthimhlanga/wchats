@@ -9,9 +9,10 @@ OtpVerifyBody         — body for POST /widget/{id}/identity/verify (Phase 17)
 OtpVerifyResponse     — response for POST /widget/{id}/identity/verify (Phase 17)
 """
 
+import re
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class WidgetConfigResponse(BaseModel):
@@ -50,10 +51,19 @@ class OtpRequestBody(BaseModel):
 
     ASVS V5: external_id is bounded at 320 chars (max email length per RFC 5321).
     method must be "email" or "sms" (regex validation).
+    Cross-field: external_id must match the format implied by method (WR-06).
     """
 
     external_id: str = Field(..., min_length=1, max_length=320)
     method: str = Field(..., pattern=r"^(email|sms)$")
+
+    @model_validator(mode="after")
+    def external_id_matches_method(self) -> "OtpRequestBody":
+        if self.method == "sms" and not re.match(r"^\+\d{7,15}$", self.external_id):
+            raise ValueError("external_id must be E.164 format (e.g. +27821234567) for method='sms'")
+        if self.method == "email" and "@" not in self.external_id:
+            raise ValueError("external_id must be an email address for method='email'")
+        return self
 
 
 class OtpVerifyBody(BaseModel):
@@ -62,11 +72,20 @@ class OtpVerifyBody(BaseModel):
     ASVS V5: otp_code is exactly 6 numeric digits (pattern=r"^\\d{6}$") — prevents
     injection via non-digit characters and enforces the 6-digit challenge length.
     method must be "email" or "sms" (regex validation).
+    Cross-field: external_id must match the format implied by method (WR-06).
     """
 
     external_id: str = Field(..., min_length=1, max_length=320)
     otp_code: str = Field(..., pattern=r"^\d{6}$")  # ASVS V5 — numeric 6-digit only
     method: str = Field(..., pattern=r"^(email|sms)$")
+
+    @model_validator(mode="after")
+    def external_id_matches_method(self) -> "OtpVerifyBody":
+        if self.method == "sms" and not re.match(r"^\+\d{7,15}$", self.external_id):
+            raise ValueError("external_id must be E.164 format (e.g. +27821234567) for method='sms'")
+        if self.method == "email" and "@" not in self.external_id:
+            raise ValueError("external_id must be an email address for method='email'")
+        return self
 
 
 class OtpVerifyResponse(BaseModel):
