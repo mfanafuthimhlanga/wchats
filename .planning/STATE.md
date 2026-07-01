@@ -4,12 +4,12 @@ milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; Phase 16 (Integration adapters) EXECUTED — 7/7 plans code-complete, live Stripe gate deferred to prod; Phase 15 (Actor validator) EXECUTED — ACT-04/05 live-verified, ACT-06 deferred; v1.0 Phase 13 paused at live AWS gates (7/11 done, needs domain)
 stopped_at: "Completed 17-03-PLAN.md: _verified_session_token_var ContextVar + build_tool_server/run_agent_turn param threading (IDV-05 transport rail). Next: 17-04 OTP service"
-last_updated: "2026-07-01T17:29:55.336Z"
+last_updated: "2026-07-01T18:24:24.671Z"
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 24
-  completed_plans: 21
+  completed_plans: 22
   percent: 50
 ---
 
@@ -331,6 +331,6 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Session
 
-**Last session:** 2026-07-01T17:29:44.779Z
+**Last session:** 2026-07-01T18:24:24.601Z
 **Stopped at:** Completed 17-03-PLAN.md: _verified_session_token_var ContextVar + build_tool_server/run_agent_turn param threading (IDV-05 transport rail). Next: 17-04 OTP service
 **Resume file:** None

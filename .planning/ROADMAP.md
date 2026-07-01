@@ -203,7 +203,7 @@ Plans:
 2. Per-skill verification requirement is driven by the capability envelope
 3. A mutating tool requiring verification is blocked server-side until a valid verified session exists
 
-**Plans:** 3/6 plans executed
+**Plans:** 4/6 plans executed
 **Wave 1**
 
 - [x] 17-01-PLAN.md — Foundation: config settings + customer_identities migration 0008 + live tenant-DB apply/roundtrip (IDV-01) [wave 1]
@@ -212,7 +212,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 17-04-PLAN.md — identity_service.py: OTP engine, session issuance, email+SMS delivery seam, check_verified_session (IDV-02, IDV-03, IDV-05) [wave 2]
+- [x] 17-04-PLAN.md — identity_service.py: OTP engine, session issuance, email+SMS delivery seam, check_verified_session (IDV-02, IDV-03, IDV-05) [wave 2]
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
