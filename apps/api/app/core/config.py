@@ -88,6 +88,23 @@ class Settings(BaseSettings):
     SMTP_USER: str | None = None
     SMTP_PASSWORD: str | None = None
 
+    # M17: OTP identity verification — TTL and rate-limit settings (OD-4 global TTL lock)
+    VERIFIED_SESSION_TTL_SECONDS: int = 3600   # OD-4: 1 hour verified-session lifetime
+    OTP_EMAIL_TTL_SECONDS: int = 600           # 10 min email OTP window
+    OTP_SMS_TTL_SECONDS: int = 300             # 5 min SMS OTP window
+    OTP_MAX_ATTEMPTS: int = 5                  # max verify attempts before challenge expires
+    OTP_SEND_MAX_PER_WINDOW: int = 3           # max sends per external_id per 10-min window
+
+    # M17: SMS OTP provider — OD-2 Twilio default; NullSmsProvider used when creds unset
+    # All credentials default to None (fail-safe: unset = SMS not configured).
+    SMS_PROVIDER: str = "twilio"               # "twilio" | "africastalking"
+    TWILIO_ACCOUNT_SID: str | None = None
+    TWILIO_AUTH_TOKEN: str | None = None
+    TWILIO_FROM_NUMBER: str | None = None      # E.164 format, e.g. +27XXXXXXXXX
+    AT_API_KEY: str | None = None              # Africa's Talking API key
+    AT_USERNAME: str | None = None             # Africa's Talking username
+    AT_SENDER_ID: str | None = None            # Africa's Talking sender ID (optional)
+
     # M4.1: Tenant daily budget ceiling (global default; per-tenant override in M5 admin UI)
     TENANT_DAILY_BUDGET_USD: float = 5.0
 
