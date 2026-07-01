@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; Phase 16 (Integration adapters) EXECUTED — 7/7 plans code-complete, live Stripe gate deferred to prod; Phase 15 (Actor validator) EXECUTED — ACT-04/05 live-verified, ACT-06 deferred; v1.0 Phase 13 paused at live AWS gates (7/11 done, needs domain)
-stopped_at: "Completed 17-03-PLAN.md: _verified_session_token_var ContextVar + build_tool_server/run_agent_turn param threading (IDV-05 transport rail). Next: 17-04 OTP service"
-last_updated: "2026-07-01T18:52:43.588Z"
+stopped_at: "Completed 17-06-PLAN.md: Step 2.5 IDV gate in _execute_transactional_tool (IDV-04, IDV-05). Phase 17 all 6 plans complete."
+last_updated: "2026-07-01T19:13:43.709Z"
 progress:
   total_phases: 6
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 24
-  completed_plans: 23
-  percent: 50
+  completed_plans: 24
+  percent: 67
 ---
 
 # Project State
@@ -71,6 +71,9 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Key Decisions
 
+- [17-06] Step 2.5 IDV gate placed BEFORE reserve_idempotency (Step 3) — T-17-21: blocked unverified calls never consume the idempotency slot; key remains reusable after verification
+- [17-06] check_verified_session lazily imported inside dispatcher body (inner function-body import) — avoids circular import chain (Pitfall 7); consistent with existing _conn_str_var lazy-import convention
+- [17-06] AUD-01 symmetry: both IDV block branches use the same write_audit_row keyword signature as capability.denial; errors are identity_verification.required and identity_verification.invalid_or_expired
 - [16-05] CalendlyAdapter resolves service_type → event_type URI from config_data["event_types"] (Open Question 2 closed) — keeps BookSlotInput.service_type provider-agnostic; ValueError on unknown service_type before HTTP call
 - [16-05] WooCommerceAdapter uses httpx + _WooOAuth1Auth(httpx.Auth) bridging requests-oauthlib OAuth1 HMAC-SHA256 — overrides plan text referencing rejected WooCommerce PyPI package (16-02 gate); HTTPS-only enforced in __init__
 - [16-05] Calendly POST /invitees requires paid plan (Pitfall 7) — raise_for_status() propagates 403; deploy-time prerequisite documented in 16-07 runbook
@@ -193,6 +196,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Phase 17 P03 | 10 min | 3 tasks | 3 files |
 | Phase 17 P02 | 9m | 2 tasks | 1 files |
 | Phase 17 P05 | 15m | 3 tasks | 3 files |
+| Phase 17 P06 | 15m | 2 tasks | 2 files |
 
 ### Quick Tasks Completed
 
@@ -334,6 +338,6 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Session
 
-**Last session:** 2026-07-01T18:52:34.499Z
+**Last session:** 2026-07-01T19:13:43.627Z
 **Stopped at:** Completed 17-03-PLAN.md: _verified_session_token_var ContextVar + build_tool_server/run_agent_turn param threading (IDV-05 transport rail). Next: 17-04 OTP service
 **Resume file:** None

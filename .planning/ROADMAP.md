@@ -203,7 +203,7 @@ Plans:
 2. Per-skill verification requirement is driven by the capability envelope
 3. A mutating tool requiring verification is blocked server-side until a valid verified session exists
 
-**Plans:** 5/6 plans executed
+**Plans:** 6/6 plans complete
 **Wave 1**
 
 - [x] 17-01-PLAN.md — Foundation: config settings + customer_identities migration 0008 + live tenant-DB apply/roundtrip (IDV-01) [wave 1]
@@ -217,7 +217,7 @@ Plans:
 **Wave 3** *(blocked on Wave 2 completion)*
 
 - [x] 17-05-PLAN.md — Widget identity routes (request/verify) + verified_session_token transport (IDV-02, IDV-03, IDV-05) [wave 3]
-- [ ] 17-06-PLAN.md — Step 2.5 IDV enforcement gate in the transactional dispatcher (IDV-04, IDV-05) [wave 3]
+- [x] 17-06-PLAN.md — Step 2.5 IDV enforcement gate in the transactional dispatcher (IDV-04, IDV-05) [wave 3]
 
 ### Phase 18: Blast-radius gate, capability admin UI, transaction red-team & injection-defense extensions
 
