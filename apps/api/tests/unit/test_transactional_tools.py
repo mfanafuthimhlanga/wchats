@@ -2025,8 +2025,9 @@ class TestFourNodeStructuralAssertion:
         """
         src = self._tools_src()
         dispatcher_start = src.index("async def _execute_transactional_tool(")
-        # 14 000-char slice covers the full dispatcher body (steps 1-7 + require_human branch)
-        dispatcher_body = src[dispatcher_start : dispatcher_start + 14000]
+        # 20 000-char slice covers the full dispatcher body (steps 1-7 + 2.5 IDV gate + require_human branch).
+        # Increased from 14 000 in 17-06 after Step 2.5 IDV gate added ~1 500 chars before get_adapter_for_skill.
+        dispatcher_body = src[dispatcher_start : dispatcher_start + 20000]
 
         call_actor_pos = dispatcher_body.index("call_actor_gate(")
         get_adapter_pos = dispatcher_body.index("get_adapter_for_skill(")
