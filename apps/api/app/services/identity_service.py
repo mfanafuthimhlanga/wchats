@@ -173,18 +173,16 @@ class AfricasTalkingProvider:
     """Africa's Talking SMS provider."""
 
     def __init__(self, api_key: str, username: str, sender_id: str | None = None) -> None:
-        self._api_key = api_key
-        self._username = username
+        import africastalking  # noqa: PLC0415
+        africastalking.initialize(username, api_key)
+        self._sms = africastalking.SMS
         self._sender_id = sender_id
 
     def send(self, to: str, body: str) -> None:
-        import africastalking  # noqa: PLC0415
-        africastalking.initialize(self._username, self._api_key)
-        sms = africastalking.SMS
         kwargs: dict = {"message": body, "recipients": [to]}
         if self._sender_id:
             kwargs["senderId"] = self._sender_id
-        sms.send(**kwargs)
+        self._sms.send(**kwargs)
 
 
 class NullSmsProvider:
