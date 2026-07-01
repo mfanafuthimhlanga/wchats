@@ -371,7 +371,7 @@ async def verify_otp(
         # Increment attempts; DO NOT delete the key — allow retries up to the cap
         new_attempts = attempts + 1
         data["attempts"] = new_attempts
-        await redis.set(key, json.dumps(data))
+        await redis.set(key, json.dumps(data), keepttl=True)
         if new_attempts >= settings.OTP_MAX_ATTEMPTS:
             # Nth attempt hit the wall — signal lockout on this attempt
             raise OtpRateLimited("Too many failed attempts — challenge locked")

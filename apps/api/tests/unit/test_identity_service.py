@@ -256,8 +256,12 @@ async def test_otp_wrong_code():
 
     # Key NOT deleted (T-17-05 — single-use only on correct code)
     redis.delete.assert_not_called()
-    # Attempts counter persisted back
+    # Attempts counter persisted back with TTL preserved (CR-01)
     redis.set.assert_called_once()
+    _, set_kwargs = redis.set.call_args
+    assert set_kwargs.get("keepttl") is True, (
+        "keepttl=True must be passed to preserve the OTP expiry window (CR-01)"
+    )
 
 
 async def test_otp_expired():
