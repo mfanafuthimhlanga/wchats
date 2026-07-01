@@ -2057,3 +2057,254 @@ class TestFourNodeStructuralAssertion:
                     f"_conn_str_var import at line {lineno} is NOT indented (module-level import "
                     "would cause circular import — Pitfall 2 from 15-RESEARCH.md)"
                 )
+
+
+# ===========================================================================
+# IDV-04 + IDV-05 — Step 2.5 identity verification gate (Phase 17 Plan 06)
+# ===========================================================================
+
+
+class TestIDVGate:
+    """IDV-04 + IDV-05: Step 2.5 enforcement gate tests.
+
+    Gate ordering invariant: capability check (2) → IDV gate (2.5) → reserve idempotency (3).
+    AUD-01 symmetry: both block branches write exactly one audit row.
+    T-17-21: blocked calls must NOT consume the idempotency slot (reserve_idempotency not called).
+    T-17-01: check_verified_session uses the tenant conn_str (per-tenant lookup).
+
+    Patch notes:
+    - 'check_verified_session' is lazily imported inside _execute_transactional_tool, so it
+      must be patched at its source module: 'app.services.identity_service.check_verified_session'.
+    - '_verified_session_token_var' is set directly via ContextVar.set() in each test's setup.
+    """
+
+    def _set_vst(self, token: str = "") -> None:
+        """Set the verified session token ContextVar for the current asyncio context."""
+        from app.services.agent_tools import _verified_session_token_var  # noqa: PLC0415
+
+        _verified_session_token_var.set(token)
+
+    def _snapshot_idv(self, required: bool) -> dict:
+        """Return a minimal capability snapshot with requires_identity_verification set."""
+        return {
+            "enabled": True,
+            "skill": "place_order",
+            "requires_identity_verification": required,
+        }
+
+    def test_idv_blocks_without_session(self):
+        """IDV-05: requires_identity_verification=true + empty ContextVar token → is_error, no adapter call."""
+        _set_context()
+        self._set_vst("")  # no verified session token
+        adapter_mock = _mock_adapter()
+        get_adapter_mock = AsyncMock(return_value=adapter_mock)
+
+        with (
+            _p("check_capability_access", AsyncMock(return_value=(self._snapshot_idv(True), None))),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("release_idempotency", _mock_release()),
+            _p("finalize_idempotency", _mock_finalize()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
+            patch(f"{_T}.write_audit_row", AsyncMock()),
+            patch(f"{_T}.get_adapter_for_skill", get_adapter_mock),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            result = asyncio.run(place_order_tool.handler(_valid_place_order_args()))
+
+        assert result.get("is_error") is True, f"Expected is_error=True on no-token IDV block; got: {result}"
+        get_adapter_mock.assert_not_called()
+        adapter_mock.place_order.assert_not_called()
+
+    def test_idv_blocks_expired_session(self):
+        """IDV-05: token present but check_verified_session returns False → is_error, no adapter call."""
+        _set_context()
+        self._set_vst("expired-or-invalid-token")
+        adapter_mock = _mock_adapter()
+        get_adapter_mock = AsyncMock(return_value=adapter_mock)
+
+        with (
+            _p("check_capability_access", AsyncMock(return_value=(self._snapshot_idv(True), None))),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("release_idempotency", _mock_release()),
+            _p("finalize_idempotency", _mock_finalize()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
+            patch(f"{_T}.write_audit_row", AsyncMock()),
+            patch(f"{_T}.get_adapter_for_skill", get_adapter_mock),
+            patch(
+                "app.services.identity_service.check_verified_session",
+                AsyncMock(return_value=False),
+            ),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            result = asyncio.run(place_order_tool.handler(_valid_place_order_args()))
+
+        assert result.get("is_error") is True, (
+            f"Expected is_error=True on expired-token IDV block; got: {result}"
+        )
+        get_adapter_mock.assert_not_called()
+        adapter_mock.place_order.assert_not_called()
+
+    def test_idv_passes_with_valid_session(self):
+        """IDV-05: valid verified session → gate passes → reaches adapter (reserve + adapter called)."""
+        _set_context()
+        self._set_vst("valid-verified-token")
+        adapter_mock = _mock_adapter()
+        cvs_mock = AsyncMock(return_value=True)
+
+        with (
+            _p("check_capability_access", AsyncMock(return_value=(self._snapshot_idv(True), None))),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("release_idempotency", _mock_release()),
+            _p("finalize_idempotency", _mock_finalize()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
+            patch(f"{_T}.write_audit_row", AsyncMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=adapter_mock)),
+            patch(
+                "app.services.identity_service.check_verified_session",
+                cvs_mock,
+            ),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            result = asyncio.run(place_order_tool.handler(_valid_place_order_args()))
+
+        assert result.get("is_error") is not True, (
+            f"Valid session must NOT block; got is_error on: {result}"
+        )
+        assert adapter_mock.place_order.call_count == 1, (
+            f"Adapter must be called on valid session; count={adapter_mock.place_order.call_count}"
+        )
+        # IDV-05: gate must have consulted check_verified_session exactly once
+        cvs_mock.assert_called_once()
+
+    def test_idv_skipped_when_not_required(self):
+        """IDV-04: requires_identity_verification=false + empty token → gate is no-op, adapter called."""
+        _set_context()
+        self._set_vst("")  # no token — but gate must be entirely skipped
+        adapter_mock = _mock_adapter()
+
+        with (
+            _p("check_capability_access", AsyncMock(return_value=(self._snapshot_idv(False), None))),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("release_idempotency", _mock_release()),
+            _p("finalize_idempotency", _mock_finalize()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
+            patch(f"{_T}.write_audit_row", AsyncMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=adapter_mock)),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            result = asyncio.run(place_order_tool.handler(_valid_place_order_args()))
+
+        # Gate skipped entirely (IDV-04 envelope-driven) — adapter reached and called normally
+        assert result.get("is_error") is not True, (
+            f"Unverified call with required=False must NOT be blocked; got: {result}"
+        )
+        assert adapter_mock.place_order.call_count == 1, (
+            f"Adapter must be called when IDV not required; count={adapter_mock.place_order.call_count}"
+        )
+
+    def test_idv_audit_row_written(self):
+        """AUD-01 symmetry: each IDV block path writes exactly one audit row with the correct error.
+
+        Block 1 (no token):     error='identity_verification.required'
+        Block 2 (invalid token): error='identity_verification.invalid_or_expired'
+        """
+        # ---- Block 1: no token → identity_verification.required ----
+        _set_context()
+        self._set_vst("")
+        audit_mock_1 = AsyncMock()
+
+        with (
+            _p("check_capability_access", AsyncMock(return_value=(self._snapshot_idv(True), None))),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("release_idempotency", _mock_release()),
+            _p("finalize_idempotency", _mock_finalize()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
+            patch(f"{_T}.write_audit_row", audit_mock_1),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=_mock_adapter())),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            asyncio.run(place_order_tool.handler(_valid_place_order_args("idem-idv-audit-1")))
+
+        assert audit_mock_1.call_count == 1, (
+            f"Expected exactly 1 audit row on no-token block, got {audit_mock_1.call_count}"
+        )
+        err1 = audit_mock_1.call_args.kwargs.get("error", "")
+        assert err1 == "identity_verification.required", (
+            f"Expected error='identity_verification.required', got {err1!r}"
+        )
+
+        # ---- Block 2: token present but invalid/expired ----
+        _set_context()
+        self._set_vst("stale-token")
+        audit_mock_2 = AsyncMock()
+
+        with (
+            _p("check_capability_access", AsyncMock(return_value=(self._snapshot_idv(True), None))),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("release_idempotency", _mock_release()),
+            _p("finalize_idempotency", _mock_finalize()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
+            patch(f"{_T}.write_audit_row", audit_mock_2),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=_mock_adapter())),
+            patch(
+                "app.services.identity_service.check_verified_session",
+                AsyncMock(return_value=False),
+            ),
+        ):
+            asyncio.run(place_order_tool.handler(_valid_place_order_args("idem-idv-audit-2")))
+
+        assert audit_mock_2.call_count == 1, (
+            f"Expected exactly 1 audit row on invalid-token block, got {audit_mock_2.call_count}"
+        )
+        err2 = audit_mock_2.call_args.kwargs.get("error", "")
+        assert err2 == "identity_verification.invalid_or_expired", (
+            f"Expected error='identity_verification.invalid_or_expired', got {err2!r}"
+        )
+
+    def test_idv_before_idempotency(self):
+        """T-17-21: IDV block must NOT call reserve_idempotency; idempotency key stays reusable.
+
+        Gate order: Step 2 → Step 2.5 (IDV) → Step 3 (reserve).
+        A blocked unverified call returns before reserve_idempotency, leaving the
+        idempotency key free for a retry after the customer verifies identity.
+        """
+        _set_context()
+        self._set_vst("")  # no token → block
+        reserve_mock = _mock_reserve("reserved")
+
+        with (
+            _p("check_capability_access", AsyncMock(return_value=(self._snapshot_idv(True), None))),
+            _p("reserve_idempotency", reserve_mock),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("release_idempotency", _mock_release()),
+            _p("finalize_idempotency", _mock_finalize()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
+            patch(f"{_T}.write_audit_row", AsyncMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=_mock_adapter())),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            result = asyncio.run(place_order_tool.handler(_valid_place_order_args()))
+
+        assert result.get("is_error") is True, (
+            f"IDV block must return is_error; got: {result}"
+        )
+        reserve_mock.assert_not_called()
