@@ -46,6 +46,9 @@ dependencies = [
     # requests-oauthlib>=2.0: WooCommerce OAuth1 fallback (WooCommerce PyPI package rejected — 5-year stale)
     # Plan 16-05 WooCommerce adapter uses httpx + requests-oauthlib OAuth1 signing
     "requests-oauthlib>=2.0",
+    # P17-02: SMS OTP — supply-chain gate cleared (human checkpoint T-17-SC approved)
+    # twilio 9.10.9: official Twilio SDK (github.com/twilio/twilio-python) — SMS OTP default (OD-2), verified 17-02 human gate
+    "twilio==9.10.9",
 ]
 
 [project.optional-dependencies]
