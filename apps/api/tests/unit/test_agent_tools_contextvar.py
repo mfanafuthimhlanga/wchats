@@ -185,3 +185,96 @@ def test_retrieve_counter_isolated():
     assert counts["y"] == 7, (
         f"Counter isolation failed for context Y: expected 7, got {counts.get('y')}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Tests 4-6: IDV-05 _verified_session_token_var ContextVar plumbing (17-03)
+# ---------------------------------------------------------------------------
+
+def test_verified_session_token_var_default_empty():
+    """_verified_session_token_var defaults to '' in a fresh context.
+
+    An empty-string default means 'no verified session — all non-IDV tool calls
+    pass through' (IDV-05, Phase 17).  This test runs inside copy_context() to
+    simulate a fresh Celery task context that has never called build_tool_server.
+    """
+    result: list[str] = []
+
+    def _read_default() -> None:
+        result.append(agent_tools._verified_session_token_var.get())
+
+    ctx = contextvars.copy_context()
+    ctx.run(_read_default)
+
+    assert len(result) == 1, "Reading ContextVar inside copy_context() did not execute"
+    assert result[0] == "", (
+        f"_verified_session_token_var default should be '' but got {result[0]!r}"
+    )
+
+
+def test_build_tool_server_sets_verified_session_token():
+    """build_tool_server with verified_session_token='tok_abc' sets the ContextVar.
+
+    The test calls build_tool_server with the new kwarg and immediately reads
+    _verified_session_token_var to confirm the token was threaded into the
+    task-scoped ContextVar.  Uses the same MagicMock SDK server pattern as the
+    module-level monkeypatch above (create_sdk_mcp_server is already patched).
+    """
+    from unittest.mock import MagicMock
+
+    result: list[str] = []
+
+    def _run() -> None:
+        agent_tools.build_tool_server(
+            conn_str="postgresql://test/db",
+            agent_id="agent-idv-test",
+            agent_name="IDV Test Agent",
+            strategy=agent_tools.RetrievalStrategy(),
+            conversation_id="conv-idv-test",
+            notify_fn=MagicMock(),
+            tenant_id="tenant-idv-test",
+            verified_session_token="tok_abc",
+        )
+        result.append(agent_tools._verified_session_token_var.get())
+
+    ctx = contextvars.copy_context()
+    ctx.run(_run)
+
+    assert len(result) == 1, "build_tool_server context block did not execute"
+    assert result[0] == "tok_abc", (
+        f"Expected ContextVar to carry 'tok_abc', got {result[0]!r}"
+    )
+
+
+def test_default_empty_when_omitted():
+    """build_tool_server WITHOUT verified_session_token leaves ContextVar as ''.
+
+    Proves backward compatibility: existing 4-arg dispatches (job_id, agent_id,
+    message, conversation_id) do not need to supply the new param; the
+    ContextVar stays at its empty-string default so non-IDV tool calls are
+    unaffected (IDV-05, Phase 17).
+    """
+    from unittest.mock import MagicMock
+
+    result: list[str] = []
+
+    def _run() -> None:
+        agent_tools.build_tool_server(
+            conn_str="postgresql://test/db",
+            agent_id="agent-compat-test",
+            agent_name="Compat Test Agent",
+            strategy=agent_tools.RetrievalStrategy(),
+            conversation_id="conv-compat-test",
+            notify_fn=MagicMock(),
+            tenant_id="tenant-compat-test",
+            # verified_session_token intentionally omitted
+        )
+        result.append(agent_tools._verified_session_token_var.get())
+
+    ctx = contextvars.copy_context()
+    ctx.run(_run)
+
+    assert len(result) == 1, "build_tool_server context block did not execute"
+    assert result[0] == "", (
+        f"Expected ContextVar to be '' when arg omitted, got {result[0]!r}"
+    )
