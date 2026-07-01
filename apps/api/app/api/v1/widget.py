@@ -384,7 +384,8 @@ async def post_widget_chat(
     # 4. Validate conversation_id ownership (T-04-04-05)
     # ------------------------------------------------------------------
     if body.conversation_id is not None:
-        owned = _validate_conv_owner(
+        owned = await asyncio.to_thread(
+            _validate_conv_owner,
             agent.neon_connection_string,
             body.conversation_id,
             agent.id,
