@@ -1,9 +1,9 @@
 ---
-status: testing
+status: deferred
 phase: 16-integration-adapters-platform-credential-service-l5-extensio
 source: [16-07-SUMMARY.md]
 started: 2026-06-30T20:26:00Z
-updated: 2026-06-30T20:26:00Z
+updated: 2026-07-01T00:00:00Z
 ---
 
 ## Current Test
@@ -16,7 +16,7 @@ expected: |
   the same idempotency_key returns the same refund_id (Stripe native Idempotency-Key
   replay — T-16-08 / TXN-02). No raw key material (sk_/rk_ prefix) appears in stdout
   or logs.
-awaiting: user response
+awaiting: production-like infra — operator deferred 2026-07-01 (accepted deferral, not a failure)
 
 ## Tests
 
@@ -56,16 +56,17 @@ how: |
          | grep -E "(sk_|rk_)" | grep -v "STRIPE_TEST"
      Expect: empty output (no raw key in stdout).
 
-result: [pending]
+result: [deferred — operator accepted deferral to production-like infra on 2026-07-01; run the runbook above on prod to close INT-05 / T-16-08. Adapter code is complete + unit-tested; the live provider round-trip is the only unproven piece.]
 
 ## Summary
 
 total: 1
 passed: 0
 issues: 0
-pending: 1
-skipped: 0
+pending: 0
+skipped: 1
 blocked: 0
+deferred: 1
 
 ## Gaps
 
