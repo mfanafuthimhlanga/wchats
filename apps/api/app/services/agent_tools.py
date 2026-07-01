@@ -152,6 +152,13 @@ _tenant_id_var: ContextVar[str] = ContextVar("tenant_id", default="")
 _RETRIEVE_CALLS_PER_TURN_MAX: int = 8
 _retrieve_call_count_var: ContextVar[int] = ContextVar("retrieve_call_count", default=0)
 
+# IDV-05 (Phase 17): verified session token transport rail.
+# Empty-string default means "no verified session — all non-IDV tool calls pass through".
+# The token is NEVER logged (parity with `message`, T-04-03-05).
+# Set by build_tool_server() from the run_agent_turn task arg; read by the
+# Step 2.5 gate in transactional/tools.py (wired in 17-06).
+_verified_session_token_var: ContextVar[str] = ContextVar("verified_session_token", default="")
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -574,6 +581,7 @@ def build_tool_server(
     conversation_id: str,
     notify_fn,
     tenant_id: str = "",
+    verified_session_token: str = "",
 ) -> object:
     """Inject tenant-scoped state into ContextVars and return the MCP server.
 
@@ -588,12 +596,16 @@ def build_tool_server(
         task, so no cross-request state bleed occurs.
 
     Args:
-        conn_str:        Decrypted tenant DB connection string.
-        agent_id:        Agent UUID string (for logging / metadata).
-        agent_name:      Agent display name (for logging / metadata).
-        strategy:        RetrievalStrategy parsed from agent.retrieval_strategy JSONB.
-        conversation_id: Conversation UUID for escalation DB writes.
-        notify_fn:       Callable(reason: str, context: str) — fire-and-forget notification.
+        conn_str:                Decrypted tenant DB connection string.
+        agent_id:                Agent UUID string (for logging / metadata).
+        agent_name:              Agent display name (for logging / metadata).
+        strategy:                RetrievalStrategy parsed from agent.retrieval_strategy JSONB.
+        conversation_id:         Conversation UUID for escalation DB writes.
+        notify_fn:               Callable(reason: str, context: str) — fire-and-forget notification.
+        tenant_id:               Tenant UUID string for credential derivation (INT-01).
+        verified_session_token:  IDV-05 verified session token from the Celery task arg.
+                                 NEVER logged (T-04-03-05). Empty string when no verified
+                                 session is present — all non-IDV tool calls pass through.
 
     Returns:
         MCP server object (create_sdk_mcp_server result) registering all 11 tools:
@@ -612,6 +624,11 @@ def build_tool_server(
     # D-10 (suspenders): reset per-turn retrieve counter for this new task invocation.
     # ContextVar.set() ensures the reset is scoped to this task's context only.
     _retrieve_call_count_var.set(0)
+
+    # IDV-05: thread the verified session token into the task-scoped ContextVar.
+    # The enforcement gate in transactional/tools.py (17-06) reads this value.
+    # NEVER referenced in any log call (T-04-03-05).
+    _verified_session_token_var.set(verified_session_token)
 
     log.debug(
         "build_tool_server.ready",
