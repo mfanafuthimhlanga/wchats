@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; Phase 16 (Integration adapters) EXECUTED — 7/7 plans code-complete, live Stripe gate deferred to prod; Phase 15 (Actor validator) EXECUTED — ACT-04/05 live-verified, ACT-06 deferred; v1.0 Phase 13 paused at live AWS gates (7/11 done, needs domain)
-stopped_at: "Phase 16 EXECUTED + verified (human_needed) — 7/7 plans code-complete. All INT-01–INT-07 implemented (HKDF Fernet credential service, 4 adapters, dispatcher wiring, provisioning script). Code review found 3 blockers + 8 warnings (adapter business logic; credential-security core verified clean) — ALL in-scope FIXED (7 fix(16) commits 45a3a0a→d86c612, 35 tests re-pass). Verifier human_needed 2/3 (SC1/SC3 verified). Live Stripe test-mode gate DEFERRED to prod — operator ACCEPTED 2026-07-01 (16-UAT status: deferred). Phase 16 code-done; Phase 17 unblocked. Optional next: /gsd-secure-phase 16, /gsd-validate-phase 16; close live gate later via /gsd-verify-work 16 on prod."
-last_updated: "2026-07-01T00:00:00Z"
+stopped_at: "Completed 17-01-PLAN.md: M17 config settings, migration 0008, integration test (live DB gate deferred — local Postgres unavailable). Next: 17-02 identity service"
+last_updated: "2026-07-01T16:32:10.318Z"
 progress:
   total_phases: 6
   completed_phases: 3
-  total_plans: 18
-  completed_plans: 18
+  total_plans: 24
+  completed_plans: 19
   percent: 50
 ---
 
@@ -50,7 +50,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** Phase 16 — integration-adapters-platform-credential-service-l5-extensio
+**Current focus:** Phase 17 — customer-identity-verification-email-sms-otp-per-skill-serve
 **Previous:** M3 (Hybrid Retrieval) ✓ Complete — demo_m3.sh passed, notebook 4 DataFrames verified, RET-01–RET-08 satisfied (2026-05-16)
 
 ## Milestone Progress
@@ -188,6 +188,8 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Phase 14 P05 | 5 | 2 tasks | 3 files |
 | Phase 14 P06 | 14 | 2 tasks | 3 files |
 | Phase 16 P07 | 573 | 2 tasks | 3 files |
+| Phase 17 P01 | 30 | 3 tasks | 3 files |
+| Phase 17 P01 | 30 | 3 tasks | 3 files |
 
 ### Quick Tasks Completed
 
@@ -317,9 +319,13 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: Open Question 3 (Phase 16): deploy-time script + operator runbook, NOT admin API endpoints; Phase 18 owns self-serve credential UI
 - [Phase ?]: INT-07 single-currency guard: enforced at provisioning time — script aborts on conflicting currency_code
 - [Phase ?]: T-16-08 live gate: deferred to operator (Stripe test creds unavailable), mirroring Phase 13/15 pattern
+- [Phase ?]: [17-01] OD-1: customer_identities has no agent_id (per-tenant scope, UNIQUE external_id per tenant)
+- [Phase ?]: [17-01] OD-3: OTP challenge state in Redis only; no otp_pending table in migration 0008
+- [Phase ?]: [17-01] OD-4: VERIFIED_SESSION_TTL_SECONDS=3600 global default; per-envelope override deferred to Phase 18
+- [Phase ?]: [17-01] OD-2: SMS_PROVIDER='twilio' default; all credential settings default to None (fail-safe)
 
 ## Session
 
-**Last session:** 2026-06-30T20:26:00Z
-**Stopped at:** Phase 16 EXECUTED — 7/7 plans code-complete; live Stripe gate deferred to prod (16-UAT.md). Next: /gsd-verify-work 16
+**Last session:** 2026-07-01T16:32:10.241Z
+**Stopped at:** Completed 17-01-PLAN.md: M17 config settings, migration 0008, integration test (live DB gate deferred — local Postgres unavailable). Next: 17-02 identity service
 **Resume file:** None
