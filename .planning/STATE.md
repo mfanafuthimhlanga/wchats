@@ -4,12 +4,12 @@ milestone: v1.1
 milestone_name: — Transactional Capability
 status: v1.1 roadmap defined (phases 14-19), building in parallel; Phase 16 (Integration adapters) EXECUTED — 7/7 plans code-complete, live Stripe gate deferred to prod; Phase 15 (Actor validator) EXECUTED — ACT-04/05 live-verified, ACT-06 deferred; v1.0 Phase 13 paused at live AWS gates (7/11 done, needs domain)
 stopped_at: "Completed 17-03-PLAN.md: _verified_session_token_var ContextVar + build_tool_server/run_agent_turn param threading (IDV-05 transport rail). Next: 17-04 OTP service"
-last_updated: "2026-07-01T18:24:24.671Z"
+last_updated: "2026-07-01T18:52:43.588Z"
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 24
-  completed_plans: 22
+  completed_plans: 23
   percent: 50
 ---
 
@@ -192,6 +192,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Phase 17 P01 | 30 | 3 tasks | 3 files |
 | Phase 17 P03 | 10 min | 3 tasks | 3 files |
 | Phase 17 P02 | 9m | 2 tasks | 1 files |
+| Phase 17 P05 | 15m | 3 tasks | 3 files |
 
 ### Quick Tasks Completed
 
@@ -328,9 +329,11 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: [17-03] _verified_session_token_var uses empty-string default — all non-IDV tool calls pass through
 - [Phase ?]: [17-03] verified_session_token added as LAST kwarg of build_tool_server and 5th positional param of run_agent_turn — empty default preserves backward compatibility
 - [Phase ?]: Twilio supply-chain gate cleared, exact pin added
+- [Phase ?]: [17-05] POST /identity/request always returns 204 (no oracle — enumeration prevention, T-17-19)
+- [Phase ?]: [17-05] PlainResponse(headers={...}) required for CORS on 204 — FastAPI does not merge injected Response headers into returned Response objects
 
 ## Session
 
-**Last session:** 2026-07-01T18:24:24.601Z
+**Last session:** 2026-07-01T18:52:34.499Z
 **Stopped at:** Completed 17-03-PLAN.md: _verified_session_token_var ContextVar + build_tool_server/run_agent_turn param threading (IDV-05 transport rail). Next: 17-04 OTP service
 **Resume file:** None
