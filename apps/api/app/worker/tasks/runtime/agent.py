@@ -401,6 +401,7 @@ def run_agent_turn(
     agent_id: str,
     message: str,
     conversation_id: str | None,
+    verified_session_token: str = "",
 ) -> dict:
     """Orchestrate one agent conversational turn with full SSE event emission.
 
@@ -409,11 +410,16 @@ def run_agent_turn(
     job_id (duplicate delivery / retry safety).
 
     Args:
-        job_id:          UUID string of the runtime chat job.
-        agent_id:        UUID string of the agent handling this conversation.
-        message:         Raw user message text. NEVER logged (T-04-03-05).
-        conversation_id: UUID string of an existing conversation, or None for
-                         the first turn (triggers conversation row creation).
+        job_id:                  UUID string of the runtime chat job.
+        agent_id:                UUID string of the agent handling this conversation.
+        message:                 Raw user message text. NEVER logged (T-04-03-05).
+        conversation_id:         UUID string of an existing conversation, or None for
+                                 the first turn (triggers conversation row creation).
+        verified_session_token:  IDV-05 verified session token. NEVER logged
+                                 (parity with message, T-04-03-05). Empty string
+                                 when no verified session — all non-IDV calls pass
+                                 through. Added in Phase 17 Plan 03; 4-arg existing
+                                 dispatches remain valid via the empty default.
 
     Returns:
         {"status": "already_complete", "job_id": job_id}  — idempotent path
@@ -531,6 +537,7 @@ def run_agent_turn(
                 conversation_id=str(local_conversation_id),
                 notify_fn=lambda r, c: send_escalation_email(agent, r, c),
                 tenant_id=str(agent.tenant_id),
+                verified_session_token=verified_session_token,
             )
 
             system_prompt = build_system_prompt(agent)
