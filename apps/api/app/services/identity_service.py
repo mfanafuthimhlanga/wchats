@@ -244,8 +244,12 @@ def send_otp_email(to_email: str, code: str) -> None:
 
     The plaintext code goes ONLY to the delivery channel — never logged (T-17-08).
     """
+    # Pseudonymise for logs: log domain only (e.g. user@example.com → example.com).
+    # Full address is PII under POPIA/GDPR — never stored in log sinks (T-17-08).
+    _log_domain = to_email.split("@")[-1] if "@" in to_email else "<redacted>"
+
     if not all([settings.SMTP_HOST, settings.SMTP_FROM]):
-        log.warning("otp_email.not_configured", to=to_email)
+        log.warning("otp_email.not_configured", to_domain=_log_domain)
         return
 
     ttl_minutes = settings.OTP_EMAIL_TTL_SECONDS // 60
@@ -266,10 +270,10 @@ def send_otp_email(to_email: str, code: str) -> None:
             if settings.SMTP_USER and settings.SMTP_PASSWORD:
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
             server.sendmail(settings.SMTP_FROM, [to_email], msg.as_string())  # type: ignore[arg-type]
-        log.info("otp_email.sent", to=to_email)
+        log.info("otp_email.sent", to_domain=_log_domain)
     except Exception as exc:
         # Fire-and-forget: log warning but NEVER re-raise
-        log.warning("otp_email.send_failed", error=str(exc), to=to_email)
+        log.warning("otp_email.send_failed", error=str(exc), to_domain=_log_domain)
 
 
 def _deliver_otp(method: str, external_id: str, code: str) -> None:
