@@ -170,19 +170,26 @@ class TwilioSmsProvider:
 
 
 class AfricasTalkingProvider:
-    """Africa's Talking SMS provider."""
+    """Africa's Talking SMS provider.
+
+    Lazily imports africastalking inside send() — same pattern as TwilioSmsProvider
+    (T-17-SC). This ensures ModuleNotFoundError stays inside _deliver_otp's try/except
+    rather than escaping through _get_sms_provider() before the try block is entered.
+    """
 
     def __init__(self, api_key: str, username: str, sender_id: str | None = None) -> None:
-        import africastalking  # noqa: PLC0415
-        africastalking.initialize(username, api_key)
-        self._sms = africastalking.SMS
+        self._api_key = api_key
+        self._username = username
         self._sender_id = sender_id
 
     def send(self, to: str, body: str) -> None:
+        import africastalking  # noqa: PLC0415  — lazy import, same pattern as TwilioSmsProvider
+        africastalking.initialize(self._username, self._api_key)
+        sms = africastalking.SMS
         kwargs: dict = {"message": body, "recipients": [to]}
         if self._sender_id:
             kwargs["senderId"] = self._sender_id
-        self._sms.send(**kwargs)
+        sms.send(**kwargs)
 
 
 class NullSmsProvider:
