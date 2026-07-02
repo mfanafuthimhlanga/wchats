@@ -428,6 +428,12 @@ async def post_widget_chat(
     # ------------------------------------------------------------------
     # 6. Dispatch run_agent_turn (message + verified_session_token NEVER logged — T-04-03-05)
     # ------------------------------------------------------------------
+    # THREAT MODEL NOTE (Phase 17 accepted trade-off):
+    # The raw verified_session_token is stored in Redis as a Celery task arg. Mitigations
+    # already in place: Redis is not a public endpoint; the token has a short TTL
+    # (VERIFIED_SESSION_TTL_SECONDS=3600) and grants access only to IDV-gated tools — not
+    # admin or tenant-level access. Full mitigation (Fernet encryption before task dispatch,
+    # consistent with the neon_connection_string pattern) is deferred to Phase 18.
     run_agent_turn.apply_async(
         args=[
             str(job.id),
