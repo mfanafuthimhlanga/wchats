@@ -428,7 +428,11 @@ async def verify_otp(
     return raw_token
 
 
-async def check_verified_session(agent_id: str, raw_token: str, conn_str: str) -> bool:
+async def check_verified_session(
+    agent_id: str,  # accepted for call-site symmetry; NOT used in SQL (OD-1 — see docstring)
+    raw_token: str,
+    conn_str: str,
+) -> bool:
     """Check if a verified session token is valid and non-expired.
 
     Security (T-17-01, OD-1):
