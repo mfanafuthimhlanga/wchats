@@ -1,6 +1,6 @@
 ---
 phase: 17-customer-identity-verification-email-sms-otp-per-skill-serve
-reviewed: 2026-07-01T00:00:00Z
+reviewed: 2026-07-02T00:00:00Z
 depth: standard
 files_reviewed: 14
 files_reviewed_list:
@@ -19,301 +19,223 @@ files_reviewed_list:
   - apps/api/tests/unit/test_agent_tools_contextvar.py
   - apps/api/tests/integration/test_migrations.py
 findings:
-  critical: 2
-  warning: 7
-  info: 4
-  total: 13
+  critical: 0
+  warning: 2
+  info: 5
+  total: 7
 status: issues_found
 ---
 
-# Phase 17: Code Review Report
+# Phase 17: Code Review Report (Re-review after fix pass)
 
-**Reviewed:** 2026-07-01
+**Reviewed:** 2026-07-02T00:00:00Z
 **Depth:** standard
 **Files Reviewed:** 14
 **Status:** issues_found
 
 ## Summary
 
-Phase 17 adds OTP identity verification (email + SMS), a verified-session DB table, a Step 2.5 IDV gate in the transactional dispatcher, and JWT-gated OTP routes on the widget API. The general architecture is sound: crypto primitives are correctly chosen (secrets.randbelow, SHA-256, hmac.compare_digest), the delete-first ordering in verify_otp is correct, the JWT guard fires first on both identity routes, the AUD-01 audit-row symmetry is maintained for both IDV-block branches, and the ContextVar plumbing for the session token is correctly isolated per-task.
+This is a re-review after the fix pass that addressed the 2 Critical and 7 Warning findings from the original report. All prior Critical and Warning findings are confirmed resolved in the current code. The 4 prior Info findings remain unaddressed (as expected) and are carried forward. This pass surfaced 2 new Warnings and 1 new Info finding from code paths introduced or modified by the fixes — specifically the `asyncio.to_thread` offload, the IDV gate at step 2.5 in `_execute_transactional_tool`, and the Africa's Talking SMS provider initialisation pattern.
 
-Two blockers require immediate fixes before shipping: a Redis SET call that silently strips the OTP TTL on every wrong attempt (breaking the stated 10-minute/5-minute expiry window), and uncaught SMS provider exceptions that turn the "always 204" request endpoint into an intermittent HTTP 500 oracle. Seven warnings and four informational findings are documented below.
-
-The unit-test coverage is thorough for the happy path and the major negative paths. The TTL-preservation gap (CR-01) is the main blind spot — the test for wrong-code attempts does not verify that the TTL was preserved, so the bug passes all tests undetected.
-
----
-
-## Critical Issues
-
-### CR-01: `verify_otp` strips the OTP challenge TTL on every wrong attempt
-
-**File:** `apps/api/app/services/identity_service.py:374`
-
-**Issue:** When a submitted code does not match, the service increments the attempts counter and writes the challenge payload back to Redis using a bare `redis.set(key, json.dumps(data))` — no `ex=` or `keepttl=True` parameter. In Redis, `SET key value` without a TTL modifier **removes** any existing TTL. The challenge was originally stored with `ex=ttl` by `store_otp_challenge`, but after the very first wrong attempt the key becomes persistent (no expiry).
-
-Consequence: The 10-minute email / 5-minute SMS OTP window stated in `OTP_EMAIL_TTL_SECONDS` / `OTP_SMS_TTL_SECONDS` is silently bypassed after the first failed attempt. An attacker can attempt the remaining 4 guesses at any time in the future (until the key is overwritten by a new `request_otp` call). The lockout key written after the 5th attempt also has no TTL, so the locked challenge persists indefinitely in Redis.
-
-The test `test_otp_wrong_code` does not assert on the TTL of the re-written key, so the regression passes the full test suite undetected.
-
-**Fix:**
-```python
-# identity_service.py line 374 — preserve the original TTL
-await redis.set(key, json.dumps(data), keepttl=True)
-```
-
-`redis-py 6.x` (pinned at 6.4.0 in pyproject.toml) supports `keepttl=True`. Add a corresponding assertion to `test_otp_wrong_code` verifying the key still has a TTL after the wrong attempt.
-
----
-
-### CR-02: SMS delivery exceptions propagate uncaught, breaking the "always 204" invariant
-
-**File:** `apps/api/app/services/identity_service.py:278-282` — `_deliver_otp`
-**Also:** `apps/api/app/api/v1/widget.py:594-601` — `post_widget_identity_request`
-
-**Issue:** `_deliver_otp` delegates SMS delivery to `provider.send()` with no exception handling. Three exception sources exist:
-
-1. `NullSmsProvider.send()` raises `ProviderNotConfiguredError` when `SMS_PROVIDER` credentials are absent.
-2. `TwilioSmsProvider.send()` raises `twilio.base.exceptions.TwilioRestException` on invalid numbers, suspended accounts, etc.
-3. `AfricasTalkingProvider.send()` similarly raises on delivery failures.
-
-None of these are caught in `_deliver_otp`. They propagate through `request_otp()` and out of the route handler. The route handler (`post_widget_identity_request`) only catches `OtpRateLimited`; everything else becomes an unhandled HTTP 500.
-
-This breaks two stated invariants:
-- The route docstring: "Always returns 204 regardless of whether external_id is known to the system — no enumeration oracle."
-- A 500 for `method="sms"` when credentials are unset while `method="email"` returns 204 leaks SMS provider configuration state to unauthenticated callers with a valid JWT.
-
-Additionally, the OTP challenge was already stored in Redis before delivery is attempted (lines 316-319 of `request_otp`). A failed delivery leaves an orphaned challenge key that will expire on its own TTL but could confuse operators expecting delivery confirmation.
-
-The email path correctly uses a fire-and-forget pattern (`try/except Exception: log.warning(...)` in `send_otp_email`). The SMS path has no equivalent.
-
-**Fix:**
-```python
-# identity_service.py — _deliver_otp, SMS branch
-elif method == "sms":
-    provider = _get_sms_provider()
-    ttl_minutes = settings.OTP_SMS_TTL_SECONDS // 60
-    body = f"Your W Chats verification code is {code}. Valid for {ttl_minutes} minutes."
-    try:
-        provider.send(external_id, body)
-    except Exception as exc:  # noqa: BLE001
-        # Fire-and-forget: log but NEVER re-raise (mirrors email pattern, T-17-08)
-        log.warning("otp_sms.send_failed", error=str(exc), method=method)
-```
+**Prior Critical/Warning fix verification:**
+- CR-01 (`keepttl=True` in verify_otp wrong-attempt path): `identity_service.py:374` — confirmed present.
+- CR-02 (SMS delivery try/except): `identity_service.py:279-283` — confirmed present, mirrors email pattern.
+- WR-01 (replay before rate checks): `tools.py:279-287` — replay short-circuits before `apply_rate_and_constraint_checks`, confirmed.
+- WR-02 (args_mismatch explicit error): `tools.py:289-318` — returns explicit `is_error` without executing, confirmed.
+- WR-03 (actor require_human reservation released first): `tools.py:401` — `release_idempotency` called before row insert, confirmed.
+- WR-04 (args_mismatch audit row): `tools.py:295-317` — `write_audit_row` called on `args_mismatch` path, confirmed.
+- WR-05 (confirm_action capability gate): `tools.py:775-789` — `check_capability_access` called before DB write, confirmed.
+- WR-06 (cross-field model_validator): `widget.py schemas` — `@model_validator(mode="after")` present on both `OtpRequestBody` and `OtpVerifyBody`, confirmed.
+- WR-07 (per-IP rate limit on config endpoint, not per agent_id): `widget.py:92-112` — key is `rate:config:{client_ip}:{bucket}`, confirmed.
 
 ---
 
 ## Warnings
 
-### WR-01: `_validate_conv_owner` blocks the async event loop in a FastAPI route
+### WR-01: `AfricasTalkingProvider.__init__` eagerly imports an uninstalled package — `ModuleNotFoundError` escapes the `_deliver_otp` try/except
 
-**File:** `apps/api/app/api/v1/widget.py:219-228` (function), called at line 387
+**File:** `apps/api/app/services/identity_service.py:176-178` and `268-283`
 
-**Issue:** `_validate_conv_owner` opens a synchronous `psycopg2.connect()` connection inside an `async def` FastAPI route handler (`post_widget_chat`). A synchronous DB call in an async context blocks the uvicorn event loop for its entire duration. During this window, all other concurrent requests — including health checks and SSE streams — cannot be processed.
+**Issue:** `AfricasTalkingProvider.__init__` executes `import africastalking` synchronously, which means the import runs when `_get_sms_provider()` calls `return AfricasTalkingProvider(...)`. The `africastalking` package is absent from `pyproject.toml` — only `twilio==9.10.9` is declared. If an operator sets `SMS_PROVIDER=africastalking` with valid `AT_API_KEY` and `AT_USERNAME` credentials, the call chain is:
 
-**Fix:** Wrap the call in `asyncio.to_thread`:
+1. `_deliver_otp(method="sms", ...)` — `_get_sms_provider()` is called outside the try/except block (line 276).
+2. `AfricasTalkingProvider.__init__` runs `import africastalking` — `ModuleNotFoundError` is raised.
+3. This propagates out of `_get_sms_provider()` at line 276, which is above the `try:` block on line 279.
+4. The try/except wraps only `provider.send(external_id, body)` — the import exception is never caught.
+5. Exception propagates through `request_otp` (no handler) → route handler (catches only `OtpRateLimited`) → FastAPI 500.
+
+Contrast with `TwilioSmsProvider.send()` which places `from twilio.rest import Client` inside `send()` (line 167), safely inside `_deliver_otp`'s try/except. The asymmetry between the two providers means the Africa's Talking code path silently kills OTP requests with a 500 if the package is not installed.
+
+**Fix:** Move `import africastalking` inside `send()` instead of `__init__`, matching the Twilio lazy-import pattern:
+
 ```python
-if body.conversation_id is not None:
-    owned = await asyncio.to_thread(
-        _validate_conv_owner,
-        agent.neon_connection_string,
-        body.conversation_id,
-        agent.id,
-    )
-```
-
----
-
-### WR-02: INCR+EXPIRE race condition can permanently disable rate-limit windows
-
-**Files:**
-- `apps/api/app/services/identity_service.py:305-311` (OTP send-rate limiter)
-- `apps/api/app/api/v1/widget.py:104-107` (config endpoint rate limiter)
-- `apps/api/app/api/v1/widget.py:354-356` (chat rate limiter)
-
-**Issue:** All three rate limiters use the two-step pattern:
-```python
-count = await redis.incr(key)   # step 1
-if count == 1:
-    await redis.expire(key, ttl)  # step 2
-```
-
-Between step 1 and step 2, if the process crashes (OOM kill, SIGKILL, restart under load), the key exists in Redis with no TTL. It will never expire, permanently blocking the affected external_id, IP address, or agent_id until a Redis operator manually deletes the key.
-
-**Fix (atomic, no Lua required):**
-```python
-# Use SETNX + EXPIRE via the redis-py pipeline or SET with NX+EX:
-added = await redis.set(key, 0, nx=True, ex=ttl)  # only sets if absent
-count = await redis.incr(key)
-if count > ceiling:
-    raise ...
-```
-This sets the TTL atomically on first creation. Note: combine with an `expire` only if you need to refresh it.
-
----
-
-### WR-03: `asyncio.get_event_loop()` is deprecated inside async functions (Python 3.10+)
-
-**File:** `apps/api/app/services/agent_tools.py:306, 440, 514`
-
-**Issue:** Three async tool functions call `loop = asyncio.get_event_loop()` inside their bodies:
-- `retrieve_tool` (line 306)
-- `lookup_structured_tool` (line 440)
-- `escalate_to_human_tool` (line 514)
-
-`asyncio.get_event_loop()` emits a `DeprecationWarning` in Python 3.10+ when called inside an already-running event loop. The project targets Python 3.12 (`target-version = "py312"` in pyproject.toml). Inside `async def` functions, the correct call is `asyncio.get_running_loop()`.
-
-**Fix:**
-```python
-# Replace in all three tools:
-loop = asyncio.get_running_loop()
-```
-
----
-
-### WR-04: Dead code — CORS header set on injected `Response` parameter is never sent
-
-**File:** `apps/api/app/api/v1/widget.py:573`
-
-**Issue:** In `post_widget_identity_request`, line 573 sets:
-```python
-response.headers["Access-Control-Allow-Origin"] = _CORS_ALLOW_ORIGIN
-```
-However, the handler returns a `PlainResponse(...)` object directly. When FastAPI handlers return a `Response` subclass directly, the framework does NOT merge headers from the injected `response` dependency parameter into the returned object. The CORS header on `response` at line 573 is never sent to the client. The actual working CORS header is correctly set on the returned `PlainResponse` at lines 606-608.
-
-The dead assignment creates a false impression that coverage is shared, and could lead future editors to believe they only need to update the `response.headers` line.
-
-**Fix:** Remove line 573 entirely. The comment at line 604 already explains the `PlainResponse` pattern.
-
----
-
-### WR-05: `AfricasTalkingProvider.send()` reinitializes the SDK on every OTP delivery
-
-**File:** `apps/api/app/services/identity_service.py:181-187`
-
-**Issue:** `africastalking.initialize(self._username, self._api_key)` is called inside `send()`, which is invoked for every OTP message. The Africa's Talking SDK is designed to be initialized once as a global side effect; reinitializing on every call can reinitialize internal state, create resource contention under concurrent sends, and in some SDK versions is not thread-safe.
-
-**Fix:** Move initialization to `__init__`:
-```python
-def __init__(self, api_key: str, username: str, sender_id: str | None = None) -> None:
-    import africastalking  # noqa: PLC0415
-    africastalking.initialize(username, api_key)
-    self._sms = africastalking.SMS
-    self._sender_id = sender_id
-
 def send(self, to: str, body: str) -> None:
+    import africastalking  # noqa: PLC0415  — lazy import, same pattern as TwilioSmsProvider
+    # self._sms and self._sender_id must be set lazily too, or initialise africastalking here
+    africastalking.initialize(self._username, self._api_key)
+    sms = africastalking.SMS
     kwargs: dict = {"message": body, "recipients": [to]}
     if self._sender_id:
         kwargs["senderId"] = self._sender_id
-    self._sms.send(**kwargs)
+    sms.send(**kwargs)
 ```
+
+Alternatively, add `africastalking` to `pyproject.toml` as a required (or optional) dependency, or catch `ModuleNotFoundError` in `_get_sms_provider()` and fall back to `NullSmsProvider` with a warning.
 
 ---
 
-### WR-06: No cross-field validation that `external_id` format matches `method`
+### WR-02: `check_verified_session` at IDV gate step 2.5 has no error handling — DB failures propagate as unhandled exceptions from tool handlers
 
-**File:** `apps/api/app/schemas/widget.py:48-69`
+**File:** `apps/api/app/services/transactional/tools.py:242-270`
 
-**Issue:** `OtpRequestBody` and `OtpVerifyBody` validate `method` ∈ {`"email"`, `"sms"`} and bound `external_id` by length (1–320 chars), but do not validate that `external_id` conforms to the expected format for the chosen `method`. A client can submit `method="sms"` with `external_id="not-a-phone-number"` or `method="email"` with `external_id="+27821234567"`. This:
-- Wastes an SMS API credit (or triggers CR-02's uncaught exception for invalid E.164)
-- Stores a malformed Redis challenge key that cannot correspond to a deliverable channel
+**Issue:** The IDV gate (step 2.5) calls `await check_verified_session(agent_id, vst, conn_str)` at line 244 with no surrounding try/except. `check_verified_session` uses `asyncio.to_thread` to run a `psycopg2.connect` call. If the tenant DB is unavailable (e.g., transient connection error, Neon cold start timeout), `psycopg2.OperationalError` propagates through:
 
-**Fix:** Add a `model_validator` to each body model:
+- `_query()` inside `asyncio.to_thread`
+- `check_verified_session` (no catch)
+- `_execute_transactional_tool` (no catch at step 2.5)
+- The calling tool handler (e.g., `place_order_tool`) — has try/except only around `PlaceOrderInput(**args)`
+
+The tool handler raises an uncaught exception rather than returning a structured `{"is_error": True, "content": [...]}` response. Every other rejection path in the dispatcher (capability denial, args_mismatch, rate denial, actor block, adapter error) returns a structured error. The IDV gate step is the only path that can silently escalate a DB error into an unhandled exception reaching the Claude Agent SDK.
+
+Side effects of the unhandled exception:
+- No `tool_calls_audit` row written (audit gap — AUD-01 asymmetry on DB-error path).
+- Idempotency slot not consumed (safe for retry, but the error is invisible to operators).
+- The SDK turn likely fails, emitting `agent.failed` without a clear cause.
+
+This issue is specifically exposed by the `asyncio.to_thread` offload introduced in the fix pass: the offload is correct for psycopg2 blocking calls, but the exception propagation path from the thread pool is unguarded at the call site.
+
+**Fix:** Wrap the `check_verified_session` call in a try/except and return a structured error:
+
 ```python
-from pydantic import model_validator
-
-class OtpRequestBody(BaseModel):
-    external_id: str = Field(..., min_length=1, max_length=320)
-    method: str = Field(..., pattern=r"^(email|sms)$")
-
-    @model_validator(mode="after")
-    def external_id_matches_method(self) -> "OtpRequestBody":
-        if self.method == "sms" and not re.match(r"^\+\d{7,15}$", self.external_id):
-            raise ValueError("external_id must be E.164 format for method='sms'")
-        if self.method == "email" and "@" not in self.external_id:
-            raise ValueError("external_id must be an email address for method='email'")
-        return self
-```
-
----
-
-### WR-07: Unused `agent_id` parameter in `_check_config_rate_limit`
-
-**File:** `apps/api/app/api/v1/widget.py:92-112`
-
-**Issue:** `_check_config_rate_limit(agent_id, client_ip, redis)` accepts `agent_id` as its first argument but does not use it in the rate-limit key (`key = f"rate:config:{client_ip}:{bucket}"`). The rate limit is per-IP only. The unused parameter misleads callers into thinking the limit is scoped per-agent.
-
-**Fix:** Remove the `agent_id` parameter from the function signature and update its single call site at line 269:
-```python
-async def _check_config_rate_limit(client_ip: str, redis: Redis) -> None: ...
-# caller:
-await _check_config_rate_limit(request.client.host, redis_client)
+if snapshot.get("requires_identity_verification", False):
+    vst = _verified_session_token_var.get()
+    if not vst:
+        await write_audit_row(..., error="identity_verification.required")
+        return {"content": [...], "is_error": True}
+    try:
+        from app.services.identity_service import check_verified_session  # noqa: PLC0415
+        session_valid = await check_verified_session(agent_id, vst, conn_str)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "transactional_tool.idv_check_failed",
+            agent_id=agent_id,
+            skill=skill,
+            error=str(exc),
+        )
+        await write_audit_row(..., error=f"identity_verification.check_error:{exc}")
+        return {
+            "content": [{"type": "text", "text": "Identity verification check failed. Please try again."}],
+            "is_error": True,
+        }
+    if not session_valid:
+        await write_audit_row(..., error="identity_verification.invalid_or_expired")
+        return {"content": [...], "is_error": True}
 ```
 
 ---
 
 ## Info
 
-### IN-01: Hardcoded credentials in integration test
+### IN-01: Hardcoded local Postgres credentials in integration test file
 
 **File:** `apps/api/tests/integration/test_migrations.py:51-52`
 
-**Issue:** `_ADMIN_DB_URL = "postgresql://wchats:wchats@localhost:5432/postgres"` hardcodes a username and password. While this is the local dev DB, the convention of using environment variables for credentials should be followed even in tests to keep `.env`-based credential management consistent.
+**Issue:** `_ADMIN_DB_URL = "postgresql://wchats:wchats@localhost:5432/postgres"` and `_LOCAL_BASE = "postgresql://wchats:wchats@localhost:5432"` are hardcoded. If the developer's local Postgres uses different credentials or these files are committed to a shared repo with CI secrets scanning, this creates a false-positive secret alert. The credentials (`wchats:wchats`) are clearly development-only but they are hard-coded rather than read from environment variables.
 
-**Fix:** `_ADMIN_DB_URL = os.environ.get("TEST_ADMIN_DB_URL", "postgresql://wchats:wchats@localhost:5432/postgres")`
+**Fix:** Read from environment with a sensible default:
+```python
+import os
+_ADMIN_DB_URL = os.getenv("TEST_ADMIN_DB_URL", "postgresql://wchats:wchats@localhost:5432/postgres")
+_LOCAL_BASE = os.getenv("TEST_LOCAL_BASE", "postgresql://wchats:wchats@localhost:5432")
+```
 
 ---
 
-### IN-02: `check_verified_session` accepts `agent_id` but never uses it in SQL
+### IN-02: `check_verified_session` accepts `agent_id` but never uses it (OD-1 maintenance trap)
 
 **File:** `apps/api/app/services/identity_service.py:424`
 
-**Issue:** The parameter is intentional per OD-1 ("agent_id accepted for call-site symmetry but NOT used in SQL WHERE clause"). However, the absence of `agent_id` in the query is a security-sensitive design choice. A future maintainer who adds `AND agent_id = %s` to the WHERE clause would silently scope sessions to a single agent instead of the whole tenant, breaking the cross-agent session-sharing design without any test failure (since existing tests supply `agent_id`).
+**Issue:** The function signature is `check_verified_session(agent_id: str, raw_token: str, conn_str: str)` but `agent_id` is not referenced anywhere in the function body. The SQL WHERE clause queries only `session_token_hash` and `session_expires_at`. The docstring acknowledges this: "agent_id accepted for call-site symmetry but NOT used in SQL WHERE clause (OD-1: uniqueness is enforced on external_id alone across the whole tenant)."
 
-**Fix:** Either remove the unused parameter entirely, or replace it with a clearly named sentinel:
+The risk is a maintenance trap: a future developer seeing `agent_id` in the signature may assume it is enforced in SQL (which it is not), or may add incorrect SQL that narrows the query to a specific agent when the table is intentionally cross-agent. The parameter also appears in the IDV gate call (`check_verified_session(agent_id, vst, conn_str)` at `tools.py:244`), perpetuating the impression that it has enforcement significance.
+
+**Fix:** Either drop the parameter (breaking change to callers, but callers can be updated) or add a `# noqa` comment that makes the intent unambiguous. If kept for API symmetry, mark it explicitly:
 ```python
 async def check_verified_session(
-    raw_token: str,   # agent_id removed — not in WHERE per OD-1
+    agent_id: str,  # accepted for call-site symmetry; NOT used in SQL (OD-1 — see docstring)
+    raw_token: str,
     conn_str: str,
-) -> bool: ...
-```
-Alternatively, keep it and add a prominent inline comment:
-```python
-# agent_id intentionally excluded from WHERE — sessions are cross-agent per OD-1.
-# DO NOT add agent_id to this query without updating the design doc.
+) -> bool:
 ```
 
 ---
 
-### IN-03: Raw verified_session_token is stored in Celery task args (Redis broker)
+### IN-03: Raw `verified_session_token` stored in Celery task message (Redis at-rest exposure)
 
-**File:** `apps/api/app/worker/tasks/runtime/agent.py:404-405`
-**Also:** `apps/api/app/api/v1/widget.py:432-438`
+**File:** `apps/api/app/api/v1/widget.py:431-439`
 
-**Issue:** `run_agent_turn.apply_async(args=[job_id, agent_id, message, conversation_id, body.verified_session_token or ""])` stores the raw session token in the Celery task message, which lives in the Redis broker. If the Redis broker is compromised, an attacker can extract raw session tokens and use them to bypass identity verification for the remaining TTL window (up to 1 hour). The analogous exposure exists for the `message` field.
+**Issue:** `body.verified_session_token or ""` is passed as the 5th positional argument to `run_agent_turn.apply_async(args=[...])`. Celery serializes task arguments to JSON and stores them in Redis (`runtime` queue). The raw session token is therefore at rest in Redis for the duration of queue processing (typically seconds, but potentially longer under load or on worker failure).
 
-This is an accepted architectural trade-off (the same reasoning applies to the `message` arg which also lives in broker storage), but it should be documented explicitly in the threat model. The token should never appear in logs (correctly enforced by T-04-03-05), and Redis-at-rest encryption (if available on the deployment target) would mitigate this.
+The docstring in `agent.py:418-422` acknowledges this: "NEVER logged (parity with message, T-04-03-05)". The logging invariant is maintained — no structlog line references the token. However, the at-rest exposure in Redis differs in nature from the logged-plaintext risk addressed by T-04-03-05.
 
----
+This is a documented design trade-off (threat model note, not an oversight). Mitigations in place: Redis is not a public endpoint; the token has a short TTL (VERIFIED_SESSION_TTL_SECONDS=3600); the token grants access to IDV-gated tools only (not admin or tenant-level access). Full mitigation would require encrypting the token before placing it in task args, which is out of scope for Phase 17.
 
-### IN-04: PII (email address) included in structured log entries for OTP email
-
-**File:** `apps/api/app/services/identity_service.py:264, 267`
-
-**Issue:**
-```python
-log.info("otp_email.sent", to=to_email)
-log.warning("otp_email.send_failed", error=str(exc), to=to_email)
-```
-
-The recipient email address is recorded in structured logs. Under POPIA (applicable in South Africa) and GDPR, email addresses are personal data. Log retention periods and access controls must cover these entries. If centralized logging (e.g., Sentry, Langfuse) is in use, the `to` field will be transmitted there as well.
-
-**Fix:** Hash or omit the address, or ensure log-retention policy is documented:
-```python
-log.info("otp_email.sent", to_domain=to_email.split("@")[-1])  # domain only for ops
-```
+**Fix (Phase 18 candidate):** Encrypt the token with the existing Fernet key before placing it in task args, and decrypt at the start of `run_agent_turn` — consistent with the `neon_connection_string` pattern.
 
 ---
 
-_Reviewed: 2026-07-01_
+### IN-04: Recipient email address logged as a structured field (POPIA/GDPR PII-in-logs)
+
+**File:** `apps/api/app/services/identity_service.py:241, 262, 265`
+
+**Issue:** Three log calls in `send_otp_email` include `to=to_email` as a structured log field:
+
+```python
+log.warning("otp_email.not_configured", to=to_email)   # line 241
+log.info("otp_email.sent", to=to_email)                 # line 262
+log.warning("otp_email.send_failed", error=str(exc), to=to_email)  # line 265
+```
+
+An email address is personal information under both POPIA (South Africa) and GDPR. Logging it as a structured field means it flows into any configured log sink (Sentry, Langfuse, CloudWatch, etc.) and may persist beyond the OTP TTL. The OTP code itself is never logged (T-17-08 satisfied), but the delivery address is.
+
+**Fix:** Replace `to=to_email` with a truncated or hashed identifier to preserve debuggability without storing the raw address:
+```python
+# Pseudonymise: log domain only (user@example.com → example.com)
+_log_id = to_email.split("@")[-1] if "@" in to_email else "<redacted>"
+log.info("otp_email.sent", to_domain=_log_id)
+```
+Or hash consistently: `to_hash=hashlib.sha256(to_email.encode()).hexdigest()[:12]`.
+
+---
+
+### IN-05: `verify_otp` UPSERT failure after Redis DELETE leaves OTP consumed, no session created
+
+**File:** `apps/api/app/services/identity_service.py:380-421`
+
+**Issue:** The correct-code path in `verify_otp` deletes the Redis key at line 381 (T-17-05 single-use invariant) and then calls `await asyncio.to_thread(_upsert)` at line 420. If `_upsert` raises (e.g., `psycopg2.OperationalError` on DB timeout), the exception propagates through `asyncio.to_thread` and out of `verify_otp`. The route handler catches only `OtpInvalid` and `OtpRateLimited`, so a DB error becomes a 500.
+
+The user is now in a degraded state:
+- Their OTP is consumed (deleted from Redis) — single-use enforced even on failure.
+- No `customer_identities` row was created.
+- They receive a 500 error.
+- Recovery requires requesting a new OTP, which is rate-limited by `OTP_SEND_MAX_PER_WINDOW`.
+
+The delete-first ordering is correct per T-17-05 (security invariant must not be relaxed). This is an inherent tradeoff of the delete-first pattern. The issue is not new to the `asyncio.to_thread` rewrite (the same propagation would occur with an inline blocking call), but the thread offload makes it more explicit that the DB failure path is uncaught.
+
+**Fix:** Catch DB errors from `asyncio.to_thread(_upsert)` in `verify_otp` and raise a distinct exception (`OtpDeliveryError` or similar) so the route handler can return a retriable 503 rather than a generic 500:
+
+```python
+try:
+    await asyncio.to_thread(_upsert)
+except Exception as exc:  # noqa: BLE001
+    log.error("verify_otp.upsert_failed", agent_id=agent_id, error=str(exc))
+    raise OtpStorageError("Session record could not be created — please try again") from exc
+```
+
+Route handler then catches `OtpStorageError` → 503 with `Retry-After: 30`.
+
+---
+
+_Reviewed: 2026-07-02T00:00:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
