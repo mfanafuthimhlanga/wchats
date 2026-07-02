@@ -52,7 +52,7 @@ from app.schemas.widget import (
     WidgetChatResponse,
     WidgetConfigResponse,
 )
-from app.services.identity_service import OtpInvalid, OtpRateLimited, request_otp, verify_otp
+from app.services.identity_service import OtpInvalid, OtpRateLimited, OtpStorageError, request_otp, verify_otp
 from app.services.sse import event_generator
 from app.worker.tasks.runtime.agent import run_agent_turn
 
@@ -697,6 +697,14 @@ async def post_widget_identity_verify(
             status_code=429,
             detail="Too many failed attempts — try again later",
             headers={"Retry-After": "60"},
+        )
+    except OtpStorageError:
+        # OTP was correct and consumed (single-use invariant enforced), but the
+        # session UPSERT failed (e.g. DB timeout). Client must request a new OTP.
+        raise HTTPException(
+            status_code=503,
+            detail="Verification succeeded but session could not be saved — please request a new code",
+            headers={"Retry-After": "30"},
         )
 
     return OtpVerifyResponse(verified_session_token=token)

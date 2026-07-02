@@ -53,6 +53,15 @@ class OtpRateLimited(Exception):
     """Raised when OTP attempt or send count exceeds the configured limit."""
 
 
+class OtpStorageError(Exception):
+    """Raised when the verified-session UPSERT fails after a correct OTP.
+
+    The OTP has already been consumed (Redis key deleted — T-17-05 single-use).
+    Route handlers should surface this as HTTP 503 with Retry-After so the client
+    knows to request a new OTP rather than retrying the same code.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Task 1: Crypto core helpers (pure functions, stdlib only)
 # ---------------------------------------------------------------------------
@@ -428,7 +437,15 @@ async def verify_otp(
         finally:
             conn.close()
 
-    await asyncio.to_thread(_upsert)
+    try:
+        await asyncio.to_thread(_upsert)
+    except Exception as exc:  # noqa: BLE001
+        # OTP is already consumed (Redis key deleted above — T-17-05 single-use invariant).
+        # Raise a distinct exception so the route can return HTTP 503 with Retry-After,
+        # telling the client to request a new OTP rather than retrying the same code.
+        log.error("verify_otp.upsert_failed", agent_id=agent_id, error=str(exc))
+        raise OtpStorageError("Session record could not be created — please try again") from exc
+
     return raw_token
 
 
