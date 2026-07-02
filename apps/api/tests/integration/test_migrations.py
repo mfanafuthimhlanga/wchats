@@ -22,6 +22,7 @@ Tests:
           no-op (revision stays "0008"). Satisfies IDV-01 substrate requirement.
 """
 
+import os
 import uuid
 
 import pytest
@@ -46,10 +47,15 @@ V1_TABLES = frozenset(
     ]
 )
 
-# Admin connection URL for creating/dropping test databases
-# Using template1 (or postgres) to run CREATE DATABASE commands
-_ADMIN_DB_URL = "postgresql://wchats:wchats@localhost:5432/postgres"
-_LOCAL_BASE = "postgresql://wchats:wchats@localhost:5432"
+# Admin connection URL for creating/dropping test databases.
+# Override via env vars to avoid hardcoded credentials in version control
+# (CI secret scanning, shared repos). Defaults to the standard local dev setup.
+_ADMIN_DB_URL = os.getenv(
+    "TEST_ADMIN_DB_URL", "postgresql://wchats:wchats@localhost:5432/postgres"
+)
+_LOCAL_BASE = os.getenv(
+    "TEST_LOCAL_BASE", "postgresql://wchats:wchats@localhost:5432"
+)
 
 
 def _create_test_database(db_name: str) -> str:
