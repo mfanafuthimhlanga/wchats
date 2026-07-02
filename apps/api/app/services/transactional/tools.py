@@ -241,7 +241,38 @@ async def _execute_transactional_tool(
             }
         from app.services.identity_service import check_verified_session  # noqa: PLC0415
 
-        session_valid = await check_verified_session(agent_id, vst, conn_str)
+        try:
+            session_valid = await check_verified_session(agent_id, vst, conn_str)
+        except Exception as exc:  # noqa: BLE001
+            # DB error (e.g. psycopg2.OperationalError on Neon cold start) — fail CLOSED.
+            # Never allow the mutating tool to proceed when the IDV check cannot complete.
+            log.warning(
+                "transactional_tool.idv_check_failed",
+                agent_id=agent_id,
+                skill=skill,
+                error=str(exc),
+            )
+            await write_audit_row(
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+                skill=skill,
+                arguments=raw_args,
+                result=None,
+                actor_decision="",
+                actor_rationale="",
+                capability_snapshot=snapshot,
+                latency_ms=None,
+                error="identity_verification.check_failed",
+            )
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Identity verification check failed. Please try again.",
+                    }
+                ],
+                "is_error": True,
+            }
         if not session_valid:
             # Token present but expired or not found in tenant DB — block before reservation.
             await write_audit_row(
