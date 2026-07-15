@@ -90,6 +90,20 @@ _LIST_EVAL_RUNS_SQL = """
     LIMIT 50
 """
 
+# OPS-12: ORRERY ledger — eval provenance (born-in-production vs authored counts).
+# provenance IS NULL rows predate provenance tracking (migration 0011) and are
+# always treated as authored, never as an error state (21-RESEARCH.md Runtime
+# State Inventory / this plan's must_haves prohibitions).
+_LEDGER_SQL = """
+    SELECT
+        COUNT(*) FILTER (WHERE source = 'production') AS born_in_production_count,
+        COUNT(*) FILTER (WHERE source = 'red_team')    AS red_team_count,
+        COUNT(*) FILTER (
+            WHERE source IN ('generated', 'mined') OR provenance IS NULL
+        ) AS authored_count
+    FROM eval_scenarios
+"""
+
 
 @router.get("/agents/{agent_id}/eval-runs")
 async def list_eval_runs(
@@ -127,6 +141,16 @@ async def list_eval_runs(
         _query_tenant_db_sync, conn_str, _LIST_EVAL_RUNS_SQL, {}
     )
 
+    # 5b. OPS-12: ORRERY ledger — same tenant-DB round-trip pattern (asyncio.to_thread
+    # + _query_tenant_db_sync), computed in this same route so the eval-runs response
+    # is the single place the admin UI reads eval provenance from.
+    ledger_rows = await asyncio.to_thread(
+        _query_tenant_db_sync, conn_str, _LEDGER_SQL, {}
+    )
+    born_in_production_count, red_team_count, authored_count = (
+        ledger_rows[0] if ledger_rows else (0, 0, 0)
+    )
+
     # 6. Build response matching the exact shape from RESEARCH.md §9
     eval_runs = []
     for row in rows:
@@ -152,8 +176,17 @@ async def list_eval_runs(
         agent_id=str(agent_id),
         tenant_id=str(tenant.id),
         run_count=len(eval_runs),
+        born_in_production_count=int(born_in_production_count or 0),
+        authored_count=int(authored_count or 0),
     )
-    return {"eval_runs": eval_runs}
+    return {
+        "eval_runs": eval_runs,
+        "ledger": {
+            "born_in_production_count": int(born_in_production_count or 0),
+            "red_team_count": int(red_team_count or 0),
+            "authored_count": int(authored_count or 0),
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -24,10 +24,42 @@ Patch targets are symbols imported into app.worker.tasks.runtime.bench:
 from __future__ import annotations
 
 import inspect
+import sys
+import types
 from contextlib import contextmanager
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 from app.worker.tasks.runtime import bench as mod
+
+# ---------------------------------------------------------------------------
+# PRE-EXISTING INFRA NOTE (not a regression introduced by this plan):
+#   app.api.v1.evals transitively imports app.worker.tasks.runtime.eval ->
+#   app.services.eval_service -> ragas.metrics.collections -> ragas.llms.base ->
+#   langchain_community.chat_models.vertexai, which raises ModuleNotFoundError
+#   in this environment (confirmed present on HEAD before this plan's changes
+#   — e.g. `pytest tests/unit/test_eval_routes.py` fails to collect
+#   identically; see test_bench_routes.py's identical note for the traces
+#   module). Unlike traces.py, evals.py itself (not just app.main) sits on
+#   this import chain, so a "targeted import of just the router" isn't enough
+#   here — a minimal stub module is installed in sys.modules for ONLY that
+#   missing leaf import so evals.py can be imported directly in the ledger
+#   tests below without touching app.main or attempting to fix the broader
+#   ragas/langchain-community version mismatch (out of scope for this plan).
+# ---------------------------------------------------------------------------
+if "langchain_community.chat_models.vertexai" not in sys.modules:
+    _vertexai_stub = types.ModuleType("langchain_community.chat_models.vertexai")
+    _vertexai_stub.ChatVertexAI = MagicMock()
+    sys.modules["langchain_community.chat_models.vertexai"] = _vertexai_stub
+
+from fastapi import FastAPI  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+
+from app.api.deps import get_current_tenant  # noqa: E402
+from app.api.v1 import evals as evals_module  # noqa: E402
+from app.core.database import get_async_db  # noqa: E402
+from app.models.agent import Agent  # noqa: E402
+from app.models.tenant import Tenant  # noqa: E402
 
 
 def _make_sync_db_context(mock_db):
@@ -195,3 +227,158 @@ def test_promote_trace_no_response_event_skips_insert(monkeypatch):
 
     assert result == {"status": "no_response_event", "trace_id": "trace-1"}
     assert insert_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Task 3 (OPS-12): GET /eval-runs ORRERY ledger — select with `-k ledger`
+# ---------------------------------------------------------------------------
+
+# Targeted import — a minimal FastAPI app wrapping ONLY the evals router (see
+# PRE-EXISTING INFRA NOTE above for why the vertexai stub is required first).
+_ledger_test_app = FastAPI()
+_ledger_test_app.include_router(evals_module.router, prefix="/api/v1")
+
+
+def _make_fake_tenant() -> Tenant:
+    tenant = MagicMock(spec=Tenant)
+    tenant.id = uuid4()
+    return tenant
+
+
+def _make_ready_agent(tenant: Tenant) -> Agent:
+    agent = MagicMock(spec=Agent)
+    agent.id = uuid4()
+    agent.tenant_id = tenant.id
+    agent.neon_connection_string = b"fake-encrypted-bytes"
+    return agent
+
+
+def _make_mock_db_returning_agent(agent: Agent) -> AsyncMock:
+    mock_session = AsyncMock()
+    mock_session.get = AsyncMock(return_value=agent)
+    return mock_session
+
+
+class TestEvalRunsLedgerQuery:
+    """Source-level assertions on the ledger SQL itself (mirrors the
+    acceptance_criteria grep check: provenance IS NULL folds into authored)."""
+
+    def test_ledger_sql_folds_null_provenance_into_authored(self):
+        assert "provenance IS NULL" in evals_module._LEDGER_SQL
+        assert "authored_count" in evals_module._LEDGER_SQL
+        assert "born_in_production_count" in evals_module._LEDGER_SQL
+        assert "red_team_count" in evals_module._LEDGER_SQL
+
+
+class TestEvalRunsLedgerRoute:
+    """OPS-12: GET /agents/{id}/eval-runs surfaces the ORRERY ledger block."""
+
+    async def test_ledger_reports_born_in_production_and_authored_counts(self):
+        """Mocked cursor returns known source counts -> ledger block matches exactly."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+
+        def _fake_query(conn_str, sql, params):
+            if "born_in_production_count" in sql:
+                # 3 production, 1 red_team, 5 authored (includes NULL-provenance legacy rows)
+                return [(3, 1, 5)]
+            return []  # _LIST_EVAL_RUNS_SQL — empty; ledger is what's under test here
+
+        _ledger_test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _ledger_test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with patch(
+                "app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/tenant"
+            ), patch(
+                "app.api.v1.evals._query_tenant_db_sync", side_effect=_fake_query
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=_ledger_test_app), base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        f"/api/v1/agents/{ready_agent.id}/eval-runs"
+                    )
+        finally:
+            _ledger_test_app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ledger"] == {
+            "born_in_production_count": 3,
+            "red_team_count": 1,
+            "authored_count": 5,
+        }
+
+    async def test_ledger_treats_null_provenance_legacy_rows_as_authored(self):
+        """provenance IS NULL rows fold into authored_count — never an error state."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+
+        def _fake_query(conn_str, sql, params):
+            if "born_in_production_count" in sql:
+                # No production/red_team rows at all -- everything present is
+                # legacy (provenance IS NULL) -- all folded into authored_count.
+                return [(0, 0, 12)]
+            return []
+
+        _ledger_test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _ledger_test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with patch(
+                "app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/tenant"
+            ), patch(
+                "app.api.v1.evals._query_tenant_db_sync", side_effect=_fake_query
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=_ledger_test_app), base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        f"/api/v1/agents/{ready_agent.id}/eval-runs"
+                    )
+        finally:
+            _ledger_test_app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ledger"]["authored_count"] == 12
+        assert body["ledger"]["born_in_production_count"] == 0
+        assert body["ledger"]["red_team_count"] == 0
+
+    async def test_ledger_null_row_defaults_to_zero_counts(self):
+        """No eval_scenarios rows at all -> ledger reports all-zero, not an error."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+
+        def _fake_query(conn_str, sql, params):
+            return []  # both queries return no rows
+
+        _ledger_test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _ledger_test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with patch(
+                "app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/tenant"
+            ), patch(
+                "app.api.v1.evals._query_tenant_db_sync", side_effect=_fake_query
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=_ledger_test_app), base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        f"/api/v1/agents/{ready_agent.id}/eval-runs"
+                    )
+        finally:
+            _ledger_test_app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ledger"] == {
+            "born_in_production_count": 0,
+            "red_team_count": 0,
+            "authored_count": 0,
+        }
