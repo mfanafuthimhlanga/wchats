@@ -1,10 +1,10 @@
 'use client'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
-import { useState } from 'react'
 import Link from 'next/link'
 
 import AgentCard from '../components/AgentCard'
+import EmptyState from '../components/gotham/EmptyState'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,11 +25,20 @@ type AgentSummary = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function getTimeGreeting(): string {
-  const hour = new Date().getHours()
-  if (hour < 12) return 'Good morning'
-  if (hour < 18) return 'Good afternoon'
-  return 'Good evening'
+// The prototype's page-head sub line ("Three agents on the bench. Only one
+// has cleared its gate, and only that one is answering customers.") is
+// authored, static copy — this is the dynamic equivalent for real data.
+function subCopy(total: number, liveCount: number): string {
+  if (total === 0) {
+    return 'Nothing on the bench yet. Provision your first agent to get started.'
+  }
+  const agentWord = total === 1 ? 'agent' : 'agents'
+  if (liveCount === 0) {
+    return `${total} ${agentWord} on the bench. None have cleared the gate yet — none are answering customers.`
+  }
+  const clearedWord = liveCount === 1 ? 'has' : 'have'
+  const answeringWord = liveCount === 1 ? 'is' : 'are'
+  return `${total} ${agentWord} on the bench. ${liveCount} ${clearedWord} cleared the gate, and only ${liveCount === 1 ? 'that one' : 'those'} ${answeringWord} answering customers.`
 }
 
 // ---------------------------------------------------------------------------
@@ -134,151 +143,67 @@ export default function AgentsDashboardPage() {
       : msg || 'Failed to load agents. Please refresh.'
   }
 
-  const greeting = getTimeGreeting()
-  const [activeFilter, setActiveFilter] = useState<'All' | 'Live' | 'Testing' | 'Draft'>('All')
-
-  const liveCount = agents.filter(a => a.status === 'ready').length
-  const testingCount = agents.filter(a => a.status === 'testing').length
-  const draftCount = agents.filter(a => a.status !== 'ready' && a.status !== 'testing').length
-
-  const filteredAgents = activeFilter === 'All'
-    ? agents
-    : activeFilter === 'Live'
-    ? agents.filter(a => a.status === 'ready')
-    : activeFilter === 'Testing'
-    ? agents.filter(a => a.status === 'testing')
-    : agents.filter(a => a.status !== 'ready' && a.status !== 'testing')
+  const liveCount = agents.filter((a) => a.status === 'ready').length
 
   return (
-    <div style={{ background: 'transparent' }}>
-      {/* Header bar — greeting left, CTA right */}
-      <div
-        style={{
-          padding: '40px 48px 16px',
-          position: 'relative',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '32px', maxWidth: '1400px' }}>
+    <div className="page">
+      {/* Header bar (§6.2 `.page-head`) — h1, sub line, "New agent" CTA */}
+      <div className="page-head">
+        <div className="row">
           <div>
-            <h1 className="on-photo" style={{ fontFamily: 'var(--font-display)', fontWeight: 400, fontVariationSettings: '"opsz" 144, "SOFT" 50', fontSize: '34px', letterSpacing: '-0.022em', lineHeight: 1.1, color: 'var(--text-1)', margin: '0 0 6px 0' }}>
-              {greeting},{' '}
-              <em style={{ fontStyle: 'italic', fontWeight: 300, color: 'var(--accent)', fontVariationSettings: '"opsz" 144, "SOFT" 100' }}>
-                there
-              </em>
-            </h1>
-            <p className="on-photo" style={{ fontSize: '14px', color: 'var(--text-2)', margin: 0 }}>
-              {liveCount} live · {testingCount} in test · {draftCount} draft
-            </p>
+            <h1>Agents</h1>
+            <p className="sub">{subCopy(agents.length, liveCount)}</p>
           </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
-            <Link
-              href="/agents/new"
-              style={{
-                background: 'var(--accent)',
-                color: 'var(--text-on-accent)',
-                padding: '10px 18px',
-                borderRadius: 'var(--radius-sm)',
-                fontWeight: 600,
-                fontSize: '14px',
-                textDecoration: 'none',
-                display: 'inline-block',
-              }}
-            >
-              New agent
-            </Link>
-          </div>
+          <Link className="btn btn-primary" href="/agents/new">
+            New agent
+          </Link>
         </div>
       </div>
 
-      {/* Filter strip */}
-      <div style={{ padding: '0 48px 12px', maxWidth: '1400px' }}>
-        <div className="on-photo" style={{ display: 'flex', gap: '4px' }}>
-          {([
-            { label: 'All', count: agents.length },
-            { label: 'Live', count: liveCount },
-            { label: 'Testing', count: testingCount },
-            { label: 'Draft', count: draftCount },
-          ] as const).map(({ label, count }) => {
-            const isActive = activeFilter === label
-            return (
-              <button
-                key={label}
-                onClick={() => setActiveFilter(label)}
-                style={{
-                  background: isActive ? 'var(--chip)' : 'transparent',
-                  border: isActive ? '1px solid var(--border)' : '1px solid transparent',
-                  color: isActive ? 'var(--text-1)' : 'var(--text-2)',
-                  fontSize: '13px',
-                  fontWeight: isActive ? 600 : 500,
-                  padding: '5px 12px',
-                  borderRadius: 'var(--radius-xs)',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                }}
-              >
-                {label}
-                <span style={{
-                  fontSize: '11px',
-                  fontFamily: 'var(--font-mono)',
-                  color: isActive ? 'var(--text-1)' : 'var(--text-2)',
-                  opacity: isActive ? 1 : 0.8,
-                }}>
-                  {count}
-                </span>
-              </button>
-            )
-          })}
+      {/* Error alert */}
+      {loadError && (
+        <div
+          role="alert"
+          style={{
+            padding: '12px 16px',
+            marginBottom: '20px',
+            background: 'var(--fail-dim)',
+            border: '1px solid color-mix(in oklch, var(--fail) 40%, transparent)',
+            borderRadius: 'var(--r-control)',
+            fontSize: '14px',
+            color: 'var(--fail)',
+          }}
+        >
+          {loadError}
         </div>
-      </div>
+      )}
 
-      {/* Content area */}
-      <div style={{ padding: '0 48px 56px', maxWidth: '1400px' }}>
-        {/* Error alert */}
-        {loadError && (
-          <div
-            role="alert"
-            style={{ padding: '12px 16px', marginBottom: '20px', background: 'var(--red-bg)', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 'var(--radius-xs)', fontSize: '14px', color: 'var(--red)' }}
-          >
-            {loadError}
-          </div>
-        )}
+      {/* Loading state */}
+      {isLoading && (
+        <p className="mono" style={{ color: 'var(--ink-3)' }}>Loading agents…</p>
+      )}
 
-        {/* Loading state */}
-        {isLoading && (
-          <p style={{ color: 'var(--text-3)' }}>Loading agents…</p>
-        )}
+      {/* Empty state (§12 copywriting contract) */}
+      {!isLoading && agents.length === 0 && !loadError && (
+        <EmptyState
+          heading="No agents yet"
+          body="Provision your first agent to start ingesting documents and shipping a verified assistant."
+          linkHref="/agents/new"
+          linkLabel="New agent"
+        />
+      )}
 
-        {/* Empty state */}
-        {!isLoading && agents.length === 0 && !loadError && (
-          <div style={{ textAlign: 'center', padding: '80px 0' }}>
-            <div className="glass" style={{ display: 'inline-flex', alignItems: 'center', borderRadius: 'var(--radius-pill)', padding: '4px 14px', marginBottom: '20px' }}>
-              <span style={{ fontSize: '10.5px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)' }}>No agents yet</span>
-            </div>
-            <h2 style={{ fontFamily: 'var(--font-display)', fontWeight: 400, fontVariationSettings: '"opsz" 144, "SOFT" 30', fontSize: '24px', color: 'var(--text-1)', margin: '0 0 8px 0' }}>
-              Build your first{' '}
-              <em style={{ fontStyle: 'italic', fontWeight: 300, color: 'var(--accent)', fontVariationSettings: '"opsz" 144, "SOFT" 100' }}>agent</em>
-            </h2>
-            <p style={{ color: 'var(--text-3)', marginBottom: '24px', fontSize: '15px' }}>
-              Create a customer service agent and deploy it in minutes.
-            </p>
-            <Link href="/agents/new" style={{ background: 'var(--accent)', color: 'var(--text-on-accent)', padding: '10px 18px', borderRadius: 'var(--radius-sm)', fontWeight: 600, fontSize: '14px', textDecoration: 'none', display: 'inline-block' }}>
-              New agent
-            </Link>
-          </div>
-        )}
-
-        {/* Agent grid */}
-        {!isLoading && agents.length > 0 && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
-            {filteredAgents.map((a) => (
+      {/* Agent grid (§6.2 `.agents`) */}
+      {!isLoading && agents.length > 0 && (
+        <>
+          <h2 className="vh">All agents</h2>
+          <div className="agents">
+            {agents.map((a) => (
               <AgentCard key={a.id} {...a} onDelete={isDemoMode ? undefined : handleDelete} disableNavigation={isDemoMode} />
             ))}
           </div>
-        )}
-      </div>
+        </>
+      )}
     </div>
   )
 }
