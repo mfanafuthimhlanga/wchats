@@ -7,9 +7,11 @@ WidgetChatResponse    — response for POST /widget/{id}/chat (mirrors AgentChat
 OtpRequestBody        — body for POST /widget/{id}/identity/request (Phase 17)
 OtpVerifyBody         — body for POST /widget/{id}/identity/verify (Phase 17)
 OtpVerifyResponse     — response for POST /widget/{id}/identity/verify (Phase 17)
+WidgetFeedbackRequest — body for POST /widget/agents/{id}/feedback (Phase 21, OPS-02)
 """
 
 import re
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
@@ -97,3 +99,23 @@ class OtpVerifyResponse(BaseModel):
     """
 
     verified_session_token: str
+
+
+# ---------------------------------------------------------------------------
+# Phase 21 — OPS-02 widget feedback schema
+# ---------------------------------------------------------------------------
+
+
+class WidgetFeedbackRequest(BaseModel):
+    """Body for POST /widget/agents/{agent_id}/feedback (OPS-02).
+
+    rating is required (thumbs up/down); csat_score is optional and bounded
+    1-5 (T-21-02-04: Pydantic bounds are the first line of defense — the
+    message_feedback table's CHECK constraints, migration 0009, are the
+    defense-in-depth backstop).
+    """
+
+    message_id: UUID
+    conversation_id: UUID | None = None
+    rating: Literal["up", "down"]
+    csat_score: int | None = Field(default=None, ge=1, le=5)
