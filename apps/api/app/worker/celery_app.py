@@ -104,6 +104,8 @@ celery_app.conf.update(
         "app.worker.tasks.runtime.digest",
         # M10: daily alert check (runtime queue)
         "app.worker.tasks.runtime.alert",
+        # Phase 21 (OPS-07): sampled retrieval faithfulness task (runtime queue)
+        "app.worker.tasks.runtime.retrieval_eval",
     ],
 
     # --- Queue topology -------------------------------------------------

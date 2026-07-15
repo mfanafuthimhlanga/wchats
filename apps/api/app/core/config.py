@@ -157,6 +157,13 @@ class Settings(BaseSettings):
     # Set AGENT_MAX_BUDGET_USD in .env to override (e.g. tighter in production).
     AGENT_MAX_BUDGET_USD: float = 0.50
 
+    # Phase 21 (OPS-07): sampled Ragas 0.4.x faithfulness + citation-coverage rate.
+    # Online-scoring norm is 1-10% of live traffic (DOMAIN-NOTES §2) + 100% of
+    # Auditor-flagged ungrounded/partial turns (gated inside run_retrieval_faithfulness,
+    # not at dispatch time — see 21-04-SUMMARY.md). 0.1 = 10%, the top of that range,
+    # chosen as a conservative default; override via env var for a tighter/looser rate.
+    RETRIEVAL_FAITHFULNESS_SAMPLE_RATE: float = 0.1
+
     # M15: Actor Validator skip threshold
     # 500 = $5.00 — any skill whose envelope constraints.max_amount_cents ceiling is
     # strictly below this value skips the Actor judge entirely (ACT-03 cost control).

@@ -500,9 +500,14 @@ def test_validators_dispatched():
 
     # Verify auditor was called with 6 positional args (the last call arg to celery_chain)
     chain_call_args = mock_celery_chain.call_args[0]
-    # chain_call_args is (gatekeeper_sig, auditor_sig, strategist_sig)
-    assert len(chain_call_args) == 3, (
-        f"Expected 3 chain tasks (gatekeeper, auditor, strategist), got {len(chain_call_args)}"
+    # chain_call_args is (gatekeeper_sig, auditor_sig, strategist_sig, retrieval_faithfulness_sig)
+    # Phase 21 (OPS-07): run_retrieval_faithfulness.si(agent_id, job_id) is appended as the
+    # chain's 4th/last step -- it must run strictly after run_auditor commits its verdict,
+    # since the sample-rate-OR-auditor-flag gate is evaluated inside that task itself
+    # (see app/worker/tasks/runtime/retrieval_eval.py's module docstring).
+    assert len(chain_call_args) == 4, (
+        "Expected 4 chain tasks (gatekeeper, auditor, strategist, retrieval_faithfulness), "
+        f"got {len(chain_call_args)}"
     )
 
 

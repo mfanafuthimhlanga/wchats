@@ -56,6 +56,7 @@ from app.services.escalation import send_escalation_email
 from app.services.events import emit
 from app.worker.celery_app import celery_app
 from app.worker.tasks.runtime.validators import run_gatekeeper, run_auditor, run_strategist
+from app.worker.tasks.runtime.retrieval_eval import run_retrieval_faithfulness
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
@@ -892,11 +893,17 @@ def run_agent_turn(
             retrieve_results = [tc.get("result") for tc in tool_calls_log
                                  if tc.get("tool_name") == "retrieve" and tc.get("result")]
             retrieved_context_json = json.dumps([str(r)[:600] for r in retrieve_results][:3])
+            # OPS-07: run_retrieval_faithfulness is appended as the LAST step —
+            # it must run strictly after run_auditor commits its verdict, since
+            # the sample-rate-OR-auditor-flag gate is evaluated inside the task
+            # itself (Auditor's verdict does not exist yet at this dispatch
+            # point — see retrieval_eval.py module docstring).
             celery_chain(
                 run_gatekeeper.si(str(agent_id), job_id, response_text, message),
                 run_auditor.si(str(agent_id), job_id, response_text, message,
                                retrieved_context_json, str(local_conversation_id)),
                 run_strategist.si(str(agent_id), job_id, response_text, message),
+                run_retrieval_faithfulness.si(str(agent_id), job_id),
             ).apply_async(queue="runtime")
 
             log.info(
