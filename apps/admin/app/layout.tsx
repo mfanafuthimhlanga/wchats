@@ -2,83 +2,86 @@ import type { Metadata } from 'next'
 import { ClerkProvider } from '@clerk/nextjs'
 import QueryProvider from './components/QueryProvider'
 import SignOutTab from './components/SignOutTab'
+import { GateProvider } from './components/gotham/GateProvider'
 import './globals.css'
 
 // Plain module-level constant — Server Component, no hooks, no CSS vars at runtime.
+// Gotham "Bone on Graphite": colorPrimary is --live (bone, brightness not hue),
+// colorBackground is --surface, colorDanger is --seal/--fail. No blur/glass —
+// the console reads as one engraved graphite surface, not a translucent panel.
 const clerkAppearance = {
   variables: {
-    colorPrimary: '#F4748C',
-    colorPrimaryForeground: '#0B0717',
-    colorBackground: '#110C24',
-    colorNeutral: '#C4BCD0',
+    colorPrimary: '#E7E5E1',
+    colorPrimaryForeground: '#0E1012',
+    colorBackground: '#15181B',
+    colorNeutral: '#9BA1A3',
     // Clerk v7 names + legacy aliases — set both so text is never dark-on-dark.
-    colorForeground: '#F4EDE5',
-    colorText: '#F4EDE5',
-    colorMutedForeground: '#C4BCD0',
-    colorTextSecondary: '#C4BCD0',
-    colorInputBackground: 'rgba(11,7,23,0.42)',
-    colorInputForeground: '#F4EDE5',
-    colorInputText: '#F4EDE5',
-    colorDanger: '#F87171',
-    borderRadius: '14px',
+    colorForeground: '#E7E5E1',
+    colorText: '#E7E5E1',
+    colorMutedForeground: '#9BA1A3',
+    colorTextSecondary: '#9BA1A3',
+    colorInputBackground: '#08090B',
+    colorInputForeground: '#E7E5E1',
+    colorInputText: '#E7E5E1',
+    colorDanger: '#E5484D',
+    borderRadius: '6px',
     fontFamily: 'Inter, system-ui, sans-serif',
   },
   elements: {
     card: {
-      background: 'rgba(17,12,31,0.80)',
-      backdropFilter: 'blur(24px) saturate(115%)',
-      border: '1px solid rgba(244,232,220,0.10)',
-      boxShadow: '0 4px 12px rgba(24,14,46,0.35), 0 24px 48px rgba(11,7,23,0.6)',
-      borderRadius: '20px',
+      background: '#15181B',
+      border: '1px solid rgba(231,229,225,0.13)',
+      boxShadow: '0 1px 2px rgba(0,0,0,0.3), 0 12px 32px rgba(0,0,0,0.4)',
+      borderRadius: '6px',
     },
     headerTitle: {
-      color: '#F4EDE5',
+      color: '#E7E5E1',
     },
     headerSubtitle: {
-      color: '#C4BCD0',
+      color: '#9BA1A3',
     },
     socialButtonsBlockButton: {
-      background: 'rgba(11,7,23,0.42)',
-      border: '1px solid rgba(196,154,232,0.18)',
-      color: '#F4EDE5',
+      background: '#08090B',
+      border: '1px solid rgba(231,229,225,0.13)',
+      color: '#E7E5E1',
     },
     socialButtonsBlockButtonText: {
-      color: '#F4EDE5',
+      color: '#E7E5E1',
     },
     dividerLine: {
-      background: 'rgba(196,154,232,0.18)',
+      background: 'rgba(231,229,225,0.13)',
     },
     dividerText: {
-      color: '#8A82A0',
+      color: '#6B7275',
     },
     formFieldLabel: {
-      color: '#C4BCD0',
+      color: '#9BA1A3',
     },
     footerActionText: {
-      color: '#C4BCD0',
+      color: '#9BA1A3',
     },
     footerActionLink: {
-      color: '#F4748C',
+      color: '#E7E5E1',
     },
     identityPreviewText: {
-      color: '#F4EDE5',
+      color: '#E7E5E1',
     },
     formResendCodeLink: {
-      color: '#F4748C',
+      color: '#E7E5E1',
     },
     otpCodeFieldInput: {
-      color: '#F4EDE5',
-      borderColor: 'rgba(196,154,232,0.18)',
+      color: '#E7E5E1',
+      borderColor: 'rgba(231,229,225,0.13)',
     },
     formButtonPrimary: {
-      background: '#F4748C',
-      color: '#0B0717',
+      background: '#E7E5E1',
+      color: '#0E1012',
     },
     formFieldInput: {
-      background: 'rgba(11,7,23,0.42)',
-      border: '1px solid rgba(196,154,232,0.18)',
-      color: '#F4EDE5',
-      borderRadius: '8px',
+      background: '#08090B',
+      border: '1px solid rgba(231,229,225,0.13)',
+      color: '#E7E5E1',
+      borderRadius: '4px',
     },
     footer: {
       background: 'transparent',
@@ -86,7 +89,7 @@ const clerkAppearance = {
     userButtonAvatarBox: {
       width: '32px',
       height: '32px',
-      background: '#1E1638',
+      background: '#1E2327',
       borderRadius: '50%',
       overflow: 'hidden',
     },
@@ -94,19 +97,19 @@ const clerkAppearance = {
       opacity: '0',
     },
     userButtonTrigger: {
-      background: '#1E1638',
+      background: '#1E2327',
       borderRadius: '50%',
       padding: '4px',
     },
     userButtonPopoverCard: {
-      background: '#1E1638',
-      border: '1px solid rgba(196,154,232,0.18)',
+      background: '#1E2327',
+      border: '1px solid rgba(231,229,225,0.13)',
     },
     userButtonPopoverActionButton: {
-      color: '#C4BCD0',
+      color: '#9BA1A3',
     },
     userButtonPopoverFooter: {
-      borderTop: '1px solid rgba(196,154,232,0.10)',
+      borderTop: '1px solid rgba(231,229,225,0.06)',
     },
     avatarBox: {
       width: '32px',
@@ -158,15 +161,17 @@ export default function RootLayout({
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
-          href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..800,0..100,0..1&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Newsreader:ital,opsz,wght@0,6..72,400;1,6..72,400;1,6..72,500&family=Space+Grotesk:wght@500;600;700&display=swap"
           rel="stylesheet"
         />
       </head>
-      <body>
+      <body className="tint">
         <ClerkProvider appearance={clerkAppearance} localization={clerkLocalization}>
           <QueryProvider>
-            {children}
-            <SignOutTab />
+            <GateProvider>
+              {children}
+              <SignOutTab />
+            </GateProvider>
           </QueryProvider>
         </ClerkProvider>
       </body>
