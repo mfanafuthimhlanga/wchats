@@ -31,6 +31,7 @@ Queue: runtime (CLAUDE.md non-negotiable: both Celery queues always present)
 
 import asyncio
 import json
+import os
 import re
 import ssl
 import time
@@ -41,6 +42,7 @@ import psycopg2
 import redis as redis_lib
 import structlog
 from celery import chain as celery_chain
+from langfuse import Langfuse
 from sqlalchemy import text as sa_text
 
 from app.core.config import settings
@@ -78,6 +80,19 @@ log = structlog.get_logger(__name__)
 _url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
 _ssl_opts: dict = {"ssl_cert_reqs": ssl.CERT_NONE} if _url_clean.startswith("rediss://") else {}
 _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
+
+# ---------------------------------------------------------------------------
+# OPS-04: module-level Langfuse client — mirrors validation_service.py's
+# `_langfuse is None` no-op guard exactly. Optional at runtime: if
+# LANGFUSE_PUBLIC_KEY is unset (or client construction fails), every call
+# site below no-ops rather than raising (CLAUDE.md Rule 6 — v4 API only).
+# ---------------------------------------------------------------------------
+_langfuse: Langfuse | None = None
+try:
+    if os.environ.get("LANGFUSE_PUBLIC_KEY"):
+        _langfuse = Langfuse()
+except Exception:
+    pass  # Langfuse unavailable — the agent turn still runs, just not traced
 
 # ---------------------------------------------------------------------------
 # Citation regex — parses CITATIONS block appended by system prompt instruction.
@@ -296,6 +311,67 @@ def _write_turn_metrics(
         latency_ms=latency_ms,
         tool_count=tool_count,
     )
+
+
+def _emit_langfuse_turn_trace(
+    *,
+    job_id: str,
+    agent_id: str,
+    model: str,
+    num_turns: int | None,
+    total_cost_usd: float | None,
+    latency_ms: int,
+    stop_reason: str | None,
+) -> None:
+    """Emit one Langfuse v4 trace+generation for a completed agent turn (OPS-04).
+
+    Mirrors validation_service.py's `_log_verdict` shape exactly:
+    start_as_current_generation(...) context manager + create_score(trace_id=...)
+    + a single flush() call. Correlated to the turn_metrics row by job_id
+    (both use job_id as the Langfuse trace_id / SQL correlation key).
+
+    No-ops when _langfuse is None (LANGFUSE_PUBLIC_KEY unset — Pitfall 3/5).
+    flush() is called exactly ONCE per turn, not per generation/score, to
+    avoid the synchronous-flush latency hang documented in RESEARCH.md
+    Pitfall 3 (Phase 15 live-verification: 596s -> 52s after removing
+    per-call flush on a hot path).
+
+    Never raises: the caller (run_agent_turn) also wraps this in try/except,
+    but the internal try/except here means a Langfuse outage degrades
+    observability only — it can never fail or stall a served turn
+    (T-21-01-02, CLAUDE.md Rule 6 — v4 API only, no start_span/start_generation).
+    """
+    if _langfuse is None:
+        return
+    try:
+        with _langfuse.start_as_current_generation(
+            name="agent-turn",
+            model=model,
+            metadata={"agent_id": agent_id, "job_id": job_id},
+            output={
+                "num_turns": num_turns,
+                "total_cost_usd": total_cost_usd,
+                "stop_reason": stop_reason,
+            },
+        ):
+            pass  # generation data is set via context manager params
+
+        if total_cost_usd is not None:
+            _langfuse.create_score(
+                name="turn_cost_usd",
+                value=total_cost_usd,
+                trace_id=job_id,
+                data_type="NUMERIC",
+            )
+        _langfuse.create_score(
+            name="turn_latency_ms",
+            value=latency_ms,
+            trace_id=job_id,
+            data_type="NUMERIC",
+        )
+        _langfuse.flush()  # once per turn — never per-generation (Pitfall 3)
+    except Exception as exc:
+        log.warning("langfuse.agent_turn_trace_failed", job_id=job_id, error=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -773,13 +849,14 @@ def run_agent_turn(
             db.commit()
 
             # --------------------------------------------------------------
-            # OPS-01: telemetry — runs AFTER the terminal agent.response
+            # OPS-01/OPS-04: telemetry — runs AFTER the terminal agent.response
             # emit and the idempotency-marking commit above, so a telemetry
             # failure can never delay or fail the served turn (must_haves
             # prohibition: "the turn_metrics write NEVER blocks or precedes
             # the terminal agent.response SSE emit"). The INSERT gets its own
-            # try/except — a turn_metrics write failure must never fail or
-            # retry an already-served turn (T-21-01-03).
+            # try/except (separate from _emit_langfuse_turn_trace's internal
+            # guard) — a turn_metrics write failure must never fail or retry
+            # an already-served turn (T-21-01-03).
             # --------------------------------------------------------------
             try:
                 _write_turn_metrics(
@@ -800,7 +877,15 @@ def run_agent_turn(
                     job_id=job_id,
                     error=str(metrics_exc),
                 )
-            # OPS-04 (Task 3): _emit_langfuse_turn_trace(...) call site added below.
+            _emit_langfuse_turn_trace(
+                job_id=job_id,
+                agent_id=agent_id,
+                model="claude-haiku-4-5-20251001",
+                num_turns=num_turns,
+                total_cost_usd=total_cost_usd,
+                latency_ms=latency_ms,
+                stop_reason=stop_reason,
+            )
 
             # Dispatch validation chain (M5 — VAL-04)
             retrieve_results = [tc.get("result") for tc in tool_calls_log
