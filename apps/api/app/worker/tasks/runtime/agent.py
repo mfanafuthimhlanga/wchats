@@ -693,6 +693,7 @@ def run_agent_turn(
                 notify_fn=lambda r, c: send_escalation_email(agent, r, c),
                 tenant_id=str(agent.tenant_id),
                 verified_session_token=verified_session_token,
+                job_id=job_id,
             )
 
             system_prompt = build_system_prompt(agent)

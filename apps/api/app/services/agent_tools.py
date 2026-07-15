@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re
 import ssl
 from contextvars import ContextVar
@@ -47,6 +48,7 @@ import structlog
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from app.core.config import settings
+from app.services.retrieval_metrics_service import write_retrieval_metrics
 from app.services.retrieval_service import (
     RetrievalStrategy,
     embed_query,
@@ -159,6 +161,17 @@ _retrieve_call_count_var: ContextVar[int] = ContextVar("retrieve_call_count", de
 # Step 2.5 gate in transactional/tools.py (wired in 17-06).
 _verified_session_token_var: ContextVar[str] = ContextVar("verified_session_token", default="")
 
+# OPS-05/06 (Phase 21 Plan 03): job_id transport rail for retrieval_metrics writes.
+# Empty-string default (job_id never set) still results in a written row — with
+# an empty job_id and a warning — proving the ContextVar plumbing is exercised
+# when a real job_id IS set (see retrieve_tool's Pitfall 4 local-read comment).
+_job_id_var: ContextVar[str] = ContextVar("job_id", default="")
+
+# OPS-06: context-window budget used for ctx_window_utilization (retrieved_tokens
+# / CONTEXT_WINDOW_BUDGET). Matches the 200k-token model window referenced in
+# 21-DOMAIN-NOTES.md §3 (context rot).
+CONTEXT_WINDOW_BUDGET: int = 200_000
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -263,6 +276,9 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     conversation_id = _conversation_id_var.get()
     conn_str = _conn_str_var.get()
     strategy = _strategy_var.get() or RetrievalStrategy.model_validate({})
+    # OPS-05/06: job_id is read into a local here too — never .get() inside the
+    # write's executor lambda below (Pitfall 4).
+    job_id = _job_id_var.get()
 
     if count > _RETRIEVE_CALLS_PER_TURN_MAX:
         log.warning(
@@ -356,6 +372,107 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     ]
 
     log.debug("retrieve_tool.done", chunk_count=len(chunks))
+
+    # -------------------------------------------------------------------
+    # OPS-05/06: retrieval-health instrumentation (T-21-03-01/02/03).
+    #
+    # Written from inside this tool's closure because rank/score data from
+    # rrf_fuse/rerank never crosses back into the SDK loop (module docstring,
+    # 21-RESEARCH.md Pattern 1). job_id/conn_str/conversation_id were already
+    # read into locals above — never .get() inside the executor lambda below
+    # (Pitfall 4).
+    #
+    # No live per-query ground truth exists, so recall_at_k/ndcg_at_10/mrr
+    # treat the reranker's own final selection as the best available
+    # relevance signal and measure how well the pre-rerank RRF fusion ranked
+    # those same chunks BEFORE reranking reordered/filtered them. This is the
+    # standard "use the stronger downstream ranker as a pseudo-label"
+    # technique for unlabeled production retrieval evaluation, and it is
+    # exactly what makes "reranker lift" a meaningful, honest number
+    # (21-DOMAIN-NOTES.md §3).
+    # -------------------------------------------------------------------
+    fused_list: list[dict] = rrf_result.get("fused") or []
+    bm25_candidates: list[dict] = rrf_result.get("bm25_candidates") or []
+    vector_candidates: list[dict] = rrf_result.get("vector_candidates") or []
+
+    bm25_top_score = bm25_candidates[0]["bm25_score"] if bm25_candidates else None
+    vector_top_score = vector_candidates[0]["cosine_score"] if vector_candidates else None
+    rrf_top_score = fused_list[0]["rrf_score"] if fused_list else None
+    rerank_top_score = reranked[0].get("rerank_score") if reranked else None
+    reranker_lift = (
+        rerank_top_score - bm25_top_score
+        if rerank_top_score is not None and bm25_top_score is not None
+        else None
+    )
+
+    # 1-indexed position of each chunk in the pre-rerank RRF fusion ranking.
+    fused_rank_by_chunk_id = {c["chunk_id"]: idx + 1 for idx, c in enumerate(fused_list)}
+    returned_chunk_ids = [c["chunk_id"] for c in chunks]
+    k = len(returned_chunk_ids)
+
+    cited_chunk_rank = (
+        fused_rank_by_chunk_id.get(returned_chunk_ids[0]) if returned_chunk_ids else None
+    )
+    mrr = (1.0 / cited_chunk_rank) if cited_chunk_rank else None
+
+    if k > 0:
+        hits = sum(
+            1 for cid in returned_chunk_ids if fused_rank_by_chunk_id.get(cid, k + 1) <= k
+        )
+        recall_at_k = hits / k
+    else:
+        recall_at_k = None
+
+    # nDCG@10 — binary relevance (1 if the reranker kept this chunk in the
+    # final returned set, else 0) applied over the pre-rerank fused order.
+    _ndcg_window = fused_list[:10]
+    dcg = sum(
+        (1.0 if c["chunk_id"] in returned_chunk_ids else 0.0) / math.log2(idx + 2)
+        for idx, c in enumerate(_ndcg_window)
+    )
+    ideal_hits = min(k, 10)
+    idcg = sum(1.0 / math.log2(idx + 2) for idx in range(ideal_hits))
+    ndcg_at_10 = (dcg / idcg) if idcg > 0 else None
+
+    retrieved_tokens = sum(len(c.get("content", "") or "") for c in chunks) // 4
+    ctx_window_utilization = retrieved_tokens / CONTEXT_WINDOW_BUDGET
+
+    total_fused_tokens = sum(len(c.get("content", "") or "") for c in fused_list) // 4
+    carried_never_cited_tokens = max(total_fused_tokens - retrieved_tokens, 0)
+    compaction_ratio = (
+        retrieved_tokens / total_fused_tokens if total_fused_tokens > 0 else None
+    )
+
+    if not job_id:
+        log.warning(
+            "retrieve_tool.metrics_write_no_job_id",
+            conversation_id=conversation_id,
+            note="job_id ContextVar was empty — row written with an empty job_id",
+        )
+
+    metrics_row = {
+        "job_id": job_id,
+        "conversation_id": conversation_id,
+        "bm25_top_score": bm25_top_score,
+        "vector_top_score": vector_top_score,
+        "rrf_top_score": rrf_top_score,
+        "rerank_top_score": rerank_top_score,
+        "reranker_lift": reranker_lift,
+        "recall_at_k": recall_at_k,
+        "ndcg_at_10": ndcg_at_10,
+        "mrr": mrr,
+        "cited_chunk_rank": cited_chunk_rank,
+        "retrieved_tokens": retrieved_tokens,
+        "ctx_window_utilization": ctx_window_utilization,
+        "carried_never_cited_tokens": carried_never_cited_tokens,
+        "compaction_ratio": compaction_ratio,
+    }
+
+    # job_id/conn_str/metrics_row are locals captured from the async body —
+    # safe for the executor thread (no ContextVar.get() calls inside the lambda).
+    await loop.run_in_executor(
+        None, lambda: write_retrieval_metrics(conn_str, metrics_row)
+    )
 
     return {
         "content": [{"type": "text", "text": str(chunks)}],
@@ -582,13 +699,15 @@ def build_tool_server(
     notify_fn,
     tenant_id: str = "",
     verified_session_token: str = "",
+    job_id: str = "",
 ) -> object:
     """Inject tenant-scoped state into ContextVars and return the MCP server.
 
     Called once per ``run_agent_turn`` invocation in the sync Celery task body
-    (before asyncio.run()).  Sets all six ContextVars so they are visible inside
-    the async SDK turn and its tool callees (Python 3.7+ asyncio.run propagation
-    guarantee — see RESEARCH.md Cluster 7, note A3).
+    (before asyncio.run()).  Sets every per-task ContextVar (including _job_id_var,
+    added in Phase 21 Plan 03 for OPS-05/06) so they are visible inside the async
+    SDK turn and its tool callees (Python 3.7+ asyncio.run propagation guarantee —
+    see RESEARCH.md Cluster 7, note A3).
 
     Concurrency safety (PROD-14):
         ContextVar.set() mutates only the *current context's* copy of the variable.
@@ -606,6 +725,9 @@ def build_tool_server(
         verified_session_token:  IDV-05 verified session token from the Celery task arg.
                                  NEVER logged (T-04-03-05). Empty string when no verified
                                  session is present — all non-IDV tool calls pass through.
+        job_id:                  OPS-05/06 (Phase 21 Plan 03): Celery job_id, threaded into
+                                 retrieve_tool's retrieval_metrics write path via _job_id_var.
+                                 Empty string when omitted (backward compatible).
 
     Returns:
         MCP server object (create_sdk_mcp_server result) registering all 11 tools:
@@ -620,6 +742,7 @@ def build_tool_server(
     _strategy_var.set(strategy)
     _conversation_id_var.set(conversation_id)
     _notify_fn_var.set(notify_fn)
+    _job_id_var.set(job_id)
 
     # D-10 (suspenders): reset per-turn retrieve counter for this new task invocation.
     # ContextVar.set() ensures the reset is scoped to this task's context only.

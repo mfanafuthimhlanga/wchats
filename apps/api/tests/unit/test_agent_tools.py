@@ -173,6 +173,9 @@ def test_retrieve_truncates_to_max_chunks():
         patch("app.services.agent_tools.embed_query", return_value=[0.1] * 1024),
         patch("app.services.agent_tools.rrf_fuse", return_value=fake_rrf_result),
         patch("app.services.agent_tools.rerank", return_value=fake_chunks),
+        # OPS-05/06 (21-03): retrieve_tool now writes a retrieval_metrics row;
+        # patch it out so this test never attempts a real DB connection.
+        patch("app.services.agent_tools.write_retrieval_metrics"),
     ):
         result = _run(agent_tools.retrieve_tool({"query": "test query", "filters": []}))
 
@@ -516,6 +519,9 @@ def test_retrieve_tool_logs_warning_on_unused_filters():
             return_value={"fused": [], "vector_candidates": [], "bm25_candidates": []},
         ),
         patch("app.services.agent_tools.rerank", return_value=[]),
+        # OPS-05/06 (21-03): retrieve_tool now writes a retrieval_metrics row;
+        # patch it out so this test never attempts a real DB connection.
+        patch("app.services.agent_tools.write_retrieval_metrics"),
         patch("app.services.agent_tools.log") as mock_log,
     ):
         _run(
