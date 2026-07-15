@@ -2,6 +2,14 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useAuth } from '@clerk/nextjs'
 import { useQuery } from '@tanstack/react-query'
+import Chip, { type ChipVerdict } from '../../../components/gotham/Chip'
+
+/**
+ * Document detail modal — `/agents/[id]/ingest` (UI-SPEC S6.6, S7.1). No
+ * Gotham prototype page has a modal equivalent (ingest.html has no popover),
+ * so this restyles the existing dusk modal to `.zone`/`.well`/Chip tokens and
+ * keeps its own layout + fetch wiring unchanged (GET .../documents/{id}/detail).
+ */
 
 // ---------------------------------------------------------------------------
 // Types — mirror the backend GET /detail response shape.
@@ -38,19 +46,24 @@ interface DocumentDetail {
 }
 
 // ---------------------------------------------------------------------------
-// Status colors — kept in sync with the parse_status palette on the page.
+// Status verdict — colour is a verdict (UI-SPEC S8): map the raw
+// parse_status string onto the closed Chip verdict union instead of a raw
+// hex/bg pair. There is no amber/warning tier in Gotham, so "pending" /
+// "processing" map to "live" (brightness, not a hue), not the dusk build's
+// gold.
 // ---------------------------------------------------------------------------
 
-const PARSE_STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
-  complete: { bg: 'var(--green-bg)', fg: 'var(--green)' },
-  parsed: { bg: 'var(--green-bg)', fg: 'var(--green)' },
-  pending: { bg: 'var(--gold-bg)', fg: 'var(--gold)' },
-  processing: { bg: 'var(--gold-bg)', fg: 'var(--gold)' },
-  failed: { bg: 'var(--red-bg)', fg: 'var(--red)' },
+function parseStatusVerdict(status: string): ChipVerdict {
+  if (status === 'complete' || status === 'parsed') return 'pass'
+  if (status === 'pending' || status === 'processing') return 'live'
+  if (status === 'failed') return 'seal'
+  return 'mute'
 }
 
-function getParseStatusColor(status: string) {
-  return PARSE_STATUS_COLORS[status] ?? { bg: 'var(--chip)', fg: 'var(--text-3)' }
+const STATUS_LABEL: Partial<Record<ChipVerdict, string>> = {
+  pass: 'Parsed',
+  live: 'Processing',
+  seal: 'Failed',
 }
 
 // ---------------------------------------------------------------------------
@@ -60,21 +73,22 @@ function getParseStatusColor(status: string) {
 const pillBase: React.CSSProperties = {
   display: 'inline-block',
   padding: '3px 9px',
-  borderRadius: 'var(--radius-pill)',
+  borderRadius: 'var(--r-pill)',
   fontSize: '11px',
   fontWeight: 600,
   whiteSpace: 'nowrap',
-  fontFamily: 'var(--font-sans)',
+  fontFamily: 'var(--sans)',
 }
 
-// Shared uppercase micro-label spec — 11px / 600 / 0.12em tracking. The one
-// tracked-caps exception to sentence case everywhere.
+// Shared uppercase micro-label spec — matches the ported .label class
+// (10px / 700 / 0.2em tracking, mono, ink-3).
 const microLabel: React.CSSProperties = {
-  fontSize: '11px',
-  fontWeight: 600,
+  fontFamily: 'var(--mono)',
+  fontSize: '10px',
+  fontWeight: 700,
   textTransform: 'uppercase',
-  letterSpacing: '0.12em',
-  color: 'var(--text-3)',
+  letterSpacing: '0.2em',
+  color: 'var(--ink-3)',
 }
 
 const sectionLabel: React.CSSProperties = {
@@ -201,7 +215,7 @@ export default function DocumentDetailModal({
         position: 'fixed',
         inset: 0,
         zIndex: 1000,
-        background: 'rgba(11,7,23,0.6)',
+        background: 'rgba(8,9,11,0.72)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -214,16 +228,16 @@ export default function DocumentDetailModal({
         aria-modal="true"
         aria-labelledby={titleId}
         onClick={(e) => e.stopPropagation()}
-        className="glass-strong"
+        className="zone"
         style={{
           width: '100%',
           maxWidth: '720px',
           maxHeight: '80vh',
           display: 'flex',
           flexDirection: 'column',
-          borderRadius: 'var(--radius-md)',
+          padding: 0,
           overflow: 'hidden',
-          fontFamily: 'var(--font-sans)',
+          fontFamily: 'var(--sans)',
         }}
       >
         {/* --------------------------------------------------------------- */}
@@ -232,7 +246,7 @@ export default function DocumentDetailModal({
         <div
           style={{
             padding: '20px 24px',
-            borderBottom: '1px solid var(--border-soft)',
+            borderBottom: '1px solid var(--hairline-soft)',
             display: 'flex',
             alignItems: 'flex-start',
             gap: '12px',
@@ -243,9 +257,11 @@ export default function DocumentDetailModal({
             <h2
               id={titleId}
               style={{
+                fontFamily: 'var(--display)',
                 fontSize: '17px',
-                fontWeight: 700,
-                color: 'var(--text-1)',
+                fontWeight: 500,
+                letterSpacing: '-0.02em',
+                color: 'var(--ink)',
                 margin: 0,
                 wordBreak: 'break-word',
               }}
@@ -264,25 +280,13 @@ export default function DocumentDetailModal({
                   alignItems: 'center',
                 }}
               >
-                <span
-                  style={{
-                    ...pillBase,
-                    background: 'var(--chip)',
-                    color: 'var(--text-3)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.06em',
-                    fontSize: '10px',
-                    fontWeight: 700,
-                  }}
-                >
-                  {doc.source_type}
-                </span>
+                <Chip verdict="mute">{doc.source_type.toUpperCase()}</Chip>
                 {(() => {
-                  const sc = getParseStatusColor(doc.parse_status)
+                  const verdict = parseStatusVerdict(doc.parse_status)
                   return (
-                    <span style={{ ...pillBase, background: sc.bg, color: sc.fg }}>
-                      {doc.parse_status}
-                    </span>
+                    <Chip verdict={verdict} dot={verdict === 'live'}>
+                      {STATUS_LABEL[verdict] ?? doc.parse_status}
+                    </Chip>
                   )
                 })()}
               </div>
@@ -293,8 +297,8 @@ export default function DocumentDetailModal({
               <div
                 style={{
                   fontSize: '12px',
-                  color: 'var(--text-4)',
-                  fontFamily: 'var(--font-mono)',
+                  color: 'var(--ink-3)',
+                  fontFamily: 'var(--mono)',
                   marginTop: '8px',
                   wordBreak: 'break-all',
                 }}
@@ -317,22 +321,22 @@ export default function DocumentDetailModal({
               alignItems: 'center',
               justifyContent: 'center',
               background: 'none',
-              border: '1px solid var(--border-soft)',
-              borderRadius: 'var(--radius-xs)',
+              border: '1px solid var(--hairline-soft)',
+              borderRadius: 'var(--r-control)',
               cursor: 'pointer',
-              color: 'var(--text-3)',
+              color: 'var(--ink-3)',
               fontSize: '18px',
               lineHeight: 1,
-              fontFamily: 'var(--font-sans)',
-              transition: 'color 0.15s ease, border-color 0.15s ease',
+              fontFamily: 'var(--sans)',
+              transition: 'color 140ms ease, border-color 140ms ease',
             }}
             onMouseEnter={(e) => {
-              ;(e.currentTarget as HTMLButtonElement).style.color = 'var(--text-1)'
-              ;(e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--text-4)'
+              ;(e.currentTarget as HTMLButtonElement).style.color = 'var(--ink)'
+              ;(e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--hairline-strong)'
             }}
             onMouseLeave={(e) => {
-              ;(e.currentTarget as HTMLButtonElement).style.color = 'var(--text-3)'
-              ;(e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border-soft)'
+              ;(e.currentTarget as HTMLButtonElement).style.color = 'var(--ink-3)'
+              ;(e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--hairline-soft)'
             }}
           >
             ×
@@ -355,7 +359,7 @@ export default function DocumentDetailModal({
             <div
               role="status"
               aria-live="polite"
-              style={{ fontSize: '14px', color: 'var(--text-3)', padding: '24px 0' }}
+              style={{ fontSize: '14px', color: 'var(--ink-3)', padding: '24px 0' }}
             >
               Loading document details…
             </div>
@@ -367,11 +371,11 @@ export default function DocumentDetailModal({
               role="alert"
               style={{
                 padding: '12px 16px',
-                background: 'var(--red-bg)',
-                border: '1px solid rgba(248,113,113,0.3)',
-                borderRadius: 'var(--radius-xs)',
+                background: 'var(--fail-dim)',
+                border: '1px solid color-mix(in oklch, var(--fail) 32%, transparent)',
+                borderRadius: 'var(--r-panel)',
                 fontSize: '14px',
-                color: 'var(--red)',
+                color: 'var(--fail)',
               }}
             >
               Failed to load document details. Please try again.
@@ -395,7 +399,7 @@ export default function DocumentDetailModal({
                 <div
                   style={{
                     fontSize: '13px',
-                    color: 'var(--text-2)',
+                    color: 'var(--ink-2)',
                     fontStyle: 'italic',
                     padding: '16px 0',
                   }}
@@ -428,8 +432,9 @@ function Stat({ label, value }: { label: string; value: number }) {
         style={{
           fontSize: '22px',
           fontWeight: 700,
-          fontFamily: 'var(--font-mono)',
-          color: 'var(--text-1)',
+          fontFamily: 'var(--mono)',
+          fontVariantNumeric: 'tabular-nums',
+          color: 'var(--ink)',
           lineHeight: 1.1,
         }}
       >
@@ -448,9 +453,9 @@ function ChunkCard({ chunk }: { chunk: ChunkDetail }) {
   return (
     <div
       style={{
-        border: '1px solid var(--border-soft)',
-        borderRadius: 'var(--radius-xs)',
-        background: 'var(--chip)',
+        border: '1px solid var(--hairline-soft)',
+        borderRadius: 'var(--r-control)',
+        background: 'var(--surface-2)',
         overflow: 'hidden',
       }}
     >
@@ -458,7 +463,7 @@ function ChunkCard({ chunk }: { chunk: ChunkDetail }) {
       <div
         style={{
           padding: '10px 14px',
-          borderBottom: '1px solid var(--border-soft)',
+          borderBottom: '1px solid var(--hairline-soft)',
           display: 'flex',
           alignItems: 'center',
           gap: '8px',
@@ -467,9 +472,9 @@ function ChunkCard({ chunk }: { chunk: ChunkDetail }) {
         <span
           style={{
             ...pillBase,
-            background: 'var(--chip)',
-            color: 'var(--text-2)',
-            fontFamily: 'var(--font-mono)',
+            background: 'var(--surface-2)',
+            color: 'var(--ink-2)',
+            fontFamily: 'var(--mono)',
             fontSize: '11px',
           }}
         >
@@ -481,18 +486,14 @@ function ChunkCard({ chunk }: { chunk: ChunkDetail }) {
         {/* Raw chunk text — scrollable, capped at ~300px */}
         <div style={sectionLabel}>Text</div>
         <div
+          className="well"
           style={{
             maxHeight: '300px',
             overflowY: 'auto',
-            padding: '10px 12px',
             marginBottom: '14px',
-            background: 'var(--well)',
-            border: '1px solid var(--border-soft)',
-            borderRadius: 'var(--radius-xs)',
             fontSize: '13px',
             lineHeight: 1.6,
-            color: 'var(--text-2)',
-            fontFamily: 'var(--font-mono)',
+            color: 'var(--ink-2)',
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
           }}
@@ -507,7 +508,7 @@ function ChunkCard({ chunk }: { chunk: ChunkDetail }) {
             {chunk.metadata.summary && (
               <div style={{ marginBottom: '12px' }}>
                 <div style={sectionLabel}>Summary</div>
-                <div style={{ fontSize: '13px', color: 'var(--text-2)', lineHeight: 1.5 }}>
+                <div style={{ fontSize: '13px', color: 'var(--ink-2)', lineHeight: 1.5 }}>
                   {chunk.metadata.summary}
                 </div>
               </div>
@@ -523,8 +524,8 @@ function ChunkCard({ chunk }: { chunk: ChunkDetail }) {
                       key={`${kw}-${i}`}
                       style={{
                         ...pillBase,
-                        background: 'var(--chip)',
-                        color: 'var(--text-2)',
+                        background: 'var(--surface-2)',
+                        color: 'var(--ink-2)',
                         fontWeight: 500,
                       }}
                     >
@@ -544,7 +545,7 @@ function ChunkCard({ chunk }: { chunk: ChunkDetail }) {
                     margin: 0,
                     paddingLeft: '18px',
                     fontSize: '13px',
-                    color: 'var(--text-2)',
+                    color: 'var(--ink-2)',
                     lineHeight: 1.6,
                   }}
                 >
@@ -560,7 +561,7 @@ function ChunkCard({ chunk }: { chunk: ChunkDetail }) {
             style={{
               marginBottom: '14px',
               fontSize: '12px',
-              color: 'var(--text-3)',
+              color: 'var(--ink-3)',
               fontStyle: 'italic',
             }}
           >
@@ -578,18 +579,18 @@ function ChunkCard({ chunk }: { chunk: ChunkDetail }) {
                   key={`${ent.normalized}-${ent.type}-${i}`}
                   style={{
                     ...pillBase,
-                    background: 'var(--accent-dim)',
-                    color: 'var(--accent)',
+                    background: 'var(--live-dim)',
+                    color: 'var(--live-hot)',
                     fontWeight: 500,
                   }}
                 >
                   {ent.name}{' '}
-                  <span style={{ color: 'var(--text-2)', fontWeight: 400 }}>({ent.type})</span>
+                  <span style={{ color: 'var(--ink-2)', fontWeight: 400 }}>({ent.type})</span>
                 </span>
               ))}
             </div>
           ) : (
-            <div style={{ fontSize: '12px', color: 'var(--text-3)', fontStyle: 'italic' }}>
+            <div style={{ fontSize: '12px', color: 'var(--ink-3)', fontStyle: 'italic' }}>
               No entities extracted
             </div>
           )}
