@@ -106,6 +106,8 @@ celery_app.conf.update(
         "app.worker.tasks.runtime.alert",
         # Phase 21 (OPS-07): sampled retrieval faithfulness task (runtime queue)
         "app.worker.tasks.runtime.retrieval_eval",
+        # Phase 21 (OPS-08): index staleness / embedding-drift scan (pipeline queue)
+        "app.worker.tasks.pipeline.staleness",
     ],
 
     # --- Queue topology -------------------------------------------------
@@ -194,6 +196,13 @@ celery_app.conf.update(
         "alert-daily": {
             "task": "app.worker.tasks.runtime.alert.run_alert_check_beat",
             "schedule": crontab(hour=4, minute=0),  # Daily 04:00 UTC
+        },
+        # Phase 21 (OPS-08): index staleness / embedding-drift scan.
+        # 05:00 UTC — a quiet hour between alert-daily (04:00) and eval-nightly
+        # (02:00 the following cycle); routes to pipeline (Pitfall 6).
+        "index-staleness-daily": {
+            "task": "app.worker.tasks.pipeline.staleness.check_index_staleness_beat",
+            "schedule": crontab(hour=5, minute=0),
         },
     },
 
