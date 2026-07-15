@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: — Transactional Capability
-status: v1.1 roadmap defined (phases 14-19), building in parallel; Phase 16 (Integration adapters) EXECUTED — 7/7 plans code-complete, live Stripe gate deferred to prod; Phase 15 (Actor validator) EXECUTED — ACT-04/05 live-verified, ACT-06 deferred; v1.0 Phase 13 paused at live AWS gates (7/11 done, needs domain)
-stopped_at: "Completed 17-06-PLAN.md: Step 2.5 IDV gate in _execute_transactional_tool (IDV-04, IDV-05). Phase 17 all 6 plans complete."
-last_updated: "2026-07-01T19:13:43.709Z"
+status: Milestone complete
+stopped_at: "v1.1 (Phases 14–17) shipped; Phase 17 secured (17-SECURITY.md, 20/20). Now in a v1.2 design-exploration pause: renamed the admin console prototype to GOTHAM (prototypes/gotham/; palette "Bone on Graphite" kept; product copy neutralised to verified/check) and drafted Milestone v1.2 — Phase 20 frontend cutover (UI2-01..08) + Phase 21 agent-mgmt backend (OPS-01..16). Content grep of the old theme token is clean. Leftover: the prior empty prototype folder is locked by another process (cosmetic; untracked). Next: /gsd-plan-phase 20."
+last_updated: "2026-07-15T17:34:47.951Z"
 progress:
   total_phases: 6
   completed_phases: 4
@@ -338,6 +338,6 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Session
 
-**Last session:** 2026-07-01T19:13:43.627Z
-**Stopped at:** Completed 17-03-PLAN.md: _verified_session_token_var ContextVar + build_tool_server/run_agent_turn param threading (IDV-05 transport rail). Next: 17-04 OTP service
-**Resume file:** None
+**Last session:** 2026-07-15 (resume)
+**Stopped at:** v1.1 (Phases 14–17) shipped; Phase 17 secured (17-SECURITY.md, 20/20). Now in a v1.2 design-exploration pause: renamed the admin console prototype to GOTHAM (prototypes/gotham/; palette "Bone on Graphite" kept; product copy neutralised to verified/check) and drafted Milestone v1.2 — Phase 20 frontend cutover (UI2-01..08) + Phase 21 agent-mgmt backend (OPS-01..16). Content grep of the old theme token is clean. Leftover: the prior empty prototype folder is locked by another process (cosmetic; untracked). Next: /gsd-plan-phase 20.
+**Resume file:** .planning/.continue-here.md

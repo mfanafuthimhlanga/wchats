@@ -287,36 +287,36 @@ Plans:
 
 **Depends on:** Phase 11 (the dusk/skyline admin UI this re-skins and re-IAs).
 
-**Plans:** 15 plans (planned 2026-07-15; 4 execution waves by dependency; tokens-first; live-visual gate is autonomous:false). All UI2-01..08 covered. Every dusk page ported; every live endpoint preserved per UI-SPEC §9.
+**Plans:** 15/15 plans complete
 
 Plans:
 
 **Wave 1 — Foundation (tokens-first)**
 
-- [ ] 20-02-PLAN.md — three.js dependency provisioning: supply-chain legitimacy checkpoint (blocking-human) + pinned `three`/`@types/three` install — UI2-02
-- [ ] 20-03-PLAN.md — Gotham token cutover in globals.css (Bone-on-Graphite, `--ch-1..4`, `data-gate`) + root layout font/Clerk re-theme + GateProvider — UI2-01
-- [ ] 20-04-PLAN.md — Shared Gotham component library (Rail/PageChrome/Zone/Chip/Ledger/Btn/EmptyState/icons) + console shell mount (agents/layout Rail, [id]/layout passthrough) — UI2-01, UI2-05
+- [x] 20-02-PLAN.md — three.js dependency provisioning: supply-chain legitimacy checkpoint (blocking-human) + pinned `three`/`@types/three` install — UI2-02
+- [x] 20-03-PLAN.md — Gotham token cutover in globals.css (Bone-on-Graphite, `--ch-1..4`, `data-gate`) + root layout font/Clerk re-theme + GateProvider — UI2-01
+- [x] 20-04-PLAN.md — Shared Gotham component library (Rail/PageChrome/Zone/Chip/Ledger/Btn/EmptyState/icons) + console shell mount (agents/layout Rail, [id]/layout passthrough) — UI2-01, UI2-05
 
 **Wave 2 — Page rebuilds + harness** *(blocked on Wave 1)*
 
-- [ ] 20-01-PLAN.md — Wave-0 validation harness: Playwright + axe + 3-viewport config + spec stubs + `check:no-dusk-tokens` gate — UI2-08
-- [ ] 20-05-PLAN.md — Landing rebuild + client-only SceneMount (brass→LIVE rename) + auth re-skin (three.js landing/auth only) — UI2-02
-- [ ] 20-06-PLAN.md — Agents dashboard rebuild (GET /agents, /me/provision preserved; fake command strip cut) + AgentCard restyle — UI2-03
-- [ ] 20-07-PLAN.md — Provisioning rebuild (create→provision→poll preserved; steps 2–4 locked) + JourneyStepper restyle — UI2-04
-- [ ] 20-08-PLAN.md — Operations room: six regions (honest empty states for Live/Retrieval/bench/prompt; Judgement+Adversary wired) + AlertsBanner gate-fold — UI2-05
-- [ ] 20-09-PLAN.md — Soul rebuild (drop three.js → CSS-only temperament; PATCH preserved) — UI2-04
-- [ ] 20-10-PLAN.md — Ingest rebuild (SSE-driven swarm; brass hex → --live) + DocumentDetailModal restyle — UI2-04
-- [ ] 20-11-PLAN.md — Eval rebuild (channel colours → --ch-1..4; eval-runs preserved) — UI2-05
-- [ ] 20-12-PLAN.md — Deploy rebuild (widget preview retained; test-gate buttons dropped; endpoints preserved) — UI2-06
-- [ ] 20-13-PLAN.md — Settings rebuild (real DELETE wired; fake prototype message dropped) — UI2-07
+- [x] 20-01-PLAN.md — Wave-0 validation harness: Playwright + axe + 3-viewport config + spec stubs + `check:no-dusk-tokens` gate — UI2-08
+- [x] 20-05-PLAN.md — Landing rebuild + client-only SceneMount (brass→LIVE rename) + auth re-skin (three.js landing/auth only) — UI2-02
+- [x] 20-06-PLAN.md — Agents dashboard rebuild (GET /agents, /me/provision preserved; fake command strip cut) + AgentCard restyle — UI2-03
+- [x] 20-07-PLAN.md — Provisioning rebuild (create→provision→poll preserved; steps 2–4 locked) + JourneyStepper restyle — UI2-04
+- [x] 20-08-PLAN.md — Operations room: six regions (honest empty states for Live/Retrieval/bench/prompt; Judgement+Adversary wired) + AlertsBanner gate-fold — UI2-05
+- [x] 20-09-PLAN.md — Soul rebuild (drop three.js → CSS-only temperament; PATCH preserved) — UI2-04
+- [x] 20-10-PLAN.md — Ingest rebuild (SSE-driven swarm; brass hex → --live) + DocumentDetailModal restyle — UI2-04
+- [x] 20-11-PLAN.md — Eval rebuild (channel colours → --ch-1..4; eval-runs preserved) — UI2-05
+- [x] 20-12-PLAN.md — Deploy rebuild (widget preview retained; test-gate buttons dropped; endpoints preserved) — UI2-06
+- [x] 20-13-PLAN.md — Settings rebuild (real DELETE wired; fake prototype message dropped) — UI2-07
 
 **Wave 3 — Cutover** *(blocked on all page rebuilds)*
 
-- [ ] 20-14-PLAN.md — Delete dusk components (TopNav/HeroPipeline/HeroSteps/StepSubtaskCard/UserAvatar) + skyline PNG; drive check:no-dusk-tokens to green (whole bundle) — UI2-07
+- [x] 20-14-PLAN.md — Delete dusk components (TopNav/HeroPipeline/HeroSteps/StepSubtaskCard/UserAvatar) + skyline PNG; drive check:no-dusk-tokens to green (whole bundle) — UI2-07
 
 **Wave 4 — Parity gate** *(blocked on cutover, autonomous:false)*
 
-- [ ] 20-15-PLAN.md — Fill Playwright specs; route smoke + three-confinement + overflow (1440/1280/900) + reduced-motion + axe; blocking visual-fidelity checkpoint — UI2-08
+- [x] 20-15-PLAN.md — Fill Playwright specs; route smoke + three-confinement + overflow (1440/1280/900) + reduced-motion + axe; blocking visual-fidelity checkpoint — UI2-08
 
 ### Phase 21: Agent management backend completion — make the operations room real per AGENT-OPS.md
 
