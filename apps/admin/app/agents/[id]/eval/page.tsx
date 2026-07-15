@@ -2,38 +2,35 @@
 import { use, useState, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
-import Link from 'next/link'
-import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ReferenceLine,
-} from 'recharts'
-import { BarChart3, Clock, Play } from 'lucide-react'
+import Chip from '../../../components/gotham/Chip'
+import Ledger, { LedgerColHead, LedgerRowHead } from '../../../components/gotham/Ledger'
+import EmptyState from '../../../components/gotham/EmptyState'
 
-// Metric line/dot colors — single source of truth for the Recharts <Line>
-// strokes and the table-header dots. CSS custom properties do not resolve in
-// SVG presentation attributes, so these must be literals.
-const METRIC_COLORS = {
-  faithfulness: '#FBBF24',
-  answer_relevancy: '#F4748C',
-  context_precision: '#34D399',
-  context_recall: '#B79AE0',
-} as const
-
-// Shared uppercase micro-label spec — 11px / 600 / 0.12em tracking. The one
-// tracked-caps exception to sentence case everywhere.
-const microLabel: React.CSSProperties = {
-  fontSize: '11px',
-  fontWeight: 600,
-  textTransform: 'uppercase',
-  letterSpacing: '0.12em',
-}
+/**
+ * Eval — `/agents/[id]/eval` (UI-SPEC S6.7, UI2-05, ported from
+ * prototypes/gotham/eval.html). Telemetry chart (`.telemetry`, VITALS
+ * leader-line pattern) + the judge (CHORUS word-by-word typeset) + the
+ * scenario `.ledger`.
+ *
+ * PRESERVED VERBATIM (non-regression, UI-SPEC S9): the real
+ * `GET /api/v1/agents/{id}/eval-runs`, `GET .../eval-runs/{id}/results` and
+ * `POST .../eval-runs/trigger` fetches the previous dusk build already
+ * consumed, plus the poll-while-running effect.
+ *
+ * Colour fix required (must-fix 1 / UI-SPEC S6.7, S10 anti-pattern 1 — "the
+ * clearest violation of the colour-is-a-verdict law in the entire prototype
+ * set"): eval.html hardcodes the four ragas channel traces + dot/pin
+ * swatches to four literal brand hues (retired gold, blue, green, purple
+ * hex literals). This port resolves the CURRENT
+ * `--ch-1..4` bone-luminance values via `getComputedStyle` at draw time
+ * instead (same technique as the ingest swarm colour fix) — see
+ * `useChannelColors` below. Nothing on this page reaches for a hue; the
+ * channels are read by weight, not colour.
+ *
+ * The judge's verdict sentence is generated from real run/scenario data (no
+ * judge-summary endpoint exists on the backend — see apps/api/app/api/v1/
+ * evals.py) rather than the prototype's hardcoded placeholder paragraph.
+ */
 
 // ---------------------------------------------------------------------------
 // Types
@@ -74,99 +71,339 @@ interface EvalResultsResponse {
   results: ScenarioResult[]
 }
 
-interface ChartPoint {
-  date: string
-  faithfulness: number
-  answer_relevancy: number
-  context_precision: number
-  context_recall: number
-}
+type ChannelKey = keyof EvalRun['aggregate_scores']
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatDuration(startedAt: string, finishedAt: string | null): string {
-  if (!finishedAt) return '—'
-  const ms = new Date(finishedAt).getTime() - new Date(startedAt).getTime()
-  const seconds = Math.floor(ms / 1000)
-  const minutes = Math.floor(seconds / 60)
-  const remainingSeconds = seconds % 60
-  if (minutes === 0) return `${remainingSeconds}s`
-  return `${minutes}m ${remainingSeconds}s`
-}
-
-function formatUtcDate(iso: string): string {
+// Compact mono timestamp — "2026-07-13 09:14" (UTC), matching eval.html's
+// `.stamp` readouts.
+function formatStamp(iso: string): string {
   const d = new Date(iso)
-  return d.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    timeZone: 'UTC',
-  }) + ' ' + d.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZone: 'UTC',
-    hour12: false,
-  }) + ' UTC'
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
 }
 
-function getNextRunTime(): string {
-  const now = new Date()
-  const next = new Date(now)
-  next.setUTCHours(2, 0, 0, 0)
-  if (next <= now) {
-    next.setUTCDate(next.getUTCDate() + 1)
+// Short axis-tick date — "2026-07-06" (UTC).
+function formatShortDate(iso: string): string {
+  return new Date(iso).toISOString().slice(0, 10)
+}
+
+// The judge's verdict sentence — built from real aggregate + scenario data,
+// never hardcoded (UI-SPEC S6.7: "generated from real run data, or omitted
+// if there's no LLM-judge summary endpoint" — no such endpoint exists).
+function buildVerdict(latestRun: EvalRun | null, scenarios: ScenarioResult[]): string {
+  if (!latestRun || scenarios.length === 0) return ''
+  const total = scenarios.length
+  const failed = scenarios.filter((s) => !s.passed)
+  const passedCount = total - failed.length
+  if (failed.length === 0) {
+    return `All ${total} scenario${total === 1 ? '' : 's'} held on this run. The gate stays open.`
   }
-  const diffMs = next.getTime() - now.getTime()
-  const hours = Math.floor(diffMs / (1000 * 60 * 60))
-  const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60))
-  return `Next run in ${hours}h ${minutes}m`
-}
-
-function scoreColor(score: number): string {
-  if (score >= 0.9) return 'var(--green)'
-  if (score >= 0.7) return 'var(--gold)'
-  return 'var(--red)'
-}
-
-// ---------------------------------------------------------------------------
-// Loading Skeleton
-// ---------------------------------------------------------------------------
-
-function SkeletonRow() {
   return (
-    <div
-      style={{
-        height: '44px',
-        borderRadius: '6px',
-        marginBottom: '8px',
-        background:
-          'linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%)',
-        backgroundSize: '200% 100%',
-        animation: 'shimmer 1.5s infinite',
-      }}
-    />
+    `${total} scenario${total === 1 ? '' : 's'} ran on this run. ${passedCount} held, ` +
+    `${failed.length} failed. Review the ledger below before the gate can close.`
   )
 }
 
-function ChartSkeleton() {
+function useReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
+    setReduced(mq.matches)
+    const handler = (e: MediaQueryListEvent) => setReduced(e.matches)
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+  return reduced
+}
+
+// Colour fix (must-fix 1): resolve the CURRENT --ch-1..4 bone-luminance
+// values at draw time. CSS custom properties do not resolve inside raw SVG
+// presentation attributes, so a JS read is required either way; the fix is
+// which values get read (the channel tokens), not the technique.
+const CH_FALLBACK = ['#E7E5E1', '#A9AFB1', '#7C8386', '#565C5F']
+const CH_VARS = ['--ch-1', '--ch-2', '--ch-3', '--ch-4']
+
+function useChannelColors(): string[] {
+  const [colors, setColors] = useState<string[]>(CH_FALLBACK)
+  useEffect(() => {
+    const style = getComputedStyle(document.documentElement)
+    setColors(
+      CH_VARS.map((v, i) => style.getPropertyValue(v).trim() || CH_FALLBACK[i]),
+    )
+  }, [])
+  return colors
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry chart — VITALS leader-line pattern, ported from eval.html's
+// layout() script. Numerals are pinned to the head of their own trace via a
+// pixel-space leader line; collision-avoidance (MIN_GAP) keeps them apart.
+// Collapses to a static 2-col .pin grid under 900px (leaders hidden).
+// ---------------------------------------------------------------------------
+
+const CHANNELS: { key: ChannelKey; label: string }[] = [
+  { key: 'faithfulness', label: 'Faithfulness' },
+  { key: 'answer_relevancy', label: 'Answer relevancy' },
+  { key: 'context_recall', label: 'Context recall' },
+  { key: 'context_precision', label: 'Context precision' },
+]
+
+const CHART_VB_W = 640
+const CHART_VB_H = 200
+const CHART_X0 = 40
+const CHART_X1 = 600
+const CHART_Y_TOP = 24
+const CHART_Y_BOTTOM = 176
+const GATE_VALUE = 0.9
+const PIN_MIN_GAP = 44
+const PIN_GUTTER = 148
+
+function TelemetryChart({ runs, colors }: { runs: EvalRun[]; colors: string[] }) {
+  const wrapRef = useRef<HTMLDivElement | null>(null)
+  const traceRef = useRef<SVGSVGElement | null>(null)
+  const leadersRef = useRef<SVGSVGElement | null>(null)
+  const pinRefs = useRef<(HTMLDivElement | null)[]>([])
+
+  const n = runs.length
+
+  const allValues = runs.flatMap((r) => CHANNELS.map((c) => r.aggregate_scores[c.key]))
+  const dataMin = allValues.length ? Math.min(...allValues) : 0.82
+  const dataMax = allValues.length ? Math.max(...allValues) : 0.98
+  const yMin = Math.max(0, Math.min(dataMin - 0.04, 0.86))
+  const yMax = Math.min(1, Math.max(dataMax + 0.03, 0.92))
+  const yRange = yMax - yMin || 1
+
+  const yFor = (v: number) => CHART_Y_BOTTOM - ((v - yMin) / yRange) * (CHART_Y_BOTTOM - CHART_Y_TOP)
+  const xFor = (i: number) =>
+    n <= 1 ? (CHART_X0 + CHART_X1) / 2 : CHART_X0 + (i / (n - 1)) * (CHART_X1 - CHART_X0)
+
+  const channelPoints = CHANNELS.map((c) =>
+    runs.map((r, i) => ({ x: xFor(i), y: yFor(r.aggregate_scores[c.key]) })),
+  )
+
+  const TICK_COUNT = 4
+  const ticks = Array.from({ length: TICK_COUNT }, (_, i) => yMax - (i * yRange) / (TICK_COUNT - 1))
+  const gateY = yFor(GATE_VALUE)
+  const gateVisible = GATE_VALUE >= yMin && GATE_VALUE <= yMax
+
+  const firstRun = runs[0] ?? null
+  const lastRun = runs[n - 1] ?? null
+
+  // ── leader-line layout (VITALS pattern), ported from eval.html's layout() ──
+  useEffect(() => {
+    const wrap = wrapRef.current
+    const trace = traceRef.current
+    const leaders = leadersRef.current
+    if (!wrap || !trace || !leaders || n === 0) return
+
+    const NS = 'http://www.w3.org/2000/svg'
+    const narrow = window.matchMedia('(max-width: 900px)')
+
+    function layout() {
+      if (narrow.matches) {
+        while (leaders!.firstChild) leaders!.removeChild(leaders!.firstChild)
+        pinRefs.current.forEach((p) => {
+          if (p) p.style.top = ''
+        })
+        return
+      }
+
+      const w = trace!.clientWidth
+      if (!w) return
+      const scale = w / CHART_VB_W
+
+      const wrapBox = wrap!.getBoundingClientRect()
+      const traceBox = trace!.getBoundingClientRect()
+      const top = traceBox.top - wrapBox.top
+      const left = traceBox.left - wrapBox.left
+
+      const rows = CHANNELS.map((c, i) => {
+        const points = channelPoints[i]
+        const lastPoint = points[points.length - 1]
+        const y = (lastPoint?.y ?? CHART_Y_BOTTOM) * scale + top
+        return { index: i, lineY: y, slotY: y, colour: colors[i], lineX: CHART_X1 * scale + left }
+      })
+
+      rows.sort((a, b) => a.slotY - b.slotY)
+      for (let i = 1; i < rows.length; i++) {
+        if (rows[i].slotY - rows[i - 1].slotY < PIN_MIN_GAP) {
+          rows[i].slotY = rows[i - 1].slotY + PIN_MIN_GAP
+        }
+      }
+
+      const gutterX = wrap!.clientWidth - PIN_GUTTER
+      while (leaders!.firstChild) leaders!.removeChild(leaders!.firstChild)
+
+      rows.forEach((r) => {
+        const pinEl = pinRefs.current[r.index]
+        if (pinEl) pinEl.style.top = `${r.slotY}px`
+
+        const dot = document.createElementNS(NS, 'circle')
+        dot.setAttribute('cx', r.lineX.toFixed(1))
+        dot.setAttribute('cy', r.lineY.toFixed(1))
+        dot.setAttribute('r', '2.6')
+        dot.setAttribute('fill', r.colour)
+        leaders!.appendChild(dot)
+
+        const pl = document.createElementNS(NS, 'polyline')
+        pl.setAttribute(
+          'points',
+          [
+            `${r.lineX.toFixed(1)},${r.lineY.toFixed(1)}`,
+            `${(r.lineX + 14).toFixed(1)},${r.lineY.toFixed(1)}`,
+            `${(gutterX - 12).toFixed(1)},${r.slotY.toFixed(1)}`,
+            `${(gutterX - 1).toFixed(1)},${r.slotY.toFixed(1)}`,
+          ].join(' '),
+        )
+        pl.setAttribute('fill', 'none')
+        pl.setAttribute('stroke', r.colour)
+        pl.setAttribute('stroke-width', '1')
+        pl.setAttribute('stroke-opacity', '0.7')
+        leaders!.appendChild(pl)
+      })
+    }
+
+    const ro = 'ResizeObserver' in window ? new ResizeObserver(layout) : null
+    if (ro) {
+      ro.observe(wrap)
+    } else {
+      window.addEventListener('resize', layout)
+    }
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(layout)
+    layout()
+
+    return () => {
+      if (ro) ro.disconnect()
+      else window.removeEventListener('resize', layout)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runs, colors, n])
+
+  const chartLabel =
+    n > 0
+      ? `${n} run${n === 1 ? '' : 's'} on four channels. ` +
+        CHANNELS.map((c, i) => {
+          const last = runs[n - 1].aggregate_scores[c.key]
+          return n > 1
+            ? `${c.label} moves from ${runs[0].aggregate_scores[c.key].toFixed(2)} to ${last.toFixed(2)}`
+            : `${c.label} at ${last.toFixed(2)}`
+        }).join(', ') +
+        `. The gate is set at ${GATE_VALUE.toFixed(2)}.`
+      : 'No eval runs yet.'
+
   return (
-    <div
-      style={{
-        height: '320px',
-        borderRadius: 'var(--radius-sm)',
-        background:
-          'linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%)',
-        backgroundSize: '200% 100%',
-        animation: 'shimmer 1.5s infinite',
-      }}
-    />
+    <div className="telemetry" id="telemetry" ref={wrapRef}>
+      <svg
+        className="trace"
+        ref={traceRef}
+        viewBox={`0 0 ${CHART_VB_W} ${CHART_VB_H}`}
+        role="img"
+        aria-label={chartLabel}
+      >
+        <g className="grid">
+          {ticks.map((t, i) => (
+            <line key={i} x1={CHART_X0} y1={yFor(t)} x2={CHART_X1} y2={yFor(t)} />
+          ))}
+        </g>
+        <g className="axis">
+          <line x1={CHART_X0} y1={CHART_Y_TOP} x2={CHART_X0} y2={CHART_Y_BOTTOM} />
+          <line x1={CHART_X0} y1={CHART_Y_BOTTOM} x2={CHART_X1} y2={CHART_Y_BOTTOM} />
+        </g>
+        <g className="tickt">
+          {ticks.map((t, i) => (
+            <text key={i} x={CHART_X0 - 6} y={yFor(t) + 3} textAnchor="end">
+              {t.toFixed(2)}
+            </text>
+          ))}
+          {firstRun && (
+            <text x={CHART_X0} y="191">
+              {formatShortDate(firstRun.started_at)}
+            </text>
+          )}
+          {lastRun && n > 1 && (
+            <text x={CHART_X1} y="191" textAnchor="end">
+              {formatShortDate(lastRun.started_at)}
+            </text>
+          )}
+        </g>
+
+        {/* the gate: the line the suite has to clear. Neutral, because a
+            threshold is not an accent — not one of the four channels. */}
+        {gateVisible && (
+          <>
+            <line
+              x1={CHART_X0}
+              y1={gateY}
+              x2={CHART_X1}
+              y2={gateY}
+              stroke="#74837F"
+              strokeOpacity={0.6}
+              strokeWidth={1}
+              strokeDasharray="5 5"
+            />
+            <text
+              x={CHART_X0 + 6}
+              y={gateY - 4}
+              fontFamily="'JetBrains Mono', monospace"
+              fontSize={8.5}
+              letterSpacing={1.6}
+              fill="#74837F"
+            >
+              GATE {GATE_VALUE.toFixed(2)}
+            </text>
+          </>
+        )}
+
+        {/* the four traces — --ch-1..4 bone luminance, resolved above.
+            NOT the prototype's retired gold/blue/green/purple brand hues. */}
+        {n > 1 &&
+          CHANNELS.map((c, i) => (
+            <polyline
+              key={c.key}
+              fill="none"
+              stroke={colors[i]}
+              strokeWidth={1.7}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              points={channelPoints[i].map((p) => `${p.x},${p.y}`).join(' ')}
+            />
+          ))}
+        {n === 1 &&
+          CHANNELS.map((c, i) => (
+            <circle key={c.key} cx={channelPoints[i][0].x} cy={channelPoints[i][0].y} r={2.6} fill={colors[i]} />
+          ))}
+      </svg>
+
+      {/* the leaders, laid in pixel space by the layout effect above */}
+      <svg className="leaders" ref={leadersRef} aria-hidden="true" />
+
+      <div className="pins">
+        {CHANNELS.map((c, i) => {
+          const last = runs[n - 1]?.aggregate_scores[c.key]
+          return (
+            <div
+              key={c.key}
+              className="pin"
+              ref={(el) => {
+                pinRefs.current[i] = el
+              }}
+              style={{ '--c': colors[i] } as React.CSSProperties}
+            >
+              <span className="pin-val num">{last !== undefined ? last.toFixed(2) : '—'}</span>
+              <span className="pin-name label">{c.label}</span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Main Page
+// EvalPage
 // ---------------------------------------------------------------------------
 
 export default function EvalPage({
@@ -175,9 +412,6 @@ export default function EvalPage({
   params: Promise<{ id: string }>
 }) {
   const { id } = use(params)
-  const [activeTab, setActiveTab] = useState<'passrates' | 'scenarios'>(
-    'passrates',
-  )
   const [isRunning, setIsRunning] = useState(false)
   const [runError, setRunError] = useState<string | null>(null)
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -185,8 +419,10 @@ export default function EvalPage({
   const { getToken, isLoaded, isSignedIn } = useAuth()
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ''
   const queryClient = useQueryClient()
+  const reducedMotion = useReducedMotion()
+  const channelColors = useChannelColors()
 
-  // Fetch eval runs list
+  // Fetch eval runs list — PRESERVED VERBATIM (non-regression, UI-SPEC S9).
   const evalRunsQuery = useQuery<EvalRunsResponse>({
     queryKey: ['eval-runs', id],
     queryFn: async () => {
@@ -204,7 +440,7 @@ export default function EvalPage({
 
   const latestRunId = evalRunsQuery.data?.eval_runs?.[0]?.id ?? null
 
-  // Fetch results for the latest run
+  // Fetch results for the latest run — PRESERVED VERBATIM.
   const resultsQuery = useQuery<EvalResultsResponse>({
     queryKey: ['eval-results', id, latestRunId],
     queryFn: async () => {
@@ -221,31 +457,18 @@ export default function EvalPage({
     staleTime: 30_000,
   })
 
-  // Transform eval runs into chart data (oldest first)
-  const chartData: ChartPoint[] = (
-    [...(evalRunsQuery.data?.eval_runs ?? [])].reverse()
-  ).map((run) => ({
-    date: new Date(run.started_at).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-    }),
-    faithfulness: run.aggregate_scores?.faithfulness ?? 0,
-    answer_relevancy: run.aggregate_scores?.answer_relevancy ?? 0,
-    context_precision: run.aggregate_scores?.context_precision ?? 0,
-    context_recall: run.aggregate_scores?.context_recall ?? 0,
-  }))
+  // Chronological (oldest-first) run list for the chart.
+  const chronologicalRuns: EvalRun[] = [...(evalRunsQuery.data?.eval_runs ?? [])].reverse()
 
   const latestRun = evalRunsQuery.data?.eval_runs?.[0] ?? null
-  const hasRuns =
-    (evalRunsQuery.data?.eval_runs?.length ?? 0) > 0
+  const hasRuns = (evalRunsQuery.data?.eval_runs?.length ?? 0) > 0
   const scenarios = resultsQuery.data?.results ?? []
 
-  // Poll while a run is in progress
+  // Poll while a run is in progress — PRESERVED VERBATIM.
   useEffect(() => {
     if (isRunning) {
       pollIntervalRef.current = setInterval(async () => {
         await queryClient.invalidateQueries({ queryKey: ['eval-runs', id] })
-        // Read fresh data from the query cache after invalidation — avoids stale closure
         const fresh = queryClient.getQueryData<EvalRunsResponse>(['eval-runs', id])
         const runs = fresh?.eval_runs ?? []
         if (runs.length > 0 && runs[0].status === 'complete') {
@@ -257,10 +480,10 @@ export default function EvalPage({
     return () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isRunning, id])
 
-  // Handle Run Now button
+  // Run Now — PRESERVED VERBATIM (POST /eval-runs/trigger).
   const handleRunNow = async () => {
     setIsRunning(true)
     setRunError(null)
@@ -278,7 +501,6 @@ export default function EvalPage({
         const body = await res.text().catch(() => '')
         throw new Error(`HTTP ${res.status}: ${body}`)
       }
-      // Polling starts via the useEffect above
       queryClient.invalidateQueries({ queryKey: ['eval-runs', id] })
     } catch (err) {
       setIsRunning(false)
@@ -288,748 +510,284 @@ export default function EvalPage({
 
   const isLoading = evalRunsQuery.isPending || !isLoaded
 
-  // ─── Styles ───────────────────────────────────────────────────────────────
+  // ── the judge: word-by-word typeset, generated from real data ───────────
+  const verdictText = buildVerdict(latestRun, scenarios)
+  const verdictWords = verdictText ? verdictText.split(' ') : []
+  const [revealed, setRevealed] = useState(0)
 
-  const wrapStyle: React.CSSProperties = {
-    padding: '32px 40px',
-    maxWidth: '960px',
-    fontFamily: 'var(--font-sans)',
-  }
+  useEffect(() => {
+    if (!verdictText) {
+      setRevealed(0)
+      return
+    }
+    if (reducedMotion) {
+      // reduced-motion: set the full sentence instantly, no caret.
+      setRevealed(verdictWords.length)
+      return
+    }
+    setRevealed(0)
+    let i = 0
+    const timer = setInterval(() => {
+      i += 1
+      setRevealed(i)
+      if (i >= verdictWords.length) clearInterval(timer)
+    }, 30)
+    return () => clearInterval(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [verdictText, reducedMotion])
 
-  const backLinkStyle: React.CSSProperties = {
+  const verdictDone = revealed >= verdictWords.length
+  const verdictDisplayed = verdictWords.slice(0, revealed).join(' ')
+
+  const passedCount = scenarios.filter((s) => s.passed).length
+  const failedCount = scenarios.length - passedCount
+  const passRate = scenarios.length > 0 ? passedCount / scenarios.length : null
+
+  const alertStyle: React.CSSProperties = {
+    padding: '12px 16px',
+    marginBottom: '20px',
+    background: 'var(--fail-dim)',
+    border: '1px solid color-mix(in oklch, var(--fail) 32%, transparent)',
+    borderRadius: 'var(--r-panel)',
     fontSize: '14px',
-    color: 'var(--text-2)',
-    textDecoration: 'none',
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: '6px',
-    marginBottom: '24px',
+    color: 'var(--fail)',
   }
-
-  const pageHeaderStyle: React.CSSProperties = {
-    display: 'flex',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    marginBottom: '24px',
-  }
-
-  const btnPrimaryStyle: React.CSSProperties = {
-    background: 'var(--accent)',
-    color: 'var(--text-on-accent)',
-    border: 'none',
-    borderRadius: 'var(--radius-xs)',
-    padding: '9px 18px',
-    fontSize: '14px',
-    fontWeight: 600,
-    fontFamily: 'var(--font-sans)',
-    cursor: isRunning ? 'not-allowed' : 'pointer',
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: '6px',
-    whiteSpace: 'nowrap',
-    opacity: isRunning ? 0.5 : 1,
-  }
-
-  const scheduleStripStyle: React.CSSProperties = {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    borderRadius: 'var(--radius-sm)',
-    padding: '10px 16px',
-    marginBottom: '24px',
-    fontSize: '13px',
-    color: 'var(--text-2)',
-  }
-
-  const tabBarStyle: React.CSSProperties = {
-    display: 'flex',
-    borderBottom: '1px solid var(--border)',
-    marginBottom: '24px',
-  }
-
-  const tabStyle = (active: boolean): React.CSSProperties => ({
-    padding: '10px 20px',
-    fontSize: '14px',
-    fontWeight: active ? 600 : 500,
-    color: active ? 'var(--accent)' : 'var(--text-3)',
-    cursor: 'pointer',
-    borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
-    borderTop: 'none',
-    borderLeft: 'none',
-    borderRight: 'none',
-    background: 'transparent',
-    fontFamily: 'var(--font-sans)',
-    transition: 'color 0.15s, border-color 0.15s',
-    marginBottom: '-1px',
-  })
-
-  const chartCardStyle: React.CSSProperties = {
-    borderRadius: 'var(--radius-md)',
-    padding: '24px',
-    marginBottom: '16px',
-  }
-
-  const emptyStateStyle: React.CSSProperties = {
-    border: '2px dashed var(--border)',
-    borderRadius: 'var(--radius-sm)',
-    padding: '64px 40px',
-    textAlign: 'center',
-  }
-
-  const tableCardStyle: React.CSSProperties = {
-    borderRadius: 'var(--radius-md)',
-    overflow: 'hidden',
-  }
-
-  // ─── Dot helper for metric column headers ─────────────────────────────────
-
-  const MetricDot = ({ color }: { color: string }) => (
-    <span
-      style={{
-        display: 'inline-block',
-        width: 8,
-        height: 8,
-        borderRadius: '50%',
-        background: color,
-        marginRight: 4,
-        flexShrink: 0,
-      }}
-    />
-  )
-
-  // ─── Score cell ───────────────────────────────────────────────────────────
-
-  const ScoreCell = ({ score }: { score: number }) => (
-    <span
-      style={{
-        fontFamily: 'var(--font-mono)',
-        fontSize: '13px',
-        color: scoreColor(score),
-      }}
-    >
-      {score.toFixed(3)}
-    </span>
-  )
-
-  // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
-    <div style={wrapStyle}>
-      {/* Back link */}
-      <Link href={`/agents/${id}`} style={backLinkStyle}>
-        ← Back to configure
-      </Link>
+    <div className="page">
+      <style dangerouslySetInnerHTML={{ __html: PAGE_CSS }} />
 
-      {/* Page header */}
-      <div style={pageHeaderStyle}>
-        <div>
-          <h1
-            className="on-photo"
-            style={{
-              fontFamily: 'var(--font-display)',
-              fontVariationSettings: '"opsz" 144, "SOFT" 30',
-              fontSize: '22px',
-              fontWeight: 400,
-              color: 'var(--text-1)',
-              marginBottom: '4px',
-            }}
-          >
-            Run evaluations
-          </h1>
-          <p
-            className="on-photo"
-            style={{
-              fontSize: '14px',
-              color: 'var(--text-2)',
-              margin: 0,
-            }}
-          >
-            Ragas-scored nightly tests for your agent&apos;s knowledge base.
-          </p>
-        </div>
-        <button
-          style={btnPrimaryStyle}
-          onClick={handleRunNow}
-          disabled={isRunning}
-        >
-          {isRunning ? (
-            'Running…'
-          ) : (
-            <>
-              <Play size={14} /> Run now
-            </>
-          )}
-        </button>
-      </div>
-
-      {/* Error toast */}
-      {runError && (
-        <div
-          role="alert"
-          style={{
-            padding: '12px 16px',
-            marginBottom: '20px',
-            background: 'var(--red-bg)',
-            border: '1px solid rgba(248,113,113,0.3)',
-            borderRadius: 'var(--radius-xs)',
-            fontSize: '14px',
-            color: 'var(--red)',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <span>Eval run failed — {runError}</span>
-          <button
-            onClick={() => setRunError(null)}
-            style={{
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              color: 'var(--red)',
-              fontSize: '16px',
-              padding: '0 4px',
-            }}
-          >
-            ×
-          </button>
-        </div>
-      )}
-
-      {/* Schedule strip */}
-      <div className="glass-strong" style={scheduleStripStyle}>
-        <Clock size={16} style={{ color: 'var(--text-3)', flexShrink: 0 }} />
-        <span style={{ fontWeight: 600, color: 'var(--text-1)', marginRight: '4px' }}>
-          Automated:
-        </span>
-        <span>daily at 02:00 UTC</span>
-        <span style={{ color: 'var(--text-4)', margin: '0 8px' }}>·</span>
-        {latestRun ? (
-          <span>
-            Last run:{' '}
-            <strong style={{ fontFamily: 'var(--font-mono)' }}>
-              {formatUtcDate(latestRun.started_at)}
-            </strong>
-          </span>
-        ) : (
-          <span style={{ color: 'var(--text-3)' }}>No runs yet</span>
-        )}
-        <span style={{ color: 'var(--text-3)', fontSize: '12px', marginLeft: 'auto' }}>
-          {latestRun ? getNextRunTime() : 'First run tonight at 02:00 UTC'}
-        </span>
-      </div>
-
-      {/* Tab navigation */}
-      <div style={tabBarStyle} role="tablist" aria-label="Eval dashboard tabs">
-        <button
-          style={tabStyle(activeTab === 'passrates')}
-          onClick={() => setActiveTab('passrates')}
-          role="tab"
-          aria-selected={activeTab === 'passrates'}
-        >
-          Pass rates
-        </button>
-        <button
-          style={tabStyle(activeTab === 'scenarios')}
-          onClick={() => setActiveTab('scenarios')}
-          role="tab"
-          aria-selected={activeTab === 'scenarios'}
-        >
-          Scenarios
-        </button>
-      </div>
-
-      {/* Loading state */}
-      {isLoading && (
-        <div>
-          <ChartSkeleton />
-          <div style={{ marginTop: '24px' }}>
-            {[...Array(5)].map((_, i) => (
-              <SkeletonRow key={i} />
-            ))}
+      <header className="page-head">
+        <div className="row">
+          <div>
+            <h1>Evaluations</h1>
+            <p className="sub">
+              Ragas-scored tests for your agent&apos;s knowledge base. The suite runs against a
+              branch of the agent&apos;s database, so a run costs nothing.
+            </p>
           </div>
-        </div>
-      )}
-
-      {/* Empty state */}
-      {!isLoading && !hasRuns && (
-        <div className="glass" style={emptyStateStyle}>
-          <BarChart3
-            size={40}
-            style={{ color: 'var(--text-3)', display: 'block', margin: '0 auto 16px' }}
-          />
-          <div
-            style={{
-              fontSize: '16px',
-              fontWeight: 600,
-              color: 'var(--text-1)',
-              marginBottom: '8px',
-            }}
-          >
-            No eval runs yet
-          </div>
-          <p
-            style={{
-              fontSize: '14px',
-              color: 'var(--text-3)',
-              maxWidth: '340px',
-              margin: '0 auto 24px',
-              lineHeight: 1.6,
-            }}
-          >
-            Your agent is evaluated automatically each night. Run a check now
-            to see how it performs.
-          </p>
           <button
-            style={{
-              background: 'var(--accent)',
-              color: 'var(--text-on-accent)',
-              border: 'none',
-              borderRadius: 'var(--radius-xs)',
-              padding: '9px 18px',
-              fontSize: '14px',
-              fontWeight: 600,
-              fontFamily: 'var(--font-sans)',
-              cursor: isRunning ? 'not-allowed' : 'pointer',
-              opacity: isRunning ? 0.5 : 1,
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-            }}
+            type="button"
+            className="btn btn-primary"
             onClick={handleRunNow}
             disabled={isRunning}
           >
-            {isRunning ? (
-              'Running…'
-            ) : (
-              <>
-                <Play size={14} /> Run first eval
-              </>
-            )}
+            {isRunning ? 'Running…' : 'Run evals'}
           </button>
         </div>
-      )}
+      </header>
 
-      {/* Pass Rates tab */}
-      {!isLoading && hasRuns && activeTab === 'passrates' && (
-        <div>
-          {/* Glass aggregate stat tiles — approved glass use case (stat tiles only) */}
-          {latestRun && (
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(4, 1fr)',
-                gap: '12px',
-                marginBottom: '24px',
-              }}
-            >
-              {(
-                [
-                  { key: 'faithfulness', value: latestRun.aggregate_scores.faithfulness },
-                  { key: 'answer_relevancy', value: latestRun.aggregate_scores.answer_relevancy },
-                  { key: 'context_precision', value: latestRun.aggregate_scores.context_precision },
-                  { key: 'context_recall', value: latestRun.aggregate_scores.context_recall },
-                ] as const
-              ).map(({ key, value }) => (
-                <div
-                  key={key}
-                  className="glass"
-                  style={{
-                    borderRadius: 'var(--radius-md)',
-                    padding: '16px 20px',
-                  }}
-                >
-                  <div
-                    style={{
-                      ...microLabel,
-                      color: 'var(--text-3)',
-                      marginBottom: '8px',
-                    }}
-                  >
-                    {key.replace(/_/g, ' ')}
-                  </div>
-                  <div
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '28px',
-                      fontWeight: 600,
-                      color: scoreColor(value),
-                    }}
-                  >
-                    {value.toFixed(2)}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="glass-strong" style={chartCardStyle}>
-            <div
-              style={{
-                fontSize: '13px',
-                fontWeight: 600,
-                color: 'var(--text-2)',
-                marginBottom: '20px',
-              }}
-            >
-              Metric scores over time
-            </div>
-
-            <ResponsiveContainer width="100%" height={320}>
-              <LineChart
-                data={chartData}
-                margin={{ top: 8, right: 24, bottom: 8, left: 0 }}
-              >
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="rgba(196,154,232,0.18)"
-                  vertical={false}
-                />
-                <XAxis
-                  dataKey="date"
-                  tick={{
-                    fontSize: 12,
-                    fill: '#8A82A0',
-                    fontFamily: "'Inter', system-ui, sans-serif",
-                  }}
-                  axisLine={{ stroke: 'rgba(196,154,232,0.18)' }}
-                  tickLine={false}
-                />
-                <YAxis
-                  domain={[0, 1]}
-                  tickFormatter={(v: number) => v.toFixed(1)}
-                  tick={{
-                    fontSize: 12,
-                    fill: '#8A82A0',
-                    fontFamily: "'JetBrains Mono', ui-monospace, monospace",
-                  }}
-                  axisLine={false}
-                  tickLine={false}
-                  width={36}
-                />
-                <Tooltip
-                  contentStyle={{
-                    background: 'rgba(22,16,42,0.92)',
-                    border: '1px solid rgba(196,154,232,0.18)',
-                    borderRadius: 'var(--radius-xs)',
-                    fontSize: '13px',
-                    fontFamily: 'var(--font-sans)',
-                  }}
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  formatter={(v: any) => (typeof v === 'number' ? v.toFixed(3) : String(v ?? ''))}
-                />
-                <Legend
-                  wrapperStyle={{
-                    paddingTop: 16,
-                    fontSize: 13,
-                    fontFamily: 'var(--font-sans)',
-                  }}
-                />
-                <ReferenceLine
-                  y={0.9}
-                  stroke="rgba(244,116,140,0.32)"
-                  strokeDasharray="4 4"
-                  label={{
-                    value: 'Target 0.90',
-                    position: 'right',
-                    fontSize: 11,
-                    fill: '#8A82A0',
-                  }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="faithfulness"
-                  stroke={METRIC_COLORS.faithfulness}
-                  strokeWidth={2}
-                  dot={{ r: 4 }}
-                  name="Faithfulness"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="answer_relevancy"
-                  stroke={METRIC_COLORS.answer_relevancy}
-                  strokeWidth={2}
-                  dot={{ r: 4 }}
-                  name="Answer Relevancy"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="context_precision"
-                  stroke={METRIC_COLORS.context_precision}
-                  strokeWidth={2}
-                  dot={{ r: 4 }}
-                  name="Context Precision"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="context_recall"
-                  stroke={METRIC_COLORS.context_recall}
-                  strokeWidth={2}
-                  dot={{ r: 4 }}
-                  name="Context Recall"
-                />
-              </LineChart>
-            </ResponsiveContainer>
-
-            {/* Run summary strip */}
-            {latestRun && (
-              <div
-                style={{
-                  display: 'flex',
-                  gap: '24px',
-                  fontSize: '13px',
-                  color: 'var(--text-3)',
-                  paddingTop: '14px',
-                  borderTop: '1px solid var(--border-soft)',
-                  flexWrap: 'wrap',
-                }}
-              >
-                <span>
-                  Last run:{' '}
-                  <strong style={{ color: 'var(--text-2)', fontWeight: 500, fontFamily: 'var(--font-mono)' }}>
-                    {formatUtcDate(latestRun.started_at)}
-                  </strong>
-                </span>
-                <span>
-                  Scenarios:{' '}
-                  <strong style={{ color: 'var(--text-2)', fontWeight: 500, fontFamily: 'var(--font-mono)' }}>
-                    {latestRun.scenario_count}
-                  </strong>
-                </span>
-                <span>
-                  Duration:{' '}
-                  <strong style={{ color: 'var(--text-2)', fontWeight: 500, fontFamily: 'var(--font-mono)' }}>
-                    {formatDuration(latestRun.started_at, latestRun.finished_at)}
-                  </strong>
-                </span>
-              </div>
-            )}
-          </div>
+      {runError && (
+        <div role="alert" style={alertStyle}>
+          Eval run failed — {runError}
         </div>
       )}
 
-      {/* Scenarios tab */}
-      {!isLoading && hasRuns && activeTab === 'scenarios' && (
-        <div className="glass-strong" style={tableCardStyle}>
-          {resultsQuery.isLoading ? (
-            <div style={{ padding: '24px' }}>
-              {[...Array(5)].map((_, i) => (
-                <SkeletonRow key={i} />
-              ))}
-            </div>
-          ) : (
-            <table
+      {isLoading && (
+        <div aria-hidden="true">
+          <div
+            style={{
+              height: '220px',
+              borderRadius: 'var(--r-panel)',
+              background: 'var(--surface)',
+              marginBottom: '24px',
+            }}
+          />
+          {[...Array(3)].map((_, i) => (
+            <div
+              key={i}
               style={{
-                width: '100%',
-                borderCollapse: 'collapse',
+                height: '44px',
+                borderRadius: 'var(--r-panel)',
+                background: 'var(--surface)',
+                marginBottom: '8px',
               }}
-            >
-              <thead>
-                <tr style={{ background: 'var(--well)' }}>
-                  <th
+            />
+          ))}
+        </div>
+      )}
+
+      {!isLoading && !hasRuns && (
+        <>
+          <EmptyState
+            heading="No eval runs yet"
+            body="Your agent is evaluated automatically each night. Run a check now to see how it performs."
+          />
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ marginTop: '16px' }}
+            onClick={handleRunNow}
+            disabled={isRunning}
+          >
+            {isRunning ? 'Running…' : 'Run first eval'}
+          </button>
+        </>
+      )}
+
+      {!isLoading && hasRuns && (
+        <>
+          {/* ── the four channels ────────────────────────────────────────── */}
+          <h2 className="vh">
+            Channel telemetry, last {chronologicalRuns.length} run{chronologicalRuns.length === 1 ? '' : 's'}
+          </h2>
+          <TelemetryChart runs={chronologicalRuns} colors={channelColors} />
+
+          {/* ── the judge ────────────────────────────────────────────────── */}
+          <section className="judge">
+            <span className="label" id="judge-label">
+              The judge
+            </span>
+            <p className="voice verdict" aria-hidden="true">
+              {verdictDisplayed}
+              {!reducedMotion && !verdictDone && verdictText ? (
+                <i className="caret" aria-hidden="true" />
+              ) : null}
+            </p>
+            {/* the screen reader gets the whole sentence once, not one word at a time */}
+            <p className="vh" role="status" aria-live="polite">
+              {verdictText}
+            </p>
+            {latestRun && (
+              <p className="run-note">
+                {passRate !== null && (
+                  <span className="mono stamp">
+                    pass rate {passRate.toFixed(2)} · {passedCount} of {scenarios.length} held
+                  </span>
+                )}
+                <span className="mono stamp">last run {formatStamp(latestRun.started_at)}</span>
+              </p>
+            )}
+          </section>
+
+          {/* ── the scenarios ────────────────────────────────────────────── */}
+          <section className="section">
+            <div className="section-head">
+              <h2 className="label" id="sc-label">
+                Scenarios
+                <span className="chip chip-mute num" style={{ marginLeft: '10px' }}>
+                  {scenarios.length}
+                </span>
+              </h2>
+              {failedCount > 0 && (
+                <span className="mono stamp">
+                  {failedCount} failed
+                </span>
+              )}
+            </div>
+
+            {resultsQuery.isLoading ? (
+              <div aria-hidden="true">
+                {[...Array(4)].map((_, i) => (
+                  <div
+                    key={i}
                     style={{
-                      ...microLabel,
-                      color: 'var(--text-3)',
-                      padding: '10px 16px',
-                      textAlign: 'left',
-                      whiteSpace: 'nowrap',
+                      height: '40px',
+                      borderRadius: 'var(--r-control)',
+                      background: 'var(--surface)',
+                      marginBottom: '6px',
                     }}
-                  >
-                    Question
-                  </th>
-                  <th
-                    style={{
-                      ...microLabel,
-                      color: 'var(--text-3)',
-                      padding: '10px 16px',
-                      textAlign: 'center',
-                      whiteSpace: 'nowrap',
-                      width: '80px',
-                    }}
-                  >
-                    Source
-                  </th>
-                  {/* Metric headers with color dots */}
-                  {([
-                    { key: 'F', color: METRIC_COLORS.faithfulness },
-                    { key: 'AR', color: METRIC_COLORS.answer_relevancy },
-                    { key: 'CP', color: METRIC_COLORS.context_precision },
-                    { key: 'CR', color: METRIC_COLORS.context_recall },
-                  ] as const).map(({ key, color }) => (
-                    <th
-                      key={key}
-                      style={{
-                        ...microLabel,
-                        color: 'var(--text-3)',
-                        padding: '10px 16px',
-                        textAlign: 'center',
-                        whiteSpace: 'nowrap',
-                        width: '80px',
-                      }}
-                    >
-                      <span
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                        }}
-                      >
-                        <MetricDot color={color} />
-                        {key}
-                      </span>
-                    </th>
-                  ))}
-                  <th
-                    style={{
-                      ...microLabel,
-                      color: 'var(--text-3)',
-                      padding: '10px 16px',
-                      textAlign: 'center',
-                      whiteSpace: 'nowrap',
-                      width: '60px',
-                    }}
-                  >
-                    ✓
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {scenarios.length === 0 ? (
+                  />
+                ))}
+              </div>
+            ) : scenarios.length === 0 ? (
+              <EmptyState heading="No scenario results" body="This run has no scenario-level results yet." />
+            ) : (
+              <Ledger caption="Scenario results: question, source, faithfulness, relevancy, verdict, and run time">
+                <thead>
                   <tr>
-                    <td
-                      colSpan={7}
-                      style={{
-                        textAlign: 'center',
-                        padding: '32px 16px',
-                        color: 'var(--text-3)',
-                        fontSize: '14px',
-                        borderTop: '1px solid var(--border-soft)',
-                      }}
-                    >
-                      No scenario results for this run.
-                    </td>
+                    <LedgerColHead>Scenario</LedgerColHead>
+                    <LedgerColHead className="col-src">Source</LedgerColHead>
+                    <LedgerColHead numeric>
+                      <i className="dot" style={{ background: channelColors[0] }} aria-hidden="true" />
+                      Faithfulness
+                    </LedgerColHead>
+                    <LedgerColHead numeric>
+                      <i className="dot" style={{ background: channelColors[1] }} aria-hidden="true" />
+                      Relevancy
+                    </LedgerColHead>
+                    <LedgerColHead>Verdict</LedgerColHead>
+                    <LedgerColHead className="col-ran">Ran</LedgerColHead>
                   </tr>
-                ) : (
-                  scenarios.map((s) => (
-                    <tr
-                      key={s.scenario_id}
-                      style={{
-                        borderTop: '1px solid var(--border-soft)',
-                        transition: 'background 0.1s',
-                      }}
-                      onMouseEnter={(e) => {
-                        ;(e.currentTarget as HTMLTableRowElement).style.background =
-                          'var(--chip)'
-                      }}
-                      onMouseLeave={(e) => {
-                        ;(e.currentTarget as HTMLTableRowElement).style.background =
-                          ''
-                      }}
-                    >
-                      {/* Question */}
-                      <td
-                        style={{
-                          fontSize: '13px',
-                          color: 'var(--text-1)',
-                          fontWeight: 500,
-                          padding: '12px 16px',
-                          maxWidth: '280px',
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          verticalAlign: 'middle',
-                        }}
-                        title={s.question}
-                      >
-                        {s.question.length > 60
-                          ? s.question.slice(0, 60) + '…'
-                          : s.question}
+                </thead>
+                <tbody>
+                  {scenarios.map((s) => (
+                    <tr key={s.scenario_id} data-verdict={s.passed ? 'pass' : 'fail'}>
+                      <LedgerRowHead className="scenario">{s.question}</LedgerRowHead>
+                      <td className="col-src">
+                        <span className="chip chip-mute">{s.source}</span>
                       </td>
-
-                      {/* Source badge */}
-                      <td
-                        style={{
-                          textAlign: 'center',
-                          padding: '12px 16px',
-                          verticalAlign: 'middle',
-                        }}
-                      >
-                        <span
-                          style={{
-                            display: 'inline-block',
-                            padding: '2px 8px',
-                            borderRadius: 'var(--radius-pill)',
-                            fontSize: '11px',
-                            fontWeight: 500,
-                            letterSpacing: '0.02em',
-                            background:
-                              s.source === 'generated'
-                                ? 'var(--gold-bg)'
-                                : 'var(--lilac-dim)',
-                            color:
-                              s.source === 'generated'
-                                ? 'var(--gold)'
-                                : 'var(--lilac)',
-                          }}
-                        >
-                          {s.source}
-                        </span>
+                      <td className="num">{s.scores.faithfulness.toFixed(2)}</td>
+                      <td className="num">{s.scores.answer_relevancy.toFixed(2)}</td>
+                      <td>
+                        <Chip verdict={s.passed ? 'pass' : 'fail'}>{s.passed ? 'Pass' : 'Fail'}</Chip>
                       </td>
-
-                      {/* Score cells: F, AR, CP, CR */}
-                      {(
-                        [
-                          s.scores.faithfulness,
-                          s.scores.answer_relevancy,
-                          s.scores.context_precision,
-                          s.scores.context_recall,
-                        ] as number[]
-                      ).map((score, idx) => (
-                        <td
-                          key={idx}
-                          style={{
-                            textAlign: 'center',
-                            padding: '12px 16px',
-                            verticalAlign: 'middle',
-                          }}
-                        >
-                          <ScoreCell score={score} />
-                        </td>
-                      ))}
-
-                      {/* PASS/FAIL badge */}
-                      <td
-                        style={{
-                          textAlign: 'center',
-                          padding: '12px 16px',
-                          verticalAlign: 'middle',
-                        }}
-                      >
-                        <span
-                          style={{
-                            display: 'inline-block',
-                            padding: '2px 8px',
-                            borderRadius: 'var(--radius-pill)',
-                            fontSize: '11px',
-                            fontWeight: 600,
-                            letterSpacing: '0.02em',
-                            background: s.passed
-                              ? 'var(--green-bg)'
-                              : 'var(--red-bg)',
-                            color: s.passed ? 'var(--green)' : 'var(--red)',
-                          }}
-                        >
-                          {s.passed ? 'PASS' : 'FAIL'}
-                        </span>
+                      <td className="col-ran mono stamp">
+                        {latestRun ? formatStamp(latestRun.started_at) : '—'}
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          )}
-        </div>
+                  ))}
+                </tbody>
+              </Ledger>
+            )}
+          </section>
+        </>
       )}
     </div>
   )
 }
+
+// ---------------------------------------------------------------------------
+// Page-scoped CSS — ported from prototypes/gotham/eval.html's own <style>
+// block (telemetry / leaders / pins / judge / ledger num emphasis), same
+// static dangerouslySetInnerHTML pattern used by ingest/page.tsx. `.vh` and
+// the registration crosses are handled globally (PageChrome / globals.css)
+// and are not repeated here.
+// ---------------------------------------------------------------------------
+const PAGE_CSS = `
+  .telemetry { position: relative; padding: 10px 0 22px; }
+
+  .trace { display: block; width: calc(100% - 168px); height: auto; }
+  @media (max-width: 900px) { .trace { width: 100%; } }
+
+  .trace .grid  { stroke: var(--hairline-soft); stroke-width: 1; }
+  .trace .axis  { stroke: var(--hairline); stroke-width: 1; }
+  .trace .tickt { font-family: var(--mono); font-size: 8px; fill: var(--ink-3); }
+
+  .leaders { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+
+  .pins { position: absolute; inset: 0; pointer-events: none; }
+  .pin {
+    position: absolute; right: 0; width: 148px;
+    transform: translateY(-50%);
+    display: flex; flex-direction: column; gap: 1px;
+  }
+  .pin-val { font-size: 26px; line-height: 1.04; font-weight: 500; color: var(--c); }
+  .pin-name { color: var(--ink-3); }
+
+  @media (max-width: 900px) {
+    .leaders { display: none; }
+    .pins {
+      position: static; display: grid; gap: 14px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      margin-top: 18px;
+    }
+    .pin { position: static; transform: none; width: auto; padding-left: 11px; border-left: 2px solid var(--c); }
+  }
+
+  .judge { margin-top: 8px; padding-top: 22px; border-top: 1px solid var(--hairline-strong); }
+  .judge .label { display: block; margin-bottom: 10px; }
+  .verdict { font-size: 17.5px; max-width: 74ch; min-height: 3.3em; }
+
+  .scenario { max-width: 42ch; }
+  .ledger th .dot { display: inline-block; margin-right: 6px; vertical-align: 1px; }
+  .ledger td.num { color: var(--ink-2); }
+  .ledger tr[data-verdict="fail"] td.num { color: var(--ink); }
+  .stamp { color: var(--ink-3); font-size: 12px; }
+
+  .run-note { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+
+  @media (max-width: 820px) {
+    .ledger .col-src, .ledger .col-ran { display: none; }
+  }
+`
