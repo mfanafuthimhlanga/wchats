@@ -561,7 +561,7 @@ def run_agent_turn(
             #   settings.AGENT_MAX_BUDGET_USD (default 0.50).
             #   Root cause (additional): the 0.05 USD cap was too tight for a
             #   turn that uses extended thinking (~38s) + retrieved context + synthesis.
-            #   A Sonnet thinking+retrieve+synthesis turn can easily exceed $0.05.
+            #   A Haiku extended-thinking + retrieve + synthesis turn can exceed $0.05.
             #   When the budget is exceeded the CLI emits result{subtype:error_max_budget,
             #   is_error:true} → receive_response() terminates → response_text stays ""
             #   with no exception raised (identical empty-text signature to max_turns).
