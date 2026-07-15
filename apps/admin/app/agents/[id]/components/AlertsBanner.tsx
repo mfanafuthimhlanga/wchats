@@ -28,16 +28,15 @@ function timeAgo(iso: string): string {
 }
 
 const ALERT_TYPE_LABELS: Record<string, string> = {
-  eval_regression: "Eval Regression",
-  red_team_critical: "Critical Red Team Finding",
+  eval_regression: "Eval regression",
+  red_team_critical: "Critical red-team finding",
 }
 
 function formatAlertType(alertType: string): string {
   if (ALERT_TYPE_LABELS[alertType]) return ALERT_TYPE_LABELS[alertType]
-  // Replace underscores with spaces and title-case each word
-  return alertType
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase())
+  // Replace underscores with spaces, then sentence-case (capitalise first letter only)
+  const spaced = alertType.replace(/_/g, " ")
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -89,36 +88,20 @@ export function AlertsBanner({ agentId }: { agentId: string }) {
   return (
     <div style={{ marginBottom: "20px" }}>
       {alerts.map((alert) => {
-        const isWarning = alert.severity === "warning"
         const isCritical = alert.severity === "critical"
-
-        const rowBackground = isCritical
-          ? "var(--red-bg)"
-          : isWarning
-          ? "var(--amber-bg)"
-          : "var(--amber-bg)"
-
-        const rowBorder = isCritical
-          ? "1px solid rgba(185, 28, 28, 0.20)"
-          : isWarning
-          ? "1px solid rgba(146, 64, 14, 0.20)"
-          : "1px solid rgba(146, 64, 14, 0.20)"
-
-        const badgeClass = isCritical
-          ? "bg-red-100 text-red-800"
-          : "bg-amber-100 text-amber-800"
 
         return (
           <div
             key={alert.id}
             role="alert"
-            className="flex items-start justify-between"
+            className="flex items-start justify-between glass-strong"
             style={{
               padding: "12px 16px",
               marginBottom: "8px",
-              background: rowBackground,
-              border: rowBorder,
-              borderRadius: "var(--radius-xs)",
+              borderRadius: "var(--radius-sm)",
+              borderLeft: isCritical
+                ? "3px solid var(--red)"
+                : "3px solid var(--gold)",
             }}
           >
             {/* Left side: badge + label + message + triggered_at */}
@@ -126,8 +109,19 @@ export function AlertsBanner({ agentId }: { agentId: string }) {
               {/* First line: severity badge + alert_type label */}
               <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                 <span
-                  className={`${badgeClass} uppercase rounded px-1.5 py-0.5`}
-                  style={{ fontSize: "12px", fontWeight: 600, lineHeight: "1.25" }}
+                  style={{
+                    fontSize: "10.5px",
+                    fontWeight: 600,
+                    letterSpacing: "0.12em",
+                    textTransform: "uppercase",
+                    lineHeight: 1.25,
+                    padding: "2px 8px",
+                    borderRadius: "var(--radius-pill)",
+                    background: isCritical ? "var(--red-bg)" : "var(--gold-bg)",
+                    color: isCritical ? "var(--red)" : "var(--gold)",
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
+                  }}
                 >
                   {alert.severity}
                 </span>
@@ -141,7 +135,7 @@ export function AlertsBanner({ agentId }: { agentId: string }) {
                 style={{
                   fontSize: "14px",
                   fontWeight: 400,
-                  color: "var(--text-3)",
+                  color: "var(--text-2)",
                   margin: "4px 0 2px 0",
                   lineHeight: "1.5",
                 }}

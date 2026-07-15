@@ -154,22 +154,19 @@ export default function AgentsDashboardPage() {
       {/* Header bar — greeting left, CTA right */}
       <div
         style={{
-          backgroundImage: `
-            radial-gradient(ellipse 40% 80% at 100% 50%, rgba(244, 116, 140, 0.08) 0%, transparent 60%),
-            radial-gradient(ellipse 30% 60% at 0% 0%, rgba(183, 154, 224, 0.06) 0%, transparent 60%)`,
           padding: '40px 48px 16px',
           position: 'relative',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '32px', maxWidth: '1400px' }}>
           <div>
-            <h1 style={{ fontFamily: 'var(--font-display)', fontWeight: 400, fontVariationSettings: '"opsz" 144, "SOFT" 50', fontSize: '34px', letterSpacing: '-0.022em', lineHeight: 1.1, color: 'var(--text-1)', margin: '0 0 6px 0' }}>
+            <h1 className="on-photo" style={{ fontFamily: 'var(--font-display)', fontWeight: 400, fontVariationSettings: '"opsz" 144, "SOFT" 50', fontSize: '34px', letterSpacing: '-0.022em', lineHeight: 1.1, color: 'var(--text-1)', margin: '0 0 6px 0' }}>
               {greeting},{' '}
               <em style={{ fontStyle: 'italic', fontWeight: 300, color: 'var(--accent)', fontVariationSettings: '"opsz" 144, "SOFT" 100' }}>
                 there
               </em>
             </h1>
-            <p style={{ fontSize: '14px', color: 'var(--text-2)', margin: 0 }}>
+            <p className="on-photo" style={{ fontSize: '14px', color: 'var(--text-2)', margin: 0 }}>
               {liveCount} live · {testingCount} in test · {draftCount} draft
             </p>
           </div>
@@ -179,7 +176,7 @@ export default function AgentsDashboardPage() {
               href="/agents/new"
               style={{
                 background: 'var(--accent)',
-                color: '#0B0717',
+                color: 'var(--text-on-accent)',
                 padding: '10px 18px',
                 borderRadius: 'var(--radius-sm)',
                 fontWeight: 600,
@@ -196,7 +193,7 @@ export default function AgentsDashboardPage() {
 
       {/* Filter strip */}
       <div style={{ padding: '0 48px 12px', maxWidth: '1400px' }}>
-        <div style={{ display: 'flex', gap: '4px' }}>
+        <div className="on-photo" style={{ display: 'flex', gap: '4px' }}>
           {([
             { label: 'All', count: agents.length },
             { label: 'Live', count: liveCount },
@@ -209,7 +206,7 @@ export default function AgentsDashboardPage() {
                 key={label}
                 onClick={() => setActiveFilter(label)}
                 style={{
-                  background: isActive ? 'var(--surface-2)' : 'transparent',
+                  background: isActive ? 'var(--chip)' : 'transparent',
                   border: isActive ? '1px solid var(--border)' : '1px solid transparent',
                   color: isActive ? 'var(--text-1)' : 'var(--text-2)',
                   fontSize: '13px',
@@ -224,9 +221,10 @@ export default function AgentsDashboardPage() {
               >
                 {label}
                 <span style={{
-                  fontSize: '10px',
+                  fontSize: '11px',
                   fontFamily: 'var(--font-mono)',
-                  color: isActive ? 'var(--text-2)' : 'var(--text-3)',
+                  color: isActive ? 'var(--text-1)' : 'var(--text-2)',
+                  opacity: isActive ? 1 : 0.8,
                 }}>
                   {count}
                 </span>
@@ -242,7 +240,7 @@ export default function AgentsDashboardPage() {
         {loadError && (
           <div
             role="alert"
-            style={{ padding: '12px 16px', marginBottom: '20px', background: 'var(--red-bg)', border: '1px solid rgba(192,57,43,0.3)', borderRadius: 'var(--radius-xs)', fontSize: '14px', color: 'var(--red)' }}
+            style={{ padding: '12px 16px', marginBottom: '20px', background: 'var(--red-bg)', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 'var(--radius-xs)', fontSize: '14px', color: 'var(--red)' }}
           >
             {loadError}
           </div>
@@ -256,8 +254,8 @@ export default function AgentsDashboardPage() {
         {/* Empty state */}
         {!isLoading && agents.length === 0 && !loadError && (
           <div style={{ textAlign: 'center', padding: '80px 0' }}>
-            <div style={{ display: 'inline-flex', alignItems: 'center', background: 'var(--glass-bg)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--radius-pill)', padding: '4px 14px', marginBottom: '20px' }}>
-              <span style={{ fontSize: '10.5px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)' }}>NO AGENTS YET</span>
+            <div className="glass" style={{ display: 'inline-flex', alignItems: 'center', borderRadius: 'var(--radius-pill)', padding: '4px 14px', marginBottom: '20px' }}>
+              <span style={{ fontSize: '10.5px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)' }}>No agents yet</span>
             </div>
             <h2 style={{ fontFamily: 'var(--font-display)', fontWeight: 400, fontVariationSettings: '"opsz" 144, "SOFT" 30', fontSize: '24px', color: 'var(--text-1)', margin: '0 0 8px 0' }}>
               Build your first{' '}
@@ -266,7 +264,7 @@ export default function AgentsDashboardPage() {
             <p style={{ color: 'var(--text-3)', marginBottom: '24px', fontSize: '15px' }}>
               Create a customer service agent and deploy it in minutes.
             </p>
-            <Link href="/agents/new" style={{ background: 'var(--accent)', color: '#0B0717', padding: '10px 18px', borderRadius: 'var(--radius-sm)', fontWeight: 600, fontSize: '14px', textDecoration: 'none', display: 'inline-block' }}>
+            <Link href="/agents/new" style={{ background: 'var(--accent)', color: 'var(--text-on-accent)', padding: '10px 18px', borderRadius: 'var(--radius-sm)', fontWeight: 600, fontSize: '14px', textDecoration: 'none', display: 'inline-block' }}>
               New agent
             </Link>
           </div>

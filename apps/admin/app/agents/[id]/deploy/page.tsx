@@ -1,7 +1,8 @@
 'use client'
-import { useState, useEffect, use } from 'react'
+import { useState, useEffect, use, type ComponentType } from 'react'
 import { useAuth } from '@clerk/nextjs'
 import Link from 'next/link'
+import { MessageCircle, PanelBottom, PanelRight, X, TriangleAlert } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,37 +79,39 @@ const RADIUS_MAP: Record<'sharp' | 'rounded' | 'pill', string> = {
   pill: '24px',
 }
 
-const APPEARANCE_OPTIONS: { key: string; label: string; hint: string; icon: string }[] = [
+type AppearanceIcon = ComponentType<{ size?: number; color?: string }>
+
+const APPEARANCE_OPTIONS: { key: string; label: string; hint: string; Icon: AppearanceIcon }[] = [
   {
     key: 'floating-button',
-    label: 'Floating Button',
+    label: 'Floating button',
     hint: 'Circular launcher fixed to page corner — chat opens on click',
-    icon: '💬',
+    Icon: MessageCircle,
   },
   {
     key: 'floating-mini-modal',
-    label: 'Floating Mini-modal',
+    label: 'Floating mini-modal',
     hint: 'Compact card showing greeting + input, expands on click',
-    icon: '🪟',
+    Icon: PanelBottom,
   },
   {
     key: 'slide-out-panel',
-    label: 'Slide-out Panel',
+    label: 'Slide-out panel',
     hint: 'Full-height panel slides in from right page edge',
-    icon: '▶',
+    Icon: PanelRight,
   },
 ]
 
 const COLOR_FIELDS: { key: keyof WidgetConfig['colors']; label: string }[] = [
-  { key: 'widget_bg', label: 'Widget Background' },
-  { key: 'header_bg', label: 'Header Background' },
-  { key: 'header_text', label: 'Header Text' },
-  { key: 'agent_bubble_bg', label: 'Agent Bubble Background' },
-  { key: 'agent_bubble_text', label: 'Agent Bubble Text' },
-  { key: 'user_bubble_bg', label: 'User Bubble Background' },
-  { key: 'user_bubble_text', label: 'User Bubble Text' },
-  { key: 'send_button', label: 'Send Button' },
-  { key: 'input_bg', label: 'Input Field Background' },
+  { key: 'widget_bg', label: 'Widget background' },
+  { key: 'header_bg', label: 'Header background' },
+  { key: 'header_text', label: 'Header text' },
+  { key: 'agent_bubble_bg', label: 'Agent bubble background' },
+  { key: 'agent_bubble_text', label: 'Agent bubble text' },
+  { key: 'user_bubble_bg', label: 'User bubble background' },
+  { key: 'user_bubble_text', label: 'User bubble text' },
+  { key: 'send_button', label: 'Send button' },
+  { key: 'input_bg', label: 'Input field background' },
 ]
 
 const WIDGET_CDN_BASE = process.env.NEXT_PUBLIC_WCHATS_WIDGET_CDN || 'https://widget.wchats.app'
@@ -148,18 +151,20 @@ function AppearanceCard({
   selected,
   onSelect,
 }: {
-  option: { key: string; label: string; hint: string; icon: string }
+  option: { key: string; label: string; hint: string; Icon: AppearanceIcon }
   selected: boolean
   onSelect: () => void
 }) {
+  const Icon = option.Icon
   return (
     <label
+      className="glass-strong"
       style={{
         display: 'block',
         padding: '16px',
-        borderRadius: 'var(--radius-xs)',
-        background: selected ? 'var(--accent-dim)' : 'var(--surface-2)',
-        border: `1px solid ${selected ? 'var(--accent)' : 'var(--border-soft)'}`,
+        borderRadius: 'var(--radius-sm)',
+        border: selected ? '1px solid var(--border-hard)' : undefined,
+        boxShadow: selected ? 'var(--shadow-glow)' : undefined,
         cursor: 'pointer',
         marginBottom: '8px',
       }}
@@ -169,15 +174,15 @@ function AppearanceCard({
           style={{
             width: '36px',
             height: '36px',
-            background: 'var(--surface-3)',
-            borderRadius: '8px',
+            background: 'var(--chip)',
+            borderRadius: 'var(--radius-xs)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            fontSize: '18px',
+            color: 'var(--text-1)',
           }}
         >
-          {option.icon}
+          <Icon size={20} aria-hidden />
         </div>
         <input
           type="radio"
@@ -188,7 +193,7 @@ function AppearanceCard({
           aria-label={option.label}
         />
       </div>
-      <div style={{ fontSize: '13.5px', fontWeight: 600, color: 'var(--text-1)', marginBottom: '4px' }}>
+      <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-1)', marginBottom: '4px' }}>
         {option.label}
       </div>
       <div style={{ fontSize: '12px', color: 'var(--text-3)', lineHeight: 1.45 }}>
@@ -359,7 +364,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
         href={`/agents/${id}`}
         style={{
           fontSize: '14px',
-          color: 'var(--accent)',
+          color: 'var(--text-2)',
           textDecoration: 'none',
           display: 'inline-block',
           marginBottom: '24px',
@@ -369,10 +374,20 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
       </Link>
 
       {/* Page header */}
-      <h1 style={{ fontSize: '22px', fontWeight: 700, color: 'var(--text-1)', margin: '0 0 6px' }}>
+      <h1
+        className="on-photo"
+        style={{
+          fontSize: '22px',
+          fontFamily: 'var(--font-display)',
+          fontWeight: 400,
+          fontVariationSettings: '"opsz" 144, "SOFT" 30',
+          color: 'var(--text-1)',
+          margin: '0 0 6px',
+        }}
+      >
         Deploy
       </h1>
-      <p style={{ fontSize: '14px', color: 'var(--text-3)', margin: '0 0 24px' }}>
+      <p className="on-photo" style={{ fontSize: '14px', color: 'var(--text-2)', margin: '0 0 24px' }}>
         Embed the agent on your site and customise its look.
       </p>
 
@@ -384,7 +399,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
             padding: '12px 16px',
             marginBottom: '20px',
             background: 'var(--red-bg)',
-            border: '1px solid rgba(248,113,113,0.25)',
+            border: '1px solid rgba(248,113,113,0.3)',
             borderRadius: 'var(--radius-xs)',
             fontSize: '14px',
             color: 'var(--red)',
@@ -397,11 +412,13 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
       {/* Sub-tab nav */}
       <div
         role="tablist"
+        className="glass-strong"
         style={{
-          display: 'flex',
-          borderBottom: '1px solid var(--border-soft)',
-          marginBottom: '24px',
+          display: 'inline-flex',
           gap: '4px',
+          padding: '4px',
+          borderRadius: 'var(--radius-pill)',
+          marginBottom: '24px',
         }}
       >
         <button
@@ -413,17 +430,16 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
           style={{
             padding: '10px 20px',
             border: 'none',
-            borderBottom: `2px solid ${activeTab === 'customize' ? 'var(--accent)' : 'transparent'}`,
-            background: 'none',
-            color: activeTab === 'customize' ? 'var(--accent)' : 'var(--text-3)',
+            borderRadius: 'var(--radius-pill)',
+            background: activeTab === 'customize' ? 'var(--chip)' : 'transparent',
+            color: activeTab === 'customize' ? 'var(--text-1)' : 'var(--text-2)',
             fontWeight: activeTab === 'customize' ? 600 : 400,
             fontSize: '14px',
             cursor: activeTab === 'customize' ? 'default' : 'pointer',
             fontFamily: 'var(--font-sans)',
-            marginBottom: -1,
           }}
         >
-          Customise Widget
+          Customise widget
         </button>
         <button
           role="tab"
@@ -434,17 +450,16 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
           style={{
             padding: '10px 20px',
             border: 'none',
-            borderBottom: `2px solid ${activeTab === 'predeploy' ? 'var(--accent)' : 'transparent'}`,
-            background: 'none',
-            color: activeTab === 'predeploy' ? 'var(--accent)' : 'var(--text-3)',
+            borderRadius: 'var(--radius-pill)',
+            background: activeTab === 'predeploy' ? 'var(--chip)' : 'transparent',
+            color: activeTab === 'predeploy' ? 'var(--text-1)' : 'var(--text-2)',
             fontWeight: activeTab === 'predeploy' ? 600 : 400,
             fontSize: '14px',
             cursor: activeTab === 'predeploy' ? 'default' : 'pointer',
             fontFamily: 'var(--font-sans)',
-            marginBottom: -1,
           }}
         >
-          Pre-Deploy Check
+          Pre-deploy check
         </button>
         <button
           role="tab"
@@ -455,17 +470,16 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
           style={{
             padding: '10px 20px',
             border: 'none',
-            borderBottom: `2px solid ${activeTab === 'embed' ? 'var(--accent)' : 'transparent'}`,
-            background: 'none',
-            color: activeTab === 'embed' ? 'var(--accent)' : 'var(--text-3)',
+            borderRadius: 'var(--radius-pill)',
+            background: activeTab === 'embed' ? 'var(--chip)' : 'transparent',
+            color: activeTab === 'embed' ? 'var(--text-1)' : 'var(--text-2)',
             fontWeight: activeTab === 'embed' ? 600 : 400,
             fontSize: '14px',
             cursor: activeTab === 'embed' ? 'default' : 'pointer',
             fontFamily: 'var(--font-sans)',
-            marginBottom: -1,
           }}
         >
-          Embed Code
+          Embed code
         </button>
       </div>
 
@@ -475,10 +489,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
           role="tabpanel"
           id="panel-embed"
           aria-labelledby="tab-embed"
+          className="glass-strong"
           style={{
-            background: 'var(--surface-1)',
-            border: '1px solid var(--border-soft)',
-            borderRadius: 'var(--radius-xs)',
+            borderRadius: 'var(--radius-md)',
             padding: '24px',
           }}
         >
@@ -490,9 +503,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
           </p>
           <pre
             style={{
-              background: 'var(--surface-2)',
-              border: '1px solid var(--border)',
-              color: 'var(--text-2)',
+              background: 'var(--well)',
+              border: '1px solid var(--border-soft)',
+              color: 'var(--text-1)',
               padding: '16px',
               borderRadius: 'var(--radius-xs)',
               fontFamily: 'var(--font-mono)',
@@ -508,7 +521,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
             style={{
               padding: '10px 18px',
               background: 'var(--accent)',
-              color: '#0B0717',
+              color: 'var(--text-on-accent)',
               border: 'none',
               borderRadius: 'var(--radius-xs)',
               cursor: 'pointer',
@@ -532,7 +545,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                 padding: '12px 16px',
                 marginBottom: '20px',
                 background: 'var(--red-bg)',
-                border: '1px solid rgba(248,113,113,0.25)',
+                border: '1px solid rgba(248,113,113,0.3)',
                 borderRadius: 'var(--radius-xs)',
                 fontSize: '14px',
                 color: 'var(--red)',
@@ -544,7 +557,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
 
           {/* STATE 1: idle — No Run */}
           {checklistState.kind === 'idle' && (
-            <div style={{ border: '2px dashed var(--border)', padding: '64px 40px', textAlign: 'center', borderRadius: 'var(--radius-xs)' }}>
+            <div className="glass" style={{ border: '2px dashed var(--border)', padding: '64px 40px', textAlign: 'center', borderRadius: 'var(--radius-md)' }}>
               <h2 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-1)', margin: '0 0 12px' }}>
                 Ready to deploy your agent?
               </h2>
@@ -574,7 +587,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                 }}
                 style={{
                   background: 'var(--accent)',
-                  color: '#0B0717',
+                  color: 'var(--text-on-accent)',
                   padding: '10px 18px',
                   borderRadius: 'var(--radius-xs)',
                   fontWeight: 600,
@@ -591,7 +604,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
 
           {/* STATE 2: running */}
           {checklistState.kind === 'running' && (
-            <div style={{ border: '2px dashed var(--border)', padding: '64px 40px', textAlign: 'center', borderRadius: 'var(--radius-xs)' }}>
+            <div className="glass" style={{ border: '2px dashed var(--border)', padding: '64px 40px', textAlign: 'center', borderRadius: 'var(--radius-md)' }}>
               <div
                 aria-label="Checking readiness"
                 aria-live="polite"
@@ -638,17 +651,14 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
               (rec === 'ship_with_warnings' && acknowledged.size === run.warnings.length && run.warnings.length > 0)
 
             const cardStyle = {
-              background: 'var(--surface-1)',
-              border: '1px solid var(--border-soft)',
-              borderRadius: 'var(--radius-xs)',
+              borderRadius: 'var(--radius-md)',
               padding: '16px',
-              boxShadow: 'var(--shadow-card)',
             }
             const labelStyle = {
               fontSize: '11px',
               fontWeight: 600,
               textTransform: 'uppercase' as const,
-              letterSpacing: '0.08em',
+              letterSpacing: '0.12em',
               color: 'var(--text-3)',
               marginBottom: '12px',
             }
@@ -668,15 +678,16 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                     role="alert"
                     style={{
                       background: 'var(--red-bg)',
-                      border: '1px solid rgba(248,113,113,0.25)',
+                      border: '1px solid rgba(248,113,113,0.3)',
                       borderLeft: '4px solid var(--red)',
                       borderRadius: 'var(--radius-xs)',
                       padding: '16px',
                       marginBottom: '24px',
                     }}
                   >
-                    <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--red)', marginBottom: '6px' }}>
-                      ✕ <strong>Deployment blocked</strong>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '15px', fontWeight: 600, color: 'var(--red)', marginBottom: '6px' }}>
+                      <X size={16} aria-hidden />
+                      <strong>Deployment blocked</strong>
                     </div>
                     <div style={{ fontSize: '14px', color: 'var(--text-3)' }}>
                       {(report?.summary as string) || 'Agent has critical issues.'}
@@ -695,8 +706,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                       marginBottom: '24px',
                     }}
                   >
-                    <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--gold)', marginBottom: '6px' }}>
-                      ⚠ Ready to deploy with warnings
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '15px', fontWeight: 600, color: 'var(--gold)', marginBottom: '6px' }}>
+                      <TriangleAlert size={16} aria-hidden />
+                      Ready to deploy with warnings
                     </div>
                     <div style={{ fontSize: '14px', color: 'var(--text-3)' }}>{report?.summary as string}</div>
                   </div>
@@ -722,7 +734,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                 {/* Signal cards grid */}
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
                   {/* Eval Quality */}
-                  <div style={cardStyle}>
+                  <div className="glass-strong" style={cardStyle}>
                     <p style={labelStyle}>EVAL QUALITY</p>
                     {evalSummary?.last_run_at != null && (
                       <div style={{ fontSize: '12px', color: 'var(--text-4)', marginBottom: '8px' }}>
@@ -743,7 +755,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                   </div>
 
                   {/* Security */}
-                  <div style={cardStyle}>
+                  <div className="glass-strong" style={cardStyle}>
                     <p style={labelStyle}>SECURITY</p>
                     {redTeamSummary?.last_run_at != null && (
                       <div style={{ fontSize: '12px', color: 'var(--text-4)', marginBottom: '8px' }}>
@@ -777,7 +789,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                   </div>
 
                   {/* Corpus Coverage */}
-                  <div style={cardStyle}>
+                  <div className="glass-strong" style={cardStyle}>
                     <p style={labelStyle}>CORPUS COVERAGE</p>
                     <div style={metricRowStyle}>
                       <span style={{ color: 'var(--text-2)' }}>Documents</span>
@@ -798,7 +810,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                   </div>
 
                   {/* Knowledge Depth */}
-                  <div style={cardStyle}>
+                  <div className="glass-strong" style={cardStyle}>
                     <p style={labelStyle}>KNOWLEDGE DEPTH</p>
                     <div style={metricRowStyle}>
                       <span style={{ color: 'var(--text-2)' }}>Verified Q&amp;A pairs</span>
@@ -931,8 +943,8 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                       }}
                       style={{
                         padding: '12px 24px',
-                        background: isApprovable ? 'var(--accent)' : 'var(--surface-3)',
-                        color: isApprovable ? '#0B0717' : 'var(--text-4)',
+                        background: isApprovable ? 'var(--accent)' : 'var(--chip)',
+                        color: isApprovable ? 'var(--text-on-accent)' : 'var(--text-3)',
                         border: 'none',
                         borderRadius: 'var(--radius-xs)',
                         fontWeight: 600,
@@ -952,8 +964,8 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                       aria-disabled="true"
                       style={{
                         padding: '12px 24px',
-                        background: 'var(--surface-3)',
-                        color: 'var(--text-4)',
+                        background: 'var(--chip)',
+                        color: 'var(--text-3)',
                         border: 'none',
                         borderRadius: 'var(--radius-xs)',
                         fontWeight: 600,
@@ -972,12 +984,12 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
 
           {/* STATE 5: approved */}
           {checklistState.kind === 'approved' && (
-            <div style={{ textAlign: 'center', padding: '64px 40px' }}>
+            <div className="glass" style={{ textAlign: 'center', padding: '64px 40px', borderRadius: 'var(--radius-md)' }}>
               <div style={{
                 display: 'inline-block',
                 background: 'var(--green-bg)',
                 border: '1px solid rgba(52,211,153,0.3)',
-                borderRadius: '9999px',
+                borderRadius: 'var(--radius-pill)',
                 padding: '6px 16px',
                 color: 'var(--green)',
                 fontWeight: 600,
@@ -999,9 +1011,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                   onClick={() => setActiveTab('embed')}
                   role="button"
                   tabIndex={0}
-                  onKeyDown={(e) => { if (e.key === 'Enter') setActiveTab('embed') }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveTab('embed') } }}
                 >
-                  Embed Code
+                  Embed code
                 </span>
                 {' '}tab to get your installation snippet.
               </p>
@@ -1027,8 +1039,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
               <p
                 style={{
                   fontSize: '11px',
+                  fontWeight: 600,
                   textTransform: 'uppercase',
-                  letterSpacing: '0.08em',
+                  letterSpacing: '0.12em',
                   color: 'var(--text-3)',
                   marginBottom: '12px',
                   paddingBottom: '12px',
@@ -1052,10 +1065,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
 
             {/* Column 2: Style Pickers */}
             <div
+              className="glass-strong"
               style={{
-                background: 'var(--surface-1)',
-                border: '1px solid var(--border-soft)',
-                borderRadius: 'var(--radius-xs)',
+                borderRadius: 'var(--radius-md)',
                 padding: '16px',
               }}
             >
@@ -1063,8 +1075,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
               <p
                 style={{
                   fontSize: '11px',
+                  fontWeight: 600,
                   textTransform: 'uppercase',
-                  letterSpacing: '0.08em',
+                  letterSpacing: '0.12em',
                   color: 'var(--text-3)',
                   marginBottom: '8px',
                   paddingBottom: '8px',
@@ -1090,8 +1103,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                 <p
                   style={{
                     fontSize: '11px',
+                    fontWeight: 600,
                     textTransform: 'uppercase',
-                    letterSpacing: '0.08em',
+                    letterSpacing: '0.12em',
                     color: 'var(--text-3)',
                     marginBottom: '8px',
                     paddingBottom: '8px',
@@ -1111,7 +1125,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                       marginBottom: '4px',
                     }}
                   >
-                    Font Family
+                    Font family
                   </label>
                   <select
                     value={widgetConfig.typography.font_family}
@@ -1126,7 +1140,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                     }
                     style={{
                       width: '100%',
-                      background: 'var(--surface-1)',
+                      background: 'var(--well)',
                       border: '1px solid var(--border)',
                       padding: '8px 10px',
                       borderRadius: 'var(--radius-xs)',
@@ -1153,7 +1167,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                         marginBottom: '4px',
                       }}
                     >
-                      Custom Font URL
+                      Custom font URL
                     </label>
                     <input
                       type="url"
@@ -1167,7 +1181,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                       }
                       style={{
                         width: '100%',
-                        background: 'var(--surface-1)',
+                        background: 'var(--well)',
                         border: '1px solid var(--border)',
                         padding: '8px 10px',
                         borderRadius: 'var(--radius-xs)',
@@ -1190,7 +1204,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                       marginBottom: '6px',
                     }}
                   >
-                    Border Radius
+                    Border radius
                   </label>
                   <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
                     {(['sharp', 'rounded', 'pill'] as const).map((preset) => {
@@ -1207,8 +1221,8 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                           style={{
                             flex: 1,
                             padding: '6px 0',
-                            background: isSelected ? 'var(--accent)' : 'var(--surface-2)',
-                            color: isSelected ? '#fff' : 'var(--text-3)',
+                            background: isSelected ? 'var(--accent)' : 'var(--chip)',
+                            color: isSelected ? 'var(--text-on-accent)' : 'var(--text-3)',
                             border: isSelected ? 'none' : '1px solid var(--border)',
                             borderRadius: 'var(--radius-xs)',
                             cursor: 'pointer',
@@ -1231,14 +1245,13 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
 
             {/* Right preview panel — sticky 300px */}
             <div
+              className="glass preview-panel"
               style={{
                 width: '300px',
                 flexShrink: 0,
                 position: 'sticky',
                 top: '80px',
-                background: 'var(--surface-1)',
-                border: '1px solid var(--border-soft)',
-                borderRadius: 'var(--radius-xs)',
+                borderRadius: 'var(--radius-md)',
                 padding: '24px',
                 minHeight: '400px',
                 alignSelf: 'flex-start',
@@ -1247,8 +1260,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
               <p
                 style={{
                   fontSize: '11px',
+                  fontWeight: 600,
                   textTransform: 'uppercase',
-                  letterSpacing: '0.08em',
+                  letterSpacing: '0.12em',
                   color: 'var(--text-3)',
                   marginBottom: '16px',
                   paddingBottom: '12px',
@@ -1269,7 +1283,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                     background: widgetConfig.colors.widget_bg,
                     borderRadius: RADIUS_MAP[widgetConfig.typography.border_radius_preset],
                     border: '1px solid rgba(0,0,0,0.06)',
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.35), 0 24px 48px rgba(11,7,23,0.6)',
+                    boxShadow: 'var(--shadow-lift)',
                     overflow: 'hidden',
                     fontFamily:
                       widgetConfig.typography.font_family === 'custom'
@@ -1428,7 +1442,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
               style={{
                 padding: '12px 24px',
                 background: 'var(--accent)',
-                color: '#0B0717',
+                color: 'var(--text-on-accent)',
                 border: 'none',
                 borderRadius: 'var(--radius-xs)',
                 fontWeight: 600,

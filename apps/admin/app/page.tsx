@@ -1,8 +1,8 @@
 'use client'
 
-import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import Script from 'next/script'
+import { Play } from 'lucide-react'
 import { HeroPipeline } from './components/HeroPipeline'
 
 // demo: set to the current https://<random>.trycloudflare.com URL from
@@ -14,14 +14,6 @@ import { HeroPipeline } from './components/HeroPipeline'
 const WCHATS_TUNNEL_API_BASE = '' // demo: set to https://<random>.trycloudflare.com
 
 export default function LandingPage() {
-  const [scrolled, setScrolled] = useState(false)
-
-  useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 60)
-    window.addEventListener('scroll', onScroll, { passive: true })
-    return () => window.removeEventListener('scroll', onScroll)
-  }, [])
-
   return (
     <main
       style={{
@@ -30,8 +22,9 @@ export default function LandingPage() {
         minHeight: '100vh',
       }}
     >
-      {/* ── Landing nav — glass → solid on scroll ──────────────────────── */}
+      {/* ── Landing nav — progressive-blur glass scrim (glass-nav) ──────── */}
       <header
+        className="glass-nav"
         style={{
           height: '56px',
           display: 'flex',
@@ -41,11 +34,6 @@ export default function LandingPage() {
           position: 'sticky',
           top: 0,
           zIndex: 100,
-          background: scrolled ? 'var(--bg-elev)' : 'transparent',
-          backdropFilter: scrolled ? 'blur(20px) saturate(140%)' : 'none',
-          WebkitBackdropFilter: scrolled ? 'blur(20px) saturate(140%)' : 'none',
-          transition: 'background 0.3s, backdrop-filter 0.3s',
-          borderBottom: scrolled ? '1px solid var(--border-soft)' : 'none',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginRight: 0 }}>
@@ -54,20 +42,27 @@ export default function LandingPage() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '2px', flex: 1, justifyContent: 'center' }}>
-          {['Product', 'How it works', 'Pricing', 'Docs', 'Changelog'].map(label => (
-            <span
+          {[
+            { label: 'Product', href: '#product' },
+            { label: 'How it works', href: '#how-it-works' },
+            { label: 'Pricing', href: '#pricing' },
+            { label: 'Docs', href: '#docs' },
+            { label: 'Changelog', href: '#changelog' },
+          ].map(({ label, href }) => (
+            <a
               key={label}
+              href={href}
               style={{
                 padding: '7px 14px',
-                fontSize: '13.5px',
+                fontSize: '14px',
                 fontWeight: 500,
                 color: 'var(--text-2)',
                 borderRadius: 'var(--radius-xs)',
-                cursor: 'pointer',
+                textDecoration: 'none',
               }}
             >
               {label}
-            </span>
+            </a>
           ))}
         </div>
 
@@ -82,7 +77,7 @@ export default function LandingPage() {
             href="/sign-up"
             style={{
               background: 'var(--accent)',
-              color: '#0B0717',
+              color: 'var(--text-on-accent)',
               padding: '8px 18px',
               borderRadius: 'var(--radius-sm)',
               fontWeight: 600,
@@ -108,6 +103,7 @@ export default function LandingPage() {
 
       {/* ── Hero — transparent, city shows through ─────────────────────── */}
       <section
+        id="product"
         style={{
           background: 'transparent',
           position: 'relative',
@@ -131,123 +127,151 @@ export default function LandingPage() {
           }}
         >
           {/* Left column — copy */}
-          <div>
-            {/* Fraunces headline */}
-            <h1
-              style={{
-                fontFamily: 'var(--font-display)',
-                fontWeight: 400,
-                fontVariationSettings: '"opsz" 144, "SOFT" 30',
-                fontSize: 'clamp(32px, 3.4vw, 52px)',
-                letterSpacing: '-0.022em',
-                lineHeight: 1.1,
-                color: 'var(--text-1)',
-                marginBottom: '16px',
-                marginTop: 0,
-              }}
-            >
-              Ship a customer support agent that is{' '}
-              <em
-                style={{
-                  fontStyle: 'italic',
-                  fontWeight: 300,
-                  color: 'var(--accent)',
-                  fontVariationSettings: '"opsz" 144, "SOFT" 100',
-                }}
-              >
-                defensible
-              </em>
-              , grounded, evaluated, and red-teamed before it goes live.
-            </h1>
-
-            <p
-              style={{
-                fontSize: '15px',
-                lineHeight: 1.6,
-                color: 'var(--text-2)',
-                marginBottom: '22px',
-                maxWidth: '480px',
-              }}
-            >
-              W Chats wires a <strong style={{ color: 'var(--text-1)', fontWeight: 600 }}>Claude Agent SDK</strong> reasoning engine to your business documents, evaluates every answer, and ships a <strong style={{ color: 'var(--text-1)', fontWeight: 600 }}>20kb widget</strong> for any page.
-            </p>
-
-            {/* CTA row */}
-            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '40px' }}>
-              <Link
-                href="/sign-up"
-                style={{
-                  background: 'var(--accent)',
-                  color: '#0B0717',
-                  padding: '14px 28px',
-                  borderRadius: 'var(--radius-sm)',
-                  fontWeight: 600,
-                  fontSize: '15px',
-                  textDecoration: 'none',
-                  display: 'inline-block',
-                }}
-              >
-                Build your agent
-              </Link>
-              <button
-                style={{
-                  background: 'transparent',
-                  border: '1px solid var(--border)',
-                  color: 'var(--text-2)',
-                  padding: '14px 28px',
-                  borderRadius: 'var(--radius-sm)',
-                  fontWeight: 600,
-                  fontSize: '15px',
-                  cursor: 'pointer',
-                }}
-              >
-                ▶ Watch the build&nbsp;&nbsp;2:18
-              </button>
-            </div>
-
-            {/* Trust strip */}
+          <div style={{ position: 'relative' }}>
+            {/* Hero vignette — darkens the headline zone; skyline stays visible behind */}
             <div
+              aria-hidden="true"
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                borderTop: '1px solid var(--glass-border)',
-                paddingTop: '24px',
+                position: 'absolute',
+                inset: '-80px -120px -60px -100px',
+                background:
+                  'radial-gradient(ellipse 62% 58% at 42% 38%, rgba(11,7,23,0.55) 0%, rgba(11,7,23,0.30) 55%, transparent 78%)',
+                pointerEvents: 'none',
+                zIndex: 0,
               }}
-            >
-              {[
-                { value: '>248+', label: 'Agents deployed' },
-                { value: '>0.91', label: 'Faithfulness median' },
-                { value: '>$0.17', label: 'Avg cost / session' },
-                { value: '0', label: 'Critical red team findings' },
-              ].flatMap(({ value, label }, i) => [
-                ...(i > 0 ? [
-                  <div key={`sep-${i}`} style={{ width: '1px', height: '32px', background: 'var(--glass-border)', flexShrink: 0 }} />
-                ] : []),
-                <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: '2px', padding: i === 0 ? '0 28px 0 0' : '0 28px' }}>
-                  <span
+            />
+
+            <div style={{ position: 'relative', zIndex: 1 }}>
+              {/* Fraunces headline */}
+              <h1
+                className="on-photo"
+                style={{
+                  fontFamily: 'var(--font-display)',
+                  fontWeight: 400,
+                  fontVariationSettings: '"opsz" 144, "SOFT" 30',
+                  fontSize: 'clamp(32px, 3.4vw, 52px)',
+                  letterSpacing: '-0.022em',
+                  lineHeight: 1.1,
+                  color: 'var(--text-1)',
+                  marginBottom: '16px',
+                  marginTop: 0,
+                }}
+              >
+                Ship a customer support agent that is{' '}
+                <em
+                  style={{
+                    fontStyle: 'italic',
+                    fontWeight: 300,
+                    color: 'var(--accent)',
+                    fontVariationSettings: '"opsz" 144, "SOFT" 100',
+                  }}
+                >
+                  defensible
+                </em>
+                , grounded, evaluated, and red-teamed before it goes live.
+              </h1>
+
+              <p
+                className="on-photo"
+                style={{
+                  fontSize: '15px',
+                  lineHeight: 1.6,
+                  color: 'var(--text-2)',
+                  marginBottom: '22px',
+                  maxWidth: '480px',
+                }}
+              >
+                W Chats wires a <strong style={{ color: 'var(--text-1)', fontWeight: 600 }}>Claude Agent SDK</strong> reasoning engine to your business documents, evaluates every answer, and ships a <strong style={{ color: 'var(--text-1)', fontWeight: 600 }}>20kb widget</strong> for any page.
+              </p>
+
+              {/* CTA row */}
+              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '40px' }}>
+                <Link
+                  href="/sign-up"
+                  style={{
+                    background: 'var(--accent)',
+                    color: 'var(--text-on-accent)',
+                    padding: '14px 28px',
+                    borderRadius: 'var(--radius-sm)',
+                    fontWeight: 600,
+                    fontSize: '15px',
+                    textDecoration: 'none',
+                    display: 'inline-block',
+                  }}
+                >
+                  Build your agent
+                </Link>
+                <button
+                  style={{
+                    background: 'transparent',
+                    border: '1px solid var(--border)',
+                    color: 'var(--text-2)',
+                    padding: '14px 28px',
+                    borderRadius: 'var(--radius-sm)',
+                    fontWeight: 600,
+                    fontSize: '15px',
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '10px',
+                  }}
+                >
+                  <Play size={14} strokeWidth={2} aria-hidden="true" />
+                  Watch the build
+                  <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-3)' }}>2:18</span>
+                </button>
+              </div>
+
+              {/* Trust strip — quiet inline stats, no card chrome */}
+              <div
+                className="on-photo"
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  columnGap: '40px',
+                  rowGap: '18px',
+                  paddingTop: '28px',
+                }}
+              >
+                {[
+                  { value: '248+', label: 'Agents deployed' },
+                  { value: '>0.91', label: 'Faithfulness median' },
+                  { value: '<$0.17', label: 'Avg cost / session' },
+                  { value: '0', label: 'Critical red team findings' },
+                ].map(({ value, label }) => (
+                  <div
+                    key={label}
                     style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '18px',
-                      fontWeight: 600,
-                      color: 'var(--text-1)',
-                      letterSpacing: '-0.01em',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '3px',
                     }}
                   >
-                    {value}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: '9.5px',
-                      fontWeight: 600,
-                      letterSpacing: '0.1em',
-                      textTransform: 'uppercase',
-                      color: 'var(--text-3)',
-                    }}
-                  >
-                    {label}
-                  </span>
-                </div>,
-              ])}
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '16px',
+                        fontWeight: 600,
+                        color: 'var(--text-1)',
+                        letterSpacing: '-0.01em',
+                      }}
+                    >
+                      {value}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: '10.5px',
+                        fontWeight: 600,
+                        letterSpacing: '0.12em',
+                        textTransform: 'uppercase',
+                        color: 'var(--text-2)',
+                      }}
+                    >
+                      {label}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
 

@@ -22,10 +22,10 @@ export interface AgentCardProps {
 // ---------------------------------------------------------------------------
 
 const STATUS_COLORS: Record<string, { bg: string; fg: string; label: string }> = {
-  ready: { bg: 'var(--green-bg)', fg: 'var(--green)', label: '+ LIVE' },
-  testing: { bg: 'var(--gold-bg)', fg: 'var(--gold)', label: '+ TESTING' },
-  pending: { bg: 'var(--lilac-dim)', fg: 'var(--lilac)', label: '+ BUILDING' },
-  provisioning: { bg: 'var(--lilac-dim)', fg: 'var(--lilac)', label: '+ BUILDING' },
+  ready: { bg: 'var(--green-bg)', fg: 'var(--green)', label: 'LIVE' },
+  testing: { bg: 'var(--gold-bg)', fg: 'var(--gold)', label: 'TESTING' },
+  pending: { bg: 'var(--lilac-dim)', fg: 'var(--lilac)', label: 'BUILDING' },
+  provisioning: { bg: 'var(--lilac-dim)', fg: 'var(--lilac)', label: 'BUILDING' },
   error: { bg: 'var(--red-bg)', fg: 'var(--red)', label: 'Error' },
 }
 
@@ -46,7 +46,7 @@ function getRoleIcon(role: string) {
 function getRoleIconBg(role: string): string {
   const r = role.toLowerCase()
   if (r.includes('helpdesk') || r.includes('help') || r.includes('tech')) {
-    return 'rgba(183,154,224,0.15)'
+    return 'var(--lilac-dim)'
   }
   return 'var(--accent-dim)'
 }
@@ -54,7 +54,7 @@ function getRoleIconBg(role: string): string {
 function getStatusColor(status: string) {
   return (
     STATUS_COLORS[status] ?? {
-      bg: 'var(--surface-3)',
+      bg: 'var(--chip)',
       fg: 'var(--text-3)',
       label: status,
     }
@@ -89,7 +89,7 @@ const deleteTriggerButton: React.CSSProperties = {
 const confirmDeleteButton: React.CSSProperties = {
   ...baseActionButton,
   background: 'var(--red)',
-  color: '#fff',
+  color: 'var(--text-on-accent)',
   borderColor: 'var(--red)',
 }
 
@@ -109,6 +109,7 @@ export default function AgentCard({ id, name, role, status, created_at, disableN
   const formattedDate = new Date(created_at).toLocaleDateString()
 
   const [hovered, setHovered] = useState(false)
+  const [focused, setFocused] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -129,21 +130,30 @@ export default function AgentCard({ id, name, role, status, created_at, disableN
     }
   }
 
+  // The card lifts + flashes a coral top-bar on hover; the same affordance
+  // mirrors on keyboard focus-within (onFocus/onBlur bubble from the inner
+  // link + delete buttons) so tab-navigation gets the same visual cue.
+  const active = hovered || focused
+
   return (
     <div
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      className="glass-strong"
       style={{
         display: 'flex',
         flexDirection: 'column',
-        background: 'var(--surface-1)',
-        border: `1px solid ${hovered ? 'var(--border)' : 'var(--border-soft)'}`,
-        borderTop: hovered ? '3px solid var(--accent)' : '1px solid var(--border-soft)',
+        border: `1px solid ${active ? 'var(--border)' : 'var(--border-soft)'}`,
+        borderTop: active ? '3px solid var(--accent)' : '1px solid var(--border-soft)',
         borderRadius: 'var(--radius-md)',
-        boxShadow: 'var(--shadow-card)',
+        boxShadow: active
+          ? 'var(--glass-highlight), var(--shadow-lift)'
+          : 'var(--glass-highlight), var(--shadow-card)',
         color: 'var(--text-1)',
         overflow: 'hidden',
-        transform: hovered ? 'translateY(-2px)' : 'translateY(0)',
+        transform: active ? 'translateY(-2px)' : 'translateY(0)',
         transition: 'transform 0.2s, box-shadow 0.2s, border-color 0.2s',
         cursor: 'pointer',
       }}
@@ -219,10 +229,10 @@ export default function AgentCard({ id, name, role, status, created_at, disableN
             { label: 'Cost/Sess', val: '—' },
           ].map(({ label, val }) => (
             <div key={label}>
-              <div style={{ fontSize: '9.5px', fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-4)', marginBottom: '4px' }}>
+              <div style={{ fontSize: '10.5px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '4px' }}>
                 {label}
               </div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '13.5px', fontWeight: 600, color: 'var(--text-1)' }}>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 600, color: 'var(--text-1)' }}>
                 {val}
               </div>
             </div>

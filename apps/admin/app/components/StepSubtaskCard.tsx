@@ -6,7 +6,7 @@ import Link from 'next/link'
 // ---------------------------------------------------------------------------
 
 export interface StepSubtaskCardProps {
-  icon: string
+  icon: React.ReactNode
   title: string
   description: string
   href?: string
@@ -41,7 +41,7 @@ export default function StepSubtaskCard({
     display: 'inline-block',
     fontFamily: 'var(--font-sans)',
     ...(ctaPrimary
-      ? { background: 'var(--accent)', color: '#fff', border: 'none' }
+      ? { background: 'var(--accent)', color: 'var(--text-on-accent)', border: 'none' }
       : { background: 'transparent', color: 'var(--text-3)', border: '1px solid var(--border)' }),
   }
 
@@ -52,9 +52,9 @@ export default function StepSubtaskCard({
         alignItems: 'center',
         gap: '16px',
         padding: '16px 20px',
-        background: 'var(--surface-1)',
+        background: 'var(--chip)',
         border: '1px solid var(--border-soft)',
-        borderRadius: 'var(--radius-xs)',
+        borderRadius: 'var(--radius-sm)',
         borderLeft:
           state === 'completed'
             ? '3px solid var(--green)'
@@ -63,7 +63,7 @@ export default function StepSubtaskCard({
             : '1px solid var(--border-soft)',
       }}
     >
-      {/* Icon block */}
+      {/* Icon block — holds a lucide icon (16px) supplied by the caller */}
       <div
         style={{
           width: '40px',
@@ -73,7 +73,7 @@ export default function StepSubtaskCard({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          fontSize: '18px',
+          color: 'var(--accent)',
           flexShrink: 0,
         }}
       >

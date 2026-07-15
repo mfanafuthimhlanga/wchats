@@ -14,6 +14,26 @@ import {
   Legend,
   ReferenceLine,
 } from 'recharts'
+import { BarChart3, Clock, Play } from 'lucide-react'
+
+// Metric line/dot colors — single source of truth for the Recharts <Line>
+// strokes and the table-header dots. CSS custom properties do not resolve in
+// SVG presentation attributes, so these must be literals.
+const METRIC_COLORS = {
+  faithfulness: '#FBBF24',
+  answer_relevancy: '#F4748C',
+  context_precision: '#34D399',
+  context_recall: '#B79AE0',
+} as const
+
+// Shared uppercase micro-label spec — 11px / 600 / 0.12em tracking. The one
+// tracked-caps exception to sentence case everywhere.
+const microLabel: React.CSSProperties = {
+  fontSize: '11px',
+  fontWeight: 600,
+  textTransform: 'uppercase',
+  letterSpacing: '0.12em',
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -278,7 +298,7 @@ export default function EvalPage({
 
   const backLinkStyle: React.CSSProperties = {
     fontSize: '14px',
-    color: 'var(--accent)',
+    color: 'var(--text-2)',
     textDecoration: 'none',
     display: 'inline-flex',
     alignItems: 'center',
@@ -294,8 +314,8 @@ export default function EvalPage({
   }
 
   const btnPrimaryStyle: React.CSSProperties = {
-    background: isRunning ? undefined : 'var(--accent)',
-    color: '#fff',
+    background: 'var(--accent)',
+    color: 'var(--text-on-accent)',
     border: 'none',
     borderRadius: 'var(--radius-xs)',
     padding: '9px 18px',
@@ -308,16 +328,13 @@ export default function EvalPage({
     gap: '6px',
     whiteSpace: 'nowrap',
     opacity: isRunning ? 0.5 : 1,
-    backgroundColor: isRunning ? 'var(--accent)' : undefined,
   }
 
   const scheduleStripStyle: React.CSSProperties = {
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
-    background: 'var(--surface-3)',
-    border: '1px solid var(--border)',
-    borderRadius: 'var(--radius-xs)',
+    borderRadius: 'var(--radius-sm)',
     padding: '10px 16px',
     marginBottom: '24px',
     fontSize: '13px',
@@ -347,12 +364,9 @@ export default function EvalPage({
   })
 
   const chartCardStyle: React.CSSProperties = {
-    background: 'var(--surface-1)',
-    border: '1px solid var(--border)',
-    borderRadius: 'var(--radius-sm)',
+    borderRadius: 'var(--radius-md)',
     padding: '24px',
     marginBottom: '16px',
-    boxShadow: 'var(--shadow-card)',
   }
 
   const emptyStateStyle: React.CSSProperties = {
@@ -360,15 +374,11 @@ export default function EvalPage({
     borderRadius: 'var(--radius-sm)',
     padding: '64px 40px',
     textAlign: 'center',
-    background: 'var(--surface-2)',
   }
 
   const tableCardStyle: React.CSSProperties = {
-    background: 'var(--surface-1)',
-    border: '1px solid var(--border)',
-    borderRadius: 'var(--radius-sm)',
+    borderRadius: 'var(--radius-md)',
     overflow: 'hidden',
-    boxShadow: 'var(--shadow-card)',
   }
 
   // ─── Dot helper for metric column headers ─────────────────────────────────
@@ -407,16 +417,19 @@ export default function EvalPage({
     <div style={wrapStyle}>
       {/* Back link */}
       <Link href={`/agents/${id}`} style={backLinkStyle}>
-        ← Back to Configure
+        ← Back to configure
       </Link>
 
       {/* Page header */}
       <div style={pageHeaderStyle}>
         <div>
           <h1
+            className="on-photo"
             style={{
+              fontFamily: 'var(--font-display)',
+              fontVariationSettings: '"opsz" 144, "SOFT" 30',
               fontSize: '22px',
-              fontWeight: 700,
+              fontWeight: 400,
               color: 'var(--text-1)',
               marginBottom: '4px',
             }}
@@ -424,9 +437,10 @@ export default function EvalPage({
             Run evaluations
           </h1>
           <p
+            className="on-photo"
             style={{
               fontSize: '14px',
-              color: 'var(--text-3)',
+              color: 'var(--text-2)',
               margin: 0,
             }}
           >
@@ -438,7 +452,13 @@ export default function EvalPage({
           onClick={handleRunNow}
           disabled={isRunning}
         >
-          {isRunning ? 'Running…' : '▶ Run Now'}
+          {isRunning ? (
+            'Running…'
+          ) : (
+            <>
+              <Play size={14} /> Run now
+            </>
+          )}
         </button>
       </div>
 
@@ -450,7 +470,7 @@ export default function EvalPage({
             padding: '12px 16px',
             marginBottom: '20px',
             background: 'var(--red-bg)',
-            border: '1px solid rgba(185,28,28,0.3)',
+            border: '1px solid rgba(248,113,113,0.3)',
             borderRadius: 'var(--radius-xs)',
             fontSize: '14px',
             color: 'var(--red)',
@@ -477,17 +497,19 @@ export default function EvalPage({
       )}
 
       {/* Schedule strip */}
-      <div style={scheduleStripStyle}>
-        <span style={{ fontSize: '15px', flexShrink: 0 }}>🕑</span>
+      <div className="glass-strong" style={scheduleStripStyle}>
+        <Clock size={16} style={{ color: 'var(--text-3)', flexShrink: 0 }} />
         <span style={{ fontWeight: 600, color: 'var(--text-1)', marginRight: '4px' }}>
           Automated:
         </span>
         <span>daily at 02:00 UTC</span>
-        <span style={{ color: 'var(--border-hard)', margin: '0 8px' }}>·</span>
+        <span style={{ color: 'var(--text-4)', margin: '0 8px' }}>·</span>
         {latestRun ? (
           <span>
             Last run:{' '}
-            <strong>{formatUtcDate(latestRun.started_at)}</strong>
+            <strong style={{ fontFamily: 'var(--font-mono)' }}>
+              {formatUtcDate(latestRun.started_at)}
+            </strong>
           </span>
         ) : (
           <span style={{ color: 'var(--text-3)' }}>No runs yet</span>
@@ -505,7 +527,7 @@ export default function EvalPage({
           role="tab"
           aria-selected={activeTab === 'passrates'}
         >
-          Pass Rates
+          Pass rates
         </button>
         <button
           style={tabStyle(activeTab === 'scenarios')}
@@ -531,10 +553,11 @@ export default function EvalPage({
 
       {/* Empty state */}
       {!isLoading && !hasRuns && (
-        <div style={emptyStateStyle}>
-          <span style={{ fontSize: '40px', marginBottom: '16px', display: 'block' }}>
-            📊
-          </span>
+        <div className="glass" style={emptyStateStyle}>
+          <BarChart3
+            size={40}
+            style={{ color: 'var(--text-3)', display: 'block', margin: '0 auto 16px' }}
+          />
           <div
             style={{
               fontSize: '16px',
@@ -560,7 +583,7 @@ export default function EvalPage({
           <button
             style={{
               background: 'var(--accent)',
-              color: '#fff',
+              color: 'var(--text-on-accent)',
               border: 'none',
               borderRadius: 'var(--radius-xs)',
               padding: '9px 18px',
@@ -576,7 +599,13 @@ export default function EvalPage({
             onClick={handleRunNow}
             disabled={isRunning}
           >
-            {isRunning ? 'Running…' : '▶ Run First Eval'}
+            {isRunning ? (
+              'Running…'
+            ) : (
+              <>
+                <Play size={14} /> Run first eval
+              </>
+            )}
           </button>
         </div>
       )}
@@ -604,21 +633,15 @@ export default function EvalPage({
               ).map(({ key, value }) => (
                 <div
                   key={key}
+                  className="glass"
                   style={{
-                    background: 'var(--glass-bg)',
-                    backdropFilter: 'var(--glass-blur)',
-                    WebkitBackdropFilter: 'var(--glass-blur)',
-                    border: '1px solid var(--glass-border)',
-                    borderRadius: 'var(--radius-sm)',
+                    borderRadius: 'var(--radius-md)',
                     padding: '16px 20px',
                   }}
                 >
                   <div
                     style={{
-                      fontSize: '10.5px',
-                      fontWeight: 600,
-                      letterSpacing: '0.12em',
-                      textTransform: 'uppercase',
+                      ...microLabel,
                       color: 'var(--text-3)',
                       marginBottom: '8px',
                     }}
@@ -640,7 +663,7 @@ export default function EvalPage({
             </div>
           )}
 
-          <div style={chartCardStyle}>
+          <div className="glass-strong" style={chartCardStyle}>
             <div
               style={{
                 fontSize: '13px',
@@ -659,17 +682,17 @@ export default function EvalPage({
               >
                 <CartesianGrid
                   strokeDasharray="3 3"
-                  stroke="var(--border)"
+                  stroke="rgba(196,154,232,0.18)"
                   vertical={false}
                 />
                 <XAxis
                   dataKey="date"
                   tick={{
                     fontSize: 12,
-                    fill: 'var(--text-3)',
-                    fontFamily: 'var(--font-sans)',
+                    fill: '#8A82A0',
+                    fontFamily: "'Inter', system-ui, sans-serif",
                   }}
-                  axisLine={{ stroke: 'var(--border)' }}
+                  axisLine={{ stroke: 'rgba(196,154,232,0.18)' }}
                   tickLine={false}
                 />
                 <YAxis
@@ -677,8 +700,8 @@ export default function EvalPage({
                   tickFormatter={(v: number) => v.toFixed(1)}
                   tick={{
                     fontSize: 12,
-                    fill: 'var(--text-3)',
-                    fontFamily: 'var(--font-mono)',
+                    fill: '#8A82A0',
+                    fontFamily: "'JetBrains Mono', ui-monospace, monospace",
                   }}
                   axisLine={false}
                   tickLine={false}
@@ -686,9 +709,9 @@ export default function EvalPage({
                 />
                 <Tooltip
                   contentStyle={{
-                    background: 'var(--surface-1)',
-                    border: '1px solid var(--border)',
-                    borderRadius: '8px',
+                    background: 'rgba(22,16,42,0.92)',
+                    border: '1px solid rgba(196,154,232,0.18)',
+                    borderRadius: 'var(--radius-xs)',
                     fontSize: '13px',
                     fontFamily: 'var(--font-sans)',
                   }}
@@ -704,19 +727,19 @@ export default function EvalPage({
                 />
                 <ReferenceLine
                   y={0.9}
-                  stroke="var(--border-hard)"
+                  stroke="rgba(244,116,140,0.32)"
                   strokeDasharray="4 4"
                   label={{
                     value: 'Target 0.90',
                     position: 'right',
                     fontSize: 11,
-                    fill: 'var(--text-3)',
+                    fill: '#8A82A0',
                   }}
                 />
                 <Line
                   type="monotone"
                   dataKey="faithfulness"
-                  stroke="#FBBF24"
+                  stroke={METRIC_COLORS.faithfulness}
                   strokeWidth={2}
                   dot={{ r: 4 }}
                   name="Faithfulness"
@@ -724,7 +747,7 @@ export default function EvalPage({
                 <Line
                   type="monotone"
                   dataKey="answer_relevancy"
-                  stroke="#F4748C"
+                  stroke={METRIC_COLORS.answer_relevancy}
                   strokeWidth={2}
                   dot={{ r: 4 }}
                   name="Answer Relevancy"
@@ -732,7 +755,7 @@ export default function EvalPage({
                 <Line
                   type="monotone"
                   dataKey="context_precision"
-                  stroke="#34D399"
+                  stroke={METRIC_COLORS.context_precision}
                   strokeWidth={2}
                   dot={{ r: 4 }}
                   name="Context Precision"
@@ -740,7 +763,7 @@ export default function EvalPage({
                 <Line
                   type="monotone"
                   dataKey="context_recall"
-                  stroke="#B79AE0"
+                  stroke={METRIC_COLORS.context_recall}
                   strokeWidth={2}
                   dot={{ r: 4 }}
                   name="Context Recall"
@@ -763,19 +786,19 @@ export default function EvalPage({
               >
                 <span>
                   Last run:{' '}
-                  <strong style={{ color: 'var(--text-2)', fontWeight: 500 }}>
+                  <strong style={{ color: 'var(--text-2)', fontWeight: 500, fontFamily: 'var(--font-mono)' }}>
                     {formatUtcDate(latestRun.started_at)}
                   </strong>
                 </span>
                 <span>
                   Scenarios:{' '}
-                  <strong style={{ color: 'var(--text-2)', fontWeight: 500 }}>
+                  <strong style={{ color: 'var(--text-2)', fontWeight: 500, fontFamily: 'var(--font-mono)' }}>
                     {latestRun.scenario_count}
                   </strong>
                 </span>
                 <span>
                   Duration:{' '}
-                  <strong style={{ color: 'var(--text-2)', fontWeight: 500 }}>
+                  <strong style={{ color: 'var(--text-2)', fontWeight: 500, fontFamily: 'var(--font-mono)' }}>
                     {formatDuration(latestRun.started_at, latestRun.finished_at)}
                   </strong>
                 </span>
@@ -787,7 +810,7 @@ export default function EvalPage({
 
       {/* Scenarios tab */}
       {!isLoading && hasRuns && activeTab === 'scenarios' && (
-        <div style={tableCardStyle}>
+        <div className="glass-strong" style={tableCardStyle}>
           {resultsQuery.isLoading ? (
             <div style={{ padding: '24px' }}>
               {[...Array(5)].map((_, i) => (
@@ -802,14 +825,11 @@ export default function EvalPage({
               }}
             >
               <thead>
-                <tr style={{ background: 'var(--surface-2)' }}>
+                <tr style={{ background: 'var(--well)' }}>
                   <th
                     style={{
-                      fontSize: '11px',
-                      fontWeight: 600,
+                      ...microLabel,
                       color: 'var(--text-3)',
-                      letterSpacing: '0.04em',
-                      textTransform: 'uppercase',
                       padding: '10px 16px',
                       textAlign: 'left',
                       whiteSpace: 'nowrap',
@@ -819,11 +839,8 @@ export default function EvalPage({
                   </th>
                   <th
                     style={{
-                      fontSize: '11px',
-                      fontWeight: 600,
+                      ...microLabel,
                       color: 'var(--text-3)',
-                      letterSpacing: '0.04em',
-                      textTransform: 'uppercase',
                       padding: '10px 16px',
                       textAlign: 'center',
                       whiteSpace: 'nowrap',
@@ -834,19 +851,16 @@ export default function EvalPage({
                   </th>
                   {/* Metric headers with color dots */}
                   {([
-                    { key: 'F', color: '#FBBF24' },
-                    { key: 'AR', color: '#F4748C' },
-                    { key: 'CP', color: '#34D399' },
-                    { key: 'CR', color: '#B79AE0' },
+                    { key: 'F', color: METRIC_COLORS.faithfulness },
+                    { key: 'AR', color: METRIC_COLORS.answer_relevancy },
+                    { key: 'CP', color: METRIC_COLORS.context_precision },
+                    { key: 'CR', color: METRIC_COLORS.context_recall },
                   ] as const).map(({ key, color }) => (
                     <th
                       key={key}
                       style={{
-                        fontSize: '11px',
-                        fontWeight: 600,
+                        ...microLabel,
                         color: 'var(--text-3)',
-                        letterSpacing: '0.04em',
-                        textTransform: 'uppercase',
                         padding: '10px 16px',
                         textAlign: 'center',
                         whiteSpace: 'nowrap',
@@ -867,11 +881,8 @@ export default function EvalPage({
                   ))}
                   <th
                     style={{
-                      fontSize: '11px',
-                      fontWeight: 600,
+                      ...microLabel,
                       color: 'var(--text-3)',
-                      letterSpacing: '0.04em',
-                      textTransform: 'uppercase',
                       padding: '10px 16px',
                       textAlign: 'center',
                       whiteSpace: 'nowrap',
@@ -908,7 +919,7 @@ export default function EvalPage({
                       }}
                       onMouseEnter={(e) => {
                         ;(e.currentTarget as HTMLTableRowElement).style.background =
-                          'var(--surface-2)'
+                          'var(--chip)'
                       }}
                       onMouseLeave={(e) => {
                         ;(e.currentTarget as HTMLTableRowElement).style.background =
@@ -947,7 +958,7 @@ export default function EvalPage({
                           style={{
                             display: 'inline-block',
                             padding: '2px 8px',
-                            borderRadius: 'var(--radius-xs)',
+                            borderRadius: 'var(--radius-pill)',
                             fontSize: '11px',
                             fontWeight: 500,
                             letterSpacing: '0.02em',
@@ -998,7 +1009,7 @@ export default function EvalPage({
                           style={{
                             display: 'inline-block',
                             padding: '2px 8px',
-                            borderRadius: 'var(--radius-xs)',
+                            borderRadius: 'var(--radius-pill)',
                             fontSize: '11px',
                             fontWeight: 600,
                             letterSpacing: '0.02em',

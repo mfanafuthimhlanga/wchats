@@ -160,11 +160,11 @@ export default function CreateAgentPage() {
   const inputStyle: React.CSSProperties = {
     width: '100%',
     padding: '11px 14px',
-    border: '1px solid var(--border-soft)',
+    border: '1px solid var(--border)',
     borderRadius: 'var(--radius-sm)',
     fontSize: '14px',
     fontFamily: 'var(--font-sans)',
-    background: 'var(--surface-2)',
+    background: 'var(--well)',
     color: 'var(--text-1)',
     outline: 'none',
     boxSizing: 'border-box',
@@ -176,7 +176,7 @@ export default function CreateAgentPage() {
     fontSize: '11px',
     textTransform: 'uppercase',
     letterSpacing: '0.12em',
-    color: '#F4EDE5',
+    color: 'var(--text-1)',
     marginBottom: '7px',
   }
 
@@ -231,6 +231,17 @@ export default function CreateAgentPage() {
           flexDirection: 'column',
         }}
       >
+        {/* Glass panel — gives labels/helper text a surface to sit on */}
+        <div
+          className="glass-strong"
+          style={{
+            borderRadius: 'var(--radius-md)',
+            padding: '28px',
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
         {/* Form phase */}
         {phase === 'form' && (
           <form onSubmit={handleSubmit}>
@@ -241,7 +252,7 @@ export default function CreateAgentPage() {
               fontWeight: 600,
               letterSpacing: '0.12em',
               textTransform: 'uppercase',
-              color: '#C4BCD0',
+              color: 'var(--text-2)',
               marginBottom: '8px',
             }}>
               Step 1 of 4
@@ -251,14 +262,14 @@ export default function CreateAgentPage() {
               fontWeight: 600,
               fontVariationSettings: '"opsz" 144, "SOFT" 30',
               fontSize: '24px',
-              color: '#F4EDE5',
+              color: 'var(--text-1)',
               marginBottom: '8px',
             }}>
               Provision your agent
             </h1>
             <p style={{
               fontSize: '14px',
-              color: '#F4EDE5',
+              color: 'var(--text-1)',
               lineHeight: 1.6,
               maxWidth: '520px',
               marginBottom: '32px',
@@ -292,7 +303,7 @@ export default function CreateAgentPage() {
                 maxLength={120}
                 style={inputStyle}
               />
-              <p style={{ fontSize: '12px', color: '#C4BCD0', marginTop: '5px' }}>
+              <p style={{ fontSize: '12px', color: 'var(--text-2)', marginTop: '5px' }}>
                 Used as the role context in the system prompt. Be specific.
               </p>
             </div>
@@ -324,7 +335,7 @@ export default function CreateAgentPage() {
               <span style={{
                 fontFamily: 'var(--font-mono)',
                 fontSize: '11px',
-                color: '#C4BCD0',
+                color: 'var(--text-2)',
                 letterSpacing: '0.08em',
               }}>
                 Step 1 of 4
@@ -334,7 +345,7 @@ export default function CreateAgentPage() {
                 style={{
                   padding: '11px 28px',
                   background: 'var(--accent)',
-                  color: '#0B0717',
+                  color: 'var(--text-on-accent)',
                   border: 'none',
                   borderRadius: 'var(--radius-sm)',
                   cursor: 'pointer',
@@ -359,7 +370,7 @@ export default function CreateAgentPage() {
               .prov-spinner {
                 width: 48px; height: 48px;
                 border: 3px solid rgba(244,116,140,0.15);
-                border-top-color: #F4748C;
+                border-top-color: var(--accent);
                 border-radius: 50%;
                 animation: prov-spin 0.85s linear infinite;
               }
@@ -425,7 +436,7 @@ export default function CreateAgentPage() {
                 padding: '12px 16px',
                 marginBottom: '20px',
                 background: 'var(--red-bg)',
-                border: '1px solid rgba(192,57,43,0.3)',
+                border: '1px solid rgba(248,113,113,0.3)',
                 borderRadius: 'var(--radius-xs)',
                 fontSize: '14px',
                 color: 'var(--red)',
@@ -439,7 +450,7 @@ export default function CreateAgentPage() {
                 padding: '12px 32px',
                 minHeight: '44px',
                 background: 'var(--accent)',
-                color: '#0B0717',
+                color: 'var(--text-on-accent)',
                 border: 'none',
                 borderRadius: 'var(--radius-sm)',
                 cursor: 'pointer',
@@ -452,6 +463,7 @@ export default function CreateAgentPage() {
             </button>
           </div>
         )}
+        </div>
       </div>
     </div>
   )

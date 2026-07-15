@@ -14,9 +14,9 @@ export default function TopNav() {
 
   return (
     <nav
+      className="glass-nav"
       style={{
         height: '60px',
-        background: 'transparent',
         display: 'flex',
         alignItems: 'center',
         padding: '0 28px',

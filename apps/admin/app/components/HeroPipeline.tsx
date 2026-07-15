@@ -103,8 +103,8 @@ export function HeroPipeline() {
 
   return (
     <div
+      className="glass"
       style={{
-        border: '1px solid var(--glass-border)',
         borderRadius: 'var(--radius-md)',
         overflow: 'hidden',
       }}
@@ -123,24 +123,24 @@ export function HeroPipeline() {
           style={{
             fontFamily: 'var(--font-mono)',
             fontSize: '10.5px',
-            fontWeight: 700,
+            fontWeight: 600,
             letterSpacing: '0.12em',
             textTransform: 'uppercase',
             color: 'var(--text-3)',
             transition: 'opacity 0.35s ease',
           }}
         >
-          {mode === 'pipeline' ? 'Build Pipeline · Agent Alpha' : 'Widget Preview · acme-demo.com'}
+          {mode === 'pipeline' ? 'Build pipeline · agent.alpha' : 'Widget preview · acme-demo.com'}
         </span>
         <span
           style={{
             display: 'inline-flex',
             alignItems: 'center',
             gap: '5px',
-            background: mode === 'pipeline' ? 'var(--accent-dim)' : 'rgba(52,211,153,0.12)',
+            background: mode === 'pipeline' ? 'var(--accent-dim)' : 'var(--green-bg)',
             color: mode === 'pipeline' ? 'var(--accent)' : 'var(--green)',
             fontSize: '9.5px',
-            fontWeight: 700,
+            fontWeight: 600,
             letterSpacing: '0.08em',
             textTransform: 'uppercase',
             padding: '3px 8px',
@@ -191,8 +191,8 @@ export function HeroPipeline() {
                       width: '24px',
                       height: '24px',
                       borderRadius: '50%',
-                      background: isDone ? 'var(--green)' : isActive ? 'var(--accent)' : 'var(--surface-3)',
-                      color: isDone || isActive ? '#fff' : 'var(--text-4)',
+                      background: isDone ? 'var(--green)' : isActive ? 'var(--accent)' : 'var(--chip)',
+                      color: isDone || isActive ? 'var(--text-on-accent)' : 'var(--text-4)',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
@@ -276,7 +276,7 @@ export function HeroPipeline() {
           })}
 
           {/* Progress bar */}
-          <div style={{ marginTop: '16px', height: '3px', background: 'var(--surface-3)', borderRadius: '2px', overflow: 'hidden' }}>
+          <div style={{ marginTop: '16px', height: '3px', background: 'var(--well)', borderRadius: '2px', overflow: 'hidden' }}>
             <div
               style={{
                 height: '100%',
@@ -334,7 +334,7 @@ export function HeroPipeline() {
               {msg.typing ? (
                 <div
                   style={{
-                    background: 'var(--surface-2)',
+                    background: 'var(--well)',
                     border: '1px solid var(--glass-border)',
                     borderRadius: '10px 10px 10px 2px',
                     padding: '10px 14px',
@@ -360,12 +360,12 @@ export function HeroPipeline() {
               ) : (
                 <div
                   style={{
-                    background: msg.role === 'user' ? 'var(--accent)' : 'var(--surface-2)',
+                    background: msg.role === 'user' ? 'var(--accent)' : 'var(--well)',
                     border: msg.role === 'user' ? 'none' : '1px solid var(--glass-border)',
                     borderRadius: msg.role === 'user' ? '10px 10px 2px 10px' : '10px 10px 10px 2px',
                     padding: '8px 12px',
                     fontSize: '12px',
-                    color: msg.role === 'user' ? '#0B0717' : 'var(--text-1)',
+                    color: msg.role === 'user' ? 'var(--text-on-accent)' : 'var(--text-1)',
                     maxWidth: '82%',
                     lineHeight: 1.45,
                     fontWeight: msg.role === 'user' ? 500 : 400,
@@ -385,7 +385,7 @@ export function HeroPipeline() {
                 border: `1px solid ${chatState.receipt.status === 'confirmed' ? 'rgba(52,211,153,0.35)' : 'var(--glass-border)'}`,
                 borderRadius: 'var(--radius-xs)',
                 padding: '10px 12px',
-                background: chatState.receipt.status === 'confirmed' ? 'rgba(52,211,153,0.07)' : 'var(--surface-2)',
+                background: chatState.receipt.status === 'confirmed' ? 'var(--green-bg)' : 'var(--chip)',
                 transition: 'all 0.45s ease',
               }}
             >
@@ -394,14 +394,14 @@ export function HeroPipeline() {
                   style={{
                     fontSize: '9.5px',
                     fontFamily: 'var(--font-mono)',
-                    fontWeight: 700,
+                    fontWeight: 600,
                     letterSpacing: '0.1em',
                     textTransform: 'uppercase',
                     color: chatState.receipt.status === 'confirmed' ? 'var(--green)' : 'var(--text-3)',
                     transition: 'color 0.4s ease',
                   }}
                 >
-                  {chatState.receipt.status === 'confirmed' ? '✓ Replacement Confirmed' : '⏳ Processing...'}
+                  {chatState.receipt.status === 'confirmed' ? 'Replacement confirmed' : 'Processing...'}
                 </span>
                 <span style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--text-4)' }}>
                   {chatState.receipt.ref}

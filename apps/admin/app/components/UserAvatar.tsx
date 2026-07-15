@@ -21,7 +21,7 @@ export default function UserAvatar() {
         alignItems: 'center',
         justifyContent: 'center',
         borderRadius: '50%',
-        border: '1px solid rgba(183, 154, 224, 0.6)',
+        border: '1px solid var(--border)',
         padding: '1px',
       }}
     >

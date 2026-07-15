@@ -18,7 +18,7 @@ export default function SettingsPage({ params }: { params: Promise<{ id: string 
         href={`/agents/${id}`}
         style={{
           fontSize: '14px',
-          color: 'var(--accent)',
+          color: 'var(--text-2)',
           textDecoration: 'none',
           display: 'inline-flex',
           alignItems: 'center',
@@ -26,13 +26,16 @@ export default function SettingsPage({ params }: { params: Promise<{ id: string 
           marginBottom: '24px',
         }}
       >
-        ← Back to Configure
+        ← Back to configure
       </Link>
 
       <h1
+        className="on-photo"
         style={{
           fontSize: '22px',
-          fontWeight: 700,
+          fontFamily: 'var(--font-display)',
+          fontWeight: 400,
+          fontVariationSettings: '"opsz" 144, "SOFT" 30',
           color: 'var(--text-1)',
           marginBottom: '8px',
         }}
@@ -41,8 +44,9 @@ export default function SettingsPage({ params }: { params: Promise<{ id: string 
       </h1>
 
       <p
+        className="on-photo"
         style={{
-          color: 'var(--text-3)',
+          color: 'var(--text-2)',
           fontSize: '14px',
           marginBottom: '24px',
         }}
@@ -50,12 +54,11 @@ export default function SettingsPage({ params }: { params: Promise<{ id: string 
         Agent settings coming soon.
       </p>
 
-      {/* Dark form panel — same pattern as soul editor */}
+      {/* Glass form panel — matches the soul editor's glass-strong surface */}
       <div
+        className="glass-strong"
         style={{
-          background: 'var(--surface-1)',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-sm)',
+          borderRadius: 'var(--radius-md)',
           padding: '24px',
         }}
       >
@@ -94,8 +97,8 @@ export default function SettingsPage({ params }: { params: Promise<{ id: string 
             placeholder="Coming soon"
             style={{
               width: '100%',
-              background: 'var(--surface-2)',
-              border: '1px solid var(--border-soft)',
+              background: 'var(--well)',
+              border: '1px solid var(--border)',
               borderRadius: 'var(--radius-xs)',
               padding: '10px 14px',
               fontSize: '14px',
@@ -113,7 +116,7 @@ export default function SettingsPage({ params }: { params: Promise<{ id: string 
           disabled
           style={{
             background: 'var(--accent)',
-            color: '#0B0717',
+            color: 'var(--text-on-accent)',
             border: 'none',
             borderRadius: 'var(--radius-xs)',
             padding: '10px 18px',

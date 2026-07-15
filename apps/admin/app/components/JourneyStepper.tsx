@@ -1,6 +1,7 @@
 'use client'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { Check, Lock } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,6 +45,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
 
   return (
     <aside
+      className="glass-strong"
       style={{
         width: '280px',
         flexShrink: 0,
@@ -108,17 +110,23 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
           fontWeight: 600,
           flexShrink: 0,
           ...(visualState === 'done'
-            ? { background: 'var(--green)', color: '#fff' }
+            ? { background: 'var(--green)', color: 'var(--text-on-accent)' }
             : visualState === 'active'
             ? { background: 'rgba(244,116,140,0.22)', border: '2px solid var(--accent)', color: 'var(--accent)' }
-            : { background: 'var(--surface-3)', border: '1px solid var(--border)', color: 'var(--text-4)' }),
+            : { background: 'var(--chip)', border: '1px solid var(--border)', color: 'var(--text-4)' }),
         }
 
         const rowContent = (
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            {/* Circle indicator */}
+            {/* Circle indicator — check when done, padlock when locked, else the step number */}
             <div style={circleStyle}>
-              {visualState === 'done' ? '✓' : step.num}
+              {visualState === 'done' ? (
+                <Check size={15} strokeWidth={2} />
+              ) : visualState === 'locked' ? (
+                <Lock size={14} strokeWidth={2} />
+              ) : (
+                step.num
+              )}
             </div>
 
             {/* Text block */}
@@ -150,7 +158,7 @@ export default function JourneyStepper({ agentName, agentRole, steps }: JourneyS
                   padding: '2px 8px',
                   background: 'var(--green-bg)',
                   color: 'var(--green)',
-                  borderRadius: '999px',
+                  borderRadius: 'var(--radius-pill)',
                   fontSize: '11px',
                   fontWeight: 600,
                   whiteSpace: 'nowrap',

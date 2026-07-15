@@ -59,7 +59,16 @@ const PARSE_STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
 }
 
 function getParseStatusColor(status: string) {
-  return PARSE_STATUS_COLORS[status] ?? { bg: 'var(--surface-3)', fg: 'var(--text-3)' }
+  return PARSE_STATUS_COLORS[status] ?? { bg: 'var(--chip)', fg: 'var(--text-3)' }
+}
+
+// Shared uppercase micro-label spec — sentence case is the norm everywhere else;
+// these tracked labels are the one exception. 11px / 600 / 0.12em tracking.
+const microLabel: React.CSSProperties = {
+  fontSize: '11px',
+  fontWeight: 600,
+  textTransform: 'uppercase',
+  letterSpacing: '0.12em',
 }
 
 // SSE stream is aborted after this long. URL ingestion with Haiku extraction can
@@ -493,9 +502,12 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
       }}
     >
       <h1
+        className="on-photo"
         style={{
           fontSize: '22px',
-          fontWeight: 700,
+          fontWeight: 400,
+          fontFamily: 'var(--font-display)',
+          fontVariationSettings: '"opsz" 144, "SOFT" 30',
           color: 'var(--text-1)',
           marginBottom: '8px',
         }}
@@ -504,8 +516,9 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
       </h1>
 
       <p
+        className="on-photo"
         style={{
-          color: 'var(--text-3)',
+          color: 'var(--text-2)',
           fontSize: '14px',
           marginBottom: '24px',
         }}
@@ -521,7 +534,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
             padding: '12px 16px',
             marginBottom: '20px',
             background: 'var(--red-bg)',
-            border: '1px solid rgba(192,57,43,0.3)',
+            border: '1px solid rgba(248,113,113,0.3)',
             borderRadius: 'var(--radius-xs)',
             fontSize: '14px',
             color: 'var(--red)',
@@ -537,7 +550,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
           style={{
             padding: '24px',
             background: 'var(--gold-bg)',
-            border: '1px solid rgba(240,198,116,0.25)',
+            border: '1px solid rgba(251,191,36,0.3)',
             borderRadius: 'var(--radius-xs)',
             fontSize: '14px',
             color: 'var(--gold)',
@@ -582,7 +595,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   fontFamily: 'var(--font-sans)',
                 }}
               >
-                {tab === 'file' ? 'Upload File' : 'Add URL'}
+                {tab === 'file' ? 'Upload file' : 'Add URL'}
               </button>
             ))}
           </div>
@@ -595,7 +608,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                 padding: '12px 16px',
                 marginBottom: '16px',
                 background: 'var(--red-bg)',
-                border: '1px solid rgba(192,57,43,0.3)',
+                border: '1px solid rgba(248,113,113,0.3)',
                 borderRadius: 'var(--radius-xs)',
                 fontSize: '14px',
                 color: 'var(--red)',
@@ -610,11 +623,8 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
             <div style={{ marginBottom: '24px' }}>
               <label
                 style={{
+                  ...microLabel,
                   display: 'block',
-                  fontWeight: 600,
-                  fontSize: '11px',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.08em',
                   color: 'var(--text-3)',
                   marginBottom: '8px',
                 }}
@@ -649,7 +659,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   padding: '16px',
                   border: `2px dashed ${isDragging ? 'var(--border-hard)' : 'var(--border)'}`,
                   borderRadius: 'var(--radius-sm)',
-                  background: isDragging ? 'var(--accent-dim)' : 'var(--surface-1)',
+                  background: isDragging ? 'var(--accent-dim)' : 'var(--well)',
                   cursor: submitting ? 'not-allowed' : 'pointer',
                   transition: 'border-color 0.15s ease, background 0.15s ease',
                 }}
@@ -736,10 +746,13 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   padding: '12px 28px',
                   minHeight: '44px',
                   background:
-                    submitting || selectedFiles.length === 0 ? 'var(--surface-3)' : 'var(--accent)',
-                  color: submitting || selectedFiles.length === 0 ? 'var(--text-4)' : '#fff',
+                    submitting || selectedFiles.length === 0 ? 'var(--chip)' : 'var(--accent)',
+                  color:
+                    submitting || selectedFiles.length === 0
+                      ? 'var(--text-3)'
+                      : 'var(--text-on-accent)',
                   border: 'none',
-                  borderRadius: 'var(--radius-sm)',
+                  borderRadius: 'var(--radius-xs)',
                   cursor: submitting || selectedFiles.length === 0 ? 'not-allowed' : 'pointer',
                   fontSize: '14px',
                   fontWeight: 600,
@@ -757,11 +770,8 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
               <label
                 htmlFor="urlInput"
                 style={{
+                  ...microLabel,
                   display: 'block',
-                  fontWeight: 600,
-                  fontSize: '11px',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.08em',
                   color: 'var(--text-3)',
                   marginBottom: '8px',
                 }}
@@ -785,7 +795,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   borderRadius: 'var(--radius-xs)',
                   fontSize: '14px',
                   fontFamily: 'var(--font-sans)',
-                  background: 'var(--surface-2)',
+                  background: 'var(--well)',
                   color: 'var(--text-1)',
                   outline: 'none',
                   boxSizing: 'border-box',
@@ -803,10 +813,10 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                 style={{
                   padding: '12px 28px',
                   minHeight: '44px',
-                  background: submitting ? 'var(--surface-3)' : 'var(--accent)',
-                  color: submitting ? 'var(--text-4)' : '#fff',
+                  background: submitting ? 'var(--chip)' : 'var(--accent)',
+                  color: submitting ? 'var(--text-3)' : 'var(--text-on-accent)',
                   border: 'none',
-                  borderRadius: 'var(--radius-sm)',
+                  borderRadius: 'var(--radius-xs)',
                   cursor: submitting ? 'not-allowed' : 'pointer',
                   fontSize: '14px',
                   fontWeight: 600,
@@ -825,20 +835,17 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
         <div style={{ marginTop: '32px' }}>
           <h2
             style={{
-              fontSize: '14px',
-              fontWeight: 700,
-              textTransform: 'uppercase',
-              letterSpacing: '0.08em',
+              ...microLabel,
               color: 'var(--text-3)',
               marginBottom: '12px',
             }}
           >
-            Knowledge Base ({documents.length + optimisticDocs.length})
+            Knowledge base ({documents.length + optimisticDocs.length})
           </h2>
           <div
+            className="glass-strong"
             style={{
-              border: '1px solid var(--border-soft)',
-              borderRadius: 'var(--radius-xs)',
+              borderRadius: 'var(--radius-md)',
               overflow: 'hidden',
             }}
           >
@@ -850,7 +857,9 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                 aria-busy="true"
                 style={{
                   padding: '14px 16px',
-                  background: 'var(--surface-2)',
+                  borderBottom: '1px solid var(--border-soft)',
+                  background: 'var(--chip)',
+                  opacity: 0.75,
                   display: 'flex',
                   alignItems: 'center',
                   gap: '12px',
@@ -860,11 +869,11 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                 <span
                   style={{
                     padding: '2px 8px',
-                    borderRadius: '999px',
+                    borderRadius: 'var(--radius-pill)',
                     fontSize: '10px',
                     fontWeight: 700,
-                    background: 'var(--surface-3)',
-                    color: 'var(--text-3)',
+                    background: 'var(--lilac-dim)',
+                    color: 'var(--lilac)',
                     textTransform: 'uppercase',
                     letterSpacing: '0.06em',
                     whiteSpace: 'nowrap',
@@ -895,7 +904,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                 <span
                   style={{
                     padding: '3px 10px',
-                    borderRadius: '999px',
+                    borderRadius: 'var(--radius-pill)',
                     fontSize: '11px',
                     fontWeight: 600,
                     background: 'var(--gold-bg)',
@@ -905,7 +914,11 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   }}
                 >
                   {progressLabel ?? 'processing…'}
-                  {jobStartedAt !== null && ` · ${formatElapsed(elapsedSeconds)}`}
+                  {jobStartedAt !== null && (
+                    <span style={{ fontFamily: 'var(--font-mono)' }}>
+                      {' '}· {formatElapsed(elapsedSeconds)}
+                    </span>
+                  )}
                 </span>
               </div>
             ))}
@@ -931,11 +944,9 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   }}
                   style={{
                     padding: '14px 16px',
-                    borderTop:
-                      i > 0 || optimisticDocs.length > 0
-                        ? '1px solid var(--border-soft)'
-                        : undefined,
-                    background: 'var(--surface-1)',
+                    borderBottom:
+                      i < documents.length - 1 ? '1px solid var(--border-soft)' : undefined,
+                    background: 'transparent',
                     display: 'flex',
                     alignItems: 'center',
                     gap: '12px',
@@ -943,21 +954,21 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                     transition: 'background 0.15s ease',
                   }}
                   onMouseEnter={(e) => {
-                    ;(e.currentTarget as HTMLDivElement).style.background = 'var(--surface-2)'
+                    ;(e.currentTarget as HTMLDivElement).style.background = 'var(--chip)'
                   }}
                   onMouseLeave={(e) => {
-                    ;(e.currentTarget as HTMLDivElement).style.background = 'var(--surface-1)'
+                    ;(e.currentTarget as HTMLDivElement).style.background = 'transparent'
                   }}
                 >
                   {/* Source type badge */}
                   <span
                     style={{
                       padding: '2px 8px',
-                      borderRadius: '999px',
+                      borderRadius: 'var(--radius-pill)',
                       fontSize: '10px',
                       fontWeight: 700,
-                      background: 'var(--surface-3)',
-                      color: 'var(--text-3)',
+                      background: 'var(--lilac-dim)',
+                      color: 'var(--lilac)',
                       textTransform: 'uppercase',
                       letterSpacing: '0.06em',
                       whiteSpace: 'nowrap',
@@ -973,7 +984,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                       style={{
                         fontSize: '13px',
                         fontWeight: 600,
-                        fontFamily: 'var(--font-mono)',
+                        fontFamily: doc.title ? 'var(--font-sans)' : 'var(--font-mono)',
                         color: 'var(--text-2)',
                         whiteSpace: 'nowrap',
                         overflow: 'hidden',
@@ -983,7 +994,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                       {doc.title || doc.source_uri}
                     </div>
                     {doc.chunk_count > 0 && (
-                      <div style={{ fontSize: '11px', color: 'var(--text-4)', marginTop: '2px' }}>
+                      <div style={{ fontSize: '11px', color: 'var(--text-3)', marginTop: '2px' }}>
                         {doc.chunk_count} chunk{doc.chunk_count !== 1 ? 's' : ''}
                       </div>
                     )}
@@ -993,7 +1004,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   <span
                     style={{
                       padding: '3px 10px',
-                      borderRadius: '999px',
+                      borderRadius: 'var(--radius-pill)',
                       fontSize: '11px',
                       fontWeight: 600,
                       background: sc.bg,
@@ -1009,7 +1020,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
                   <span
                     style={{
                       fontSize: '11px',
-                      color: 'var(--text-4)',
+                      color: 'var(--text-3)',
                       fontFamily: 'var(--font-mono)',
                       whiteSpace: 'nowrap',
                       flexShrink: 0,
@@ -1082,15 +1093,15 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
               padding: '12px 28px',
               minHeight: '44px',
               background: 'var(--accent)',
-              color: '#fff',
-              borderRadius: 'var(--radius-sm)',
+              color: 'var(--text-on-accent)',
+              borderRadius: 'var(--radius-xs)',
               fontSize: '15px',
               fontWeight: 600,
               textDecoration: 'none',
               whiteSpace: 'nowrap',
             }}
           >
-            Next: Run Evals →
+            Next: Run evals →
           </Link>
         </div>
       )}

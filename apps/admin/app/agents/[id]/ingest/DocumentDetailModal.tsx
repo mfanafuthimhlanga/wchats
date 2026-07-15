@@ -44,13 +44,13 @@ interface DocumentDetail {
 const PARSE_STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
   complete: { bg: 'var(--green-bg)', fg: 'var(--green)' },
   parsed: { bg: 'var(--green-bg)', fg: 'var(--green)' },
-  pending: { bg: 'var(--amber-bg)', fg: 'var(--amber)' },
-  processing: { bg: 'var(--amber-bg)', fg: 'var(--amber)' },
+  pending: { bg: 'var(--gold-bg)', fg: 'var(--gold)' },
+  processing: { bg: 'var(--gold-bg)', fg: 'var(--gold)' },
   failed: { bg: 'var(--red-bg)', fg: 'var(--red)' },
 }
 
 function getParseStatusColor(status: string) {
-  return PARSE_STATUS_COLORS[status] ?? { bg: 'var(--surface-3)', fg: 'var(--text-3)' }
+  return PARSE_STATUS_COLORS[status] ?? { bg: 'var(--chip)', fg: 'var(--text-3)' }
 }
 
 // ---------------------------------------------------------------------------
@@ -60,19 +60,25 @@ function getParseStatusColor(status: string) {
 const pillBase: React.CSSProperties = {
   display: 'inline-block',
   padding: '3px 9px',
-  borderRadius: '999px',
+  borderRadius: 'var(--radius-pill)',
   fontSize: '11px',
   fontWeight: 600,
   whiteSpace: 'nowrap',
   fontFamily: 'var(--font-sans)',
 }
 
-const sectionLabel: React.CSSProperties = {
-  fontSize: '10px',
-  fontWeight: 700,
+// Shared uppercase micro-label spec — 11px / 600 / 0.12em tracking. The one
+// tracked-caps exception to sentence case everywhere.
+const microLabel: React.CSSProperties = {
+  fontSize: '11px',
+  fontWeight: 600,
   textTransform: 'uppercase',
-  letterSpacing: '0.08em',
+  letterSpacing: '0.12em',
   color: 'var(--text-3)',
+}
+
+const sectionLabel: React.CSSProperties = {
+  ...microLabel,
   marginBottom: '6px',
 }
 
@@ -195,7 +201,7 @@ export default function DocumentDetailModal({
         position: 'fixed',
         inset: 0,
         zIndex: 1000,
-        background: 'rgba(0,0,0,0.55)',
+        background: 'rgba(11,7,23,0.6)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -208,16 +214,14 @@ export default function DocumentDetailModal({
         aria-modal="true"
         aria-labelledby={titleId}
         onClick={(e) => e.stopPropagation()}
+        className="glass-strong"
         style={{
           width: '100%',
           maxWidth: '720px',
           maxHeight: '80vh',
           display: 'flex',
           flexDirection: 'column',
-          background: 'var(--surface-1)',
-          border: '1px solid var(--border-soft)',
-          borderRadius: 'var(--radius-sm)',
-          boxShadow: '0 24px 64px rgba(0,0,0,0.4)',
+          borderRadius: 'var(--radius-md)',
           overflow: 'hidden',
           fontFamily: 'var(--font-sans)',
         }}
@@ -263,7 +267,7 @@ export default function DocumentDetailModal({
                 <span
                   style={{
                     ...pillBase,
-                    background: 'var(--surface-3)',
+                    background: 'var(--chip)',
                     color: 'var(--text-3)',
                     textTransform: 'uppercase',
                     letterSpacing: '0.06em',
@@ -364,7 +368,7 @@ export default function DocumentDetailModal({
               style={{
                 padding: '12px 16px',
                 background: 'var(--red-bg)',
-                border: '1px solid rgba(192,57,43,0.3)',
+                border: '1px solid rgba(248,113,113,0.3)',
                 borderRadius: 'var(--radius-xs)',
                 fontSize: '14px',
                 color: 'var(--red)',
@@ -391,7 +395,7 @@ export default function DocumentDetailModal({
                 <div
                   style={{
                     fontSize: '13px',
-                    color: 'var(--text-3)',
+                    color: 'var(--text-2)',
                     fontStyle: 'italic',
                     padding: '16px 0',
                   }}
@@ -420,21 +424,18 @@ export default function DocumentDetailModal({
 function Stat({ label, value }: { label: string; value: number }) {
   return (
     <div>
-      <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--text-1)', lineHeight: 1.1 }}>
-        {value}
-      </div>
       <div
         style={{
-          fontSize: '10px',
+          fontSize: '22px',
           fontWeight: 700,
-          textTransform: 'uppercase',
-          letterSpacing: '0.08em',
-          color: 'var(--text-3)',
-          marginTop: '4px',
+          fontFamily: 'var(--font-mono)',
+          color: 'var(--text-1)',
+          lineHeight: 1.1,
         }}
       >
-        {label}
+        {value}
       </div>
+      <div style={{ ...microLabel, marginTop: '4px' }}>{label}</div>
     </div>
   )
 }
@@ -449,7 +450,7 @@ function ChunkCard({ chunk }: { chunk: ChunkDetail }) {
       style={{
         border: '1px solid var(--border-soft)',
         borderRadius: 'var(--radius-xs)',
-        background: 'var(--surface-2)',
+        background: 'var(--chip)',
         overflow: 'hidden',
       }}
     >
@@ -466,7 +467,7 @@ function ChunkCard({ chunk }: { chunk: ChunkDetail }) {
         <span
           style={{
             ...pillBase,
-            background: 'var(--surface-3)',
+            background: 'var(--chip)',
             color: 'var(--text-2)',
             fontFamily: 'var(--font-mono)',
             fontSize: '11px',
@@ -485,7 +486,7 @@ function ChunkCard({ chunk }: { chunk: ChunkDetail }) {
             overflowY: 'auto',
             padding: '10px 12px',
             marginBottom: '14px',
-            background: 'var(--surface-1)',
+            background: 'var(--well)',
             border: '1px solid var(--border-soft)',
             borderRadius: 'var(--radius-xs)',
             fontSize: '13px',
@@ -522,7 +523,7 @@ function ChunkCard({ chunk }: { chunk: ChunkDetail }) {
                       key={`${kw}-${i}`}
                       style={{
                         ...pillBase,
-                        background: 'var(--surface-3)',
+                        background: 'var(--chip)',
                         color: 'var(--text-2)',
                         fontWeight: 500,
                       }}
@@ -559,7 +560,7 @@ function ChunkCard({ chunk }: { chunk: ChunkDetail }) {
             style={{
               marginBottom: '14px',
               fontSize: '12px',
-              color: 'var(--text-4)',
+              color: 'var(--text-3)',
               fontStyle: 'italic',
             }}
           >
@@ -583,12 +584,12 @@ function ChunkCard({ chunk }: { chunk: ChunkDetail }) {
                   }}
                 >
                   {ent.name}{' '}
-                  <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>({ent.type})</span>
+                  <span style={{ color: 'var(--text-2)', fontWeight: 400 }}>({ent.type})</span>
                 </span>
               ))}
             </div>
           ) : (
-            <div style={{ fontSize: '12px', color: 'var(--text-4)', fontStyle: 'italic' }}>
+            <div style={{ fontSize: '12px', color: 'var(--text-3)', fontStyle: 'italic' }}>
               No entities extracted
             </div>
           )}

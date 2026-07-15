@@ -9,11 +9,19 @@
   --surface-2:  #2A1E4A;
   --surface-3:  #382860;
 
-  /* Glass */
-  --glass-bg:        rgba(30, 22, 56, 0.55);
-  --glass-bg-strong: rgba(40, 28, 72, 0.70);
+  /* Glass — three tiers over the skyline photo.
+     featured (hero/stat/modal) · dense (forms/tables/lists) · nav scrim.
+     Children of a glass panel never blur again — they blend (see --well/--chip). */
+  --glass-bg:        rgba(17, 12, 31, 0.55);
+  --glass-bg-strong: rgba(24, 17, 45, 0.70);
+  --glass-bg-dense:  rgba(13, 9, 24, 0.74);
   --glass-border:    rgba(244, 232, 220, 0.10);
-  --glass-blur:      blur(24px) saturate(140%);
+  --glass-blur:      blur(24px) saturate(115%);
+  --glass-blur-dense: blur(28px) saturate(105%);
+  --glass-highlight: inset 0 1px 0 rgba(244, 232, 220, 0.07);
+  /* Blend-with-parent surfaces for elements INSIDE glass panels (no blur) */
+  --well: rgba(11, 7, 23, 0.42);   /* sunken: inputs, code blocks, log wells */
+  --chip: rgba(40, 30, 66, 0.42);  /* raised: chips, row hovers, nested tiles */
 
   /* Borders */
   --border:      rgba(196, 154, 232, 0.18);
@@ -34,7 +42,8 @@
   --cyan: #5EDFD3;
 
   /* Warm — building amber (illustrations only, NOT status) */
-  --amber: #E8A87C;
+  --amber:    #E8A87C;
+  --amber-bg: rgba(232, 168, 124, 0.12);
 
   /* Text */
   --text-1: #F4EDE5;
@@ -130,15 +139,19 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Depth-graded scrim: light touch — the skyline is the hero, legibility comes
+   from the glass surfaces, not from burying the photo. */
 body::before {
   content: '';
   position: fixed;
   inset: 0;
   z-index: 0;
   background:
-    radial-gradient(ellipse 60% 40% at 75% 10%, rgba(244, 116, 140, 0.06) 0%, transparent 55%),
-    radial-gradient(ellipse 50% 40% at 0% 55%, rgba(183, 154, 224, 0.05) 0%, transparent 55%),
-    rgba(11, 7, 23, 0.45);
+    linear-gradient(180deg,
+      rgba(11, 7, 23, 0.18) 0%,
+      rgba(11, 7, 23, 0.28) 220px,
+      rgba(11, 7, 23, 0.40) 560px,
+      rgba(11, 7, 23, 0.48) 100%);
   pointer-events: none;
 }
 
@@ -162,6 +175,59 @@ body::after {
   box-sizing: border-box;
 }
 
+/* ── Glass tiers ──────────────────────────────────────────────────────────────
+   .glass        featured surfaces: hero card, stat tiles, modals, empty states
+   .glass-strong dense surfaces: forms, tables, lists, panels — still translucent,
+                 the skyline reads as soft colour, never detail
+   .glass-nav    sticky nav scrim — progressive blur that fades to nothing
+   Inside any glass panel use var(--well) / var(--chip); never nest blur. */
+
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-highlight), var(--shadow-card);
+}
+
+.glass-strong {
+  background: var(--glass-bg-dense);
+  backdrop-filter: var(--glass-blur-dense);
+  -webkit-backdrop-filter: var(--glass-blur-dense);
+  border: 1px solid var(--border-soft);
+  box-shadow: var(--glass-highlight), var(--shadow-card);
+}
+
+.glass-nav {
+  position: relative;
+  background: transparent;
+  border: none;
+}
+.glass-nav::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 -24px 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(11, 7, 23, 0.60) 0%, rgba(11, 7, 23, 0.28) 55%, transparent 100%);
+  backdrop-filter: blur(16px) saturate(130%);
+  -webkit-backdrop-filter: blur(16px) saturate(130%);
+  mask-image: linear-gradient(180deg, black 55%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, black 55%, transparent 100%);
+}
+
+/* Display text sitting directly on the photo (outside any glass) */
+.on-photo {
+  text-shadow: 0 2px 24px rgba(11, 7, 23, 0.55);
+}
+
+/* Legibility floor when backdrop-filter is unavailable */
+@supports not (backdrop-filter: blur(1px)) {
+  .glass        { background: rgba(17, 12, 31, 0.92); }
+  .glass-strong { background: rgba(13, 9, 24, 0.93); }
+  .glass-nav::before { background: linear-gradient(180deg, rgba(11, 7, 23, 0.88) 0%, rgba(11, 7, 23, 0.55) 55%, transparent 100%); }
+}
+
 @media (max-width: 1099px) {
   .preview-panel { display: none !important; }
 }
@@ -179,9 +245,21 @@ textarea::placeholder {
   opacity: 1;
 }
 
+button:focus-visible,
+a:focus-visible,
+[role="button"]:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
 @media (prefers-reduced-motion: reduce) {
-  [style*="spin-cw"] {
-    animation: none !important;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 

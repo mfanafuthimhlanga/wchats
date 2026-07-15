@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, use } from 'react'
 import { useRouter } from 'next/navigation'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
+import { X, Plus } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -281,17 +282,12 @@ export default function SoulEditorPage({
     <div style={{ display: 'flex', flex: 1, overflow: 'hidden', fontFamily: 'var(--font-sans)' }}>
       {/* Two-column body — preview hidden below 1100px */}
       {/* Form Panel */}
-      <div style={{
+      <div className="glass-strong" style={{
         flex: 1,
         padding: '32px',
         maxWidth: '600px',
         overflowY: 'auto',
-        background: 'var(--glass-bg-strong)',
-        backdropFilter: 'var(--glass-blur)',
-        WebkitBackdropFilter: 'var(--glass-blur)',
-        border: '1px solid var(--glass-border)',
         borderRadius: 'var(--radius-md)',
-        boxShadow: 'var(--shadow-lift)',
         margin: '32px',
       }}>
         <h1
@@ -323,7 +319,7 @@ export default function SoulEditorPage({
                 padding: '12px 16px',
                 marginBottom: '20px',
                 background: 'var(--red-bg)',
-                border: '1px solid rgba(192,57,43,0.3)',
+                border: '1px solid rgba(248,113,113,0.3)',
                 borderRadius: 'var(--radius-xs)',
                 fontSize: '14px',
                 color: 'var(--red)',
@@ -349,11 +345,11 @@ export default function SoulEditorPage({
               style={{
                 width: '100%',
                 padding: '10px 12px',
-                border: `1px solid ${!name.trim() ? 'var(--red)' : 'var(--border)'}`,
+                border: `1px solid ${nameInvalid ? 'var(--red)' : 'var(--border)'}`,
                 borderRadius: 'var(--radius-xs)',
                 fontSize: '14px',
                 fontFamily: 'var(--font-sans)',
-                background: 'var(--surface-2)',
+                background: 'var(--well)',
                 color: 'var(--text-1)',
                 outline: 'none',
               }}
@@ -375,11 +371,11 @@ export default function SoulEditorPage({
               style={{
                 width: '100%',
                 padding: '10px 12px',
-                border: '1px solid var(--border-soft)',
+                border: '1px solid var(--border)',
                 borderRadius: 'var(--radius-xs)',
                 fontSize: '14px',
                 fontFamily: 'var(--font-sans)',
-                background: 'var(--surface-2)',
+                background: 'var(--well)',
                 color: 'var(--text-1)',
                 outline: 'none',
                 cursor: 'pointer',
@@ -402,11 +398,11 @@ export default function SoulEditorPage({
               style={{
                 width: '100%',
                 padding: '10px 12px',
-                border: '1px solid var(--border-soft)',
+                border: '1px solid var(--border)',
                 borderRadius: 'var(--radius-xs)',
                 fontSize: '14px',
                 fontFamily: 'var(--font-sans)',
-                background: 'var(--surface-2)',
+                background: 'var(--well)',
                 color: 'var(--text-1)',
                 outline: 'none',
                 resize: 'vertical',
@@ -422,18 +418,10 @@ export default function SoulEditorPage({
 
           {/* Do List */}
           <div style={{ marginBottom: '20px' }}>
-            <label
-              style={{
-                display: 'block',
-                fontWeight: 600,
-                fontSize: '14px',
-                color: 'var(--text-2)',
-                marginBottom: '8px',
-              }}
-            >
-              Do List
+            <label style={LABEL_STYLE}>
+              Do list
               <span
-                style={{ fontWeight: 400, color: 'var(--text-3)', marginLeft: '8px', fontSize: '12px' }}
+                style={{ fontWeight: 400, color: 'var(--text-3)', marginLeft: '8px', fontSize: '11px', textTransform: 'none', letterSpacing: 'normal' }}
               >
                 What the agent must always do
               </span>
@@ -452,11 +440,11 @@ export default function SoulEditorPage({
                   style={{
                     flex: 1,
                     padding: '10px 12px',
-                    border: '1px solid var(--border-soft)',
+                    border: '1px solid var(--border)',
                     borderRadius: 'var(--radius-xs)',
                     fontSize: '14px',
                     fontFamily: 'var(--font-sans)',
-                    background: 'var(--surface-2)',
+                    background: 'var(--well)',
                     color: 'var(--text-1)',
                     outline: 'none',
                   }}
@@ -470,17 +458,16 @@ export default function SoulEditorPage({
                     width: '44px',
                     height: '44px',
                     background: 'var(--red-bg)',
-                    border: '1px solid rgba(192,57,43,0.2)',
+                    border: '1px solid rgba(248,113,113,0.3)',
                     borderRadius: 'var(--radius-xs)',
                     cursor: 'pointer',
                     color: 'var(--red)',
-                    fontSize: '16px',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                   }}
                 >
-                  ✕
+                  <X size={16} aria-hidden />
                 </button>
               </div>
             ))}
@@ -498,26 +485,22 @@ export default function SoulEditorPage({
                 fontSize: '14px',
                 fontWeight: 500,
                 fontFamily: 'var(--font-sans)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
               }}
             >
-              + Add Do Item
+              <Plus size={14} aria-hidden />
+              Add do item
             </button>
           </div>
 
           {/* Do Not List */}
           <div style={{ marginBottom: '32px' }}>
-            <label
-              style={{
-                display: 'block',
-                fontWeight: 600,
-                fontSize: '14px',
-                color: 'var(--text-2)',
-                marginBottom: '8px',
-              }}
-            >
-              Do Not List
+            <label style={LABEL_STYLE}>
+              Do-not list
               <span
-                style={{ fontWeight: 400, color: 'var(--text-3)', marginLeft: '8px', fontSize: '12px' }}
+                style={{ fontWeight: 400, color: 'var(--text-3)', marginLeft: '8px', fontSize: '11px', textTransform: 'none', letterSpacing: 'normal' }}
               >
                 Behaviors the agent must avoid
               </span>
@@ -536,11 +519,11 @@ export default function SoulEditorPage({
                   style={{
                     flex: 1,
                     padding: '10px 12px',
-                    border: '1px solid var(--border-soft)',
+                    border: '1px solid var(--border)',
                     borderRadius: 'var(--radius-xs)',
                     fontSize: '14px',
                     fontFamily: 'var(--font-sans)',
-                    background: 'var(--surface-2)',
+                    background: 'var(--well)',
                     color: 'var(--text-1)',
                     outline: 'none',
                   }}
@@ -554,17 +537,16 @@ export default function SoulEditorPage({
                     width: '44px',
                     height: '44px',
                     background: 'var(--red-bg)',
-                    border: '1px solid rgba(192,57,43,0.2)',
+                    border: '1px solid rgba(248,113,113,0.3)',
                     borderRadius: 'var(--radius-xs)',
                     cursor: 'pointer',
                     color: 'var(--red)',
-                    fontSize: '16px',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                   }}
                 >
-                  ✕
+                  <X size={16} aria-hidden />
                 </button>
               </div>
             ))}
@@ -582,9 +564,13 @@ export default function SoulEditorPage({
                 fontSize: '14px',
                 fontWeight: 500,
                 fontFamily: 'var(--font-sans)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
               }}
             >
-              + Add Do-Not Item
+              <Plus size={14} aria-hidden />
+              Add do-not item
             </button>
           </div>
 
@@ -600,10 +586,10 @@ export default function SoulEditorPage({
                 style={{
                   padding: '12px 32px',
                   minHeight: '44px',
-                  background: saveStatus === 'saved' || canSave ? 'var(--accent)' : 'var(--surface-3)',
-                  color: saveStatus === 'saved' || canSave ? '#0B0717' : 'var(--text-4)',
+                  background: saveStatus === 'saved' || canSave ? 'var(--accent)' : 'var(--chip)',
+                  color: saveStatus === 'saved' || canSave ? 'var(--text-on-accent)' : 'var(--text-3)',
                   border: 'none',
-                  borderRadius: 'var(--radius-sm)',
+                  borderRadius: 'var(--radius-xs)',
                   cursor: saveStatus === 'saved' || canSave ? 'pointer' : 'not-allowed',
                   fontSize: '15px',
                   fontWeight: 600,
@@ -617,7 +603,7 @@ export default function SoulEditorPage({
                   ? 'Next: Upload documents →'
                   : saveStatus === 'error'
                   ? 'Error — retry'
-                  : 'Save Soul'}
+                  : 'Save soul'}
               </button>
               {saveStatus === 'saved' && (
                 <span style={{ fontSize: '14px', color: 'var(--green)' }}>
@@ -635,30 +621,18 @@ export default function SoulEditorPage({
 
         {/* Live Preview Panel — hidden at <1100px via inline media-query equivalent */}
         <div
-          className="preview-panel"
+          className="glass preview-panel"
           style={{
             width: '400px',
             padding: '32px',
-            background: 'var(--glass-bg)',
-            backdropFilter: 'var(--glass-blur)',
-            WebkitBackdropFilter: 'var(--glass-blur)',
-            border: '1px solid var(--glass-border)',
-            borderLeft: '1px solid var(--glass-border)',
+            borderRadius: 'var(--radius-md)',
+            margin: '32px 32px 32px 0',
             overflowY: 'auto',
             flexShrink: 0,
           }}
         >
-          <h2
-            style={{
-              fontSize: '11px',
-              fontWeight: 700,
-              textTransform: 'uppercase',
-              letterSpacing: '0.08em',
-              color: 'var(--text-3)',
-              marginBottom: '16px',
-            }}
-          >
-            Live System Prompt Preview
+          <h2 style={{ ...LABEL_STYLE, marginBottom: '16px' }}>
+            Live system prompt preview
           </h2>
           <pre
             style={{
@@ -667,11 +641,11 @@ export default function SoulEditorPage({
               lineHeight: 1.65,
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-word',
-              color: '#D4C0BC',
-              background: '#1A0A0F',
+              color: 'var(--text-2)',
+              background: 'var(--well)',
               padding: '16px',
               borderRadius: 'var(--radius-xs)',
-              border: '1px solid rgba(255,255,255,0.06)',
+              border: '1px solid var(--border-soft)',
               margin: 0,
             }}
           >
@@ -681,7 +655,7 @@ export default function SoulEditorPage({
             style={{
               marginTop: '12px',
               fontSize: '11px',
-              color: 'var(--text-4)',
+              color: 'var(--text-3)',
               lineHeight: 1.5,
             }}
           >

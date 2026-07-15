@@ -1,5 +1,5 @@
 'use client'
-import Link from 'next/link'
+import { Check, LoaderCircle, Upload } from 'lucide-react'
 import { use } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
@@ -165,7 +165,7 @@ export default function AgentJourneyPage({
         }}>Provisioning your agent…</h1>
         {agent && (
           <span style={{
-            padding: '4px 10px', borderRadius: '999px', fontSize: '11px', fontWeight: 600,
+            padding: '4px 10px', borderRadius: 'var(--radius-pill)', fontSize: '11px', fontWeight: 600,
             background: getStatusColor(agent.status).bg, color: getStatusColor(agent.status).fg,
             whiteSpace: 'nowrap', flexShrink: 0,
           }}>{getStatusColor(agent.status).label}</span>
@@ -212,7 +212,7 @@ export default function AgentJourneyPage({
       >
         {/* Soul — done when saved, otherwise the active first step */}
         <StepSubtaskCard
-          icon="◐"
+          icon={<LoaderCircle size={16} strokeWidth={2} />}
           title="Define the soul"
           description={
             soulSaved
@@ -227,7 +227,7 @@ export default function AgentJourneyPage({
         {/* Ingest — done when at least one non-failed doc exists; becomes the
             active step once the soul is saved. */}
         <StepSubtaskCard
-          icon="⬆"
+          icon={<Upload size={16} strokeWidth={2} />}
           title="Ingest documents"
           description={
             hasDocs
@@ -263,29 +263,13 @@ export default function AgentJourneyPage({
 
       <div style={{ marginTop: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
         <StepSubtaskCard
-          icon="✓"
+          icon={<Check size={16} strokeWidth={2} />}
           title="Run automated evals"
           description="Measure faithfulness, relevance, and red-team resistance"
           href={`/agents/${id}/eval`}
           ctaLabel="Go to Evals →"
           state="active"
         />
-        <Link
-          href={`/agents/${id}/eval`}
-          style={{
-            display: 'inline-block',
-            padding: '12px 24px',
-            background: 'var(--accent)',
-            color: '#fff',
-            borderRadius: 'var(--radius-sm)',
-            fontSize: '15px',
-            fontWeight: 600,
-            textDecoration: 'none',
-            alignSelf: 'flex-start',
-          }}
-        >
-          Open Evals →
-        </Link>
       </div>
     </>
   )
@@ -317,7 +301,7 @@ export default function AgentJourneyPage({
             padding: '12px 16px',
             marginBottom: '20px',
             background: 'var(--red-bg)',
-            border: '1px solid rgba(192,57,43,0.3)',
+            border: '1px solid rgba(248,113,113,0.3)',
             borderRadius: 'var(--radius-xs)',
             fontSize: '14px',
             color: 'var(--red)',
@@ -329,20 +313,23 @@ export default function AgentJourneyPage({
 
       {isLoaded && isSignedIn && agent && <AlertsBanner agentId={id} />}
 
-      {panel}
+      {/* Glass panel — step copy + subtask cards sit on a dense surface */}
+      <div className="glass-strong" style={{ borderRadius: 'var(--radius-md)', padding: '28px' }}>
+        {panel}
 
-      {/* Langfuse observability link — always visible */}
-      <div style={{ marginTop: '24px', paddingTop: '16px',
-                    borderTop: '1px solid var(--border-soft)' }}>
-        <a
-          href="https://cloud.langfuse.com"
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ fontSize: '13px', color: 'var(--text-3)',
-                   textDecoration: 'underline' }}
-        >
-          View Langfuse Dashboard →
-        </a>
+        {/* Langfuse observability link — always visible */}
+        <div style={{ marginTop: '24px', paddingTop: '16px',
+                      borderTop: '1px solid var(--border-soft)' }}>
+          <a
+            href="https://cloud.langfuse.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontSize: '13px', color: 'var(--text-2)',
+                     textDecoration: 'underline' }}
+          >
+            View Langfuse dashboard →
+          </a>
+        </div>
       </div>
     </div>
   )
