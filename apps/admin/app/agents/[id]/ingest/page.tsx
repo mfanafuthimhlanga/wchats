@@ -4,6 +4,29 @@ import { useState, useRef, useCallback, useEffect, use } from 'react'
 import { useAuth } from '@clerk/nextjs'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import DocumentDetailModal from './DocumentDetailModal'
+import Chip, { type ChipVerdict } from '../../../components/gotham/Chip'
+import Ledger, { LedgerColHead, LedgerRowHead } from '../../../components/gotham/Ledger'
+import EmptyState from '../../../components/gotham/EmptyState'
+import { DocIcon } from '../../../components/gotham/icons'
+
+/**
+ * Ingest — `/agents/[id]/ingest` (UI-SPEC S6.6, UI2-04, ported from
+ * prototypes/gotham/ingest.html). Two-tab panel (Upload file / Add URL) +
+ * the knowledge-base `.ledger`.
+ *
+ * PRESERVED VERBATIM (non-regression, UI-SPEC S9): the real
+ * `POST /api/v1/agents/{id}/documents` upload flow and the SSE progress
+ * stream (`readSseProgress`) the previous dusk build already consumed. The
+ * HIVE chunk swarm below decorates that real state — it is not a
+ * replacement for it, and it does not run ingest.html's client-only
+ * `chunksFor()` hash simulation.
+ *
+ * Colour fix (must-fix 2 / UI-SPEC S10 anti-pattern 3): the prototype
+ * hardcodes the swarm dot fill to the retired brass gold literal
+ * (ingest.html:442). This port resolves the dot fill to the CURRENT
+ * `--live` bone value via `getComputedStyle` at draw time instead — see
+ * `ChunkSwarm` below.
+ */
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,25 +73,21 @@ const EVENT_LABELS: Record<string, string> = {
   'job.failed': 'Failed',
 }
 
-const PARSE_STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
-  complete: { bg: 'var(--green-bg)', fg: 'var(--green)' },
-  parsed: { bg: 'var(--green-bg)', fg: 'var(--green)' },
-  pending: { bg: 'var(--gold-bg)', fg: 'var(--gold)' },
-  processing: { bg: 'var(--gold-bg)', fg: 'var(--gold)' },
-  failed: { bg: 'var(--red-bg)', fg: 'var(--red)' },
+// Colour is a verdict (UI-SPEC S8): map the raw backend parse_status onto
+// the closed Chip verdict union instead of a raw hex/bg pair. There is no
+// amber/warning tier in Gotham — "pending"/"processing" map to "live"
+// (brightness, not a hue), not the dusk build's gold.
+function parseStatusVerdict(status: string): ChipVerdict {
+  if (status === 'complete' || status === 'parsed') return 'pass'
+  if (status === 'pending' || status === 'processing') return 'live'
+  if (status === 'failed') return 'seal'
+  return 'mute'
 }
 
-function getParseStatusColor(status: string) {
-  return PARSE_STATUS_COLORS[status] ?? { bg: 'var(--chip)', fg: 'var(--text-3)' }
-}
-
-// Shared uppercase micro-label spec — sentence case is the norm everywhere else;
-// these tracked labels are the one exception. 11px / 600 / 0.12em tracking.
-const microLabel: React.CSSProperties = {
-  fontSize: '11px',
-  fontWeight: 600,
-  textTransform: 'uppercase',
-  letterSpacing: '0.12em',
+const STATUS_LABEL: Partial<Record<ChipVerdict, string>> = {
+  pass: 'Parsed',
+  live: 'Processing',
+  seal: 'Failed',
 }
 
 // SSE stream is aborted after this long. URL ingestion with Haiku extraction can
@@ -87,6 +106,180 @@ function formatElapsed(seconds: number): string {
 }
 
 // ---------------------------------------------------------------------------
+// prefers-reduced-motion — drives the swarm's settled-vs-animated branch
+// (UI-SPEC S6.6, S8.1).
+// ---------------------------------------------------------------------------
+
+function useReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
+    setReduced(mq.matches)
+    const handler = (e: MediaQueryListEvent) => setReduced(e.matches)
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+  return reduced
+}
+
+// ---------------------------------------------------------------------------
+// THE CHUNK SWARM (HIVE) — ported from prototypes/gotham/ingest.html
+// lines 406-511. Forty dots stream from off-canvas to a golden-angle-spiral
+// cluster at a CAPPED speed (SWARM_MAX_SPEED) — the cap is explicitly the
+// point (HIVE's "dispatch births a centroid" language) and must not be
+// raised for perceived performance.
+// ---------------------------------------------------------------------------
+
+const SWARM_N = 40
+const SWARM_W = 170
+const SWARM_H = 56
+const SWARM_CX = 118
+const SWARM_CY = 28
+const SWARM_MAX_SPEED = 2.6 // px per 60Hz frame. The cap is the point.
+const SWARM_MAX_FORCE = 0.24
+const SWARM_SLOW_R = 15
+const SWARM_RUN_MS = 1800
+
+// A golden-angle spiral packs the cluster tight and evenly.
+function swarmSlot(i: number): { x: number; y: number } {
+  const a = i * 2.399963
+  const r = 2.4 + 1.5 * Math.sqrt(i)
+  return { x: SWARM_CX + r * Math.cos(a), y: SWARM_CY + r * Math.sin(a) }
+}
+
+interface SwarmDot {
+  el: SVGCircleElement
+  x: number
+  y: number
+  vx: number
+  vy: number
+  tx: number
+  ty: number
+}
+
+function ChunkSwarm({ reducedMotion }: { reducedMotion: boolean }) {
+  const svgRef = useRef<SVGSVGElement | null>(null)
+
+  useEffect(() => {
+    const svg = svgRef.current
+    if (!svg) return
+
+    // Resolve the CURRENT --live bone value at draw time — CSS custom
+    // properties do not resolve inside raw SVG presentation attributes, so a
+    // JS read is required either way; the fix (must-fix 2) is which value
+    // gets read (the live token), not the technique (a literal attribute).
+    const liveColor =
+      getComputedStyle(document.documentElement).getPropertyValue('--live').trim() || '#E7E5E1'
+
+    while (svg.firstChild) svg.removeChild(svg.firstChild)
+
+    const NS = 'http://www.w3.org/2000/svg'
+    const dots: SwarmDot[] = []
+
+    for (let i = 0; i < SWARM_N; i++) {
+      const s = swarmSlot(i)
+      const c = document.createElementNS(NS, 'circle')
+      c.setAttribute('r', '1.7')
+      c.setAttribute('fill', liveColor)
+      c.setAttribute('fill-opacity', '0.9')
+      svg.appendChild(c)
+
+      let x = -8 - Math.random() * 142 // staggered off the left edge
+      let y = 8 + Math.random() * 40
+      if (reducedMotion) {
+        x = s.x
+        y = s.y
+      }
+      c.setAttribute('cx', x.toFixed(2))
+      c.setAttribute('cy', y.toFixed(2))
+
+      dots.push({
+        el: c,
+        x,
+        y,
+        vx: 1.4 + Math.random() * 0.8,
+        vy: (Math.random() - 0.5) * 0.9,
+        tx: s.x,
+        ty: s.y,
+      })
+    }
+
+    // prefers-reduced-motion: dots render already-settled, no animation loop
+    // (UI-SPEC S6.6, S8.1) — matches ingest.html's stream() calling done()
+    // immediately instead of starting the requestAnimationFrame loop.
+    if (reducedMotion) return
+
+    let raf = 0
+    const t0 = performance.now()
+    let last = t0
+
+    function frame(now: number) {
+      const dt = Math.min((now - last) / 16.667, 2.2) // frame-rate independent
+      last = now
+
+      for (const d of dots) {
+        const dx = d.tx - d.x
+        const dy = d.ty - d.y
+        const dist = Math.sqrt(dx * dx + dy * dy) || 0.0001
+
+        // arrival: full speed until the slowing radius, then ease into the slot
+        const speed = dist < SWARM_SLOW_R ? SWARM_MAX_SPEED * (dist / SWARM_SLOW_R) : SWARM_MAX_SPEED
+        const desx = (dx / dist) * speed
+        const desy = (dy / dist) * speed
+
+        let sx = desx - d.vx
+        let sy = desy - d.vy
+        const smag = Math.sqrt(sx * sx + sy * sy)
+        if (smag > SWARM_MAX_FORCE) {
+          sx = (sx / smag) * SWARM_MAX_FORCE
+          sy = (sy / smag) * SWARM_MAX_FORCE
+        }
+
+        d.vx += sx * dt
+        d.vy += sy * dt
+
+        // the cap: nothing in this swarm moves faster than this
+        const vmag = Math.sqrt(d.vx * d.vx + d.vy * d.vy)
+        if (vmag > SWARM_MAX_SPEED) {
+          d.vx = (d.vx / vmag) * SWARM_MAX_SPEED
+          d.vy = (d.vy / vmag) * SWARM_MAX_SPEED
+        }
+
+        d.x += d.vx * dt
+        d.y += d.vy * dt
+
+        d.el.setAttribute('cx', d.x.toFixed(2))
+        d.el.setAttribute('cy', d.y.toFixed(2))
+      }
+
+      if (now - t0 < SWARM_RUN_MS) {
+        raf = requestAnimationFrame(frame)
+      } else {
+        for (const d of dots) {
+          // settle exactly on the slots
+          d.el.setAttribute('cx', d.tx.toFixed(2))
+          d.el.setAttribute('cy', d.ty.toFixed(2))
+        }
+      }
+    }
+
+    raf = requestAnimationFrame(frame)
+    return () => cancelAnimationFrame(raf)
+  }, [reducedMotion])
+
+  return (
+    <svg
+      ref={svgRef}
+      className="swarm"
+      viewBox={`0 0 ${SWARM_W} ${SWARM_H}`}
+      width={SWARM_W}
+      height={SWARM_H}
+      aria-hidden="true"
+    />
+  )
+}
+
+// ---------------------------------------------------------------------------
 // IngestPage
 // ---------------------------------------------------------------------------
 
@@ -95,6 +288,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
   const { getToken, isLoaded, isSignedIn } = useAuth()
   const queryClient = useQueryClient()
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ''
+  const reducedMotion = useReducedMotion()
 
   const [activeTab, setActiveTab] = useState<IngestTab>('file')
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
@@ -118,7 +312,13 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null)
   // Track each row's DOM node so focus can be restored to the triggering row
   // when the modal closes (WCAG 2.4.3 Focus Order).
-  const rowRefs = useRef<Map<string, HTMLDivElement | null>>(new Map())
+  const rowRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map())
+
+  // Roving-tab focus targets (UI-SPEC S13: arrow-key roving tabs).
+  const tabButtonRefs = useRef<Record<IngestTab, HTMLButtonElement | null>>({
+    file: null,
+    url: null,
+  })
 
   // ---------------------------------------------------------------------------
   // Elapsed-time counter — ticks once per second while a job is running so the
@@ -461,7 +661,7 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
 
       // Optimistic feedback: show a "processing" row per submitted source while
       // the ingestion job runs. Cleared once a terminal SSE event triggers a
-      // refetch of the real documents list (see readSseProgress -> finish()).
+      // refetch of the real documents list (see readSseProgress -> teardown()).
       const placeholders: OptimisticDoc[] =
         activeTab === 'url'
           ? [{ clientKey: `${data.job_id}:url`, source_type: 'url', title: pendingUrl }]
@@ -489,111 +689,102 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
   }
 
   // ---------------------------------------------------------------------------
+  // Tab selection — roving tabindex, arrow-key navigation (UI-SPEC S13, ported
+  // from ingest.html's select()/keydown handlers).
+  // ---------------------------------------------------------------------------
+
+  const TAB_ORDER: IngestTab[] = ['file', 'url']
+
+  const selectTab = (tab: IngestTab, focus: boolean) => {
+    setActiveTab(tab)
+    setSubmitError(null)
+    setUrlError(null)
+    setProgressLabel(null)
+    setSubmitting(false)
+    setJobStartedAt(null)
+    if (focus) tabButtonRefs.current[tab]?.focus()
+  }
+
+  const handleTabKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (e.key === 'ArrowRight') {
+      e.preventDefault()
+      selectTab(TAB_ORDER[(index + 1) % TAB_ORDER.length], true)
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault()
+      selectTab(TAB_ORDER[(index + TAB_ORDER.length - 1) % TAB_ORDER.length], true)
+    } else if (e.key === 'Home') {
+      e.preventDefault()
+      selectTab(TAB_ORDER[0], true)
+    } else if (e.key === 'End') {
+      e.preventDefault()
+      selectTab(TAB_ORDER[TAB_ORDER.length - 1], true)
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
 
-  return (
-    <div
-      style={{
-        padding: '32px 40px',
-        maxWidth: '720px',
-        margin: '0 auto',
-        fontFamily: 'var(--font-sans)',
-      }}
-    >
-      <h1
-        className="on-photo"
-        style={{
-          fontSize: '22px',
-          fontWeight: 400,
-          fontFamily: 'var(--font-display)',
-          fontVariationSettings: '"opsz" 144, "SOFT" 30',
-          color: 'var(--text-1)',
-          marginBottom: '8px',
-        }}
-      >
-        Ingest documents
-      </h1>
+  const alertStyle: React.CSSProperties = {
+    padding: '12px 16px',
+    marginBottom: '20px',
+    background: 'var(--fail-dim)',
+    border: '1px solid color-mix(in oklch, var(--fail) 32%, transparent)',
+    borderRadius: 'var(--r-panel)',
+    fontSize: '14px',
+    color: 'var(--fail)',
+  }
 
-      <p
-        className="on-photo"
-        style={{
-          color: 'var(--text-2)',
-          fontSize: '14px',
-          marginBottom: '24px',
-        }}
-      >
-        Upload PDFs, images, markdown, or URLs for your agent&apos;s knowledge base.
-      </p>
+  return (
+    <div className="page">
+      <style dangerouslySetInnerHTML={{ __html: PAGE_CSS }} />
+
+      <header className="page-head">
+        <div className="row">
+          <div>
+            <h1>Ingest documents</h1>
+            <p className="sub">
+              Everything the agent is allowed to say comes from here. A document is parsed, cut
+              into chunks and embedded, and only then can it be cited.
+            </p>
+          </div>
+        </div>
+      </header>
 
       {/* Load error */}
       {loadError && (
-        <div
-          role="alert"
-          style={{
-            padding: '12px 16px',
-            marginBottom: '20px',
-            background: 'var(--red-bg)',
-            border: '1px solid rgba(248,113,113,0.3)',
-            borderRadius: 'var(--radius-xs)',
-            fontSize: '14px',
-            color: 'var(--red)',
-          }}
-        >
+        <div role="alert" style={alertStyle}>
           {loadError}
         </div>
       )}
 
-      {/* Agent not ready guard */}
+      {/* Agent not ready guard — informational, never a fail/pass verdict colour */}
       {agentStatus !== null && agentStatus !== 'ready' ? (
-        <div
-          style={{
-            padding: '24px',
-            background: 'var(--gold-bg)',
-            border: '1px solid rgba(251,191,36,0.3)',
-            borderRadius: 'var(--radius-xs)',
-            fontSize: '14px',
-            color: 'var(--gold)',
-            marginBottom: '24px',
-          }}
-        >
-          Agent is still provisioning — ingest is available once the agent is ready.
+        <div className="zone" style={{ marginBottom: '24px' }}>
+          <p style={{ margin: 0, fontSize: '14px', color: 'var(--ink-2)' }}>
+            Agent is still provisioning — ingest is available once the agent is ready.
+          </p>
         </div>
       ) : (
         <>
           {/* Tab nav */}
-          <div
-            role="tablist"
-            style={{
-              display: 'flex',
-              borderBottom: '1px solid var(--border-soft)',
-              marginBottom: '20px',
-            }}
-          >
-            {(['file', 'url'] as IngestTab[]).map((tab) => (
+          <h2 className="vh">Add a document</h2>
+          <div className="tabs" role="tablist" aria-label="How to add a document">
+            {TAB_ORDER.map((tab, i) => (
               <button
                 key={tab}
+                ref={(el) => {
+                  tabButtonRefs.current[tab] = el
+                }}
+                id={`tab-${tab}`}
                 role="tab"
+                type="button"
+                className="tab"
                 aria-selected={activeTab === tab}
-                onClick={() => {
-                  setActiveTab(tab)
-                  setSubmitError(null)
-                  setUrlError(null)
-                  setProgressLabel(null)
-                  setSubmitting(false)
-                  setJobStartedAt(null)
-                }}
-                style={{
-                  padding: '10px 20px',
-                  border: 'none',
-                  borderBottom: `2px solid ${activeTab === tab ? 'var(--accent)' : 'transparent'}`,
-                  background: 'none',
-                  color: activeTab === tab ? 'var(--accent)' : 'var(--text-3)',
-                  fontWeight: activeTab === tab ? 600 : 400,
-                  fontSize: '14px',
-                  cursor: 'pointer',
-                  fontFamily: 'var(--font-sans)',
-                }}
+                aria-controls={`panel-${tab}`}
+                tabIndex={activeTab === tab ? 0 : -1}
+                onClick={() => selectTab(tab, false)}
+                onKeyDown={(e) => handleTabKeyDown(e, i)}
               >
                 {tab === 'file' ? 'Upload file' : 'Add URL'}
               </button>
@@ -602,508 +793,258 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
 
           {/* Submit error */}
           {submitError && (
-            <div
-              role="alert"
-              style={{
-                padding: '12px 16px',
-                marginBottom: '16px',
-                background: 'var(--red-bg)',
-                border: '1px solid rgba(248,113,113,0.3)',
-                borderRadius: 'var(--radius-xs)',
-                fontSize: '14px',
-                color: 'var(--red)',
-              }}
-            >
+            <div role="alert" style={alertStyle}>
               {submitError}
             </div>
           )}
 
           {/* Tab: Upload File */}
-          {activeTab === 'file' && (
-            <div style={{ marginBottom: '24px' }}>
-              <label
-                style={{
-                  ...microLabel,
-                  display: 'block',
-                  color: 'var(--text-3)',
-                  marginBottom: '8px',
-                }}
-              >
-                File
-              </label>
-              <div
-                role="button"
-                tabIndex={0}
-                aria-label="Drop a file here or click to browse"
-                onClick={() => {
-                  if (!submitting) fileInputRef.current?.click()
-                }}
-                onKeyDown={(e) => {
-                  if ((e.key === 'Enter' || e.key === ' ') && !submitting) {
-                    e.preventDefault()
-                    fileInputRef.current?.click()
-                  }
-                }}
-                onDragOver={handleDragOver}
-                onDragEnter={handleDragEnter}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  textAlign: 'center',
-                  height: '160px',
-                  marginBottom: '16px',
-                  padding: '16px',
-                  border: `2px dashed ${isDragging ? 'var(--border-hard)' : 'var(--border)'}`,
-                  borderRadius: 'var(--radius-sm)',
-                  background: isDragging ? 'var(--accent-dim)' : 'var(--well)',
-                  cursor: submitting ? 'not-allowed' : 'pointer',
-                  transition: 'border-color 0.15s ease, background 0.15s ease',
-                }}
-              >
-                {selectedFiles.length === 1 ? (
-                  <span
-                    style={{
-                      fontSize: '14px',
-                      fontWeight: 600,
-                      color: 'var(--text-2)',
-                      fontFamily: 'var(--font-sans)',
-                      wordBreak: 'break-all',
-                    }}
-                  >
-                    {selectedFiles[0].name}
-                  </span>
-                ) : selectedFiles.length > 1 ? (
-                  <>
-                    <span
-                      style={{
-                        fontSize: '14px',
-                        fontWeight: 600,
-                        color: 'var(--text-2)',
-                        fontFamily: 'var(--font-sans)',
-                      }}
-                    >
-                      {selectedFiles.length} files selected
-                    </span>
-                    <span
-                      style={{
-                        fontSize: '12px',
-                        color: 'var(--text-3)',
-                        fontFamily: 'var(--font-sans)',
-                        marginTop: '4px',
-                        wordBreak: 'break-all',
-                      }}
-                    >
-                      {(() => {
-                        const names = selectedFiles.map((f) => f.name).join(', ')
-                        return names.length > 60 ? `${names.slice(0, 60)}…` : names
-                      })()}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span
-                      style={{
-                        fontSize: '14px',
-                        fontWeight: 600,
-                        color: 'var(--text-2)',
-                        fontFamily: 'var(--font-sans)',
-                      }}
-                    >
-                      Drop files here
-                    </span>
-                    <span
-                      style={{
-                        fontSize: '12px',
-                        color: 'var(--text-3)',
-                        fontFamily: 'var(--font-sans)',
-                        marginTop: '4px',
-                      }}
-                    >
-                      or click to browse
-                    </span>
-                  </>
-                )}
-              </div>
+          <div
+            id="panel-file"
+            role="tabpanel"
+            aria-labelledby="tab-file"
+            tabIndex={0}
+            hidden={activeTab !== 'file'}
+          >
+            <div
+              className="drop"
+              data-over={isDragging ? 'true' : 'false'}
+              onDragOver={handleDragOver}
+              onDragEnter={handleDragEnter}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              onClick={(e) => {
+                const target = e.target as HTMLElement
+                // the label owns the real dialog; elsewhere on the zone, open it too
+                if (target.closest('label') || target.closest('input')) return
+                if (!submitting) fileInputRef.current?.click()
+              }}
+            >
+              <h3>
+                {selectedFiles.length === 1
+                  ? selectedFiles[0].name
+                  : selectedFiles.length > 1
+                    ? `${selectedFiles.length} files selected`
+                    : 'Drop PDF, PNG, JPG or MD'}
+              </h3>
+              <p className="help">
+                {selectedFiles.length > 0
+                  ? (() => {
+                      const names = selectedFiles.map((f) => f.name).join(', ')
+                      return names.length > 60 ? `${names.slice(0, 60)}…` : names
+                    })()
+                  : 'Up to 20 MB a file. Anything you drop here is retrievable by the agent within seconds.'}
+              </p>
               <input
                 ref={fileInputRef}
                 type="file"
+                id="file"
                 multiple
                 accept=".pdf,.png,.jpg,.jpeg,.md"
                 onChange={(e) => {
                   if (e.target.files) acceptFile(e.target.files)
                 }}
                 disabled={submitting}
-                style={{ display: 'none' }}
               />
-              <button
-                onClick={handleSubmit}
-                disabled={submitting || selectedFiles.length === 0}
-                style={{
-                  padding: '12px 28px',
-                  minHeight: '44px',
-                  background:
-                    submitting || selectedFiles.length === 0 ? 'var(--chip)' : 'var(--accent)',
-                  color:
-                    submitting || selectedFiles.length === 0
-                      ? 'var(--text-3)'
-                      : 'var(--text-on-accent)',
-                  border: 'none',
-                  borderRadius: 'var(--radius-xs)',
-                  cursor: submitting || selectedFiles.length === 0 ? 'not-allowed' : 'pointer',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  fontFamily: 'var(--font-sans)',
-                }}
-              >
-                Upload file
-              </button>
+              <label className="file-btn" htmlFor="file">
+                Choose file
+              </label>
             </div>
-          )}
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ marginTop: '16px' }}
+              onClick={handleSubmit}
+              disabled={submitting || selectedFiles.length === 0}
+            >
+              {submitting && activeTab === 'file' ? 'Uploading…' : 'Upload file'}
+            </button>
+          </div>
 
           {/* Tab: Add URL */}
-          {activeTab === 'url' && (
-            <div style={{ marginBottom: '24px' }}>
-              <label
-                htmlFor="urlInput"
-                style={{
-                  ...microLabel,
-                  display: 'block',
-                  color: 'var(--text-3)',
-                  marginBottom: '8px',
-                }}
-              >
-                URL
-              </label>
-              <input
-                id="urlInput"
-                type="url"
-                placeholder="https://example.com/document"
-                value={urlInput}
-                onChange={(e) => {
-                  setUrlInput(e.target.value)
-                  setUrlError(null)
-                }}
-                disabled={submitting}
-                style={{
-                  width: '100%',
-                  padding: '10px 12px',
-                  border: `1px solid ${urlError ? 'var(--red)' : 'var(--border)'}`,
-                  borderRadius: 'var(--radius-xs)',
-                  fontSize: '14px',
-                  fontFamily: 'var(--font-sans)',
-                  background: 'var(--well)',
-                  color: 'var(--text-1)',
-                  outline: 'none',
-                  boxSizing: 'border-box',
-                  marginBottom: '8px',
-                }}
-              />
-              {urlError && (
-                <p role="alert" style={{ fontSize: '12px', color: 'var(--red)', marginBottom: '12px' }}>
-                  {urlError}
+          <div
+            id="panel-url"
+            role="tabpanel"
+            aria-labelledby="tab-url"
+            tabIndex={0}
+            hidden={activeTab !== 'url'}
+          >
+            <form
+              className="url-form"
+              onSubmit={(e) => {
+                e.preventDefault()
+                handleSubmit()
+              }}
+            >
+              <div className="field">
+                <label htmlFor="url">Page address</label>
+                <input
+                  id="url"
+                  type="url"
+                  placeholder="https://example.com/document"
+                  value={urlInput}
+                  onChange={(e) => {
+                    setUrlInput(e.target.value)
+                    setUrlError(null)
+                  }}
+                  disabled={submitting}
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-describedby="url-help"
+                />
+                <p className="help" id="url-help">
+                  The page is fetched once, stripped of navigation and chrome, then chunked like
+                  any other document.
                 </p>
-              )}
-              <button
-                onClick={handleSubmit}
-                disabled={submitting}
-                style={{
-                  padding: '12px 28px',
-                  minHeight: '44px',
-                  background: submitting ? 'var(--chip)' : 'var(--accent)',
-                  color: submitting ? 'var(--text-3)' : 'var(--text-on-accent)',
-                  border: 'none',
-                  borderRadius: 'var(--radius-xs)',
-                  cursor: submitting ? 'not-allowed' : 'pointer',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  fontFamily: 'var(--font-sans)',
-                }}
-              >
-                Add URL
+                {urlError && (
+                  <p role="alert" className="help" style={{ color: 'var(--fail)' }}>
+                    {urlError}
+                  </p>
+                )}
+              </div>
+              <button type="submit" className="btn btn-primary" disabled={submitting}>
+                {submitting && activeTab === 'url' ? 'Fetching…' : 'Fetch page'}
               </button>
-            </div>
-          )}
+            </form>
+          </div>
+
+          <p className="vh" role="status" aria-live="polite">
+            {progressLabel ?? ''}
+          </p>
         </>
       )}
 
-      {/* Document list */}
-      {(documents.length > 0 || optimisticDocs.length > 0) && (
-        <div style={{ marginTop: '32px' }}>
-          <h2
-            style={{
-              ...microLabel,
-              color: 'var(--text-3)',
-              marginBottom: '12px',
-            }}
-          >
-            Knowledge base ({documents.length + optimisticDocs.length})
+      {/* Knowledge base */}
+      <section className="section">
+        <div className="section-head">
+          <h2 className="label" id="kb-label">
+            Knowledge base
+            <span className="chip chip-mute count num">
+              {documents.length + optimisticDocs.length}
+            </span>
           </h2>
-          <div
-            className="glass-strong"
-            style={{
-              borderRadius: 'var(--radius-md)',
-              overflow: 'hidden',
-            }}
-          >
-            {/* Optimistic in-flight rows — shown while the ingestion job runs,
-                replaced by real rows once the documents query refetches. */}
-            {optimisticDocs.map((doc) => (
-              <div
-                key={doc.clientKey}
-                aria-busy="true"
-                style={{
-                  padding: '14px 16px',
-                  borderBottom: '1px solid var(--border-soft)',
-                  background: 'var(--chip)',
-                  opacity: 0.75,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '12px',
-                }}
-              >
-                {/* Source type badge */}
-                <span
-                  style={{
-                    padding: '2px 8px',
-                    borderRadius: 'var(--radius-pill)',
-                    fontSize: '10px',
-                    fontWeight: 700,
-                    background: 'var(--lilac-dim)',
-                    color: 'var(--lilac)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.06em',
-                    whiteSpace: 'nowrap',
-                    flexShrink: 0,
-                  }}
-                >
-                  {doc.source_type}
-                </span>
-
-                {/* Title */}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontSize: '13px',
-                      fontWeight: 600,
-                      color: 'var(--text-2)',
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}
-                  >
-                    {doc.title}
-                  </div>
-                </div>
-
-                {/* Processing badge (live label tracks the SSE progress; the
-                    elapsed counter signals the job is still alive). */}
-                <span
-                  style={{
-                    padding: '3px 10px',
-                    borderRadius: 'var(--radius-pill)',
-                    fontSize: '11px',
-                    fontWeight: 600,
-                    background: 'var(--gold-bg)',
-                    color: 'var(--gold)',
-                    whiteSpace: 'nowrap',
-                    flexShrink: 0,
-                  }}
-                >
-                  {progressLabel ?? 'processing…'}
-                  {jobStartedAt !== null && (
-                    <span style={{ fontFamily: 'var(--font-mono)' }}>
-                      {' '}· {formatElapsed(elapsedSeconds)}
-                    </span>
-                  )}
-                </span>
-              </div>
-            ))}
-
-            {documents.map((doc, i) => {
-              const sc = getParseStatusColor(doc.parse_status)
-              return (
-                <div
-                  key={doc.id}
-                  ref={(el) => {
-                    rowRefs.current.set(doc.id, el)
-                  }}
-                  role="button"
-                  tabIndex={0}
-                  aria-haspopup="dialog"
-                  aria-label={`View details for ${doc.title || doc.source_uri}`}
-                  onClick={() => setSelectedDocId(doc.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
-                      setSelectedDocId(doc.id)
-                    }
-                  }}
-                  style={{
-                    padding: '14px 16px',
-                    borderBottom:
-                      i < documents.length - 1 ? '1px solid var(--border-soft)' : undefined,
-                    background: 'transparent',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '12px',
-                    cursor: 'pointer',
-                    transition: 'background 0.15s ease',
-                  }}
-                  onMouseEnter={(e) => {
-                    ;(e.currentTarget as HTMLDivElement).style.background = 'var(--chip)'
-                  }}
-                  onMouseLeave={(e) => {
-                    ;(e.currentTarget as HTMLDivElement).style.background = 'transparent'
-                  }}
-                >
-                  {/* Source type badge */}
-                  <span
-                    style={{
-                      padding: '2px 8px',
-                      borderRadius: 'var(--radius-pill)',
-                      fontSize: '10px',
-                      fontWeight: 700,
-                      background: 'var(--lilac-dim)',
-                      color: 'var(--lilac)',
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.06em',
-                      whiteSpace: 'nowrap',
-                      flexShrink: 0,
-                    }}
-                  >
-                    {doc.source_type}
-                  </span>
-
-                  {/* Title / URI */}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontSize: '13px',
-                        fontWeight: 600,
-                        fontFamily: doc.title ? 'var(--font-sans)' : 'var(--font-mono)',
-                        color: 'var(--text-2)',
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
-                      {doc.title || doc.source_uri}
-                    </div>
-                    {doc.chunk_count > 0 && (
-                      <div style={{ fontSize: '11px', color: 'var(--text-3)', marginTop: '2px' }}>
-                        {doc.chunk_count} chunk{doc.chunk_count !== 1 ? 's' : ''}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Parse status badge */}
-                  <span
-                    style={{
-                      padding: '3px 10px',
-                      borderRadius: 'var(--radius-pill)',
-                      fontSize: '11px',
-                      fontWeight: 600,
-                      background: sc.bg,
-                      color: sc.fg,
-                      whiteSpace: 'nowrap',
-                      flexShrink: 0,
-                    }}
-                  >
-                    {doc.parse_status}
-                  </span>
-
-                  {/* Date */}
-                  <span
-                    style={{
-                      fontSize: '11px',
-                      color: 'var(--text-3)',
-                      fontFamily: 'var(--font-mono)',
-                      whiteSpace: 'nowrap',
-                      flexShrink: 0,
-                    }}
-                  >
-                    {new Date(doc.created_at).toLocaleDateString()}
-                  </span>
-
-                  {/* Delete button — stop propagation so it never opens the
-                      detail modal; the row click handler must not fire. */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      handleDeleteDoc(doc.id)
-                    }}
-                    onKeyDown={(e) => e.stopPropagation()}
-                    disabled={deletingIds.has(doc.id)}
-                    aria-label={`Delete ${doc.title || doc.source_uri}`}
-                    style={{
-                      flexShrink: 0,
-                      background: 'none',
-                      border: 'none',
-                      cursor: deletingIds.has(doc.id) ? 'not-allowed' : 'pointer',
-                      padding: '4px 6px',
-                      borderRadius: 'var(--radius-xs)',
-                      color: deletingIds.has(doc.id) ? 'var(--text-4)' : 'var(--text-3)',
-                      fontSize: '14px',
-                      lineHeight: 1,
-                      opacity: deletingIds.has(doc.id) ? 0.4 : 1,
-                      transition: 'color 0.15s ease, opacity 0.15s ease',
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!deletingIds.has(doc.id))
-                        (e.currentTarget as HTMLButtonElement).style.color = 'var(--red)'
-                    }}
-                    onMouseLeave={(e) => {
-                      ;(e.currentTarget as HTMLButtonElement).style.color = deletingIds.has(doc.id)
-                        ? 'var(--text-4)'
-                        : 'var(--text-3)'
-                    }}
-                  >
-                    {deletingIds.has(doc.id) ? '…' : '×'}
-                  </button>
-                </div>
-              )
-            })}
-          </div>
         </div>
-      )}
+
+        {documents.length === 0 && optimisticDocs.length === 0 ? (
+          <EmptyState
+            heading="No documents yet"
+            body="Upload a file or add a URL above to start building this agent's knowledge base."
+          />
+        ) : (
+          <Ledger caption="Knowledge base documents: name, type, chunk count, ingestion status, and date added">
+            <thead>
+              <tr>
+                <LedgerColHead>Document</LedgerColHead>
+                <LedgerColHead className="col-type">Type</LedgerColHead>
+                <LedgerColHead numeric>Chunks</LedgerColHead>
+                <LedgerColHead className="st">Status</LedgerColHead>
+                <LedgerColHead className="col-added">Added</LedgerColHead>
+              </tr>
+            </thead>
+            <tbody>
+              {/* Optimistic in-flight rows — shown while the ingestion job runs
+                  (real SSE-driven state), replaced by real rows once the
+                  documents query refetches. This is the one place the HIVE
+                  swarm renders: a document actually transitioning to parsing. */}
+              {optimisticDocs.map((doc) => (
+                <tr key={doc.clientKey} aria-busy="true">
+                  <LedgerRowHead>
+                    <span className="doc">
+                      <DocIcon />
+                      {doc.title}
+                    </span>
+                  </LedgerRowHead>
+                  <td className="col-type">
+                    <Chip verdict="mute">{doc.source_type.toUpperCase()}</Chip>
+                  </td>
+                  <td className="num pending">pending</td>
+                  <td className="st">
+                    <div className="parsing">
+                      <span className="label">{progressLabel ?? 'Starting…'}</span>
+                      <ChunkSwarm reducedMotion={reducedMotion} />
+                    </div>
+                    {jobStartedAt !== null && (
+                      <span className="mono elapsed">{formatElapsed(elapsedSeconds)}</span>
+                    )}
+                  </td>
+                  <td className="col-added mono">—</td>
+                </tr>
+              ))}
+
+              {documents.map((doc) => {
+                const verdict = parseStatusVerdict(doc.parse_status)
+                const isProcessing = verdict === 'live'
+                return (
+                  <tr key={doc.id}>
+                    <LedgerRowHead>
+                      <button
+                        type="button"
+                        className="doc doc-open"
+                        ref={(el) => {
+                          rowRefs.current.set(doc.id, el)
+                        }}
+                        aria-haspopup="dialog"
+                        aria-label={`View details for ${doc.title || doc.source_uri}`}
+                        onClick={() => setSelectedDocId(doc.id)}
+                      >
+                        <DocIcon />
+                        <span className="doc-title">{doc.title || doc.source_uri}</span>
+                      </button>
+                    </LedgerRowHead>
+                    <td className="col-type">
+                      <Chip verdict="mute">{doc.source_type.toUpperCase()}</Chip>
+                    </td>
+                    <td className={doc.chunk_count > 0 ? 'num' : 'num pending'}>
+                      {doc.chunk_count > 0 ? doc.chunk_count : isProcessing ? 'pending' : doc.chunk_count}
+                    </td>
+                    <td className="st">
+                      <span className="st-line">
+                        <Chip verdict={verdict} dot={verdict === 'live'}>
+                          {verdict === 'mute' ? doc.parse_status : STATUS_LABEL[verdict]}
+                        </Chip>
+                      </span>
+                    </td>
+                    <td className="col-added mono">
+                      <span className="added-cell">
+                        {new Date(doc.created_at).toLocaleDateString()}
+                        <button
+                          type="button"
+                          className="row-del"
+                          onClick={() => handleDeleteDoc(doc.id)}
+                          disabled={deletingIds.has(doc.id)}
+                          aria-label={`Delete ${doc.title || doc.source_uri}`}
+                        >
+                          {deletingIds.has(doc.id) ? '…' : '×'}
+                        </button>
+                      </span>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </Ledger>
+        )}
+      </section>
 
       {/* Next step CTA — visible once at least one document is successfully ingested */}
       {documents.some((d) => d.parse_status !== 'failed') && (
-        <div
+        <section
+          className="section"
           style={{
-            marginTop: '32px',
-            paddingTop: '24px',
-            borderTop: '1px solid var(--border-soft)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
+            gap: '24px',
+            flexWrap: 'wrap',
           }}
         >
-          <p style={{ fontSize: '14px', color: 'var(--text-3)', margin: 0 }}>
+          <p className="voice" style={{ margin: 0 }}>
             Knowledge base ready — you can now run evaluations.
           </p>
-          <Link
-            href={`/agents/${id}/eval`}
-            style={{
-              display: 'inline-block',
-              padding: '12px 28px',
-              minHeight: '44px',
-              background: 'var(--accent)',
-              color: 'var(--text-on-accent)',
-              borderRadius: 'var(--radius-xs)',
-              fontSize: '15px',
-              fontWeight: 600,
-              textDecoration: 'none',
-              whiteSpace: 'nowrap',
-            }}
-          >
+          <Link href={`/agents/${id}/eval`} className="btn btn-primary">
             Next: Run evals →
           </Link>
-        </div>
+        </section>
       )}
 
       {/* Document detail modal — opened by clicking a KB row. */}
@@ -1118,3 +1059,99 @@ export default function IngestPage({ params }: { params: Promise<{ id: string }>
     </div>
   )
 }
+
+// ---------------------------------------------------------------------------
+// Page-scoped CSS — ported from prototypes/gotham/ingest.html's own <style>
+// block (tabs / drop / ledger status cell / swarm), following the same
+// static dangerouslySetInnerHTML pattern used by soul/page.tsx and
+// agents/[id]/page.tsx. `.cross-*` / `.vh` are handled globally
+// (PageChrome / globals.css) and are not repeated here.
+// ---------------------------------------------------------------------------
+const PAGE_CSS = `
+  .tabs {
+    display: flex; gap: 26px;
+    border-bottom: 1px solid var(--hairline);
+    margin-bottom: 22px;
+  }
+  .tab {
+    appearance: none; background: none; border: 0;
+    padding: 0 0 11px; margin-bottom: -1px; cursor: pointer;
+    font-family: var(--mono); font-size: 11px; font-weight: 700;
+    letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--ink-3);
+    border-bottom: 2px solid transparent;
+    transition: color 140ms ease, border-color 140ms ease;
+  }
+  .tab:hover { color: var(--ink-2); }
+  .tab[aria-selected="true"] { color: var(--live); border-bottom-color: var(--live); }
+
+  .drop {
+    position: relative;
+    display: block; width: 100%; padding: 40px 24px;
+    background: var(--well);
+    border: 1px dashed var(--hairline-strong);
+    border-radius: var(--r-panel);
+    text-align: center; cursor: pointer;
+    transition: border-color 140ms ease, background 140ms ease;
+  }
+  .drop:hover, .drop[data-over="true"] { border-color: var(--live); background: var(--surface); }
+  .drop h3 { font-size: 15px; }
+  .drop .help { margin: 6px 0 16px; }
+  .drop label { margin: 0; }
+  .drop input[type="file"] {
+    position: absolute; width: 1px; height: 1px; opacity: 0;
+    overflow: hidden; clip-path: inset(50%);
+  }
+  .file-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--sans); font-size: 13px; font-weight: 600;
+    letter-spacing: 0; text-transform: none;
+    padding: 9px 16px; border-radius: var(--r-control);
+    color: var(--live-ink); background: color-mix(in srgb, var(--live) 70%, transparent);
+    cursor: pointer;
+  }
+  .drop input[type="file"]:focus-visible + .file-btn { outline: 2px solid var(--live); outline-offset: 2px; }
+
+  .url-form { max-width: 520px; }
+  .url-form .btn { margin-top: 2px; }
+
+  .count { margin-left: 10px; }
+  .doc { display: flex; align-items: center; gap: 10px; }
+  .doc svg { flex: none; color: var(--ink-3); }
+  .doc-open {
+    appearance: none; background: none; border: none; padding: 0; margin: 0;
+    width: 100%; text-align: left; cursor: pointer; color: var(--ink); font: inherit;
+  }
+  .doc-title {
+    font-size: 13px; font-weight: 600; color: var(--ink);
+    transition: color 140ms ease;
+  }
+  .doc-open:hover .doc-title, .doc-open:focus-visible .doc-title { color: var(--live); }
+
+  .ledger th.st, .ledger td.st { min-width: 196px; }
+  .ledger td.st { padding-top: 9px; padding-bottom: 9px; }
+  .st-line { display: flex; align-items: center; gap: 10px; }
+  .elapsed { font-size: 12px; color: var(--ink-3); }
+  .pending { color: var(--ink-3); }
+
+  .added-cell { display: flex; align-items: center; gap: 8px; }
+  .row-del {
+    flex: none; width: 22px; height: 22px;
+    display: grid; place-items: center;
+    background: transparent; border: 1px solid transparent; border-radius: var(--r-control);
+    color: var(--ink-3); cursor: pointer; font-size: 14px; line-height: 1;
+    transition: color 140ms ease, background 140ms ease;
+  }
+  .row-del:hover { color: var(--seal-hot); background: var(--seal-dim); }
+  .row-del[disabled] { opacity: 0.4; cursor: not-allowed; }
+
+  /* the chunk swarm (HIVE): dispatch births a centroid, the chunks stream to
+     it at a capped speed. You watch the document become citable evidence. */
+  .parsing { display: flex; flex-direction: column; gap: 4px; }
+  .parsing .label { color: var(--live); }
+  .swarm { display: block; border-radius: 3px; background: var(--well); }
+
+  @media (max-width: 760px) {
+    .ledger .col-added, .ledger .col-type { display: none; }
+  }
+`
