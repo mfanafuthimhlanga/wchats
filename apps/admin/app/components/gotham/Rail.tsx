@@ -38,8 +38,20 @@ function RailLink({ href, label, active, children }: RailLinkProps) {
     // not clickable) but still matches the `.rail a.rail-btn` CSS selector,
     // so the glyph stays correctly sized/positioned without faking
     // navigation to a route that does not exist yet (UI-SPEC §10 #6).
+    // 20-15 fix (axe aria-prohibited-attr, real defect): an `<a>` with no
+    // `href` has no implicit ARIA role (maps to `role=generic`), which
+    // prohibits `aria-label`/`aria-disabled` (WAI-ARIA "no valid role
+    // attribute"). Explicit `role="link"` restores the intended semantics —
+    // the WAI-ARIA APG "disabled link" pattern — without adding a fake
+    // `href` that would make it focusable/clickable.
     return (
-      <a className="rail-btn" aria-disabled="true" aria-label={label} style={{ opacity: 0.35, cursor: 'default' }}>
+      <a
+        className="rail-btn"
+        role="link"
+        aria-disabled="true"
+        aria-label={label}
+        style={{ opacity: 0.35, cursor: 'default' }}
+      >
         {children}
       </a>
     )

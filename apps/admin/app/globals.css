@@ -28,7 +28,11 @@
   /* ---- bone lettering -------------------------------------------------- */
   --ink:   #E7E5E1;
   --ink-2: #9BA1A3;
-  --ink-3: #6B7275;
+  /* 20-15 fix (axe color-contrast, real defect): #6B7275 measured 3.64-4.07:1
+     against --bg/--surface/--well (WCAG AA text needs 4.5:1). Lightened to
+     the nearest tone that clears 4.5:1 against all three console
+     backgrounds with margin -- same hue/character, not a redesign. */
+  --ink-3: #7E8588;
 
   /* ---- LIVE is not a colour. It is brightness. -------------------------
      Where every other console would put an accent hue, this one puts light.
@@ -42,12 +46,18 @@
   --pass:     #4CC38A;
   --pass-dim: rgba(76, 195, 138, 0.13);
   --fail:     #E5484D;
-  --fail-dim: rgba(229, 72, 77, 0.13);
+  /* 20-15 fix (axe color-contrast, real defect): .chip-fail sets --fail as
+     foreground on --fail-dim as background -- at 0.13 alpha that composited
+     to 4.34:1 (WCAG AA needs 4.5:1). --fail itself is a locked brand hex
+     (UI-SPEC S8 table); darkening the dim background's alpha instead
+     preserves the exact foreground red and still reads as the same subtle
+     tint (0.08 measured 4.58:1 with margin). */
+  --fail-dim: rgba(229, 72, 77, 0.08);
 
   /* the seal: the gate is shut. The same red, because it is the same claim. */
   --seal:     #E5484D;
   --seal-hot: #FF6369;
-  --seal-dim: rgba(229, 72, 77, 0.13);
+  --seal-dim: rgba(229, 72, 77, 0.08);
 
   /* ---- the four eval channels.
      Even here, restraint: the channels are four VALUES of bone, separated by

@@ -876,9 +876,22 @@ const PAGE_CSS = `
     background: var(--well); border: 1px solid var(--hairline-soft); border-radius: var(--r-panel);
     padding: 18px; display: flex; flex-direction: column; align-items: flex-end; gap: 12px;
   }
+  /* 20-15 fix (axe color-contrast, real defect): prototypes/gotham/deploy.html
+     ports .widget's background as rgba(255,255,255,0.7) over the dark
+     .stage (--well) backdrop, compositing to roughly #B5B5B6. Against that,
+     the prototype's own secondary-text greys (#7C8687/#9AA3A3) topped out at
+     3.74:1/2.58:1 even at fully OPAQUE white -- never legible at any
+     opacity, not a porting regression -- and the locked --widget-accent
+     (#C79A3C) used as bare text measured 1.26:1, effectively invisible. Since
+     darkening those foreground colors alone couldn't reach 4.5:1 against the
+     original 0.7-alpha backdrop without abandoning their "light secondary
+     text" / "brand accent" character entirely, the backdrop opacity is
+     raised to 0.94 (still visibly translucent, not solid) so the darkened
+     foregrounds below clear 4.5:1 with comfortable margin while staying
+     recognizably grey / amber-gold rather than near-black/near-brown. */
   .widget {
     width: 100%;
-    background: rgba(255, 255, 255, 0.7);
+    background: rgba(255, 255, 255, 0.94);
     border-radius: 12px; overflow: hidden;
     font-family: var(--sans); color: #12181A;
   }
@@ -889,7 +902,7 @@ const PAGE_CSS = `
     display: grid; place-items: center; font-family: var(--display); font-size: 13px; font-weight: 600;
   }
   .w-name { display: block; font-size: 13px; font-weight: 600; line-height: 1.3; }
-  .w-state { display: block; font-size: 11px; color: #7C8687; }
+  .w-state { display: block; font-size: 11px; color: #5F6669; }
   .w-body { padding: 14px; display: flex; flex-direction: column; gap: 9px; }
   .w-msg { max-width: 88%; padding: 9px 12px; font-size: 12.5px; line-height: 1.5; border-radius: 12px; }
   .w-agent { align-self: flex-start; background: #F3F1EB; border-bottom-left-radius: 4px; }
@@ -897,9 +910,9 @@ const PAGE_CSS = `
   .w-input {
     display: flex; align-items: center; justify-content: space-between; gap: 8px;
     margin: 0 14px 14px; padding: 9px 12px; border: 1px solid #E4E1D9; border-radius: 100px;
-    font-size: 12.5px; color: #9AA3A3;
+    font-size: 12.5px; color: #5F6669;
   }
-  .w-send { color: var(--widget-accent); font-weight: 600; }
+  .w-send { color: #7A5A16; font-weight: 600; }
   .launcher {
     width: 46px; height: 46px; flex: none; border-radius: 50%;
     background: var(--widget-accent); color: #0A1416; display: grid; place-items: center;

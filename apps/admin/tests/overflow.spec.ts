@@ -1,25 +1,40 @@
 import { test, expect } from '@playwright/test'
 
-// Wave 0 stub (plan 20-01) -- SC4 / UI2-08 no-horizontal-overflow check.
-// playwright.config.ts already defines the three required viewport projects
-// (desktop-1440, laptop-1280, tablet-900); this spec runs once per project,
-// so the viewport itself needs no per-test setup here. Filled in by 20-15.
-
-const ROUTES = ['/', '/agents', '/agents/new']
+// SC4 / UI2-08 no-horizontal-overflow check, filled in by 20-15. Runs once
+// per viewport project (desktop-1440 / laptop-1280 / tablet-900 -- defined
+// in playwright.config.ts) against every real routed page. The eval page's
+// telemetry leader-line layout at 900px is called out in the plan as the
+// most likely regression, so `/agents/demo-1/eval` is included explicitly,
+// not just the base four routes.
+const AGENT_ID = 'demo-1'
+const ROUTES = [
+  '/',
+  '/sign-in',
+  '/sign-up',
+  '/agents',
+  '/agents/new',
+  `/agents/${AGENT_ID}`,
+  `/agents/${AGENT_ID}/soul`,
+  `/agents/${AGENT_ID}/ingest`,
+  `/agents/${AGENT_ID}/eval`,
+  `/agents/${AGENT_ID}/deploy`,
+  `/agents/${AGENT_ID}/settings`,
+]
 
 test.describe('@smoke no horizontal overflow', () => {
   for (const route of ROUTES) {
     test(`${route} has no horizontal overflow at this viewport`, async ({ page }) => {
-      test.fixme(true, 'Gotham route rebuild pending 20-15 parity gate (SC4)')
-
       await page.goto(route)
+      await page.waitForLoadState('networkidle')
 
       const { scrollWidth, clientWidth } = await page.evaluate(() => {
         const el = document.scrollingElement as HTMLElement
         return { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth }
       })
 
-      expect(scrollWidth).toBeLessThanOrEqual(clientWidth)
+      expect(scrollWidth, `${route}: scrollWidth (${scrollWidth}) > clientWidth (${clientWidth})`).toBeLessThanOrEqual(
+        clientWidth
+      )
     })
   }
 })

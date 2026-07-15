@@ -51,8 +51,11 @@ const clerkAppearance = {
     dividerLine: {
       background: 'rgba(231,229,225,0.13)',
     },
+    // 20-15 fix (axe color-contrast, real defect): matches the --ink-3 token
+    // (globals.css) -- was a stale literal copy of the pre-fix #6B7275 value
+    // (3.63:1 against this card's #15181B background, WCAG AA needs 4.5:1).
     dividerText: {
-      color: '#6B7275',
+      color: '#7E8588',
     },
     formFieldLabel: {
       color: '#9BA1A3',
