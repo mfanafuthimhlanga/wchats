@@ -248,8 +248,125 @@ Plans:
 
 *v1.1 roadmap added 2026-06-29 (safe parallel track). The standard new-milestone reset was deliberately NOT run — it would have cleared the paused Phase 13 directory and reset its checkpoint. Phase 13 stays paused & resumable (`/gsd-execute-phase 13 --wave 3` once the domain + Bedrock are ready). 6 phases, 43 requirements, all mapped. Out of scope: A2A/MCP (v1.2), schema-bound exfiltration + classifier firewall (v1.2), continuous alerting/audit-infra (v1.3).*
 
+## Milestone v1.2 — Gotham console + comprehensive agent management (Phases 20–21)
+
+*The dusk/skyline admin UI is a retired design direction and the operations room behind it is mostly mock: only PROVISIONING (create → tenant DB → ingest → first deploy) is end-to-end (`.planning/AGENT-MGMT-GAPS.md`). This milestone (a) cuts the frontend over to the already-built Gotham prototypes and (b) builds the real backends the operations room needs so managing a live agent is E2E, not UI-only. Phase 20 is a pure re-skin+re-IA; Phase 21 derives its requirements directly from the gap table.*
+
+### Phase 20: Frontend cutover — replace the skyline "dusk" admin UI with the Gotham console
+
+**Goal:** Retire the retired-direction dusk-indigo/glass admin frontend and replace it with the "Gotham / Bone on Graphite" design system the owner already rebuilt as static prototypes in `prototypes/gotham/` (colour-is-a-verdict, single-surface console, physical gate shutter, provisioning kept distinct from operations). This is a pure-frontend re-skin + re-information-architecture of `apps/admin`: it ports the prototypes into real routed Next.js pages and must **not regress the working provisioning flow** or any live endpoint the dusk pages already call. The operations room is stood up here with graceful empty states for the regions Phase 21 backs with real data.
+
+**Requirements:** UI2-01 through UI2-08
+
+*Wave 1 — Gotham design system:*
+
+- UI2-01 — Port the Gotham tokens into `apps/admin/app/globals.css` (Bone-on-Graphite palette, the four `--ch-1..4` channel luminances, the `data-gate` shutter mechanism), replacing the dusk-indigo/glass token set.
+
+*Wave 2 — Landing + provisioning re-skin (flow unchanged):*
+
+- UI2-02 — Rebuild the landing page as a routed Next.js page and wire the three.js specimen (three.js confined to landing/auth only, per the design law).
+- UI2-03 — Rebuild the agents dashboard as a real routed page reading `GET /agents`.
+- UI2-04 — Rebuild agent-new as the provisioning page with steps 2–4 locked until step 1 completes (provisioning distinct from operations); the create → provision → ingest → deploy path is unchanged.
+
+*Wave 3 — Operations room:*
+
+- UI2-05 — Build the agent operations room as a real routed page (the six regions) consuming the endpoints that already exist (alerts, eval-runs, red-team-runs, checklist/approve) with honest empty states for the not-yet-backed regions.
+- UI2-06 — Keep the customer widget preview (Preact, <20 KB gzipped) embedded in the console.
+
+*Wave 4 — Cutover + parity:*
+
+- UI2-07 — Delete the retired dusk `dusk-*` / skyline / `amber-console` styles and pages from the production `apps/admin` bundle.
+- UI2-08 — Accessibility + reduced-motion parity: `prefers-reduced-motion` skips the gate-shutter repaint and row fades; no horizontal overflow at 1440 / 1280 / 900px.
+
+**Success criteria:**
+
+1. `globals.css` exposes the Gotham tokens (`--ch-1..4`, `data-gate` shutter, Bone-on-Graphite palette) and **no** `dusk-*` / skyline / `amber-console` class or token remains anywhere in the production `apps/admin` bundle.
+2. Landing, agents dashboard, agent-new, and the operations room are real routed Next.js pages (not static HTML); the three.js specimen renders on landing/auth only.
+3. The provisioning flow (create → provision → ingest → deploy) still works end-to-end with steps 2–4 locked until step 1 completes — no regression against the dusk flow or its live endpoints.
+4. `prefers-reduced-motion` skips the shutter repaint and row fades, and there is no horizontal overflow at 1440 / 1280 / 900px.
+
+**Depends on:** Phase 11 (the dusk/skyline admin UI this re-skins and re-IAs).
+
+**Plans:** 15 plans (planned 2026-07-15; 4 execution waves by dependency; tokens-first; live-visual gate is autonomous:false). All UI2-01..08 covered. Every dusk page ported; every live endpoint preserved per UI-SPEC §9.
+
+Plans:
+
+**Wave 1 — Foundation (tokens-first)**
+
+- [ ] 20-02-PLAN.md — three.js dependency provisioning: supply-chain legitimacy checkpoint (blocking-human) + pinned `three`/`@types/three` install — UI2-02
+- [ ] 20-03-PLAN.md — Gotham token cutover in globals.css (Bone-on-Graphite, `--ch-1..4`, `data-gate`) + root layout font/Clerk re-theme + GateProvider — UI2-01
+- [ ] 20-04-PLAN.md — Shared Gotham component library (Rail/PageChrome/Zone/Chip/Ledger/Btn/EmptyState/icons) + console shell mount (agents/layout Rail, [id]/layout passthrough) — UI2-01, UI2-05
+
+**Wave 2 — Page rebuilds + harness** *(blocked on Wave 1)*
+
+- [ ] 20-01-PLAN.md — Wave-0 validation harness: Playwright + axe + 3-viewport config + spec stubs + `check:no-dusk-tokens` gate — UI2-08
+- [ ] 20-05-PLAN.md — Landing rebuild + client-only SceneMount (brass→LIVE rename) + auth re-skin (three.js landing/auth only) — UI2-02
+- [ ] 20-06-PLAN.md — Agents dashboard rebuild (GET /agents, /me/provision preserved; fake command strip cut) + AgentCard restyle — UI2-03
+- [ ] 20-07-PLAN.md — Provisioning rebuild (create→provision→poll preserved; steps 2–4 locked) + JourneyStepper restyle — UI2-04
+- [ ] 20-08-PLAN.md — Operations room: six regions (honest empty states for Live/Retrieval/bench/prompt; Judgement+Adversary wired) + AlertsBanner gate-fold — UI2-05
+- [ ] 20-09-PLAN.md — Soul rebuild (drop three.js → CSS-only temperament; PATCH preserved) — UI2-04
+- [ ] 20-10-PLAN.md — Ingest rebuild (SSE-driven swarm; brass hex → --live) + DocumentDetailModal restyle — UI2-04
+- [ ] 20-11-PLAN.md — Eval rebuild (channel colours → --ch-1..4; eval-runs preserved) — UI2-05
+- [ ] 20-12-PLAN.md — Deploy rebuild (widget preview retained; test-gate buttons dropped; endpoints preserved) — UI2-06
+- [ ] 20-13-PLAN.md — Settings rebuild (real DELETE wired; fake prototype message dropped) — UI2-07
+
+**Wave 3 — Cutover** *(blocked on all page rebuilds)*
+
+- [ ] 20-14-PLAN.md — Delete dusk components (TopNav/HeroPipeline/HeroSteps/StepSubtaskCard/UserAvatar) + skyline PNG; drive check:no-dusk-tokens to green (whole bundle) — UI2-07
+
+**Wave 4 — Parity gate** *(blocked on cutover, autonomous:false)*
+
+- [ ] 20-15-PLAN.md — Fill Playwright specs; route smoke + three-confinement + overflow (1440/1280/900) + reduced-motion + axe; blocking visual-fidelity checkpoint — UI2-08
+
+### Phase 21: Agent management backend completion — make the operations room real per AGENT-OPS.md
+
+**Goal:** Close every non-provisioning E2E gap in `.planning/AGENT-MGMT-GAPS.md` so the Gotham operations room is backed by real data end-to-end, not mock. Requirements are derived directly from the gap table and grouped into waves that mirror the ops-research capability areas. Each requirement names the concrete backend artifact (table, endpoint, worker task, or service) it delivers. Every new Celery task is `acks_late=True` **and** idempotent, receives only `tenant_id`/agent IDs (connection strings fetched and decrypted at runtime, never in task args), uses Langfuse v4 (`start_as_current_span` / `update_current_generation`) for any tracing, Ragas 0.4.x for any generation-side scoring, and native `tsvector` + `ts_rank_cd` for the BM25 baseline of reranker lift (no `pg_search`/pgbm25). No Docker anywhere in the run/verify path.
+
+**Requirements:** OPS-01 through OPS-16
+
+*Wave 1 — Trace/span capture + live performance metrics:*
+
+- OPS-01 — `turn_metrics` tenant table + write from `run_agent_turn` capturing the SDK `ResultMessage` (cost_usd, num_turns, latency_ms, escalated, tool_count) that is currently logged-only (`agent.py:355-365`).
+- OPS-02 — `message_feedback` tenant table + widget `POST /widget/agents/{id}/feedback` route (thumbs up/down, optional 1–5 CSAT) persisted per assistant message.
+- OPS-03 — `GET /agents/{id}/metrics` service+endpoint computing containment, deflection, escalation rate, CSAT/thumbs-down, p95 latency, and cost/session over a window from `turn_metrics` + `message_feedback` + conversations.
+- OPS-04 — Extend Langfuse v4 tracing to the agent turn in `run_agent_turn` (a trace + generation per production turn) linked to the `turn_metrics` row by `job_id` (agent.py is currently untraced).
+
+*Wave 2 — RAG health instrumentation:*
+
+- OPS-05 — `retrieval_metrics` tenant table + instrument `retrieval_service` to record per-query recall@k, nDCG@10, MRR, reranker lift (BM25→vector→hybrid→reranker delta; BM25 via native `tsvector`), and cited-chunk rank.
+- OPS-06 — Extend the OPS-05 write path to record context-window utilization (retrieved tokens vs the 200k budget), carried-but-never-cited token count, and compaction ratio per turn.
+- OPS-07 — Production groundedness + citation coverage: compute per-turn citation coverage from the CITATIONS parse in `run_agent_turn` plus a lightweight groundedness score (Ragas 0.4.x `faithfulness`), stored in `retrieval_metrics`.
+- OPS-08 — `check_index_staleness` Celery task (acks_late + idempotent; tenant_id in args) flagging stale documents (source newer than last embed) and embedding-model drift, surfaced via `GET /agents/{id}/retrieval-health`.
+
+*Wave 3 — Failure-triage flywheel:*
+
+- OPS-09 — `GET /agents/{id}/traces?status=failing` service+endpoint surfacing failing production turns (Gatekeeper/Auditor `fail`/`ungrounded`/`partial` from `job_events`) with the customer turn, agent turn, and judge rationale.
+- OPS-10 — `POST /agents/{id}/traces/{trace_id}/grade` (filed | held | dismissed) persisting the operator grade + bench tally; a `filed` trace cannot be withdrawn (TERRARIUM law).
+- OPS-11 — `promote_trace_to_scenario` Celery task (acks_late + idempotent; tenant_id in args, conn_str at runtime) inserting a filed trace into `eval_scenarios` with `source='production'` + `origin_trace_id`, incrementing the born-in-production count.
+- OPS-12 — Add a `provenance` column to `eval_scenarios` (origin trace-id / finding-id / authored) and surface born-in-production vs authored counts in the eval-runs response (the ORRERY ledger).
+
+*Wave 4 — Red-team programme + prompt versioning:*
+
+- OPS-13 — `red_team_strategies` + `red_team_probes` tenant tables + coverage rollup, so strategies/probes/coverage are first-class queryable objects (not a per-run JSON blob), via `GET /agents/{id}/red-team/programme`.
+- OPS-14 — `red_team_findings` tenant table (one row per finding: severity, status) replacing the embedded findings JSON; containing/closing a critical finding files it into `eval_scenarios` (`source='red_team'`, provenance = finding-id) — the same flywheel a complaint feeds.
+- OPS-15 — Wire the critical-finding gate-block to the real deploy gate: assert `_fetch_red_team_summary_sync` (`deployment.py:154`) drives `run_deployment_checklist` → `recommendation='block'`, so a live red-team critical finding makes `POST /approve-deployment` return 422.
+- OPS-16 — `prompt_versions` table capturing every soul edit as an immutable version; `GET /agents/{id}/prompt-versions` + diff, `POST .../canary` (percent routing chosen at turn dispatch in `run_agent_turn`), and `POST .../rollback` (`patch_agent` no longer overwrites history).
+
+**Success criteria:**
+
+1. A completed production turn writes a `turn_metrics` row and a Langfuse v4 trace; `GET /agents/{id}/metrics` returns containment, escalation rate, CSAT/thumbs, p95 latency, and cost/session computed from stored rows — no mock data.
+2. `GET /agents/{id}/retrieval-health` returns recall@k, nDCG@10, reranker lift, context-window utilization, compaction ratio, citation coverage, and index staleness, each computed from stored `retrieval_metrics` rows.
+3. An operator grades a failing production trace `filed`; `promote_trace_to_scenario` inserts it into `eval_scenarios` with `source='production'` + `origin_trace_id`, the born-in-production count increments, and the scenario appears in the **next eval run tagged born-in-production**; a filed trace cannot be withdrawn.
+4. Red-team strategies/probes/coverage and per-finding severity are queryable rows; containing a critical finding files a `source='red_team'` scenario, and a live critical finding sets the deploy checklist to `block` so `POST /approve-deployment` returns 422.
+5. Editing a soul writes an immutable `prompt_versions` row; the versions list + diff render, a canary set to a percentage routes that share of turns to the new version, and rollback restores the prior version — history is never overwritten.
+
+**Depends on:** Phase 20 (the Gotham operations room that consumes this data), Phase 6 (eval system — `eval_runs`/`eval_scenarios`), Phase 7 (red team — `red_team_runs`), Phase 10 (observability — alerts + Langfuse v4).
+
+**Plans:** 0 — run /gsd-plan-phase 21
+
 ---
 
 *Roadmap created: 2026-05-12*
 *Last updated: 2026-05-29 — Phase 12 host pivot (no credit card): Oracle ARM VM + Caddy/DuckDNS TLS (D-01/D-02/D-05) superseded by local Windows PC + Cloudflare quick tunnel. 12-05/12-06 re-planned in place (tunnel bring-up + live gate); 12-01/02/03/04 unchanged. The VM/systemd/Caddy deploy artifacts (12-04) are retained as the AWS-VM reference for ADR 0001. Still 6 plans / 3 waves; all D-01..D-15 (as amended) covered.*
 *Updated 2026-06-28 — Phase 13 added (Production Hosting and Durable Deployment): turns "deploy" from a control-DB flag into a durable always-on multi-tenant serving substrate + working self-serve embed. Four waves (PROD-01..PROD-15): durable managed hosting, CDN widget + working embed snippet, object storage for uploads, concurrency-safe horizontal workers. Executes the ADR-0001 D-14 env seam onto always-on infra. Out of scope: Neon project-cap/Aurora migration and the Post-M10 transactional/A2A/MCP security layers. Not planned yet — run /gsd-plan-phase 13.*
+*Updated 2026-07-15 — Milestone v1.2 added (Phases 20–21). Phase 20: frontend cutover from the retired dusk/skyline admin UI to the Gotham "Bone on Graphite" console (UI2-01..UI2-08; pure re-skin+re-IA, provisioning flow preserved). Phase 21: agent-management backend completion (OPS-01..OPS-16) closing the non-provisioning E2E gaps in AGENT-MGMT-GAPS.md — live-performance metrics, RAG-health instrumentation, the failure-triage flywheel, first-class red-team programme, and prompt versioning. Both unplanned — run /gsd-plan-phase 20 / 21.*
