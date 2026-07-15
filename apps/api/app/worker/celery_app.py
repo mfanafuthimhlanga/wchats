@@ -108,6 +108,8 @@ celery_app.conf.update(
         "app.worker.tasks.runtime.retrieval_eval",
         # Phase 21 (OPS-08): index staleness / embedding-drift scan (pipeline queue)
         "app.worker.tasks.pipeline.staleness",
+        # Phase 21 (OPS-11): promote-trace-to-scenario flywheel task (runtime queue)
+        "app.worker.tasks.runtime.bench",
     ],
 
     # --- Queue topology -------------------------------------------------

@@ -246,6 +246,70 @@ def generate_eval_suite_for_agent(
 
 
 # ---------------------------------------------------------------------------
+# OPS-11/OPS-14: shared provenance-scenario insert path
+# ---------------------------------------------------------------------------
+
+
+def insert_provenance_scenario(
+    conn,
+    source: str,
+    question: str,
+    reference_answer: str,
+    retrieved_contexts: list,
+    provenance: str | None,
+    origin_trace_id: str | None,
+) -> str:
+    """Insert one eval_scenarios row carrying provenance metadata.
+
+    Shared insertion path for both the production promote flow (OPS-11,
+    app.worker.tasks.runtime.bench.promote_trace_to_scenario) and the
+    red-team finding-file flow (OPS-14, 21-08) — both callers pass an
+    already-open psycopg2 connection so the caller controls the transaction
+    (e.g. wrapping an idempotency pre-check + this insert in one commit).
+
+    Requires migration 0011 (widened source CHECK + provenance/origin_trace_id
+    columns) to already be applied — inserting source='production' or
+    source='red_team' before that migration raises psycopg2.errors.CheckViolation
+    (21-RESEARCH.md Pitfall 2).
+
+    Args:
+        conn: An open psycopg2 connection. This function does NOT commit or
+            close it — the caller owns the transaction lifecycle.
+        source: One of 'generated' | 'mined' | 'production' | 'red_team'.
+        question: The scenario's question text.
+        reference_answer: The scenario's reference answer text.
+        retrieved_contexts: List of context strings/dicts (stored as JSONB).
+        provenance: Human-readable origin tag (e.g. the trace_id or finding_id
+            that produced this scenario).
+        origin_trace_id: Structured trace/job id — used by callers for the
+            idempotency pre-check on repeat promotion/file attempts.
+
+    Returns:
+        The new scenario's UUID (str).
+    """
+    scenario_id = str(uuid.uuid4())
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO eval_scenarios
+              (id, source, question, reference_answer, retrieved_contexts,
+               provenance, origin_trace_id, created_at)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, NOW())
+            """,
+            (
+                scenario_id,
+                source,
+                question,
+                reference_answer,
+                json.dumps(retrieved_contexts),
+                provenance,
+                origin_trace_id,
+            ),
+        )
+    return scenario_id
+
+
+# ---------------------------------------------------------------------------
 # Task 2: Production conversation miner (EVL-03) — D-15/D-16
 # ---------------------------------------------------------------------------
 
