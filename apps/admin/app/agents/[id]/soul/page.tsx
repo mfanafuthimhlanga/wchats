@@ -5,6 +5,28 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
 import { X, Plus } from 'lucide-react'
 
+/**
+ * The soul editor — `/agents/[id]/soul` (UI-SPEC S6.5, UI2-04, ported from
+ * prototypes/gotham/soul.html). Two-column `.soul` grid: the form (Identity,
+ * Temperament dials, Rules) on the left, the sticky "object" — the real,
+ * live-regenerated system-prompt preview — on the right.
+ *
+ * Design-law confinement fix (must-fix 3 / UI-SPEC §5.3): soul.html mounts
+ * the three.js VESSEL specimen in `#scene` next to the Temperament dials.
+ * three.js is confined to landing/auth only in this build — that mount is
+ * DROPPED here and replaced with a CSS-only bar readout (`.scene-fallback`)
+ * that reflects the same three dial values without WebGL/CDN surface.
+ *
+ * Field mapping (UI-SPEC §6.5): the three Warmth/Rigor/Candor dials do not
+ * get new backend columns (`AgentSoulUpdate` has no such fields — see
+ * apps/api/app/schemas/agent.py). Their band descriptions compose into the
+ * EXISTING `soul_voice` field on save, so `PATCH /api/v1/agents/{id}` keeps
+ * sending exactly the same field set the previous build sent. On load, the
+ * dials are seeded back from `soul_voice` when it matches the generated
+ * shape; otherwise they default to a neutral 50/50/50 (see Deviations in
+ * 20-09-SUMMARY.md for the tradeoff this implies for pre-existing agents).
+ */
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -18,12 +40,68 @@ interface SoulData {
 }
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
-type ListItem = { id: string; value: string }
+type DialKey = 'warmth' | 'rigor' | 'candor'
 
 // ---------------------------------------------------------------------------
-// buildSystemPromptPreview — TypeScript port of agent_prompt.py build_system_prompt
-// This is a client-side live preview only (not an RPC call). Match Python output
-// closely enough for the preview to be useful.
+// Temperament — the three dials, in their own words (UI-SPEC §6.5: a
+// describing sentence that changes in 3 bands, 0-33/34-66/67-100).
+// ---------------------------------------------------------------------------
+
+const DIAL_KEYS: DialKey[] = ['warmth', 'rigor', 'candor']
+
+const BANDS: Record<DialKey, [string, string, string]> = {
+  warmth: [
+    'Answers stay short and neutral. No pleasantries, no small talk.',
+    'Courteous and clear. One line of warmth, then the answer.',
+    "Greets like a regular and mirrors the customer's tone.",
+  ],
+  rigor: [
+    'Answers from what it knows. Cites a source only when asked.',
+    'Cites the source document for any price, time, or policy claim.',
+    'Cites a source for every factual claim, and refuses to answer if none exists.',
+  ],
+  candor: [
+    'Gives its best answer. Does not volunteer its own uncertainty.',
+    'Says when it is unsure, and offers to check with a person.',
+    'States plainly when it does not know, and hands off to a person unasked.',
+  ],
+}
+
+function band(v: number): 0 | 1 | 2 {
+  return v < 34 ? 0 : v < 67 ? 1 : 2
+}
+
+// Composes the three dial readings into the free-text `soul_voice` field —
+// the only backend slot Temperament has to live in (do not invent new soul
+// fields, UI-SPEC §6.5).
+function buildVoiceFromDials(warmth: number, rigor: number, candor: number): string {
+  return (
+    `Warmth ${warmth}/100 — ${BANDS.warmth[band(warmth)]} ` +
+    `Rigor ${rigor}/100 — ${BANDS.rigor[band(rigor)]} ` +
+    `Candor ${candor}/100 — ${BANDS.candor[band(candor)]}`
+  )
+}
+
+// Best-effort reverse parse so re-opening the editor after a save made here
+// restores the same dial positions. Voice text written before this rebuild
+// (free-form, no "Warmth N/100" markers) falls back to the neutral default.
+function parseDialsFromVoice(
+  voice: string | null | undefined
+): { warmth: number; rigor: number; candor: number } | null {
+  if (!voice) return null
+  const m = voice.match(/Warmth (\d{1,3})\/100.*Rigor (\d{1,3})\/100.*Candor (\d{1,3})\/100/)
+  if (!m) return null
+  const clamp = (n: number) => Math.min(100, Math.max(0, n))
+  return { warmth: clamp(+m[1]), rigor: clamp(+m[2]), candor: clamp(+m[3]) }
+}
+
+// ---------------------------------------------------------------------------
+// buildSystemPromptPreview — TypeScript port of agent_prompt.py
+// build_system_prompt. This is a client-side live preview only (not an RPC
+// call), but its shape matches the real backend template line-for-line
+// ("Voice and tone: {voice}") so the artifact pane shows the actual prompt
+// the save action will persist (UI-SPEC §6.5 functional-slot rule) — not an
+// invented "Temperament:" block that would diverge from the real output.
 // ---------------------------------------------------------------------------
 
 function buildSystemPromptPreview(soul: SoulData): string {
@@ -60,25 +138,125 @@ function buildSystemPromptPreview(soul: SoulData): string {
   ].join('\n')
 }
 
+function formatStamp(d: Date): string {
+  const p = (x: number) => String(x).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
 // ---------------------------------------------------------------------------
 // Form options
 // ---------------------------------------------------------------------------
 
-const ROLE_OPTIONS = [
-  'Customer Support',
-  'Sales Qualification',
-  'Internal Helpdesk',
-  'Custom...',
-]
+const ROLE_OPTIONS = ['Customer Support', 'Sales Qualification', 'Internal Helpdesk', 'Custom...']
 
-const LABEL_STYLE: React.CSSProperties = {
-  display: 'block',
-  fontWeight: 600,
-  fontSize: '10.5px',
-  textTransform: 'uppercase' as const,
-  letterSpacing: '0.12em',
-  color: 'var(--text-3)',
-  marginBottom: '6px',
+// ---------------------------------------------------------------------------
+// RuleList — Do / Do-not row list (UI-SPEC §6.5: dynamic add/remove rows,
+// commit-on-blur/Enter, discard-on-Escape — ported from soul.html's
+// makeRow()/addRow()/removeRow()).
+// ---------------------------------------------------------------------------
+
+function RuleList({
+  label,
+  hint,
+  items,
+  onAdd,
+  onRemove,
+}: {
+  label: string
+  hint: string
+  items: string[]
+  onAdd: (value: string) => void
+  onRemove: (index: number) => void
+}) {
+  const [drafting, setDrafting] = useState(false)
+  const [draftValue, setDraftValue] = useState('')
+  const draftRef = useRef<HTMLInputElement>(null)
+  const addBtnRef = useRef<HTMLButtonElement>(null)
+  const settledRef = useRef(false)
+
+  useEffect(() => {
+    if (drafting) draftRef.current?.focus()
+  }, [drafting])
+
+  const startAdd = () => {
+    settledRef.current = false
+    setDraftValue('')
+    setDrafting(true)
+  }
+
+  const commit = () => {
+    if (settledRef.current) return
+    settledRef.current = true
+    const v = draftValue.trim()
+    setDrafting(false)
+    if (v) onAdd(v)
+    addBtnRef.current?.focus()
+  }
+
+  const discard = () => {
+    if (settledRef.current) return
+    settledRef.current = true
+    setDrafting(false)
+    addBtnRef.current?.focus()
+  }
+
+  return (
+    <div>
+      <label>
+        {label}
+        <span className="rule-hint">{hint}</span>
+      </label>
+      <ul className="rule-list" aria-label={label}>
+        {items.map((text, i) => (
+          <li className="item" key={`${label}-${i}`}>
+            <span className="mono item-text">{text}</span>
+            <button
+              type="button"
+              className="item-x"
+              aria-label={`Remove ${label.toLowerCase()} item ${i + 1}`}
+              onClick={() => onRemove(i)}
+            >
+              <X size={14} aria-hidden />
+            </button>
+          </li>
+        ))}
+        {drafting && (
+          <li className="item">
+            <input
+              ref={draftRef}
+              type="text"
+              className="mono item-input"
+              value={draftValue}
+              onChange={(e) => setDraftValue(e.target.value)}
+              onBlur={commit}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  commit()
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  discard()
+                }
+              }}
+              placeholder={hint}
+              aria-label={`New ${label.toLowerCase()} rule`}
+            />
+            <button type="button" className="item-x" aria-label="Discard new item" onClick={discard}>
+              <X size={14} aria-hidden />
+            </button>
+          </li>
+        )}
+      </ul>
+      {items.length === 0 && !drafting && <p className="list-empty">No rules yet.</p>}
+      {!drafting && (
+        <button ref={addBtnRef} type="button" className="btn btn-ghost add" onClick={startAdd}>
+          <Plus size={14} aria-hidden />
+          Add item
+        </button>
+      )}
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -95,15 +273,23 @@ export default function SoulEditorPage({
   const { getToken, isLoaded, isSignedIn } = useAuth()
   const queryClient = useQueryClient()
 
-  // Soul fields
+  // Identity
   const [name, setName] = useState('')
   const [soulRole, setSoulRole] = useState('')
-  const [soulVoice, setSoulVoice] = useState('')
-  const [soulDoList, setSoulDoList] = useState<ListItem[]>([{ id: crypto.randomUUID(), value: '' }])
-  const [soulDonotList, setSoulDonotList] = useState<ListItem[]>([{ id: crypto.randomUUID(), value: '' }])
+
+  // Temperament dials — client-side only; composed into soul_voice on save.
+  const [warmth, setWarmth] = useState(50)
+  const [rigor, setRigor] = useState(50)
+  const [candor, setCandor] = useState(50)
+
+  // Rules
+  const [soulDoList, setSoulDoList] = useState<string[]>([])
+  const [soulDonotList, setSoulDonotList] = useState<string[]>([])
 
   // Save state machine
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
+  const [dirty, setDirty] = useState(false)
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null)
 
   // Load error — set when the initial agent fetch fails or auth is missing
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -111,23 +297,16 @@ export default function SoulEditorPage({
   // Validation touch tracking — only show errors after blur or save attempt
   const [nameTouched, setNameTouched] = useState(false)
 
-  // Refs for auto-focus on newly added list rows
-  const newDoRef = useRef<HTMLInputElement>(null)
-  const newDonotRef = useRef<HTMLInputElement>(null)
-  const prevDoLength = useRef(soulDoList.length)
-  const prevDonotLength = useRef(soulDonotList.length)
-
-  // Tracks whether the form has been seeded from the agent query. Once seeded,
-  // later query refreshes (e.g. the refetch triggered by invalidateQueries on
-  // save) must NOT overwrite in-progress user edits.
+  // Tracks whether the form has been seeded from the agent query. Once
+  // seeded, later query refreshes (e.g. the refetch triggered by
+  // invalidateQueries on save) must NOT overwrite in-progress user edits.
   const seeded = useRef(false)
 
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ''
 
   // ---------------------------------------------------------------------------
-  // Load agent — TanStack Query. Shares the ['agent', id] cache with the layout
-  // and the journey/configure pages, so this is an instant cache hit on mount
-  // (no extra network request beyond what the layout already issued).
+  // Load agent — TanStack Query. Shares the ['agent', id] cache with the
+  // layout and the operations-room/ingest pages.
   // ---------------------------------------------------------------------------
 
   const agentQuery = useQuery<SoulData & { status?: string }>({
@@ -145,18 +324,15 @@ export default function SoulEditorPage({
     staleTime: 30_000,
   })
 
-  // Surface a load error in the form panel when the query fails.
   useEffect(() => {
     if (agentQuery.isError) {
       setLoadError(
-        isLoaded && !isSignedIn
-          ? 'Not authenticated. Please sign in.'
-          : 'Failed to load agent. Please refresh.'
+        isLoaded && !isSignedIn ? 'Not authenticated. Please sign in.' : 'Failed to load agent. Please refresh.'
       )
     }
   }, [agentQuery.isError, isLoaded, isSignedIn])
 
-  // Populate soul form fields once the agent data first arrives. Guarded by the
+  // Populate form fields once the agent data first arrives. Guarded by the
   // `seeded` ref so subsequent query refreshes don't clobber user edits.
   useEffect(() => {
     const data = agentQuery.data
@@ -164,64 +340,40 @@ export default function SoulEditorPage({
     seeded.current = true
     setName(data.name || '')
     setSoulRole(data.soul_role || '')
-    setSoulVoice(data.soul_voice || '')
-    setSoulDoList(
-      data.soul_do_list && data.soul_do_list.length > 0
-        ? data.soul_do_list.map((v) => ({ id: crypto.randomUUID(), value: v }))
-        : [{ id: crypto.randomUUID(), value: '' }]
-    )
-    setSoulDonotList(
-      data.soul_donot_list && data.soul_donot_list.length > 0
-        ? data.soul_donot_list.map((v) => ({ id: crypto.randomUUID(), value: v }))
-        : [{ id: crypto.randomUUID(), value: '' }]
-    )
+    setSoulDoList(data.soul_do_list ?? [])
+    setSoulDonotList(data.soul_donot_list ?? [])
+    const parsed = parseDialsFromVoice(data.soul_voice)
+    if (parsed) {
+      setWarmth(parsed.warmth)
+      setRigor(parsed.rigor)
+      setCandor(parsed.candor)
+    }
   }, [agentQuery.data])
 
   // ---------------------------------------------------------------------------
-  // Auto-focus newly added list rows
-  // ---------------------------------------------------------------------------
-
-  useEffect(() => {
-    if (soulDoList.length > prevDoLength.current && newDoRef.current) {
-      newDoRef.current.focus()
-    }
-    prevDoLength.current = soulDoList.length
-  }, [soulDoList.length])
-
-  useEffect(() => {
-    if (soulDonotList.length > prevDonotLength.current && newDonotRef.current) {
-      newDonotRef.current.focus()
-    }
-    prevDonotLength.current = soulDonotList.length
-  }, [soulDonotList.length])
-
-  // ---------------------------------------------------------------------------
-  // Live preview — recomputed on every field change
+  // Live preview — recomputed on every field/dial change
   // ---------------------------------------------------------------------------
 
   const preview = buildSystemPromptPreview({
     name,
     soul_role: soulRole,
-    soul_voice: soulVoice,
-    soul_do_list: soulDoList.map((item) => item.value),
-    soul_donot_list: soulDonotList.map((item) => item.value),
+    soul_voice: buildVoiceFromDials(warmth, rigor, candor),
+    soul_do_list: soulDoList,
+    soul_donot_list: soulDonotList,
   })
 
   // ---------------------------------------------------------------------------
-  // Save handler — PATCH /api/v1/agents/{id}
+  // Save handler — PATCH /api/v1/agents/{id} — SAME payload shape as before
   // ---------------------------------------------------------------------------
 
   const handleSave = async () => {
     setSaveStatus('saving')
     const body = {
       name: name || undefined,
-      // Always send the displayed role value — if the user never touched the
-      // dropdown the state is '' but we should persist the shown default.
       soul_role: soulRole || ROLE_OPTIONS[0],
-      soul_voice: soulVoice || undefined,
-      // Strip empty items client-side before PATCH (server also strips)
-      soul_do_list: soulDoList.map((item) => item.value).filter((s) => s.trim().length > 0),
-      soul_donot_list: soulDonotList.map((item) => item.value).filter((s) => s.trim().length > 0),
+      soul_voice: buildVoiceFromDials(warmth, rigor, candor),
+      soul_do_list: soulDoList.filter((s) => s.trim().length > 0),
+      soul_donot_list: soulDonotList.filter((s) => s.trim().length > 0),
     }
     try {
       const token = await getToken()
@@ -232,37 +384,50 @@ export default function SoulEditorPage({
       const res = await fetch(`${apiBase}/api/v1/agents/${id}`, {
         method: 'PATCH',
         headers: {
-          'Authorization': `Bearer ${token}`,
+          Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      // Invalidate the shared ['agent', id] cache so the configure overview
-      // page reflects soulSaved = true immediately on back-navigation.
       await queryClient.invalidateQueries({ queryKey: ['agent', id] })
       setSaveStatus('saved')
-      // Intentionally do NOT reset to 'idle' — keep persistent saved state + show Next CTA
+      setDirty(false)
+      setLastSavedAt(new Date())
     } catch {
       setSaveStatus('error')
     }
   }
 
   // ---------------------------------------------------------------------------
-  // List helpers
+  // Field/dial change handlers — mark the savebar dirty once per edit burst
   // ---------------------------------------------------------------------------
 
-  const addDoItem = () => setSoulDoList((l) => [...l, { id: crypto.randomUUID(), value: '' }])
-  const removeDoItem = (id: string) =>
-    setSoulDoList((l) => l.filter((item) => item.id !== id))
-  const updateDoItem = (id: string, val: string) =>
-    setSoulDoList((l) => l.map((item) => (item.id === id ? { ...item, value: val } : item)))
+  const touch = () => setDirty(true)
 
-  const addDonotItem = () => setSoulDonotList((l) => [...l, { id: crypto.randomUUID(), value: '' }])
-  const removeDonotItem = (id: string) =>
-    setSoulDonotList((l) => l.filter((item) => item.id !== id))
-  const updateDonotItem = (id: string, val: string) =>
-    setSoulDonotList((l) => l.map((item) => (item.id === id ? { ...item, value: val } : item)))
+  const setDial = (key: DialKey, value: number) => {
+    if (key === 'warmth') setWarmth(value)
+    else if (key === 'rigor') setRigor(value)
+    else setCandor(value)
+    touch()
+  }
+
+  const addDoItem = (value: string) => {
+    setSoulDoList((l) => [...l, value])
+    touch()
+  }
+  const removeDoItem = (index: number) => {
+    setSoulDoList((l) => l.filter((_, i) => i !== index))
+    touch()
+  }
+  const addDonotItem = (value: string) => {
+    setSoulDonotList((l) => [...l, value])
+    touch()
+  }
+  const removeDonotItem = (index: number) => {
+    setSoulDonotList((l) => l.filter((_, i) => i !== index))
+    touch()
+  }
 
   // ---------------------------------------------------------------------------
   // Derived state
@@ -270,399 +435,327 @@ export default function SoulEditorPage({
 
   const nameInvalid = nameTouched && !name.trim()
   const canSave = name.trim().length > 0 && saveStatus !== 'saving'
-  const voiceWarning = !soulVoice.trim()
+  const dialValues: Record<DialKey, number> = { warmth, rigor, candor }
+
+  const savebarText =
+    saveStatus === 'saving'
+      ? 'Saving…'
+      : saveStatus === 'error'
+        ? 'Save failed — check API key and connection'
+        : dirty
+          ? 'Unsaved changes'
+          : lastSavedAt
+            ? `Last saved ${formatStamp(lastSavedAt)}`
+            : 'Not yet saved'
+
+  const buttonLabel =
+    saveStatus === 'saving'
+      ? 'Saving...'
+      : saveStatus === 'saved'
+        ? 'Next: Upload documents →'
+        : saveStatus === 'error'
+          ? 'Error — retry'
+          : 'Save soul'
 
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
 
   return (
-    // No outer minHeight wrapper — the shared /agents/[id]/layout.tsx provides
-    // the page container (JourneyStepper on the left, this content on the right).
-    <div style={{ display: 'flex', flex: 1, overflow: 'hidden', fontFamily: 'var(--font-sans)' }}>
-      {/* Two-column body — preview hidden below 1100px */}
-      {/* Form Panel */}
-      <div className="glass-strong" style={{
-        flex: 1,
-        padding: '32px',
-        maxWidth: '600px',
-        overflowY: 'auto',
-        borderRadius: 'var(--radius-md)',
-        margin: '32px',
-      }}>
-        <h1
+    <div className="page">
+      <style dangerouslySetInnerHTML={{ __html: PAGE_CSS }} />
+
+      <header className="page-head">
+        <div className="row">
+          <div>
+            <h1>Soul</h1>
+            <p className="sub">
+              Who the agent is before it knows anything. Every change here rewrites the system prompt beside it.
+            </p>
+          </div>
+          <div className="ident">
+            <p className="label">Agent</p>
+            <p>{agentQuery.data?.name ?? 'Loading agent…'}</p>
+            <p className="mono ident-id">{id}</p>
+          </div>
+        </div>
+      </header>
+
+      {loadError && (
+        <div
+          role="alert"
           style={{
-            fontSize: '20px',
-            fontWeight: 700,
-            color: 'var(--text-1)',
-            marginBottom: '24px',
+            padding: '12px 16px',
+            marginBottom: '20px',
+            background: 'var(--fail-dim)',
+            border: '1px solid color-mix(in oklch, var(--fail) 32%, transparent)',
+            borderRadius: 'var(--r-panel)',
+            fontSize: '14px',
+            color: 'var(--fail)',
           }}
         >
-          <span
-            style={{
-              fontFamily: 'var(--font-display)',
-              fontStyle: 'italic',
-              fontWeight: 300,
-              color: 'var(--accent)',
-              fontVariationSettings: '"opsz" 144, "SOFT" 100',
-            }}
-          >
-            {agentQuery.data?.name ?? 'Agent'}
-          </span>
-          {' '}— Soul
-        </h1>
+          {loadError}
+        </div>
+      )}
 
-          {loadError && (
-            <div
-              role="alert"
-              style={{
-                padding: '12px 16px',
-                marginBottom: '20px',
-                background: 'var(--red-bg)',
-                border: '1px solid rgba(248,113,113,0.3)',
-                borderRadius: 'var(--radius-xs)',
-                fontSize: '14px',
-                color: 'var(--red)',
-              }}
-            >
-              {loadError}
+      <div className="soul">
+        {/* ═══ the form ═══════════════════════════════════════════════ */}
+        <div className="form-col">
+          <section className="section" aria-labelledby="identity-h">
+            <div className="section-head">
+              <h2 className="label" id="identity-h">
+                Identity
+              </h2>
             </div>
-          )}
 
-          {/* Agent Name */}
-          <div style={{ marginBottom: '20px' }}>
-            <label htmlFor="agentName" style={LABEL_STYLE}>
-              Agent Name <span style={{ color: 'var(--red)' }}>*</span>
-            </label>
-            <input
-              id="agentName"
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onBlur={() => setNameTouched(true)}
-              placeholder="e.g. SupportBot"
-              maxLength={60}
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                border: `1px solid ${nameInvalid ? 'var(--red)' : 'var(--border)'}`,
-                borderRadius: 'var(--radius-xs)',
-                fontSize: '14px',
-                fontFamily: 'var(--font-sans)',
-                background: 'var(--well)',
-                color: 'var(--text-1)',
-                outline: 'none',
-              }}
-            />
-            {nameInvalid && (
-              <p role="alert" style={{ fontSize: '12px', color: 'var(--red)', marginTop: '4px' }}>
-                Agent name is required.
-              </p>
-            )}
-          </div>
+            <div className="field">
+              <label htmlFor="f-name">
+                Name <span style={{ color: 'var(--fail)' }}>*</span>
+              </label>
+              <input
+                id="f-name"
+                type="text"
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value)
+                  touch()
+                }}
+                onBlur={() => setNameTouched(true)}
+                placeholder="e.g. SupportBot"
+                maxLength={60}
+                style={nameInvalid ? { borderColor: 'var(--fail)' } : undefined}
+              />
+              {nameInvalid && (
+                <p role="alert" className="help" style={{ color: 'var(--fail)' }}>
+                  Agent name is required.
+                </p>
+              )}
+            </div>
 
-          {/* Role */}
-          <div style={{ marginBottom: '20px' }}>
-            <label htmlFor="soulRole" style={LABEL_STYLE}>Role</label>
-            <select
-              id="soulRole"
-              value={soulRole || ROLE_OPTIONS[0]}
-              onChange={(e) => setSoulRole(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-xs)',
-                fontSize: '14px',
-                fontFamily: 'var(--font-sans)',
-                background: 'var(--well)',
-                color: 'var(--text-1)',
-                outline: 'none',
-                cursor: 'pointer',
-              }}
-            >
-              {ROLE_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
-            </select>
-          </div>
-
-          {/* Voice & Tone */}
-          <div style={{ marginBottom: '20px' }}>
-            <label htmlFor="soulVoice" style={LABEL_STYLE}>Voice &amp; Tone</label>
-            <textarea
-              id="soulVoice"
-              value={soulVoice}
-              onChange={(e) => setSoulVoice(e.target.value)}
-              placeholder="e.g. empathetic, clear, and never condescending"
-              maxLength={500}
-              rows={3}
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-xs)',
-                fontSize: '14px',
-                fontFamily: 'var(--font-sans)',
-                background: 'var(--well)',
-                color: 'var(--text-1)',
-                outline: 'none',
-                resize: 'vertical',
-                minHeight: '80px',
-              }}
-            />
-            {voiceWarning && (
-              <p style={{ fontSize: '12px', color: 'var(--gold)', marginTop: '4px' }}>
-                A voice description improves agent consistency.
-              </p>
-            )}
-          </div>
-
-          {/* Do List */}
-          <div style={{ marginBottom: '20px' }}>
-            <label style={LABEL_STYLE}>
-              Do list
-              <span
-                style={{ fontWeight: 400, color: 'var(--text-3)', marginLeft: '8px', fontSize: '11px', textTransform: 'none', letterSpacing: 'normal' }}
-              >
-                What the agent must always do
-              </span>
-            </label>
-            {soulDoList.map((item, i) => (
-              <div
-                key={item.id}
-                style={{ display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center' }}
-              >
-                <input
-                  ref={i === soulDoList.length - 1 ? newDoRef : undefined}
-                  type="text"
-                  value={item.value}
-                  onChange={(e) => updateDoItem(item.id, e.target.value)}
-                  placeholder="e.g. verify account before discussing billing"
-                  style={{
-                    flex: 1,
-                    padding: '10px 12px',
-                    border: '1px solid var(--border)',
-                    borderRadius: 'var(--radius-xs)',
-                    fontSize: '14px',
-                    fontFamily: 'var(--font-sans)',
-                    background: 'var(--well)',
-                    color: 'var(--text-1)',
-                    outline: 'none',
-                  }}
-                />
-                <button
-                  onClick={() => removeDoItem(item.id)}
-                  aria-label={`Remove do item ${i + 1}`}
-                  style={{
-                    minWidth: '44px',
-                    minHeight: '44px',
-                    width: '44px',
-                    height: '44px',
-                    background: 'var(--red-bg)',
-                    border: '1px solid rgba(248,113,113,0.3)',
-                    borderRadius: 'var(--radius-xs)',
-                    cursor: 'pointer',
-                    color: 'var(--red)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <X size={16} aria-hidden />
-                </button>
-              </div>
-            ))}
-            <button
-              onClick={addDoItem}
-              style={{
-                minWidth: '44px',
-                minHeight: '44px',
-                padding: '10px 16px',
-                background: 'var(--accent-dim)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-xs)',
-                cursor: 'pointer',
-                color: 'var(--accent)',
-                fontSize: '14px',
-                fontWeight: 500,
-                fontFamily: 'var(--font-sans)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-              }}
-            >
-              <Plus size={14} aria-hidden />
-              Add do item
-            </button>
-          </div>
-
-          {/* Do Not List */}
-          <div style={{ marginBottom: '32px' }}>
-            <label style={LABEL_STYLE}>
-              Do-not list
-              <span
-                style={{ fontWeight: 400, color: 'var(--text-3)', marginLeft: '8px', fontSize: '11px', textTransform: 'none', letterSpacing: 'normal' }}
-              >
-                Behaviors the agent must avoid
-              </span>
-            </label>
-            {soulDonotList.map((item, i) => (
-              <div
-                key={item.id}
-                style={{ display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center' }}
-              >
-                <input
-                  ref={i === soulDonotList.length - 1 ? newDonotRef : undefined}
-                  type="text"
-                  value={item.value}
-                  onChange={(e) => updateDonotItem(item.id, e.target.value)}
-                  placeholder="e.g. promise refunds without manager approval"
-                  style={{
-                    flex: 1,
-                    padding: '10px 12px',
-                    border: '1px solid var(--border)',
-                    borderRadius: 'var(--radius-xs)',
-                    fontSize: '14px',
-                    fontFamily: 'var(--font-sans)',
-                    background: 'var(--well)',
-                    color: 'var(--text-1)',
-                    outline: 'none',
-                  }}
-                />
-                <button
-                  onClick={() => removeDonotItem(item.id)}
-                  aria-label={`Remove do-not item ${i + 1}`}
-                  style={{
-                    minWidth: '44px',
-                    minHeight: '44px',
-                    width: '44px',
-                    height: '44px',
-                    background: 'var(--red-bg)',
-                    border: '1px solid rgba(248,113,113,0.3)',
-                    borderRadius: 'var(--radius-xs)',
-                    cursor: 'pointer',
-                    color: 'var(--red)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <X size={16} aria-hidden />
-                </button>
-              </div>
-            ))}
-            <button
-              onClick={addDonotItem}
-              style={{
-                minWidth: '44px',
-                minHeight: '44px',
-                padding: '10px 16px',
-                background: 'var(--accent-dim)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-xs)',
-                cursor: 'pointer',
-                color: 'var(--accent)',
-                fontSize: '14px',
-                fontWeight: 500,
-                fontFamily: 'var(--font-sans)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-              }}
-            >
-              <Plus size={14} aria-hidden />
-              Add do-not item
-            </button>
-          </div>
-
-          {/* Save Section */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-              {/* Once saved, the same button becomes the "Next" CTA: it navigates
-                  to the ingest step and keeps accent styling (not a disabled
-                  state). Before/while saving it performs the save action. */}
-              <button
-                onClick={saveStatus === 'saved' ? () => router.push(`/agents/${id}/ingest`) : handleSave}
-                disabled={saveStatus === 'saved' ? false : !canSave}
-                style={{
-                  padding: '12px 32px',
-                  minHeight: '44px',
-                  background: saveStatus === 'saved' || canSave ? 'var(--accent)' : 'var(--chip)',
-                  color: saveStatus === 'saved' || canSave ? 'var(--text-on-accent)' : 'var(--text-3)',
-                  border: 'none',
-                  borderRadius: 'var(--radius-xs)',
-                  cursor: saveStatus === 'saved' || canSave ? 'pointer' : 'not-allowed',
-                  fontSize: '15px',
-                  fontWeight: 600,
-                  fontFamily: 'var(--font-sans)',
-                  transition: 'background 0.15s',
+            <div className="field">
+              <label htmlFor="f-role">Role</label>
+              <select
+                id="f-role"
+                value={soulRole || ROLE_OPTIONS[0]}
+                onChange={(e) => {
+                  setSoulRole(e.target.value)
+                  touch()
                 }}
               >
-                {saveStatus === 'saving'
-                  ? 'Saving...'
-                  : saveStatus === 'saved'
-                  ? 'Next: Upload documents →'
-                  : saveStatus === 'error'
-                  ? 'Error — retry'
-                  : 'Save soul'}
-              </button>
-              {saveStatus === 'saved' && (
-                <span style={{ fontSize: '14px', color: 'var(--green)' }}>
-                  Changes saved successfully
-                </span>
-              )}
-              {saveStatus === 'error' && (
-                <span style={{ fontSize: '14px', color: 'var(--red)' }}>
-                  Save failed — check API key and connection
-                </span>
-              )}
+                {ROLE_OPTIONS.map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </select>
+              <p className="help">The role decides which documents the agent is allowed to reach for.</p>
             </div>
+          </section>
+
+          <section className="section" aria-labelledby="temperament-h">
+            <div className="section-head">
+              <h2 className="label" id="temperament-h">
+                Temperament
+              </h2>
+              <p className="mono head-note">Drag to reshape the agent</p>
+            </div>
+
+            <div className="temper">
+              <div className="dials">
+                {DIAL_KEYS.map((d) => (
+                  <div className="dial" key={d}>
+                    <div className="dial-head">
+                      <label htmlFor={`f-${d}`}>{d.charAt(0).toUpperCase() + d.slice(1)}</label>
+                      <span className="mono num dial-out">{dialValues[d]}</span>
+                    </div>
+                    <input
+                      type="range"
+                      id={`f-${d}`}
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={dialValues[d]}
+                      onChange={(e) => setDial(d, Number(e.target.value))}
+                      aria-describedby={`help-${d}`}
+                    />
+                    <p className="help" id={`help-${d}`}>
+                      {BANDS[d][band(dialValues[d])]}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Design-law confinement fix (must-fix 3): CSS-only fallback —
+                  no three.js specimen mount on this route. Bars reflect the
+                  live dial values with the same --live bone brightness used
+                  everywhere else, not a new hue (colour is a verdict). */}
+              <figure className="form-preview">
+                <div className="scene-fallback" aria-hidden="true">
+                  {DIAL_KEYS.map((d) => (
+                    <div className="scene-bar" key={d}>
+                      <div className="scene-bar-track">
+                        <div className="scene-bar-fill" style={{ height: `${dialValues[d]}%` }} />
+                      </div>
+                      <span className="scene-bar-label">{d.charAt(0).toUpperCase()}</span>
+                    </div>
+                  ))}
+                </div>
+                <figcaption className="label">Form</figcaption>
+              </figure>
+            </div>
+          </section>
+
+          <section className="section" aria-labelledby="rules-h">
+            <div className="section-head">
+              <h2 className="label" id="rules-h">
+                Rules
+              </h2>
+            </div>
+            <div className="rules">
+              <RuleList
+                label="Do"
+                hint="What the agent must always do"
+                items={soulDoList}
+                onAdd={addDoItem}
+                onRemove={removeDoItem}
+              />
+              <RuleList
+                label="Do not"
+                hint="Behaviors the agent must avoid"
+                items={soulDonotList}
+                onAdd={addDonotItem}
+                onRemove={removeDonotItem}
+              />
+            </div>
+          </section>
+
+          <div className="savebar tint">
+            <p className="saved-line" role="status">
+              <span className="mono">{savebarText}</span>
+              {dirty && <span className="chip chip-mute">Draft</span>}
+            </p>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={saveStatus === 'saved' ? false : !canSave}
+              onClick={saveStatus === 'saved' ? () => router.push(`/agents/${id}/ingest`) : handleSave}
+            >
+              {buttonLabel}
+            </button>
           </div>
         </div>
 
-        {/* Live Preview Panel — hidden at <1100px via inline media-query equivalent */}
-        <div
-          className="glass preview-panel"
-          style={{
-            width: '400px',
-            padding: '32px',
-            borderRadius: 'var(--radius-md)',
-            margin: '32px 32px 32px 0',
-            overflowY: 'auto',
-            flexShrink: 0,
-          }}
-        >
-          <h2 style={{ ...LABEL_STYLE, marginBottom: '16px' }}>
-            Live system prompt preview
-          </h2>
-          <pre
-            style={{
-              fontFamily: 'var(--font-mono)',
-              fontSize: '12px',
-              lineHeight: 1.65,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              color: 'var(--text-2)',
-              background: 'var(--well)',
-              padding: '16px',
-              borderRadius: 'var(--radius-xs)',
-              border: '1px solid var(--border-soft)',
-              margin: 0,
-            }}
-          >
-            {preview}
-          </pre>
-          <p
-            style={{
-              marginTop: '12px',
-              fontSize: '11px',
-              color: 'var(--text-3)',
-              lineHeight: 1.5,
-            }}
-          >
-            Preview updates live as you type. Exact output may vary slightly from
-            the deployed system prompt after citations and context injection.
-          </p>
+        {/* ═══ the artifact: the prompt this form actually produces ═════ */}
+        <div className="object">
+          <section className="section" aria-labelledby="prompt-h">
+            <div className="prompt-head">
+              <h2 className="label" id="prompt-h">
+                Live system prompt preview
+              </h2>
+              <p className="mono prompt-meta">
+                <span className="num">{preview.length}</span> characters
+              </p>
+            </div>
+            <pre className="well prompt-pre" id="prompt" tabIndex={0} role="region" aria-label="Generated system prompt">
+              {preview}
+            </pre>
+            <p className="help">
+              Preview updates live as you type. Exact output may vary slightly from the deployed system prompt after
+              citations and context injection.
+            </p>
+          </section>
         </div>
+      </div>
     </div>
   )
 }
+
+// ---------------------------------------------------------------------------
+// Page-scoped CSS — classes with no equivalent in the shared globals.css
+// Gotham port (they were page-local `<style>` rules in soul.html, not
+// app.css), following the same static dangerouslySetInnerHTML pattern used
+// by agents/[id]/page.tsx and agents/new/page.tsx.
+// ---------------------------------------------------------------------------
+const PAGE_CSS = `
+  .ident { display: grid; justify-items: end; gap: 5px; text-align: right; }
+  .ident-id { font-size: 12px; color: var(--ink-2); }
+  .head-note { font-size: 11px; color: var(--ink-3); }
+
+  .soul { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 48px; align-items: start; }
+  .form-col { min-width: 0; }
+  .form-col .section:first-of-type { margin-top: 0; padding-top: 0; border-top: none; }
+
+  .dial { padding: 16px 0; border-bottom: 1px solid var(--hairline-soft); }
+  .dial:last-of-type { border-bottom: none; }
+  .dial-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+  .dial-head label { margin-bottom: 0; }
+  .dial-out { font-size: 13px; color: var(--live); font-weight: 500; }
+  .dial .help { min-height: 2.6em; max-width: 56ch; }
+
+  .temper { display: grid; grid-template-columns: minmax(0, 1fr) 168px; gap: 32px; align-items: start; }
+  .dials { min-width: 0; }
+  .form-preview { margin: 0; display: grid; justify-items: center; gap: 8px; }
+
+  .scene-fallback {
+    position: relative; width: 168px; height: 168px;
+    border: 1px solid var(--hairline-soft); border-radius: var(--r-panel);
+    background: var(--well);
+    display: flex; align-items: flex-end; justify-content: center;
+    gap: 18px; padding: 18px 0 16px;
+  }
+  .scene-bar { display: flex; flex-direction: column-reverse; align-items: center; gap: 8px; height: 100%; }
+  .scene-bar-label { font-family: var(--mono); font-size: 9px; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.1em; }
+  .scene-bar-track { width: 10px; flex: 1; background: var(--hairline-strong); border-radius: 6px; display: flex; align-items: flex-end; overflow: hidden; }
+  .scene-bar-fill { width: 100%; background: var(--live); border-radius: 6px; transition: height 160ms ease; }
+
+  .rules { display: grid; gap: 30px; }
+  .rule-list { list-style: none; margin: 12px 0 0; padding: 0; }
+  .rule-hint { font-weight: 400; color: var(--ink-3); margin-left: 8px; font-size: 11px; text-transform: none; letter-spacing: normal; }
+  .item { display: flex; align-items: center; gap: 12px; padding: 9px 0 9px 2px; border-bottom: 1px solid var(--hairline-soft); }
+  .item-text, .item-input { flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.5; color: var(--ink); }
+  .item-input { background: transparent; border: none; border-radius: 0; padding: 0; font-family: var(--mono); }
+  .item-input:focus { outline: none; border: none; box-shadow: 0 1px 0 0 var(--live); }
+  .item-x {
+    flex: none; width: 26px; height: 26px;
+    display: grid; place-items: center;
+    background: transparent; border: 1px solid transparent; border-radius: var(--r-control);
+    color: var(--ink-3); cursor: pointer;
+    transition: color 140ms ease, background 140ms ease;
+  }
+  .item-x:hover { color: var(--seal-hot); background: var(--seal-dim); }
+  .list-empty { padding: 10px 0; font-size: 12.5px; color: var(--ink-3); }
+  .add { margin-top: 14px; }
+
+  .savebar {
+    position: sticky; bottom: 0; z-index: var(--z-strip);
+    display: flex; align-items: center; justify-content: space-between; gap: 20px;
+    margin-top: 34px; padding: 14px 0;
+    background: var(--bg); border-top: 1px solid var(--hairline);
+  }
+  .saved-line { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--ink-3); margin: 0; }
+
+  .object { position: sticky; top: 30px; }
+  .object .section:first-of-type { margin-top: 0; padding-top: 0; border-top: none; }
+
+  .prompt-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
+  .prompt-meta { font-size: 11px; color: var(--ink-3); margin: 0; }
+  .prompt-pre { margin: 0; white-space: pre-wrap; max-height: calc(100svh - 260px); overflow: auto; }
+  .prompt-pre:focus-visible { outline: 2px solid var(--live); outline-offset: 2px; }
+
+  @media (max-width: 820px) {
+    .temper { grid-template-columns: 1fr; }
+    .form-preview { justify-items: start; }
+  }
+  @media (max-width: 1000px) {
+    .soul { grid-template-columns: 1fr; gap: 34px; }
+    .object { position: static; }
+  }
+  @media (max-width: 900px) {
+    .savebar { bottom: 56px; }
+  }
+  @media (max-width: 720px) {
+    .page-head .row { flex-direction: column; }
+    .ident { justify-items: start; text-align: left; }
+    .savebar { flex-direction: column; align-items: stretch; gap: 12px; }
+  }
+`
