@@ -26,6 +26,17 @@ const ADMIN_ROOT = join(__dirname, '..')
 const SCAN_ROOTS = ['app', 'public'].map((d) => join(ADMIN_ROOT, d))
 const EXCLUDE_DIRS = new Set(['node_modules', '.next', '.git'])
 
+// Out-of-scope for the dusk cutover: the published customer-facing chat
+// widget bundle (a separate Preact package, built + copied here in 12-02 for
+// CDN delivery). It has its own standalone brand palette (coral/burgundy)
+// that is NOT the retired "Hillbrow at Dusk" admin theme -- 20-UI-SPEC.md §4
+// explicitly calls the real widget "a separate package, out of this phase's
+// scope." Its var names (--accent, --gold, --amber, --text-1..4, ...)
+// coincidentally collide with the forbidden-marker patterns below, which are
+// tuned for the admin console's retired tokens. Excluding this path avoids
+// false positives without weakening the gate for actual admin app code.
+const EXCLUDE_PATHS = [join(ADMIN_ROOT, 'public', 'wchats')]
+
 // Extensions whose *content* we grep. Everything else (png, ico, woff, ...)
 // is only checked by filename below -- reading binary asset bytes as text
 // would produce garbage matches.
@@ -113,6 +124,7 @@ function walk(dir, files = []) {
   for (const entry of entries) {
     if (EXCLUDE_DIRS.has(entry)) continue
     const full = join(dir, entry)
+    if (EXCLUDE_PATHS.includes(full)) continue
     const st = statSync(full)
     if (st.isDirectory()) {
       walk(full, files)
