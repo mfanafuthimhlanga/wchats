@@ -33,6 +33,7 @@ import asyncio
 import json
 import re
 import ssl
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -233,6 +234,70 @@ def _persist_messages(
     )
 
 
+def _write_turn_metrics(
+    conn,
+    *,
+    job_id: str,
+    conversation_id: str,
+    agent_id: str,
+    cost_usd: float | None,
+    num_turns: int | None,
+    latency_ms: int,
+    escalated: bool,
+    tool_count: int,
+    stop_reason: str | None,
+) -> None:
+    """Insert one turn_metrics row for a completed production turn (OPS-01).
+
+    Called AFTER the terminal agent.response emit and the idempotency-marking
+    db.commit() in run_agent_turn — telemetry must never delay or block the
+    served turn (must_haves prohibition).
+
+    prompt_version_id is always NULL from this write path: the column exists
+    (migration 0009) reserved for OPS-16 canary correlation, but nothing in
+    Wave 1 populates it yet.
+
+    Failure handling: any exception here is caught by the caller
+    (run_agent_turn wraps this call in its own try/except) — a metrics write
+    failure degrades observability only, it never fails a served turn
+    (T-21-01-03).
+
+    The caller owns the connection lifecycle — this helper does NOT open or
+    close the connection (same PROD-05 convention as _persist_messages).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO turn_metrics
+                (id, job_id, conversation_id, agent_id, cost_usd, num_turns,
+                 latency_ms, escalated, tool_count, stop_reason,
+                 prompt_version_id, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, NOW())
+            """,
+            (
+                str(uuid.uuid4()),
+                job_id,
+                conversation_id,
+                agent_id,
+                cost_usd,
+                num_turns,
+                latency_ms,
+                escalated,
+                tool_count,
+                stop_reason,
+            ),
+        )
+    conn.commit()
+
+    log.debug(
+        "_write_turn_metrics.done",
+        job_id=job_id,
+        conversation_id=conversation_id,
+        latency_ms=latency_ms,
+        tool_count=tool_count,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Citation extractor
 # ---------------------------------------------------------------------------
@@ -284,6 +349,9 @@ async def _run_sdk_turn(
             escalation_reason   — reason from escalate_to_human input, or None
             escalation_context  — context from escalate_to_human input, or None
             sdk_session_id      — ResultMessage.session_id, or None
+            total_cost_usd      — ResultMessage.total_cost_usd, or None (OPS-01)
+            num_turns           — ResultMessage.num_turns, or None (OPS-01)
+            stop_reason         — ResultMessage.stop_reason, or None (OPS-01)
 
     Security (T-04-03-02, T-04-03-03):
         - Tool-call streaming is the evidence source for escalation detection.
@@ -296,6 +364,9 @@ async def _run_sdk_turn(
     escalation_reason: str | None = None
     escalation_context: str | None = None
     sdk_session_id_out: str | None = None
+    total_cost_usd_out: float | None = None
+    num_turns_out: int | None = None
+    stop_reason_out: str | None = None
 
     async with ClaudeSDKClient(options=options) as client:
         await client.query(message)
@@ -372,6 +443,11 @@ async def _run_sdk_turn(
                         num_turns=msg.num_turns,
                         total_cost_usd=msg.total_cost_usd,
                     )
+                # OPS-01: carry these through the return dict — previously logged
+                # only, now persisted to turn_metrics by run_agent_turn (below).
+                total_cost_usd_out = msg.total_cost_usd
+                num_turns_out = msg.num_turns
+                stop_reason_out = msg.stop_reason
 
     return {
         "response_text": response_text,
@@ -380,6 +456,9 @@ async def _run_sdk_turn(
         "escalation_reason": escalation_reason,
         "escalation_context": escalation_context,
         "sdk_session_id": sdk_session_id_out,
+        "total_cost_usd": total_cost_usd_out,
+        "num_turns": num_turns_out,
+        "stop_reason": stop_reason_out,
     }
 
 
@@ -603,7 +682,11 @@ def run_agent_turn(
             # call. T-04-03-06 DoS guard: max_turns=6, max_budget_usd=settings.AGENT_MAX_BUDGET_USD.
             # D-11: raised from 30s to 90s — warm-but-not-hot Agent SDK subprocess
             # needs up to 90s on slower ARM VMs; SSE layer retains 120s (30s headroom).
+            #
+            # OPS-01: monotonic start captured immediately before the call so
+            # latency_ms reflects only the SDK turn itself, not queueing/setup.
             # --------------------------------------------------------------
+            _turn_start_monotonic = time.monotonic()
             result = asyncio.run(
                 asyncio.wait_for(
                     _run_sdk_turn(
@@ -618,6 +701,7 @@ def run_agent_turn(
                     timeout=90,
                 )
             )
+            latency_ms = int((time.monotonic() - _turn_start_monotonic) * 1000)
 
             response_text: str = result["response_text"]
             tool_calls_log: list[dict] = result["tool_calls_log"]
@@ -625,6 +709,9 @@ def run_agent_turn(
             escalation_reason: str | None = result["escalation_reason"]
             escalation_context: str | None = result["escalation_context"]
             sdk_session_id_out: str | None = result["sdk_session_id"]
+            total_cost_usd: float | None = result.get("total_cost_usd")
+            num_turns: int | None = result.get("num_turns")
+            stop_reason: str | None = result.get("stop_reason")
 
             # --------------------------------------------------------------
             # Citation extraction — missing block yields [] + warning (not failure)
@@ -684,6 +771,36 @@ def run_agent_turn(
             job.status = "complete"
             job.finished_at = datetime.now(timezone.utc)
             db.commit()
+
+            # --------------------------------------------------------------
+            # OPS-01: telemetry — runs AFTER the terminal agent.response
+            # emit and the idempotency-marking commit above, so a telemetry
+            # failure can never delay or fail the served turn (must_haves
+            # prohibition: "the turn_metrics write NEVER blocks or precedes
+            # the terminal agent.response SSE emit"). The INSERT gets its own
+            # try/except — a turn_metrics write failure must never fail or
+            # retry an already-served turn (T-21-01-03).
+            # --------------------------------------------------------------
+            try:
+                _write_turn_metrics(
+                    tenant_conn,
+                    job_id=job_id,
+                    conversation_id=local_conversation_id,
+                    agent_id=agent_id,
+                    cost_usd=total_cost_usd,
+                    num_turns=num_turns,
+                    latency_ms=latency_ms,
+                    escalated=escalated,
+                    tool_count=len(tool_calls_log),
+                    stop_reason=stop_reason,
+                )
+            except Exception as metrics_exc:
+                log.warning(
+                    "run_agent_turn.turn_metrics_write_failed",
+                    job_id=job_id,
+                    error=str(metrics_exc),
+                )
+            # OPS-04 (Task 3): _emit_langfuse_turn_trace(...) call site added below.
 
             # Dispatch validation chain (M5 — VAL-04)
             retrieve_results = [tc.get("result") for tc in tool_calls_log
