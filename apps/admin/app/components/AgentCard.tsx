@@ -1,7 +1,9 @@
 'use client'
 import { useState } from 'react'
 import Link from 'next/link'
-import { MessageCircle, Zap, Settings, Bot } from 'lucide-react'
+
+import Chip, { type ChipVerdict } from './gotham/Chip'
+import Btn from './gotham/Btn'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -18,98 +20,45 @@ export interface AgentCardProps {
 }
 
 // ---------------------------------------------------------------------------
-// Status color map — uses design-g tokens from globals.css
+// Status -> verdict-chip map (UI-SPEC §6.2, §8 "colour is a verdict")
 // ---------------------------------------------------------------------------
 
-const STATUS_COLORS: Record<string, { bg: string; fg: string; label: string }> = {
-  ready: { bg: 'var(--green-bg)', fg: 'var(--green)', label: 'LIVE' },
-  testing: { bg: 'var(--gold-bg)', fg: 'var(--gold)', label: 'TESTING' },
-  pending: { bg: 'var(--lilac-dim)', fg: 'var(--lilac)', label: 'BUILDING' },
-  provisioning: { bg: 'var(--lilac-dim)', fg: 'var(--lilac)', label: 'BUILDING' },
-  error: { bg: 'var(--red-bg)', fg: 'var(--red)', label: 'Error' },
+interface StatusChipSpec {
+  verdict: ChipVerdict
+  label: string
+  dot?: boolean
 }
 
-function getRoleIcon(role: string) {
-  const r = role.toLowerCase()
-  if (r.includes('support') || r.includes('service') || r.includes('customer')) {
-    return <MessageCircle size={20} color="var(--accent)" strokeWidth={1.5} />
-  }
-  if (r.includes('sales') || r.includes('revenue')) {
-    return <Zap size={20} color="var(--gold)" strokeWidth={1.5} />
-  }
-  if (r.includes('helpdesk') || r.includes('help') || r.includes('tech')) {
-    return <Settings size={20} color="var(--lilac)" strokeWidth={1.5} />
-  }
-  return <Bot size={20} color="var(--text-3)" strokeWidth={1.5} />
+const STATUS_CHIP: Record<string, StatusChipSpec> = {
+  ready: { verdict: 'live', label: 'Live', dot: true },
+  testing: { verdict: 'mute', label: 'Testing' },
+  pending: { verdict: 'mute', label: 'Building' },
+  provisioning: { verdict: 'mute', label: 'Building' },
+  // "error" carries the same claim as a shut gate — same red, same seal.
+  error: { verdict: 'seal', label: 'Error' },
 }
 
-function getRoleIconBg(role: string): string {
-  const r = role.toLowerCase()
-  if (r.includes('helpdesk') || r.includes('help') || r.includes('tech')) {
-    return 'var(--lilac-dim)'
-  }
-  return 'var(--accent-dim)'
-}
-
-function getStatusColor(status: string) {
-  return (
-    STATUS_COLORS[status] ?? {
-      bg: 'var(--chip)',
-      fg: 'var(--text-3)',
-      label: status,
-    }
-  )
+function getStatusChip(status: string): StatusChipSpec {
+  return STATUS_CHIP[status] ?? { verdict: 'mute', label: status }
 }
 
 // ---------------------------------------------------------------------------
-// Inline button styles — match radius/font of existing buttons (radius-xs,
-// 13px, weight 600). The destructive variant uses the --red / --red-bg tokens.
+// AgentCard — a `.zone.card` (UI-SPEC §6.2, §14). Exactly one real `<a>`
+// (the stretched `.card-open::after` link) lives in the tree; the name is a
+// `<span>` (via `<h3>`), never a nested anchor (§10 anti-pattern 5).
 // ---------------------------------------------------------------------------
 
-const baseActionButton: React.CSSProperties = {
-  appearance: 'none',
-  border: '1px solid transparent',
-  borderRadius: 'var(--radius-xs)',
-  fontFamily: 'var(--font-sans)',
-  fontSize: '13px',
-  fontWeight: 600,
-  padding: '6px 12px',
-  cursor: 'pointer',
-  lineHeight: 1.2,
-}
+export default function AgentCard({ id, name, status, created_at, disableNavigation, onDelete }: AgentCardProps) {
+  // `role` is part of the data contract (kept for API-shape compatibility)
+  // but the Gotham `.zone.card` (agents.html) has no role/icon slot — name +
+  // mono id + verdict chips is the whole identity block.
+  const chip = getStatusChip(status)
+  // "shut" mirrors the gate-shut claim on the agent operations room's
+  // gatebar (§6.4) — the only status this list has enough signal to treat
+  // that way is a hard error.
+  const shut = status === 'error'
+  const formattedDate = new Date(created_at).toISOString().slice(0, 10)
 
-const deleteTriggerButton: React.CSSProperties = {
-  ...baseActionButton,
-  background: 'transparent',
-  color: 'var(--red)',
-  borderColor: 'transparent',
-  padding: '6px 0',
-}
-
-const confirmDeleteButton: React.CSSProperties = {
-  ...baseActionButton,
-  background: 'var(--red)',
-  color: 'var(--text-on-accent)',
-  borderColor: 'var(--red)',
-}
-
-const cancelButton: React.CSSProperties = {
-  ...baseActionButton,
-  background: 'var(--red-bg)',
-  color: 'var(--red)',
-  borderColor: 'transparent',
-}
-
-// ---------------------------------------------------------------------------
-// AgentCard
-// ---------------------------------------------------------------------------
-
-export default function AgentCard({ id, name, role, status, created_at, disableNavigation, onDelete }: AgentCardProps) {
-  const c = getStatusColor(status)
-  const formattedDate = new Date(created_at).toLocaleDateString()
-
-  const [hovered, setHovered] = useState(false)
-  const [focused, setFocused] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -130,209 +79,93 @@ export default function AgentCard({ id, name, role, status, created_at, disableN
     }
   }
 
-  // The card lifts + flashes a coral top-bar on hover; the same affordance
-  // mirrors on keyboard focus-within (onFocus/onBlur bubble from the inner
-  // link + delete buttons) so tab-navigation gets the same visual cue.
-  const active = hovered || focused
-
   return (
-    <div
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
-      className="glass-strong"
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        border: `1px solid ${active ? 'var(--border)' : 'var(--border-soft)'}`,
-        borderTop: active ? '3px solid var(--accent)' : '1px solid var(--border-soft)',
-        borderRadius: 'var(--radius-md)',
-        boxShadow: active
-          ? 'var(--glass-highlight), var(--shadow-lift)'
-          : 'var(--glass-highlight), var(--shadow-card)',
-        color: 'var(--text-1)',
-        overflow: 'hidden',
-        transform: active ? 'translateY(-2px)' : 'translateY(0)',
-        transition: 'transform 0.2s, box-shadow 0.2s, border-color 0.2s',
-        cursor: 'pointer',
-      }}
+    <article
+      className="zone card"
+      data-live={status === 'ready' ? 'true' : undefined}
+      data-shut={shut ? 'true' : undefined}
     >
-      {/* Navigable area — keep the delete controls OUTSIDE this anchor so we
-          never nest interactive elements inside a link (invalid HTML + would
-          otherwise trigger navigation when clicking Delete). */}
-      {(() => {
-        const cardContent = (
-          <>
-            {/* ac-top: [icon + name/role] left, status chip right */}
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '14px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
-                <div style={{
-                  width: '40px', height: '40px',
-                  background: getRoleIconBg(role),
-                  borderRadius: 'var(--radius-sm)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  flexShrink: 0,
-                }}>
-                  {getRoleIcon(role)}
-                </div>
-                <div style={{ minWidth: 0 }}>
-                  <h3 style={{
-                    fontFamily: 'var(--font-display)',
-                    fontSize: '15px',
-                    fontWeight: 700,
-                    fontVariationSettings: '"opsz" 144, "SOFT" 30',
-                    color: 'var(--text-1)',
-                    margin: '0 0 2px 0',
-                    letterSpacing: '-0.01em',
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}>
-                    {name}
-                  </h3>
-                  <p style={{ fontSize: '11px', color: 'var(--text-3)', margin: 0, lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {role}
-                  </p>
-                </div>
-              </div>
-              <span style={{
-                padding: '3px 10px',
-                borderRadius: 'var(--radius-pill)',
-                fontSize: '10.5px',
-                fontWeight: 600,
-                letterSpacing: '0.08em',
-                textTransform: 'uppercase',
-                background: c.bg,
-                color: c.fg,
-                whiteSpace: 'nowrap',
-                flexShrink: 0,
-              }}>
-                {c.label}
-              </span>
-            </div>
-
-            {/* ac-metrics: 3-column mini stat grid */}
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr 1fr',
-          gap: '12px',
-          paddingTop: '14px',
-          paddingBottom: '14px',
-          borderTop: '1px solid var(--border-soft)',
-          borderBottom: '1px solid var(--border-soft)',
-          marginBottom: '14px',
-        }}>
-          {[
-            { label: 'Conv · 7D', val: '—' },
-            { label: 'Faithfulness', val: '—' },
-            { label: 'Cost/Sess', val: '—' },
-          ].map(({ label, val }) => (
-            <div key={label}>
-              <div style={{ fontSize: '10.5px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '4px' }}>
-                {label}
-              </div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 600, color: 'var(--text-1)' }}>
-                {val}
-              </div>
-            </div>
-          ))}
+      <div className="card-top">
+        <div>
+          <h3 className="card-name">{name}</h3>
+          <span className="card-id mono">{id}</span>
         </div>
-
-        {/* ac-footer */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: '16px' }}>
-          <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)' }}>
-            {formattedDate}
-          </span>
-          {!disableNavigation && (
-            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              View details →
-            </span>
-          )}
+        <div className="card-chips">
+          <Chip verdict={chip.verdict} dot={chip.dot}>{chip.label}</Chip>
         </div>
-          </>
-        )
-        const sharedStyle: React.CSSProperties = {
-          display: 'block',
-          textDecoration: 'none',
-          padding: '22px 22px 0 22px',
-          color: 'var(--text-1)',
-        }
-        return disableNavigation
-          ? <div style={sharedStyle}>{cardContent}</div>
-          : <Link href={`/agents/${id}`} style={sharedStyle}>{cardContent}</Link>
-      })()}
+      </div>
 
-      {/* Action footer — delete controls live here, outside the link */}
+      <div className="hair" />
+
+      {/* Docs / Pass rate / Sessions — honest-empty: GET /agents does not
+          return per-agent corpus/eval/session counts, so these render as
+          placeholders rather than fabricated numbers (§10 anti-pattern 6). */}
+      <div className="metrics">
+        <div>
+          <span className="label">Docs</span>
+          <span className="mono">—</span>
+        </div>
+        <div>
+          <span className="label">Pass rate</span>
+          <span className="mono pending">pending</span>
+        </div>
+        <div>
+          <span className="label">Sessions</span>
+          <span className="mono">—</span>
+        </div>
+      </div>
+
+      <div className="card-foot">
+        <span className="mono">created {formattedDate}</span>
+        {disableNavigation ? (
+          <span className="card-open">Open →</span>
+        ) : (
+          <Link className="card-open" href={`/agents/${id}`} aria-label={`Open ${name}`}>
+            Open →
+          </Link>
+        )}
+      </div>
+
+      {/* Delete controls — raised above the stretched `.card-open::after`
+          link (see `.card-actions` in globals.css) so they stay clickable. */}
       {onDelete && (
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '8px',
-            padding: '0 22px 16px 22px',
-            marginTop: 'auto',
-          }}
-        >
+        <div className="card-actions">
           {deleteError && (
-            <p
-              role="alert"
-              style={{
-                margin: 0,
-                fontSize: '12px',
-                color: 'var(--red)',
-              }}
-            >
+            <p role="alert" style={{ margin: '0 0 8px', fontSize: '12px', color: 'var(--fail)' }}>
               {deleteError}
             </p>
           )}
 
           {confirming ? (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px',
-                flexWrap: 'wrap',
-              }}
-            >
-              <span style={{ fontSize: '13px', color: 'var(--text-2)' }}>
-                Delete this agent?
-              </span>
-              <button
-                type="button"
-                onClick={runDelete}
-                disabled={deleting}
-                style={{ ...confirmDeleteButton, opacity: deleting ? 0.6 : 1 }}
-              >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '12.5px', color: 'var(--ink-2)' }}>Delete this agent?</span>
+              <Btn variant="seal" onClick={runDelete} disabled={deleting}>
                 {deleting ? 'Deleting…' : 'Confirm'}
-              </button>
-              <button
-                type="button"
+              </Btn>
+              <Btn
+                variant="ghost"
                 onClick={() => {
                   setConfirming(false)
                   setDeleteError(null)
                 }}
                 disabled={deleting}
-                style={cancelButton}
               >
                 Cancel
-              </button>
+              </Btn>
             </div>
           ) : (
-            <button
-              type="button"
+            <Btn
+              variant="ghost"
               onClick={() => {
                 setDeleteError(null)
                 setConfirming(true)
               }}
-              style={{ ...deleteTriggerButton, alignSelf: 'flex-start' }}
             >
               Delete
-            </button>
+            </Btn>
           )}
         </div>
       )}
-    </div>
+    </article>
   )
 }

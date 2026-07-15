@@ -337,6 +337,64 @@ input[type="range"]::-moz-range-thumb {
   overflow-x: auto;
 }
 
+/* ── visually-hidden utility (headings/labels for screen readers only) ──── */
+.vh {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+
+/* ── agents grid + card (ported from prototypes/gotham/agents.html) ─────── */
+.agents {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 16px; margin-top: 26px;
+}
+@media (max-width: 1000px) { .agents { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 700px)  { .agents { grid-template-columns: 1fr; } }
+
+.card {
+  position: relative; display: flex; flex-direction: column;
+  transition: border-color 140ms ease;
+}
+.card:hover { border-color: var(--hairline-strong); }
+.card:has(a:focus-visible) { outline: 2px solid var(--live); outline-offset: 2px; }
+
+/* the heads are cut to one height so every hairline, metric and footer on
+   the row reads across the grid, even when a card carries two chips */
+.card-top {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; min-height: 52px;
+}
+.card-name { font-size: 16px; line-height: 1.25; }
+.card-id { display: block; margin-top: 5px; font-size: 11.5px; color: var(--ink-3); }
+.card-chips { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: none; }
+
+.hair { height: 1px; background: var(--hairline); margin: 16px 0 14px; }
+.card[data-shut="true"] .hair { background: color-mix(in oklch, var(--seal) 62%, transparent); }
+
+.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 18px; }
+.metrics div { display: flex; flex-direction: column; gap: 4px; }
+.metrics .num, .metrics .mono { font-size: 15px; color: var(--ink); }
+.metrics .pending { color: var(--ink-3); font-size: 13px; }
+
+.card-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-top: auto; padding-top: 13px;
+  border-top: 1px solid var(--hairline-soft);
+  font-size: 11.5px; color: var(--ink-3);
+}
+.card-open {
+  font-family: var(--sans); font-size: 12.5px; font-weight: 600;
+  color: var(--ink); text-decoration: none;
+}
+/* the whole zone is the target, but only one link is in the tree */
+.card-open::after { content: ''; position: absolute; inset: 0; border-radius: var(--r-panel); }
+.card:hover .card-open { color: var(--live); }
+
+/* delete controls sit under the footer, raised above `.card-open::after`
+   (position + z-index) so the stretched card link does not swallow clicks
+   meant for them */
+.card-actions { position: relative; z-index: 1; margin-top: 10px; }
+
 /* ── the command strip: permanent, never a modal ─────────────────────────── */
 .command {
   display: flex; align-items: center; gap: 10px;
