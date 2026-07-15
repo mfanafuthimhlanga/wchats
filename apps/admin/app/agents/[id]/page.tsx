@@ -1,14 +1,24 @@
 'use client'
-import { Check, LoaderCircle, Upload } from 'lucide-react'
 import { use } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
-import StepSubtaskCard from '../../components/StepSubtaskCard'
+import Chip from '../../components/gotham/Chip'
+import EmptyState from '../../components/gotham/EmptyState'
 import { AlertsBanner } from './components/AlertsBanner'
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+/**
+ * The agent operations room — `/agents/[id]` (UI-SPEC S6.4, UI2-05, ported
+ * from prototypes/gotham/agent.html). Six `.section` regions in a fixed
+ * order: Live, Retrieval health, The bench, Judgement, Adversary, The
+ * prompt. Four of the six (Live / Retrieval health / The bench / The
+ * prompt) have no backing endpoint yet (AGENT-MGMT-GAPS.md) and render an
+ * honest `<EmptyState>` — never the prototype's client-side seeded-noise
+ * demo data (hardcoded channel/version arrays). Judgement
+ * and Adversary wire to the real eval-runs / red-team-runs endpoints; that
+ * wiring (plus the real gatebar derivation and the relocated AlertsBanner)
+ * is added in this plan's second task — this shell renders their region
+ * heads only, filled in next.
+ */
 
 interface AgentDetail {
   id: string
@@ -24,40 +34,18 @@ interface AgentDetail {
   created_at: string
 }
 
-// Minimal document shape — only the field we need to decide "Configure done".
-// The full shape lives in the ingest page; here we just need parse_status.
+// Minimal document shape — only what the region head-count needs.
 interface AgentDocument {
   id: string
   parse_status: string
 }
 
-// ---------------------------------------------------------------------------
-// Status color map — mirrors AgentCard STATUS_COLORS
-// ---------------------------------------------------------------------------
-
-const STATUS_COLORS: Record<string, { bg: string; fg: string; label: string }> = {
-  ready: { bg: 'var(--green-bg)', fg: 'var(--green)', label: 'Ready' },
-  pending: { bg: 'var(--gold-bg)', fg: 'var(--gold)', label: 'Provisioning' },
-  provisioning: { bg: 'var(--gold-bg)', fg: 'var(--gold)', label: 'Provisioning' },
-  error: { bg: 'var(--red-bg)', fg: 'var(--red)', label: 'Error' },
+function formatDate(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  return new Date(iso).toISOString().slice(0, 10)
 }
 
-function getStatusColor(status: string) {
-  return (
-    STATUS_COLORS[status] ?? {
-      bg: 'var(--surface-3)',
-      fg: 'var(--text-3)',
-      label: status,
-    }
-  )
-}
-
-// ---------------------------------------------------------------------------
-// AgentJourneyPage — renders the right-panel content only.
-// The shared layout (layout.tsx) provides the two-panel wrapper + stepper.
-// ---------------------------------------------------------------------------
-
-export default function AgentJourneyPage({
+export default function AgentOperationsRoom({
   params,
 }: {
   params: Promise<{ id: string }>
@@ -66,7 +54,7 @@ export default function AgentJourneyPage({
   const { getToken, isLoaded, isSignedIn } = useAuth()
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ''
 
-  // Same queryKey as the layout — TanStack serves this from cache (no extra fetch).
+  // ---- Agent + documents — preserved verbatim from the prior dusk build --
   const agentQuery = useQuery({
     queryKey: ['agent', id],
     queryFn: async () => {
@@ -79,7 +67,7 @@ export default function AgentJourneyPage({
       return r.json() as Promise<AgentDetail>
     },
     enabled: isLoaded && !!isSignedIn,
-    // Poll every 3s while provisioning; stop once ready
+    // Poll every 3s while provisioning; stop once ready.
     refetchInterval: (query) => {
       const d = query.state.data
       if (!d) return false
@@ -97,16 +85,12 @@ export default function AgentJourneyPage({
     ? (agentQuery.error as Error).message || 'Failed to load agent. Please refresh.'
     : null
 
-  // Derived step1Done for right-panel dispatch
   const step1Done =
     !!agent &&
     (agent.status === 'ready' ||
       agent.status === 'provisioning_complete' ||
       agent.neon_project_id !== null)
 
-  // Documents query — same key/shape as the ingest page so the cache is shared.
-  // Only enabled once step1 is done (the backend rejects /documents while the
-  // tenant DB is still provisioning), mirroring the ingest page's gate.
   const docsQuery = useQuery({
     queryKey: ['agent-documents', id],
     queryFn: async () => {
@@ -122,189 +106,52 @@ export default function AgentJourneyPage({
     enabled: isLoaded && !!isSignedIn && step1Done,
     staleTime: 10_000,
   })
-
   const documents = docsQuery.data ?? []
 
-  // Derived soulSaved — gates the soul card CTA emphasis + downstream copy
-  const soulSaved = !!(
-    agent?.soul_role ||
-    agent?.soul_voice ||
-    (agent?.soul_do_list?.length ?? 0) > 0
-  )
-
-  // Derived hasDocs — at least one document that did not fail to parse.
-  const hasDocs = documents.some((d) => d.parse_status !== 'failed')
-
-  // "Configure done" is a single, unambiguous definition: BOTH the soul is
-  // saved AND there is at least one non-failed document in the knowledge base.
-  const configureDone = soulSaved && hasDocs
-
-  // step3Done: at least one eval run exists (M6 eval harness is live).
-  // This flag controls whether step 4 (Deploy) is unlocked in the stepper.
-  // Note: step3Done derivation is authoritative in layout.tsx; this local copy
-  // keeps the right-panel dispatch logic self-contained.
-  const step3Done = false // layout.tsx owns the gating query; page mirrors it
-
-  // ---- Right-panel: loading skeleton (first load, no cached data yet) -------
-  const loadingPanel = (
-    <p style={{ fontSize: '14px', color: 'var(--text-3)' }}>Loading agent…</p>
-  )
-
-  // ---- Right-panel: provisioning status (step1 not yet done) ----------------
-  const provisioningPanel = (
-    <div style={{ maxWidth: '560px' }}>
-      <p style={{
-        fontFamily: 'var(--font-mono)', fontSize: '10px', fontWeight: 600,
-        letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '8px',
-      }}>Step 1 of 4</p>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '8px' }}>
-        <h1 style={{
-          fontFamily: 'var(--font-display)', fontWeight: 600,
-          fontVariationSettings: '"opsz" 144, "SOFT" 30',
-          fontSize: '24px', color: 'var(--text-1)', margin: 0,
-        }}>Provisioning your agent…</h1>
-        {agent && (
-          <span style={{
-            padding: '4px 10px', borderRadius: 'var(--radius-pill)', fontSize: '11px', fontWeight: 600,
-            background: getStatusColor(agent.status).bg, color: getStatusColor(agent.status).fg,
-            whiteSpace: 'nowrap', flexShrink: 0,
-          }}>{getStatusColor(agent.status).label}</span>
-        )}
-      </div>
-      <p style={{ fontSize: '14px', color: 'var(--text-3)', lineHeight: 1.6, marginBottom: '16px' }}>
-        Setting up a dedicated database. This usually takes 30–60 seconds.
-      </p>
-      {agent && (
-        <p style={{ fontSize: '12px', color: 'var(--text-4)', fontFamily: 'var(--font-mono)' }}>
-          agent_id: {agent.id}
-        </p>
-      )}
-    </div>
-  )
-
-  // ---- Right-panel: configure subtask cards (step1 done, configure pending)-
-  // Configure owns exactly two sub-tasks — Soul and Ingest. Steps 3 (Test) and
-  // 4 (Deploy) are separate journey stages and are NOT previewed here. The
-  // "active" CTA emphasis follows the natural order: soul first, then ingest
-  // once the soul is saved.
-  const configurePanel = (
-    <>
-      <p style={{
-        fontFamily: 'var(--font-mono)', fontSize: '10px', fontWeight: 600,
-        letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '8px',
-      }}>Step 2 of 4</p>
-      <h1 style={{
-        fontFamily: 'var(--font-display)', fontWeight: 600,
-        fontVariationSettings: '"opsz" 144, "SOFT" 30',
-        fontSize: '24px', color: 'var(--text-1)', marginBottom: '8px',
-      }}>Configure your agent</h1>
-      <p style={{ fontSize: '14px', color: 'var(--text-3)', lineHeight: 1.6, maxWidth: '520px', marginBottom: '24px' }}>
-        Shape the agent&apos;s voice and ground it with your business knowledge. Both sub-processes feed directly into the system prompt.
-      </p>
-
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '12px',
-          marginTop: '24px',
-        }}
-      >
-        {/* Soul — done when saved, otherwise the active first step */}
-        <StepSubtaskCard
-          icon={<LoaderCircle size={16} strokeWidth={2} />}
-          title="Define the soul"
-          description={
-            soulSaved
-              ? 'Personality, behaviors, and boundaries — saved'
-              : 'Personality, behaviors, and boundaries'
-          }
-          href={`/agents/${id}/soul`}
-          ctaLabel={soulSaved ? 'Edit soul' : 'Open editor'}
-          state={soulSaved ? 'completed' : 'active'}
-        />
-
-        {/* Ingest — done when at least one non-failed doc exists; becomes the
-            active step once the soul is saved. */}
-        <StepSubtaskCard
-          icon={<Upload size={16} strokeWidth={2} />}
-          title="Ingest documents"
-          description={
-            hasDocs
-              ? 'Knowledge base has documents'
-              : soulSaved
-              ? 'Upload PDFs or URLs'
-              : 'Save soul settings first'
-          }
-          href={`/agents/${id}/ingest`}
-          ctaLabel={hasDocs ? 'Manage documents' : 'Upload'}
-          state={hasDocs ? 'completed' : soulSaved ? 'active' : 'idle'}
-        />
-      </div>
-    </>
-  )
-
-  // ---- Right-panel: Test stage (configure done) ----------------------------
-  // M6 eval harness is live. Surface a CTA to the Evals page.
-  const testPanel = (
-    <>
-      <p style={{
-        fontFamily: 'var(--font-mono)', fontSize: '10px', fontWeight: 600,
-        letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '8px',
-      }}>Step 3 of 4</p>
-      <h1 style={{
-        fontFamily: 'var(--font-display)', fontWeight: 600,
-        fontVariationSettings: '"opsz" 144, "SOFT" 30',
-        fontSize: '24px', color: 'var(--text-1)', marginBottom: '8px',
-      }}>Test your agent</h1>
-      <p style={{ fontSize: '14px', color: 'var(--text-3)', lineHeight: 1.6, maxWidth: '520px', marginBottom: '24px' }}>
-        Run evaluations and adversarial probes before deploying. Deploy unlocks once at least one eval run is complete.
-      </p>
-
-      <div style={{ marginTop: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-        <StepSubtaskCard
-          icon={<Check size={16} strokeWidth={2} />}
-          title="Run automated evals"
-          description="Measure faithfulness, relevance, and red-team resistance"
-          href={`/agents/${id}/eval`}
-          ctaLabel="Go to Evals →"
-          state="active"
-        />
-      </div>
-    </>
-  )
-
-  // ---- Dispatch -------------------------------------------------------------
-  // This landing page owns the Provision and Configure stages. Once Configure
-  // is done, the right panel advances to the (M6-blocked) Test placeholder.
-  // The Deploy stage lives at /agents/[id]/deploy and is reached via the stepper.
-  let panel: React.ReactNode
-  if (agentQuery.isPending) {
-    panel = loadingPanel
-  } else if (!step1Done) {
-    panel = provisioningPanel
-  } else if (!configureDone) {
-    panel = configurePanel
-  } else {
-    // configureDone === true → step 3 (Test) is the active stage. step3Done is
-    // always false until M6, so we show the Test placeholder.
-    panel = step3Done ? configurePanel : testPanel
-  }
-
   return (
-    <div style={{ padding: '40px 48px' }}>
-      {/* Error alert */}
+    <div className="page">
+      <style dangerouslySetInnerHTML={{ __html: PAGE_CSS }} />
+
+      <header className="page-head">
+        <div className="row">
+          <div>
+            <h1>{agent?.name ?? 'Loading agent…'}</h1>
+            <p className="sub">
+              {agent?.role || 'Agent'}
+              {agent ? ` · Serving since ${formatDate(agent.created_at)}` : ''}
+            </p>
+          </div>
+          <div className="ident">
+            <p className="label">Agent</p>
+            <p className="mono ident-id">{agent?.id ?? id}</p>
+            <Chip verdict={agent?.status === 'ready' ? 'live' : 'mute'} dot>
+              {agent?.status === 'ready' ? 'Serving' : agent ? agent.status : 'Loading'}
+            </Chip>
+          </div>
+        </div>
+
+        {/* Real gatebar derivation (checklist-runs + red-team deployment_blocked
+            + the folded red_team_critical alert) is wired in this plan's second
+            task — this is the shell only, so it never hand-colours itself. */}
+        <div className="gatebar rule-double">
+          <Chip verdict="pass">Gate open</Chip>
+          <p>Every build ships. No critical finding is open.</p>
+          <p className="mono" style={{ marginLeft: 'auto' }}>checking…</p>
+        </div>
+        <p className="vh" role="status" aria-live="polite" />
+      </header>
+
       {loadError && (
         <div
           role="alert"
           style={{
             padding: '12px 16px',
             marginBottom: '20px',
-            background: 'var(--red-bg)',
-            border: '1px solid rgba(248,113,113,0.3)',
-            borderRadius: 'var(--radius-xs)',
+            background: 'var(--fail-dim)',
+            border: '1px solid color-mix(in oklch, var(--fail) 32%, transparent)',
+            borderRadius: 'var(--r-panel)',
             fontSize: '14px',
-            color: 'var(--red)',
+            color: 'var(--fail)',
           }}
         >
           {loadError}
@@ -313,24 +160,91 @@ export default function AgentJourneyPage({
 
       {isLoaded && isSignedIn && agent && <AlertsBanner agentId={id} />}
 
-      {/* Glass panel — step copy + subtask cards sit on a dense surface */}
-      <div className="glass-strong" style={{ borderRadius: 'var(--radius-md)', padding: '28px' }}>
-        {panel}
-
-        {/* Langfuse observability link — always visible */}
-        <div style={{ marginTop: '24px', paddingTop: '16px',
-                      borderTop: '1px solid var(--border-soft)' }}>
-          <a
-            href="https://cloud.langfuse.com"
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ fontSize: '13px', color: 'var(--text-2)',
-                     textDecoration: 'underline' }}
-          >
-            View Langfuse dashboard →
-          </a>
+      {/* ═══ LIVE ═══════════════════════════════════════════════════════ */}
+      <section className="section" aria-labelledby="live-h">
+        <div className="section-head">
+          <h2 className="label" id="live-h">Live</h2>
         </div>
-      </div>
+        <EmptyState
+          heading="No live telemetry yet"
+          body="Live performance metrics are not available yet."
+        />
+      </section>
+
+      {/* ═══ RETRIEVAL HEALTH ═══════════════════════════════════════════ */}
+      <section className="section" aria-labelledby="rag-h">
+        <div className="section-head">
+          <h2 className="label" id="rag-h">Retrieval health</h2>
+          <p className="mono head-count">{documents.length} documents</p>
+        </div>
+        <EmptyState
+          heading="No retrieval instrumentation yet"
+          body="Retrieval health instrumentation ships in a future release."
+        />
+      </section>
+
+      {/* ═══ THE BENCH ══════════════════════════════════════════════════ */}
+      <section className="section" aria-labelledby="bench-h">
+        <div className="section-head">
+          <h2 className="label" id="bench-h">The bench</h2>
+        </div>
+        <EmptyState
+          heading="Nothing on the bench yet"
+          body="No failing production traces to review yet."
+        />
+      </section>
+
+      {/* ═══ JUDGEMENT — wired to real eval-runs data in Task 2 ═══════════ */}
+      <section className="section" aria-labelledby="judge-h">
+        <div className="section-head">
+          <h2 className="label" id="judge-h">Judgement</h2>
+        </div>
+      </section>
+
+      {/* ═══ ADVERSARY — wired to real red-team-runs data in Task 2 ═══════ */}
+      <section className="section" aria-labelledby="adv-h">
+        <div className="section-head">
+          <h2 className="label" id="adv-h">Adversary</h2>
+        </div>
+      </section>
+
+      {/* ═══ THE PROMPT ═════════════════════════════════════════════════ */}
+      <section className="section" aria-labelledby="prompt-h">
+        <div className="section-head">
+          <h2 className="label" id="prompt-h">The prompt</h2>
+        </div>
+        <EmptyState
+          heading="No version history yet"
+          body="Version history, canary releases and rollback ship in a future release."
+          linkHref={`/agents/${id}/soul`}
+          linkLabel="Edit in the soul editor"
+        />
+      </section>
     </div>
   )
 }
+
+// ---------------------------------------------------------------------------
+// Page-scoped CSS — classes with no equivalent in the shared globals.css
+// Gotham port (they were page-local `<style>` rules in agent.html, not
+// app.css), following the same static dangerouslySetInnerHTML pattern used
+// by agents/new/page.tsx.
+// ---------------------------------------------------------------------------
+const PAGE_CSS = `
+  .ident { display: grid; justify-items: end; gap: 5px; text-align: right; }
+  .ident-id { font-size: 12px; color: var(--ink-2); }
+  .head-count { font-size: 12px; color: var(--ink-3); }
+
+  .gatebar {
+    margin-top: 22px;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 11px 0 0;
+  }
+  .gatebar p { font-size: 13px; color: var(--ink-2); margin: 0; }
+  .gatebar .mono { font-size: 12px; color: var(--ink-3); }
+
+  @media (max-width: 720px) {
+    .page-head .row { flex-direction: column; }
+    .ident { justify-items: start; text-align: left; }
+  }
+`
