@@ -10,7 +10,20 @@ Tests:
         - grade_trace validates the grade enum and the trace's agent ownership.
         - bench_tally treats 'filed' as terminal (never overwritten by a later row).
 
-    Route layer tests (app/api/v1/traces.py) are added in Task 2 of this plan.
+    Route layer (app/api/v1/traces.py):
+        GET  /api/v1/agents/{agent_id}/traces?status=failing
+        POST /api/v1/agents/{agent_id}/traces/{trace_id}/grade
+
+PRE-EXISTING INFRA NOTE (not a regression introduced by this plan):
+    `app.main` transitively imports app.api.v1.evals -> app.worker.tasks.runtime.eval
+    -> app.services.eval_service -> ragas.metrics.collections -> ragas.llms.base ->
+    langchain_community.chat_models.vertexai, which raises ModuleNotFoundError in
+    this environment (confirmed present on HEAD before this plan's changes — e.g.
+    `pytest tests/unit/test_eval_routes.py` fails to collect identically). Route
+    tests below therefore build a minimal FastAPI app around ONLY
+    app.api.v1.traces.router (a "targeted import" of just this plan's router
+    module) instead of importing `app.main`, so these tests can actually run in
+    this environment without touching the broken import chain.
 """
 
 from __future__ import annotations
@@ -19,7 +32,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 
+from app.api.deps import get_current_tenant
+from app.api.v1 import traces as traces_module
+from app.core.database import get_async_db
+from app.models.agent import Agent
+from app.models.tenant import Tenant
 from app.services import bench_service
 
 
@@ -41,6 +61,36 @@ def _mock_result(rows: list | None = None, one=None) -> MagicMock:
     result.fetchall = MagicMock(return_value=rows or [])
     result.fetchone = MagicMock(return_value=one)
     return result
+
+
+def _make_fake_tenant() -> Tenant:
+    tenant = MagicMock(spec=Tenant)
+    tenant.id = uuid4()
+    tenant.name = "Test Tenant"
+    tenant.deleted_at = None
+    return tenant
+
+
+def _make_ready_agent(tenant: Tenant) -> Agent:
+    agent = MagicMock(spec=Agent)
+    agent.id = uuid4()
+    agent.tenant_id = tenant.id
+    agent.status = "ready"
+    agent.deleted_at = None
+    agent.neon_connection_string = b"fake-encrypted-bytes"
+    return agent
+
+
+def _make_mock_db_returning_agent(agent: Agent) -> AsyncMock:
+    mock_session = AsyncMock()
+    mock_session.get = AsyncMock(return_value=agent)
+    return mock_session
+
+
+def _make_mock_db_returning_none() -> AsyncMock:
+    mock_session = AsyncMock()
+    mock_session.get = AsyncMock(return_value=None)
+    return mock_session
 
 
 # ---------------------------------------------------------------------------
@@ -273,3 +323,316 @@ class TestGradeTraceService:
         assert added_event.event_type == "trace.graded"
         assert added_event.payload["grade"] == "held"
         assert added_event.payload["agent_id"] == agent_id
+
+
+# ---------------------------------------------------------------------------
+# Route tests (Task 2)
+# ---------------------------------------------------------------------------
+
+# Targeted import — a minimal FastAPI app wrapping ONLY the traces router, so
+# these tests never import app.main (see PRE-EXISTING INFRA NOTE above).
+_test_app = FastAPI()
+_test_app.include_router(traces_module.router, prefix="/api/v1")
+
+
+class TestListTracesRoute:
+    async def test_returns_404_on_cross_tenant_idor(self):
+        """404 (not 403) when the agent belongs to a different tenant."""
+        fake_tenant = _make_fake_tenant()
+        other_tenant = _make_fake_tenant()
+        foreign_agent = _make_ready_agent(other_tenant)
+        mock_db = _make_mock_db_returning_agent(foreign_agent)
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=_test_app), base_url="http://test"
+            ) as client:
+                response = await client.get(f"/api/v1/agents/{foreign_agent.id}/traces")
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 404
+
+    async def test_returns_404_when_agent_not_found(self):
+        fake_tenant = _make_fake_tenant()
+        mock_db = _make_mock_db_returning_none()
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=_test_app), base_url="http://test"
+            ) as client:
+                response = await client.get(f"/api/v1/agents/{uuid4()}/traces")
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 404
+
+    async def test_returns_200_with_traces_and_tally_shape(self):
+        """Happy path: 200 with the {traces, tally} response shape."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+
+        fake_result = {
+            "traces": [
+                {
+                    "trace_id": str(uuid4()),
+                    "verdict": "ungrounded",
+                    "judge_rationale": "no citation",
+                    "customer_turn": "What's your return policy?",
+                    "agent_turn": "I don't know",
+                    "conversation_id": "conv-1",
+                    "graded_status": "ungraded",
+                }
+            ],
+            "tally": {"filed": 0, "held": 0, "dismissed": 0},
+        }
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with (
+                patch(
+                    "app.api.v1.traces.fernet_decrypt",
+                    return_value="postgresql://fake/tenantdb",
+                ),
+                patch(
+                    "app.api.v1.traces.bench_service.list_failing_traces",
+                    new=AsyncMock(return_value=fake_result),
+                ),
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=_test_app), base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        f"/api/v1/agents/{ready_agent.id}/traces?status=failing"
+                    )
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        assert response.json() == fake_result
+
+    async def test_returns_400_for_unsupported_status_value(self):
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=_test_app), base_url="http://test"
+            ) as client:
+                response = await client.get(
+                    f"/api/v1/agents/{ready_agent.id}/traces?status=resolved"
+                )
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 400
+
+
+class TestGradeTraceRoute:
+    async def test_returns_404_on_cross_tenant_idor(self):
+        fake_tenant = _make_fake_tenant()
+        other_tenant = _make_fake_tenant()
+        foreign_agent = _make_ready_agent(other_tenant)
+        mock_db = _make_mock_db_returning_agent(foreign_agent)
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=_test_app), base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    f"/api/v1/agents/{foreign_agent.id}/traces/{uuid4()}/grade",
+                    json={"grade": "held"},
+                )
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 404
+
+    async def test_returns_422_on_invalid_grade_enum(self):
+        """T-21-05-03: grade enum injection — Pydantic Literal returns 422."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=_test_app), base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    f"/api/v1/agents/{ready_agent.id}/traces/{uuid4()}/grade",
+                    json={"grade": "not-a-real-grade"},
+                )
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 422
+
+    async def test_returns_409_when_service_raises_already_filed(self):
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with (
+                patch(
+                    "app.api.v1.traces.fernet_decrypt",
+                    return_value="postgresql://fake/tenantdb",
+                ),
+                patch(
+                    "app.api.v1.traces.bench_service.grade_trace",
+                    new=AsyncMock(
+                        side_effect=bench_service.TraceAlreadyFiledError("already filed")
+                    ),
+                ),
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=_test_app), base_url="http://test"
+                ) as client:
+                    response = await client.post(
+                        f"/api/v1/agents/{ready_agent.id}/traces/{uuid4()}/grade",
+                        json={"grade": "filed"},
+                    )
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 409
+
+    async def test_returns_404_when_service_raises_not_found(self):
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with (
+                patch(
+                    "app.api.v1.traces.fernet_decrypt",
+                    return_value="postgresql://fake/tenantdb",
+                ),
+                patch(
+                    "app.api.v1.traces.bench_service.grade_trace",
+                    new=AsyncMock(
+                        side_effect=bench_service.TraceNotFoundError("not found")
+                    ),
+                ),
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=_test_app), base_url="http://test"
+                ) as client:
+                    response = await client.post(
+                        f"/api/v1/agents/{ready_agent.id}/traces/{uuid4()}/grade",
+                        json={"grade": "held"},
+                    )
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 404
+
+    async def test_returns_200_happy_path(self):
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+        trace_id = uuid4()
+
+        fake_result = {
+            "trace_id": str(trace_id),
+            "grade": "held",
+            "tally": {"filed": 0, "held": 1, "dismissed": 0},
+        }
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with (
+                patch(
+                    "app.api.v1.traces.fernet_decrypt",
+                    return_value="postgresql://fake/tenantdb",
+                ),
+                patch(
+                    "app.api.v1.traces.bench_service.grade_trace",
+                    new=AsyncMock(return_value=fake_result),
+                ),
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=_test_app), base_url="http://test"
+                ) as client:
+                    response = await client.post(
+                        f"/api/v1/agents/{ready_agent.id}/traces/{trace_id}/grade",
+                        json={"grade": "held"},
+                    )
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        assert response.json() == fake_result
+
+    async def test_second_filed_grade_returns_409(self):
+        """POST grade='filed' twice on the same trace: first succeeds, second 409s."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+        trace_id = uuid4()
+
+        call_count = {"n": 0}
+
+        async def _fake_grade_trace(control_db, agent_id, tid, grade):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {"trace_id": tid, "grade": grade, "tally": {"filed": 1, "held": 0, "dismissed": 0}}
+            raise bench_service.TraceAlreadyFiledError("already filed")
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with (
+                patch(
+                    "app.api.v1.traces.fernet_decrypt",
+                    return_value="postgresql://fake/tenantdb",
+                ),
+                patch(
+                    "app.api.v1.traces.bench_service.grade_trace",
+                    new=AsyncMock(side_effect=_fake_grade_trace),
+                ),
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=_test_app), base_url="http://test"
+                ) as client:
+                    first = await client.post(
+                        f"/api/v1/agents/{ready_agent.id}/traces/{trace_id}/grade",
+                        json={"grade": "filed"},
+                    )
+                    second = await client.post(
+                        f"/api/v1/agents/{ready_agent.id}/traces/{trace_id}/grade",
+                        json={"grade": "filed"},
+                    )
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert first.status_code == 200
+        assert second.status_code == 409
