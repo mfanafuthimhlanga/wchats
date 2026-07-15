@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:e2e": "playwright test",
+    "check:no-dusk-tokens": "node scripts/check-no-dusk-tokens.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.3.5",
@@ -20,6 +22,8 @@
     "three": "0.185.1"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
+    "@playwright/test": "1.61.1",
     "@tailwindcss/postcss": "4.1.16",
     "@types/node": "22.18.10",
     "@types/react": "19.2.6",
