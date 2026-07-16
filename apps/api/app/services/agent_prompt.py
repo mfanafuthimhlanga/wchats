@@ -32,7 +32,7 @@ Agent: [calls escalate_to_human with reason="Customer expressed frustration abou
 """
 
 
-def build_system_prompt(agent: Agent) -> str:
+def build_system_prompt(agent: Agent, soul_override: dict | None = None) -> str:
     """Assemble system prompt from agent soul fields.
 
     Called once per ``run_agent_turn`` invocation. The returned string is
@@ -46,6 +46,12 @@ def build_system_prompt(agent: Agent) -> str:
                - soul_voice (str | None): tone/style description
                - soul_do_list (list[str]): positive behavioural rules
                - soul_donot_list (list[str]): negative behavioural rules
+        soul_override: OPS-16 canary routing (21-RESEARCH.md Pattern 3). When
+               provided, overrides soul_role/soul_voice/soul_do_list/
+               soul_donot_list for THIS prompt build only — the `agent` row
+               itself is never mutated. Keys not present in the dict (or a
+               None value for a given key) fall back to the live `agent`
+               field, same as when soul_override is None entirely.
 
     Returns:
         Complete system prompt string. Contains:
@@ -61,11 +67,13 @@ def build_system_prompt(agent: Agent) -> str:
         - The string "CITATIONS:" appears exactly once.
         - The string "AI assistant" appears at least once.
     """
-    role: str = agent.soul_role or "customer service representative"
-    voice: str = agent.soul_voice or "helpful, professional, and concise"
+    soul_override = soul_override or {}
 
-    do_items = agent.soul_do_list or []
-    donot_items = agent.soul_donot_list or []
+    role: str = soul_override.get("soul_role") or agent.soul_role or "customer service representative"
+    voice: str = soul_override.get("soul_voice") or agent.soul_voice or "helpful, professional, and concise"
+
+    do_items = soul_override.get("soul_do_list") or agent.soul_do_list or []
+    donot_items = soul_override.get("soul_donot_list") or agent.soul_donot_list or []
 
     do_block: str = (
         "\n".join(f"- {item}" for item in do_items)

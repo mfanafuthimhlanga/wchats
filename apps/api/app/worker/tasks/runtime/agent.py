@@ -50,10 +50,12 @@ from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.models.job import Job
+from app.models.prompt_version import PromptVersion
 from app.services.agent_prompt import build_system_prompt
 from app.services.agent_tools import build_tool_server, RetrievalStrategy
 from app.services.escalation import send_escalation_email
 from app.services.events import emit
+from app.services.prompt_version_service import resolve_prompt_version
 from app.worker.celery_app import celery_app
 from app.worker.tasks.runtime.validators import run_gatekeeper, run_auditor, run_strategist
 from app.worker.tasks.runtime.retrieval_eval import run_retrieval_faithfulness
@@ -187,6 +189,94 @@ def _set_sdk_session_id(conn, conv_id: str, sdk_session_id: str) -> None:
     log.debug("_set_sdk_session_id.done", conversation_id=conv_id)
 
 
+def _set_prompt_version_id(conn, conv_id: str, prompt_version_id: str) -> None:
+    """Store the resolved prompt_version_id in conversations.metadata (OPS-16).
+
+    Mirrors _set_sdk_session_id's jsonb_set path exactly, so subsequent turns
+    on this conversation can read it back and reuse it without re-rolling
+    (A-CANARY: canary is sticky per-conversation — no mid-conversation persona
+    flip). Called exactly once, on the turn that first resolves a version for
+    a conversation (see _resolve_turn_prompt_version below).
+
+    Security (T-04-03-07): jsonb_set update uses parameterised %s values —
+    prompt_version_id is never string-concatenated into SQL.
+    The caller owns the connection lifecycle — this helper does NOT open or
+    close the connection (PROD-05: one pooled connection per turn).
+    """
+    sql = """
+        UPDATE conversations
+        SET metadata = jsonb_set(
+            COALESCE(metadata, '{}'),
+            '{prompt_version_id}',
+            to_jsonb(%s::text)
+        )
+        WHERE id = %s
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (prompt_version_id, conv_id))
+    conn.commit()
+
+    log.debug("_set_prompt_version_id.done", conversation_id=conv_id)
+
+
+def _resolve_turn_prompt_version(
+    db,
+    tenant_conn,
+    *,
+    agent_id: str,
+    local_conversation_id: str,
+    existing_prompt_version_id: str | None,
+) -> tuple[str | None, dict | None]:
+    """Resolve the prompt version to serve this turn, sticky per conversation (OPS-16).
+
+    First turn of a conversation (existing_prompt_version_id is None): calls
+    resolve_prompt_version (weighted pick, control DB) and — if a version was
+    found — persists the choice on conversations.metadata (tenant DB) so every
+    subsequent turn on this conversation reuses it (A-CANARY: no mid-
+    conversation persona flip; the version is never re-rolled).
+
+    Subsequent turns (existing_prompt_version_id provided): re-fetches that
+    EXACT version's soul fields by id — never re-rolls, never re-picks.
+
+    T-21-09-05 (never fails a turn): any exception here is caught and treated
+    as "no version resolved" — the caller falls back to the agent's live
+    soul_* columns unchanged (soul_override=None passed to
+    build_system_prompt), exactly like an agent with zero prompt_versions
+    rows. A resolution failure degrades canary correlation only; it never
+    blocks or fails the served turn.
+
+    Returns:
+        (prompt_version_id, soul_override) — both None on no-version-exists,
+        resolution failure, or a stale/deleted stored version id.
+    """
+    try:
+        if existing_prompt_version_id:
+            pv = db.get(PromptVersion, existing_prompt_version_id)
+            if pv is None:
+                return None, None
+            return str(pv.id), {
+                "soul_role": pv.soul_role,
+                "soul_voice": pv.soul_voice,
+                "soul_do_list": pv.soul_do_list,
+                "soul_donot_list": pv.soul_donot_list,
+            }
+
+        resolved_id, soul_override = resolve_prompt_version(db, agent_id)
+        if resolved_id is None:
+            return None, None
+
+        _set_prompt_version_id(tenant_conn, local_conversation_id, resolved_id)
+        return resolved_id, soul_override
+    except Exception as exc:
+        log.warning(
+            "run_agent_turn.prompt_version_resolve_failed",
+            agent_id=agent_id,
+            conversation_id=local_conversation_id,
+            error=str(exc),
+        )
+        return None, None
+
+
 def _persist_messages(
     conn,
     conv_id: str,
@@ -262,6 +352,7 @@ def _write_turn_metrics(
     escalated: bool,
     tool_count: int,
     stop_reason: str | None,
+    prompt_version_id: str | None = None,
 ) -> None:
     """Insert one turn_metrics row for a completed production turn (OPS-01).
 
@@ -269,9 +360,10 @@ def _write_turn_metrics(
     db.commit() in run_agent_turn — telemetry must never delay or block the
     served turn (must_haves prohibition).
 
-    prompt_version_id is always NULL from this write path: the column exists
-    (migration 0009) reserved for OPS-16 canary correlation, but nothing in
-    Wave 1 populates it yet.
+    prompt_version_id (OPS-16): the version resolved by
+    _resolve_turn_prompt_version for this turn (None when the agent has no
+    prompt_versions rows yet, or resolution failed — see T-21-09-05). The
+    column exists since migration 0009, reserved for exactly this write.
 
     Failure handling: any exception here is caught by the caller
     (run_agent_turn wraps this call in its own try/except) — a metrics write
@@ -288,7 +380,7 @@ def _write_turn_metrics(
                 (id, job_id, conversation_id, agent_id, cost_usd, num_turns,
                  latency_ms, escalated, tool_count, stop_reason,
                  prompt_version_id, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, NOW())
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             """,
             (
                 str(uuid.uuid4()),
@@ -301,6 +393,7 @@ def _write_turn_metrics(
                 escalated,
                 tool_count,
                 stop_reason,
+                prompt_version_id,
             ),
         )
     conn.commit()
@@ -650,6 +743,9 @@ def run_agent_turn(
             #               sdk_resume = metadata.get("sdk_session_id")
             # --------------------------------------------------------------
             sdk_resume: str | None = None
+            # OPS-16: only set on subsequent turns when the conversation already
+            # carries a resolved prompt_version_id — see _resolve_turn_prompt_version.
+            existing_prompt_version_id: str | None = None
 
             if conversation_id is None:
                 # First turn: create conversation row in tenant DB
@@ -679,6 +775,7 @@ def run_agent_turn(
                     return {}
                 local_conversation_id = conv_row["id"]
                 sdk_resume = conv_row["metadata"].get("sdk_session_id")
+                existing_prompt_version_id = conv_row["metadata"].get("prompt_version_id")
 
             # --------------------------------------------------------------
             # Build retrieval strategy, tool server, system prompt, options
@@ -697,7 +794,20 @@ def run_agent_turn(
                 job_id=job_id,
             )
 
-            system_prompt = build_system_prompt(agent)
+            # ----------------------------------------------------------------
+            # OPS-16: canary prompt-version resolution — sticky per conversation,
+            # never fails a turn (T-21-09-05). See _resolve_turn_prompt_version's
+            # own docstring for the first-turn-vs-subsequent-turn distinction.
+            # ----------------------------------------------------------------
+            prompt_version_id, soul_override = _resolve_turn_prompt_version(
+                db,
+                tenant_conn,
+                agent_id=agent_id,
+                local_conversation_id=str(local_conversation_id),
+                existing_prompt_version_id=existing_prompt_version_id,
+            )
+
+            system_prompt = build_system_prompt(agent, soul_override=soul_override)
 
             # D-10 note (13-07): The Voyage 3 RPM free-tier prompt-level retrieve-cap
             # instruction was removed now that embeddings move to Bedrock (PROD-06).
@@ -872,6 +982,7 @@ def run_agent_turn(
                     escalated=escalated,
                     tool_count=len(tool_calls_log),
                     stop_reason=stop_reason,
+                    prompt_version_id=prompt_version_id,
                 )
             except Exception as metrics_exc:
                 log.warning(
