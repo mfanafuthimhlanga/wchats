@@ -29,7 +29,12 @@ os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 
 import uuid
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
+
+import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 
 
 # ---------------------------------------------------------------------------
@@ -214,3 +219,275 @@ class TestRunRedTeamProgrammeWrites:
         assert not [s for s in executed_sql if "INSERT INTO red_team_probes" in s]
         run_updates = [s for s in executed_sql if "UPDATE red_team_runs" in s]
         assert len(run_updates) == 1
+
+
+# ===========================================================================
+# Task 3 — redteam_programme_service.read_programme (-k service)
+# ===========================================================================
+
+
+class TestReadProgrammeService:
+    def test_service_wires_mocked_cursor_and_computes_coverage(self):
+        from app.services import redteam_programme_service
+
+        strategy_id = uuid4()
+        strategy_rows = [(strategy_id, "prompt_injection", "Attack strategy: prompt_injection", None)]
+        probe_rows = [(uuid4(), strategy_id, None, "probe-1", None)]
+        coverage_rows = [(strategy_id, "prompt_injection", 2, 1, 1)]
+
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_cursor.execute = MagicMock()
+        mock_cursor.fetchall = MagicMock(
+            side_effect=[strategy_rows, probe_rows, coverage_rows]
+        )
+
+        mock_conn = MagicMock()
+        mock_conn.cursor = MagicMock(return_value=mock_cursor)
+        mock_conn.close = MagicMock()
+
+        with patch.object(redteam_programme_service.psycopg2, "connect", return_value=mock_conn) as mock_connect:
+            result = redteam_programme_service.read_programme("postgresql://fake/tenantdb", "agent-1")
+
+        mock_connect.assert_called_once_with("postgresql://fake/tenantdb", connect_timeout=10)
+        mock_conn.close.assert_called_once()
+
+        assert len(result["strategies"]) == 1
+        assert result["strategies"][0]["attack_vector"] == "prompt_injection"
+        assert len(result["probes"]) == 1
+        assert len(result["coverage"]) == 1
+        cell = result["coverage"][0]
+        assert cell["attack_vector"] == "prompt_injection"
+        assert cell["probes_tested"] == 2
+        assert cell["findings_count"] == 1
+        assert cell["attack_success_rate"] == pytest.approx(0.5)
+
+    def test_service_honest_empty_no_divide_by_zero(self):
+        """Zero probes tested -> ASR is 0.0, never a ZeroDivisionError."""
+        from app.services import redteam_programme_service
+
+        strategy_id = uuid4()
+        coverage_rows = [(strategy_id, "hallucination", 0, 0, 0)]
+
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchall = MagicMock(side_effect=[[], [], coverage_rows])
+
+        mock_conn = MagicMock()
+        mock_conn.cursor = MagicMock(return_value=mock_cursor)
+        mock_conn.close = MagicMock()
+
+        with patch.object(redteam_programme_service.psycopg2, "connect", return_value=mock_conn):
+            result = redteam_programme_service.read_programme("postgresql://fake/tenantdb", "agent-2")
+
+        assert result["strategies"] == []
+        assert result["probes"] == []
+        assert result["coverage"][0]["attack_success_rate"] == 0.0
+
+    def test_service_empty_programme_returns_empty_lists(self):
+        """No runs yet at all -> every list is empty (honest empty, not fabricated)."""
+        from app.services import redteam_programme_service
+
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchall = MagicMock(side_effect=[[], [], []])
+
+        mock_conn = MagicMock()
+        mock_conn.cursor = MagicMock(return_value=mock_cursor)
+        mock_conn.close = MagicMock()
+
+        with patch.object(redteam_programme_service.psycopg2, "connect", return_value=mock_conn):
+            result = redteam_programme_service.read_programme("postgresql://fake/tenantdb", "agent-3")
+
+        assert result == {"strategies": [], "probes": [], "coverage": []}
+
+
+# ===========================================================================
+# Task 3 — GET /agents/{id}/red-team/programme route
+# ===========================================================================
+
+
+def _make_fake_tenant():
+    from app.models.tenant import Tenant
+
+    tenant = MagicMock(spec=Tenant)
+    tenant.id = uuid4()
+    tenant.name = "Test Tenant"
+    tenant.deleted_at = None
+    return tenant
+
+
+def _make_ready_agent(tenant):
+    from app.models.agent import Agent
+
+    agent = MagicMock(spec=Agent)
+    agent.id = uuid4()
+    agent.tenant_id = tenant.id
+    agent.status = "ready"
+    agent.deleted_at = None
+    agent.neon_connection_string = b"fake-encrypted-bytes"
+    return agent
+
+
+def _make_mock_db_returning_agent(agent):
+    mock_session = AsyncMock()
+    mock_session.get = AsyncMock(return_value=agent)
+    return mock_session
+
+
+def _make_mock_db_returning_none():
+    mock_session = AsyncMock()
+    mock_session.get = AsyncMock(return_value=None)
+    return mock_session
+
+
+# Targeted import — a minimal FastAPI app wrapping ONLY the red_team router, so
+# these tests never import app.main (PRE-EXISTING INFRA NOTE at module top —
+# app.main -> app.api.v1.evals -> ragas.llms.base -> langchain_community
+# ModuleNotFoundError, confirmed present on HEAD before this plan's changes;
+# mirrors the pattern already established in test_metrics_routes.py, 21-05/21-02).
+from app.api.deps import get_current_tenant  # noqa: E402
+from app.api.v1 import red_team as red_team_module  # noqa: E402
+from app.core.database import get_async_db  # noqa: E402
+
+_test_app = FastAPI()
+_test_app.include_router(red_team_module.router, prefix="/api/v1")
+
+
+class TestGetRedTeamProgrammeRoute:
+    async def test_returns_404_on_cross_tenant_idor(self):
+        """404 (not 403) when the agent belongs to a different tenant."""
+        fake_tenant = _make_fake_tenant()
+        other_tenant = _make_fake_tenant()
+        foreign_agent = _make_ready_agent(other_tenant)
+        mock_db = _make_mock_db_returning_agent(foreign_agent)
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=_test_app), base_url="http://test"
+            ) as client:
+                response = await client.get(
+                    f"/api/v1/agents/{foreign_agent.id}/red-team/programme"
+                )
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 404
+
+    async def test_returns_404_when_agent_not_found(self):
+        fake_tenant = _make_fake_tenant()
+        mock_db = _make_mock_db_returning_none()
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=_test_app), base_url="http://test"
+            ) as client:
+                response = await client.get(f"/api/v1/agents/{uuid4()}/red-team/programme")
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 404
+
+    async def test_returns_404_when_neon_connection_string_absent(self):
+        fake_tenant = _make_fake_tenant()
+        agent = _make_ready_agent(fake_tenant)
+        agent.neon_connection_string = None
+        mock_db = _make_mock_db_returning_agent(agent)
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=_test_app), base_url="http://test"
+            ) as client:
+                response = await client.get(f"/api/v1/agents/{agent.id}/red-team/programme")
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 404
+
+    async def test_returns_200_with_programme_shape_from_mocked_reader(self):
+        """Happy path: 200 with the programme dict returned unmodified from the service."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+
+        fake_programme = {
+            "strategies": [{"id": "s1", "attack_vector": "prompt_injection", "description": None, "created_at": None}],
+            "probes": [{"id": "p1", "strategy_id": "s1", "harm_category": None, "probe_message": "hi", "created_at": None}],
+            "coverage": [
+                {
+                    "strategy_id": "s1",
+                    "attack_vector": "prompt_injection",
+                    "probes_tested": 1,
+                    "findings_count": 0,
+                    "high_severity_count": 0,
+                    "attack_success_rate": 0.0,
+                }
+            ],
+        }
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with (
+                patch("app.api.v1.red_team.fernet_decrypt", return_value="postgresql://fake/tenantdb"),
+                patch(
+                    "app.api.v1.red_team.read_programme",
+                    return_value=fake_programme,
+                ) as mock_read,
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=_test_app), base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        f"/api/v1/agents/{ready_agent.id}/red-team/programme"
+                    )
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        assert response.json() == fake_programme
+        mock_read.assert_called_once()
+
+    async def test_empty_programme_returns_empty_lists_not_404(self):
+        """An agent with no red-team runs yet returns 200 with empty lists — honest empty."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+
+        empty_programme = {"strategies": [], "probes": [], "coverage": []}
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with (
+                patch("app.api.v1.red_team.fernet_decrypt", return_value="postgresql://fake/tenantdb"),
+                patch(
+                    "app.api.v1.red_team.read_programme",
+                    return_value=empty_programme,
+                ),
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=_test_app), base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        f"/api/v1/agents/{ready_agent.id}/red-team/programme"
+                    )
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        assert response.json() == empty_programme

@@ -8,6 +8,7 @@ Routes:
     GET  /agents/{agent_id}/red-team-runs             — list runs (up to 20)
     GET  /agents/{agent_id}/red-team-runs/{run_id}    — single run detail with findings
     POST /agents/{agent_id}/red-team-runs             — dispatch run_red_team manually (202)
+    GET  /agents/{agent_id}/red-team/programme        — OPS-13: strategies/probes/coverage rollup
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.models.tenant import Tenant
 from app.schemas.red_team import RedTeamRunListResponse, RedTeamRunResponse, RedTeamTriggerResponse
+from app.services.redteam_programme_service import read_programme
 from app.worker.tasks.runtime.red_team import run_red_team
 
 router = APIRouter(tags=["red_team"])
@@ -268,3 +270,58 @@ async def trigger_red_team_run(
     )
 
     return {"job_id": task.id, "run_id": task.id, "message": "Red team run queued — poll GET /red-team-runs for results"}
+
+
+# ---------------------------------------------------------------------------
+# Route 4: GET /agents/{agent_id}/red-team/programme — coverage rollup (OPS-13)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/agents/{agent_id}/red-team/programme")
+async def get_red_team_programme(
+    agent_id: UUID,
+    db: AsyncSession = Depends(get_async_db),
+    tenant: Tenant = Depends(get_current_tenant),
+) -> dict:
+    """Return the red-team programme for an agent: strategies, probes, and a
+    coverage rollup (harm-category x attack-strategy, ASR per cell).
+
+    Security:
+        Same IDOR prevention as the other red-team routes — agent ownership
+        verified via agent.tenant_id == tenant.id, 404-not-403.
+
+    Response shape:
+        {"strategies": [...], "probes": [...], "coverage": [...]}
+
+    Honest empty:
+        An agent with no red-team runs yet returns 200 with empty lists —
+        never a 404. red_team_findings is created by migration 0012 but
+        only populated starting in 21-08, so coverage cells will show
+        attack_success_rate=0.0 until then.
+    """
+    # 1. Fetch agent from control DB
+    agent = await db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # 2. IDOR check — agent must belong to the authenticated tenant
+    if agent.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # 3. Guard: agent must have a tenant DB configured
+    if not agent.neon_connection_string:
+        raise HTTPException(status_code=404, detail="Agent database not provisioned")
+
+    # 4. Decrypt connection string at runtime — never logged (T-02-01)
+    conn_str = fernet_decrypt(agent.neon_connection_string)
+
+    # 5. Read the programme in a thread pool to avoid blocking the event loop
+    programme = await asyncio.to_thread(read_programme, conn_str, str(agent_id))
+
+    log.info(
+        "get_red_team_programme.ok",
+        agent_id=str(agent_id),
+        tenant_id=str(tenant.id),
+        strategy_count=len(programme.get("strategies", [])),
+    )
+    return programme
