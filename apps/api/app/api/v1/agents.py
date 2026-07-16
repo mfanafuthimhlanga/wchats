@@ -43,6 +43,7 @@ from app.schemas.agent import (
     AgentSoulUpdate,
     WidgetConfigUpdate,
 )
+from app.services.prompt_version_service import SOUL_FIELDS, create_version_from_agent
 from app.worker.tasks.pipeline.provision import provision_neon
 
 router = APIRouter(tags=["agents"])
@@ -196,6 +197,14 @@ async def patch_agent(
     # 4. Apply updates to the ORM row
     for field, value in updates.items():
         setattr(agent, field, value)
+
+    # 4b. OPS-16: every soul edit appends an immutable prompt_versions row
+    # (history is never overwritten — create_version_from_agent only ever
+    # INSERTs a new row; a prior 'production' row is relabeled 'archived',
+    # never mutated). A pure `name`-only PATCH is not a soul edit and does
+    # not churn the version ledger.
+    if any(field in updates for field in SOUL_FIELDS):
+        await create_version_from_agent(db, agent)
 
     # 5. Persist
     await db.commit()
