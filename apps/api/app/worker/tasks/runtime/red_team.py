@@ -19,6 +19,9 @@ Flow (run_red_team):
     5. Run PromptInjection → DataLeakage → Hallucination agents sequentially
     6. Compute max_severity and deployment_blocked
     7. Update red_team_run row to 'complete' with findings JSONB
+       7b. Persist first-class red_team_strategies/red_team_probes rows (OPS-13)
+       7c. Persist one first-class red_team_findings row per finding, status='open'
+           (OPS-14) — the deploy gate reads this table, not the findings JSONB
     8. Return result dict
 """
 
@@ -372,14 +375,17 @@ def run_red_team(self, agent_id: str) -> dict:
         # One red_team_strategies row per distinct attack_vector (idempotent
         # upsert via UNIQUE(attack_vector) + ON CONFLICT DO NOTHING) and one
         # red_team_probes row per finding's probe_message, linked by
-        # strategy_id. Uses the same _agents_conn as Step 7 above. Does NOT
-        # write red_team_findings — that table is populated in 21-08 (deploy
-        # gate rewire). Best-effort: a failure here must never affect the
-        # run-row write above or the acks_late/idempotency guard.
+        # strategy_id. Uses the same _agents_conn as Step 7 above.
+        # RETURNING id on the probe INSERT recovers each finding's probe_id
+        # for Step 7c below (findings are inserted in the same order as
+        # all_findings, so finding_probe_ids[i] lines up with all_findings[i]).
+        # Best-effort: a failure here must never affect the run-row write
+        # above or the acks_late/idempotency guard.
         # ------------------------------------------------------------------
+        strategy_ids: dict[str, str | None] = {}
+        finding_probe_ids: list[str | None] = []
         try:
             distinct_vectors = sorted({f.attack_vector for f in all_findings})
-            strategy_ids: dict[str, str | None] = {}
             with _agents_conn.cursor() as _cur:
                 for vector in distinct_vectors:
                     _cur.execute(
@@ -402,6 +408,7 @@ def run_red_team(self, agent_id: str) -> dict:
                         """
                         INSERT INTO red_team_probes (strategy_id, harm_category, probe_message)
                         VALUES (%s, %s, %s)
+                        RETURNING id
                         """,
                         (
                             strategy_ids.get(finding.attack_vector),
@@ -409,6 +416,8 @@ def run_red_team(self, agent_id: str) -> dict:
                             finding.probe_message,
                         ),
                     )
+                    _probe_row = _cur.fetchone()
+                    finding_probe_ids.append(_probe_row[0] if _probe_row else None)
             _agents_conn.commit()
         except Exception as programme_exc:
             log.warning(
@@ -416,6 +425,49 @@ def run_red_team(self, agent_id: str) -> dict:
                 agent_id=agent_id,
                 run_id=run_id,
                 error=str(programme_exc),
+            )
+
+        # ------------------------------------------------------------------
+        # Step 7c — Persist first-class red_team_findings rows (OPS-14, 21-08)
+        # One row per finding, status='open', linked to run_id + the
+        # strategy_id/probe_id recovered in Step 7b. The findings JSONB write
+        # on red_team_runs (Step 7 above) remains for read back-compat — this
+        # table is the new source of truth the deploy gate reads
+        # (deployment_service._fetch_red_team_summary_sync, 21-08 Task 3).
+        # Re-running the same red-team run creates a new run_id (Step 3), so
+        # this insert never double-fires for a given run — idempotent within
+        # the existing 30-minute run idempotency guard (Step 2).
+        # Best-effort: a failure here must never affect the run-row write
+        # above or the acks_late/idempotency guard.
+        # ------------------------------------------------------------------
+        try:
+            with _agents_conn.cursor() as _cur:
+                for _finding, _probe_id in zip(all_findings, finding_probe_ids):
+                    _cur.execute(
+                        """
+                        INSERT INTO red_team_findings
+                          (run_id, strategy_id, probe_id, severity, status,
+                           attack_vector, probe_message, agent_response, turn_count)
+                        VALUES (%s, %s, %s, %s, 'open', %s, %s, %s, %s)
+                        """,
+                        (
+                            run_id,
+                            strategy_ids.get(_finding.attack_vector),
+                            _probe_id,
+                            _finding.severity,
+                            _finding.attack_vector,
+                            _finding.probe_message,
+                            _finding.agent_response,
+                            _finding.turn_count,
+                        ),
+                    )
+            _agents_conn.commit()
+        except Exception as findings_exc:
+            log.warning(
+                "run_red_team.findings_write_failed",
+                agent_id=agent_id,
+                run_id=run_id,
+                error=str(findings_exc),
             )
 
         # ------------------------------------------------------------------
