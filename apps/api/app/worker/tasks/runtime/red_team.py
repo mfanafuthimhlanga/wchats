@@ -368,6 +368,57 @@ def run_red_team(self, agent_id: str) -> dict:
             )
 
         # ------------------------------------------------------------------
+        # Step 7b — Persist first-class strategy + probe rows (OPS-13)
+        # One red_team_strategies row per distinct attack_vector (idempotent
+        # upsert via UNIQUE(attack_vector) + ON CONFLICT DO NOTHING) and one
+        # red_team_probes row per finding's probe_message, linked by
+        # strategy_id. Uses the same _agents_conn as Step 7 above. Does NOT
+        # write red_team_findings — that table is populated in 21-08 (deploy
+        # gate rewire). Best-effort: a failure here must never affect the
+        # run-row write above or the acks_late/idempotency guard.
+        # ------------------------------------------------------------------
+        try:
+            distinct_vectors = sorted({f.attack_vector for f in all_findings})
+            strategy_ids: dict[str, str | None] = {}
+            with _agents_conn.cursor() as _cur:
+                for vector in distinct_vectors:
+                    _cur.execute(
+                        """
+                        INSERT INTO red_team_strategies (attack_vector, description)
+                        VALUES (%s, %s)
+                        ON CONFLICT (attack_vector) DO NOTHING
+                        """,
+                        (vector, f"Attack strategy: {vector}"),
+                    )
+                    _cur.execute(
+                        "SELECT id FROM red_team_strategies WHERE attack_vector = %s",
+                        (vector,),
+                    )
+                    _strategy_row = _cur.fetchone()
+                    strategy_ids[vector] = _strategy_row[0] if _strategy_row else None
+
+                for finding in all_findings:
+                    _cur.execute(
+                        """
+                        INSERT INTO red_team_probes (strategy_id, harm_category, probe_message)
+                        VALUES (%s, %s, %s)
+                        """,
+                        (
+                            strategy_ids.get(finding.attack_vector),
+                            None,
+                            finding.probe_message,
+                        ),
+                    )
+            _agents_conn.commit()
+        except Exception as programme_exc:
+            log.warning(
+                "run_red_team.programme_write_failed",
+                agent_id=agent_id,
+                run_id=run_id,
+                error=str(programme_exc),
+            )
+
+        # ------------------------------------------------------------------
         # Step 8 — Return result
         # ------------------------------------------------------------------
         log.info(
