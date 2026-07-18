@@ -636,3 +636,89 @@ class TestGradeTraceRoute:
 
         assert first.status_code == 200
         assert second.status_code == 409
+
+    async def test_grade_filed_dispatches_promote_trace_to_scenario(self):
+        """OPS-11 seam: filing a trace MUST dispatch the promotion task.
+
+        Regression guard for the Phase-21 verification gap where
+        promote_trace_to_scenario existed, was idempotent, and passed its own
+        tests -- but nothing in application code ever called it, silently
+        breaking the flywheel's write side.
+        """
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+        trace_id = str(uuid4())
+
+        graded = {
+            "trace_id": trace_id,
+            "grade": "filed",
+            "tally": {"filed": 1, "held": 0, "dismissed": 0},
+        }
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with (
+                patch(
+                    "app.api.v1.traces.bench_service.grade_trace",
+                    new=AsyncMock(return_value=graded),
+                ),
+                patch(
+                    "app.worker.tasks.runtime.bench.promote_trace_to_scenario.apply_async"
+                ) as mock_dispatch,
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=_test_app), base_url="http://test"
+                ) as client:
+                    response = await client.post(
+                        f"/api/v1/agents/{ready_agent.id}/traces/{trace_id}/grade",
+                        json={"grade": "filed"},
+                    )
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        mock_dispatch.assert_called_once()
+        # Only IDs cross the task boundary -- never a conn_str (CLAUDE.md rule 4).
+        assert mock_dispatch.call_args.kwargs["args"] == [str(ready_agent.id), trace_id]
+
+    async def test_grade_held_does_not_dispatch_promote_trace_to_scenario(self):
+        """Only 'filed' promotes -- 'held'/'dismissed' must not fire the task."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+        trace_id = str(uuid4())
+
+        graded = {
+            "trace_id": trace_id,
+            "grade": "held",
+            "tally": {"filed": 0, "held": 1, "dismissed": 0},
+        }
+
+        _test_app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        _test_app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with (
+                patch(
+                    "app.api.v1.traces.bench_service.grade_trace",
+                    new=AsyncMock(return_value=graded),
+                ),
+                patch(
+                    "app.worker.tasks.runtime.bench.promote_trace_to_scenario.apply_async"
+                ) as mock_dispatch,
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=_test_app), base_url="http://test"
+                ) as client:
+                    response = await client.post(
+                        f"/api/v1/agents/{ready_agent.id}/traces/{trace_id}/grade",
+                        json={"grade": "held"},
+                    )
+        finally:
+            _test_app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        mock_dispatch.assert_not_called()

@@ -155,6 +155,27 @@ async def grade_trace(
     except bench_service.TraceAlreadyFiledError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    if body.grade == "filed":
+        # OPS-11: filing a trace is the flywheel's promotion ceremony — it must
+        # become a permanent regression scenario. Lazy import keeps the worker
+        # task graph off this route module's import path (same convention as the
+        # transactional dispatcher). Only IDs cross the task boundary; conn_str
+        # is decrypted inside the task at runtime (CLAUDE.md rule 4).
+        from app.worker.tasks.runtime.bench import promote_trace_to_scenario
+
+        try:
+            promote_trace_to_scenario.apply_async(args=[str(agent_id), str(trace_id)])
+        except Exception as exc:  # broker unreachable — the grade is already committed
+            # Do NOT fail the request: the filing itself succeeded and the task is
+            # idempotent, so it can be safely re-dispatched. Log loudly so a silently
+            # un-promoted trace is visible rather than lost.
+            log.error(
+                "grade_trace.promote_dispatch_failed",
+                agent_id=str(agent_id),
+                trace_id=str(trace_id),
+                error=str(exc),
+            )
+
     log.info(
         "grade_trace.ok",
         agent_id=str(agent_id),
