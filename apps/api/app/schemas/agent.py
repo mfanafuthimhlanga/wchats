@@ -82,9 +82,18 @@ class AgentSoulUpdate(BaseModel):
     @field_validator("soul_do_list", "soul_donot_list", mode="before")
     @classmethod
     def sanitise_list_field(cls, v: list | None) -> list | None:
+        """Sanitise each item, then drop the ones left empty.
+
+        The admin soul editor submits blank rows, and sanitise_chunk_text can
+        itself reduce an item to "" by removing injection markers. Per the
+        04-06 API contract these are stripped server-side rather than 422-ing
+        the whole update via the per-item min_length=1 constraint, which still
+        guards anything that survives.
+        """
         if v is None:
             return None
-        return [sanitize_chunk_text(item) for item in v]
+        sanitised = (sanitize_chunk_text(item) for item in v)
+        return [item for item in sanitised if item]
 
 
 class AgentDetailResponse(BaseModel):
