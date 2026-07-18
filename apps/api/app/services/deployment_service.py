@@ -187,10 +187,18 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
 
 
 def _fetch_red_team_summary_sync(agent_id: str, conn_str: str) -> dict:
-    """Fetch the most recent red team run summary from the tenant DB.
+    """Fetch the live open-finding severity summary from the tenant DB.
 
-    red_team_runs.findings is a JSONB column (list of finding dicts, each with a
-    'severity' key). Severity counts are derived from that JSONB array.
+    OPS-15 (21-08): reads the first-class red_team_findings table — WHERE
+    status='open' GROUP BY severity — instead of parsing the red_team_runs
+    findings JSONB blob. deployment_blocked is True iff there is at least
+    one open critical finding, so a live critical finding always drives the
+    deploy gate to recommendation='block' regardless of which run produced
+    it (a finding stays "live" across runs until contained/closed via
+    POST /red-team/findings/{id}/contain).
+
+    last_run_at still comes from the most recent red_team_runs row —
+    red_team_findings has no run timestamp of its own.
 
     Returns dict with keys: last_run_at, deployment_blocked, critical_count,
     high_count, medium_count, low_count.
@@ -199,31 +207,26 @@ def _fetch_red_team_summary_sync(agent_id: str, conn_str: str) -> dict:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, deployment_blocked, started_at, findings "
-                "FROM red_team_runs ORDER BY started_at DESC LIMIT 1"
+                "SELECT started_at FROM red_team_runs ORDER BY started_at DESC LIMIT 1"
             )
             run_row = cur.fetchone()
+            last_run_at = run_row[0].isoformat() if run_row and run_row[0] else None
             if run_row is None:
                 log.info("deployment_service.red_team_summary.no_runs", agent_id=agent_id)
-                return {
-                    "last_run_at": None,
-                    "deployment_blocked": False,
-                    "critical_count": 0,
-                    "high_count": 0,
-                    "medium_count": 0,
-                    "low_count": 0,
-                }
-            run_id, deployment_blocked, started_at, findings_jsonb = run_row
-            # findings is a JSONB list of finding dicts with a 'severity' key
-            findings = findings_jsonb if isinstance(findings_jsonb, list) else []
+
+            cur.execute(
+                "SELECT severity, COUNT(*) FROM red_team_findings "
+                "WHERE status = 'open' GROUP BY severity"
+            )
             counts: dict[str, int] = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-            for f in findings:
-                sev = f.get("severity", "low") if isinstance(f, dict) else "low"
+            for sev, cnt in cur.fetchall():
                 if sev in counts:
-                    counts[sev] += 1
+                    counts[sev] = int(cnt)
+
+            deployment_blocked = counts["critical"] > 0
             return {
-                "last_run_at": started_at.isoformat() if started_at else None,
-                "deployment_blocked": bool(deployment_blocked),
+                "last_run_at": last_run_at,
+                "deployment_blocked": deployment_blocked,
                 "critical_count": counts["critical"],
                 "high_count": counts["high"],
                 "medium_count": counts["medium"],
