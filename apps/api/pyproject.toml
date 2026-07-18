@@ -29,6 +29,14 @@ dependencies = [
     "claude-agent-sdk==0.1.81",
     # M6: Eval system — Ragas 0.4.x with InstructorLLM (Anthropic) (D-01 LOCKED)
     "ragas>=0.4.0,<0.5.0",
+    # langchain-community pinned <0.4: ragas 0.4.3 (latest 0.4.x) hard-imports
+    # `langchain_community.chat_models.vertexai`, which was REMOVED in the 0.4 line.
+    # ragas declares langchain-community unpinned, so a fresh resolve picks 0.4.x and
+    # `import ragas` dies at ModuleNotFoundError — taking every module that imports
+    # app.main down with it. 0.3.31 still ships that module and satisfies
+    # langchain-core<2.0.0,>=0.3.78, so the rest of the langchain stack is unaffected.
+    # Revisit when ragas ships a 0.5.x that drops the legacy vertexai import.
+    "langchain-community<0.4",
     "instructor>=1.0.0,<2.0.0",
     "python-jose[cryptography]==3.5.0",
     "PyJWT[cryptography]==2.12.1",
