@@ -362,18 +362,19 @@ Plans:
 
 **Depends on:** Phase 20 (the Gotham operations room that consumes this data), Phase 6 (eval system — `eval_runs`/`eval_scenarios`), Phase 7 (red team — `red_team_runs`), Phase 10 (observability — alerts + Langfuse v4).
 
-**Plans:** 9 plans (5 waves)
+**Plans:** 9/9 plans complete
 
 Plans:
-- [ ] 21-01-PLAN.md — (W1) OPS-01/04: tenant migration 0009 (turn_metrics+message_feedback) + agent-turn write path + Langfuse v4 trace
-- [ ] 21-05-PLAN.md — (W1) OPS-09/10: bench failing-trace listing (cross-DB) + grade (filed irrevocable)
-- [ ] 21-02-PLAN.md — (W2) OPS-02/03: metrics_service + GET /metrics + widget feedback route
-- [ ] 21-03-PLAN.md — (W2) OPS-05/06: tenant migration 0010 (retrieval_metrics) + instrument retrieve_tool (job_id ContextVar)
-- [ ] 21-06-PLAN.md — (W3) OPS-11/12: tenant migration 0011 (widen source CHECK + provenance) + promote_trace_to_scenario + ORRERY ledger
-- [ ] 21-04-PLAN.md — (W4) OPS-07/08: sampled Ragas faithfulness + check_index_staleness + GET /retrieval-health
-- [ ] 21-07-PLAN.md — (W4) OPS-13: tenant migration 0012 (red_team_strategies/probes/findings) + programme endpoint
-- [ ] 21-08-PLAN.md — (W5) OPS-14/15: red_team_findings rows + contain→file scenario + deploy-gate rewire (422)
-- [ ] 21-09-PLAN.md — (W5) OPS-16: control migration 0017 (prompt_versions) + diff/canary/rollback + canary at dispatch
+
+- [x] 21-01-PLAN.md — (W1) OPS-01/04: tenant migration 0009 (turn_metrics+message_feedback) + agent-turn write path + Langfuse v4 trace
+- [x] 21-05-PLAN.md — (W1) OPS-09/10: bench failing-trace listing (cross-DB) + grade (filed irrevocable)
+- [x] 21-02-PLAN.md — (W2) OPS-02/03: metrics_service + GET /metrics + widget feedback route
+- [x] 21-03-PLAN.md — (W2) OPS-05/06: tenant migration 0010 (retrieval_metrics) + instrument retrieve_tool (job_id ContextVar)
+- [x] 21-06-PLAN.md — (W3) OPS-11/12: tenant migration 0011 (widen source CHECK + provenance) + promote_trace_to_scenario + ORRERY ledger
+- [x] 21-04-PLAN.md — (W4) OPS-07/08: sampled Ragas faithfulness + check_index_staleness + GET /retrieval-health
+- [x] 21-07-PLAN.md — (W4) OPS-13: tenant migration 0012 (red_team_strategies/probes/findings) + programme endpoint
+- [x] 21-08-PLAN.md — (W5) OPS-14/15: red_team_findings rows + contain→file scenario + deploy-gate rewire (422)
+- [x] 21-09-PLAN.md — (W5) OPS-16: control migration 0017 (prompt_versions) + diff/canary/rollback + canary at dispatch
 
 ---
 

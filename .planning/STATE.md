@@ -4,7 +4,7 @@ milestone: v1.1
 milestone_name: — Transactional Capability
 status: Milestone complete
 stopped_at: "v1.1 (Phases 14–17) shipped; Phase 17 secured (17-SECURITY.md, 20/20). Now in a v1.2 design-exploration pause: renamed the admin console prototype to GOTHAM (prototypes/gotham/; palette "Bone on Graphite" kept; product copy neutralised to verified/check) and drafted Milestone v1.2 — Phase 20 frontend cutover (UI2-01..08) + Phase 21 agent-mgmt backend (OPS-01..16). Content grep of the old theme token is clean. Leftover: the prior empty prototype folder is locked by another process (cosmetic; untracked). Next: /gsd-plan-phase 20."
-last_updated: "2026-07-15T17:34:47.951Z"
+last_updated: "2026-07-18T09:18:47.507Z"
 progress:
   total_phases: 6
   completed_phases: 4
