@@ -95,6 +95,16 @@ def _fake_eval_runs_rows() -> list[tuple]:
     ]
 
 
+def _fake_ledger_rows() -> list[tuple]:
+    """ORRERY ledger row (OPS-12): (born_in_production, red_team, authored).
+
+    list_eval_runs makes TWO asyncio.to_thread calls — the eval-runs query and
+    then _LEDGER_SQL — so tests must patch to_thread with side_effect, not
+    return_value, or the ledger unpack at evals.py receives eval-run rows.
+    """
+    return [(3, 2, 15)]
+
+
 def _fake_eval_results_rows(run_id: str, scenario_id: str) -> list[tuple]:
     """Rows for a single scenario with all four metrics."""
     return [
@@ -132,7 +142,7 @@ class TestListEvalRuns:
                 ),
                 patch(
                     "app.api.v1.evals.asyncio.to_thread",
-                    new=AsyncMock(return_value=fake_rows),
+                    new=AsyncMock(side_effect=[fake_rows, _fake_ledger_rows()]),
                 ),
             ):
                 async with AsyncClient(
@@ -166,6 +176,13 @@ class TestListEvalRuns:
         assert first["scenario_count"] == 20
         assert abs(scores["faithfulness"] - 0.87) < 0.001
 
+        # OPS-12: the ORRERY ledger travels with the eval-runs response
+        assert body["ledger"] == {
+            "born_in_production_count": 3,
+            "red_team_count": 2,
+            "authored_count": 15,
+        }
+
     async def test_null_scores_map_to_zero(self):
         """NULL metric scores (failed run) map to 0.0 in aggregate_scores."""
         fake_tenant = _make_fake_tenant()
@@ -180,7 +197,10 @@ class TestListEvalRuns:
         try:
             with (
                 patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
-                patch("app.api.v1.evals.asyncio.to_thread", new=AsyncMock(return_value=fake_rows)),
+                patch(
+                    "app.api.v1.evals.asyncio.to_thread",
+                    new=AsyncMock(side_effect=[fake_rows, _fake_ledger_rows()]),
+                ),
             ):
                 async with AsyncClient(
                     transport=ASGITransport(app=app), base_url="http://test"
@@ -341,20 +361,25 @@ class TestGetEvalRunResults:
         body = response.json()
         assert body["results"][0]["passed"] is True
 
-    async def test_passed_flag_false_when_any_score_below_threshold(self):
-        """passed=False when any metric score < EVAL_FAITHFULNESS_THRESHOLD (0.90)."""
+    async def test_passed_flag_false_when_gated_score_below_threshold(self):
+        """passed=False when a GATED metric falls below its threshold.
+
+        D-21 LOCKED gates on exactly two metrics — faithfulness AND
+        answer_relevancy (see promote_to_verified_qa in eval_service.py).
+        Here answer_relevancy = 0.79 < EVAL_RELEVANCY_THRESHOLD (0.90).
+        """
         fake_tenant = _make_fake_tenant()
         ready_agent = _make_ready_agent(fake_tenant)
         mock_db = _make_mock_db_returning_agent(ready_agent)
 
         run_id = uuid4()
         scenario_id = str(uuid4())
-        # context_recall = 0.79 — below threshold
+        # answer_relevancy = 0.79 — below threshold, and it IS part of the gate
         failing_rows = [
             (scenario_id, "Q?", "generated", "faithfulness", 0.95),
-            (scenario_id, "Q?", "generated", "answer_relevancy", 0.92),
+            (scenario_id, "Q?", "generated", "answer_relevancy", 0.79),
             (scenario_id, "Q?", "generated", "context_precision", 0.91),
-            (scenario_id, "Q?", "generated", "context_recall", 0.79),
+            (scenario_id, "Q?", "generated", "context_recall", 0.93),
         ]
 
         app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
@@ -377,6 +402,50 @@ class TestGetEvalRunResults:
 
         body = response.json()
         assert body["results"][0]["passed"] is False
+
+    async def test_passed_flag_ignores_ungated_metrics_below_threshold(self):
+        """passed stays True when only NON-gated metrics are below threshold.
+
+        Pins the D-21 LOCKED contract: context_precision and context_recall are
+        reported but deliberately NOT part of the promotion gate. A prior version
+        of this suite asserted a 4-metric "any score" rule, which contradicts
+        D-21 — it never ran because the module was uncollectable while the ragas
+        import was broken.
+        """
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+
+        run_id = uuid4()
+        scenario_id = str(uuid4())
+        # Both gated metrics pass; both ungated metrics are well below threshold.
+        rows = [
+            (scenario_id, "Q?", "generated", "faithfulness", 0.95),
+            (scenario_id, "Q?", "generated", "answer_relevancy", 0.92),
+            (scenario_id, "Q?", "generated", "context_precision", 0.41),
+            (scenario_id, "Q?", "generated", "context_recall", 0.39),
+        ]
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with (
+                patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
+                patch("app.api.v1.evals.asyncio.to_thread", new=AsyncMock(return_value=rows)),
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        f"/api/v1/agents/{ready_agent.id}/eval-runs/{run_id}/results",
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        body = response.json()
+        assert body["results"][0]["passed"] is True
 
     async def test_returns_empty_results_when_no_rows(self):
         """Empty results list when no eval_results rows exist for the run."""
