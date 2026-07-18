@@ -64,6 +64,12 @@ def _make_mock_agent(tenant_id, agent_id=None, widget_config=None) -> Agent:
     agent.created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
     agent.deleted_at = None
     agent.widget_config = widget_config if widget_config is not None else {}
+    # Soul fields are additive on AgentResponse (04-01). MagicMock(spec=Agent)
+    # otherwise hands pydantic a MagicMock for each, failing `str | None`.
+    agent.soul_role = None
+    agent.soul_voice = None
+    agent.soul_do_list = []
+    agent.soul_donot_list = []
     return agent
 
 

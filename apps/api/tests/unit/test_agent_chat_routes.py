@@ -114,7 +114,7 @@ class TestAgentChatPost202:
                     transport=ASGITransport(app=app), base_url="http://test"
                 ) as client:
                     response = await client.post(
-                        f"/agents/{ready_agent.id}/chat",
+                        f"/api/v1/agents/{ready_agent.id}/chat",
                         headers={"X-API-Key": "vrd_live_test"},
                         json={"message": "Hello, agent!"},
                     )
@@ -149,7 +149,7 @@ class TestAgentChatPost404:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    f"/agents/{uuid4()}/chat",
+                    f"/api/v1/agents/{uuid4()}/chat",
                     headers={"X-API-Key": "vrd_live_test"},
                     json={"message": "Hello"},
                 )
@@ -179,7 +179,7 @@ class TestAgentChatPost409:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    f"/agents/{building_agent.id}/chat",
+                    f"/api/v1/agents/{building_agent.id}/chat",
                     headers={"X-API-Key": "vrd_live_test"},
                     json={"message": "Hello"},
                 )
@@ -208,7 +208,7 @@ class TestAgentChatPost422TooLong:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    f"/agents/{uuid4()}/chat",
+                    f"/api/v1/agents/{uuid4()}/chat",
                     headers={"X-API-Key": "vrd_live_test"},
                     json={"message": "x" * 2001},
                 )
@@ -237,7 +237,7 @@ class TestAgentChatPost422Empty:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    f"/agents/{uuid4()}/chat",
+                    f"/api/v1/agents/{uuid4()}/chat",
                     headers={"X-API-Key": "vrd_live_test"},
                     json={"message": ""},
                 )
@@ -271,7 +271,7 @@ class TestAgentChatPost403ConversationOwnership:
                     transport=ASGITransport(app=app), base_url="http://test"
                 ) as client:
                     response = await client.post(
-                        f"/agents/{ready_agent.id}/chat",
+                        f"/api/v1/agents/{ready_agent.id}/chat",
                         headers={"X-API-Key": "vrd_live_test"},
                         json={
                             "message": "Hello",
@@ -330,7 +330,7 @@ class TestGetAgentConversations:
                     transport=ASGITransport(app=app), base_url="http://test"
                 ) as client:
                     response = await client.get(
-                        f"/agents/{ready_agent.id}/conversations",
+                        f"/api/v1/agents/{ready_agent.id}/conversations",
                         headers={"X-API-Key": "vrd_live_test"},
                     )
         finally:
@@ -358,7 +358,7 @@ class TestAgentChatRequiresApiKey:
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
             response = await client.post(
-                f"/agents/{uuid4()}/chat",
+                f"/api/v1/agents/{uuid4()}/chat",
                 json={"message": "Hello"},
             )
 
@@ -369,6 +369,6 @@ class TestAgentChatRequiresApiKey:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.get(f"/agents/{uuid4()}/conversations")
+            response = await client.get(f"/api/v1/agents/{uuid4()}/conversations")
 
         assert response.status_code in (401, 403)

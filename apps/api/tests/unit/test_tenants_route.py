@@ -54,7 +54,7 @@ class TestPostTenants:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    "/tenants",
+                    "/api/v1/tenants",
                     json={"name": "Test Corp"},
                     headers={"X-Admin-Key": ADMIN_KEY},
                 )
@@ -73,7 +73,7 @@ class TestPostTenants:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    "/tenants",
+                    "/api/v1/tenants",
                     json={"name": "Test Corp"},
                     headers={"X-Admin-Key": ADMIN_KEY},
                 )
@@ -96,7 +96,7 @@ class TestPostTenants:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    "/tenants",
+                    "/api/v1/tenants",
                     json={"name": "Test Corp"},
                     # No X-Admin-Key
                 )
@@ -115,7 +115,7 @@ class TestPostTenants:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.post(
-                    "/tenants",
+                    "/api/v1/tenants",
                     json={"name": "Test Corp"},
                     headers={"X-Admin-Key": "wrong_key_that_does_not_match"},
                 )

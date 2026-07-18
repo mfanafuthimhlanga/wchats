@@ -103,7 +103,7 @@ class TestPatchAgent:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.patch(
-                    f"/agents/{agent_id}",
+                    f"/api/v1/agents/{agent_id}",
                     json={
                         "name": "UpdatedBot",
                         "soul_role": "billing specialist",
@@ -140,7 +140,7 @@ class TestPatchAgent:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.patch(
-                    f"/agents/{agent_id}",
+                    f"/api/v1/agents/{agent_id}",
                     json={"soul_voice": "warm and reassuring"},
                     headers={"X-API-Key": "vrd_live_test"},
                 )
@@ -169,7 +169,7 @@ class TestPatchAgent:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.patch(
-                    f"/agents/{agent_id}",
+                    f"/api/v1/agents/{agent_id}",
                     json={
                         "soul_do_list": ["valid item", "", "  ", "another item"],
                     },
@@ -201,7 +201,7 @@ class TestPatchAgent:
             ) as client:
                 other_tenants_agent_id = uuid4()
                 response = await client.patch(
-                    f"/agents/{other_tenants_agent_id}",
+                    f"/api/v1/agents/{other_tenants_agent_id}",
                     json={"soul_voice": "sneaky voice"},
                     headers={"X-API-Key": "vrd_live_test"},
                 )
@@ -225,7 +225,7 @@ class TestPatchAgent:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.patch(
-                    f"/agents/{agent_id}",
+                    f"/api/v1/agents/{agent_id}",
                     json={"soul_voice": "irrelevant"},
                     # No X-API-Key header provided
                 )
@@ -246,7 +246,7 @@ class TestPatchAgent:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.patch(
-                    f"/agents/{agent_id}",
+                    f"/api/v1/agents/{agent_id}",
                     json={"name": ""},
                     headers={"X-API-Key": "vrd_live_test"},
                 )

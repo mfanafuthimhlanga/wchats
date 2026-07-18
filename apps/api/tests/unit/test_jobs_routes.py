@@ -88,7 +88,7 @@ class TestGetJob:
             ) as client:
                 job_id = uuid4()
                 response = await client.get(
-                    f"/jobs/{job_id}",
+                    f"/api/v1/jobs/{job_id}",
                     headers={"X-API-Key": "vrd_live_test"},
                 )
         finally:
@@ -116,7 +116,7 @@ class TestGetJob:
             ) as client:
                 job_id = uuid4()
                 response = await client.get(
-                    f"/jobs/{job_id}",
+                    f"/api/v1/jobs/{job_id}",
                     headers={"X-API-Key": "vrd_live_test"},
                 )
         finally:
@@ -139,7 +139,7 @@ class TestGetJob:
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 response = await client.get(
-                    "/jobs/not-valid-uuid",
+                    "/api/v1/jobs/not-valid-uuid",
                     headers={"X-API-Key": "vrd_live_test"},
                 )
         finally:
