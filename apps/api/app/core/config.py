@@ -172,6 +172,17 @@ class Settings(BaseSettings):
     # Override via env var ACTOR_SKIP_MAX_AMOUNT_CENTS.
     ACTOR_SKIP_MAX_AMOUNT_CENTS: int = 500
 
+    # Phase 18: blast-radius platform-default warning thresholds (BLR-01).
+    # Used when tenants.blast_radius_warn_single_cents /
+    # blast_radius_warn_hourly_cents is NULL (mirrors the tenants.daily_budget_usd
+    # + global-default convention from migration 0008). Both are configured-side
+    # ceilings, distinct from the observed-history figures computed over
+    # BLAST_RADIUS_OBSERVED_WINDOW_DAYS — Open Decision 1 keeps the two kinds
+    # of number separately labelled, never conflated.
+    BLAST_RADIUS_WARN_SINGLE_CENTS: int = 50000    # R500.00 platform-default single-action warning
+    BLAST_RADIUS_WARN_HOURLY_CENTS: int = 200000   # R2000.00 platform-default hourly-aggregate warning
+    BLAST_RADIUS_OBSERVED_WINDOW_DAYS: int = 7     # rolling window the observed blast-radius figures cover
+
     def __repr__(self) -> str:  # T-01-01, T-01-02: never leak field values
         return f"Settings(LOG_LEVEL={self.LOG_LEVEL!r})"
 
