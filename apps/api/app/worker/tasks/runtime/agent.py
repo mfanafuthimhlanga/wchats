@@ -56,6 +56,7 @@ from app.services.agent_tools import build_tool_server, RetrievalStrategy
 from app.services.escalation import send_escalation_email
 from app.services.events import emit
 from app.services.prompt_version_service import resolve_prompt_version
+from app.utils.pii_firewall import scan_response
 from app.worker.celery_app import celery_app
 from app.worker.tasks.runtime.validators import run_gatekeeper, run_auditor, run_strategist
 from app.worker.tasks.runtime.retrieval_eval import run_retrieval_faithfulness
@@ -900,6 +901,32 @@ def run_agent_turn(
             total_cost_usd: float | None = result.get("total_cost_usd")
             num_turns: int | None = result.get("num_turns")
             stop_reason: str | None = result.get("stop_reason")
+
+            # --------------------------------------------------------------
+            # SEC-01/L4: synchronous PII output firewall (T-18-SEC-01, T-18-SEC-02).
+            # Must run here, synchronously, because the Gatekeeper/Auditor/Strategist
+            # validators dispatch ASYNCHRONOUSLY after the response has already
+            # streamed to the customer (see the validator chord below) — a leak
+            # cannot wait for a post-hoc judge. Rebinding response_text here, before
+            # any consumer reads it, guarantees the served text (SSE emit), the
+            # persisted text (_persist_messages), the cited text (_extract_citations)
+            # and the judged text (the validator chord) can never diverge — a single
+            # substitution covers all four. The firewall call below takes no flag and
+            # reads no config, so nothing in the response text, the agent soul, or an
+            # ingested document can disable it. Citations are extracted from the deflection
+            # when a flag fires, which correctly yields an empty citation list — a
+            # deflection cites nothing.
+            filtered_text, pii_detector = scan_response(response_text)
+            if pii_detector is not None:
+                log.warning(
+                    "pii_firewall.response_deflected",
+                    job_id=job_id,
+                    agent_id=agent_id,
+                    conversation_id=str(local_conversation_id),
+                    detector=pii_detector,
+                    original_length=len(response_text),
+                )
+            response_text = filtered_text
 
             # --------------------------------------------------------------
             # Citation extraction — missing block yields [] + warning (not failure)
