@@ -8,7 +8,7 @@ Schema: prd-M1.md §5
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, Index, Text, text
+from sqlalchemy import DateTime, Index, Integer, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -46,4 +46,15 @@ class Tenant(Base):
     )
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # Phase 18 BLR-01: per-tenant blast-radius warning thresholds, in cents.
+    # NULL means "fall back to the platform default in settings
+    # (BLAST_RADIUS_WARN_SINGLE_CENTS / BLAST_RADIUS_WARN_HOURLY_CENTS)" —
+    # mirroring the tenants.daily_budget_usd + global-default convention from
+    # migration 0008. No admin UI edits these columns in Phase 18.
+    blast_radius_warn_single_cents: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    blast_radius_warn_hourly_cents: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
     )

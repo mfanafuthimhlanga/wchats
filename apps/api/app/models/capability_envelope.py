@@ -10,6 +10,11 @@ Plan 03 checks this before any tool call executes.
 
 UNIQUE(agent_id, skill) named uq_capability_envelopes_agent_skill guarantees
 at most one envelope row per agent/skill pair.
+
+Phase 18 (BLR-02, CAP-03): actor_mode is part of the canonical envelope-hash
+input used to detect BLR-02 drift between checklist-run time and approval
+time — id and updated_at are deliberately excluded from that hash (a no-op
+re-save must not fire false drift). See 18-01-PLAN.md Open Decision 2.
 """
 
 from datetime import datetime
@@ -47,6 +52,15 @@ class CapabilityEnvelope(Base):
     )
     requires_identity_verification: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
+    )
+    # Phase 18 CAP-03: per-skill Actor mode. Legal shapes (enforced by
+    # ck_capability_envelopes_actor_mode at the DB layer): 'always-on'
+    # (default, full Actor review), 'off', or 'sample_at_rate_N' for N in
+    # 1..100. Default is fail-safe strictest — an unset row never silently
+    # means "no Actor review". Wiring sample_at_rate_N sampling behaviour
+    # into call_actor_gate is deferred (Open Decision 3b).
+    actor_mode: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'always-on'")
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")

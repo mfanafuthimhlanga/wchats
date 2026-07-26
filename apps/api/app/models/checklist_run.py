@@ -43,6 +43,17 @@ class ChecklistRun(Base):
         DateTime(timezone=True), nullable=True
     )
     approved_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Phase 18 BLR-02: sha256 canonical-JSON hash of the capability envelope
+    # at checklist-run time. Nullable — historical runs predate the hash and
+    # NULL must never be read as "matches whatever is live now" (that
+    # comparison is 18-07's contract).
+    envelope_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Phase 18 BLR-02: stamped inside the existing POST /approve-deployment
+    # call — the approve gesture IS the acknowledgement gesture, no separate
+    # acknowledgement endpoint exists.
+    envelope_acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
