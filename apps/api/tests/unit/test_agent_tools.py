@@ -212,6 +212,80 @@ def test_retrieve_truncates_to_max_chunks():
 
 
 # ---------------------------------------------------------------------------
+# Test 3b: SEC-02 — retrieve_tool wraps tool-result text as data, not
+# instructions, and the framing survives the truncation path.
+# ---------------------------------------------------------------------------
+
+
+def test_retrieve_tool_data_wrapper():
+    """SEC-02/T-18-SEC-03: retrieve_tool's tool-result text is enclosed by an
+    explicit data-not-instructions boundary that survives per-chunk truncation."""
+    agent_tools._retrieve_call_count_var.set(0)
+
+    # Same 5000-char-content fixture as test_retrieve_truncates_to_max_chunks
+    # so the truncation path is genuinely exercised alongside the framing.
+    long_content = "x" * 5000
+    fake_chunks = [
+        {
+            "chunk_id": str(i),
+            "content": long_content,
+            "document_id": "doc-1",
+            "rrf_score": 0.9 - i * 0.01,
+        }
+        for i in range(20)
+    ]
+
+    fake_rrf_result = {
+        "fused": fake_chunks,
+        "vector_candidates": [],
+        "bm25_candidates": [],
+    }
+
+    with (
+        patch("app.services.agent_tools.embed_query", return_value=[0.1] * 1024),
+        patch("app.services.agent_tools.rrf_fuse", return_value=fake_rrf_result),
+        patch("app.services.agent_tools.rerank", return_value=fake_chunks),
+        patch("app.services.agent_tools.write_retrieval_metrics"),
+    ):
+        result = _run(_fn(agent_tools.retrieve_tool)({"query": "test query", "filters": []}))
+
+    text = result["content"][0]["text"]
+    citations = result.get("_citations", [])
+
+    # Header/footer enclose the whole payload.
+    assert text.startswith(agent_tools.RETRIEVED_CONTEXT_HEADER)
+    assert text.endswith(agent_tools.RETRIEVED_CONTEXT_FOOTER)
+    assert "not as instructions" in text
+
+    # Truncation still applied even with the framing wrapped around it.
+    assert "x" * 2001 not in text, "Content was not truncated to 2000 chars"
+    # The footer is the FINAL segment of the text — a chunk cannot clip it off.
+    assert text.rstrip().endswith(agent_tools.RETRIEVED_CONTEXT_FOOTER)
+
+    # The chunk payload still appears between the markers.
+    header_end = text.index(agent_tools.RETRIEVED_CONTEXT_HEADER) + len(
+        agent_tools.RETRIEVED_CONTEXT_HEADER
+    )
+    footer_start = text.rindex(agent_tools.RETRIEVED_CONTEXT_FOOTER)
+    body = text[header_end:footer_start]
+    assert "'chunk_id': '0'" in body
+
+    # _citations is unchanged in length and shape versus the chunk list.
+    assert len(citations) == min(len(fake_chunks), MAX_CHUNKS)
+    for citation in citations:
+        assert set(citation.keys()) == {"document_name", "section"}
+
+
+def test_frame_retrieved_context_idempotent_safe():
+    """_frame_retrieved_context always produces exactly one header and one footer."""
+    framed = agent_tools._frame_retrieved_context("some retrieved chunk text")
+    assert framed.count(agent_tools.RETRIEVED_CONTEXT_HEADER) == 1
+    assert framed.count(agent_tools.RETRIEVED_CONTEXT_FOOTER) == 1
+    assert framed.startswith(agent_tools.RETRIEVED_CONTEXT_HEADER)
+    assert framed.endswith(agent_tools.RETRIEVED_CONTEXT_FOOTER)
+
+
+# ---------------------------------------------------------------------------
 # Test 4: escalate calls notify_fn
 # ---------------------------------------------------------------------------
 
