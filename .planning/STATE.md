@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — v1.1 Phases 18–19 and Phase 13 still outstanding
-stopped_at: Completed 18-04-PLAN.md
-last_updated: "2026-07-26T21:50:52.809Z"
+stopped_at: Completed 18-05-PLAN.md
+last_updated: "2026-07-26T22:33:20.375Z"
 progress:
   total_phases: 2
   completed_phases: 2
@@ -37,7 +37,9 @@ Two findings from this planning pass that matter beyond Phase 18:
 
 **▶ 18-03 EXECUTED 2026-07-26 — RTX-01/02/03 red-team probe substrate (OD-6), 3/3 tasks, wave 1.** `app/services/transactional/provider_adapter.py`: module-private `_red_team_mode_var` ContextVar (default `False`, no config/env surface) plus `_set_red_team_mode`/`_reset_red_team_mode`, and a short-circuit at the very top of `get_adapter_for_skill` returning the `_STUB_ADAPTER` singleton before `_fetch_credential_config` is ever called — placed there specifically because a clean red-team tenant has zero `integration_credentials` rows, so credential resolution would otherwise abort with `provider.not_configured` before any capability/IDV/rate/Actor verdict fires (RESEARCH.md Pitfall 1). New `app/services/red_team_probe.py` (the two no-analog gaps `18-PATTERNS.md` named): `red_team_mode()` context manager (the only sanctioned setter), `invoke_probe_tool(skill, args)` (deterministic dispatcher-invocation surface for RTX-02/RTX-03, returns the dispatcher's own response dict verbatim), `_build_transactional_probe_fn(agent, conn_str, tenant_id)` (conversational victim-turn surface for RTX-01 confused-deputy probing, matching the existing `run_X_agent(probe_fn, ...)` runner contract exactly and appending a machine-readable tool-verdict transcript; returns `""` on any victim-turn failure, matching the shipped `_build_probe_fn` resilience contract), `ProbeToolResult.verdict_tag` (7-way classifier over the dispatcher's own response vocabulary including `provider_not_configured` — a failed short-circuit surfaces as an invalid run, never a clean one), and `CLEAN_TENANT_ENVELOPES`/`CLEAN_TENANT_SPEC` (RTX-04's clean tenant as executable data: 6 skill rows all enabled with bounded `max_amount_cents` + `rate_limit`, exactly one — `issue_refund` — requiring identity verification). New `tests/unit/test_red_team_probe.py`: 18 mocked-boundary test cases, no Postgres/Redis/live Anthropic/SDK subprocess. **Caller-free by design** — plan 18-06 wires this substrate into the red-team runners; that is explicitly not incomplete work. Full unit suite 996→1014 passed, 8 skipped, 0 failed; `apps/api/pyproject.toml` unchanged (no `pyrit`, no new dependency). Commits `ed4bcef`, `9a7849c`, `ab6b35a`. See `18-03-SUMMARY.md`.
 
-**▶ NEXT: `/gsd-execute-phase 18`** to continue with the remaining wave-1+ plans (18-04..18-11). Phase 19 (DOC/VER) still has 0 plans and depends on 18. Phase 13 stays paused at 7/11 on a real AWS account. **No v1.2 migration has been applied to a live Neon DB** (tenant 0009–0012, control 0017–0018) — that plus live Langfuse trace visibility, real Ragas numbers, and an end-to-end `POST /approve-deployment` → 422 are the deferred `/gsd-verify-work 21` gate. Phase 18's own control migration 0019 inherits the same constraint (its live roundtrip is `autonomous:false`).
+**▶ 18-05 EXECUTED 2026-07-27 — BLR-01 blast-radius signal collector, 3/3 tasks, wave 2.** `deployment_service.py` gains the fifth M8 collector, `_fetch_blast_radius_sync(agent_id)` — the first collector to read the **control DB** (`get_sync_db()`) instead of the tenant DB, taking only `agent_id`, no `conn_str`. Reports four separately-named figures (configured ceiling vs observed maximum, single-action vs hourly-aggregate) plus `observed_window_days` and the two resolved thresholds; a partially-bounded enabled skill (one capped, one not) forces the configured ceiling to `None` rather than the max of the bounded rows (OD-1, UI-SPEC D4.2); NULL never coerces to `0`. `_resolve_blast_radius_thresholds` applies the tenant-column-with-platform-fallback pattern (OD-1b) in Python. `derive_blast_radius_warnings` is a pure function — no DB, no LLM — reading only the `configured_max_*` keys (proven by an `inspect.getsource` regression test that the source never mentions a historical-maximum key), so a financial-gate warning can never be triggered by what merely happened, only by what is currently authorized. `run_deployment_checklist` Step 4 wraps the fifth collector in its own try/except with a copied `BLAST_RADIUS_DEFAULT_SIGNAL` safe default; Step 6 appends the derived warnings to the orchestrator's own list, de-duplicated by `warning_id`. `_DEPLOYMENT_SYSTEM_PROMPT` gained one additive narrative paragraph (blast-radius awareness for the summary text) with an explicit instruction never to emit a warning itself — the blocking/warning/ship condition lists are byte-for-byte unchanged. 20 new unit tests (`test_fetch_blast_radius_sync` module-scope + `TestBlastRadiusCollector` + `TestBlastRadiusWarnings` + `TestBlastRadiusWiring`); full unit suite 1029→1049 passed, 8 skipped, 0 failed; `apps/api/pyproject.toml` unchanged. Commits `4f0e0f0`, `cbc92e7`, `61d61bc`. See `18-05-SUMMARY.md`.
+
+**▶ NEXT: `/gsd-execute-phase 18`** to continue with the remaining wave-2+ plans (18-06..18-11). Phase 19 (DOC/VER) still has 0 plans and depends on 18. Phase 13 stays paused at 7/11 on a real AWS account. **No v1.2 migration has been applied to a live Neon DB** (tenant 0009–0012, control 0017–0018) — that plus live Langfuse trace visibility, real Ragas numbers, and an end-to-end `POST /approve-deployment` → 422 are the deferred `/gsd-verify-work 21` gate. Phase 18's own control migration 0019 inherits the same constraint (its live roundtrip is `autonomous:false`), and BLR-01's live end-to-end signal against a real control DB is deferred alongside it to plan 18-11.
 
 **Security artifact status (corrected 2026-07-26 — the previous text below wrongly claimed 14/15/16 had none):** Phases 14, 15, 16, 17 and 21 each have a `SECURITY.md`. Phase 20 has none (pure frontend re-skin). Phase 13 has neither SECURITY nor VERIFICATION (paused mid-execution).
 
@@ -239,6 +241,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Phase 18 P02 | 13min | 3 tasks | 5 files |
 | Phase 18 P03 | 25min | 3 tasks | 3 files |
 | Phase 18 P04 | 25min | 2 tasks | 2 files |
+| Phase 18 P05 | 18min | 3 tasks | 4 files |
 
 ## Notes
 
@@ -380,11 +383,13 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: [18-03] _build_transactional_probe_fn returns "" immediately on any victim-turn exception (not a partial transcript) — matches the shipped _build_probe_fn failure contract exactly
 - [Phase ?]: [18-04] validate_tighten_only/canonical_envelope_hash/envelope_drift ship caller-free in capability_service.py by design — 18-07 wires the hash/drift call sites, 18-08 wires the PATCH route (Phase 21 seam-ownership correction)
 - [Phase ?]: [18-04] actor_mode='off' is rejected on any mutating skill unconditionally (before the ordinal tightness comparison), not merely when it would be a loosening
+- [Phase ?]: [18-05] A partially-bounded enabled-skill configuration reports configured_max_single_action_cents as None, not the max of the bounded rows — an unconfigured ceiling on a money-moving agent is real exposure, not a favorable number
+- [Phase ?]: [18-05] derive_blast_radius_warnings reads only configured_max_* keys, never observed history — proven by an inspect.getsource regression test asserting no historical-maximum key is ever referenced
 
 ## Session
 
-**Last session:** 2026-07-26T21:50:31.694Z
-**Stopped at:** Completed 18-04-PLAN.md
+**Last session:** 2026-07-26T22:31:56.217Z
+**Stopped at:** Completed 18-05-PLAN.md
 
 Earlier the same session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 

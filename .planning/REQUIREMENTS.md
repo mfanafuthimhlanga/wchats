@@ -345,7 +345,7 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 
 ### Blast-Radius Gate
 
-- [ ] **BLR-01**: Financial blast-radius gate in the M8 checklist orchestrator — reports max single-action value and max hourly aggregate per agent
+- [x] **BLR-01**: Financial blast-radius gate in the M8 checklist orchestrator — reports max single-action value and max hourly aggregate per agent
 - [x] **BLR-02**: Warnings escalate above tenant-configured thresholds; owner acknowledges the envelope hash at deploy (logged)
 
 ### Red-Team Extensions (extends M7)
@@ -386,7 +386,7 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 | ACT-01..06 | Phase 15 | ✓ Complete (3/3 plans; live-verified ACT-04/05 + T-15-01/02; **ACT-06 p95<1s deferred to prod infra** — 4660ms p95 on the local 4GB box; 15-SECURITY.md) |
 | INT-01..07 | Phase 16 | ✓ Complete (7/7 plans; 16-VERIFICATION human_needed 2/3; **live Stripe test-mode refund gate deferred to prod, operator-accepted 2026-07-01**; 16-SECURITY.md) |
 | IDV-01..05 | Phase 17 | ✓ Complete (6/6 plans; 17-VERIFICATION.md; 17-SECURITY.md 20/20) |
-| BLR-01, BLR-02, CAP-03, CAP-04, RTX-01..04, SEC-01..03 | Phase 18 | ◐ In progress — 4/11 plans executed (18-01..18-04; capability_service.py tighten-only/hash/drift ships caller-free, wired by 18-07/18-08) |
+| BLR-01, BLR-02, CAP-03, CAP-04, RTX-01..04, SEC-01..03 | Phase 18 | ◐ In progress — 5/11 plans executed (18-01..18-05; BLR-01 blast-radius collector shipped; capability_service.py tighten-only/hash/drift ships caller-free, wired by 18-07/18-08) |
 | DOC-01..03, VER-01, AUD-03 | Phase 19 | **○ Not planned — 0 plans (depends on 18).** |
 
 **v1.1 coverage:** 43 requirements across phases 14–19, all mapped. (TXN 5, CAP 4, ACT 6, INT 7, IDV 5, AUD 3, BLR 2, RTX 4, SEC 3, DOC 3, VER 1 = 43.)
