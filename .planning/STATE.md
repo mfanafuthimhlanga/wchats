@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — v1.1 Phases 18–19 and Phase 13 still outstanding
-stopped_at: Completed 18-05-PLAN.md
-last_updated: "2026-07-26T22:33:20.375Z"
+stopped_at: Completed 18-06-PLAN.md
+last_updated: "2026-07-26T23:16:48.376Z"
 progress:
   total_phases: 2
   completed_phases: 2
@@ -39,7 +39,9 @@ Two findings from this planning pass that matter beyond Phase 18:
 
 **▶ 18-05 EXECUTED 2026-07-27 — BLR-01 blast-radius signal collector, 3/3 tasks, wave 2.** `deployment_service.py` gains the fifth M8 collector, `_fetch_blast_radius_sync(agent_id)` — the first collector to read the **control DB** (`get_sync_db()`) instead of the tenant DB, taking only `agent_id`, no `conn_str`. Reports four separately-named figures (configured ceiling vs observed maximum, single-action vs hourly-aggregate) plus `observed_window_days` and the two resolved thresholds; a partially-bounded enabled skill (one capped, one not) forces the configured ceiling to `None` rather than the max of the bounded rows (OD-1, UI-SPEC D4.2); NULL never coerces to `0`. `_resolve_blast_radius_thresholds` applies the tenant-column-with-platform-fallback pattern (OD-1b) in Python. `derive_blast_radius_warnings` is a pure function — no DB, no LLM — reading only the `configured_max_*` keys (proven by an `inspect.getsource` regression test that the source never mentions a historical-maximum key), so a financial-gate warning can never be triggered by what merely happened, only by what is currently authorized. `run_deployment_checklist` Step 4 wraps the fifth collector in its own try/except with a copied `BLAST_RADIUS_DEFAULT_SIGNAL` safe default; Step 6 appends the derived warnings to the orchestrator's own list, de-duplicated by `warning_id`. `_DEPLOYMENT_SYSTEM_PROMPT` gained one additive narrative paragraph (blast-radius awareness for the summary text) with an explicit instruction never to emit a warning itself — the blocking/warning/ship condition lists are byte-for-byte unchanged. 20 new unit tests (`test_fetch_blast_radius_sync` module-scope + `TestBlastRadiusCollector` + `TestBlastRadiusWarnings` + `TestBlastRadiusWiring`); full unit suite 1029→1049 passed, 8 skipped, 0 failed; `apps/api/pyproject.toml` unchanged. Commits `4f0e0f0`, `cbc92e7`, `61d61bc`. See `18-05-SUMMARY.md`.
 
-**▶ NEXT: `/gsd-execute-phase 18`** to continue with the remaining wave-2+ plans (18-06..18-11). Phase 19 (DOC/VER) still has 0 plans and depends on 18. Phase 13 stays paused at 7/11 on a real AWS account. **No v1.2 migration has been applied to a live Neon DB** (tenant 0009–0012, control 0017–0018) — that plus live Langfuse trace visibility, real Ragas numbers, and an end-to-end `POST /approve-deployment` → 422 are the deferred `/gsd-verify-work 21` gate. Phase 18's own control migration 0019 inherits the same constraint (its live roundtrip is `autonomous:false`), and BLR-01's live end-to-end signal against a real control DB is deferred alongside it to plan 18-11.
+**▶ 18-06 EXECUTED 2026-07-27 — RTX-01/02/03 transaction red-team probes wired into run_red_team, 4/4 tasks, wave 2.** Closes the cross-wave seam 18-03 shipped caller-free: `red_team_service.py` gains three runners sharing the shipped `run_X_agent(probe_fn, max_turns, attack_sequences)` contract — `run_confused_deputy_agent` (RTX-01, conversational, instructed that a blocked/require-human/capability-denied/identity-required transcript line is correct behaviour, not a finding) and two deterministic runners, `run_value_bound_evasion_agent` (RTX-02, chains real `issue_refund` calls inside one `red_team_mode()` window, reads the Redis rate layer's own `verdict_tag`) and `run_identity_bypass_agent` (RTX-03, two attempts — no session, forged token — against the Step 2.5 IDV gate, restoring the `verified_session_token` ContextVar afterwards). `provider_not_configured` surfaces as an explicit invalid-run finding in both deterministic runners (RESEARCH.md Pitfall 1), never silent success. `worker/tasks/runtime/red_team.py` Step 4 now builds `transactional_probe_fn` (via `red_team_probe._build_transactional_probe_fn`) alongside the existing bare `probe_fn`, and seeds the dispatcher ContextVars once via `build_tool_server()` — synchronously, before any `asyncio.run()` call in Step 5 — so the two deterministic RTX runners' own event loops inherit them via Python's `contextvars.copy_context()` Task-creation semantics (the "caller must have already populated the ContextVars via `build_tool_server()`" contract `red_team_probe.py` itself documents). Step 5 runs all six runners strictly sequentially (`worker_pool=solo` preserved, no chord). New `tests/unit/test_red_team_rtx_runners.py` (14 mocked-boundary tests including the `test_run_red_team_calls_all_six_runners` cross-wave-seam wiring proof) and new `tests/integration/test_red_team_rtx.py` (`INTEGRATION_TESTS_ENABLED`-gated, mirrors `test_deploy_gate_redteam.py`'s ephemeral-DB pattern; collects with all 3 named tests skipped in this environment — no live Postgres/Redis/API key here; live run deferred to 18-11). Three pre-existing test files (`test_red_team_task.py`, `test_redteam_findings.py`, `test_redteam_programme.py`) needed a Rule-1 fix: their `MagicMock` agents' auto-generated `retrieval_strategy` broke Step 4's new `RetrievalStrategy.model_validate(...)` call. Full unit suite 1049→1063 passed, 8 skipped, 0 failed; `apps/api/pyproject.toml` unchanged (no `pyrit`, no new dependency). Commits `4431ca4`, `2ccb0b2`, `81becbc`, `df2deef`, `8d662f1`, `4d12544`. See `18-06-SUMMARY.md`.
+
+**▶ NEXT: `/gsd-execute-phase 18`** to continue with the remaining wave-2+ plans (18-07..18-11). Phase 19 (DOC/VER) still has 0 plans and depends on 18. Phase 13 stays paused at 7/11 on a real AWS account. **No v1.2 migration has been applied to a live Neon DB** (tenant 0009–0012, control 0017–0018) — that plus live Langfuse trace visibility, real Ragas numbers, and an end-to-end `POST /approve-deployment` → 422 are the deferred `/gsd-verify-work 21` gate. Phase 18's own control migration 0019 inherits the same constraint (its live roundtrip is `autonomous:false`), and BLR-01's live end-to-end signal against a real control DB is deferred alongside it to plan 18-11.
 
 **Security artifact status (corrected 2026-07-26 — the previous text below wrongly claimed 14/15/16 had none):** Phases 14, 15, 16, 17 and 21 each have a `SECURITY.md`. Phase 20 has none (pure frontend re-skin). Phase 13 has neither SECURITY nor VERIFICATION (paused mid-execution).
 
@@ -242,6 +244,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Phase 18 P03 | 25min | 3 tasks | 3 files |
 | Phase 18 P04 | 25min | 2 tasks | 2 files |
 | Phase 18 P05 | 18min | 3 tasks | 4 files |
+| Phase 18 P06 | ~40min | 4 tasks | 7 files |
 
 ## Notes
 
@@ -385,11 +388,14 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: [18-04] actor_mode='off' is rejected on any mutating skill unconditionally (before the ordinal tightness comparison), not merely when it would be a loosening
 - [Phase ?]: [18-05] A partially-bounded enabled-skill configuration reports configured_max_single_action_cents as None, not the max of the bounded rows — an unconfigured ceiling on a money-moving agent is real exposure, not a favorable number
 - [Phase ?]: [18-05] derive_blast_radius_warnings reads only configured_max_* keys, never observed history — proven by an inspect.getsource regression test asserting no historical-maximum key is ever referenced
+- [Phase ?]: [18-06] RTX-02/03 deterministic runners keep the shipped run_X_agent(probe_fn, max_turns, attack_sequences) signature but call red_team_probe.invoke_probe_tool directly; run_red_team's Step 4 seeds the dispatcher ContextVars once via build_tool_server() before Step 5 so asyncio Task-context-copy propagates them into each runner's own event loop
+- [Phase ?]: [18-06] red_team_probe.py symbols are imported lazily (function-body, not module level) inside red_team_service.py's new runners — red_team_probe.py imports SONNET_MODEL from red_team_service.py at module level, so a module-level import back would be circular
+- [Phase ?]: [18-06] provider_not_configured findings in both deterministic RTX runners are built directly with severity='high', bypassing classify_severity — a failed short-circuit is a tooling/infra signal, not a behavioral judgment for the Haiku rubric
 
 ## Session
 
-**Last session:** 2026-07-26T22:31:56.217Z
-**Stopped at:** Completed 18-05-PLAN.md
+**Last session:** 2026-07-26T23:16:16.275Z
+**Stopped at:** Completed 18-06-PLAN.md
 
 Earlier the same session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 

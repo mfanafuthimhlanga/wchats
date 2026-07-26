@@ -231,7 +231,7 @@ Plans:
 3. Transaction red-team probes (confused-deputy, value-bound evasion, identity-bypass) run with zero high-severity findings on a clean tenant
 4. PII output-firewall pass live; retrieval "treat as data, not instructions" wrapper in place; injection agent split into conversation/content variants
 
-**Plans:** 5/11 plans executed
+**Plans:** 6/11 plans executed
 
 Plans:
 
@@ -240,7 +240,7 @@ Plans:
 - [x] 18-03-PLAN.md — RTX probe substrate: red-team mode, StubProviderAdapter short-circuit, transactional probe_fn, clean-tenant fixture *(wave 1)*
 - [x] 18-04-PLAN.md — capability_service: platform defaults, canonical envelope hash, tighten-only comparator, drift predicate *(wave 2)*
 - [x] 18-05-PLAN.md — BLR-01 blast-radius collector (control DB) + tenant thresholds + deterministic warnings *(wave 2)*
-- [ ] 18-06-PLAN.md — RTX-01/02/03 runners against the real dispatcher + integration roundtrips *(wave 2)*
+- [x] 18-06-PLAN.md — RTX-01/02/03 runners against the real dispatcher + integration roundtrips *(wave 2)*
 - [ ] 18-07-PLAN.md — BLR-02/CAP-04 envelope-hash persistence, drift on read, approve-deployment 422 at the route *(wave 3)*
 - [ ] 18-08-PLAN.md — CAP-03 capability-envelope GET/PATCH routes with server-side tighten-only enforcement *(wave 3)*
 - [ ] 18-09-PLAN.md — SEC-03 injection agent split into conversation and content variants *(wave 3)*
