@@ -161,6 +161,9 @@ class TestRunRedTeamWritesFindingsRows:
         mock_agent.soul_role = None
         mock_agent.soul_do_list = None
         mock_agent.soul_donot_list = None
+        mock_agent.id = agent_id
+        mock_agent.tenant_id = str(uuid.uuid4())
+        mock_agent.retrieval_strategy = {}  # Step 4's RetrievalStrategy.model_validate needs a dict
 
         mock_db = MagicMock()
         mock_db.get.return_value = mock_agent
@@ -208,6 +211,21 @@ class TestRunRedTeamWritesFindingsRows:
         ), patch(
             "app.worker.tasks.runtime.red_team.run_hallucination_agent",
             return_value=[low_finding],
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_confused_deputy_agent",
+            return_value=[],
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_value_bound_evasion_agent",
+            return_value=[],
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_identity_bypass_agent",
+            return_value=[],
+        ), patch(
+            "app.worker.tasks.runtime.red_team.build_tool_server",
+            return_value=MagicMock(),
+        ), patch(
+            "app.worker.tasks.runtime.red_team._build_transactional_probe_fn",
+            return_value=MagicMock(),
         ):
             result = run_red_team.run(agent_id=agent_id)
 
@@ -253,6 +271,9 @@ class TestRunRedTeamWritesFindingsRows:
         mock_agent.soul_role = None
         mock_agent.soul_do_list = None
         mock_agent.soul_donot_list = None
+        mock_agent.id = agent_id
+        mock_agent.tenant_id = str(uuid.uuid4())
+        mock_agent.retrieval_strategy = {}  # Step 4's RetrievalStrategy.model_validate needs a dict
 
         mock_db = MagicMock()
         mock_db.get.return_value = mock_agent
@@ -292,6 +313,21 @@ class TestRunRedTeamWritesFindingsRows:
         ), patch(
             "app.worker.tasks.runtime.red_team.run_hallucination_agent",
             return_value=[],
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_confused_deputy_agent",
+            return_value=[],
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_value_bound_evasion_agent",
+            return_value=[],
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_identity_bypass_agent",
+            return_value=[],
+        ), patch(
+            "app.worker.tasks.runtime.red_team.build_tool_server",
+            return_value=MagicMock(),
+        ), patch(
+            "app.worker.tasks.runtime.red_team._build_transactional_probe_fn",
+            return_value=MagicMock(),
         ):
             run_red_team.run(agent_id=agent_id)
 
