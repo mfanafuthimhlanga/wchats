@@ -10,6 +10,11 @@ Routes:
     GET  /agents/{agent_id}/checklist-runs/{run_id}                  — single run detail with report
     POST /agents/{agent_id}/checklist-runs/{run_id}/acknowledge      — acknowledge warnings
     POST /agents/{agent_id}/approve-deployment                       — approve and flip is_deployed
+
+Phase 18 BLR-02: both checklist reads (list and detail) now carry
+envelope_drift, computed from one live capability-envelope hash query per
+request, and approve-deployment gates on a fourth server-side validation —
+drift between the live envelope and the hash the checklist run recorded.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_tenant
 from app.core.database import get_async_db
 from app.models.agent import Agent
+from app.models.capability_envelope import CapabilityEnvelope
 from app.models.checklist_run import ChecklistRun
 from app.models.tenant import Tenant
 from app.schemas.deployment import (
@@ -36,6 +42,7 @@ from app.schemas.deployment import (
     ChecklistRunResponse,
     ChecklistRunTriggerResponse,
 )
+from app.services.capability_service import canonical_envelope_hash, envelope_drift
 from app.services.deployment_service import _make_iframe_snippet
 from app.worker.tasks.runtime.deployment import run_deployment_checklist
 
@@ -48,8 +55,47 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _run_to_dict(run: ChecklistRun) -> dict:
-    """Convert a ChecklistRun ORM object to a dict matching ChecklistRunResponse."""
+async def _fetch_envelope_rows(agent_id: UUID, db: AsyncSession) -> list[dict]:
+    """Async twin of deployment_service._fetch_envelope_rows_sync (BLR-02).
+
+    This projection must stay byte-for-byte equivalent in field set to the
+    sync reader — any divergence between the two makes the approve gate fire
+    on every single deploy, since the checklist task and this route would
+    then be hashing different data for what is supposed to be the identical
+    live configuration. id and updated_at are deliberately not selected.
+    """
+    result = await db.execute(
+        select(
+            CapabilityEnvelope.skill,
+            CapabilityEnvelope.enabled,
+            CapabilityEnvelope.rate_limit,
+            CapabilityEnvelope.constraints,
+            CapabilityEnvelope.requires_confirmation,
+            CapabilityEnvelope.requires_identity_verification,
+            CapabilityEnvelope.actor_mode,
+        )
+        .where(CapabilityEnvelope.agent_id == agent_id)
+        .order_by(CapabilityEnvelope.skill)
+    )
+    return [dict(r) for r in result.mappings().all()]
+
+
+async def _current_envelope_hash(agent_id: UUID, db: AsyncSession) -> str:
+    """Compute the live canonical envelope hash for this agent (BLR-02)."""
+    rows = await _fetch_envelope_rows(agent_id, db)
+    return canonical_envelope_hash(rows)
+
+
+def _run_to_dict(run: ChecklistRun, live_envelope_hash: str | None = None) -> dict:
+    """Convert a ChecklistRun ORM object to a dict matching ChecklistRunResponse.
+
+    live_envelope_hash is optional because this is a plain sync function with
+    no DB access of its own — callers compute the live hash once per request
+    (not once per run) and pass it in. When omitted, envelope_drift is
+    reported as True: an unknown live hash is never evidence of a match, the
+    same fail-closed direction envelope_drift itself takes for a missing
+    recorded hash.
+    """
     return {
         "id": str(run.id),
         "agent_id": str(run.agent_id),
@@ -62,6 +108,13 @@ def _run_to_dict(run: ChecklistRun) -> dict:
         "approved_at": run.approved_at,
         "approved_by": run.approved_by,
         "created_at": run.created_at,
+        "envelope_hash": run.envelope_hash,
+        "envelope_acknowledged_at": run.envelope_acknowledged_at,
+        "envelope_drift": (
+            envelope_drift(live_envelope_hash, run.envelope_hash)
+            if live_envelope_hash is not None
+            else True
+        ),
     }
 
 
@@ -148,7 +201,11 @@ async def list_checklist_runs(
     if agent.tenant_id != tenant.id:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # 3. Query control DB via SQLAlchemy async ORM (checklist_runs is in control DB)
+    # 3. Compute the live envelope hash once for the whole page — a single
+    #    query per request, not one per run (T-18-CAP-03 DoS disposition).
+    live_hash = await _current_envelope_hash(agent_id, db)
+
+    # 4. Query control DB via SQLAlchemy async ORM (checklist_runs is in control DB)
     result = await db.execute(
         select(ChecklistRun)
         .where(ChecklistRun.agent_id == agent_id)
@@ -163,7 +220,7 @@ async def list_checklist_runs(
         tenant_id=str(tenant.id),
         run_count=len(runs),
     )
-    return {"runs": [_run_to_dict(r) for r in runs]}
+    return {"runs": [_run_to_dict(r, live_envelope_hash=live_hash) for r in runs]}
 
 
 # ---------------------------------------------------------------------------
@@ -201,13 +258,16 @@ async def get_checklist_run(
     if run is None or run.agent_id != agent_id:
         raise HTTPException(status_code=404, detail="Checklist run not found")
 
+    # 4. Compute the live envelope hash once for this read.
+    live_hash = await _current_envelope_hash(agent_id, db)
+
     log.info(
         "get_checklist_run.ok",
         agent_id=str(agent_id),
         run_id=str(run_id),
         tenant_id=str(tenant.id),
     )
-    return {"run": _run_to_dict(run)}
+    return {"run": _run_to_dict(run, live_envelope_hash=live_hash)}
 
 
 # ---------------------------------------------------------------------------
@@ -303,15 +363,20 @@ async def approve_deployment(
         T-08-04-02: Server-side validation before any mutation —
         blocked or incomplete runs are rejected (422).
 
-    Validation sequence (CONTEXT.md §Approval Validation):
+    Validation sequence (CONTEXT.md §Approval Validation; Phase 18 BLR-02 adds #4):
         1. run.status != "complete"     → 422 "Checklist is still running"
         2. recommendation == "block"    → 422 "Cannot approve a blocked deployment..."
         3. ship_with_warnings + not all acknowledged → 422 "Acknowledge all warnings..."
+        4. live envelope hash drifted from the run's recorded hash (or the
+           recorded hash is NULL — an absent acknowledgement is drift, never
+           a match) → 422 "Capability envelope changed..."
 
     On success:
         - agent.is_deployed = True
         - run.approved_at = now()
         - run.approved_by = str(tenant.id)
+        - run.envelope_acknowledged_at is stamped to now() — the approve
+          call IS the BLR-02 acknowledgement gesture; no separate endpoint exists
 
     Response shape:
         {"deployed": True, "agent_id": str, "iframe_snippet": str}
@@ -343,11 +408,26 @@ async def approve_deployment(
             status_code=422,
             detail="Acknowledge all warnings before approving",
         )
+    # 4b. BLR-02: the live capability envelope must still match what this
+    #     checklist run recorded. envelope_drift returns True for a NULL
+    #     recorded hash too — a pre-0019 historical run or a run whose hash
+    #     collector failed is unapprovable, the deliberate fail-closed
+    #     direction. This check runs after the three checks above, so a
+    #     blocked or incomplete run still reports its own, more severe 422.
+    live_hash = await _current_envelope_hash(agent_id, db)
+    if envelope_drift(live_hash, run.envelope_hash):
+        raise HTTPException(
+            status_code=422,
+            detail="Capability envelope changed since this checklist ran — re-run the checklist.",
+        )
 
     # 5. Flip is_deployed and stamp approval metadata
     agent.is_deployed = True
     run.approved_at = datetime.now(timezone.utc)
     run.approved_by = str(tenant.id)
+    # The approve call IS the BLR-02 acknowledgement gesture — no separate
+    # acknowledgement endpoint exists for the envelope hash.
+    run.envelope_acknowledged_at = datetime.now(timezone.utc)
     await db.commit()
 
     log.info(
@@ -355,6 +435,7 @@ async def approve_deployment(
         agent_id=str(agent_id),
         run_id=str(run.id),
         tenant_id=str(tenant.id),
+        envelope_hash=run.envelope_hash,
     )
 
     return {
