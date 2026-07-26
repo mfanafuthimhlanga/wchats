@@ -1,4 +1,4 @@
-"""Unit tests for app.worker.tasks.runtime.red_team — M7 Celery tasks.
+"""Unit tests for app.worker.tasks.runtime.red_team — M7 + RTX (Phase 18) Celery tasks.
 
 Tests:
     test_run_red_team_idempotent_skip
@@ -13,6 +13,10 @@ Mock strategy:
     - app.worker.tasks.runtime.red_team.fernet_decrypt patched to return plain conn_str
     - app.worker.tasks.runtime.red_team.psycopg2.connect patched for cursor control
     - app.worker.tasks.runtime.red_team.run_prompt_injection_agent etc. patched at boundary
+    - app.worker.tasks.runtime.red_team.run_confused_deputy_agent /
+      run_value_bound_evasion_agent / run_identity_bypass_agent (Phase 18 RTX runners)
+      and build_tool_server / _build_transactional_probe_fn patched at boundary too —
+      the cross-wave wiring proof for these lives in test_red_team_rtx_runners.py
     - Tasks called via .run(...) to bypass Celery broker
 """
 
@@ -189,6 +193,9 @@ class TestRunRedTeamComplete:
         mock_agent.soul_role = None
         mock_agent.soul_do_list = None
         mock_agent.soul_donot_list = None
+        mock_agent.id = agent_id
+        mock_agent.tenant_id = str(uuid.uuid4())
+        mock_agent.retrieval_strategy = {}  # Step 4's RetrievalStrategy.model_validate needs a dict
 
         mock_db = MagicMock()
         mock_db.get.return_value = mock_agent
@@ -230,6 +237,21 @@ class TestRunRedTeamComplete:
         ), patch(
             "app.worker.tasks.runtime.red_team.run_hallucination_agent",
             return_value=[],
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_confused_deputy_agent",
+            return_value=[],
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_value_bound_evasion_agent",
+            return_value=[],
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_identity_bypass_agent",
+            return_value=[],
+        ), patch(
+            "app.worker.tasks.runtime.red_team.build_tool_server",
+            return_value=MagicMock(),
+        ), patch(
+            "app.worker.tasks.runtime.red_team._build_transactional_probe_fn",
+            return_value=MagicMock(),
         ):
             result = run_red_team.run(agent_id=agent_id)
 
