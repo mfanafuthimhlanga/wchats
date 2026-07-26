@@ -13,14 +13,22 @@ Dual-DB split (PATTERNS.md — non-negotiable):
     - Control DB (checklist_runs, agents): use get_sync_db() SQLAlchemy ORM
     - Tenant DB (eval_runs, red_team_runs, verified_qa, documents, chunks):
       use _fetch_*_sync psycopg2 functions from deployment_service.py
+    - Phase 18 BLR-01 extends this: the fifth signal, blast_radius, reads the
+      CONTROL DB via get_sync_db() (capability_envelopes/tool_calls_audit/
+      tenants all live there) — it is the one collector that breaks the
+      tenant-DB-only convention the other four follow, and it needs no
+      conn_str at all.
 
 Flow (run_deployment_checklist):
     1. Fetch agent from control DB; decrypt conn_str
     2. Idempotency guard — skip if a running checklist_run for this agent exists within 60 min
     3. Insert checklist_runs row (status='running') in control DB via ORM
-    4. Collect all 4 signals synchronously (psycopg2 against tenant DB)
+    4. Collect all 5 signals synchronously (4 via psycopg2 against the tenant DB,
+       the 5th — blast_radius — via get_sync_db() against the control DB)
     5. Call run_orchestrator(signals_json, result_container) via asyncio.run bridge
-    6. Parse result and UPDATE checklist_runs row to status='complete'
+    6. Parse result and UPDATE checklist_runs row to status='complete'; merge the
+       deterministic blast-radius warnings into the persisted warnings list,
+       de-duplicated by warning_id
     7. On exception: UPDATE checklist_runs row to status='failed'; retry if retries < max_retries
 """
 
@@ -38,11 +46,14 @@ from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.models.checklist_run import ChecklistRun
 from app.services.deployment_service import (
+    BLAST_RADIUS_DEFAULT_SIGNAL,
     DeploymentReport,
+    _fetch_blast_radius_sync,
     _fetch_corpus_stats_sync,
     _fetch_eval_summary_sync,
     _fetch_red_team_summary_sync,
     _fetch_verified_qa_stats_sync,
+    derive_blast_radius_warnings,
     run_orchestrator,
 )
 from app.worker.celery_app import celery_app
@@ -187,6 +198,20 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
         )
         corpus_stats = {"document_count": 0, "chunk_count": 0, "last_ingested_at": None}
 
+    try:
+        # Fifth collector — control DB, no conn_str (BLR-01). This is the one
+        # collector that reads capability_envelopes/tool_calls_audit/tenants
+        # directly rather than the tenant DB, so it takes agent_id only.
+        blast_radius = _fetch_blast_radius_sync(agent_id)
+    except Exception as exc:
+        log.warning(
+            "run_deployment_checklist.blast_radius_fetch_failed",
+            agent_id=agent_id,
+            error=str(exc),
+        )
+        # Copy so a later mutation cannot poison the module constant.
+        blast_radius = dict(BLAST_RADIUS_DEFAULT_SIGNAL)
+
     # ------------------------------------------------------------------
     # Step 5 — Call Agent SDK orchestrator via asyncio.run bridge
     # asyncio.run(asyncio.wait_for(..., timeout=120.0)) — CTL-08 rule.
@@ -198,6 +223,7 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
         "red_team_summary": red_team_summary,
         "verified_qa_stats": verified_qa_stats,
         "corpus_stats": corpus_stats,
+        "blast_radius": blast_radius,
     }
     signals_json = json.dumps(signals)
     result_container: dict = {}
@@ -234,6 +260,7 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
                 red_team_summary=red_team_summary,
                 verified_qa_stats=verified_qa_stats,
                 corpus_stats=corpus_stats,
+                blast_radius=blast_radius,
             )
             with get_sync_db() as db:
                 run_obj = db.get(ChecklistRun, run_id)
@@ -245,7 +272,21 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
                         "summary": report.summary,
                         "recommendation": report.recommendation,
                     }
-                    run_obj.warnings = [w.model_dump() for w in report.warnings]
+                    # BLR-01: the deterministic blast-radius warnings are derived
+                    # in Python (never by the orchestrator) and APPENDED to the
+                    # orchestrator's own warnings — never replacing them. The
+                    # merge de-duplicates by warning_id so a future prompt change
+                    # that starts emitting a blast-radius warning cannot produce
+                    # two rows the owner has to acknowledge twice. This keeps the
+                    # acknowledge flow (POST /checklist-runs/{run_id}/acknowledge,
+                    # which validates submitted ids against run.warnings) working
+                    # unchanged for the new ids.
+                    derived = derive_blast_radius_warnings(blast_radius)
+                    existing_ids = {w.warning_id for w in report.warnings}
+                    merged_warnings = list(report.warnings) + [
+                        w for w in derived if w.warning_id not in existing_ids
+                    ]
+                    run_obj.warnings = [w.model_dump() for w in merged_warnings]
                     db.commit()
                     db.refresh(run_obj)
 
