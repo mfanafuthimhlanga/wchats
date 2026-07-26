@@ -382,16 +382,41 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 
 | Requirements | Phase | Status |
 |---|---|---|
-| TXN-01..05, CAP-01, CAP-02, AUD-01, AUD-02 | Phase 14 | Pending |
-| ACT-01..06 | Phase 15 | Pending |
-| INT-01..07 | Phase 16 | Pending |
-| IDV-01..05 | Phase 17 | Pending |
-| BLR-01, BLR-02, CAP-03, CAP-04, RTX-01..04, SEC-01..03 | Phase 18 | Pending |
-| DOC-01..03, VER-01, AUD-03 | Phase 19 | Pending |
+| TXN-01..05, CAP-01, CAP-02, AUD-01, AUD-02 | Phase 14 | ✓ Complete (8/8 plans; 14-VERIFICATION human_needed 3/4, SC2 idempotency present-behavior-unverified pending live DB; 14-SECURITY.md) |
+| ACT-01..06 | Phase 15 | ✓ Complete (3/3 plans; live-verified ACT-04/05 + T-15-01/02; **ACT-06 p95<1s deferred to prod infra** — 4660ms p95 on the local 4GB box; 15-SECURITY.md) |
+| INT-01..07 | Phase 16 | ✓ Complete (7/7 plans; 16-VERIFICATION human_needed 2/3; **live Stripe test-mode refund gate deferred to prod, operator-accepted 2026-07-01**; 16-SECURITY.md) |
+| IDV-01..05 | Phase 17 | ✓ Complete (6/6 plans; 17-VERIFICATION.md; 17-SECURITY.md 20/20) |
+| BLR-01, BLR-02, CAP-03, CAP-04, RTX-01..04, SEC-01..03 | Phase 18 | **○ Not planned — 0 plans. Run `/gsd-plan-phase 18`.** |
+| DOC-01..03, VER-01, AUD-03 | Phase 19 | **○ Not planned — 0 plans (depends on 18).** |
 
 **v1.1 coverage:** 43 requirements across phases 14–19, all mapped. (TXN 5, CAP 4, ACT 6, INT 7, IDV 5, AUD 3, BLR 2, RTX 4, SEC 3, DOC 3, VER 1 = 43.)
+**v1.1 delivered:** 30 of 43 (Phases 14–17). **Outstanding:** 13 (Phase 18's 11 + Phase 19's 5, less AUD-03/VER-01 overlap accounting — see the two rows above).
+
+---
+
+### v1.2 Traceability
+
+*Milestone v1.2 — Gotham console + comprehensive agent management. Source: `.planning/AGENT-MGMT-GAPS.md`.*
+
+| Requirements | Phase | Status |
+|---|---|---|
+| UI2-01..08 | Phase 20 — Gotham frontend cutover | ✓ Complete (15/15 plans; 20-VERIFICATION.md `passed` 12/12; parity suite 135/135; `check:no-dusk-tokens` exits 0) |
+| OPS-01..16 | Phase 21 — Agent-management backend completion | ✓ Complete (9/9 plans; 21-VERIFICATION.md `passed` 7/7 after the SC3 grade→promote wiring gap was closed; 21-SECURITY.md 33/33 threats closed) |
+
+**v1.2 coverage:** 24 requirements across phases 20–21, all mapped and all delivered. (UI2 8, OPS 16 = 24.)
+
+**v1.2 live-gate debt:** no v1.2 migration has been applied to a live Neon DB (tenant 0009–0012, control 0017–0018). Live Langfuse trace visibility, real Ragas faithfulness numbers, and an end-to-end `POST /approve-deployment` → 422 remain unproven — this is the deferred `/gsd-verify-work 21` gate.
+
+---
+
+### Phase 13 (Production Hosting) Traceability
+
+| Requirements | Phase | Status |
+|---|---|---|
+| PROD-01..15 | Phase 13 | **⏸ Paused at 7/11 plans.** All autonomous code complete (Terraform IaC, Bedrock Titan v2 embedder, Neon pooling, per-tenant re-embed, env-driven embed snippet, S3 uploads, ContextVar concurrency). 13-08/09/10/11 are `autonomous:false` and need a real AWS account (billing + Bedrock Titan v2 access in us-east-1) plus the `terraform` and `aws` CLIs. Resume: `/gsd-execute-phase 13 --wave 3`. No VERIFICATION or SECURITY artifact yet. |
 
 ---
 *Requirements defined: 2026-05-12*
 *Last updated: 2026-05-12 after 01-04 — CTL-01, CTL-05, CTL-09, CTL-10 marked complete*
 *Last updated: 2026-05-13 after 01-06 — CTL-13 marked complete (80.41% unit test coverage)*
+*Last updated: 2026-07-26 — traceability refresh. v1.1 rows corrected from "Pending" to their real status (Phases 14–17 complete, each with a SECURITY.md; 18–19 have 0 plans). v1.2 traceability added (UI2-01..08, OPS-01..16 — 24 requirements, previously absent from this file entirely). Phase 13 PROD-01..15 row added with its paused-at-7/11 status. Live-gate debt recorded explicitly rather than left implied.*

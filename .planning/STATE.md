@@ -1,21 +1,37 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.1
-milestone_name: — Transactional Capability
-status: Milestone complete
-stopped_at: "v1.1 (Phases 14–17) shipped; Phase 17 secured (17-SECURITY.md, 20/20). Now in a v1.2 design-exploration pause: renamed the admin console prototype to GOTHAM (prototypes/gotham/; palette "Bone on Graphite" kept; product copy neutralised to verified/check) and drafted Milestone v1.2 — Phase 20 frontend cutover (UI2-01..08) + Phase 21 agent-mgmt backend (OPS-01..16). Content grep of the old theme token is clean. Leftover: the prior empty prototype folder is locked by another process (cosmetic; untracked). Next: /gsd-plan-phase 20."
-last_updated: "2026-07-18T09:18:47.507Z"
+milestone: v1.2
+milestone_name: — Gotham console + comprehensive agent management
+status: Milestone complete — v1.1 Phases 18–19 and Phase 13 still outstanding
+stopped_at: "v1.2 (Phases 20–21) shipped and verified. Phase 20 Gotham frontend cutover 12/12 (parity suite 135/135, check:no-dusk-tokens green, operator-approved visual fidelity). Phase 21 agent-mgmt backend 7/7 + 21-SECURITY.md 33/33 threats closed. Ragas import unblocked (langchain-community pinned <0.4). 2026-07-26 housekeeping: 273 local commits PUSHED to origin/main (origin had been 8 weeks stale at c05c076); unit suite repaired 947→970 pass (3 tests were making live AWS Bedrock calls, 18 were order-polluted by the real-vs-fake claude_agent_sdk race, 2 mocked a removed NeonAPI symbol, 1 was a 6%-flaky base64 JWT tamper). OUTSTANDING: v1.1 Phases 18 (blast-radius gate, capability UI, txn red-team, PII firewall) and 19 (docs + v1.1 E2E proof) were never planned; Phase 13 production hosting paused at 7/11 pending a real AWS account; every v1.2 migration (tenant 0009–0012, control 0017–0018) is UNAPPLIED to a live Neon DB. Next: /gsd-plan-phase 18."
+last_updated: "2026-07-26T00:00:00.000Z"
 progress:
-  total_phases: 6
-  completed_phases: 4
+  total_phases: 2
+  completed_phases: 2
   total_plans: 24
   completed_plans: 24
-  percent: 67
+  percent: 100
 ---
 
 # Project State
 
 ## Current Status
+
+**▶ MILESTONE v1.2 COMPLETE (Phases 20 + 21), verified 2026-07-18.** Phase 20 (Gotham frontend cutover) 15/15 plans, verifier `passed` 12/12: `apps/admin` runs the "Bone on Graphite" console — tokens in `globals.css` (`--ch-1..4`, `data-gate` shutter), fixed Rail (`TopNav` deleted), verdict-only `Chip`, three.js confined to landing/auth via `SceneMount`, six-region ops room; parity suite 135/135 and `check:no-dusk-tokens` exits 0. Phase 21 (agent-mgmt backend) 9/9 plans, verifier `passed` 7/7 + `21-SECURITY.md` 33/33 threats closed: tenant migrations 0009→0012 and control 0017→0018 (no forks), `turn_metrics` + Langfuse v4 trace from `run_agent_turn`, `GET /metrics` with honest `not_tracked` sentinels, retrieval-health instrumentation inside `retrieve_tool` via `_job_id_var` (native `tsvector` BM25 baseline, sampled Ragas faithfulness, `check_index_staleness`), the bench flywheel (failing-trace listing → grade → `promote_trace_to_scenario` with `source='production'`), first-class `red_team_findings` driving the deploy gate to 422, and immutable `prompt_versions` with diff/canary/rollback. One cross-wave wiring gap (grade→promote never dispatched) was caught by the verifier and closed in `traces.py::grade_trace` + 2 regression tests — **lesson: when a seam crosses waves, the LATER plan must own the wiring.**
+
+**▶ SESSION 2026-07-26 — repo + suite housekeeping (no phase work).**
+- **Pushed 273 commits to `origin/main`** (`c05c076`→`655b42c`). Origin had been 8 weeks stale; all of v1.1 and v1.2 existed only on the local machine. Verified no secrets in the range first (only `.env.example` files tracked; the only `sk_live_`/`sk-ant-` hits are the pre-commit guard's own pattern list, docs, and fake fixtures).
+- **Unit suite repaired: 947 → 970 passing, 0 failing** (was 23 failed). Four distinct root causes, all test-side: (1) `EMBEDDING_PROVIDER` defaults to `bedrock` (`config.py:142`, P13-02 seam) but 3 tests still patched only the Voyage path, so they issued **real `boto3` InvokeModel calls** and failed `ValidationException` — pinned the provider to `voyage` in those tests (`retrieval` module run 83s→5s); (2) 18 tests failed **only in full-suite order** with `TypeError: 'SdkMcpTool' object is not callable` — `test_agent_chat_routes.py` imports `app.main` and thus the REAL `claude_agent_sdk` first, so `test_agent_tools.py`'s `if "claude_agent_sdk" not in sys.modules` guard skipped its passthrough fake and `@tool` had already produced `SdkMcpTool` dataclasses; added an order-independent `_fn()` resolver (`.handler` or the function) in `test_agent_tools.py` + `test_retrieval_metrics.py`; (3) `TestCreateNeonProject` mocked `app.services.neon.NeonAPI`, a symbol removed when the SDK was dropped for raw `requests` (to preserve HTTP status codes) — rewritten against `requests`, and the obsolete `TimeoutError` test replaced with the untested `NeonHTTPError.status_code` contract (readiness timeout is already covered by `TestWaitForNeonReady`); (4) `test_validate_widget_jwt_tampered_token_raises_401` was a **~6% flake, not order-dependent** — an HS256 signature is 32 bytes = 43 base64url chars, so the final char carries only 4 significant bits, and flipping it to `'b'` decodes to identical bytes whenever it was `'Y'` (1 of the 16 legal final chars) → signature still verified → no 401; now tampers the decoded bytes (`^ 0xFF`).
+- **Still red / known:** `test_chunking_service.py` and `test_docling_service.py` **cannot collect** — `docling` / `docling_core` are not installed in `apps/api/.venv` (environment gap, not a code defect).
+- Planning-doc drift repaired: this file's frontmatter, `REQUIREMENTS.md` traceability, and root `DESIGN.md` (which still described the superseded "Amber Console" direction).
+
+**▶ NEXT: `/gsd-plan-phase 18`** — the last v1.1 code work that is not blocked on money. Phases 18 (BLR/CAP-03/04/RTX/SEC) and 19 (DOC/VER) have 0 plans. Phase 13 stays paused at 7/11 on a real AWS account. **No v1.2 migration has been applied to a live Neon DB** (tenant 0009–0012, control 0017–0018) — that plus live Langfuse trace visibility, real Ragas numbers, and an end-to-end `POST /approve-deployment` → 422 are the deferred `/gsd-verify-work 21` gate.
+
+**Security artifact status (corrected 2026-07-26 — the previous text below wrongly claimed 14/15/16 had none):** Phases 14, 15, 16, 17 and 21 each have a `SECURITY.md`. Phase 20 has none (pure frontend re-skin). Phase 13 has neither SECURITY nor VERIFICATION (paused mid-execution).
+
+---
+
+*Historical narrative below is retained as record; where it conflicts with the block above, the block above wins.*
 
 **▶ PHASE 16 — Integration adapters + platform credential service (L5) EXECUTED + verified human_needed (2026-07-01).** 7/7 plans, sequential on `main` (worktree isolation auto-degraded, #683). Shipped the `integration_credentials` tenant-DB table (migration 0007) with HKDF-derived per-tenant Fernet + `CredentialHandle` (redacted repr); `get_adapter_for_skill` resolving credentials only in the dispatcher (`tools.py` step 6, never a route/SDK hook); four adapters — Stripe (`StripeClient` per-call), Shopify (Admin GraphQL), WooCommerce (**httpx + requests-oauthlib OAuth1** — the stale `WooCommerce` PyPI package was REJECTED at the 16-02 supply-chain checkpoint), Calendly (async httpx PAT, service_type→event_type map in `config_data`); deploy-time `provision_integration_credential.py` + runbook with the single-currency guard. **Code review found 3 blockers + 8 warnings**, all in adapter *business logic* the mocked unit tests couldn't catch (CR-01 Shopify $0 refund, CR-02 Stripe duplicate-plan, CR-03 KeyError strands idempotency, WR-01 refund 400) — the credential-security core (HKDF/Fernet, redaction, ContextVar isolation, migration guards) was verified sound. **All in-scope findings FIXED** (`45a3a0a`→`d86c612`, 7 `fix(16)` commits; 35 adapter/dispatch/credential unit tests re-pass). **Verifier: human_needed, 2/3** (SC1 agent-invisible creds ✓, SC3 single-currency ✓; SC2 present-behavior-unverified for the live Stripe round-trip). **Live Stripe test-mode refund/replay gate DEFERRED to prod — operator ACCEPTED 2026-07-01** (`16-UAT.md` status: deferred; mirrors the Phase 13/14/15 live-gate deferrals). Residual live-integration follow-up: Shopify refund `parentId`/gateway (the silent-$0 blocker itself is fixed). Artifacts: `16-REVIEW.md`, `16-REVIEW-FIX.md`, `16-VERIFICATION.md`, `16-UAT.md`. **NEXT:** `/gsd-secure-phase 16` (security capability active, no `16-SECURITY.md` yet) and/or `/gsd-validate-phase 16` (VALIDATION.md skeleton); Phase 17 (customer identity verification) is code-unblocked.
 
@@ -338,6 +354,6 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Session
 
-**Last session:** 2026-07-15 (resume)
-**Stopped at:** v1.1 (Phases 14–17) shipped; Phase 17 secured (17-SECURITY.md, 20/20). Now in a v1.2 design-exploration pause: renamed the admin console prototype to GOTHAM (prototypes/gotham/; palette "Bone on Graphite" kept; product copy neutralised to verified/check) and drafted Milestone v1.2 — Phase 20 frontend cutover (UI2-01..08) + Phase 21 agent-mgmt backend (OPS-01..16). Content grep of the old theme token is clean. Leftover: the prior empty prototype folder is locked by another process (cosmetic; untracked). Next: /gsd-plan-phase 20.
+**Last session:** 2026-07-26
+**Stopped at:** Milestone v1.2 complete and verified (Phases 20 + 21). This session did repo/suite housekeeping only, no phase work: pushed 273 commits to origin/main, repaired the unit suite 947→970 passing / 0 failing (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; the one repairable warning `W016 workflow.ai_integration_phase` was auto-added to config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md. Outstanding: Phases 18 + 19 have 0 plans, Phase 13 paused at 7/11 on AWS, no v1.2 migration applied to a live Neon DB. Next: /gsd-plan-phase 18.
 **Resume file:** .planning/.continue-here.md
