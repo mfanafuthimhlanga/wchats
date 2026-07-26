@@ -97,6 +97,22 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _fn(tool_obj):
+    """Resolve a @tool-decorated tool to its async callable.
+
+    The fake SDK's passthrough decorator returns the function itself, but the
+    REAL claude_agent_sdk's @tool returns an ``SdkMcpTool`` dataclass, which is
+    not callable — its async function lives on ``.handler``. Which shape we get
+    depends on test-module ordering: the ``if "claude_agent_sdk" not in
+    sys.modules`` guard above deliberately does not clobber an already-imported
+    real SDK, and modules such as test_agent_chat_routes.py import ``app.main``
+    (pulling in the real SDK) before this module loads. Resolving both shapes
+    here makes these tests order-independent instead of silently depending on
+    winning that race.
+    """
+    return getattr(tool_obj, "handler", tool_obj)
+
+
 # ---------------------------------------------------------------------------
 # Test 1: lookup_structured rejects non-allowlisted table
 # ---------------------------------------------------------------------------
@@ -106,7 +122,7 @@ def test_lookup_structured_rejects_non_allowlist_table():
     """Table 'users' is not in ALLOWED_LOOKUP_TABLES — must return is_error=True
     and must NOT call psycopg2.connect."""
     with patch("psycopg2.connect") as mock_connect:
-        result = _run(agent_tools.lookup_structured_tool({"table": "users", "filters": {}}))
+        result = _run(_fn(agent_tools.lookup_structured_tool)({"table": "users", "filters": {}}))
 
     assert result.get("is_error") is True
     content_text = result["content"][0]["text"]
@@ -134,7 +150,7 @@ def test_lookup_structured_accepts_allowlist_table():
 
     with patch("psycopg2.connect", return_value=mock_conn) as mock_connect:
         result = _run(
-            agent_tools.lookup_structured_tool({"table": "chunks", "filters": {"document_id": "abc"}})
+            _fn(agent_tools.lookup_structured_tool)({"table": "chunks", "filters": {"document_id": "abc"}})
         )
 
     mock_connect.assert_called_once()
@@ -177,7 +193,7 @@ def test_retrieve_truncates_to_max_chunks():
         # patch it out so this test never attempts a real DB connection.
         patch("app.services.agent_tools.write_retrieval_metrics"),
     ):
-        result = _run(agent_tools.retrieve_tool({"query": "test query", "filters": []}))
+        result = _run(_fn(agent_tools.retrieve_tool)({"query": "test query", "filters": []}))
 
     # Extract returned chunks from the text field.
     text = result["content"][0]["text"]
@@ -217,7 +233,7 @@ def test_escalate_calls_notify_fn():
 
     with patch("psycopg2.connect", return_value=mock_conn):
         result = _run(
-            agent_tools.escalate_to_human_tool(
+            _fn(agent_tools.escalate_to_human_tool)(
                 {"reason": "Customer frustrated", "context": "Order delayed 3 weeks"}
             )
         )
@@ -237,7 +253,7 @@ def test_escalate_calls_notify_fn():
 
 def test_clarify_returns_question_text():
     """clarify tool must return the question verbatim in content text."""
-    result = _run(agent_tools.clarify_tool({"question": "Which size?"}))
+    result = _run(_fn(agent_tools.clarify_tool)({"question": "Which size?"}))
 
     assert result["content"][0]["text"] == "Which size?"
 
@@ -296,7 +312,7 @@ def test_lookup_structured_rejects_unknown_column():
     """Unknown/injected column names must return is_error=True with no DB call."""
     with patch("psycopg2.connect") as mock_connect:
         result = _run(
-            agent_tools.lookup_structured_tool(
+            _fn(agent_tools.lookup_structured_tool)(
                 {"table": "chunks", "filters": {"evil_col; DROP TABLE": "x"}}
             )
         )
@@ -325,7 +341,7 @@ def test_lookup_structured_allows_known_columns():
 
     with patch("psycopg2.connect", return_value=mock_conn) as mock_connect:
         result = _run(
-            agent_tools.lookup_structured_tool(
+            _fn(agent_tools.lookup_structured_tool)(
                 {"table": "chunks", "filters": {"id": "abc"}}
             )
         )
@@ -362,7 +378,7 @@ def test_lookup_structured_sql_identifier_quoting():
 
     with patch("psycopg2.connect", return_value=mock_conn):
         result = _run(
-            agent_tools.lookup_structured_tool(
+            _fn(agent_tools.lookup_structured_tool)(
                 {"table": "documents", "filters": {"name": "test"}}
             )
         )
@@ -401,7 +417,7 @@ def test_escalate_to_human_idempotent():
     mock_cursor.rowcount = 1
     with patch("psycopg2.connect", return_value=mock_conn):
         _run(
-            agent_tools.escalate_to_human_tool(
+            _fn(agent_tools.escalate_to_human_tool)(
                 {"reason": "Angry customer", "context": "Some context"}
             )
         )
@@ -410,7 +426,7 @@ def test_escalate_to_human_idempotent():
     mock_cursor.rowcount = 0
     with patch("psycopg2.connect", return_value=mock_conn):
         result = _run(
-            agent_tools.escalate_to_human_tool(
+            _fn(agent_tools.escalate_to_human_tool)(
                 {"reason": "Angry customer", "context": "Some context"}
             )
         )
@@ -448,7 +464,7 @@ def test_escalate_to_human_sanitises_reason():
 
     with patch("psycopg2.connect", return_value=mock_conn):
         _run(
-            agent_tools.escalate_to_human_tool(
+            _fn(agent_tools.escalate_to_human_tool)(
                 {"reason": dirty_reason, "context": "Normal context"}
             )
         )
@@ -484,7 +500,7 @@ def test_escalate_to_human_reason_truncated_at_500():
 
     with patch("psycopg2.connect", return_value=mock_conn):
         _run(
-            agent_tools.escalate_to_human_tool(
+            _fn(agent_tools.escalate_to_human_tool)(
                 {"reason": long_reason, "context": "Normal context"}
             )
         )
@@ -525,7 +541,7 @@ def test_retrieve_tool_logs_warning_on_unused_filters():
         patch("app.services.agent_tools.log") as mock_log,
     ):
         _run(
-            agent_tools.retrieve_tool(
+            _fn(agent_tools.retrieve_tool)(
                 {"query": "test", "filters": [{"document_id": "abc"}]}
             )
         )
@@ -563,7 +579,7 @@ def test_retrieve_tool_blocked_on_third_call():
         patch("app.services.agent_tools.rrf_fuse") as mock_rrf,
         patch("app.services.agent_tools.rerank") as mock_rerank,
     ):
-        result = _run(agent_tools.retrieve_tool({"query": "capped call query"}))
+        result = _run(_fn(agent_tools.retrieve_tool)({"query": "capped call query"}))
 
     # Must be blocked — embed/rrf/rerank must NOT have been called.
     mock_embed.assert_not_called()

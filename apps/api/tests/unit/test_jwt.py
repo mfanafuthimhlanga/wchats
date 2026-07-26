@@ -14,6 +14,7 @@ Security coverage:
     T-04-04-03: signature manipulation → 401
 """
 
+import base64
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -68,12 +69,19 @@ def test_validate_widget_jwt_tampered_token_raises_401():
     agent_id = str(uuid4())
     token = create_widget_jwt(agent_id)
 
-    # Split JWT into header.payload.signature and flip the last char of the signature
+    # Split JWT into header.payload.signature, then corrupt the signature at the
+    # BYTE level. Tampering the base64url text instead is silently flaky: an
+    # HS256 signature is 32 bytes = 43 base64url chars, so the final char encodes
+    # only 4 significant bits and its low 2 bits are unused. Flipping that char
+    # to 'b' decodes to identical bytes whenever it was 'Y' (1 of the 16 legal
+    # final chars) — the signature still verifies and no 401 is raised, failing
+    # this test on ~6% of runs.
     parts = token.split(".")
     assert len(parts) == 3, "JWT must have three dot-separated segments"
-    sig = parts[2]
-    # Flip last character between 'a' and 'b' to corrupt the signature
-    tampered_sig = sig[:-1] + ("b" if sig[-1] != "b" else "a")
+    sig_bytes = base64.urlsafe_b64decode(parts[2] + "=" * (-len(parts[2]) % 4))
+    tampered_bytes = bytes([sig_bytes[0] ^ 0xFF]) + sig_bytes[1:]
+    assert tampered_bytes != sig_bytes, "tamper must actually change the signature"
+    tampered_sig = base64.urlsafe_b64encode(tampered_bytes).rstrip(b"=").decode()
     tampered_token = ".".join([parts[0], parts[1], tampered_sig])
 
     with pytest.raises(HTTPException) as exc_info:

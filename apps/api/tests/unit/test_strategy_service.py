@@ -221,7 +221,13 @@ def test_expansion_calls_rrf_fuse_per_variant():
         "bm25_candidates": [],
     }
 
+    # EMBEDDING_PROVIDER defaults to "bedrock" (P13-02 seam, config.py). Without
+    # this pin, rrf_fuse_with_expansion takes the Bedrock branch, ignores the
+    # _get_vo patch, and issues a real boto3 InvokeModel call.
     with patch(
+        "app.services.retrieval_service.settings.EMBEDDING_PROVIDER",
+        "voyage",
+    ), patch(
         "app.services.retrieval_service._expand_query",
         return_value=["q", "q1", "q2"],
     ) as mock_expand, patch(

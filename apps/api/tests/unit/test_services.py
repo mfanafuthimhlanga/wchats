@@ -89,74 +89,68 @@ class TestWaitForNeonReady:
 
 
 class TestCreateNeonProject:
-    @patch("app.services.neon.NeonAPI")
-    @patch("app.services.neon.time.sleep")
-    def test_create_neon_project_returns_expected_keys(
-        self, mock_sleep, mock_neon_api_cls
-    ):
+    """create_neon_project drives the Neon REST API through ``requests`` directly.
+
+    The neon_api SDK was dropped because it discards the HTTP status code when
+    raising NeonAPIError, and provision_neon needs the code to tell a fatal 4xx
+    from a retryable 5xx — so these tests mock ``requests``, not a client class.
+    create_neon_project also does NOT poll operations or raise TimeoutError any
+    more; compute readiness moved to wait_for_neon_ready (covered above).
+    """
+
+    @staticmethod
+    def _ok(payload):
+        r = MagicMock()
+        r.ok = True
+        r.json.return_value = payload
+        return r
+
+    @patch("app.services.neon.requests")
+    def test_create_neon_project_returns_expected_keys(self, mock_requests):
         """create_neon_project returns dict with id, pooled_uri, direct_uri."""
         from app.services.neon import create_neon_project
 
-        # Mock Neon API client
-        mock_client = MagicMock()
-        mock_neon_api_cls.return_value = mock_client
-
-        # Mock project creation response
-        mock_project = MagicMock()
-        mock_project.project.id = "proj-abc123"
-        mock_client.project_create.return_value = mock_project
-
-        # Mock operations (all terminal on first poll)
-        mock_op = MagicMock()
-        mock_op.status = "finished"
-        mock_ops = MagicMock()
-        mock_ops.operations = [mock_op]
-        mock_client.operations.return_value = mock_ops
-
-        # Mock connection URIs
-        mock_pooled = MagicMock()
-        mock_pooled.uri = "postgresql://pooled@host/db?sslmode=require"
-        mock_direct = MagicMock()
-        mock_direct.uri = "postgresql://direct@host/db?sslmode=require"
-        mock_client.connection_uri.side_effect = [mock_pooled, mock_direct]
+        mock_requests.post.return_value = self._ok({"project": {"id": "proj-abc123"}})
+        # Two GETs: pooled URI first, then direct URI.
+        mock_requests.get.side_effect = [
+            self._ok({"uri": "postgresql://pooled@host/db?sslmode=require"}),
+            self._ok({"uri": "postgresql://direct@host/db?sslmode=require"}),
+        ]
 
         result = create_neon_project("agent-uuid-123")
 
         assert result["id"] == "proj-abc123"
-        assert "pooled_uri" in result
-        assert "direct_uri" in result
         assert result["pooled_uri"] == "postgresql://pooled@host/db?sslmode=require"
         assert result["direct_uri"] == "postgresql://direct@host/db?sslmode=require"
 
-    @patch("app.services.neon.NeonAPI")
-    @patch("app.services.neon.time.time")
-    @patch("app.services.neon.time.sleep")
-    def test_create_neon_project_raises_timeout(
-        self, mock_sleep, mock_time, mock_neon_api_cls
+        # The pooled/direct distinction is the whole point of the two GETs —
+        # swapping them would silently hand DDL callers a PgBouncer endpoint.
+        assert mock_requests.get.call_args_list[0].kwargs["params"]["pooled"] == "true"
+        assert mock_requests.get.call_args_list[1].kwargs["params"]["pooled"] == "false"
+
+    @patch("app.services.neon.requests")
+    def test_create_neon_project_raises_neon_http_error_with_status_code(
+        self, mock_requests
     ):
-        """create_neon_project raises TimeoutError if operations don't finish in 90s."""
-        from app.services.neon import create_neon_project
+        """A non-2xx create response raises NeonHTTPError carrying the status code.
 
-        mock_client = MagicMock()
-        mock_neon_api_cls.return_value = mock_client
+        provision_neon branches on .status_code (fatal 4xx vs retryable 5xx), so
+        losing the code here would turn a quota rejection into an infinite retry.
+        """
+        from app.services.neon import NeonHTTPError, create_neon_project
 
-        mock_project = MagicMock()
-        mock_project.project.id = "proj-timeout"
-        mock_client.project_create.return_value = mock_project
+        bad = MagicMock()
+        bad.ok = False
+        bad.status_code = 422
+        bad.text = "quota exceeded"
+        mock_requests.post.return_value = bad
 
-        # Operations are always pending (never terminal)
-        mock_op = MagicMock()
-        mock_op.status = "running"
-        mock_ops = MagicMock()
-        mock_ops.operations = [mock_op]
-        mock_client.operations.return_value = mock_ops
+        with pytest.raises(NeonHTTPError) as exc_info:
+            create_neon_project("agent-uuid-quota")
 
-        # Simulate deadline exceeded immediately
-        start = 1000.0
-        mock_time.side_effect = [start, start + 91, start + 92]
-
-        with pytest.raises(TimeoutError, match="did not become ready"):
-            create_neon_project("agent-uuid-timeout")
+        assert exc_info.value.status_code == 422
+        # No connection URIs are fetched once creation has failed.
+        mock_requests.get.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

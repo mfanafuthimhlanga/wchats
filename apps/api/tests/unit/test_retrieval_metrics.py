@@ -68,6 +68,19 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _fn(tool_obj):
+    """Resolve a @tool-decorated tool to its async callable.
+
+    The fake SDK's passthrough decorator returns the function itself, but the
+    REAL claude_agent_sdk's @tool returns an ``SdkMcpTool`` dataclass, which is
+    not callable — its async function lives on ``.handler``. The guard above
+    deliberately does not clobber an already-imported real SDK, and modules such
+    as test_agent_chat_routes.py import ``app.main`` (pulling in the real SDK)
+    before this module loads, so resolve both shapes to stay order-independent.
+    """
+    return getattr(tool_obj, "handler", tool_obj)
+
+
 # ---------------------------------------------------------------------------
 # Shared fixture: fused (pre-rerank) + reranked (post-rerank, reordered so
 # the reranker promotes a chunk that was ranked #4 in the fused list up to
@@ -150,7 +163,7 @@ def test_retrieve_tool_writes_retrieval_metrics_row():
         patch("app.services.agent_tools.rerank", return_value=reranked),
         patch("app.services.agent_tools.write_retrieval_metrics") as mock_write,
     ):
-        _run(agent_tools.retrieve_tool({"query": "test query"}))
+        _run(_fn(agent_tools.retrieve_tool)({"query": "test query"}))
 
     mock_write.assert_called_once()
     call_args = mock_write.call_args
@@ -213,7 +226,7 @@ def test_retrieve_tool_job_id_read_from_contextvar_into_local():
         patch("app.services.agent_tools.rerank", return_value=reranked),
         patch("app.services.agent_tools.write_retrieval_metrics") as mock_write,
     ):
-        _run(agent_tools.retrieve_tool({"query": "job id plumbing check"}))
+        _run(_fn(agent_tools.retrieve_tool)({"query": "job id plumbing check"}))
 
     mock_write.assert_called_once()
     row = mock_write.call_args.args[1]
@@ -245,7 +258,7 @@ def test_retrieve_tool_writes_row_with_empty_job_id_and_warns_when_unset():
         patch("app.services.agent_tools.write_retrieval_metrics") as mock_write,
         patch("app.services.agent_tools.log") as mock_log,
     ):
-        _run(agent_tools.retrieve_tool({"query": "no job id"}))
+        _run(_fn(agent_tools.retrieve_tool)({"query": "no job id"}))
 
     mock_write.assert_called_once()
     row = mock_write.call_args.args[1]
@@ -283,7 +296,7 @@ def test_retrieve_tool_metrics_row_has_no_filters_key():
         patch("app.services.agent_tools.write_retrieval_metrics") as mock_write,
     ):
         _run(
-            agent_tools.retrieve_tool(
+            _fn(agent_tools.retrieve_tool)(
                 {"query": "filters test", "filters": [{"document_id": "abc"}]}
             )
         )
@@ -316,7 +329,7 @@ def test_retrieve_tool_metrics_handles_empty_candidates():
         patch("app.services.agent_tools.rerank", return_value=[]),
         patch("app.services.agent_tools.write_retrieval_metrics") as mock_write,
     ):
-        result = _run(agent_tools.retrieve_tool({"query": "no results anywhere"}))
+        result = _run(_fn(agent_tools.retrieve_tool)({"query": "no results anywhere"}))
 
     assert result.get("is_error") is not True
     mock_write.assert_called_once()

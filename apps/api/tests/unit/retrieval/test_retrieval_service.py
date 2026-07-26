@@ -53,6 +53,19 @@ class TestRetrievalStrategy:
 # ---------------------------------------------------------------------------
 
 class TestEmbedQuery:
+    """Voyage-branch semantics of the P13-02 provider seam.
+
+    EMBEDDING_PROVIDER defaults to "bedrock" (config.py), so these tests MUST pin
+    the provider to "voyage" — without the pin, embed_query takes the Bedrock
+    branch, ignores the _get_vo patch, and issues a real boto3 InvokeModel call.
+    Bedrock-branch routing is covered by test_embedding_bedrock.py (tests 8/9).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _force_voyage_provider(self, monkeypatch):
+        import app.services.retrieval_service as retrieval_service
+        monkeypatch.setattr(retrieval_service.settings, "EMBEDDING_PROVIDER", "voyage")
+
     @patch("app.services.retrieval_service._get_vo")
     def test_uses_query_input_type(self, mock_get_vo):
         mock_vo = MagicMock()
