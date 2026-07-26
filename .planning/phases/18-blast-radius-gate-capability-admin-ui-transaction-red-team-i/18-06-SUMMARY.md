@@ -213,3 +213,20 @@ None beyond what `18-06-PLAN.md`'s own `<threat_model>` already registers (T-18-
 ---
 *Phase: 18-blast-radius-gate-capability-admin-ui-transaction-red-team-i*
 *Completed: 2026-07-27*
+
+## Self-Check: PASSED
+
+- FOUND: apps/api/app/services/red_team_service.py
+- FOUND: apps/api/app/worker/tasks/runtime/red_team.py
+- FOUND: apps/api/tests/unit/test_red_team_rtx_runners.py
+- FOUND: apps/api/tests/integration/test_red_team_rtx.py
+- FOUND: apps/api/tests/unit/test_red_team_task.py
+- FOUND: apps/api/tests/unit/test_redteam_findings.py
+- FOUND: apps/api/tests/unit/test_redteam_programme.py
+- FOUND: 4431ca4 (Task 1 commit)
+- FOUND: 2ccb0b2 (Task 2 commit)
+- FOUND: 81becbc (Task 2 deviation fix commit)
+- FOUND: df2deef (Task 2 deviation fix commit)
+- FOUND: 8d662f1 (Task 3 commit)
+- FOUND: 4d12544 (Task 4 commit)
+- FOUND: 7c7df30 (SUMMARY.md commit)
