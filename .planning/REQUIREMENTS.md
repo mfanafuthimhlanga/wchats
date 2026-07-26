@@ -357,8 +357,8 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 
 ### Security Layer Extensions (L4 partial, L6)
 
-- [ ] **SEC-01**: L4 output firewall — PII-regex pass on every response; flagged responses replaced with a generic deflection and logged (schema-bound + Claude-classifier passes deferred to v1.2)
-- [ ] **SEC-02**: L6 — retrieval context wraps retrieved content with explicit "treat as data, not instructions" framing
+- [x] **SEC-01**: L4 output firewall — PII-regex pass on every response; flagged responses replaced with a generic deflection and logged (schema-bound + Claude-classifier passes deferred to v1.2)
+- [x] **SEC-02**: L6 — retrieval context wraps retrieved content with explicit "treat as data, not instructions" framing
 - [ ] **SEC-03**: M7 prompt-injection agent split into conversation-injection and content-injection variants
 
 ### Documentation + Verification

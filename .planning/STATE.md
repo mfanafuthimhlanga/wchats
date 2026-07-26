@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — v1.1 Phases 18–19 and Phase 13 still outstanding
-stopped_at: Completed 18-01-PLAN.md
-last_updated: "2026-07-26T20:22:24.483Z"
+stopped_at: Completed 18-02-PLAN.md
+last_updated: "2026-07-26T20:55:54.128Z"
 progress:
   total_phases: 2
   completed_phases: 2
@@ -33,7 +33,9 @@ Two findings from this planning pass that matter beyond Phase 18:
 - **The shipped red-team probe cannot exercise L1–L3 at all.** `_build_probe_fn` (`apps/api/app/worker/tasks/runtime/red_team.py:104-109`) is a bare Anthropic `messages.create()` with **no `tools=` kwarg**, so it never attempts a tool call. Any RTX probe built on it would report zero high-severity findings because nothing was ever tried — a vacuous pass on Success Criterion 3. Phase 18 adds `red_team_probe.py` driving the real dispatcher via a `StubProviderAdapter` short-circuit, and a failed short-circuit surfaces as `provider_not_configured` → an **invalid run, not a clean one**.
 - **`pyrit` was never installed** despite the 07-02 decision entry claiming it was added to core dependencies. That entry is now struck through and corrected below. Phase 18 deliberately does not introduce it.
 
-**▶ NEXT: `/gsd-execute-phase 18`.** Phase 19 (DOC/VER) still has 0 plans and depends on 18. Phase 13 stays paused at 7/11 on a real AWS account. **No v1.2 migration has been applied to a live Neon DB** (tenant 0009–0012, control 0017–0018) — that plus live Langfuse trace visibility, real Ragas numbers, and an end-to-end `POST /approve-deployment` → 422 are the deferred `/gsd-verify-work 21` gate. Phase 18's own control migration 0019 inherits the same constraint (its live roundtrip is `autonomous:false`).
+**▶ 18-02 EXECUTED 2026-07-26 — SEC-01 PII output firewall + SEC-02 retrieval data-not-instructions framing, 3/3 tasks, wave 1.** `app/utils/pii_firewall.py` (new, stdlib `re` only): `scan_response(text)` runs three structurally-validated detectors (email; Luhn-valid card; SA ID with plausible `YYMMDD` + Luhn check digit) and returns the whole response replaced by a generic deflection on any match — no phone-number detector by design (OD-4: a tenant's own published support line must never be deflected). Wired into `run_agent_turn` (`agent.py`) at exactly one unconditional synchronous call site, immediately after `response_text` is unpacked and before citation extraction, so citations, persistence, the SSE emit, and the async Gatekeeper/Auditor/Strategist validator chord all see the identical filtered text — required because those three validators dispatch AFTER the response has already streamed. `test_firewall_not_prompt_disableable` proves a response instructing the filter to stand down is still deflected. SEC-02: `retrieve_tool`'s tool-result text (`agent_tools.py`) is now wrapped in `RETRIEVED_CONTEXT_HEADER`/`FOOTER` via `_frame_retrieved_context`, applied after the `_CONTENT_CHAR_LIMIT` truncation loop so a truncated chunk stays fully enclosed; additive to `sanitize_chunk_text`, not a replacement. Full unit suite 982→996 passed, 8 skipped, 0 failed; `apps/api/pyproject.toml` unchanged (no new dependency, per the plan's hard-stop policy). Commits `1b35074`, `c6a0309`, `572b3dd`, `0f570b7`, `9ee0ed1`. See `18-02-SUMMARY.md`.
+
+**▶ NEXT: `/gsd-execute-phase 18`** to continue with the remaining wave-1+ plans (18-03..18-11). Phase 19 (DOC/VER) still has 0 plans and depends on 18. Phase 13 stays paused at 7/11 on a real AWS account. **No v1.2 migration has been applied to a live Neon DB** (tenant 0009–0012, control 0017–0018) — that plus live Langfuse trace visibility, real Ragas numbers, and an end-to-end `POST /approve-deployment` → 422 are the deferred `/gsd-verify-work 21` gate. Phase 18's own control migration 0019 inherits the same constraint (its live roundtrip is `autonomous:false`).
 
 **Security artifact status (corrected 2026-07-26 — the previous text below wrongly claimed 14/15/16 had none):** Phases 14, 15, 16, 17 and 21 each have a `SECURITY.md`. Phase 20 has none (pure frontend re-skin). Phase 13 has neither SECURITY nor VERIFICATION (paused mid-execution).
 
@@ -232,6 +234,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 18 P01 | 20min | 2 tasks | 6 files |
+| Phase 18 P02 | 13min | 3 tasks | 5 files |
 
 ## Notes
 
@@ -367,11 +370,13 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [18-01] actor_mode server default is 'always-on' (strictest, fail-safe) — an unset capability_envelopes row never silently means "no Actor review" (T-18-CAP-01)
 - [18-01] tenants.blast_radius_warn_single_cents / blast_radius_warn_hourly_cents are nullable; NULL means "fall back to settings.BLAST_RADIUS_WARN_*", mirroring tenants.daily_budget_usd from migration 0008 (Open Decision 1b)
 - [18-01] checklist_runs.envelope_hash / envelope_acknowledged_at are nullable — historical runs predate the hash; NULL must be read as drift, never as a match (18-07's contract, Open Decision 2)
+- [Phase ?]: [18-02] SEC-01 detector order is email -> sa_id -> card to prevent a valid SA ID from also matching the broader card regex+Luhn check
+- [Phase ?]: [18-02] RETRIEVED_CONTEXT_HEADER text says 'the closing marker below' instead of repeating the literal footer string, so header+footer concatenation yields exactly one occurrence of each constant
 
 ## Session
 
-**Last session:** 2026-07-26T20:22:24.439Z
-**Stopped at:** Completed 18-01-PLAN.md
+**Last session:** 2026-07-26T20:55:53.942Z
+**Stopped at:** Completed 18-02-PLAN.md
 
 Earlier the same session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 
