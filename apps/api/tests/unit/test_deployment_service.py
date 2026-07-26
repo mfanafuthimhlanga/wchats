@@ -36,8 +36,10 @@ os.environ.setdefault("VOYAGE_API_KEY", "test_voyage_key")
 os.environ.setdefault("JWT_SECRET", "test_jwt_secret")
 os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 
+import inspect
 import json
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
@@ -45,12 +47,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
+from app.core.config import settings
 from app.services.deployment_service import (
     DeploymentReport,
     DeploymentWarning,
+    BLAST_RADIUS_DEFAULT_SIGNAL,
     _DEPLOYMENT_SYSTEM_PROMPT,
+    _fetch_blast_radius_sync,
     _fetch_eval_summary_sync,
     _make_iframe_snippet,
+    _resolve_blast_radius_thresholds,
+    derive_blast_radius_warnings,
     run_orchestrator,
 )
 
@@ -70,6 +77,92 @@ def _make_psycopg2_conn(fetchone_value=None, fetchall_value=None):
     mock_cursor.fetchall.return_value = fetchall_value if fetchall_value is not None else []
     mock_conn.cursor.return_value = mock_cursor
     return mock_conn
+
+
+# ---------------------------------------------------------------------------
+# Helper: build a mock get_sync_db context manager (control-DB collector)
+# ---------------------------------------------------------------------------
+
+
+def _make_sync_db_ctx(mock_db):
+    """Return a patched get_sync_db that yields mock_db when used as 'with get_sync_db() as db'."""
+    @contextmanager
+    def _fake_get_sync_db():
+        yield mock_db
+
+    return _fake_get_sync_db
+
+
+def _make_scripted_db(script):
+    """Build a MagicMock db whose sequential db.execute(...) results are scripted.
+
+    Each item in `script` is a dict with one of "scalar"/"fetchall"/"first"
+    mapping to the value db.execute(...).<method>() should return for that
+    call, in call order — matching _fetch_blast_radius_sync's /
+    _resolve_blast_radius_thresholds's exact query sequence.
+    """
+    mock_db = MagicMock()
+    results = []
+    for item in script:
+        mock_result = MagicMock()
+        if "scalar" in item:
+            mock_result.scalar.return_value = item["scalar"]
+        if "fetchall" in item:
+            mock_result.fetchall.return_value = item["fetchall"]
+        if "first" in item:
+            mock_result.first.return_value = item["first"]
+        results.append(mock_result)
+    mock_db.execute.side_effect = results
+    return mock_db
+
+
+# ---------------------------------------------------------------------------
+# test_fetch_blast_radius_sync (module scope — T-18-BLR-01 pins this node id)
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_blast_radius_sync():
+    """T-18-BLR-01 / OD-1: the configured and observed single-action figures
+    are reported under their own distinct keys, with deliberately different
+    fixture values (5000 vs 9999) so a transposition bug fails this test.
+    """
+    mock_db = _make_scripted_db(
+        [
+            {"scalar": 5000},                    # configured_max_row
+            {"scalar": 0},                        # unbounded_single_count
+            {"fetchall": [("1/hour", "5000")]},   # enabled_rows
+            {"scalar": 9999},                     # observed_single_row (!= 5000)
+            {"scalar": 15000},                    # observed_hourly_row
+            {"first": (None, None)},              # threshold row -> platform defaults
+        ]
+    )
+
+    with patch(
+        "app.services.deployment_service.get_sync_db",
+        _make_sync_db_ctx(mock_db),
+    ):
+        result = _fetch_blast_radius_sync("test-agent")
+
+    assert set(result.keys()) == {
+        "configured_max_single_action_cents",
+        "configured_max_hourly_aggregate_cents",
+        "observed_max_single_action_cents",
+        "observed_max_hourly_aggregate_cents",
+        "observed_window_days",
+        "warn_threshold_single_cents",
+        "warn_threshold_hourly_cents",
+        "enabled_skill_count",
+    }
+    assert result["configured_max_single_action_cents"] == 5000
+    assert result["observed_max_single_action_cents"] == 9999
+    assert (
+        result["configured_max_single_action_cents"]
+        != result["observed_max_single_action_cents"]
+    )
+    assert result["observed_window_days"] == settings.BLAST_RADIUS_OBSERVED_WINDOW_DAYS
+    assert result["warn_threshold_single_cents"] == settings.BLAST_RADIUS_WARN_SINGLE_CENTS
+    assert result["warn_threshold_hourly_cents"] == settings.BLAST_RADIUS_WARN_HOURLY_CENTS
+    assert result["enabled_skill_count"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -228,3 +321,224 @@ class TestSignalCollectionFunctions:
             "pass_rates": {},
             "failing_scenarios": 0,
         }
+
+
+# ---------------------------------------------------------------------------
+# TestBlastRadiusCollector
+# ---------------------------------------------------------------------------
+
+
+class TestBlastRadiusCollector:
+    """Tests for _fetch_blast_radius_sync's honest-empty behaviour, its
+    unbounded-configuration handling, its per-skill hourly derivation, its
+    tenant-vs-platform threshold resolution, and its no-conn_str signature.
+    """
+
+    def test_no_qualifying_audit_rows_yields_none_not_zero(self):
+        """T-18-BLR-01: NULL observed queries yield None, never 0 (OD-1)."""
+        mock_db = _make_scripted_db(
+            [
+                {"scalar": None},        # configured_max_row: no enabled rows
+                {"scalar": 0},           # unbounded_single_count
+                {"fetchall": []},        # enabled_rows: none
+                {"scalar": None},        # observed_single_row: no qualifying rows
+                {"scalar": None},        # observed_hourly_row: no qualifying rows
+                {"first": (None, None)},
+            ]
+        )
+        with patch(
+            "app.services.deployment_service.get_sync_db",
+            _make_sync_db_ctx(mock_db),
+        ):
+            result = _fetch_blast_radius_sync("test-agent")
+
+        assert result["observed_max_single_action_cents"] is None
+        assert result["observed_max_hourly_aggregate_cents"] is None
+        assert result["observed_max_single_action_cents"] != 0
+        assert result["observed_max_hourly_aggregate_cents"] != 0
+
+    def test_unbounded_enabled_skill_forces_configured_none(self):
+        """T-18-BLR-01: one unbounded enabled row makes the whole configured
+        ceiling honestly None, even when other enabled rows are bounded
+        (a partially-bounded configuration is not a ceiling)."""
+        mock_db = _make_scripted_db(
+            [
+                {"scalar": 5000},   # configured_max_row: max of the bounded rows
+                {"scalar": 1},      # unbounded_single_count: one enabled row has no max
+                {"fetchall": [("1/hour", "5000"), ("2/hour", None)]},
+                {"scalar": None},
+                {"scalar": None},
+                {"first": (None, None)},
+            ]
+        )
+        with patch(
+            "app.services.deployment_service.get_sync_db",
+            _make_sync_db_ctx(mock_db),
+        ):
+            result = _fetch_blast_radius_sync("test-agent")
+
+        assert result["configured_max_single_action_cents"] is None
+
+    def test_configured_hourly_aggregate_sums_per_skill_ceiling_times_rate(self):
+        """5000 cents at 2/hour + 10000 cents at 5/hour = 10000 + 50000 = 60000."""
+        mock_db = _make_scripted_db(
+            [
+                {"scalar": 10000},
+                {"scalar": 0},
+                {"fetchall": [("2/hour", "5000"), ("5/hour", "10000")]},
+                {"scalar": None},
+                {"scalar": None},
+                {"first": (None, None)},
+            ]
+        )
+        with patch(
+            "app.services.deployment_service.get_sync_db",
+            _make_sync_db_ctx(mock_db),
+        ):
+            result = _fetch_blast_radius_sync("test-agent")
+
+        assert result["configured_max_hourly_aggregate_cents"] == 60000
+
+    def test_configured_hourly_none_when_any_rate_limit_null(self):
+        """A NULL rate_limit on any enabled skill forces the hourly ceiling to None."""
+        mock_db = _make_scripted_db(
+            [
+                {"scalar": 10000},
+                {"scalar": 0},
+                {"fetchall": [("2/hour", "5000"), (None, "10000")]},
+                {"scalar": None},
+                {"scalar": None},
+                {"first": (None, None)},
+            ]
+        )
+        with patch(
+            "app.services.deployment_service.get_sync_db",
+            _make_sync_db_ctx(mock_db),
+        ):
+            result = _fetch_blast_radius_sync("test-agent")
+
+        assert result["configured_max_hourly_aggregate_cents"] is None
+
+    def test_threshold_resolution_prefers_tenant_column_over_platform_default(self):
+        mock_db = _make_scripted_db([{"first": (12345, 67890)}])
+        with patch(
+            "app.services.deployment_service.get_sync_db",
+            _make_sync_db_ctx(mock_db),
+        ):
+            result = _resolve_blast_radius_thresholds("test-agent")
+
+        assert result == (12345, 67890)
+
+    def test_threshold_resolution_falls_back_to_settings_when_null(self):
+        mock_db = _make_scripted_db([{"first": (None, None)}])
+        with patch(
+            "app.services.deployment_service.get_sync_db",
+            _make_sync_db_ctx(mock_db),
+        ):
+            result = _resolve_blast_radius_thresholds("test-agent")
+
+        assert result == (
+            settings.BLAST_RADIUS_WARN_SINGLE_CENTS,
+            settings.BLAST_RADIUS_WARN_HOURLY_CENTS,
+        )
+
+    def test_collector_takes_no_conn_str(self):
+        """A future refactor must not quietly reintroduce a connection string
+        into this control-DB-only collector (CLAUDE.md rule 4)."""
+        assert list(inspect.signature(_fetch_blast_radius_sync).parameters) == ["agent_id"]
+
+
+# ---------------------------------------------------------------------------
+# TestBlastRadiusWarnings
+# ---------------------------------------------------------------------------
+
+
+class TestBlastRadiusWarnings:
+    """Tests for derive_blast_radius_warnings — pure, no DB, no LLM (OD-1b)."""
+
+    def test_zero_enabled_skills_returns_empty_list(self):
+        """An agent with no enabled transactional skill has no blast radius to warn about."""
+        assert derive_blast_radius_warnings({"enabled_skill_count": 0}) == []
+
+    def test_no_ceiling_configured_warning(self):
+        blast_radius = {
+            "enabled_skill_count": 3,
+            "configured_max_single_action_cents": None,
+            "configured_max_hourly_aggregate_cents": None,
+            "warn_threshold_single_cents": 50000,
+            "warn_threshold_hourly_cents": 200000,
+        }
+        result = derive_blast_radius_warnings(blast_radius)
+        assert len(result) == 1
+        assert result[0].warning_id == "blast_radius_no_ceiling_configured"
+
+    def test_single_action_above_threshold_warning(self):
+        blast_radius = {
+            "enabled_skill_count": 1,
+            "configured_max_single_action_cents": 60000,
+            "configured_max_hourly_aggregate_cents": 100000,
+            "warn_threshold_single_cents": 50000,
+            "warn_threshold_hourly_cents": 200000,
+        }
+        result = derive_blast_radius_warnings(blast_radius)
+        warning = next(
+            w for w in result if w.warning_id == "blast_radius_single_action_above_threshold"
+        )
+        assert "600.00" in warning.message
+
+    def test_hourly_aggregate_above_threshold_warning(self):
+        blast_radius = {
+            "enabled_skill_count": 1,
+            "configured_max_single_action_cents": 10000,
+            "configured_max_hourly_aggregate_cents": 250000,
+            "warn_threshold_single_cents": 50000,
+            "warn_threshold_hourly_cents": 200000,
+        }
+        result = derive_blast_radius_warnings(blast_radius)
+        ids = {w.warning_id for w in result}
+        assert "blast_radius_hourly_aggregate_above_threshold" in ids
+
+    def test_both_above_threshold_warnings_fire_together(self):
+        blast_radius = {
+            "enabled_skill_count": 2,
+            "configured_max_single_action_cents": 60000,
+            "configured_max_hourly_aggregate_cents": 250000,
+            "warn_threshold_single_cents": 50000,
+            "warn_threshold_hourly_cents": 200000,
+        }
+        result = derive_blast_radius_warnings(blast_radius)
+        ids = {w.warning_id for w in result}
+        assert ids == {
+            "blast_radius_single_action_above_threshold",
+            "blast_radius_hourly_aggregate_above_threshold",
+        }
+
+    def test_at_threshold_boundary_emits_no_warning(self):
+        """Strictly-exceeds semantics: equal-to-threshold is not a warning."""
+        blast_radius = {
+            "enabled_skill_count": 1,
+            "configured_max_single_action_cents": 50000,
+            "configured_max_hourly_aggregate_cents": 200000,
+            "warn_threshold_single_cents": 50000,
+            "warn_threshold_hourly_cents": 200000,
+        }
+        assert derive_blast_radius_warnings(blast_radius) == []
+
+    def test_high_observed_maximum_with_within_threshold_configured_ceiling_emits_no_warning(self):
+        """History never drives a warning — only the configured ceiling does."""
+        blast_radius = {
+            "enabled_skill_count": 1,
+            "configured_max_single_action_cents": 1000,
+            "configured_max_hourly_aggregate_cents": 1000,
+            "observed_max_single_action_cents": 999999999,
+            "observed_max_hourly_aggregate_cents": 999999999,
+            "warn_threshold_single_cents": 50000,
+            "warn_threshold_hourly_cents": 200000,
+        }
+        assert derive_blast_radius_warnings(blast_radius) == []
+
+    def test_no_warning_derived_from_observed_figures(self):
+        """T-18-BLR-01: the derivation source must never reference an
+        observed_max_ key — no warning is derived from history."""
+        source = inspect.getsource(derive_blast_radius_warnings)
+        assert "observed_max_" not in source
