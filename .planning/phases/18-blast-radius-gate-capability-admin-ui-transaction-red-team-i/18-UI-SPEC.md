@@ -266,11 +266,11 @@ primary object of attestation. Instead, the acknowledgement UI (a new `Zone` ins
 the four/five-signal `Ledger` and the existing `verdict-bar` in `deploy/page.tsx`) renders:
 
 1. A compact per-skill summary `Ledger` — one row per enabled skill, columns: skill name, rate
-   limit, max amount, "Confirmation required" / "Verification required" as small `Chip
-   verdict="mute"` tags where true, actor mode. This is literally the human-legible
-   deserialization of the exact fields BLR-02's canonical hash is computed over
-   (`18-RESEARCH.md` Open Decision 2's field list) — the owner attests to THIS table, not to a
-   hex string.
+   limit, max amount, "Confirmation required" / "Verification required" as plain `.help`-weight
+   label text where true (empty cell where false — see D6 for why this is text, not a `Chip`),
+   actor mode. This is literally the human-legible deserialization of the exact fields BLR-02's
+   canonical hash is computed over (`18-RESEARCH.md` Open Decision 2's field list) — the owner
+   attests to THIS table, not to a hex string.
 2. Beneath the summary, one mono caption line: "config `{hash[:8]}…{hash[-4:]}`" in `--ink-3` —
    present as an integrity fingerprint an engineer or support agent could cross-reference later
    (mirrors the short-commit-hash convention already used across this console's mono stamps),
@@ -305,6 +305,28 @@ protect (per `18-RESEARCH.md`'s own Anti-Pattern: "Flipping `agent.is_deployed =
 automatically on envelope drift... use the advisory drift flag... instead" — the same restraint
 applies to the room-wide shutter, not just the deployed flag).
 
+### D6 — No `Chip` for presence labels in the acknowledgement summary table
+
+**Decision:** In D5's per-skill summary table, "Confirmation required" and "Verification
+required" render as plain label text (`.help`-weight, `--ink-2`, present only when true, the
+cell left empty when false) — never as `Chip verdict="mute"`. This table is the object of a
+financial-risk attestation (BLR-02: the owner is signing off on a configuration before money
+can move). In this design system a `Chip` carries verdict weight by construction (`ChipVerdict`
+is a closed union — `live`/`pass`/`fail`/`seal`/`mute` — enforced by construction in
+`Chip.tsx`); spending chips on presence labels on THIS specific surface dilutes exactly the
+signal the owner most needs to read correctly at the moment they accept risk. `DESIGN.md`'s
+own anti-pattern list names this precisely: "a chip used as a category tag rather than a
+verdict."
+
+**Rejected alternative:** keep `Chip verdict="mute"` for these two fields, for consistency with
+`apps/admin/app/ingest/page.tsx`, which already uses `Chip verdict="mute"` as a category tag for
+`doc.source_type` values ("PDF"/"URL"). Rejected — consistency with an existing anti-pattern is
+not a reason to extend it, and the ingest page's document-type badges are not attached to a
+financial-risk attestation, so the two surfaces do not carry the same stakes even though they
+share a visual precedent. This decision does not overturn or schedule a fix for the `ingest`
+usage — that is a pre-existing inconsistency, out of scope for Phase 18, and no change to
+`ingest/page.tsx` is implied or planned here.
+
 ---
 
 ## Structural placement (non-visual, for the planner/executor)
@@ -326,6 +348,22 @@ applies to the room-wide shutter, not just the deployed flag).
 - **Do not touch:** the widget preview column, the Embed section, the existing four-signal
   Ledger's content, or `GateProvider`'s existing `gateBlocked` derivation (D5's rejected
   alternative).
+- **Visual hierarchy is state-dependent, not fixed.** The existing gate Chip ("Shut"/"Open")
+  and the existing four-signal `Ledger` remain the page's overall primary anchor, unchanged, in
+  both states below. Among the NEW content this phase adds, the render-priority order differs
+  by whether the envelope has drifted:
+  - **Clean run (no drift):** (1) the blast-radius ceiling/observed figures (D3) — risk data the
+    owner must read before acknowledging anything, (2) the acknowledgement summary table +
+    checkbox (D5), (3) the six per-skill capability `Zone`s (D1/D2) — a configuration task the
+    owner returns to occasionally, not something re-read on every deploy, so it ranks last among
+    the new elements.
+  - **Drifted run:** the envelope-drift `Chip verdict="fail"` ("Changed since approval") out-
+    ranks every other new element, including the blast-radius figures. Render a second instance
+    of that chip directly beside the existing gate Chip in the `#gate-label` section head — not
+    only inside its own lower acknowledgement `Zone` — so an owner returning to a
+    previously-approved agent sees "drifted" before anything else new on the page. The
+    blast-radius figures and per-skill `Zone`s stay reachable below it but do not compete for
+    first-glance attention while a drift exists.
 
 ---
 
