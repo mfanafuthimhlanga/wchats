@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — v1.1 Phases 18–19 and Phase 13 still outstanding
-stopped_at: Completed 18-02-PLAN.md
-last_updated: "2026-07-26T20:55:54.128Z"
+stopped_at: Completed 18-03-PLAN.md
+last_updated: "2026-07-26T21:24:51.440Z"
 progress:
   total_phases: 2
   completed_phases: 2
@@ -35,7 +35,9 @@ Two findings from this planning pass that matter beyond Phase 18:
 
 **▶ 18-02 EXECUTED 2026-07-26 — SEC-01 PII output firewall + SEC-02 retrieval data-not-instructions framing, 3/3 tasks, wave 1.** `app/utils/pii_firewall.py` (new, stdlib `re` only): `scan_response(text)` runs three structurally-validated detectors (email; Luhn-valid card; SA ID with plausible `YYMMDD` + Luhn check digit) and returns the whole response replaced by a generic deflection on any match — no phone-number detector by design (OD-4: a tenant's own published support line must never be deflected). Wired into `run_agent_turn` (`agent.py`) at exactly one unconditional synchronous call site, immediately after `response_text` is unpacked and before citation extraction, so citations, persistence, the SSE emit, and the async Gatekeeper/Auditor/Strategist validator chord all see the identical filtered text — required because those three validators dispatch AFTER the response has already streamed. `test_firewall_not_prompt_disableable` proves a response instructing the filter to stand down is still deflected. SEC-02: `retrieve_tool`'s tool-result text (`agent_tools.py`) is now wrapped in `RETRIEVED_CONTEXT_HEADER`/`FOOTER` via `_frame_retrieved_context`, applied after the `_CONTENT_CHAR_LIMIT` truncation loop so a truncated chunk stays fully enclosed; additive to `sanitize_chunk_text`, not a replacement. Full unit suite 982→996 passed, 8 skipped, 0 failed; `apps/api/pyproject.toml` unchanged (no new dependency, per the plan's hard-stop policy). Commits `1b35074`, `c6a0309`, `572b3dd`, `0f570b7`, `9ee0ed1`. See `18-02-SUMMARY.md`.
 
-**▶ NEXT: `/gsd-execute-phase 18`** to continue with the remaining wave-1+ plans (18-03..18-11). Phase 19 (DOC/VER) still has 0 plans and depends on 18. Phase 13 stays paused at 7/11 on a real AWS account. **No v1.2 migration has been applied to a live Neon DB** (tenant 0009–0012, control 0017–0018) — that plus live Langfuse trace visibility, real Ragas numbers, and an end-to-end `POST /approve-deployment` → 422 are the deferred `/gsd-verify-work 21` gate. Phase 18's own control migration 0019 inherits the same constraint (its live roundtrip is `autonomous:false`).
+**▶ 18-03 EXECUTED 2026-07-26 — RTX-01/02/03 red-team probe substrate (OD-6), 3/3 tasks, wave 1.** `app/services/transactional/provider_adapter.py`: module-private `_red_team_mode_var` ContextVar (default `False`, no config/env surface) plus `_set_red_team_mode`/`_reset_red_team_mode`, and a short-circuit at the very top of `get_adapter_for_skill` returning the `_STUB_ADAPTER` singleton before `_fetch_credential_config` is ever called — placed there specifically because a clean red-team tenant has zero `integration_credentials` rows, so credential resolution would otherwise abort with `provider.not_configured` before any capability/IDV/rate/Actor verdict fires (RESEARCH.md Pitfall 1). New `app/services/red_team_probe.py` (the two no-analog gaps `18-PATTERNS.md` named): `red_team_mode()` context manager (the only sanctioned setter), `invoke_probe_tool(skill, args)` (deterministic dispatcher-invocation surface for RTX-02/RTX-03, returns the dispatcher's own response dict verbatim), `_build_transactional_probe_fn(agent, conn_str, tenant_id)` (conversational victim-turn surface for RTX-01 confused-deputy probing, matching the existing `run_X_agent(probe_fn, ...)` runner contract exactly and appending a machine-readable tool-verdict transcript; returns `""` on any victim-turn failure, matching the shipped `_build_probe_fn` resilience contract), `ProbeToolResult.verdict_tag` (7-way classifier over the dispatcher's own response vocabulary including `provider_not_configured` — a failed short-circuit surfaces as an invalid run, never a clean one), and `CLEAN_TENANT_ENVELOPES`/`CLEAN_TENANT_SPEC` (RTX-04's clean tenant as executable data: 6 skill rows all enabled with bounded `max_amount_cents` + `rate_limit`, exactly one — `issue_refund` — requiring identity verification). New `tests/unit/test_red_team_probe.py`: 18 mocked-boundary test cases, no Postgres/Redis/live Anthropic/SDK subprocess. **Caller-free by design** — plan 18-06 wires this substrate into the red-team runners; that is explicitly not incomplete work. Full unit suite 996→1014 passed, 8 skipped, 0 failed; `apps/api/pyproject.toml` unchanged (no `pyrit`, no new dependency). Commits `ed4bcef`, `9a7849c`, `ab6b35a`. See `18-03-SUMMARY.md`.
+
+**▶ NEXT: `/gsd-execute-phase 18`** to continue with the remaining wave-1+ plans (18-04..18-11). Phase 19 (DOC/VER) still has 0 plans and depends on 18. Phase 13 stays paused at 7/11 on a real AWS account. **No v1.2 migration has been applied to a live Neon DB** (tenant 0009–0012, control 0017–0018) — that plus live Langfuse trace visibility, real Ragas numbers, and an end-to-end `POST /approve-deployment` → 422 are the deferred `/gsd-verify-work 21` gate. Phase 18's own control migration 0019 inherits the same constraint (its live roundtrip is `autonomous:false`).
 
 **Security artifact status (corrected 2026-07-26 — the previous text below wrongly claimed 14/15/16 had none):** Phases 14, 15, 16, 17 and 21 each have a `SECURITY.md`. Phase 20 has none (pure frontend re-skin). Phase 13 has neither SECURITY nor VERIFICATION (paused mid-execution).
 
@@ -235,6 +237,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 |------|----------|-------|-------|
 | Phase 18 P01 | 20min | 2 tasks | 6 files |
 | Phase 18 P02 | 13min | 3 tasks | 5 files |
+| Phase 18 P03 | 25min | 3 tasks | 3 files |
 
 ## Notes
 
@@ -372,11 +375,13 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [18-01] checklist_runs.envelope_hash / envelope_acknowledged_at are nullable — historical runs predate the hash; NULL must be read as drift, never as a match (18-07's contract, Open Decision 2)
 - [Phase ?]: [18-02] SEC-01 detector order is email -> sa_id -> card to prevent a valid SA ID from also matching the broader card regex+Luhn check
 - [Phase ?]: [18-02] RETRIEVED_CONTEXT_HEADER text says 'the closing marker below' instead of repeating the literal footer string, so header+footer concatenation yields exactly one occurrence of each constant
+- [Phase ?]: [18-03] get_adapter_for_skill red-team-mode short-circuit placed before _fetch_credential_config, not after — prevents a clean zero-credential tenant from aborting at provider.not_configured before any capability/IDV/rate/Actor verdict fires
+- [Phase ?]: [18-03] _build_transactional_probe_fn returns "" immediately on any victim-turn exception (not a partial transcript) — matches the shipped _build_probe_fn failure contract exactly
 
 ## Session
 
-**Last session:** 2026-07-26T20:55:53.942Z
-**Stopped at:** Completed 18-02-PLAN.md
+**Last session:** 2026-07-26T21:24:51.323Z
+**Stopped at:** Completed 18-03-PLAN.md
 
 Earlier the same session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 

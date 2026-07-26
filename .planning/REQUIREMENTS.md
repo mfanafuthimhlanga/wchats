@@ -350,9 +350,9 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 
 ### Red-Team Extensions (extends M7)
 
-- [ ] **RTX-01**: Confused-deputy attack probe
-- [ ] **RTX-02**: Value-bound evasion probe (chained smaller refunds to evade a daily/hourly cap)
-- [ ] **RTX-03**: Identity-verification-bypass probe
+- [x] **RTX-01**: Confused-deputy attack probe
+- [x] **RTX-02**: Value-bound evasion probe (chained smaller refunds to evade a daily/hourly cap)
+- [x] **RTX-03**: Identity-verification-bypass probe
 - [ ] **RTX-04**: Zero high-severity findings on the transaction red-team classes for a clean tenant (gate target)
 
 ### Security Layer Extensions (L4 partial, L6)
