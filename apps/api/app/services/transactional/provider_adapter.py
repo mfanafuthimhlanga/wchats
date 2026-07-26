@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import base64
 from abc import ABC, abstractmethod
+from contextvars import ContextVar
 from uuid import uuid4
 
 import structlog
@@ -190,6 +191,34 @@ class StubProviderAdapter(ProviderAdapter):
 _STUB_ADAPTER: StubProviderAdapter = StubProviderAdapter()
 
 
+# ---------------------------------------------------------------------------
+# Red-team-mode flag (Phase 18, OD-6) — module-private ContextVar.
+#
+# Off by default. The ONLY sanctioned setter is red_team_probe.red_team_mode()
+# (apps/api/app/services/red_team_probe.py), which calls _set_red_team_mode /
+# _reset_red_team_mode symmetrically around a probe invocation. No `settings`
+# field, no environment variable, and no code path in agent_tools.build_tool_server
+# sets this var — a customer turn can never enter red-team mode.
+# ---------------------------------------------------------------------------
+
+_red_team_mode_var: ContextVar[bool] = ContextVar("_red_team_mode", default=False)
+
+
+def _set_red_team_mode(enabled: bool) -> object:
+    """Set the red-team-mode ContextVar and return the reset token.
+
+    Only called by red_team_probe.red_team_mode(). Callers MUST pass the
+    returned token to _reset_red_team_mode() in a `finally` block so the mode
+    is symmetrically exited even if the probe body raises.
+    """
+    return _red_team_mode_var.set(enabled)
+
+
+def _reset_red_team_mode(token: object) -> None:
+    """Reset the red-team-mode ContextVar using the token from _set_red_team_mode."""
+    _red_team_mode_var.reset(token)  # type: ignore[arg-type]
+
+
 def get_adapter(agent_id: str | None = None) -> ProviderAdapter:
     """Return the ProviderAdapter for the given agent.
 
@@ -225,6 +254,31 @@ async def get_adapter_for_skill(
     MUST NOT be imported or called from any FastAPI route handler or SDK hook —
     only from _execute_transactional_tool (tools.py step 6).
 
+    Red-team mode (Phase 18, OD-6):
+        When `_red_team_mode_var.get()` is truthy, this function returns the
+        `_STUB_ADAPTER` singleton BEFORE any credential fetch — see the guard
+        at the very top of the body below. The short-circuit is placed before
+        `_fetch_credential_config` deliberately: a clean red-team tenant has
+        ZERO `integration_credentials` rows, so credential resolution would
+        raise `ProviderNotConfiguredError`, and `tools.py` step 6's handler
+        would abort the call with `provider.not_configured` BEFORE any
+        capability, IDV, rate, or Actor verdict could be observed. A probe
+        built on that path would silently report zero findings for the wrong
+        reason — the exact vacuous-pass failure mode this phase exists to
+        close (RESEARCH.md Pitfall 1).
+
+        The flag is a module-private ContextVar (`_red_team_mode_var`,
+        declared above `_STUB_ADAPTER`) whose only sanctioned setter is
+        `app.services.red_team_probe.red_team_mode()`. It defaults to
+        `False`, so an ordinary customer turn is completely unaffected. It
+        changes ONLY this adapter-resolution step — every enforcement layer
+        in `_execute_transactional_tool` steps 1 through 5 (IN-03 guard,
+        capability check, IDV gate, idempotency reservation, rate and
+        constraint checks, Actor seam) still runs unmodified against the
+        real dispatcher. That is the whole point of the design: the probe
+        exercises the real security layers and only the network-facing leaf
+        (the provider adapter) is swapped for the stub.
+
     Args:
         skill:     Canonical skill name (e.g. "issue_refund"). Used to look up
                    the integration_credentials row with enabled_skills @> [skill].
@@ -234,12 +288,21 @@ async def get_adapter_for_skill(
 
     Returns:
         A concrete ProviderAdapter subclass holding an in-memory CredentialHandle.
+        In red-team mode: the `_STUB_ADAPTER` singleton, no credential touched.
 
     Raises:
         ProviderNotConfiguredError: No integration_credentials row found for the skill,
                                     or the provider_type is not recognised.
         CredentialDecryptionError:  Fernet decryption failed (wrong key or tampered data).
     """
+    # -- Red-team-mode short-circuit — MUST precede credential resolution. --
+    # No _fetch_credential_config call, no _tenant_id_var read, no
+    # settings.PLATFORM_CREDENTIAL_KEY touch, no Fernet operation. conn_str is
+    # deliberately absent from this log call (CLAUDE.md rule 4 / T-16-06).
+    if _red_team_mode_var.get():
+        log.warning("provider.red_team_mode_stub", skill=skill, agent_id=agent_id)
+        return _STUB_ADAPTER
+
     # 1. Fetch encrypted credential + provider config from tenant DB.
     #    Returns None if conn_str is empty or no row matches.
     config = await _fetch_credential_config(conn_str, skill)
