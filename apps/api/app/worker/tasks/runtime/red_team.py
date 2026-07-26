@@ -8,15 +8,19 @@ Architecture constraints (CLAUDE.md — non-negotiable):
     - run_red_team receives only `agent_id` — NEVER a conn_str in task args (CTL-08)
     - conn_str is fetched from the control DB and decrypted at runtime via fernet_decrypt
     - asyncio.run(asyncio.wait_for(...)) bridge — never loop.run_until_complete (broken Python 3.12)
-    - worker_pool=solo means NO Celery chord — all three agent runners execute sequentially
+    - worker_pool=solo means NO Celery chord — all six agent runners execute sequentially
       inside run_red_team
 
 Flow (run_red_team):
     1. Fetch agent from control DB; decrypt conn_str
     2. Idempotency guard — skip if a running red_team_run for this agent exists within 30 min
     3. Insert red_team_run row (status='running')
-    4. Build probe_fn closure (calls the deployed agent via direct Claude API)
-    5. Run PromptInjection → DataLeakage → Hallucination agents sequentially
+    4. Build two probe_fn closures: the bare-completion probe (calls the deployed
+       agent via direct Claude API, no tools attached) for the M7 conversational
+       probes, and the transactional probe (drives the real tool server through
+       the transactional dispatcher, Phase 18 OD-6) for the three RTX probes.
+    5. Run PromptInjection → DataLeakage → Hallucination → ConfusedDeputy →
+       ValueBoundEvasion → IdentityBypass agents sequentially
     6. Compute max_severity and deployment_blocked
     7. Update red_team_run row to 'complete' with findings JSONB
        7b. Persist first-class red_team_strategies/red_team_probes rows (OPS-13)
@@ -40,10 +44,15 @@ from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
+from app.services.agent_tools import RetrievalStrategy, build_tool_server
+from app.services.red_team_probe import _build_transactional_probe_fn
 from app.services.red_team_service import (
     run_prompt_injection_agent,
     run_data_leakage_agent,
     run_hallucination_agent,
+    run_confused_deputy_agent,
+    run_value_bound_evasion_agent,
+    run_identity_bypass_agent,
 )
 from app.worker.celery_app import celery_app
 
@@ -199,8 +208,9 @@ def run_red_team(self, agent_id: str) -> dict:
         2. Idempotency guard — skip if a 'running' red_team_run for this agent
            was created within the last 30 minutes.
         3. Insert red_team_run row (status='running').
-        4. Build probe_fn closure.
-        5. Run PromptInjection → DataLeakage → Hallucination agents sequentially.
+        4. Build two probe_fn closures (bare-completion + transactional).
+        5. Run PromptInjection → DataLeakage → Hallucination → ConfusedDeputy →
+           ValueBoundEvasion → IdentityBypass agents sequentially.
         6. Compute max_severity and deployment_blocked flag.
         7. Update red_team_run row to 'complete' with findings JSONB.
         8. Return result dict.
@@ -294,15 +304,54 @@ def run_red_team(self, agent_id: str) -> dict:
             _run_conn.close()
 
     # ------------------------------------------------------------------
-    # Step 4 — Build probe_fn closure
-    # probe_fn sends one message to the deployed agent persona and returns
-    # the response text. Wraps a direct Anthropic API call (not _run_sdk_turn
-    # from agent.py — that function is coupled to SSE infrastructure).
+    # Step 4 — Build two probe_fn closures
+    #
+    # probe_fn (unchanged): sends one message to the deployed agent persona
+    # and returns the response text. Wraps a direct Anthropic API call with
+    # NO tools attached (not _run_sdk_turn from agent.py — that function is
+    # coupled to SSE infrastructure). Correct for the M7
+    # conversational/retrieval probes, which never touch the transactional
+    # dispatcher.
+    #
+    # transactional_probe_fn (new, Phase 18 OD-6): drives the REAL tool
+    # server through the transactional dispatcher (_execute_transactional_tool)
+    # via the probe builder imported from red_team_probe, so RTX-01 (confused
+    # deputy) can actually reach the Actor seam. There are now two probe
+    # functions for exactly this reason — one bare, one wired to the real
+    # dispatcher. conn_str is never logged (CTL-08).
     # ------------------------------------------------------------------
     probe_fn = _build_probe_fn(agent, conn_str)
 
+    tenant_id_str = str(agent.tenant_id)
+    transactional_probe_fn = _build_transactional_probe_fn(agent, conn_str, tenant_id_str)
+
+    # RTX-02 (ValueBoundEvasion) and RTX-03 (IdentityBypass) are deterministic —
+    # they call red_team_probe.invoke_probe_tool directly instead of driving a
+    # ClaudeSDKClient conversational turn, so (unlike transactional_probe_fn,
+    # which seeds the dispatcher ContextVars itself inside its own
+    # asyncio.run() call for every probe message) they need those ContextVars
+    # seeded once here, synchronously, before Step 5 begins.
+    # red_team_probe.invoke_probe_tool's own contract is explicit: "The caller
+    # must have already populated the dispatcher ContextVars via
+    # build_tool_server()." asyncio.run()/Task creation copies the *current*
+    # thread context (contextvars.copy_context()) at Task-creation time, so
+    # values set here — before any asyncio.run() call in Step 5 — propagate
+    # into each runner's own event loop. conn_str is never logged.
+    _rtx_strategy = RetrievalStrategy.model_validate(agent.retrieval_strategy or {})
+    build_tool_server(
+        conn_str=conn_str,
+        agent_id=str(agent.id),
+        agent_name=agent.name,
+        strategy=_rtx_strategy,
+        conversation_id=str(uuid.uuid4()),
+        notify_fn=lambda reason, context: None,  # never send a real escalation email
+        tenant_id=tenant_id_str,
+        verified_session_token="",  # RTX-03's unverified posture (attempt 1)
+        job_id="",
+    )
+
     # ------------------------------------------------------------------
-    # Step 5 — Run three agents sequentially (no chord — worker_pool=solo)
+    # Step 5 — Run six agents sequentially (no chord — worker_pool=solo)
     # Wrapped in a single try so a partial failure can update status='failed'.
     # ------------------------------------------------------------------
     _agents_conn = psycopg2.connect(conn_str, connect_timeout=5)
@@ -322,7 +371,29 @@ def run_red_team(self, agent_id: str) -> dict:
             max_turns=settings.RED_TEAM_MAX_TURNS,
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
         )
-        all_findings = injection_findings + leakage_findings + hallucination_findings
+        confused_deputy_findings = run_confused_deputy_agent(
+            transactional_probe_fn,
+            max_turns=settings.RED_TEAM_MAX_TURNS,
+            attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
+        )
+        value_bound_findings = run_value_bound_evasion_agent(
+            transactional_probe_fn,
+            max_turns=settings.RED_TEAM_MAX_TURNS,
+            attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
+        )
+        identity_bypass_findings = run_identity_bypass_agent(
+            transactional_probe_fn,
+            max_turns=settings.RED_TEAM_MAX_TURNS,
+            attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
+        )
+        all_findings = (
+            injection_findings
+            + leakage_findings
+            + hallucination_findings
+            + confused_deputy_findings
+            + value_bound_findings
+            + identity_bypass_findings
+        )
 
         # ------------------------------------------------------------------
         # Step 6 — Compute max_severity and deployment_blocked
@@ -381,6 +452,16 @@ def run_red_team(self, agent_id: str) -> dict:
         # all_findings, so finding_probe_ids[i] lines up with all_findings[i]).
         # Best-effort: a failure here must never affect the run-row write
         # above or the acks_late/idempotency guard.
+        #
+        # No migration work for the three new RTX attack_vector values
+        # (confused_deputy, value_bound_evasion, identity_verification_bypass,
+        # per red_team_service.RTX_ATTACK_VECTORS): red_team_strategies.attack_vector
+        # is free TEXT with only a UNIQUE constraint, and the ON CONFLICT DO
+        # NOTHING upsert below already handles any new string value. Step 7c's
+        # one-row-per-finding write with status='open' means an RTX critical
+        # finding inherits Phase 21's live deploy-gate behaviour for free —
+        # recorded here explicitly so a future reader does not add redundant
+        # wiring for it.
         # ------------------------------------------------------------------
         strategy_ids: dict[str, str | None] = {}
         finding_probe_ids: list[str | None] = []
