@@ -307,8 +307,8 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 
 - [x] **CAP-01**: `capability_envelopes` control-DB table — `(agent_id, skill, enabled, rate_limit, constraints JSONB, requires_confirmation, requires_identity_verification, UNIQUE(agent_id, skill))`
 - [x] **CAP-02**: Enforcement middleware rejects a tool call (logged as `capability.denial`) when the skill is disabled, over its rate limit, or violates a constraint (`max_amount_cents`, scope filters)
-- [ ] **CAP-03**: Capability-and-limits admin UI in the M8 checklist — per-skill envelope config, tighten-only (never loosen beyond platform defaults), identity-verification requirement, Actor mode per skill
-- [ ] **CAP-04**: Envelope configured at deploy time and surfaced in the M8 pre-deployment report; any later envelope change re-triggers the pre-deployment checklist (acknowledged via envelope hash)
+- [x] **CAP-03**: Capability-and-limits admin UI in the M8 checklist — per-skill envelope config, tighten-only (never loosen beyond platform defaults), identity-verification requirement, Actor mode per skill
+- [x] **CAP-04**: Envelope configured at deploy time and surfaced in the M8 pre-deployment report; any later envelope change re-triggers the pre-deployment checklist (acknowledged via envelope hash)
 
 ### Actor Validator (L3)
 
@@ -346,7 +346,7 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 ### Blast-Radius Gate
 
 - [ ] **BLR-01**: Financial blast-radius gate in the M8 checklist orchestrator — reports max single-action value and max hourly aggregate per agent
-- [ ] **BLR-02**: Warnings escalate above tenant-configured thresholds; owner acknowledges the envelope hash at deploy (logged)
+- [x] **BLR-02**: Warnings escalate above tenant-configured thresholds; owner acknowledges the envelope hash at deploy (logged)
 
 ### Red-Team Extensions (extends M7)
 

@@ -1,10 +1,10 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.2
-milestone_name: — Gotham console + comprehensive agent management
+milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — v1.1 Phases 18–19 and Phase 13 still outstanding
-stopped_at: "v1.2 (Phases 20–21) shipped and verified. Phase 20 Gotham frontend cutover 12/12 (parity suite 135/135, check:no-dusk-tokens green, operator-approved visual fidelity). Phase 21 agent-mgmt backend 7/7 + 21-SECURITY.md 33/33 threats closed. Ragas import unblocked (langchain-community pinned <0.4). 2026-07-26 housekeeping: 273 local commits PUSHED to origin/main (origin had been 8 weeks stale at c05c076); unit suite repaired 947→970 pass (3 tests were making live AWS Bedrock calls, 18 were order-polluted by the real-vs-fake claude_agent_sdk race, 2 mocked a removed NeonAPI symbol, 1 was a 6%-flaky base64 JWT tamper). Phase 18 then PLANNED the same day (11 plans / 5 waves; plan-checker VERIFICATION PASSED, 0 blockers; all seven RESEARCH Open Decisions closed in 18-01-PLAN.md). OUTSTANDING: Phase 18 planned but NOT executed; Phase 19 (docs + v1.1 E2E proof) still has 0 plans; Phase 13 production hosting paused at 7/11 pending a real AWS account; every v1.2 migration (tenant 0009–0012, control 0017–0018) is UNAPPLIED to a live Neon DB. Next: /gsd-execute-phase 18."
-last_updated: "2026-07-26T00:00:00.000Z"
+stopped_at: Completed 18-01-PLAN.md
+last_updated: "2026-07-26T20:22:24.483Z"
 progress:
   total_phases: 2
   completed_phases: 2
@@ -20,6 +20,7 @@ progress:
 **▶ MILESTONE v1.2 COMPLETE (Phases 20 + 21), verified 2026-07-18.** Phase 20 (Gotham frontend cutover) 15/15 plans, verifier `passed` 12/12: `apps/admin` runs the "Bone on Graphite" console — tokens in `globals.css` (`--ch-1..4`, `data-gate` shutter), fixed Rail (`TopNav` deleted), verdict-only `Chip`, three.js confined to landing/auth via `SceneMount`, six-region ops room; parity suite 135/135 and `check:no-dusk-tokens` exits 0. Phase 21 (agent-mgmt backend) 9/9 plans, verifier `passed` 7/7 + `21-SECURITY.md` 33/33 threats closed: tenant migrations 0009→0012 and control 0017→0018 (no forks), `turn_metrics` + Langfuse v4 trace from `run_agent_turn`, `GET /metrics` with honest `not_tracked` sentinels, retrieval-health instrumentation inside `retrieve_tool` via `_job_id_var` (native `tsvector` BM25 baseline, sampled Ragas faithfulness, `check_index_staleness`), the bench flywheel (failing-trace listing → grade → `promote_trace_to_scenario` with `source='production'`), first-class `red_team_findings` driving the deploy gate to 422, and immutable `prompt_versions` with diff/canary/rollback. One cross-wave wiring gap (grade→promote never dispatched) was caught by the verifier and closed in `traces.py::grade_trace` + 2 regression tests — **lesson: when a seam crosses waves, the LATER plan must own the wiring.**
 
 **▶ SESSION 2026-07-26 — repo + suite housekeeping (no phase work).**
+
 - **Pushed 273 commits to `origin/main`** (`c05c076`→`655b42c`). Origin had been 8 weeks stale; all of v1.1 and v1.2 existed only on the local machine. Verified no secrets in the range first (only `.env.example` files tracked; the only `sk_live_`/`sk-ant-` hits are the pre-commit guard's own pattern list, docs, and fake fixtures).
 - **Unit suite repaired: 947 → 970 passing, 0 failing** (was 23 failed). Four distinct root causes, all test-side: (1) `EMBEDDING_PROVIDER` defaults to `bedrock` (`config.py:142`, P13-02 seam) but 3 tests still patched only the Voyage path, so they issued **real `boto3` InvokeModel calls** and failed `ValidationException` — pinned the provider to `voyage` in those tests (`retrieval` module run 83s→5s); (2) 18 tests failed **only in full-suite order** with `TypeError: 'SdkMcpTool' object is not callable` — `test_agent_chat_routes.py` imports `app.main` and thus the REAL `claude_agent_sdk` first, so `test_agent_tools.py`'s `if "claude_agent_sdk" not in sys.modules` guard skipped its passthrough fake and `@tool` had already produced `SdkMcpTool` dataclasses; added an order-independent `_fn()` resolver (`.handler` or the function) in `test_agent_tools.py` + `test_retrieval_metrics.py`; (3) `TestCreateNeonProject` mocked `app.services.neon.NeonAPI`, a symbol removed when the SDK was dropped for raw `requests` (to preserve HTTP status codes) — rewritten against `requests`, and the obsolete `TimeoutError` test replaced with the untested `NeonHTTPError.status_code` contract (readiness timeout is already covered by `TestWaitForNeonReady`); (4) `test_validate_widget_jwt_tampered_token_raises_401` was a **~6% flake, not order-dependent** — an HS256 signature is 32 bytes = 43 base64url chars, so the final char carries only 4 significant bits, and flipping it to `'b'` decodes to identical bytes whenever it was `'Y'` (1 of the 16 legal final chars) → signature still verified → no 401; now tampers the decoded bytes (`^ 0xFF`).
 - **Still red / known:** `test_chunking_service.py` and `test_docling_service.py` **cannot collect** — `docling` / `docling_core` are not installed in `apps/api/.venv` (environment gap, not a code defect).
@@ -28,6 +29,7 @@ progress:
 **▶ PHASE 18 PLANNED 2026-07-26 — 11 plans / 5 waves, plan-checker VERIFICATION PASSED (0 blockers, 2 warnings both fixed before hand-off).** Planned with research + UI-SPEC + patterns + validation but **no CONTEXT.md** (no discuss-phase pass), so the planner owned and closed all seven Open Decisions — recorded in `18-01-PLAN.md` § Open Decisions Resolved, with RESEARCH.md's section carrying a RESOLVED pointer. Waves 1–3 autonomous; wave 4 (admin UI) + wave 5 (RTX-04 live gate) are `autonomous:false`.
 
 Two findings from this planning pass that matter beyond Phase 18:
+
 - **The shipped red-team probe cannot exercise L1–L3 at all.** `_build_probe_fn` (`apps/api/app/worker/tasks/runtime/red_team.py:104-109`) is a bare Anthropic `messages.create()` with **no `tools=` kwarg**, so it never attempts a tool call. Any RTX probe built on it would report zero high-severity findings because nothing was ever tried — a vacuous pass on Success Criterion 3. Phase 18 adds `red_team_probe.py` driving the real dispatcher via a `StubProviderAdapter` short-circuit, and a failed short-circuit surfaces as `provider_not_configured` → an **invalid run, not a clean one**.
 - **`pyrit` was never installed** despite the 07-02 decision entry claiming it was added to core dependencies. That entry is now struck through and corrected below. Phase 18 deliberately does not introduce it.
 
@@ -72,7 +74,7 @@ Two findings from this planning pass that matter beyond Phase 18:
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** Phase 17 — customer-identity-verification-email-sms-otp-per-skill-serve
+**Current focus:** Phase 18 — Blast-radius gate, capability admin UI, transaction red-team & injection-defense extensions
 **Previous:** M3 (Hybrid Retrieval) ✓ Complete — demo_m3.sh passed, notebook 4 DataFrames verified, RET-01–RET-08 satisfied (2026-05-16)
 
 ## Milestone Progress
@@ -225,6 +227,11 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260516-aaa | Fix eval harness blockers (capture pipeline, G-06 gate, CI, D3 regex) | 2026-05-16 | 2ab4245 | [260516-aaa-eval-blocker-fixes](.planning/quick/260516-aaa-eval-blocker-fixes/) |
+**Per-Plan Metrics:**
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 18 P01 | 20min | 2 tasks | 6 files |
 
 ## Notes
 
@@ -357,13 +364,16 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: Twilio supply-chain gate cleared, exact pin added
 - [Phase ?]: [17-05] POST /identity/request always returns 204 (no oracle — enumeration prevention, T-17-19)
 - [Phase ?]: [17-05] PlainResponse(headers={...}) required for CORS on 204 — FastAPI does not merge injected Response headers into returned Response objects
+- [18-01] actor_mode server default is 'always-on' (strictest, fail-safe) — an unset capability_envelopes row never silently means "no Actor review" (T-18-CAP-01)
+- [18-01] tenants.blast_radius_warn_single_cents / blast_radius_warn_hourly_cents are nullable; NULL means "fall back to settings.BLAST_RADIUS_WARN_*", mirroring tenants.daily_budget_usd from migration 0008 (Open Decision 1b)
+- [18-01] checklist_runs.envelope_hash / envelope_acknowledged_at are nullable — historical runs predate the hash; NULL must be read as drift, never as a match (18-07's contract, Open Decision 2)
 
 ## Session
 
-**Last session:** 2026-07-26
-**Stopped at:** **Phase 18 PLANNED — 11 plans across 5 waves, plan-checker VERIFICATION PASSED (0 blockers).** Artifacts: `18-RESEARCH.md`, `18-VALIDATION.md`, `18-UI-SPEC.md`, `18-PATTERNS.md`, `18-01..18-11-PLAN.md`. Planned WITHOUT a discuss-phase pass, so the planner owned and closed all seven of RESEARCH.md's Open Decisions (recorded in `18-01-PLAN.md` § Open Decisions Resolved; RESEARCH.md's section now carries a RESOLVED pointer). Waves 1–3 autonomous; wave 4 (admin UI) and wave 5 (RTX-04 live gate) are `autonomous:false`.
+**Last session:** 2026-07-26T20:22:24.439Z
+**Stopped at:** Completed 18-01-PLAN.md
 
 Earlier the same session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 
 **Outstanding:** Phase 19 has 0 plans (depends on 18). Phase 13 paused at 7/11 on a real AWS account. No v1.2 migration has been applied to a live Neon DB. **Next: `/gsd-execute-phase 18`.**
-**Resume file:** .planning/.continue-here.md
+**Resume file:** None
