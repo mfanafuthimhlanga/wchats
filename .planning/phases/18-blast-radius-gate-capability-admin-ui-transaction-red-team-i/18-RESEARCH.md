@@ -75,7 +75,27 @@ No `18-CONTEXT.md` exists — the operator explicitly skipped `/gsd-discuss-phas
 **Packages removed due to `[SLOP]` verdict:** none — none proposed.
 **Packages flagged as suspicious `[SUS]`:** none.
 
-## Open Decisions (no CONTEXT.md — planner must resolve explicitly)
+## Open Decisions — RESOLVED (see `18-01-PLAN.md` § Open Decisions Resolved)
+
+> **All seven decisions below are CLOSED.** They were resolved by the planner on
+> 2026-07-26 and recorded, with the rejected alternative for each, in
+> `18-01-PLAN.md` § Open Decisions Resolved (OD-1..OD-7, plus OD-1b, OD-3b, and
+> OQ-1/OQ-2). Every downstream plan references them by ID. The text below is the
+> researcher's original recommendation and rationale, retained as the reasoning
+> record — it is **not** an open question, and the executor must not re-litigate
+> it. Where a resolution departs from a recommendation here, `18-01-PLAN.md`
+> wins.
+>
+> Two of the resolutions departed materially from the text below, so read the
+> plan before relying on this section:
+> - **OD-4 (PII firewall):** resolved as redact-and-deflect with Luhn/date-validated
+>   detectors and **no phone regex**, regex-only with a hard no-new-dependency
+>   policy.
+> - **OD-6 (RTX probe model):** resolved with a new `red_team_probe.py` carrying two
+>   surfaces, and a `provider_not_configured` verdict tag so a failed
+>   `StubProviderAdapter` short-circuit surfaces as an **invalid run, not a clean
+>   one** — the finding that a probe over the existing `_build_probe_fn` (a bare
+>   `messages.create()` with no `tools=`) would have made RTX-04 vacuous.
 
 ### 1. BLR-01 computation site — BOTH, with clearly separated labels
 
