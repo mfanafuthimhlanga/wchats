@@ -141,3 +141,12 @@ None - no external service configuration required.
 ---
 *Phase: 18-blast-radius-gate-capability-admin-ui-transaction-red-team-i*
 *Completed: 2026-07-26*
+
+## Self-Check: PASSED
+
+- FOUND: apps/api/app/services/capability_service.py
+- FOUND: apps/api/tests/unit/test_capability_service.py
+- FOUND: .planning/phases/18-blast-radius-gate-capability-admin-ui-transaction-red-team-i/18-04-SUMMARY.md
+- FOUND: commit c9aeb58
+- FOUND: commit 38459a7
+- FOUND: commit c239183

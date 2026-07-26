@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — v1.1 Phases 18–19 and Phase 13 still outstanding
-stopped_at: Completed 18-03-PLAN.md
-last_updated: "2026-07-26T21:24:51.440Z"
+stopped_at: Completed 18-04-PLAN.md
+last_updated: "2026-07-26T21:50:52.809Z"
 progress:
   total_phases: 2
   completed_phases: 2
@@ -238,6 +238,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Phase 18 P01 | 20min | 2 tasks | 6 files |
 | Phase 18 P02 | 13min | 3 tasks | 5 files |
 | Phase 18 P03 | 25min | 3 tasks | 3 files |
+| Phase 18 P04 | 25min | 2 tasks | 2 files |
 
 ## Notes
 
@@ -377,11 +378,13 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: [18-02] RETRIEVED_CONTEXT_HEADER text says 'the closing marker below' instead of repeating the literal footer string, so header+footer concatenation yields exactly one occurrence of each constant
 - [Phase ?]: [18-03] get_adapter_for_skill red-team-mode short-circuit placed before _fetch_credential_config, not after — prevents a clean zero-credential tenant from aborting at provider.not_configured before any capability/IDV/rate/Actor verdict fires
 - [Phase ?]: [18-03] _build_transactional_probe_fn returns "" immediately on any victim-turn exception (not a partial transcript) — matches the shipped _build_probe_fn failure contract exactly
+- [Phase ?]: [18-04] validate_tighten_only/canonical_envelope_hash/envelope_drift ship caller-free in capability_service.py by design — 18-07 wires the hash/drift call sites, 18-08 wires the PATCH route (Phase 21 seam-ownership correction)
+- [Phase ?]: [18-04] actor_mode='off' is rejected on any mutating skill unconditionally (before the ordinal tightness comparison), not merely when it would be a loosening
 
 ## Session
 
-**Last session:** 2026-07-26T21:24:51.323Z
-**Stopped at:** Completed 18-03-PLAN.md
+**Last session:** 2026-07-26T21:50:31.694Z
+**Stopped at:** Completed 18-04-PLAN.md
 
 Earlier the same session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 
