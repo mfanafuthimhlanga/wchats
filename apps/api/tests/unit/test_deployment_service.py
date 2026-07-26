@@ -53,6 +53,7 @@ from app.services.deployment_service import (
     DeploymentWarning,
     BLAST_RADIUS_DEFAULT_SIGNAL,
     _DEPLOYMENT_SYSTEM_PROMPT,
+    _compute_envelope_hash_sync,
     _fetch_blast_radius_sync,
     _fetch_eval_summary_sync,
     _make_iframe_snippet,
@@ -114,6 +115,151 @@ def _make_scripted_db(script):
         results.append(mock_result)
     mock_db.execute.side_effect = results
     return mock_db
+
+
+def _make_envelope_mock_db(rows):
+    """Build a MagicMock db whose db.execute(...).mappings().all() returns rows.
+
+    Matches _fetch_envelope_rows_sync's exact call shape:
+    with get_sync_db() as db: db.execute(text(...), {...}).mappings().all().
+    """
+    mock_db = MagicMock()
+    mock_result = MagicMock()
+    mock_result.mappings.return_value.all.return_value = rows
+    mock_db.execute.return_value = mock_result
+    return mock_db
+
+
+# ---------------------------------------------------------------------------
+# test_envelope_hash_stability (module scope — 18-VALIDATION.md pins this node id)
+# ---------------------------------------------------------------------------
+
+
+def test_envelope_hash_stability():
+    """T-18-BLR-02: the sync envelope-hash reader is stable under a no-op
+    re-save (row order change), sensitive to a semantic field change, and
+    structurally excludes id/agent_id/updated_at at the query layer."""
+    rows_a = [
+        {
+            "skill": "issue_refund",
+            "enabled": True,
+            "rate_limit": "5/hour",
+            "constraints": {"max_amount_cents": 5000},
+            "requires_confirmation": False,
+            "requires_identity_verification": False,
+            "actor_mode": "always-on",
+        },
+        {
+            "skill": "place_order",
+            "enabled": True,
+            "rate_limit": "10/hour",
+            "constraints": {"max_amount_cents": 100000},
+            "requires_confirmation": False,
+            "requires_identity_verification": False,
+            "actor_mode": "always-on",
+        },
+    ]
+
+    mock_db_1 = _make_envelope_mock_db(rows_a)
+    with patch("app.services.deployment_service.get_sync_db", _make_sync_db_ctx(mock_db_1)):
+        hash_1 = _compute_envelope_hash_sync("agent-a")
+
+    mock_db_2 = _make_envelope_mock_db(rows_a)
+    with patch("app.services.deployment_service.get_sync_db", _make_sync_db_ctx(mock_db_2)):
+        hash_2 = _compute_envelope_hash_sync("agent-a")
+
+    assert hash_1 == hash_2
+    assert len(hash_1) == 64
+    assert all(c in "0123456789abcdef" for c in hash_1)
+
+    # Row order change (the SELECT is ORDER BY skill, but the canonicaliser
+    # is order-independent regardless — assert that independence directly).
+    rows_reordered = list(reversed(rows_a))
+    mock_db_3 = _make_envelope_mock_db(rows_reordered)
+    with patch("app.services.deployment_service.get_sync_db", _make_sync_db_ctx(mock_db_3)):
+        hash_reordered = _compute_envelope_hash_sync("agent-a")
+    assert hash_reordered == hash_1
+
+    # A semantic field change (constraints.max_amount_cents) yields a
+    # different hash.
+    rows_changed = [dict(rows_a[0]), dict(rows_a[1])]
+    rows_changed[0] = dict(rows_changed[0])
+    rows_changed[0]["constraints"] = {"max_amount_cents": 9999}
+    mock_db_4 = _make_envelope_mock_db(rows_changed)
+    with patch("app.services.deployment_service.get_sync_db", _make_sync_db_ctx(mock_db_4)):
+        hash_changed = _compute_envelope_hash_sync("agent-a")
+    assert hash_changed != hash_1
+
+    # Structural Pitfall-2 guard: the SELECT column list contains none of
+    # id / agent_id / updated_at (agent_id legitimately appears in the WHERE
+    # clause as the filter parameter name — only the SELECT projection is
+    # asserted here).
+    sql_str = str(mock_db_4.execute.call_args[0][0])
+    select_clause = sql_str.upper().split("FROM", 1)[0]
+    projected_columns = {
+        c.strip() for c in select_clause.replace("SELECT", "", 1).split(",")
+    }
+    assert "ID" not in projected_columns
+    assert "AGENT_ID" not in projected_columns
+    assert "UPDATED_AT" not in projected_columns
+
+
+# ---------------------------------------------------------------------------
+# TestEnvelopeHashSync
+# ---------------------------------------------------------------------------
+
+
+class TestEnvelopeHashSync:
+    """Tests pinning that _compute_envelope_hash_sync delegates to the single
+    shared canonicaliser rather than re-implementing hashing, that its
+    signature carries no conn_str, and that an empty envelope hashes to a
+    stable, non-empty value."""
+
+    def test_compute_envelope_hash_sync_delegates_to_capability_service(self):
+        rows = [
+            {
+                "skill": "issue_refund",
+                "enabled": True,
+                "rate_limit": "5/hour",
+                "constraints": {},
+                "requires_confirmation": False,
+                "requires_identity_verification": False,
+                "actor_mode": "always-on",
+            }
+        ]
+        mock_db = _make_envelope_mock_db(rows)
+        with patch(
+            "app.services.deployment_service.get_sync_db", _make_sync_db_ctx(mock_db)
+        ), patch(
+            "app.services.deployment_service.canonical_envelope_hash"
+        ) as mock_hash:
+            mock_hash.return_value = "deadbeef"
+            result = _compute_envelope_hash_sync("agent-x")
+
+        mock_hash.assert_called_once_with(rows)
+        assert result == "deadbeef"
+
+    def test_compute_envelope_hash_sync_takes_no_conn_str(self):
+        assert list(inspect.signature(_compute_envelope_hash_sync).parameters) == [
+            "agent_id"
+        ]
+
+    def test_empty_envelope_rows_hash_is_deterministic(self):
+        mock_db_1 = _make_envelope_mock_db([])
+        with patch(
+            "app.services.deployment_service.get_sync_db", _make_sync_db_ctx(mock_db_1)
+        ):
+            result_1 = _compute_envelope_hash_sync("agent-empty")
+
+        mock_db_2 = _make_envelope_mock_db([])
+        with patch(
+            "app.services.deployment_service.get_sync_db", _make_sync_db_ctx(mock_db_2)
+        ):
+            result_2 = _compute_envelope_hash_sync("agent-empty")
+
+        assert result_1 is not None
+        assert len(result_1) == 64
+        assert result_1 == result_2
 
 
 # ---------------------------------------------------------------------------

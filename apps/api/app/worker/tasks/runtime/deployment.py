@@ -23,11 +23,14 @@ Flow (run_deployment_checklist):
     1. Fetch agent from control DB; decrypt conn_str
     2. Idempotency guard — skip if a running checklist_run for this agent exists within 60 min
     3. Insert checklist_runs row (status='running') in control DB via ORM
-    4. Collect all 5 signals synchronously (4 via psycopg2 against the tenant DB,
-       the 5th — blast_radius — via get_sync_db() against the control DB)
+    4. Collect all 5 signals plus the BLR-02 envelope hash synchronously (4
+       signals via psycopg2 against the tenant DB, the 5th signal —
+       blast_radius — and the envelope hash both via get_sync_db() against
+       the control DB)
     5. Call run_orchestrator(signals_json, result_container) via asyncio.run bridge
-    6. Parse result and UPDATE checklist_runs row to status='complete'; merge the
-       deterministic blast-radius warnings into the persisted warnings list,
+    6. Parse result and UPDATE checklist_runs row to status='complete'; persist the
+       envelope hash alongside status, recommendation, report and warnings; merge
+       the deterministic blast-radius warnings into the persisted warnings list,
        de-duplicated by warning_id
     7. On exception: UPDATE checklist_runs row to status='failed'; retry if retries < max_retries
 """
@@ -48,6 +51,7 @@ from app.models.checklist_run import ChecklistRun
 from app.services.deployment_service import (
     BLAST_RADIUS_DEFAULT_SIGNAL,
     DeploymentReport,
+    _compute_envelope_hash_sync,
     _fetch_blast_radius_sync,
     _fetch_corpus_stats_sync,
     _fetch_eval_summary_sync,
@@ -82,9 +86,11 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
         2. Idempotency guard — skip if a 'running' checklist_run for this agent
            was created within the last 60 minutes.
         3. Insert checklist_runs row (status='running') in control DB via ORM.
-        4. Collect all 4 signals synchronously (psycopg2 against tenant DB).
+        4. Collect all 5 signals synchronously (psycopg2 against tenant DB) plus
+           the BLR-02 envelope hash (control DB, own guarded block).
         5. Call run_orchestrator via asyncio.run(asyncio.wait_for(..., timeout=120.0)) bridge.
-        6. Parse result and UPDATE checklist_runs to status='complete'.
+        6. Parse result and UPDATE checklist_runs to status='complete', persisting
+           the envelope hash alongside status/recommendation/report/warnings.
         7. On exception: UPDATE checklist_runs to status='failed'; retry if possible.
 
     Args:
@@ -212,6 +218,24 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
         # Copy so a later mutation cannot poison the module constant.
         blast_radius = dict(BLAST_RADIUS_DEFAULT_SIGNAL)
 
+    try:
+        # Sixth collector — control DB, no conn_str (BLR-02). Computed
+        # separately from the `signals` dict below because it is not a
+        # narrative quality signal for the orchestrator; it is persisted
+        # directly onto the checklist run in Step 6. A None result here
+        # (collector failure) is not a neutral outcome: envelope_drift
+        # treats an absent recorded hash as drift, so a run whose hash
+        # collector failed can never be approved — the deliberate
+        # fail-closed direction, matching a NULL pre-0019 historical hash.
+        envelope_hash = _compute_envelope_hash_sync(agent_id)
+    except Exception as exc:
+        log.warning(
+            "run_deployment_checklist.envelope_hash_failed",
+            agent_id=agent_id,
+            error=str(exc),
+        )
+        envelope_hash = None
+
     # ------------------------------------------------------------------
     # Step 5 — Call Agent SDK orchestrator via asyncio.run bridge
     # asyncio.run(asyncio.wait_for(..., timeout=120.0)) — CTL-08 rule.
@@ -287,6 +311,12 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
                         w for w in derived if w.warning_id not in existing_ids
                     ]
                     run_obj.warnings = [w.model_dump() for w in merged_warnings]
+                    # BLR-02: the hash lands in the same transaction as
+                    # status/report/warnings. Acknowledgement (the sibling
+                    # timestamp column) is never stamped here — that is the
+                    # owner's act at approve time, not the platform's at
+                    # checklist time.
+                    run_obj.envelope_hash = envelope_hash
                     db.commit()
                     db.refresh(run_obj)
 

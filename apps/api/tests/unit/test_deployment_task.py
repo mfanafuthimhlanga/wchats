@@ -25,6 +25,15 @@ Phase 18 BLR-01 addition:
       it opens its OWN get_sync_db() session inside deployment_service.py
       (not the module-level get_sync_db patched here), so leaving it
       unpatched would attempt a real control-DB connection.
+
+Phase 18 BLR-02 addition:
+    - app.worker.tasks.runtime.deployment._compute_envelope_hash_sync is
+      patched alongside _fetch_blast_radius_sync for the same reason — it
+      also opens its own get_sync_db() session inside deployment_service.py.
+      Step 4's guarded try/except means an unpatched real-DB connection
+      failure would still complete the run (envelope_hash=None), but every
+      test patches it anyway to keep this module fast and independent of
+      whatever is or isn't listening on localhost:5432.
 """
 
 import os
@@ -205,6 +214,9 @@ class TestRunDeploymentChecklistHappyPath:
             "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
             return_value=empty_blast_radius,
         ), patch(
+            "app.worker.tasks.runtime.deployment._compute_envelope_hash_sync",
+            return_value="test-envelope-hash",
+        ), patch(
             "app.worker.tasks.runtime.deployment._call_orchestrator_async",
             side_effect=_fake_call_orchestrator_async,
         ):
@@ -315,6 +327,9 @@ class TestRunDeploymentChecklistFailurePath:
                 "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
                 return_value=empty_blast_radius,
             ), patch(
+                "app.worker.tasks.runtime.deployment._compute_envelope_hash_sync",
+                return_value="test-envelope-hash",
+            ), patch(
                 "app.worker.tasks.runtime.deployment._call_orchestrator_async",
                 side_effect=_failing_orchestrator_async,
             ):
@@ -424,6 +439,9 @@ class TestBlastRadiusWiring:
             "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
             return_value=empty_blast_radius,
         ) as mock_blast_radius, patch(
+            "app.worker.tasks.runtime.deployment._compute_envelope_hash_sync",
+            return_value="test-envelope-hash",
+        ), patch(
             "app.worker.tasks.runtime.deployment._call_orchestrator_async",
             side_effect=_fake_call_orchestrator_async,
         ):
@@ -467,6 +485,9 @@ class TestBlastRadiusWiring:
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
             side_effect=RuntimeError("control DB unreachable"),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._compute_envelope_hash_sync",
+            return_value="test-envelope-hash",
         ), patch(
             "app.worker.tasks.runtime.deployment._call_orchestrator_async",
             side_effect=_fake_call_orchestrator_async,
@@ -534,6 +555,9 @@ class TestBlastRadiusWiring:
             "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
             return_value=above_threshold_blast_radius,
         ), patch(
+            "app.worker.tasks.runtime.deployment._compute_envelope_hash_sync",
+            return_value="test-envelope-hash",
+        ), patch(
             "app.worker.tasks.runtime.deployment._call_orchestrator_async",
             side_effect=_fake_call_orchestrator_async,
         ):
@@ -595,6 +619,9 @@ class TestBlastRadiusWiring:
         ), patch(
             "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
             return_value=above_threshold_blast_radius,
+        ), patch(
+            "app.worker.tasks.runtime.deployment._compute_envelope_hash_sync",
+            return_value="test-envelope-hash",
         ), patch(
             "app.worker.tasks.runtime.deployment._call_orchestrator_async",
             side_effect=_fake_call_orchestrator_async,

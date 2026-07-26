@@ -29,6 +29,7 @@ from claude_agent_sdk import (
 )
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.services.capability_service import canonical_envelope_hash
 from app.services.transactional.enforcement import _parse_rate_limit
 
 SONNET_MODEL = "claude-sonnet-4-6"
@@ -530,6 +531,63 @@ def _fetch_blast_radius_sync(agent_id: str) -> dict:
         "warn_threshold_hourly_cents": warn_threshold_hourly_cents,
         "enabled_skill_count": enabled_skill_count,
     }
+
+
+# ---------------------------------------------------------------------------
+# Envelope-hash reader (BLR-02) — the sync twin of api/v1/deployment.py's
+# async reader. Both project exactly capability_service.HASHED_ENVELOPE_FIELDS
+# at the query layer and delegate hashing to the one shared canonicaliser, so
+# the checklist task and the approve route can never disagree on what "the
+# current envelope" hashes to.
+# ---------------------------------------------------------------------------
+
+
+def _fetch_envelope_rows_sync(agent_id: str) -> list[dict]:
+    """Read this agent's capability_envelopes rows for the BLR-02 envelope hash.
+
+    Projects exactly the seven capability_service.HASHED_ENVELOPE_FIELDS
+    columns (skill, enabled, rate_limit, constraints, requires_confirmation,
+    requires_identity_verification, actor_mode) at the query layer — id,
+    agent_id and updated_at are never in the SELECT list, which makes it
+    structurally impossible for a non-semantic, DB-managed column to reach
+    the hash. That is a stronger guarantee than relying on the canonicaliser
+    to drop them after the fact.
+
+    ORDER BY skill is defensive, not load-bearing — the canonicaliser itself
+    sorts the projected rows, so input row order never varies the hash.
+
+    Returns a list of plain dicts, one per envelope row, ready to hand
+    directly to capability_service.canonical_envelope_hash.
+    """
+    with get_sync_db() as db:
+        rows = (
+            db.execute(
+                text(
+                    "SELECT skill, enabled, rate_limit, constraints, "
+                    "requires_confirmation, requires_identity_verification, "
+                    "actor_mode FROM capability_envelopes "
+                    "WHERE agent_id = :agent_id ORDER BY skill"
+                ),
+                {"agent_id": agent_id},
+            )
+            .mappings()
+            .all()
+        )
+    return [dict(row) for row in rows]
+
+
+def _compute_envelope_hash_sync(agent_id: str) -> str:
+    """Sync twin of api/v1/deployment.py's async envelope-hash reader (BLR-02).
+
+    Both this function (called from run_deployment_checklist at checklist-run
+    time) and the approve route's reader delegate hashing to the same
+    capability_service.canonical_envelope_hash — a divergence between the two
+    readers' field projections would fire the BLR-02 drift gate on every
+    single deploy, since the two sides would then be hashing different data
+    for what is supposed to be the identical live configuration.
+    """
+    rows = _fetch_envelope_rows_sync(agent_id)
+    return canonical_envelope_hash(rows)
 
 
 def derive_blast_radius_warnings(blast_radius: dict) -> list[DeploymentWarning]:
