@@ -308,7 +308,7 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 - [x] **CAP-01**: `capability_envelopes` control-DB table — `(agent_id, skill, enabled, rate_limit, constraints JSONB, requires_confirmation, requires_identity_verification, UNIQUE(agent_id, skill))`
 - [x] **CAP-02**: Enforcement middleware rejects a tool call (logged as `capability.denial`) when the skill is disabled, over its rate limit, or violates a constraint (`max_amount_cents`, scope filters)
 - [ ] **CAP-03**: Capability-and-limits admin UI in the M8 checklist — per-skill envelope config, tighten-only (never loosen beyond platform defaults), identity-verification requirement, Actor mode per skill *(partial: the tighten-only comparator + platform defaults shipped in 18-04, but the PATCH routes are 18-08 and the admin UI is 18-10 — both unexecuted, so this stays unchecked)*
-- [ ] **CAP-04**: Envelope configured at deploy time and surfaced in the M8 pre-deployment report; any later envelope change re-triggers the pre-deployment checklist (acknowledged via envelope hash) *(partial: `envelope_drift` shipped caller-free in 18-04; the checklist wiring and re-trigger are 18-07, unexecuted)*
+- [x] **CAP-04**: Envelope configured at deploy time and surfaced in the M8 pre-deployment report; any later envelope change re-triggers the pre-deployment checklist (acknowledged via envelope hash) *(complete: `envelope_drift` shipped caller-free in 18-04; 18-07 wires the checklist-time hash persistence, the approve-time 422, and `envelope_drift` on both checklist reads)*
 
 ### Actor Validator (L3)
 
@@ -346,7 +346,7 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 ### Blast-Radius Gate
 
 - [x] **BLR-01**: Financial blast-radius gate in the M8 checklist orchestrator — reports max single-action value and max hourly aggregate per agent
-- [ ] **BLR-02**: Warnings escalate above tenant-configured thresholds; owner acknowledges the envelope hash at deploy (logged) *(partial: threshold columns + derived warnings shipped in 18-01/18-05 and `canonical_envelope_hash` in 18-04; the acknowledgement persistence + approve-deployment 422 are 18-07 and the acknowledgement UI is 18-10 — both unexecuted)*
+- [x] **BLR-02**: Warnings escalate above tenant-configured thresholds; owner acknowledges the envelope hash at deploy (logged) *(complete for the backend gate: threshold columns + derived warnings shipped in 18-01/18-05, `canonical_envelope_hash` in 18-04, and 18-07 wires the checklist-time hash persistence, the approve-time 422, and `envelope_acknowledged_at` stamping; the admin-facing acknowledgement UI is 18-10, unexecuted)*
 
 ### Red-Team Extensions (extends M7)
 
@@ -386,7 +386,7 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 | ACT-01..06 | Phase 15 | ✓ Complete (3/3 plans; live-verified ACT-04/05 + T-15-01/02; **ACT-06 p95<1s deferred to prod infra** — 4660ms p95 on the local 4GB box; 15-SECURITY.md) |
 | INT-01..07 | Phase 16 | ✓ Complete (7/7 plans; 16-VERIFICATION human_needed 2/3; **live Stripe test-mode refund gate deferred to prod, operator-accepted 2026-07-01**; 16-SECURITY.md) |
 | IDV-01..05 | Phase 17 | ✓ Complete (6/6 plans; 17-VERIFICATION.md; 17-SECURITY.md 20/20) |
-| BLR-01, BLR-02, CAP-03, CAP-04, RTX-01..04, SEC-01..03 | Phase 18 | ◐ In progress — 6/11 plans executed (18-01..18-06; BLR-01 blast-radius collector shipped; RTX-01/02/03 red-team probes wired into run_red_team, RTX-04 live gate deferred to 18-11; capability_service.py tighten-only/hash/drift ships caller-free, wired by 18-07/18-08) |
+| BLR-01, BLR-02, CAP-03, CAP-04, RTX-01..04, SEC-01..03 | Phase 18 | ◐ In progress — 7/11 plans executed (18-01..18-07; BLR-01 blast-radius collector shipped; RTX-01/02/03 red-team probes wired into run_red_team, RTX-04 live gate deferred to 18-11; capability_service.py's canonical_envelope_hash/envelope_drift wired by 18-07 (BLR-02/CAP-04 complete for the backend gate); validate_tighten_only still caller-free, wired by 18-08) |
 | DOC-01..03, VER-01, AUD-03 | Phase 19 | **○ Not planned — 0 plans (depends on 18).** |
 
 **v1.1 coverage:** 43 requirements across phases 14–19, all mapped. (TXN 5, CAP 4, ACT 6, INT 7, IDV 5, AUD 3, BLR 2, RTX 4, SEC 3, DOC 3, VER 1 = 43.)
