@@ -261,11 +261,20 @@ const RATE_UNITS = ['minute', 'hour', 'day'] as const
 type RateUnit = (typeof RATE_UNITS)[number]
 const RATE_UNIT_SECS: Record<RateUnit, number> = { minute: 60, hour: 3600, day: 86400 }
 
-// CAP-03/D2: fixed tightness order, Off first — this order alone (plus the
-// recessed-vs-live treatment) teaches the metaphor without a legend. The Off
-// tile is filtered out at render time for every mutating skill.
-const ACTOR_MODE_ORDER: { tier: 0 | 1 | 2; key: 'off' | 'sampled' | 'always-on'; label: string }[] = [
-  { tier: 0, key: 'off', label: 'Off' },
+// CAP-03/D2: fixed tightness order, loosest first — this order alone (plus the
+// recessed-vs-live treatment) teaches the metaphor without a legend.
+//
+// `off` is deliberately not a member. A Zone renders only for a mutating skill,
+// every platform default seeds `actor_mode: "always-on"` (the tightest tier),
+// and `validate_tighten_only` refuses every loosening — so Off is not a legal
+// destination from any state this control can be in. It used to be listed here
+// and filtered back out on `envelope.mutating`, which left an unreachable tile,
+// an unreachable `handleSelect` branch, and an unreachable caption narrating
+// what turning Actor review on would do (a B5 violation waiting for the state
+// to become reachable). `actorModeTier`/`actorModeLabel` still carry tier 0,
+// because the acknowledgement table has to be able to name an out-of-band
+// `off` value the API returns.
+const ACTOR_MODE_ORDER: { tier: 1 | 2; key: 'sampled' | 'always-on'; label: string }[] = [
   { tier: 1, key: 'sampled', label: 'Sampled' },
   { tier: 2, key: 'always-on', label: 'Always-on' },
 ]
@@ -461,14 +470,18 @@ function BlastRadiusBlock({ blastRadius }: { blastRadius: BlastRadiusSignal | un
     </div>
   )
 
+  // `<section>` rather than a bare `div` for the same reason the capability
+  // Zones carry `as="section"`: `aria-labelledby` on a role-less element has
+  // nothing to name and the name is discarded, so `#blast-label` was naming
+  // nothing programmatically and M4's heading was decorative only.
   if (!blastRadius || blastRadius.enabled_skill_count === 0) {
     return (
-      <div className="blast-block">
+      <section className="blast-block" aria-labelledby="blast-label">
         {head}
         <p className="blast-note">
           No transactional skill is enabled for this agent. There is no blast radius to report.
         </p>
-      </div>
+      </section>
     )
   }
 
@@ -480,14 +493,13 @@ function BlastRadiusBlock({ blastRadius }: { blastRadius: BlastRadiusSignal | un
     observed_window_days: windowDays,
     warn_threshold_single_cents: warnSingle,
     warn_threshold_hourly_cents: warnHourly,
-    enabled_skill_count: enabledSkillCount,
   } = blastRadius
 
   const singleObserved = centsOrNotTracked(observedSingle, windowDays)
   const hourlyObserved = centsOrNotTracked(observedHourly, windowDays)
 
   return (
-    <div className="blast-block">
+    <section className="blast-block" aria-labelledby="blast-label">
       {head}
       <div className="blast-line">
         <span className="label blast-label">Max single action</span>
@@ -496,9 +508,13 @@ function BlastRadiusBlock({ blastRadius }: { blastRadius: BlastRadiusSignal | un
         {configuredSingle !== null && (
           <span className="num">{formatCents(configuredSingle)} ceiling</span>
         )}
-        {configuredSingle === null && enabledSkillCount > 0 ? (
+        {/* The early return above already left on `enabled_skill_count === 0`,
+            so the count is not re-tested here. Re-testing it made
+            `enabledSkillCount > 0` always true and left a `null` middle branch
+            that rendered no chip at all for an unconfigured ceiling. */}
+        {configuredSingle === null ? (
           <Chip verdict="fail">No ceiling</Chip>
-        ) : configuredSingle === null ? null : warnSingle === null ? (
+        ) : warnSingle === null ? (
           // No threshold was resolved for this tenant, so nothing was measured
           // against. "Within threshold" in --pass here would assert that a
           // ceiling cleared a bar that does not exist. Same treatment the four
@@ -530,9 +546,9 @@ function BlastRadiusBlock({ blastRadius }: { blastRadius: BlastRadiusSignal | un
         {configuredHourly !== null && (
           <span className="num">{formatCents(configuredHourly)} ceiling</span>
         )}
-        {configuredHourly === null && enabledSkillCount > 0 ? (
+        {configuredHourly === null ? (
           <Chip verdict="fail">No ceiling</Chip>
-        ) : configuredHourly === null ? null : warnHourly === null ? (
+        ) : warnHourly === null ? (
           <Chip verdict="mute">No threshold set</Chip>
         ) : configuredHourly > warnHourly ? (
           <Chip verdict="fail">Exceeds threshold</Chip>
@@ -548,7 +564,7 @@ function BlastRadiusBlock({ blastRadius }: { blastRadius: BlastRadiusSignal | un
           <span className="blast-note">{hourlyObserved.text}</span>
         )}
       </div>
-    </div>
+    </section>
   )
 }
 
@@ -705,8 +721,7 @@ function EnvelopeAcknowledgement({
 
 // CAP-03/D2 — the actor-mode segmented control, built from the AppearanceTile
 // shape. Positions to the left of the current selection (looser) render
-// recessed and unreachable; the Off tile is physically absent whenever the
-// skill is mutating (tested on `envelope.mutating`, never a skill-name list).
+// recessed and unreachable; Off is not offered at all (see ACTOR_MODE_ORDER).
 function ActorModeTiles({
   envelope,
   skillLabel,
@@ -730,13 +745,9 @@ function ActorModeTiles({
     setSampledN(serverSampledN)
   }, [serverSampledN])
 
-  const tiles = ACTOR_MODE_ORDER.filter((t) => !(t.tier === 0 && envelope.mutating))
-
-  const handleSelect = (tier: 0 | 1 | 2) => {
+  const handleSelect = (tier: 1 | 2) => {
     if (!isActorModeReachable(tier, currentTierNum)) return
-    if (tier === 0) {
-      onSave(envelope.skill, { actor_mode: 'off' })
-    } else if (tier === 2) {
+    if (tier === 2) {
       onSave(envelope.skill, { actor_mode: 'always-on' })
     } else {
       const n = Math.max(sampledN, currentTier?.tier === 1 ? currentTier.n : 1)
@@ -753,13 +764,13 @@ function ActorModeTiles({
       <legend className="label">Actor mode for {skillLabel}</legend>
       <div
         className="tiles cap-actor-tiles"
-        // Column count follows the tile count. Hardcoding two columns would,
-        // for any envelope carrying a third tile, wrap "Always-on" to the row
-        // below and place it visually LEFT of "Sampled" — inverting the fixed
+        // Column count follows the tier count. Hardcoding two columns would,
+        // for any future third tier, wrap the tightest tile to the row below
+        // and place it visually LEFT of a looser one — inverting the fixed
         // tightness ordering that is this control's only legend.
-        style={{ gridTemplateColumns: `repeat(${tiles.length}, minmax(0, 1fr))` }}
+        style={{ gridTemplateColumns: `repeat(${ACTOR_MODE_ORDER.length}, minmax(0, 1fr))` }}
       >
-        {tiles.map((t) => {
+        {ACTOR_MODE_ORDER.map((t) => {
           const selected = currentTierNum === t.tier
           const reachable = isActorModeReachable(t.tier, currentTierNum)
           return (
@@ -801,12 +812,13 @@ function ActorModeTiles({
           />
         </div>
       )}
+      {/* B5: the present fact, never the mechanism. The label comes from
+          `actorModeLabel`, the same helper the acknowledgement table uses, so
+          every reachable value (and an out-of-band `off`) is named correctly
+          here without a third branch that would have to assert something. */}
       <p className="help cap-caption">
-        {currentTierNum === 2
-          ? 'Currently: Always-on. Nothing stricter exists for this skill.'
-          : currentTierNum === 1
-            ? `Currently: Sampled at ${currentTier?.n ?? 1} in 100.`
-            : 'Currently: Off. Turning this on adds Actor review before every call.'}
+        Currently: {actorModeLabel(envelope.actor_mode)}.
+        {currentTierNum === 2 && ' Nothing stricter exists for this skill.'}
       </p>
     </fieldset>
   )
