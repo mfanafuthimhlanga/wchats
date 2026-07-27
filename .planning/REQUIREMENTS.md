@@ -387,7 +387,7 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 | INT-01..07 | Phase 16 | ✓ Complete (7/7 plans; 16-VERIFICATION human_needed 2/3; **live Stripe test-mode refund gate deferred to prod, operator-accepted 2026-07-01**; 16-SECURITY.md) |
 | IDV-01..05 | Phase 17 | ✓ Complete (6/6 plans; 17-VERIFICATION.md; 17-SECURITY.md 20/20) |
 | BLR-01, BLR-02, CAP-03, CAP-04, RTX-01..04, SEC-01..03 | Phase 18 | ◐ In progress — 7/11 plans executed (18-01..18-07; BLR-01 blast-radius collector shipped; RTX-01/02/03 red-team probes wired into run_red_team, RTX-04 live gate deferred to 18-11; capability_service.py's canonical_envelope_hash/envelope_drift wired by 18-07 (BLR-02/CAP-04 complete for the backend gate); validate_tighten_only still caller-free, wired by 18-08) |
-| DOC-01..03, VER-01, AUD-03 | Phase 19 | ◐ In progress — 3/5 plans executed (19-01 DOC-01/02 guides; 19-02 DOC-03 guide + VER-01 demo tenant; 19-03 AUD-03 gated harness + compute_audit_gap, live run deferred to 19-05). VER-01's live gates (19-04/19-05) and AUD-03's live run remain `autonomous:false`. |
+| DOC-01..03, VER-01, AUD-03 | Phase 19 | ◐ In progress — 4/5 plans executed (19-01 DOC-01/02 guides; 19-02 DOC-03 guide + VER-01 demo tenant; 19-03 AUD-03 gated harness + compute_audit_gap; 19-04 VER-01 SC3 104-message adversarial harness — all three gated live runs deferred to 19-05). VER-01's live gate (19-05) and AUD-03's live run remain `autonomous:false`. |
 
 **v1.1 coverage:** 43 requirements across phases 14–19, all mapped. (TXN 5, CAP 4, ACT 6, INT 7, IDV 5, AUD 3, BLR 2, RTX 4, SEC 3, DOC 3, VER 1 = 43.)
 **v1.1 delivered:** 30 of 43 (Phases 14–17). **Outstanding:** 13 (Phase 18's 11 + Phase 19's 5, less AUD-03/VER-01 overlap accounting — see the two rows above).

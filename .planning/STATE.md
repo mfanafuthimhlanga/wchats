@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — v1.1 Phases 18–19 and Phase 13 still outstanding
-stopped_at: Executed 19-03-PLAN.md (AUD-03 30-day audit-gap gate + compute_audit_gap)
-last_updated: "2026-07-27T22:47:18.756Z"
+stopped_at: Executed 19-04-PLAN.md (VER-01 SC3 100-message adversarial harness)
+last_updated: "2026-07-27T23:09:11.144Z"
 progress:
   total_phases: 2
   completed_phases: 2
@@ -270,6 +270,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Phase 18 P09 | ~35min | 3 tasks | 7 files |
 | Phase 19 P02 | ~25min | 2 tasks | 2 files |
 | Phase 19 P03 | 20min | 2 tasks | 2 files |
+| Phase 19 P04 | 30min | 2 tasks | 2 files |
 
 ## Notes
 
@@ -430,11 +431,14 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: [19-03] AUD-03 harness built with seeded-backdated-rows via direct SQL against tool_calls_audit; no clock abstraction added to write_audit_row
 - [Phase ?]: [19-03] Harness envelope tunes place_order max_amount_cents below ACTOR_SKIP_MAX_AMOUNT_CENTS so the Actor skip engages deterministically per batch — no live ANTHROPIC_API_KEY needed for the gate
 - [Phase ?]: [19-03] Moved app.services.red_team_probe imports from module scope to lazy fixture/test-body imports so bare python -c import never triggers app.core.config Settings() validation outside pytest
+- [Phase ?]: [19-04] Capability-layer probes routed through confirm_action referencing an unconfigured skill string, since all six real mutating skills are enabled on the clean tenant
+- [Phase ?]: [19-04] Attack-class vocabulary strictly limited to shipped RTX_ATTACK_VECTORS + INJECTION_ATTACK_VECTORS (5 strings) — capability-layer confirm_action probes labelled confused_deputy as closest fit, no sixth invented label
+- [Phase ?]: [19-04] invoke_probe_tool/red_team_mode/ProbeToolResult bound as deferred None module globals populated by _load_probe_substrate() -- resolves conflict between the plan's bare-python-c-import acceptance check and its module-level-patchability action text
 
 ## Session
 
-**Last session:** 2026-07-27T22:47:18.693Z
-**Stopped at:** Executed 19-03-PLAN.md (AUD-03 30-day audit-gap gate + compute_audit_gap)
+**Last session:** 2026-07-27T23:08:48.267Z
+**Stopped at:** Executed 19-04-PLAN.md (VER-01 SC3 100-message adversarial harness)
 
 Earlier the same session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 
