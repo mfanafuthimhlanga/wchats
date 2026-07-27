@@ -1,5 +1,5 @@
 'use client'
-import { use, useEffect, useMemo, useState } from 'react'
+import { use, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
 import Btn from '../../../components/gotham/Btn'
@@ -581,8 +581,15 @@ function EnvelopeAcknowledgement({
         </>
       ) : (
         <>
+          {/* Six columns, one of which holds an unbreakable actor-mode value.
+              The left bench column is ~600px in the 1101-1280 band (the sidebar
+              holds 320px until 1100px), which is not one of the three widths
+              the parity suite asserts, so this scrolls in its own container
+              rather than pushing the page. `tabIndex` keeps the scroll
+              reachable without a pointer. */}
+          <div className="ack-table-scroll" tabIndex={0}>
           <Ledger
-            caption="The capability limits this checklist's envelope hash covers, one row per enabled skill."
+            caption="The capability limits this checklist's envelope hash covers, one row per skill. Rows for skills that are not enabled are shown recessed."
             className="ack-table"
           >
             <thead>
@@ -618,6 +625,7 @@ function EnvelopeAcknowledgement({
               )}
             </tbody>
           </Ledger>
+          </div>
           {/* Reached only when `attestable`, so the fingerprint is always a
               real hash here — there is no "config unavailable" caption sitting
               above a tickable checkbox. */}
@@ -642,18 +650,26 @@ function EnvelopeAcknowledgement({
 // skill is mutating (tested on `envelope.mutating`, never a skill-name list).
 function ActorModeTiles({
   envelope,
+  skillLabel,
   isSaving,
   onSave,
 }: {
   envelope: CapabilityEnvelope
+  skillLabel: string
   isSaving: boolean
   onSave: (skill: string, patch: CapabilityEnvelopePatch) => void
 }) {
   const currentTier = actorModeTier(envelope.actor_mode)
   const currentTierNum = currentTier?.tier ?? 2
-  const [sampledN, setSampledN] = useState<number>(
-    currentTier?.tier === 1 ? currentTier.n : Math.max(currentTier?.n ?? 1, 1),
-  )
+  const serverSampledN = currentTier?.tier === 1 ? currentTier.n : Math.max(currentTier?.n ?? 1, 1)
+  const [sampledN, setSampledN] = useState<number>(serverSampledN)
+
+  // The Zone is no longer remounted on every save (that dropped focus to
+  // <body> on each change), so the local draft has to follow the
+  // server-authoritative value when a refetch brings a new one in.
+  useEffect(() => {
+    setSampledN(serverSampledN)
+  }, [serverSampledN])
 
   const tiles = ACTOR_MODE_ORDER.filter((t) => !(t.tier === 0 && envelope.mutating))
 
@@ -670,9 +686,20 @@ function ActorModeTiles({
   }
 
   return (
-    <div className="field cap-row">
-      <label>Actor mode</label>
-      <div className="tiles cap-actor-tiles">
+    // A radio group needs a group name, or a screen reader announces
+    // "Sampled, radio button, 1 of 2" with no field and no skill attached — on
+    // six Zones whose labels are textually identical. `fieldset`/`legend` is
+    // the same pattern the Appearance tiles two sections down already use.
+    <fieldset className="field cap-row cap-fieldset">
+      <legend className="label">Actor mode for {skillLabel}</legend>
+      <div
+        className="tiles cap-actor-tiles"
+        // Column count follows the tile count. Hardcoding two columns would,
+        // for any envelope carrying a third tile, wrap "Always-on" to the row
+        // below and place it visually LEFT of "Sampled" — inverting the fixed
+        // tightness ordering that is this control's only legend.
+        style={{ gridTemplateColumns: `repeat(${tiles.length}, minmax(0, 1fr))` }}
+      >
         {tiles.map((t) => {
           const selected = currentTierNum === t.tier
           const reachable = isActorModeReachable(t.tier, currentTierNum)
@@ -705,6 +732,7 @@ function ActorModeTiles({
             max={100}
             value={sampledN}
             disabled={isSaving}
+            aria-label={`Sample rate (per 100 calls) for ${skillLabel}`}
             onChange={(e) => setSampledN(Math.max(Number(e.target.value) || currentTier.n, currentTier.n))}
             onBlur={() => {
               if (sampledN !== currentTier.n) {
@@ -721,7 +749,7 @@ function ActorModeTiles({
             ? `Currently: Sampled at ${currentTier?.n ?? 1} in 100.`
             : 'Currently: Off. Turning this on adds Actor review before every call.'}
       </p>
-    </div>
+    </fieldset>
   )
 }
 
@@ -732,13 +760,16 @@ function CapabilityZone({
   envelope,
   fieldErrors,
   isSaving,
+  justSaved,
   onSave,
 }: {
   envelope: CapabilityEnvelope
   fieldErrors: Record<string, string>
   isSaving: boolean
+  justSaved: boolean
   onSave: (skill: string, patch: CapabilityEnvelopePatch) => void
 }) {
+  const skillLabel = SKILL_LABELS[envelope.skill] ?? envelope.skill
   const enabledLocked = envelope.enabled === false && envelope.platform_default.enabled === false
   const currentMaxCents = envelope.constraints.max_amount_cents ?? null
   const parsedRate = parseRateLimit(envelope.rate_limit)
@@ -764,6 +795,27 @@ function CapabilityZone({
   const [maxAmountInput, setMaxAmountInput] = useState<string>(
     currentMaxCents !== null ? String(currentMaxCents / 100) : '',
   )
+
+  // This Zone used to be keyed on `${skill}:${updated_at}`, which remounted it
+  // after every successful PATCH purely to reset these three drafts — and
+  // destroyed focus in the process. The key is now the skill alone, so the
+  // drafts follow the server-authoritative values explicitly. The dependency
+  // is the SERVER value, so a refetch that returns what is already on screen
+  // does not touch a draft mid-edit.
+  useEffect(() => {
+    // Recomputed inside the effect on purpose: `parsedRate` is a fresh object
+    // every render, so listing it as a dependency would re-run this on every
+    // keystroke and clobber the draft being typed.
+    const parsed = parseRateLimit(envelope.rate_limit)
+    setUnit(
+      (RATE_UNITS.find((u) => RATE_UNIT_SECS[u] === parsed?.windowSecs) as RateUnit | undefined) ?? 'hour',
+    )
+    setRateInput(parsed ? String(parsed.calls) : '')
+  }, [envelope.rate_limit])
+
+  useEffect(() => {
+    setMaxAmountInput(currentMaxCents !== null ? String(currentMaxCents / 100) : '')
+  }, [currentMaxCents])
 
   const handleRateNumberChange = (raw: string) => {
     const cap = maxForUnit(unit)
@@ -820,18 +872,36 @@ function CapabilityZone({
   }
 
   return (
-    <Zone className="cap-zone" aria-labelledby={`cap-${envelope.skill}-label`}>
-      <h3 className="label" id={`cap-${envelope.skill}-label`}>{SKILL_LABELS[envelope.skill] ?? envelope.skill}</h3>
+    // `aria-labelledby` on a plain `div` with no role is inert, so the six
+    // near-identical Zones had no group name at all: a screen reader read "Max
+    // amount, spin button" six times with nothing separating `place_order` from
+    // `issue_refund`, on a panel that sets irreversible money ceilings.
+    // `as="section"` gives the name somewhere to land and makes each skill a
+    // navigable region; every control below also carries the skill in its own
+    // accessible name so it survives being read out of context.
+    <Zone as="section" className="cap-zone" aria-labelledby={`cap-${envelope.skill}-label`}>
+      <div className="section-head cap-head">
+        <h3 className="label" id={`cap-${envelope.skill}-label`}>{skillLabel}</h3>
+        {/* Per skill, not per section: a save in the sixth Zone used to report
+            "saved" three rows away, and an auto-saved irreversible write gave a
+            screen-reader user no confirmation at all. */}
+        <span className="mono stamp cap-status" role="status">
+          {isSaving ? 'saving…' : justSaved ? 'saved' : ''}
+        </span>
+      </div>
 
       <div className="field cap-row">
-        <label htmlFor={`${envelope.skill}-enabled`}>Enabled</label>
-        <input
-          id={`${envelope.skill}-enabled`}
-          type="checkbox"
-          checked={envelope.enabled}
-          disabled={enabledLocked || isSaving}
-          onChange={(e) => onSave(envelope.skill, { enabled: e.target.checked })}
-        />
+        <div className="cap-bool">
+          <label htmlFor={`${envelope.skill}-enabled`}>Enabled</label>
+          <input
+            id={`${envelope.skill}-enabled`}
+            type="checkbox"
+            checked={envelope.enabled}
+            disabled={enabledLocked || isSaving}
+            aria-label={`Enabled for ${skillLabel}`}
+            onChange={(e) => onSave(envelope.skill, { enabled: e.target.checked })}
+          />
+        </div>
         <p className="help cap-caption">
           {enabledLocked
             ? 'Cannot re-enable - the platform default is off for this skill.'
@@ -854,6 +924,7 @@ function CapabilityZone({
             max={maxForUnit(unit)}
             value={rateInput}
             disabled={isSaving}
+            aria-label={`Rate limit calls for ${skillLabel}`}
             onChange={(e) => handleRateNumberChange(e.target.value)}
             onBlur={commitRate}
           />
@@ -862,7 +933,12 @@ function CapabilityZone({
             // select holding a single option reads as an offer that isn't one.
             <span className="cap-unit-fixed">per {allowedUnits[0]}</span>
           ) : (
-            <select value={unit} disabled={isSaving} onChange={(e) => handleUnitChange(e.target.value as RateUnit)}>
+            <select
+              value={unit}
+              disabled={isSaving}
+              aria-label={`Rate limit window for ${skillLabel}`}
+              onChange={(e) => handleUnitChange(e.target.value as RateUnit)}
+            >
               {allowedUnits.map((u) => (
                 <option key={u} value={u}>{u}</option>
               ))}
@@ -888,6 +964,7 @@ function CapabilityZone({
           value={maxAmountInput}
           placeholder="No ceiling set"
           disabled={isSaving}
+          aria-label={`Max amount in rand for ${skillLabel}`}
           onChange={(e) => handleMaxAmountChange(e.target.value)}
           onBlur={commitMaxAmount}
         />
@@ -900,19 +977,29 @@ function CapabilityZone({
       </div>
 
       <div className="field cap-row">
-        <label htmlFor={`${envelope.skill}-confirmation`}>Confirmation</label>
+        {/* In the locked state the input is not rendered at all, so a
+            `<label htmlFor>` here pointed at a nonexistent id and the "On" chip
+            had no programmatic association to the word "Confirmation". The
+            locked branch therefore carries a plain span, not a label. */}
         {envelope.requires_confirmation ? (
-          <Chip verdict="live">On</Chip>
+          <div className="cap-bool">
+            <span className="label">Confirmation</span>
+            <Chip verdict="live">On</Chip>
+          </div>
         ) : (
-          <input
-            id={`${envelope.skill}-confirmation`}
-            type="checkbox"
-            checked={false}
-            disabled={isSaving}
-            onChange={(e) => {
-              if (e.target.checked) onSave(envelope.skill, { requires_confirmation: true })
-            }}
-          />
+          <div className="cap-bool">
+            <label htmlFor={`${envelope.skill}-confirmation`}>Confirmation</label>
+            <input
+              id={`${envelope.skill}-confirmation`}
+              type="checkbox"
+              checked={false}
+              disabled={isSaving}
+              aria-label={`Confirmation required for ${skillLabel}`}
+              onChange={(e) => {
+                if (e.target.checked) onSave(envelope.skill, { requires_confirmation: true })
+              }}
+            />
+          </div>
         )}
         <p className="help cap-caption">
           {envelope.requires_confirmation
@@ -922,19 +1009,25 @@ function CapabilityZone({
       </div>
 
       <div className="field cap-row">
-        <label htmlFor={`${envelope.skill}-verification`}>Verification</label>
         {envelope.requires_identity_verification ? (
-          <Chip verdict="live">On</Chip>
+          <div className="cap-bool">
+            <span className="label">Verification</span>
+            <Chip verdict="live">On</Chip>
+          </div>
         ) : (
-          <input
-            id={`${envelope.skill}-verification`}
-            type="checkbox"
-            checked={false}
-            disabled={isSaving}
-            onChange={(e) => {
-              if (e.target.checked) onSave(envelope.skill, { requires_identity_verification: true })
-            }}
-          />
+          <div className="cap-bool">
+            <label htmlFor={`${envelope.skill}-verification`}>Verification</label>
+            <input
+              id={`${envelope.skill}-verification`}
+              type="checkbox"
+              checked={false}
+              disabled={isSaving}
+              aria-label={`Identity verification required for ${skillLabel}`}
+              onChange={(e) => {
+                if (e.target.checked) onSave(envelope.skill, { requires_identity_verification: true })
+              }}
+            />
+          </div>
         )}
         <p className="help cap-caption">
           {envelope.requires_identity_verification
@@ -943,7 +1036,7 @@ function CapabilityZone({
         </p>
       </div>
 
-      <ActorModeTiles envelope={envelope} isSaving={isSaving} onSave={onSave} />
+      <ActorModeTiles envelope={envelope} skillLabel={skillLabel} isSaving={isSaving} onSave={onSave} />
     </Zone>
   )
 }
@@ -1007,6 +1100,20 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
   // CAP-03/D1 server-side backstop: keyed "<skill>.<field>", set from a
   // rejected PATCH and cleared the moment that field changes again.
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
+  // Per-skill save state. A single shared `mutation.isPending` disabled all six
+  // Zones (~36 controls) while one field saved, and a single shared
+  // `mutation.isSuccess` never reset — so "saved" stuck forever and reported
+  // itself in whichever Zone happened to hold the section stamp.
+  const [savingSkills, setSavingSkills] = useState<Record<string, true>>({})
+  const [savedSkills, setSavedSkills] = useState<Record<string, true>>({})
+  const savedTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+
+  useEffect(
+    () => () => {
+      for (const t of Object.values(savedTimers.current)) clearTimeout(t)
+    },
+    [],
+  )
 
   // ---- Agent (name, is_deployed, soul fields for the "Soul" gate row) ----
   const agentQuery = useQuery({
@@ -1095,7 +1202,20 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
       }
       return res.json() as Promise<CapabilityEnvelope>
     },
-    onSuccess: () => {
+    onSuccess: (_data, { skill }) => {
+      // "saved" is per skill and self-clearing, and lives in a `role="status"`
+      // inside its own Zone so an auto-saved irreversible write is announced.
+      setSavedSkills((prev) => ({ ...prev, [skill]: true }))
+      clearTimeout(savedTimers.current[skill])
+      savedTimers.current[skill] = setTimeout(() => {
+        setSavedSkills((prev) => {
+          const next = { ...prev }
+          delete next[skill]
+          return next
+        })
+        delete savedTimers.current[skill]
+      }, 4000)
+
       queryClient.invalidateQueries({ queryKey: ['capability-envelopes', id] })
       // A capability PATCH changes the live envelope, so the checklist run's
       // `envelope_hash` / `envelope_drift` are now stale. Without refetching
@@ -1119,6 +1239,13 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
         setFieldErrors((prev) => ({ ...prev, [`${skill}.${field}`]: withContext.message }))
       }
     },
+    onSettled: (_data, _err, { skill }) => {
+      setSavingSkills((prev) => {
+        const next = { ...prev }
+        delete next[skill]
+        return next
+      })
+    },
   })
 
   const handleSaveCapability = (skill: string, patch: CapabilityEnvelopePatch) => {
@@ -1127,6 +1254,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
       for (const field of Object.keys(patch)) delete next[`${skill}.${field}`]
       return next
     })
+    setSavingSkills((prev) => ({ ...prev, [skill]: true }))
     saveCapabilityEnvelope.mutate({ skill, patch })
   }
 
@@ -1306,6 +1434,22 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     latestRun?.envelope_drift === false &&
     envelopeAcknowledged === true &&
     capabilityEnvelopesQuery.isSuccess
+
+  // Why Approve is unavailable once the checklist itself is clear. Scoped to
+  // the envelope preconditions on purpose: the block / unacknowledged-warnings
+  // cases already carry their own on-screen messaging, and repeating them here
+  // would put two claims on screen for one fact.
+  const envelopeBlockReason =
+    !baseApprovable || isApprovable
+      ? null
+      : latestRun?.envelope_drift === true
+        ? 'Re-run the checklist to acknowledge the new configuration.'
+        : !capabilityEnvelopesQuery.isSuccess
+          ? 'The capability limits are not on screen yet. Approve stays disabled until they load.'
+          : latestRun?.envelope_hash === null
+            ? 'This checklist run carries no configuration fingerprint. Re-run the checklist before approving.'
+            : 'Tick the acknowledgement above to enable Approve.'
+  const approveUnavailable = !isApprovable || approveDeployment.isPending
 
   const loadError = useMemo(() => {
     const errs = [
@@ -1506,10 +1650,20 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                 />
 
                 <div className="verdict-bar">
+                  {/* `aria-disabled` + a no-op handler rather than `disabled`:
+                      a `disabled` button leaves the tab order, so a keyboard
+                      user never reaches it and never hears the reason it is
+                      unavailable. `.is-disabled` carries the identical
+                      `.btn[disabled]` treatment from globals.css. */}
                   <Btn
-                    disabled={!isApprovable || approveDeployment.isPending}
-                    aria-describedby="consequence"
-                    onClick={() => approveDeployment.mutate()}
+                    className={approveUnavailable ? 'is-disabled' : undefined}
+                    aria-disabled={approveUnavailable || undefined}
+                    aria-describedby={
+                      envelopeBlockReason ? 'approve-reason consequence' : 'consequence'
+                    }
+                    onClick={() => {
+                      if (!approveUnavailable) approveDeployment.mutate()
+                    }}
                   >
                     {approveDeployment.isPending
                       ? 'Approving…'
@@ -1520,18 +1674,20 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                   {agent?.is_deployed && <Chip verdict="pass" dot>Live</Chip>}
                   <span className="mono stamp">agent {id}</span>
                 </div>
-                {baseApprovable && !isApprovable && (
-                  <p className="help">
-                    {latestRun.envelope_drift
-                      ? 'Re-run the checklist to acknowledge the new configuration.'
-                      : 'Tick the acknowledgement above to enable Approve.'}
+                {envelopeBlockReason && (
+                  <p className="help" id="approve-reason" role="status">
+                    {envelopeBlockReason}
                   </p>
                 )}
                 <p className="voice consequence" id="consequence">{consequence}</p>
                 <p className="vh" role="status" aria-live="polite">
                   {gateBlocked
                     ? 'The gate is shut. A blocking finding is open and no new build reaches a customer.'
-                    : 'The gate is open. Approving puts this agent in front of every customer.'}
+                    : isApprovable
+                      ? 'The gate is open. Approving puts this agent in front of every customer.'
+                      : `The gate is open. This deploy is not approvable yet. ${
+                          envelopeBlockReason ?? 'Every signal above must hold first.'
+                        }`}
                 </p>
 
                 <div className="rig">
@@ -1588,10 +1744,8 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
           <section className="section">
             <div className="section-head">
               <h2 className="label" id="capabilities-label">Capabilities and limits</h2>
-              {saveCapabilityEnvelope.isPending && <span className="mono stamp">saving…</span>}
-              {saveCapabilityEnvelope.isSuccess && !saveCapabilityEnvelope.isPending && (
-                <span className="mono stamp">saved</span>
-              )}
+              {/* The saving/saved stamp moved into each Zone — see m9. A single
+                  section-level stamp reported one skill's write against all six. */}
             </div>
             {mutatingCapabilityEnvelopes.length === 0 ? (
               <EmptyState
@@ -1602,10 +1756,15 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
               <div className="cap-grid">
                 {mutatingCapabilityEnvelopes.map((env) => (
                   <CapabilityZone
-                    key={`${env.skill}:${env.updated_at ?? 'unsaved'}`}
+                    // Keyed on the skill alone. The old `${skill}:${updated_at}`
+                    // key remounted the whole Zone after every save, which drops
+                    // focus to <body>; the drafts now follow the server value
+                    // through effects inside the component instead.
+                    key={env.skill}
                     envelope={env}
                     fieldErrors={fieldErrors}
-                    isSaving={saveCapabilityEnvelope.isPending}
+                    isSaving={savingSkills[env.skill] === true}
+                    justSaved={savedSkills[env.skill] === true}
                     onSave={handleSaveCapability}
                   />
                 ))}
@@ -1677,7 +1836,7 @@ const PAGE_CSS = `
        the checkbox bound directly beneath it, and the drift state. ───────── */
   .gate-chips { display: flex; align-items: center; gap: 12px; }
   .ack-zone { margin-top: 20px; }
-  .ack-table { margin-bottom: 14px; }
+  .ack-table-scroll { overflow-x: auto; margin-bottom: 14px; }
   .ack-fingerprint { color: var(--ink-3); font-size: 12px; margin-bottom: 14px; }
   .ack-checkbox {
     display: flex; align-items: flex-start; gap: 12px; cursor: pointer;
@@ -1690,10 +1849,27 @@ const PAGE_CSS = `
        control's looser direction physically unreachable. ─────────────────── */
   .cap-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-top: 16px; }
   @media (max-width: 900px) { .cap-grid { grid-template-columns: 1fr; } }
+  .cap-head { margin-bottom: 18px; }
+  .cap-status:empty { display: none; }
+  .cap-fieldset { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
+  .cap-fieldset:last-child { margin-bottom: 0; }
+  .cap-fieldset > legend { padding: 0; }
   .cap-row { margin-bottom: 16px; }
   .cap-row:last-child { margin-bottom: 0; }
   .cap-caption { margin-top: 6px; }
   .cap-error { margin-top: 6px; color: var(--fail); }
+
+  /* globals.css sizes every input at width:100% with 9px 12px padding, which
+     rendered these three checkboxes as full-Zone-width bordered boxes, and
+     with no accent-color the checkmark painted in the UA accent (system blue
+     on Windows Chrome) on a chroma-zero bench. Same reset .ack-checkbox and
+     .warning-row already carry, plus the label inline with the control. */
+  .cap-bool { display: flex; align-items: center; gap: 10px; }
+  .cap-bool > label, .cap-bool > .label { margin-bottom: 0; }
+  .cap-row input[type="checkbox"] {
+    width: 16px; height: 16px; flex: none; padding: 0;
+    accent-color: var(--live);
+  }
   .cap-row input[type="checkbox"]:disabled,
   .cap-row input[type="number"]:disabled,
   .cap-row select:disabled {
@@ -1723,6 +1899,10 @@ const PAGE_CSS = `
   .stamp { color: var(--ink-3); font-size: 12px; }
 
   .verdict-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 24px; }
+  /* Approve uses aria-disabled rather than disabled so it stays reachable by
+     Tab (see M11). Without this, .btn-primary:hover would still brighten a
+     button that is announced as unavailable. */
+  .verdict-bar .btn.is-disabled:hover { filter: none; }
   .consequence { margin-top: 16px; font-size: 16px; max-width: 62ch; }
 
   .rig { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 26px; padding-top: 20px; border-top: 1px solid var(--hairline-soft); }
