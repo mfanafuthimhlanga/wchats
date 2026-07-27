@@ -75,6 +75,21 @@ interface ChecklistWarning {
   severity_level: string
 }
 
+// BLR-01 — the fifth M8 signal: a configured ceiling (authorization) and an
+// observed maximum (history) as four separately-named cents fields, plus the
+// resolved warn thresholds. Every cents field is `number | null` and no
+// reader may ever coalesce null to 0 (UI-SPEC D3/D4).
+interface BlastRadiusSignal {
+  configured_max_single_action_cents: number | null
+  configured_max_hourly_aggregate_cents: number | null
+  observed_max_single_action_cents: number | null
+  observed_max_hourly_aggregate_cents: number | null
+  observed_window_days: number
+  warn_threshold_single_cents: number | null
+  warn_threshold_hourly_cents: number | null
+  enabled_skill_count: number
+}
+
 interface DeploymentReport {
   summary?: string
   eval_summary?: {
@@ -90,6 +105,7 @@ interface DeploymentReport {
     document_count?: number
     chunk_count?: number
   }
+  blast_radius?: BlastRadiusSignal
 }
 
 interface ChecklistRun {
@@ -103,6 +119,11 @@ interface ChecklistRun {
   all_warnings_acknowledged: boolean
   approved_at: string | null
   created_at: string
+  // BLR-02 (plan 18-07): the envelope hash the run acknowledged, whether it
+  // has drifted from the live envelope, and when an owner acknowledged it.
+  envelope_hash: string | null
+  envelope_acknowledged_at: string | null
+  envelope_drift: boolean
 }
 
 interface WidgetConfig {
@@ -114,6 +135,39 @@ interface WidgetConfig {
     font_custom_url: string | null
     border_radius_preset: string
   }
+}
+
+// CAP-03 — actor_mode is an ordinal, not a free string: "off" < any sampled
+// rate < "always-on" (UI-SPEC D2). The domain is byte-matched to the server's
+// ck_capability_envelopes_actor_mode CHECK constraint.
+type ActorMode = 'off' | 'always-on' | `sample_at_rate_${number}`
+
+interface CapabilityEnvelope {
+  skill: string
+  enabled: boolean
+  rate_limit: string | null
+  constraints: { max_amount_cents?: number | null; [key: string]: unknown }
+  requires_confirmation: boolean
+  requires_identity_verification: boolean
+  actor_mode: ActorMode
+  updated_at: string | null
+  // platform_default/mutating are read-only helper fields plan 18-08's GET
+  // attaches to every entry — mutating is the ONLY thing this page ever
+  // filters the six capability Zones on (never a skill-name list or a slice).
+  platform_default: {
+    enabled: boolean
+    rate_limit: string | null
+    constraints: { max_amount_cents?: number | null }
+    requires_confirmation: boolean
+    requires_identity_verification: boolean
+    actor_mode: ActorMode
+    mutating: boolean
+  }
+  mutating: boolean
+}
+
+interface CapabilityEnvelopeList {
+  envelopes: CapabilityEnvelope[]
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +240,19 @@ const PREVIEW_CAPTIONS: Record<WidgetConfig['appearance'], string> = {
   'slide-out-panel': 'The widget slides in from the right edge and holds the full height of the screen.',
 }
 
+// Human labels for every PLATFORM_CAPABILITY_DEFAULTS key (capability_service.py).
+// A label map only — membership in the six-Zone capability panel is decided
+// exclusively by the `mutating` flag on each envelope, never by this list.
+const SKILL_LABELS: Record<string, string> = {
+  place_order: 'Place order',
+  cancel_order: 'Cancel order',
+  issue_refund: 'Issue refund',
+  update_subscription: 'Update subscription',
+  book_slot: 'Book slot',
+  update_customer_record: 'Update customer record',
+  confirm_action: 'Confirm action',
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -213,6 +280,26 @@ function buildConsequence(run: ChecklistRun | null): string {
     return run.report?.summary || 'Ready to deploy with warnings. Acknowledge each one before approving.'
   }
   return run.report?.summary || 'Every signal holds. Approving puts this agent in front of every customer.'
+}
+
+// BLR-01/D3: a configured ceiling and an observed maximum are never merged.
+// formatCents/centsOrNotTracked are the only two readers of a blast-radius
+// cents figure on this page — neither ever coalesces null to 0 (D4).
+function formatCents(cents: number): string {
+  const rand = cents / 100
+  const [intPart, decPart] = rand.toFixed(2).split('.')
+  const withThousands = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+  return `R${withThousands}.${decPart}`
+}
+
+function centsOrNotTracked(cents: number | null, windowDays: number): { text: string; tracked: boolean } {
+  if (cents === null) {
+    return {
+      text: `Not tracked yet - no transactions in the last ${windowDays} days.`,
+      tracked: false,
+    }
+  }
+  return { text: formatCents(cents), tracked: true }
 }
 
 // ---------------------------------------------------------------------------
@@ -275,6 +362,170 @@ function AppearanceTile({
   )
 }
 
+// BLR-01 — D3's two-line-per-figure rule: a configured ceiling and an
+// observed maximum are always two labelled lines, never merged into one
+// number. D4 splits the two absence cases: a missing observation is quiet
+// muted text (D4.1), an unconfigured ceiling is a verdict chip (D4.2).
+function BlastRadiusBlock({ blastRadius }: { blastRadius: BlastRadiusSignal | undefined }) {
+  if (!blastRadius || blastRadius.enabled_skill_count === 0) {
+    return (
+      <div className="blast-block">
+        <p className="blast-note">
+          No transactional skill is enabled for this agent. There is no blast radius to report.
+        </p>
+      </div>
+    )
+  }
+
+  const {
+    configured_max_single_action_cents: configuredSingle,
+    configured_max_hourly_aggregate_cents: configuredHourly,
+    observed_max_single_action_cents: observedSingle,
+    observed_max_hourly_aggregate_cents: observedHourly,
+    observed_window_days: windowDays,
+    warn_threshold_single_cents: warnSingle,
+    warn_threshold_hourly_cents: warnHourly,
+    enabled_skill_count: enabledSkillCount,
+  } = blastRadius
+
+  const singleObserved = centsOrNotTracked(observedSingle, windowDays)
+  const hourlyObserved = centsOrNotTracked(observedHourly, windowDays)
+
+  return (
+    <div className="blast-block">
+      <div className="blast-line">
+        <span className="blast-label">Max single action</span>
+        <span className="num">{configuredSingle !== null ? `${formatCents(configuredSingle)} ceiling` : 'No ceiling'}</span>
+        {configuredSingle === null && enabledSkillCount > 0 ? (
+          <Chip verdict="fail">No ceiling</Chip>
+        ) : configuredSingle !== null && warnSingle !== null && configuredSingle > warnSingle ? (
+          <Chip verdict="fail">Exceeds threshold</Chip>
+        ) : configuredSingle !== null ? (
+          <Chip verdict="pass">Within threshold</Chip>
+        ) : null}
+      </div>
+      <div className="blast-line">
+        <span className="blast-label vh">Max single action, observed</span>
+        {singleObserved.tracked ? (
+          <span className="num">{singleObserved.text} observed · {windowDays}d</span>
+        ) : (
+          <span className="num blast-note">{singleObserved.text}</span>
+        )}
+      </div>
+
+      <div className="blast-line">
+        <span className="blast-label">Max hourly aggregate</span>
+        <span className="num">{configuredHourly !== null ? `${formatCents(configuredHourly)} ceiling` : 'No ceiling'}</span>
+        {configuredHourly === null && enabledSkillCount > 0 ? (
+          <Chip verdict="fail">No ceiling</Chip>
+        ) : configuredHourly !== null && warnHourly !== null && configuredHourly > warnHourly ? (
+          <Chip verdict="fail">Exceeds threshold</Chip>
+        ) : configuredHourly !== null ? (
+          <Chip verdict="pass">Within threshold</Chip>
+        ) : null}
+      </div>
+      <div className="blast-line">
+        <span className="blast-label vh">Max hourly aggregate, observed</span>
+        {hourlyObserved.tracked ? (
+          <span className="num">{hourlyObserved.text} observed · {windowDays}d</span>
+        ) : (
+          <span className="num blast-note">{hourlyObserved.text}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// BLR-02 — D5: the object of attestation is the human-legible table the
+// envelope hash is computed over, with the checkbox bound directly beneath
+// it, never the hex string itself. D6: "Confirmation required" / "Verification
+// required" are plain `.help`-weight text, never a Chip — a chip on this
+// surface would dilute exactly the verdict signal the owner needs at the
+// moment they accept financial risk.
+function EnvelopeAcknowledgement({
+  latestRun,
+  capabilityEnvelopes,
+  envelopeAcknowledged,
+  onToggleAcknowledged,
+}: {
+  latestRun: ChecklistRun
+  capabilityEnvelopes: CapabilityEnvelope[]
+  envelopeAcknowledged: boolean
+  onToggleAcknowledged: (checked: boolean) => void
+}) {
+  const drifted = latestRun.envelope_drift === true
+  const enabledEnvelopes = capabilityEnvelopes.filter((env) => env.enabled)
+  const hash = latestRun.envelope_hash
+  const fingerprint = hash ? `${hash.slice(0, 8)}…${hash.slice(-4)}` : null
+
+  return (
+    <Zone className="ack-zone" aria-labelledby="ack-label">
+      <div className="section-head">
+        <h3 className="label" id="ack-label">Capability envelope</h3>
+        {drifted && <Chip verdict="fail">Changed since approval</Chip>}
+      </div>
+
+      {drifted ? (
+        <>
+          <p className="voice">Capability limits changed since this checklist ran.</p>
+          <p className="help">
+            Re-run the checklist to review and acknowledge the new configuration before deploying.
+          </p>
+        </>
+      ) : (
+        <>
+          <Ledger
+            caption="The capability limits this checklist's envelope hash covers, one row per enabled skill."
+            className="ack-table"
+          >
+            <thead>
+              <tr>
+                <LedgerColHead>Skill</LedgerColHead>
+                <LedgerColHead numeric>Rate limit</LedgerColHead>
+                <LedgerColHead numeric>Max amount</LedgerColHead>
+                <LedgerColHead>Confirmation</LedgerColHead>
+                <LedgerColHead>Verification</LedgerColHead>
+                <LedgerColHead>Actor mode</LedgerColHead>
+              </tr>
+            </thead>
+            <tbody>
+              {enabledEnvelopes.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="blast-note">No skill is enabled yet.</td>
+                </tr>
+              ) : (
+                enabledEnvelopes.map((env) => (
+                  <tr key={env.skill}>
+                    <LedgerRowHead>{SKILL_LABELS[env.skill] ?? env.skill}</LedgerRowHead>
+                    <td className="num">{env.rate_limit ?? 'not set'}</td>
+                    <td className="num">
+                      {env.constraints.max_amount_cents != null
+                        ? formatCents(env.constraints.max_amount_cents)
+                        : 'not set'}
+                    </td>
+                    <td>{env.requires_confirmation && <span className="help">Confirmation required</span>}</td>
+                    <td>{env.requires_identity_verification && <span className="help">Verification required</span>}</td>
+                    <td>{env.actor_mode}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </Ledger>
+          <p className="ack-fingerprint mono">{hash ? `config ${fingerprint}` : 'config unavailable'}</p>
+          <label className="ack-checkbox">
+            <input
+              type="checkbox"
+              checked={envelopeAcknowledged}
+              onChange={(e) => onToggleAcknowledged(e.target.checked)}
+            />
+            <span>I&apos;ve reviewed these limits and approve deploying with them</span>
+          </label>
+        </>
+      )}
+    </Zone>
+  )
+}
+
 // The customer's side of the glass — the one friendly, light-mode surface in
 // the whole console (UI-SPEC S4 widget exception). Decorative: it renders
 // the SELECTED mode's layout/caption, but never the operator's own dark
@@ -328,6 +579,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
 
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied'>('idle')
   const [widgetConfig, setWidgetConfig] = useState<WidgetConfig>(DEFAULT_CONFIG)
+  // BLR-02/D5: acknowledging one configuration must never carry over to a
+  // different one — reset on latestRun.id/envelope_hash change below.
+  const [envelopeAcknowledged, setEnvelopeAcknowledged] = useState(false)
 
   // ---- Agent (name, is_deployed, soul fields for the "Soul" gate row) ----
   const agentQuery = useQuery({
@@ -366,6 +620,31 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     refetchInterval: (query) => (query.state.data?.[0]?.status === 'running' ? 3000 : false),
   })
   const latestRun = checklistListQuery.data?.[0] ?? null
+
+  // BLR-02/D5: an acknowledgement of one configuration must never carry over
+  // to a different one — reset whenever the run or its envelope hash changes.
+  useEffect(() => {
+    setEnvelopeAcknowledged(false)
+  }, [latestRun?.id, latestRun?.envelope_hash])
+
+  // ---- Capability envelopes (CAP-03) — GET added here (plan 18-10 Task 1),
+  // consumed by both the acknowledgement summary table and (plan 18-10 Task
+  // 2) the six capability Zones. PATCH mutation added in Task 2. -----------
+  const capabilityEnvelopesQuery = useQuery({
+    queryKey: ['capability-envelopes', id],
+    queryFn: async () => {
+      const token = await getToken()
+      if (!token) throw new Error('Not authenticated')
+      const r = await fetch(`${apiBase}/api/v1/agents/${id}/capability-envelopes`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      return (await r.json()) as CapabilityEnvelopeList
+    },
+    enabled: isLoaded && !!isSignedIn,
+    staleTime: 15_000,
+  })
+  const capabilityEnvelopes = capabilityEnvelopesQuery.data?.envelopes ?? []
 
   // ---- Widget config — PRESERVED, GET/POST widget-config. ---------------
   const widgetConfigQuery = useQuery({
@@ -525,11 +804,16 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     setGate(gateBlocked ? 'blocked' : 'open')
   }, [gateBlocked, setGate])
 
-  const isApprovable =
+  // BLR-02/D5: envelope acknowledgement and drift are folded into
+  // isApprovable alongside the pre-existing recommendation/warnings checks —
+  // baseApprovable is kept separate so the inline reason caption below can
+  // tell "blocked by the checklist" apart from "blocked by the envelope".
+  const baseApprovable =
     !!latestRun &&
     latestRun.status === 'complete' &&
     (latestRun.recommendation === 'ship' ||
       (latestRun.recommendation === 'ship_with_warnings' && latestRun.all_warnings_acknowledged))
+  const isApprovable = baseApprovable && latestRun?.envelope_drift === false && envelopeAcknowledged === true
 
   const loadError = useMemo(() => {
     const errs = [agentQuery.error, checklistListQuery.error, widgetConfigQuery.error]
@@ -575,7 +859,10 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
           <section aria-labelledby="gate-label">
             <div className="section-head">
               <h2 className="label" id="gate-label">The gate</h2>
-              <Chip verdict={gateBlocked ? 'seal' : 'pass'}>{gateBlocked ? 'Shut' : 'Open'}</Chip>
+              <div className="gate-chips">
+                {latestRun?.envelope_drift === true && <Chip verdict="fail">Changed since approval</Chip>}
+                <Chip verdict={gateBlocked ? 'seal' : 'pass'}>{gateBlocked ? 'Shut' : 'Open'}</Chip>
+              </div>
             </div>
 
             {!latestRun && (
@@ -685,6 +972,8 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                   </tbody>
                 </Ledger>
 
+                <BlastRadiusBlock blastRadius={report?.blast_radius} />
+
                 {latestRun.recommendation === 'ship_with_warnings' && latestRun.warnings.length > 0 && (
                   <div className="warnings">
                     <p className="label">Acknowledge each warning to proceed</p>
@@ -705,6 +994,13 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                   </div>
                 )}
 
+                <EnvelopeAcknowledgement
+                  latestRun={latestRun}
+                  capabilityEnvelopes={capabilityEnvelopes}
+                  envelopeAcknowledged={envelopeAcknowledged}
+                  onToggleAcknowledged={setEnvelopeAcknowledged}
+                />
+
                 <div className="verdict-bar">
                   <Btn
                     disabled={!isApprovable || approveDeployment.isPending}
@@ -720,6 +1016,13 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                   {agent?.is_deployed && <Chip verdict="pass" dot>Live</Chip>}
                   <span className="mono stamp">agent {id}</span>
                 </div>
+                {baseApprovable && !isApprovable && (
+                  <p className="help">
+                    {latestRun.envelope_drift
+                      ? 'Re-run the checklist to acknowledge the new configuration.'
+                      : 'Tick the acknowledgement above to enable Approve.'}
+                  </p>
+                )}
                 <p className="voice consequence" id="consequence">{consequence}</p>
                 <p className="vh" role="status" aria-live="polite">
                   {gateBlocked
@@ -825,6 +1128,30 @@ const PAGE_CSS = `
   .ledger th.sig, .ledger td.sig { width: 42%; font-weight: 500; }
   .ledger td .why { display: block; margin-top: 2px; font-size: 12px; color: var(--ink-3); font-weight: 400; }
   .ledger td.val { color: var(--ink-2); }
+
+  /* ── blast radius (BLR-01, D3/D4): two labelled lines per figure, never
+       merged, never a coalesced zero. ──────────────────────────────────── */
+  .blast-block { display: flex; flex-direction: column; gap: 14px; margin-top: 20px; }
+  .blast-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .blast-label {
+    font-family: var(--mono); font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.16em; color: var(--ink-3);
+    min-width: 168px; flex: none;
+  }
+  .blast-note { color: var(--ink-3); font-size: 13.5px; }
+
+  /* ── envelope acknowledgement (BLR-02, D5/D6): the table the hash covers,
+       the checkbox bound directly beneath it, and the drift state. ───────── */
+  .gate-chips { display: flex; align-items: center; gap: 12px; }
+  .ack-zone { margin-top: 20px; }
+  .ack-table { margin-bottom: 14px; }
+  .ack-fingerprint { color: var(--ink-3); font-size: 12px; margin-bottom: 14px; }
+  .ack-checkbox {
+    display: flex; align-items: flex-start; gap: 12px; cursor: pointer;
+    font-family: var(--sans); text-transform: none; letter-spacing: normal; color: var(--ink);
+  }
+  .ack-checkbox input { width: 16px; height: 16px; flex: none; margin-top: 2px; accent-color: var(--live); }
+  .ack-checkbox span { font-size: 13.5px; flex: 1; }
 
   .warnings { margin-top: 20px; }
   .warning-row {
