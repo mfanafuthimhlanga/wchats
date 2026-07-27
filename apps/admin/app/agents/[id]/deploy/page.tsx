@@ -783,6 +783,7 @@ function ActorModeTiles({
   }, [serverSampledN])
 
   const handleSelect = (tier: 1 | 2) => {
+    if (isSaving) return
     if (!isActorModeReachable(tier, currentTierNum)) return
     if (tier === 2) {
       onSave(envelope.skill, { actor_mode: 'always-on' })
@@ -817,11 +818,16 @@ function ActorModeTiles({
               live={selected}
               className={reachable ? 'tile' : 'tile tile-recessed'}
             >
+              {/* `disabled` stays for `!reachable` — a looser tier is
+                  permanently inert and must not be tabbable. The in-flight case
+                  is `aria-disabled` so the radio the owner just chose keeps
+                  focus for the length of the write. */}
               <input
                 type="radio"
                 name={`actor-mode-${envelope.skill}`}
                 checked={selected}
-                disabled={!reachable || isSaving}
+                disabled={!reachable}
+                aria-disabled={isSaving || undefined}
                 onChange={() => handleSelect(t.tier)}
               />
               <span className="name">{t.label}</span>
@@ -838,10 +844,15 @@ function ActorModeTiles({
             min={currentTier.n}
             max={100}
             value={sampledN}
-            disabled={isSaving}
+            readOnly={isSaving}
+            aria-disabled={isSaving || undefined}
             aria-label={`Sample rate (per 100 calls) for ${skillLabel}`}
-            onChange={(e) => setSampledN(Math.max(Number(e.target.value) || currentTier.n, currentTier.n))}
+            onChange={(e) => {
+              if (isSaving) return
+              setSampledN(Math.max(Number(e.target.value) || currentTier.n, currentTier.n))
+            }}
             onBlur={() => {
+              if (isSaving) return
               if (sampledN !== currentTier.n) {
                 onSave(envelope.skill, { actor_mode: `sample_at_rate_${sampledN}` as ActorMode })
               }
@@ -919,6 +930,18 @@ function CapabilityZone({
   const [rateNote, setRateNote] = useState<string | null>(null)
   const [maxNote, setMaxNote] = useState<string | null>(null)
 
+  // M12's confirmation blocks mount and unmount, so the node that held focus
+  // at the moment of a stage / commit / cancel / client-side refusal is removed
+  // from the document and focus falls to <body> — after which a keyboard user
+  // has to Tab from the top of the page to get back to the highest-consequence
+  // write on the screen. Focus is therefore handed deliberately in both
+  // directions: `autoFocus` on the confirm button carries it INTO the staged
+  // decision as the block mounts, and these refs carry it back OUT to the field
+  // the decision belongs to. Nothing here traps focus: Tab still leaves
+  // normally in every state.
+  const rateInputRef = useRef<HTMLInputElement | null>(null)
+  const maxInputRef = useRef<HTMLInputElement | null>(null)
+
   // This Zone used to be keyed on `${skill}:${updated_at}`, which remounted it
   // after every successful PATCH purely to reset these three drafts — and
   // destroyed focus in the process. The key is now the skill alone, so the
@@ -970,13 +993,22 @@ function CapabilityZone({
   // top of an already-clamped value and was re-clamped: against a R500 ceiling,
   // typing "600" passed through 6, then 500, then 5000, then 500 again. The
   // ceiling is checked once, at commit.
+  //
+  // Every mutating handler in this component opens with the same `isSaving`
+  // guard. That guard is what lets the controls carry `aria-disabled` instead of
+  // `disabled` while a PATCH is in flight: a focused element that becomes
+  // `disabled` leaves the tab order and focus falls to <body>, which is the
+  // second route by which this panel dropped focus on every write. The
+  // inertness is real, it just does not cost the user their place.
   const handleRateNumberChange = (raw: string) => {
+    if (isSaving) return
     setRateInput(raw)
     setPendingRate(null)
     setRateNote(null)
   }
 
   const handleMaxAmountChange = (raw: string) => {
+    if (isSaving) return
     setMaxAmountInput(raw)
     setPendingMaxCents(null)
     setMaxNote(null)
@@ -987,6 +1019,7 @@ function CapabilityZone({
   // saved here: this used to PATCH on the select's own change event, which is
   // how one click could write `0/minute`.
   const handleUnitChange = (newUnit: RateUnit) => {
+    if (isSaving) return
     const cap = maxCallsForUnit(parsedRate, newUnit)
     const typed = Number(rateInput.trim())
     const fitted = cap !== undefined && Number.isFinite(typed) ? Math.min(typed, cap) : typed
@@ -996,8 +1029,12 @@ function CapabilityZone({
     setRateNote(null)
   }
 
+  // Each refusal branch below both rewinds the field and unmounts the button
+  // that was clicked (`rateDirty` goes false, so `.cap-commit` disappears), so
+  // it also returns focus to the field now holding the rewound value. Without
+  // that the owner is left on <body> with a note they did not ask to be read.
   const requestRate = () => {
-    if (draftRate === null) return
+    if (isSaving || draftRate === null) return
     // Hard floor, independent of the option filter above: no code path in this
     // component may stage a non-positive rate, because a zero written here
     // cannot be raised again from this screen.
@@ -1005,6 +1042,7 @@ function CapabilityZone({
       setRateInput(parsedRate ? String(parsedRate.calls) : '')
       setPendingRate(null)
       setRateNote('A rate limit has to allow at least one call.')
+      rateInputRef.current?.focus()
       return
     }
     if (rateCap !== undefined && draftRate.calls > rateCap) {
@@ -1012,6 +1050,7 @@ function CapabilityZone({
       setUnit(parsedRate ? currentUnit : '')
       setPendingRate(null)
       setRateNote('That rate allows more calls than the current limit. Nothing was changed.')
+      rateInputRef.current?.focus()
       return
     }
     if (`${draftRate.calls}/${draftRate.unit}` === envelope.rate_limit) return
@@ -1019,10 +1058,15 @@ function CapabilityZone({
     setPendingRate({ calls: draftRate.calls, unit: draftRate.unit })
   }
 
+  // `.focus()` before the state updates flush: React batches, so the confirm
+  // block is still mounted while this runs and the input it hands focus to is
+  // mounted in every state. By the time the block unmounts, focus has already
+  // moved off it.
   const confirmRate = () => {
     if (pendingRate === null) return
     const next = `${pendingRate.calls}/${pendingRate.unit}`
     setPendingRate(null)
+    rateInputRef.current?.focus()
     onSave(envelope.skill, { rate_limit: next })
   }
 
@@ -1030,14 +1074,16 @@ function CapabilityZone({
     setPendingRate(null)
     setUnit(parsedRate ? currentUnit : '')
     setRateInput(parsedRate ? String(parsedRate.calls) : '')
+    rateInputRef.current?.focus()
   }
 
   const requestMaxAmount = () => {
-    if (draftMaxCents === null || draftMaxCents === currentMaxCents) return
+    if (isSaving || draftMaxCents === null || draftMaxCents === currentMaxCents) return
     if (currentMaxCents !== null && draftMaxCents > currentMaxCents) {
       setMaxAmountInput(String(currentMaxCents / 100))
       setPendingMaxCents(null)
       setMaxNote('That amount is higher than the current ceiling. Nothing was changed.')
+      maxInputRef.current?.focus()
       return
     }
     setMaxNote(null)
@@ -1048,12 +1094,14 @@ function CapabilityZone({
     if (pendingMaxCents === null) return
     const next = pendingMaxCents
     setPendingMaxCents(null)
+    maxInputRef.current?.focus()
     onSave(envelope.skill, { constraints: { ...envelope.constraints, max_amount_cents: next } })
   }
 
   const cancelMaxAmount = () => {
     setPendingMaxCents(null)
     setMaxAmountInput(currentMaxCents !== null ? String(currentMaxCents / 100) : '')
+    maxInputRef.current?.focus()
   }
 
   return (
@@ -1078,13 +1126,21 @@ function CapabilityZone({
       <div className="field cap-row">
         <div className="cap-bool">
           <label htmlFor={`${envelope.skill}-enabled`}>Enabled</label>
+          {/* `disabled` is reserved for `enabledLocked`, which is a permanent
+              state of the envelope. The in-flight case is `aria-disabled`, so
+              the box the owner just ticked does not vanish from under their
+              focus for the length of a round trip. */}
           <input
             id={`${envelope.skill}-enabled`}
             type="checkbox"
             checked={envelope.enabled}
-            disabled={enabledLocked || isSaving}
+            disabled={enabledLocked}
+            aria-disabled={isSaving || undefined}
             aria-label={`Enabled for ${skillLabel}`}
-            onChange={(e) => onSave(envelope.skill, { enabled: e.target.checked })}
+            onChange={(e) => {
+              if (isSaving) return
+              onSave(envelope.skill, { enabled: e.target.checked })
+            }}
           />
         </div>
         <p className="help cap-caption">
@@ -1102,13 +1158,18 @@ function CapabilityZone({
       <div className="field cap-row">
         <label htmlFor={`${envelope.skill}-rate-n`}>Rate limit</label>
         <div className="cap-rate-inputs">
+          {/* `readOnly` rather than `disabled` while a PATCH is in flight: a
+              read-only input stays focusable and in the tab order, so the
+              confirmation flow above can hand focus back to it mid-write. */}
           <input
+            ref={rateInputRef}
             id={`${envelope.skill}-rate-n`}
             type="number"
             min={1}
             max={rateCap}
             value={rateInput}
-            disabled={isSaving}
+            readOnly={isSaving}
+            aria-disabled={isSaving || undefined}
             aria-label={`Rate limit calls for ${skillLabel}`}
             onChange={(e) => handleRateNumberChange(e.target.value)}
             onKeyDown={(e) => {
@@ -1125,7 +1186,7 @@ function CapabilityZone({
           ) : (
             <select
               value={unit}
-              disabled={isSaving}
+              aria-disabled={isSaving || undefined}
               aria-label={`Rate limit window for ${skillLabel}`}
               onChange={(e) => handleUnitChange(e.target.value as RateUnit)}
             >
@@ -1162,8 +1223,16 @@ function CapabilityZone({
                 : `Set the rate limit to ${pendingRate.calls} per ${pendingRate.unit}?`}
             </p>
             <div className="cap-confirm-actions">
+              {/* Focus follows the staged decision. React's `autoFocus` is a
+                  focus() call on mount, not the HTML attribute, so it fires for
+                  a block that appears mid-session and fires once — a
+                  `useEffect` keyed on `pendingRate` would re-steal focus on
+                  every re-render while staged. Without it a keyboard user had
+                  to Tab from the top of the document to reach the confirmation
+                  for the highest-consequence write on the screen. */}
               <Btn
                 variant="ghost"
+                autoFocus
                 disabled={isSaving}
                 aria-describedby={`${envelope.skill}-rate-confirm-q`}
                 onClick={confirmRate}
@@ -1189,6 +1258,7 @@ function CapabilityZone({
       <div className="field cap-row">
         <label htmlFor={`${envelope.skill}-max-amount`}>Max amount</label>
         <input
+          ref={maxInputRef}
           id={`${envelope.skill}-max-amount`}
           type="number"
           min={0}
@@ -1196,7 +1266,8 @@ function CapabilityZone({
           max={currentMaxCents !== null ? currentMaxCents / 100 : undefined}
           value={maxAmountInput}
           placeholder="No ceiling set"
-          disabled={isSaving}
+          readOnly={isSaving}
+          aria-disabled={isSaving || undefined}
           aria-label={`Max amount in rand for ${skillLabel}`}
           onChange={(e) => handleMaxAmountChange(e.target.value)}
           onKeyDown={(e) => {
@@ -1224,6 +1295,7 @@ function CapabilityZone({
             <div className="cap-confirm-actions">
               <Btn
                 variant="ghost"
+                autoFocus
                 disabled={isSaving}
                 aria-describedby={`${envelope.skill}-max-confirm-q`}
                 onClick={confirmMaxAmount}
@@ -1260,9 +1332,10 @@ function CapabilityZone({
               id={`${envelope.skill}-confirmation`}
               type="checkbox"
               checked={false}
-              disabled={isSaving}
+              aria-disabled={isSaving || undefined}
               aria-label={`Confirmation required for ${skillLabel}`}
               onChange={(e) => {
+                if (isSaving) return
                 if (e.target.checked) onSave(envelope.skill, { requires_confirmation: true })
               }}
             />
@@ -1291,9 +1364,10 @@ function CapabilityZone({
               id={`${envelope.skill}-verification`}
               type="checkbox"
               checked={false}
-              disabled={isSaving}
+              aria-disabled={isSaving || undefined}
               aria-label={`Identity verification required for ${skillLabel}`}
               onChange={(e) => {
+                if (isSaving) return
                 if (e.target.checked) onSave(envelope.skill, { requires_identity_verification: true })
               }}
             />
@@ -2207,10 +2281,23 @@ const PAGE_CSS = `
     width: 16px; height: 16px; flex: none; padding: 0;
     accent-color: var(--live);
   }
-  .cap-row input[type="checkbox"]:disabled,
-  .cap-row input[type="number"]:disabled,
-  .cap-row select:disabled {
+  /* The only permanently-disabled control left in a Zone: the Enabled box of a
+     skill whose platform default is off. WCAG 1.4.3 exempts text in an inactive
+     component, so --ink-3 is legitimate here. */
+  .cap-row input[type="checkbox"]:disabled {
     background: var(--surface-2); color: var(--ink-3); cursor: not-allowed;
+  }
+  /* Inert for the length of one PATCH, not disabled. A focused element that
+     becomes disabled leaves the tab order and focus falls to <body>, which is
+     how every capability write used to cost the owner their place; aria-disabled
+     plus a guarded handler is inert without being unreachable. Same trade the
+     Approve button makes below, and the same contrast consequence: 1.4.3's
+     inactive-component exemption does not cover an aria-disabled control, so the
+     value text steps up from --ink-3 (4.12:1 on --surface-2) to --ink-2
+     (5.9:1). Both existing chroma-zero tokens. */
+  .cap-row input[aria-disabled="true"],
+  .cap-row select[aria-disabled="true"] {
+    background: var(--surface-2); color: var(--ink-2); cursor: not-allowed;
   }
   .cap-rate-inputs { display: flex; gap: 12px; }
   .cap-rate-inputs input { flex: 2; }
