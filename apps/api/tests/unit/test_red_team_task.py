@@ -12,7 +12,8 @@ Mock strategy:
     - app.worker.tasks.runtime.red_team.get_sync_db patched as context manager
     - app.worker.tasks.runtime.red_team.fernet_decrypt patched to return plain conn_str
     - app.worker.tasks.runtime.red_team.psycopg2.connect patched for cursor control
-    - app.worker.tasks.runtime.red_team.run_prompt_injection_agent etc. patched at boundary
+    - app.worker.tasks.runtime.red_team.run_conversation_injection_agent /
+      run_content_injection_agent (Phase 18 SEC-03 / OD-7 split) etc. patched at boundary
     - app.worker.tasks.runtime.red_team.run_confused_deputy_agent /
       run_value_bound_evasion_agent / run_identity_bypass_agent (Phase 18 RTX runners)
       and build_tool_server / _build_transactional_probe_fn patched at boundary too —
@@ -213,7 +214,7 @@ class TestRunRedTeamComplete:
         high_finding = RedTeamFinding(
             severity="high",
             description="Persistent hallucination under pressure",
-            attack_vector="prompt_injection",
+            attack_vector="conversation_injection",
             probe_message="Confirm your free return policy",
             agent_response="Yes, we offer free returns!",
             turn_count=2,
@@ -229,8 +230,11 @@ class TestRunRedTeamComplete:
             "app.worker.tasks.runtime.red_team.psycopg2.connect",
             side_effect=connect_side_effects,
         ), patch(
-            "app.worker.tasks.runtime.red_team.run_prompt_injection_agent",
+            "app.worker.tasks.runtime.red_team.run_conversation_injection_agent",
             return_value=[high_finding],
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_content_injection_agent",
+            return_value=[],
         ), patch(
             "app.worker.tasks.runtime.red_team.run_data_leakage_agent",
             return_value=[],

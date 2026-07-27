@@ -104,7 +104,7 @@ class TestRunRedTeamProgrammeWrites:
             RedTeamFinding(
                 severity="high",
                 description="Injection A",
-                attack_vector="prompt_injection",
+                attack_vector="conversation_injection",
                 probe_message="probe-1",
                 agent_response="resp-1",
                 turn_count=1,
@@ -112,7 +112,7 @@ class TestRunRedTeamProgrammeWrites:
             RedTeamFinding(
                 severity="medium",
                 description="Injection B",
-                attack_vector="prompt_injection",
+                attack_vector="conversation_injection",
                 probe_message="probe-2",
                 agent_response="resp-2",
                 turn_count=2,
@@ -137,8 +137,11 @@ class TestRunRedTeamProgrammeWrites:
             "app.worker.tasks.runtime.red_team.psycopg2.connect",
             side_effect=connect_side_effects,
         ), patch(
-            "app.worker.tasks.runtime.red_team.run_prompt_injection_agent",
+            "app.worker.tasks.runtime.red_team.run_conversation_injection_agent",
             return_value=findings[:2],
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_content_injection_agent",
+            return_value=[],
         ), patch(
             "app.worker.tasks.runtime.red_team.run_data_leakage_agent",
             return_value=findings[2:],
@@ -222,7 +225,10 @@ class TestRunRedTeamProgrammeWrites:
             "app.worker.tasks.runtime.red_team.psycopg2.connect",
             side_effect=connect_side_effects,
         ), patch(
-            "app.worker.tasks.runtime.red_team.run_prompt_injection_agent",
+            "app.worker.tasks.runtime.red_team.run_conversation_injection_agent",
+            return_value=[],
+        ), patch(
+            "app.worker.tasks.runtime.red_team.run_content_injection_agent",
             return_value=[],
         ), patch(
             "app.worker.tasks.runtime.red_team.run_data_leakage_agent",
