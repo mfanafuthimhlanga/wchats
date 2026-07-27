@@ -372,6 +372,19 @@ function isActorModeReachable(candidateTier: number, currentTier: number): boole
   return candidateTier >= currentTier
 }
 
+// Human labels for the actor_mode ordinal, the same job SKILL_LABELS does for
+// skill keys. `sample_at_rate_25` / `always-on` are machine tokens; printing one
+// to a non-technical owner at the moment of financial attestation, while the
+// capability Zone renders the same field as "Sampled", puts two vocabularies on
+// one value and the machine one at the highest-stakes moment.
+function actorModeLabel(mode: string): string {
+  const tier = actorModeTier(mode)
+  if (tier === null) return mode
+  if (tier.tier === 0) return 'Off'
+  if (tier.tier === 2) return 'Always-on'
+  return `Sampled at ${tier.n} in 100`
+}
+
 // ---------------------------------------------------------------------------
 // Appearance tile icons — bespoke 30x30 stroke SVGs, ported from
 // prototypes/gotham/deploy.html's own page-local `.tile svg` markup (not in
@@ -437,9 +450,21 @@ function AppearanceTile({
 // number. D4 splits the two absence cases: a missing observation is quiet
 // muted text (D4.1), an unconfigured ceiling is a verdict chip (D4.2).
 function BlastRadiusBlock({ blastRadius }: { blastRadius: BlastRadiusSignal | undefined }) {
+  // This block is the signal the gate's approval now also turns on, and it
+  // carried no heading at all, so the words "Blast radius" appeared nowhere in
+  // the product. D3 allowed a fifth Ledger row OR a labelled sub-block; this is
+  // the labelled sub-block, in the `.section-head` + `h2/h3.label` grammar every
+  // other block on this page uses.
+  const head = (
+    <div className="section-head">
+      <h3 className="label" id="blast-label">Blast radius</h3>
+    </div>
+  )
+
   if (!blastRadius || blastRadius.enabled_skill_count === 0) {
     return (
       <div className="blast-block">
+        {head}
         <p className="blast-note">
           No transactional skill is enabled for this agent. There is no blast radius to report.
         </p>
@@ -463,9 +488,14 @@ function BlastRadiusBlock({ blastRadius }: { blastRadius: BlastRadiusSignal | un
 
   return (
     <div className="blast-block">
+      {head}
       <div className="blast-line">
-        <span className="blast-label">Max single action</span>
-        <span className="num">{configuredSingle !== null ? `${formatCents(configuredSingle)} ceiling` : 'No ceiling'}</span>
+        <span className="label blast-label">Max single action</span>
+        {/* D4.2: when there is no ceiling the chip IS the claim. Printing the
+            same words in --ink 12px to its left halved the chip's signal. */}
+        {configuredSingle !== null && (
+          <span className="num">{formatCents(configuredSingle)} ceiling</span>
+        )}
         {configuredSingle === null && enabledSkillCount > 0 ? (
           <Chip verdict="fail">No ceiling</Chip>
         ) : configuredSingle === null ? null : warnSingle === null ? (
@@ -480,18 +510,26 @@ function BlastRadiusBlock({ blastRadius }: { blastRadius: BlastRadiusSignal | un
           <Chip verdict="pass">Within threshold</Chip>
         )}
       </div>
-      <div className="blast-line">
-        <span className="blast-label vh">Max single action, observed</span>
+      {/* The label is SR-only, so it is out of flow and the 168px label column
+          collapses on this line: the figure landed at x=0, directly above the
+          NEXT row's label, and an owner could not tell which ceiling an observed
+          figure belonged to. The indent is restored on the line itself. */}
+      <div className="blast-line blast-line--observed">
+        <span className="vh">Max single action, observed</span>
         {singleObserved.tracked ? (
           <span className="num">{singleObserved.text} observed · {windowDays}d</span>
         ) : (
-          <span className="num blast-note">{singleObserved.text}</span>
+          // Not `.num`: this branch is a full prose sentence, and mono with
+          // tabular figures is scoped to numbers, ids, timestamps and logs.
+          <span className="blast-note">{singleObserved.text}</span>
         )}
       </div>
 
       <div className="blast-line">
-        <span className="blast-label">Max hourly aggregate</span>
-        <span className="num">{configuredHourly !== null ? `${formatCents(configuredHourly)} ceiling` : 'No ceiling'}</span>
+        <span className="label blast-label">Max hourly aggregate</span>
+        {configuredHourly !== null && (
+          <span className="num">{formatCents(configuredHourly)} ceiling</span>
+        )}
         {configuredHourly === null && enabledSkillCount > 0 ? (
           <Chip verdict="fail">No ceiling</Chip>
         ) : configuredHourly === null ? null : warnHourly === null ? (
@@ -502,12 +540,12 @@ function BlastRadiusBlock({ blastRadius }: { blastRadius: BlastRadiusSignal | un
           <Chip verdict="pass">Within threshold</Chip>
         )}
       </div>
-      <div className="blast-line">
-        <span className="blast-label vh">Max hourly aggregate, observed</span>
+      <div className="blast-line blast-line--observed">
+        <span className="vh">Max hourly aggregate, observed</span>
         {hourlyObserved.tracked ? (
           <span className="num">{hourlyObserved.text} observed · {windowDays}d</span>
         ) : (
-          <span className="num blast-note">{hourlyObserved.text}</span>
+          <span className="blast-note">{hourlyObserved.text}</span>
         )}
       </div>
     </div>
@@ -536,7 +574,6 @@ function EnvelopeAcknowledgement({
   onToggleAcknowledged: (checked: boolean) => void
 }) {
   const drifted = latestRun.envelope_drift === true
-  const enabledEnvelopes = capabilityEnvelopes.filter((env) => env.enabled)
   const hash = latestRun.envelope_hash
   const fingerprint = hash ? `${hash.slice(0, 8)}…${hash.slice(-4)}` : null
   // The signature is only collectable once the configuration being attested to
@@ -603,23 +640,41 @@ function EnvelopeAcknowledgement({
               </tr>
             </thead>
             <tbody>
-              {enabledEnvelopes.length === 0 ? (
+              {/* Every row the hash covers, not the enabled subset. The hash
+                  SELECT carries no `WHERE enabled` and `HASHED_ENVELOPE_FIELDS`
+                  includes `enabled` itself, so filtering here meant tightening a
+                  disabled skill's ceiling changed the hash, raised the drift
+                  chip, and then showed an identical table after a re-run: drift
+                  with no visible cause, which is the desensitising false-drift
+                  failure the field list was chosen to avoid. Rows for skills
+                  that are not enabled are recessed rather than hidden. */}
+              {capabilityEnvelopes.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="blast-note">No skill is enabled yet.</td>
+                  <td colSpan={6} className="blast-note">No capability envelope exists for this agent.</td>
                 </tr>
               ) : (
-                enabledEnvelopes.map((env) => (
-                  <tr key={env.skill}>
-                    <LedgerRowHead>{SKILL_LABELS[env.skill] ?? env.skill}</LedgerRowHead>
-                    <td className="num">{env.rate_limit ?? 'not set'}</td>
-                    <td className="num">
+                capabilityEnvelopes.map((env) => (
+                  <tr key={env.skill} className={env.enabled ? undefined : 'ack-row-off'}>
+                    <LedgerRowHead>
+                      {SKILL_LABELS[env.skill] ?? env.skill}
+                      {!env.enabled && <span className="help ack-off-note">not enabled</span>}
+                    </LedgerRowHead>
+                    {/* D4.2 vocabulary, at the claim strength this surface can
+                        carry: the same words the blast-radius chip uses, in
+                        --ink-3 rather than a chip, so an absence is not mistaken
+                        for a figure and the verdict red is not spent six times
+                        inside an attestation table (D6). */}
+                    <td className={env.rate_limit ? 'num' : 'num blast-note'}>
+                      {env.rate_limit ?? 'No rate limit'}
+                    </td>
+                    <td className={env.constraints.max_amount_cents != null ? 'num' : 'num blast-note'}>
                       {env.constraints.max_amount_cents != null
                         ? formatCents(env.constraints.max_amount_cents)
-                        : 'not set'}
+                        : 'No ceiling'}
                     </td>
-                    <td>{env.requires_confirmation && <span className="help">Confirmation required</span>}</td>
-                    <td>{env.requires_identity_verification && <span className="help">Verification required</span>}</td>
-                    <td>{env.actor_mode}</td>
+                    <td>{env.requires_confirmation && <span className="help">Required</span>}</td>
+                    <td>{env.requires_identity_verification && <span className="help">Required</span>}</td>
+                    <td>{actorModeLabel(env.actor_mode)}</td>
                   </tr>
                 ))
               )}
@@ -1109,13 +1164,14 @@ function CapabilityZone({
       </div>
 
       <div className="field cap-row">
-        {/* In the locked state the input is not rendered at all, so a
-            `<label htmlFor>` here pointed at a nonexistent id and the "On" chip
-            had no programmatic association to the word "Confirmation". The
-            locked branch therefore carries a plain span, not a label. */}
+        {/* In the locked state the input is not rendered at all, so the
+            `htmlFor` here pointed at an id that does not exist in the document.
+            The locked branch drops it; the label keeps the same typography as
+            every other field label rather than forking a span style, and the
+            chip reads immediately after it in reading order. */}
         {envelope.requires_confirmation ? (
           <div className="cap-bool">
-            <span className="label">Confirmation</span>
+            <label>Confirmation</label>
             <Chip verdict="live">On</Chip>
           </div>
         ) : (
@@ -1143,7 +1199,7 @@ function CapabilityZone({
       <div className="field cap-row">
         {envelope.requires_identity_verification ? (
           <div className="cap-bool">
-            <span className="label">Verification</span>
+            <label>Verification</label>
             <Chip verdict="live">On</Chip>
           </div>
         ) : (
@@ -1616,9 +1672,11 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
         <div className="row">
           <div>
             <h1>Deploy</h1>
+            {/* Count-free on purpose. This said "four" while approval already
+                depended on six conditions, and the count has moved twice. */}
             <p className="sub">
-              Four signals stand between this agent and a paying customer. The gate opens only
-              while all four hold, and it shuts itself the moment one does not.
+              Every signal below stands between this agent and a paying customer. The gate opens
+              only while all of them hold, and it shuts itself the moment one does not.
             </p>
           </div>
         </div>
@@ -1676,7 +1734,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
 
             {latestRun?.status === 'complete' && (
               <>
-                <Ledger caption="The four signals a deployment gate checks before an agent can reach a customer.">
+                <Ledger caption="The readiness signals a deployment gate checks before an agent can reach a customer.">
                   <thead>
                     <tr>
                       <LedgerColHead className="sig">Signal</LedgerColHead>
@@ -1880,9 +1938,11 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                   section-level stamp reported one skill's write against all six. */}
             </div>
             {mutatingCapabilityEnvelopes.length === 0 ? (
+              // The old body ended "until you enable a skill below", but this
+              // state renders INSTEAD of the grid, so there was nothing below.
               <EmptyState
                 heading="No capabilities configured yet."
-                body="This agent cannot take any action on a customer's behalf until you enable a skill below."
+                body="This agent cannot take any action on a customer's behalf. No transactional skill has been provisioned for it."
               />
             ) : (
               <div className="cap-grid">
@@ -1956,12 +2016,16 @@ const PAGE_CSS = `
   /* ── blast radius (BLR-01, D3/D4): two labelled lines per figure, never
        merged, never a coalesced zero. ──────────────────────────────────── */
   .blast-block { display: flex; flex-direction: column; gap: 14px; margin-top: 20px; }
+  .blast-block .section-head { margin-bottom: 0; }
   .blast-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .blast-label {
-    font-family: var(--mono); font-size: 10px; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.16em; color: var(--ink-3);
-    min-width: 168px; flex: none;
-  }
+  /* Layout only. This used to fork .label's typography with 0.16em tracking
+     against .label's 0.2em, so blast labels did not match the section labels
+     directly above them. */
+  .blast-label { min-width: 168px; flex: none; }
+  /* 168px label column + the 12px row gap: puts each observed figure under the
+     ceiling it belongs to, since its own label is SR-only and out of flow. */
+  .blast-line--observed { padding-left: 180px; }
+  @media (max-width: 900px) { .blast-line--observed { padding-left: 0; } }
   .blast-note { color: var(--ink-3); font-size: 13.5px; }
 
   /* ── envelope acknowledgement (BLR-02, D5/D6): the table the hash covers,
@@ -1969,6 +2033,10 @@ const PAGE_CSS = `
   .gate-chips { display: flex; align-items: center; gap: 12px; }
   .ack-zone { margin-top: 20px; }
   .ack-table-scroll { overflow-x: auto; margin-bottom: 14px; }
+  /* A skill the hash covers but the agent has not enabled: present, so drift
+     always has a visible cause, and recessed, so it never reads as live. */
+  .ack-table tr.ack-row-off th, .ack-table tr.ack-row-off td { color: var(--ink-3); }
+  .ack-off-note { display: block; margin-top: 2px; }
   .ack-fingerprint { color: var(--ink-3); font-size: 12px; margin-bottom: 14px; }
   .ack-checkbox {
     display: flex; align-items: flex-start; gap: 12px; cursor: pointer;
@@ -1997,7 +2065,7 @@ const PAGE_CSS = `
      on Windows Chrome) on a chroma-zero bench. Same reset .ack-checkbox and
      .warning-row already carry, plus the label inline with the control. */
   .cap-bool { display: flex; align-items: center; gap: 10px; }
-  .cap-bool > label, .cap-bool > .label { margin-bottom: 0; }
+  .cap-bool > label { margin-bottom: 0; }
   .cap-row input[type="checkbox"] {
     width: 16px; height: 16px; flex: none; padding: 0;
     accent-color: var(--live);
@@ -2025,10 +2093,16 @@ const PAGE_CSS = `
   .cap-confirm-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
   .cap-confirm-actions .btn { flex: none; }
   .cap-confirm-actions .btn:first-child { border-color: var(--hairline-strong); }
-  .cap-actor-tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 7px; }
-  .tile-recessed { cursor: not-allowed; }
-  .tile-recessed .name { color: var(--ink-3); }
-  .tile-recessed:hover { border-color: var(--hairline); }
+  /* No grid-template-columns here: the column count follows the tile count and
+     is set inline by ActorModeTiles (see m12). */
+  .cap-actor-tiles { display: grid; gap: 12px; margin-top: 7px; }
+  /* Doubled class on purpose. At (0,1,0) and (0,2,0) these lost the cascade to
+     .tile and .tile:hover declared 36 lines below, so a recessed tile still
+     brightened on hover and still showed a pointer -- and recessed-vs-live is
+     the only thing teaching tightness direction without a legend. */
+  .tile.tile-recessed { cursor: not-allowed; }
+  .tile.tile-recessed .name { color: var(--ink-3); }
+  .tile.tile-recessed:hover { border-color: var(--hairline); }
   .cap-sampled-stepper { margin-top: 12px; }
 
   .warnings { margin-top: 20px; }
