@@ -231,7 +231,7 @@ Plans:
 3. Transaction red-team probes (confused-deputy, value-bound evasion, identity-bypass) run with zero high-severity findings on a clean tenant
 4. PII output-firewall pass live; retrieval "treat as data, not instructions" wrapper in place; injection agent split into conversation/content variants
 
-**Plans:** 7/11 plans executed
+**Plans:** 8/11 plans executed
 
 Plans:
 
@@ -242,7 +242,7 @@ Plans:
 - [x] 18-05-PLAN.md — BLR-01 blast-radius collector (control DB) + tenant thresholds + deterministic warnings *(wave 2)*
 - [x] 18-06-PLAN.md — RTX-01/02/03 runners against the real dispatcher + integration roundtrips *(wave 2)*
 - [x] 18-07-PLAN.md — BLR-02/CAP-04 envelope-hash persistence, drift on read, approve-deployment 422 at the route *(wave 3)*
-- [ ] 18-08-PLAN.md — CAP-03 capability-envelope GET/PATCH routes with server-side tighten-only enforcement *(wave 3)*
+- [x] 18-08-PLAN.md — CAP-03 capability-envelope GET/PATCH routes with server-side tighten-only enforcement *(wave 3)*
 - [ ] 18-09-PLAN.md — SEC-03 injection agent split into conversation and content variants *(wave 3)*
 - [ ] 18-10-PLAN.md — CAP-03/BLR admin UI in the Pre-Deploy screen (GOTHAM, UI-SPEC D1-D6) + human verify *(wave 4, autonomous:false)*
 - [ ] 18-11-PLAN.md — RTX-04 clean-tenant zero-high-severity gate + live-gate UAT + STATE.md closeout *(wave 5, autonomous:false)*

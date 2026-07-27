@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — v1.1 Phases 18–19 and Phase 13 still outstanding
-stopped_at: Completed 18-07-PLAN.md
-last_updated: "2026-07-26T23:51:19.588Z"
+stopped_at: Completed 18-08-PLAN.md
+last_updated: "2026-07-27T00:12:17.463Z"
 progress:
   total_phases: 2
   completed_phases: 2
@@ -43,7 +43,9 @@ Two findings from this planning pass that matter beyond Phase 18:
 
 **▶ 18-07 EXECUTED 2026-07-27 — BLR-02 envelope-hash deploy gate, 3/3 tasks, wave 3.** Closes the cross-wave seam 18-04 shipped caller-free: `canonical_envelope_hash`/`envelope_drift` now have real call sites. `deployment_service.py` gains `_fetch_envelope_rows_sync`/`_compute_envelope_hash_sync` (sync control-DB reader projecting exactly the seven `HASHED_ENVELOPE_FIELDS` at the query layer — `id`/`agent_id`/`updated_at` never in the SELECT list, a stronger guarantee than trusting the canonicaliser to drop them). `run_deployment_checklist` Step 4 gains a sixth guarded collector computing the hash (`None` on failure, fail-closed); Step 6 persists it in the same transaction as status/report/warnings — the task never stamps `envelope_acknowledged_at`. `api/v1/deployment.py` gains the async twin reader (`_fetch_envelope_rows`/`_current_envelope_hash`); both checklist reads now compute the live hash once per request and surface `envelope_drift` via extended `_run_to_dict`; `approve_deployment` gains a fourth 422 (drift, or a `NULL` recorded hash — an absent acknowledgement is drift, never a match) appended strictly after the three shipped checks so a blocked run's own more severe 422 is never masked, then stamps `envelope_acknowledged_at` alongside `approved_at`/`approved_by` and logs the approved `envelope_hash`. The 422 is asserted **at the route** via a real `ASGITransport` request (`test_approve_deployment_envelope_drift_422`, module-scope, node id pinned by 18-VALIDATION.md) — the stale RESEARCH.md claim that `app.main`-importing tests can't collect was already closed by commit `9f50028`. Two Rule-1 fixes surfaced by the new fail-closed gate against pre-existing test fixtures (not this plan's design): patched `_compute_envelope_hash_sync` in 6 `test_deployment_task.py` tests reaching Step 4 (mirrors the existing `_fetch_blast_radius_sync` patching convention; unpatched, each attempted a real `localhost:5432` connection, caught by Step 4's own try/except but 28s vs 4.7s for the module); supplied `envelope_hash=canonical_envelope_hash([])` to the pre-existing `test_approve_sets_is_deployed_true` so it stays green under the new fail-closed gate rather than being masked by a bug. 11 new unit tests. Full unit suite 1063→1074 passed, 8 skipped, 0 failed; `apps/api/pyproject.toml` unchanged. BLR-02 and CAP-04 marked complete for the backend gate (the admin-facing acknowledgement UI is 18-10, unexecuted). Commits `3618596`, `cb79167`, `0069012`. See `18-07-SUMMARY.md`.
 
-**▶ NEXT: `/gsd-execute-phase 18`** to continue with the remaining wave-3+ plans (18-08..18-11). Phase 19 (DOC/VER) still has 0 plans and depends on 18. Phase 13 stays paused at 7/11 on a real AWS account. **No v1.2 migration has been applied to a live Neon DB** (tenant 0009–0012, control 0017–0018) — that plus live Langfuse trace visibility, real Ragas numbers, and an end-to-end `POST /approve-deployment` → 422 are the deferred `/gsd-verify-work 21` gate. Phase 18's own control migration 0019 inherits the same constraint (its live roundtrip is `autonomous:false`), and BLR-01's live end-to-end signal against a real control DB is deferred alongside it to plan 18-11.
+**▶ 18-08 EXECUTED 2026-07-27 — CAP-03 capability-envelope read + tighten-only PATCH routes, 3/3 tasks, wave 3.** Closes the cross-wave seam 18-04 shipped caller-free: `validate_tighten_only` now has its first and only caller. New `app/schemas/capability.py` (`CapabilityEnvelopeUpdate` all-optional PATCH body, `extra="forbid"`, shape-only field validators reusing `_parse_rate_limit`/`ACTOR_MODE_RE`; `CapabilityEnvelopeResponse`/`CapabilityEnvelopeListResponse` carrying `platform_default`+`mutating` so the UI never needs a second request). New `app/api/v1/capability_envelopes.py`: `_get_owned_agent` IDOR guard copied verbatim from `prompt_versions.py` (404 on both branches, identical detail string, first statement in both routes); `GET` returns a stable 7-entry list (one per `PLATFORM_CAPABILITY_DEFAULTS` key), synthesising an `enabled=False`/`updated_at=None` entry for any skill with no stored row; `PATCH` is the write gate — unknown skill 404, first-write baseline is the platform default (not an empty dict, enforcing "never loosen beyond platform defaults" on creation too), empty body is a 200 no-op that never touches `updated_at`, `validate_tighten_only` runs before any `db.add`/attribute-assignment/`db.commit` and converts a non-`None` reason into a 422 with the transaction untouched. Registered in `app/main.py` immediately after `prompt_versions.router`. New `tests/unit/test_capability_routes.py`: 18 route-level tests through `ASGITransport(app=app)` — every loosening direction on all six comparable fields proven rejected with no `db.commit` awaited (load-bearing: a route that wrote then raised would still return 422), tightening proven to write, a first write proven compared against the platform ceiling in both directions, and the foreign-agent 404 test deliberately sends a loosening body so a handler checking the body before ownership would fail it. Full unit suite 1074→1092 passed, 8 skipped, 0 failed; `apps/api/pyproject.toml` unchanged (no new dependency). Commits `5decd3d`, `d926ad1`, `61a9e4d`. See `18-08-SUMMARY.md`.
+
+**▶ NEXT: `/gsd-execute-phase 18`** to continue with the remaining wave-3+/4/5 plans (18-09..18-11 — 18-09 is SEC-03's remaining wave-3 work, 18-10 is the `autonomous:false` admin UI wave, 18-11 is the `autonomous:false` live-gate wave). Phase 19 (DOC/VER) still has 0 plans and depends on 18. Phase 13 stays paused at 7/11 on a real AWS account. **No v1.2 migration has been applied to a live Neon DB** (tenant 0009–0012, control 0017–0018) — that plus live Langfuse trace visibility, real Ragas numbers, and an end-to-end `POST /approve-deployment` → 422 are the deferred `/gsd-verify-work 21` gate. Phase 18's own control migration 0019 inherits the same constraint (its live roundtrip is `autonomous:false`), and BLR-01's live end-to-end signal against a real control DB is deferred alongside it to plan 18-11.
 
 **Security artifact status (corrected 2026-07-26 — the previous text below wrongly claimed 14/15/16 had none):** Phases 14, 15, 16, 17 and 21 each have a `SECURITY.md`. Phase 20 has none (pure frontend re-skin). Phase 13 has neither SECURITY nor VERIFICATION (paused mid-execution).
 
@@ -248,6 +250,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Phase 18 P05 | 18min | 3 tasks | 4 files |
 | Phase 18 P06 | ~40min | 4 tasks | 7 files |
 | Phase 18 P07 | ~25min | 3 tasks | 6 files |
+| Phase 18 P08 | ~15min | 3 tasks | 4 files |
 
 ## Notes
 
@@ -397,11 +400,13 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: [18-07] Both envelope-hash readers (sync in deployment_service.py, async in api/v1/deployment.py) exclude id/agent_id/updated_at at the SQL SELECT layer, not merely via the canonicaliser — a stronger structural guarantee (OD-2)
 - [Phase ?]: [18-07] The fourth approve-time envelope-drift 422 is appended after the three shipped checks, never inserted ahead of them, so a blocked/incomplete run's own more severe 422 is never masked
 - [Phase ?]: [18-07] The checklist task never stamps envelope_acknowledged_at — only approve_deployment does, since acknowledgement is the owner's act at approve time
+- [Phase ?]: [18-08] Tighten-only direction validation lives entirely in capability_service, never in the Pydantic schema — CapabilityEnvelopeUpdate validates shape only (rate_limit parses, max_amount_cents non-negative int or null, actor_mode in-domain)
+- [Phase ?]: [18-08] PATCH on an absent envelope row compares against the platform default as baseline, not an empty dict — enforces never-loosen-beyond-platform-defaults on first write, not only on update
 
 ## Session
 
-**Last session:** 2026-07-26T23:51:19.541Z
-**Stopped at:** Completed 18-07-PLAN.md
+**Last session:** 2026-07-27T00:12:17.407Z
+**Stopped at:** Completed 18-08-PLAN.md
 
 Earlier the same session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 
