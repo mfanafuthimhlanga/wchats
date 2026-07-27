@@ -1150,13 +1150,24 @@ function CapabilityZone({
         )}
         {pendingRate !== null && (
           <div className="cap-confirm">
-            <p className="cap-confirm-q" role="status">
+            {/* Not `role="status"`. This whole block mounts, and a live region
+                that arrives with its text already inside it is announced
+                unreliably — the same reason `:empty { display: none }` came off
+                `.cap-status`. The question instead DESCRIBES the confirm
+                button, which is focused on mount, so it is announced with the
+                button's own name: a guarantee rather than a hope. */}
+            <p className="cap-confirm-q" id={`${envelope.skill}-rate-confirm-q`}>
               {parsedRate !== null
                 ? `Change the rate limit from ${parsedRate.calls} per ${currentUnit} to ${pendingRate.calls} per ${pendingRate.unit}?`
                 : `Set the rate limit to ${pendingRate.calls} per ${pendingRate.unit}?`}
             </p>
             <div className="cap-confirm-actions">
-              <Btn variant="ghost" disabled={isSaving} onClick={confirmRate}>
+              <Btn
+                variant="ghost"
+                disabled={isSaving}
+                aria-describedby={`${envelope.skill}-rate-confirm-q`}
+                onClick={confirmRate}
+              >
                 Set {pendingRate.calls} per {pendingRate.unit}
               </Btn>
               <Btn variant="ghost" disabled={isSaving} onClick={cancelRate}>
@@ -1165,7 +1176,11 @@ function CapabilityZone({
             </div>
           </div>
         )}
-        {rateNote && <p className="help cap-caption" role="status">{rateNote}</p>}
+        {/* Persistently mounted: a client-side refusal is a TEXT CHANGE inside
+            a region that was already there, not a region that appears. An empty
+            block generates no line box, so this costs nothing but its own
+            margin, which `.cap-note:empty` zeroes. */}
+        <p className="help cap-note" role="status">{rateNote ?? ''}</p>
         {fieldErrors[`${envelope.skill}.rate_limit`] && (
           <p className="help cap-error">{fieldErrors[`${envelope.skill}.rate_limit`]}</p>
         )}
@@ -1201,13 +1216,18 @@ function CapabilityZone({
         )}
         {pendingMaxCents !== null && (
           <div className="cap-confirm">
-            <p className="cap-confirm-q" role="status">
+            <p className="cap-confirm-q" id={`${envelope.skill}-max-confirm-q`}>
               {currentMaxCents !== null
                 ? `Change the max amount from ${formatCents(currentMaxCents)} to ${formatCents(pendingMaxCents)}?`
                 : `Set the max amount to ${formatCents(pendingMaxCents)}?`}
             </p>
             <div className="cap-confirm-actions">
-              <Btn variant="ghost" disabled={isSaving} onClick={confirmMaxAmount}>
+              <Btn
+                variant="ghost"
+                disabled={isSaving}
+                aria-describedby={`${envelope.skill}-max-confirm-q`}
+                onClick={confirmMaxAmount}
+              >
                 Set {formatCents(pendingMaxCents)}
               </Btn>
               <Btn variant="ghost" disabled={isSaving} onClick={cancelMaxAmount}>
@@ -1216,7 +1236,7 @@ function CapabilityZone({
             </div>
           </div>
         )}
-        {maxNote && <p className="help cap-caption" role="status">{maxNote}</p>}
+        <p className="help cap-note" role="status">{maxNote ?? ''}</p>
         {fieldErrors[`${envelope.skill}.constraints`] && (
           <p className="help cap-error">{fieldErrors[`${envelope.skill}.constraints`]}</p>
         )}
@@ -2166,6 +2186,15 @@ const PAGE_CSS = `
   .cap-row:last-child { margin-bottom: 0; }
   .cap-caption { margin-top: 6px; }
   .cap-error { margin-top: 6px; color: var(--fail); }
+  /* The per-field refusal note is mounted whether or not it has text, so a
+     refusal is a text change inside a live region rather than a region that
+     appears (announcement-on-appear is unreliable -- the same reason the
+     :empty display:none rule came off .cap-status). An empty block box
+     generates no line box, so the only cost is its own margin. Deliberately
+     NOT display:none or height:0 here: either can drop the node out of the
+     accessibility tree and lose the very announcement this exists for. */
+  .cap-note { margin-top: 6px; }
+  .cap-note:empty { margin-top: 0; }
 
   /* globals.css sizes every input at width:100% with 9px 12px padding, which
      rendered these three checkboxes as full-Zone-width bordered boxes, and
