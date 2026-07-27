@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — v1.1 Phases 18–19 and Phase 13 still outstanding
-stopped_at: Completed 18-09-PLAN.md
+stopped_at: Planned Phase 19 (5 plans, 2 waves) — ready to execute
 last_updated: "2026-07-27T00:51:30.679Z"
 progress:
   total_phases: 2
@@ -18,6 +18,16 @@ progress:
 ## Current Status
 
 **▶ MILESTONE v1.2 COMPLETE (Phases 20 + 21), verified 2026-07-18.** Phase 20 (Gotham frontend cutover) 15/15 plans, verifier `passed` 12/12: `apps/admin` runs the "Bone on Graphite" console — tokens in `globals.css` (`--ch-1..4`, `data-gate` shutter), fixed Rail (`TopNav` deleted), verdict-only `Chip`, three.js confined to landing/auth via `SceneMount`, six-region ops room; parity suite 135/135 and `check:no-dusk-tokens` exits 0. Phase 21 (agent-mgmt backend) 9/9 plans, verifier `passed` 7/7 + `21-SECURITY.md` 33/33 threats closed: tenant migrations 0009→0012 and control 0017→0018 (no forks), `turn_metrics` + Langfuse v4 trace from `run_agent_turn`, `GET /metrics` with honest `not_tracked` sentinels, retrieval-health instrumentation inside `retrieve_tool` via `_job_id_var` (native `tsvector` BM25 baseline, sampled Ragas faithfulness, `check_index_staleness`), the bench flywheel (failing-trace listing → grade → `promote_trace_to_scenario` with `source='production'`), first-class `red_team_findings` driving the deploy gate to 422, and immutable `prompt_versions` with diff/canary/rollback. One cross-wave wiring gap (grade→promote never dispatched) was caught by the verifier and closed in `traces.py::grade_trace` + 2 regression tests — **lesson: when a seam crosses waves, the LATER plan must own the wiring.**
+
+**▶ PHASE 19 PLANNED 2026-07-27 — 5 plans / 2 waves, plan-checker VERIFICATION PASSED (0 blockers, 0 warnings; 17 planner claims re-verified against live source).** Planned with research + patterns + validation but **no CONTEXT.md** (no discuss-phase pass, matching Phases 15–18), so the planner owned and closed five Open Decisions, recorded in `19-01-PLAN.md § Open Decisions Resolved`. Wave 1 (19-01..19-04) is autonomous with zero `files_modified` overlap; wave 2 (19-05, the UAT + operator live gates) is `autonomous:false`.
+
+Three findings from this planning pass that matter beyond Phase 19:
+
+- **The `require_human` path is a genuine dead end, and building the obvious fix is bigger than it looks.** The Actor writes a `PendingConfirmation` row that nothing in the codebase reads — confirmed by a full route inventory. The tempting fix (a resolve route) does **not** work as a plain route: `_execute_transactional_tool` reaches `call_actor_gate` unconditionally at Step 5 (`tools.py:401-402`), so a resolve route that honours the threat-model requirement to re-enter the dispatcher's checks would re-run the Actor and get `require_human` again — approval loops rather than completes. Terminating it needs a human-approved bypass seam *inside* the dispatcher, at exactly the position the threat model warns about, uncovered by any Phase 19 requirement ID. **Decision: Option 2** — configure the demo tenant around it, accept the residual gap as threat `T-19-04`, and make it a tested fact rather than a hope (`test_demo_place_order_envelope_does_not_engage_skip`).
+- **The demo refund ceiling is R4.99, and that is imposed by the platform, not chosen by the owner.** The Actor skip short-circuit needs `max_amount_cents < ACTOR_SKIP_MAX_AMOUNT_CENTS` — strictly less-than (`actor_seam.py:180`) against a default of 500 (`config.py:173`) — so 499 cents is the boundary. Every plan states this plainly rather than presenting R4.99 as a business choice. It is a real stretch against SC2's wording ("refunds up to a configured limit") and is recorded as such, not glossed.
+- **STATE.md was stale about 18-10.** This file previously implied 18-10 was unexecuted; `18-10-SUMMARY.md` and `apps/admin/app/agents/[id]/deploy/page.tsx` are both committed (`b6cc8e7`). DOC-03 therefore has no blocking dependency. **18-11 genuinely remains unexecuted** — `test_clean_tenant_zero_high_severity` does not exist, and Phase 19 neither depends on nor closes RTX-04 (18-11 stays its owner). Plan 19-05 Task 3 reconciles this file.
+
+Phase 19's three proofs (VER-01 SC2 human deploy, VER-01 SC3 100-message run, AUD-03 30-day window) are all `autonomous:false` operator gates and may be deferred — the plans make deferral explicit, dated and rationale-bearing in `19-UAT.md`, and the `verification: backstop` truths abstain to `human_needed` rather than passing silently. Worst case the phase seals with DOC-01/02/03 proven and VER-01/AUD-03 visibly deferred.
 
 **▶ SESSION 2026-07-26 — repo + suite housekeeping (no phase work).**
 
