@@ -6,6 +6,7 @@ import Btn from '../../../components/gotham/Btn'
 import Chip from '../../../components/gotham/Chip'
 import Ledger, { LedgerColHead, LedgerRowHead } from '../../../components/gotham/Ledger'
 import Zone from '../../../components/gotham/Zone'
+import EmptyState from '../../../components/gotham/EmptyState'
 import { useGate } from '../../../components/gotham/GateProvider'
 
 /**
@@ -253,6 +254,31 @@ const SKILL_LABELS: Record<string, string> = {
   confirm_action: 'Confirm action',
 }
 
+// CAP-03/D1: the only three windows the rate-limit unit select ever offers,
+// narrowest first — mirrors enforcement.py's _UNIT_TO_SECS domain exactly so
+// the UI's tightness comparison can never diverge from the server's.
+const RATE_UNITS = ['minute', 'hour', 'day'] as const
+type RateUnit = (typeof RATE_UNITS)[number]
+const RATE_UNIT_SECS: Record<RateUnit, number> = { minute: 60, hour: 3600, day: 86400 }
+
+// CAP-03/D2: fixed tightness order, Off first — this order alone (plus the
+// recessed-vs-live treatment) teaches the metaphor without a legend. The Off
+// tile is filtered out at render time for every mutating skill.
+const ACTOR_MODE_ORDER: { tier: 0 | 1 | 2; key: 'off' | 'sampled' | 'always-on'; label: string }[] = [
+  { tier: 0, key: 'off', label: 'Off' },
+  { tier: 1, key: 'sampled', label: 'Sampled' },
+  { tier: 2, key: 'always-on', label: 'Always-on' },
+]
+
+type CapabilityEnvelopePatch = Partial<{
+  enabled: boolean
+  rate_limit: string
+  constraints: { max_amount_cents: number | null }
+  requires_confirmation: boolean
+  requires_identity_verification: boolean
+  actor_mode: ActorMode
+}>
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -300,6 +326,43 @@ function centsOrNotTracked(cents: number | null, windowDays: number): { text: st
     }
   }
   return { text: formatCents(cents), tracked: true }
+}
+
+// CAP-03/D1: mirrors enforcement.py's `_parse_rate_limit` exactly — a rate
+// comparison computed differently from the server would offer values the
+// PATCH route then rejects, exactly the failure mode D1 exists to eliminate.
+function parseRateLimit(rateStr: string | null | undefined): { calls: number; windowSecs: number } | null {
+  if (!rateStr) return null
+  const parts = rateStr.trim().split('/')
+  if (parts.length !== 2) return null
+  const calls = Number(parts[0])
+  if (!Number.isInteger(calls)) return null
+  const unit = parts[1].toLowerCase() as RateUnit
+  const windowSecs = RATE_UNIT_SECS[unit]
+  if (windowSecs === undefined) return null
+  return { calls, windowSecs }
+}
+
+function rateToPerSecond(rateStr: string | null | undefined): number | null {
+  const parsed = parseRateLimit(rateStr)
+  if (!parsed) return null
+  return parsed.calls / parsed.windowSecs
+}
+
+// Mirrors capability_service.py's `parse_actor_mode` ordinal pair exactly:
+// off < any sampled rate < always-on, and within the sampled tier a higher N
+// is tighter.
+function actorModeTier(mode: string | null | undefined): { tier: 0 | 1 | 2; n: number } | null {
+  if (!mode) return null
+  if (mode === 'off') return { tier: 0, n: 0 }
+  if (mode === 'always-on') return { tier: 2, n: 0 }
+  const match = /^sample_at_rate_([1-9][0-9]?|100)$/.exec(mode)
+  if (match) return { tier: 1, n: Number(match[1]) }
+  return null
+}
+
+function isActorModeReachable(candidateTier: number, currentTier: number): boolean {
+  return candidateTier >= currentTier
 }
 
 // ---------------------------------------------------------------------------
@@ -526,6 +589,301 @@ function EnvelopeAcknowledgement({
   )
 }
 
+// CAP-03/D2 — the actor-mode segmented control, built from the AppearanceTile
+// shape. Positions to the left of the current selection (looser) render
+// recessed and unreachable; the Off tile is physically absent whenever the
+// skill is mutating (tested on `envelope.mutating`, never a skill-name list).
+function ActorModeTiles({
+  envelope,
+  isSaving,
+  onSave,
+}: {
+  envelope: CapabilityEnvelope
+  isSaving: boolean
+  onSave: (skill: string, patch: CapabilityEnvelopePatch) => void
+}) {
+  const currentTier = actorModeTier(envelope.actor_mode)
+  const currentTierNum = currentTier?.tier ?? 2
+  const [sampledN, setSampledN] = useState<number>(
+    currentTier?.tier === 1 ? currentTier.n : Math.max(currentTier?.n ?? 1, 1),
+  )
+
+  const tiles = ACTOR_MODE_ORDER.filter((t) => !(t.tier === 0 && envelope.mutating))
+
+  const handleSelect = (tier: 0 | 1 | 2) => {
+    if (!isActorModeReachable(tier, currentTierNum)) return
+    if (tier === 0) {
+      onSave(envelope.skill, { actor_mode: 'off' })
+    } else if (tier === 2) {
+      onSave(envelope.skill, { actor_mode: 'always-on' })
+    } else {
+      const n = Math.max(sampledN, currentTier?.tier === 1 ? currentTier.n : 1)
+      onSave(envelope.skill, { actor_mode: `sample_at_rate_${n}` as ActorMode })
+    }
+  }
+
+  return (
+    <div className="field cap-row">
+      <label>Actor mode</label>
+      <div className="tiles cap-actor-tiles">
+        {tiles.map((t) => {
+          const selected = currentTierNum === t.tier
+          const reachable = isActorModeReachable(t.tier, currentTierNum)
+          return (
+            <Zone
+              key={t.key}
+              as="label"
+              live={selected}
+              className={reachable ? 'tile' : 'tile tile-recessed'}
+            >
+              <input
+                type="radio"
+                name={`actor-mode-${envelope.skill}`}
+                checked={selected}
+                disabled={!reachable || isSaving}
+                onChange={() => handleSelect(t.tier)}
+              />
+              <span className="name">{t.label}</span>
+            </Zone>
+          )
+        })}
+      </div>
+      {currentTier?.tier === 1 && (
+        <div className="cap-sampled-stepper">
+          <label htmlFor={`${envelope.skill}-sample-n`}>Sample rate (per 100 calls)</label>
+          <input
+            id={`${envelope.skill}-sample-n`}
+            type="number"
+            min={currentTier.n}
+            max={100}
+            value={sampledN}
+            disabled={isSaving}
+            onChange={(e) => setSampledN(Math.max(Number(e.target.value) || currentTier.n, currentTier.n))}
+            onBlur={() => {
+              if (sampledN !== currentTier.n) {
+                onSave(envelope.skill, { actor_mode: `sample_at_rate_${sampledN}` as ActorMode })
+              }
+            }}
+          />
+        </div>
+      )}
+      <p className="help cap-caption">
+        {currentTierNum === 2
+          ? 'Currently: Always-on. Nothing stricter exists for this skill.'
+          : currentTierNum === 1
+            ? `Currently: Sampled at ${currentTier?.n ?? 1} in 100. A higher rate is tighter.`
+            : 'Currently: Off. Turning this on adds Actor review before every call.'}
+      </p>
+    </div>
+  )
+}
+
+// CAP-03/D1 — every control here is built so the looser direction is not a
+// reachable input state: a capped number input, a filtered unit list, a
+// one-way toggle that becomes a locked chip, and the actor-mode tiles above.
+function CapabilityZone({
+  envelope,
+  fieldErrors,
+  isSaving,
+  onSave,
+}: {
+  envelope: CapabilityEnvelope
+  fieldErrors: Record<string, string>
+  isSaving: boolean
+  onSave: (skill: string, patch: CapabilityEnvelopePatch) => void
+}) {
+  const enabledLocked = envelope.enabled === false && envelope.platform_default.enabled === false
+  const currentMaxCents = envelope.constraints.max_amount_cents ?? null
+  const currentRps = rateToPerSecond(envelope.rate_limit)
+  const parsedRate = parseRateLimit(envelope.rate_limit)
+  const currentUnit: RateUnit =
+    (RATE_UNITS.find((u) => RATE_UNIT_SECS[u] === parsedRate?.windowSecs) as RateUnit | undefined) ?? 'hour'
+  const allowedUnits = RATE_UNITS.filter((u) => RATE_UNIT_SECS[u] <= (parsedRate?.windowSecs ?? RATE_UNIT_SECS.day))
+
+  const [unit, setUnit] = useState<RateUnit>(currentUnit)
+  const [rateInput, setRateInput] = useState<string>(parsedRate ? String(parsedRate.calls) : '')
+  const [maxAmountInput, setMaxAmountInput] = useState<string>(
+    currentMaxCents !== null ? String(currentMaxCents / 100) : '',
+  )
+
+  const maxForUnit = (u: RateUnit): number | undefined =>
+    currentRps === null ? undefined : Math.floor(currentRps * RATE_UNIT_SECS[u])
+
+  const handleRateNumberChange = (raw: string) => {
+    const cap = maxForUnit(unit)
+    const num = Number(raw)
+    if (cap !== undefined && Number.isFinite(num) && num > cap) {
+      setRateInput(String(cap))
+    } else {
+      setRateInput(raw)
+    }
+  }
+
+  const commitRate = () => {
+    const num = Number(rateInput)
+    if (!Number.isFinite(num) || num <= 0) return
+    const nextRate = `${num}/${unit}`
+    if (nextRate !== envelope.rate_limit) onSave(envelope.skill, { rate_limit: nextRate })
+  }
+
+  const handleUnitChange = (newUnit: RateUnit) => {
+    const cap = maxForUnit(newUnit)
+    const currentNum = Number(rateInput)
+    const nextNum = cap !== undefined ? Math.min(Number.isFinite(currentNum) ? currentNum : cap, cap) : currentNum
+    setUnit(newUnit)
+    setRateInput(String(nextNum))
+    const nextRate = `${nextNum}/${newUnit}`
+    if (nextRate !== envelope.rate_limit) onSave(envelope.skill, { rate_limit: nextRate })
+  }
+
+  const handleMaxAmountChange = (raw: string) => {
+    if (currentMaxCents === null) {
+      setMaxAmountInput(raw)
+      return
+    }
+    const capRand = currentMaxCents / 100
+    const num = Number(raw)
+    if (Number.isFinite(num) && num > capRand) {
+      setMaxAmountInput(String(capRand))
+    } else {
+      setMaxAmountInput(raw)
+    }
+  }
+
+  const commitMaxAmount = () => {
+    const num = Number(maxAmountInput)
+    if (!Number.isFinite(num) || num < 0) return
+    const nextCents = Math.round(num * 100)
+    if (nextCents !== currentMaxCents) {
+      onSave(envelope.skill, { constraints: { ...envelope.constraints, max_amount_cents: nextCents } })
+    }
+  }
+
+  return (
+    <Zone className="cap-zone" aria-labelledby={`cap-${envelope.skill}-label`}>
+      <h3 className="label" id={`cap-${envelope.skill}-label`}>{SKILL_LABELS[envelope.skill] ?? envelope.skill}</h3>
+
+      <div className="field cap-row">
+        <label htmlFor={`${envelope.skill}-enabled`}>Enabled</label>
+        <input
+          id={`${envelope.skill}-enabled`}
+          type="checkbox"
+          checked={envelope.enabled}
+          disabled={enabledLocked || isSaving}
+          onChange={(e) => onSave(envelope.skill, { enabled: e.target.checked })}
+        />
+        <p className="help cap-caption">
+          {enabledLocked
+            ? 'Cannot re-enable - the platform default is off for this skill.'
+            : envelope.enabled
+              ? 'Enabled. Turning this off is always available.'
+              : 'Disabled. The platform default allows turning this on.'}
+        </p>
+        {fieldErrors[`${envelope.skill}.enabled`] && (
+          <p className="help cap-error">{fieldErrors[`${envelope.skill}.enabled`]}</p>
+        )}
+      </div>
+
+      <div className="field cap-row">
+        <label htmlFor={`${envelope.skill}-rate-n`}>Rate limit</label>
+        <div className="cap-rate-inputs">
+          <input
+            id={`${envelope.skill}-rate-n`}
+            type="number"
+            min={1}
+            max={maxForUnit(unit)}
+            value={rateInput}
+            disabled={isSaving}
+            onChange={(e) => handleRateNumberChange(e.target.value)}
+            onBlur={commitRate}
+          />
+          <select value={unit} disabled={isSaving} onChange={(e) => handleUnitChange(e.target.value as RateUnit)}>
+            {allowedUnits.map((u) => (
+              <option key={u} value={u}>{u}</option>
+            ))}
+          </select>
+        </div>
+        <p className="help cap-caption">
+          Currently {envelope.rate_limit ?? 'not set'}. Only windows at or narrower than this one are offered.
+        </p>
+        {fieldErrors[`${envelope.skill}.rate_limit`] && (
+          <p className="help cap-error">{fieldErrors[`${envelope.skill}.rate_limit`]}</p>
+        )}
+      </div>
+
+      <div className="field cap-row">
+        <label htmlFor={`${envelope.skill}-max-amount`}>Max amount</label>
+        <input
+          id={`${envelope.skill}-max-amount`}
+          type="number"
+          min={0}
+          step="0.01"
+          max={currentMaxCents !== null ? currentMaxCents / 100 : undefined}
+          value={maxAmountInput}
+          placeholder="No ceiling set"
+          disabled={isSaving}
+          onChange={(e) => handleMaxAmountChange(e.target.value)}
+          onBlur={commitMaxAmount}
+        />
+        <p className="help cap-caption">
+          {currentMaxCents !== null
+            ? `Currently ${formatCents(currentMaxCents)}. Once set, a ceiling can only be tightened.`
+            : 'No ceiling set yet. Once you set one, it can only be tightened from here.'}
+        </p>
+        {fieldErrors[`${envelope.skill}.constraints`] && (
+          <p className="help cap-error">{fieldErrors[`${envelope.skill}.constraints`]}</p>
+        )}
+      </div>
+
+      <div className="field cap-row">
+        <label htmlFor={`${envelope.skill}-confirmation`}>Confirmation</label>
+        {envelope.requires_confirmation ? (
+          <Chip verdict="live">On</Chip>
+        ) : (
+          <input
+            id={`${envelope.skill}-confirmation`}
+            type="checkbox"
+            checked={false}
+            disabled={isSaving}
+            onChange={(e) => {
+              if (e.target.checked) onSave(envelope.skill, { requires_confirmation: true })
+            }}
+          />
+        )}
+        <p className="help cap-caption">
+          {envelope.requires_confirmation
+            ? 'Confirmation is on - it cannot be turned off from here.'
+            : 'Off. Turning this on requires the customer to confirm before this action runs.'}
+        </p>
+      </div>
+
+      <div className="field cap-row">
+        <label htmlFor={`${envelope.skill}-verification`}>Verification</label>
+        {envelope.requires_identity_verification ? (
+          <Chip verdict="live">On</Chip>
+        ) : (
+          <input
+            id={`${envelope.skill}-verification`}
+            type="checkbox"
+            checked={false}
+            disabled={isSaving}
+            onChange={(e) => {
+              if (e.target.checked) onSave(envelope.skill, { requires_identity_verification: true })
+            }}
+          />
+        )}
+        <p className="help cap-caption">
+          {envelope.requires_identity_verification
+            ? 'Verification is on - it cannot be turned off from here.'
+            : 'Off. Turning this on requires identity verification before this action runs.'}
+        </p>
+      </div>
+
+      <ActorModeTiles envelope={envelope} isSaving={isSaving} onSave={onSave} />
+    </Zone>
+  )
+}
+
 // The customer's side of the glass — the one friendly, light-mode surface in
 // the whole console (UI-SPEC S4 widget exception). Decorative: it renders
 // the SELECTED mode's layout/caption, but never the operator's own dark
@@ -582,6 +940,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
   // BLR-02/D5: acknowledging one configuration must never carry over to a
   // different one — reset on latestRun.id/envelope_hash change below.
   const [envelopeAcknowledged, setEnvelopeAcknowledged] = useState(false)
+  // CAP-03/D1 server-side backstop: keyed "<skill>.<field>", set from a
+  // rejected PATCH and cleared the moment that field changes again.
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
 
   // ---- Agent (name, is_deployed, soul fields for the "Soul" gate row) ----
   const agentQuery = useQuery({
@@ -645,6 +1006,54 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     staleTime: 15_000,
   })
   const capabilityEnvelopes = capabilityEnvelopesQuery.data?.envelopes ?? []
+  // CAP-03: the mutating flag is the ONLY thing that decides which entries
+  // render a capability Zone — never a slice, a length check, or a
+  // hard-coded skill-name list, so a future seventh mutating skill appears
+  // here with no second edit.
+  const mutatingCapabilityEnvelopes = useMemo(
+    () => capabilityEnvelopes.filter((env) => env.mutating === true),
+    [capabilityEnvelopes],
+  )
+
+  const saveCapabilityEnvelope = useMutation({
+    mutationFn: async ({ skill, patch }: { skill: string; patch: CapabilityEnvelopePatch }) => {
+      const token = await getToken()
+      if (!token) throw new Error('Not authenticated')
+      const res = await fetch(`${apiBase}/api/v1/agents/${id}/capability-envelopes/${skill}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        const detail = (body as { detail?: string }).detail ?? `HTTP ${res.status}`
+        throw Object.assign(new Error(detail), { skill, patch })
+      }
+      return res.json() as Promise<CapabilityEnvelope>
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['capability-envelopes', id] })
+    },
+    onError: (err: unknown) => {
+      // D1's server-side backstop: a rejection lands inline under the
+      // specific field it targeted — never a toast, never a page alert.
+      const withContext = err as Error & { skill?: string; patch?: CapabilityEnvelopePatch }
+      const skill = withContext.skill
+      const field = withContext.patch ? Object.keys(withContext.patch)[0] : undefined
+      if (skill && field) {
+        setFieldErrors((prev) => ({ ...prev, [`${skill}.${field}`]: withContext.message }))
+      }
+    },
+  })
+
+  const handleSaveCapability = (skill: string, patch: CapabilityEnvelopePatch) => {
+    setFieldErrors((prev) => {
+      const next = { ...prev }
+      for (const field of Object.keys(patch)) delete next[`${skill}.${field}`]
+      return next
+    })
+    saveCapabilityEnvelope.mutate({ skill, patch })
+  }
 
   // ---- Widget config — PRESERVED, GET/POST widget-config. ---------------
   const widgetConfigQuery = useQuery({
@@ -1079,6 +1488,35 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
               </div>
             </fieldset>
           </section>
+
+          {/* ═══ CAPABILITIES AND LIMITS ════════════════════════════════ */}
+          <section className="section">
+            <div className="section-head">
+              <h2 className="label" id="capabilities-label">Capabilities and limits</h2>
+              {saveCapabilityEnvelope.isPending && <span className="mono stamp">saving…</span>}
+              {saveCapabilityEnvelope.isSuccess && !saveCapabilityEnvelope.isPending && (
+                <span className="mono stamp">saved</span>
+              )}
+            </div>
+            {mutatingCapabilityEnvelopes.length === 0 ? (
+              <EmptyState
+                heading="No capabilities configured yet."
+                body="This agent cannot take any action on a customer's behalf until you enable a skill below."
+              />
+            ) : (
+              <div className="cap-grid">
+                {mutatingCapabilityEnvelopes.map((env) => (
+                  <CapabilityZone
+                    key={`${env.skill}:${env.updated_at ?? 'unsaved'}`}
+                    envelope={env}
+                    fieldErrors={fieldErrors}
+                    isSaving={saveCapabilityEnvelope.isPending}
+                    onSave={handleSaveCapability}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
         </div>
 
         <WidgetPreview mode={widgetConfig.appearance} />
@@ -1152,6 +1590,28 @@ const PAGE_CSS = `
   }
   .ack-checkbox input { width: 16px; height: 16px; flex: none; margin-top: 2px; accent-color: var(--live); }
   .ack-checkbox span { font-size: 13.5px; flex: 1; }
+
+  /* ── capabilities and limits (CAP-03, D1/D2): six independent Zones, each
+       control's looser direction physically unreachable. ─────────────────── */
+  .cap-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-top: 16px; }
+  @media (max-width: 900px) { .cap-grid { grid-template-columns: 1fr; } }
+  .cap-row { margin-bottom: 16px; }
+  .cap-row:last-child { margin-bottom: 0; }
+  .cap-caption { margin-top: 6px; }
+  .cap-error { margin-top: 6px; color: var(--fail); }
+  .cap-row input[type="checkbox"]:disabled,
+  .cap-row input[type="number"]:disabled,
+  .cap-row select:disabled {
+    background: var(--surface-2); color: var(--ink-3); cursor: not-allowed;
+  }
+  .cap-rate-inputs { display: flex; gap: 12px; }
+  .cap-rate-inputs input { flex: 2; }
+  .cap-rate-inputs select { flex: 1; }
+  .cap-actor-tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 7px; }
+  .tile-recessed { cursor: not-allowed; }
+  .tile-recessed .name { color: var(--ink-3); }
+  .tile-recessed:hover { border-color: var(--hairline); }
+  .cap-sampled-stepper { margin-top: 12px; }
 
   .warnings { margin-top: 20px; }
   .warning-row {
