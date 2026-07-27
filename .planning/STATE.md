@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — v1.1 Phases 18–19 and Phase 13 still outstanding
-stopped_at: Executed 19-01-PLAN.md (DOC-01/DOC-02 guides)
-last_updated: "2026-07-27T22:11:09.717Z"
+stopped_at: Executed 19-02-PLAN.md (owner capability guide + VER-01 demo tenant)
+last_updated: "2026-07-27T22:26:25.682Z"
 progress:
   total_phases: 2
   completed_phases: 2
@@ -30,6 +30,8 @@ Three findings from this planning pass that matter beyond Phase 19:
 Phase 19's three proofs (VER-01 SC2 human deploy, VER-01 SC3 100-message run, AUD-03 30-day window) are all `autonomous:false` operator gates and may be deferred — the plans make deferral explicit, dated and rationale-bearing in `19-UAT.md`, and the `verification: backstop` truths abstain to `human_needed` rather than passing silently. Worst case the phase seals with DOC-01/02/03 proven and VER-01/AUD-03 visibly deferred.
 
 **▶ 19-01 EXECUTED 2026-07-27 — DOC-01/DOC-02 developer guides, 2/2 tasks, wave 1.** `docs/guides/tool-author-guide.md` (196 lines): narrates `_execute_transactional_tool`'s 8-step enforcement order in the exact source-banner order and step names (`IN-03 agent_id precondition` → `Capability check` → `IDV gate` → `Reserve idempotency` → `Rate + constraint checks` → `Actor seam` → `Adapter execute` → `Audit row + finalize`), states the Step 2.5-before-Step-3 IDV ordering that protects an unverified call's idempotency slot (T-17-21), quotes `registry.py`'s own "never runtime-inferred from the tool name or arguments" sentence (T-14-02-02) verbatim, documents the T-14-02-01 typed-scalar schema rule, and states plainly that `confirm_action`'s `pending_confirmations` rows have no resolver anywhere in the codebase today. `docs/guides/integration-provider-guide.md` (206 lines): delta-scoped extension of `docs/runbooks/integration-credentials.md` — names all six `ProviderAdapter` abstract methods, quotes `get_adapter_for_skill`'s docstring constraint verbatim ("MUST NOT be imported or called from any FastAPI route handler or SDK hook"), documents the per-tenant HKDF/`CredentialHandle` runtime resolution the runbook doesn't cover, and explains the red-team-mode `ContextVar` short-circuit (default `False`, sole sanctioned setter `red_team_probe.red_team_mode()`) with no example that prints, logs, or persists a resolved credential; also corrects the runbook's Phase-18 forward-reference — the shipped capability admin UI configures envelopes, not credentials, so the credential-management stop-sign still stands. Both guides verified sentence-by-sentence against `tools.py`/`registry.py`/`schemas.py`/`provider_adapter.py`/`credential_service.py`/`red_team_probe.py` before writing; no plan-vs-source discrepancy found. Both DOC-01/DOC-02 automated anchor gates pass; full unit suite unchanged at 1103 passed / 8 skipped / 0 failed (pure-prose plan, touches no Python); `apps/api/pyproject.toml` byte-identical. Commits `e8ce72e`, `c1bdb14`. See `19-01-SUMMARY.md`.
+
+**▶ 19-02 EXECUTED 2026-07-28 — DOC-03 owner guide + VER-01 demo tenant, 2/2 tasks, wave 1.** `docs/guides/owner-capability-guide.md` (256 lines): plain-language narration for a non-technical business owner of the seven capability envelopes, the six controls (Enabled, Rate limit, Ceiling, Requires confirmation, Requires identity verification, Actor review mode), tighten-only's exact boundary behaviour, the shipped platform-default table, and blast-radius reporting — quoting six shipped copy strings verbatim from `apps/admin/app/agents/[id]/deploy/page.tsx` (`"No transactional skill is enabled for this agent. There is no blast radius to report."`, `"That amount is higher than the current ceiling. Nothing was changed."`, etc.) rather than paraphrasing them, and explicitly prohibited from presenting a loosened control as a remedy for friction. `apps/api/tests/unit/test_ver01_demo_tenant.py` (338 lines, 8 tests): defines `VER01_DEMO_TENANT_ENVELOPES`/`SPEC` (issue_refund at 499 cents, place_order at 20 000 cents, both enabled; four skills at platform default) and pins the Actor skip short-circuit's strict `<` boundary against `settings.ACTOR_SKIP_MAX_AMOUNT_CENTS` on both sides (499 skips with zero Anthropic calls, 500 does not), proves the `requires_confirmation` AND-term and the absent-`max_amount_cents` case, and proves `place_order` deliberately does NOT engage the skip — making the accepted `require_human` residual gap (T-19-04) a tested fact. **Discrepancy found and recorded (not silently followed either way, per CLAUDE.md):** the plan's general claim that the demo posture is "reachable through the shipped tighten-only PATCH route" is only true for 5 of the 6 comparable fields — `validate_tighten_only` unconditionally rejects every `enabled:False -> True` transition because every `PLATFORM_CAPABILITY_DEFAULTS` entry ships `enabled=False` (confirmed by the function's own docstring and by `test_capability_routes.py`'s existing `test_patch_rejects_each_loosening_field` case); the new test proves reachability only for the 5 fields the plan's own field list already named (which itself omits `enabled`). Both `<verify>` blocks pass; full unit suite 1103→1111 passed, 8 skipped, 0 failed; no file under `apps/api/app/` touched; `apps/api/pyproject.toml` byte-identical. Commits `cf16cc3`, `b398761`. See `19-02-SUMMARY.md`.
 
 **▶ SESSION 2026-07-26 — repo + suite housekeeping (no phase work).**
 
@@ -266,6 +268,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Phase 18 P07 | ~25min | 3 tasks | 6 files |
 | Phase 18 P08 | ~15min | 3 tasks | 4 files |
 | Phase 18 P09 | ~35min | 3 tasks | 7 files |
+| Phase 19 P02 | ~25min | 2 tasks | 2 files |
 
 ## Notes
 
@@ -421,11 +424,13 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: [18-09] Both probe_fn builders are already synchronous Callable[[str], str] — run_content_injection_agent calls probe_fn directly with no asyncio.run wrapper
 - [Phase ?]: [19-01] Both v1.1 guides verified sentence-by-sentence against tools.py/registry.py/schemas.py/provider_adapter.py/credential_service.py before writing; no plan-vs-source discrepancy found
 - [Phase ?]: [19-01] DOC-02 corrects the runbook's Phase-18 admin-UI note: the shipped capability admin UI configures envelopes, not credentials, so the credential-management stop-sign still stands
+- [Phase ?]: [19-02] validate_tighten_only rejects every enabled:False->True transition (every PLATFORM_CAPABILITY_DEFAULTS entry ships enabled=False) — the demo tenant's enabled skills must be seeded, not tighten-only PATCHed; test proves reachability only for the other 5 comparable fields
+- [Phase ?]: [19-02] Owner guide quotes apps/admin/app/agents/[id]/deploy/page.tsx verbatim by line number rather than paraphrasing shipped 18-10 copy
 
 ## Session
 
-**Last session:** 2026-07-27T22:11:09.661Z
-**Stopped at:** Executed 19-01-PLAN.md (DOC-01/DOC-02 guides)
+**Last session:** 2026-07-27T22:26:25.604Z
+**Stopped at:** Executed 19-02-PLAN.md (owner capability guide + VER-01 demo tenant)
 
 Earlier the same session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 

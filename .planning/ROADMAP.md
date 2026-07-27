@@ -258,13 +258,13 @@ Plans:
 2. A non-technical tester deploys a refund + Shopify-order agent end-to-end without code
 3. 100 synthetic adversarial messages → zero unauthorized state mutations escape L1–L3; 30-day synthetic audit-gap test passes (zero gaps)
 
-**Plans:** 1/5 plans executed
+**Plans:** 2/5 plans executed
 
 Plans:
 **Wave 1**
 
 - [x] 19-01-PLAN.md — DOC-01 tool-author guide + DOC-02 integration-provider guide under `docs/guides/`; carries the phase's five resolved open decisions *(wave 1)*
-- [ ] 19-02-PLAN.md — DOC-03 owner capability guide + the VER-01 demo tenant locked as executable data with its Actor skip-boundary proof *(wave 1)*
+- [x] 19-02-PLAN.md — DOC-03 owner capability guide + the VER-01 demo tenant locked as executable data with its Actor skip-boundary proof *(wave 1)*
 - [ ] 19-03-PLAN.md — AUD-03 seeded-backdated-rows 30-day gate + DB-free per-day coverage-parity unit companion *(wave 1)*
 - [ ] 19-04-PLAN.md — VER-01 SC3 100-message adversarial harness on the shipped probe substrate + mocked-boundary unit companion *(wave 1)*
 
