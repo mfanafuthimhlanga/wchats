@@ -8,7 +8,7 @@ Architecture constraints (CLAUDE.md — non-negotiable):
     - run_red_team receives only `agent_id` — NEVER a conn_str in task args (CTL-08)
     - conn_str is fetched from the control DB and decrypted at runtime via fernet_decrypt
     - asyncio.run(asyncio.wait_for(...)) bridge — never loop.run_until_complete (broken Python 3.12)
-    - worker_pool=solo means NO Celery chord — all six agent runners execute sequentially
+    - worker_pool=solo means NO Celery chord — all seven agent runners execute sequentially
       inside run_red_team
 
 Flow (run_red_team):
@@ -19,8 +19,10 @@ Flow (run_red_team):
        agent via direct Claude API, no tools attached) for the M7 conversational
        probes, and the transactional probe (drives the real tool server through
        the transactional dispatcher, Phase 18 OD-6) for the three RTX probes.
-    5. Run PromptInjection → DataLeakage → Hallucination → ConfusedDeputy →
-       ValueBoundEvasion → IdentityBypass agents sequentially
+    5. Run ConversationInjection → ContentInjection → DataLeakage → Hallucination →
+       ConfusedDeputy → ValueBoundEvasion → IdentityBypass agents sequentially
+       (Phase 18 SEC-03 / OD-7: the shipped PromptInjection agent is split into
+       the conversation-injection and content-injection variants)
     6. Compute max_severity and deployment_blocked
     7. Update red_team_run row to 'complete' with findings JSONB
        7b. Persist first-class red_team_strategies/red_team_probes rows (OPS-13)
@@ -47,7 +49,8 @@ from app.models.agent import Agent
 from app.services.agent_tools import RetrievalStrategy, build_tool_server
 from app.services.red_team_probe import _build_transactional_probe_fn
 from app.services.red_team_service import (
-    run_prompt_injection_agent,
+    run_conversation_injection_agent,
+    run_content_injection_agent,
     run_data_leakage_agent,
     run_hallucination_agent,
     run_confused_deputy_agent,
@@ -209,8 +212,9 @@ def run_red_team(self, agent_id: str) -> dict:
            was created within the last 30 minutes.
         3. Insert red_team_run row (status='running').
         4. Build two probe_fn closures (bare-completion + transactional).
-        5. Run PromptInjection → DataLeakage → Hallucination → ConfusedDeputy →
-           ValueBoundEvasion → IdentityBypass agents sequentially.
+        5. Run ConversationInjection → ContentInjection → DataLeakage →
+           Hallucination → ConfusedDeputy → ValueBoundEvasion → IdentityBypass
+           agents sequentially.
         6. Compute max_severity and deployment_blocked flag.
         7. Update red_team_run row to 'complete' with findings JSONB.
         8. Return result dict.
@@ -356,10 +360,21 @@ def run_red_team(self, agent_id: str) -> dict:
     # ------------------------------------------------------------------
     _agents_conn = psycopg2.connect(conn_str, connect_timeout=5)
     try:
-        injection_findings = run_prompt_injection_agent(
+        conversation_injection_findings = run_conversation_injection_agent(
             probe_fn,
             max_turns=settings.RED_TEAM_MAX_TURNS,
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
+        )
+        # SEC-03 / OD-7: content_injection also receives the conversational
+        # probe_fn (not transactional_probe_fn) — this variant tests retrieval
+        # behaviour, not transactional enforcement. conn_str is passed as a
+        # plain function argument (a body local, decrypted at Step 1) — this
+        # is NOT a Celery task arg, so CLAUDE.md rule 4 is respected.
+        content_injection_findings = run_content_injection_agent(
+            probe_fn,
+            max_turns=settings.RED_TEAM_MAX_TURNS,
+            attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
+            conn_str=conn_str,
         )
         leakage_findings = run_data_leakage_agent(
             probe_fn,
@@ -387,7 +402,8 @@ def run_red_team(self, agent_id: str) -> dict:
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
         )
         all_findings = (
-            injection_findings
+            conversation_injection_findings
+            + content_injection_findings
             + leakage_findings
             + hallucination_findings
             + confused_deputy_findings
@@ -455,13 +471,17 @@ def run_red_team(self, agent_id: str) -> dict:
         #
         # No migration work for the three new RTX attack_vector values
         # (confused_deputy, value_bound_evasion, identity_verification_bypass,
-        # per red_team_service.RTX_ATTACK_VECTORS): red_team_strategies.attack_vector
+        # per red_team_service.RTX_ATTACK_VECTORS) NOR for the SEC-03 (OD-7)
+        # conversation_injection / content_injection split
+        # (red_team_service.INJECTION_ATTACK_VECTORS): red_team_strategies.attack_vector
         # is free TEXT with only a UNIQUE constraint, and the ON CONFLICT DO
-        # NOTHING upsert below already handles any new string value. Step 7c's
-        # one-row-per-finding write with status='open' means an RTX critical
-        # finding inherits Phase 21's live deploy-gate behaviour for free —
-        # recorded here explicitly so a future reader does not add redundant
-        # wiring for it.
+        # NOTHING upsert below already handles any new string value — two
+        # distinct attack_vector strings become two separate strategy rows
+        # automatically. Step 7c's one-row-per-finding write with
+        # status='open' means an RTX or content-injection critical finding
+        # inherits Phase 21's live deploy-gate behaviour for free — recorded
+        # here explicitly so a future reader does not add redundant wiring
+        # for it.
         # ------------------------------------------------------------------
         strategy_ids: dict[str, str | None] = {}
         finding_probe_ids: list[str | None] = []
