@@ -109,6 +109,135 @@ status: in_progress
 
 **Plan metadata:** this commit (docs: partial-completion summary, Task 3 pending)
 
+## Adversarial design review remediation
+
+`18-UI-REVIEW.md` (5 blockers, 15 majors, 12 minors) was run against `cbf7d8e` +
+`1d2a258` before the operator saw the work, per the global frontend quality gate.
+**Every finding is now fixed except three deliberate carve-outs.** Five remediation
+commits, grouped by concern:
+
+| Commit | Concern | Findings |
+|---|---|---|
+| `2d97e59` | Blockers | B1, B2, B3, B4, B5, m6 |
+| `f271373` | Accessibility + per-skill state scoping | M1, M7, M8, M9, M10, M11, M15, m9, m12 |
+| `4a71fb0` | Explicit commit for the two money fields | **M12 (deviation, see below)**, m5 |
+| `8b86f17` | Presentation and honesty | M2, M3, M4, M5, M6, M13, M14, m1, m2, m3, m4, m7 |
+| `a039aa8` | Consequences of the above | contrast of the `aria-disabled` Approve label, live-region visibility, `ack-zone` naming |
+
+### The M12 deviation from 18-UI-SPEC.md — recorded, not silent
+
+The UI-SPEC's Colour table asserts *"No destructive actions exist in this phase's
+UI surface — tightening a limit is not a destructive action"*, and its Copywriting
+Contract registers auto-save on change (`"saving…" → "saved"`, no button) as the
+capability-row interaction. Tasks 1-2 implemented that faithfully: both numeric
+fields committed on blur.
+
+**That premise is wrong as a UX claim, and it has been overridden.** "Not
+destructive" is a statement about the tighten-only invariant (no write can loosen
+a limit), not about whether the owner can recover from a typo. A one-way,
+unrecoverable narrowing of a money ceiling, auto-committed on focus loss, is the
+highest-consequence write on this screen: ceiling R500, owner wants R450, types
+`4`, tabs away, and the ceiling is permanently R4.00 with no undo anywhere in the
+product. The mid-typing clamp made it worse, not better: a keystroke landed on an
+already-clamped value and was re-clamped, so `600` against a R500 ceiling passed
+through 6, 500, 5000, 500.
+
+Both fields now stage the change and require an explicit confirmation that names
+the value being replaced and the value replacing it, with both buttons labelled by
+the amount they commit to. The ceiling check moved to commit time so typing is not
+interfered with. The window select no longer PATCHes on its own change event at
+all.
+
+What was **not** overridden, deliberately: the accent reservation (UI-SPEC S4
+lists the four places `--live` may be spent, so both confirmation buttons are
+ghost; hierarchy comes from order plus `--hairline-strong` on the confirming one),
+the ban on `variant="seal"` here, and the no-new-hue rule (a client-side refusal
+uses `--ink-3`, not `--fail`, since S4's five permitted red uses do not include
+it). The UI-SPEC's own Experience-Design principle — confirmation proportional to
+severity — is what this honors.
+
+### Carve-outs (deliberately not changed)
+
+- **m8** — the empty cell for a false `requires_confirmation` is ambiguous between
+  "not required" and "unknown". **D6 locks the empty cell.** The reviewer recorded
+  it for the record, not as a change request. Untouched.
+- **m10** — `<Chip verdict="fail" className="warning-cat">{category}</Chip>` uses a
+  chip as a category tag, DESIGN.md's named anti-pattern. Pre-existing code,
+  outside this plan's `files_modified` intent. Real defect, **logged as a
+  follow-up**, not fixed here.
+- **m11** — a null `envelope_hash` rendering "config unavailable" above a tickable
+  checkbox. Made unreachable as a side effect of B2 rather than by a second
+  independent guard: the summary-and-checkbox branch is gated on
+  `attestable = envelopesLoaded && hash !== null`, so the "config unavailable"
+  string no longer exists in the file and the fingerprint caption is only reached
+  when the hash is real. Verified.
+
+### Judgement calls the review did not settle
+
+1. **B5's suggested max-amount caption was not used verbatim.** The reviewer
+   proposed `"Currently R500.00. Already your tightest available limit."` The
+   second sentence would be false for a field that can still be tightened (R500 is
+   the *loosest* available value, not the tightest), so the caption is truncated to
+   the present fact alone: `"Currently R500.00."` The contract's
+   "Already your tightest available limit" string belongs on a control where no
+   tighter value is reachable, which is what the Always-on tile already says
+   ("Nothing stricter exists for this skill").
+2. **M13 took the "render all rows recessed" option, not the count-line option.**
+   The count line would name the hash's scope without making a specific drift
+   explicable; rendering every covered row with the not-enabled ones recessed in
+   `--ink-3` means drift always has a visible cause. The `Ledger` caption was
+   updated to match.
+3. **M14's absence treatment uses `num blast-note`** (the combination the
+   blast-radius block already uses), so `.ledger .num` keeps the 13px numeric size
+   at higher specificity while `.blast-note` supplies `--ink-3`. No new class, no
+   font-size fork inside one column.
+4. **M8 kept `<label>` in the locked branch, without `htmlFor`.** A `<span
+   className="label">` would have forked the label element's typography (10px /
+   0.2em vs 11px / 0.08em), which is m1's own complaint one control over. Dropping
+   the dangling `for` is the whole defect.
+5. **M9 used the reviewer's `as="section"`**, which makes each skill a named
+   `region` landmark. `role="group"` would have given the same accessible name
+   without adding six landmarks; `section` was kept as prescribed, and is
+   defensible because each Zone is a distinct money-moving configuration an owner
+   may want to jump between.
+6. **The sample-rate stepper still commits on blur.** M12 named the two money
+   fields; the sampled tier is unreachable from every state this UI can produce
+   (all seven platform defaults seed `actor_mode: "always-on"`, the strictest tier,
+   and tighten-only forbids moving down to `sampled`), so the stepper only renders
+   for an envelope set to `sample_at_rate_N` out of band. Noted rather than
+   extended.
+
+### Gates re-run after remediation
+
+- `pnpm --filter wchats-admin check:no-dusk-tokens` — **exit 0**.
+- `cd apps/admin && npx tsc --noEmit -p tsconfig.json` — **no new error**. The one
+  reported error is the pre-existing `tests/reduced-motion.spec.ts` Playwright
+  fixture typing (`reducedMotion` not in `Fixtures<>`), identical before and after.
+- `git diff --exit-code -- apps/admin/package.json apps/admin/pnpm-lock.yaml` —
+  **clean**. No new dependencies.
+- All 13 of the review's clean checks re-verified against the remediated file: the
+  `mutating === true` filter is the sole membership test (no `.slice`, no
+  `length === 6`, no name list); no blast-radius cents field is coalesced to 0;
+  the four configured/observed fields stay separate and underived; `setGate` still
+  has exactly one call site and `gateBlocked` is byte-identical; no new hue, no new
+  `ChipVerdict`, no file under `components/gotham/` and no `globals.css` touched, no
+  literal hex or `rgba()` in the added CSS, no new radius value; `--ink-3` and
+  `--fail-dim` unchanged; zero em or en dashes in any rendered string (all six hits
+  on added lines are inside comments); no new `animation` / `transition` /
+  `@keyframes`; `.cap-grid` still collapses at exactly 900px; D6 intact (the two
+  new `Chip verdict="mute"` are in the blast-radius block, matching the four signal
+  rows' missing-input treatment, and the acknowledgement table still uses plain
+  `.help` text).
+
+### Still owed to the operator
+
+The review's "Settled only by pixels" list (7 items) is **not** discharged by this
+remediation. The stack was never started, no screenshot was taken, and Task 3
+remains an unexecuted `checkpoint:human-verify`. Item 6 of that list is the one to
+carry forward deliberately: **B2 and B4 are not reachable by looking** — a failed
+capability GET must be forced in devtools and the warn thresholds must be nulled in
+the DB, and a clean happy-path walkthrough will show neither.
+
 ## Files Created/Modified
 - `apps/admin/app/agents/[id]/deploy/page.tsx` - `BlastRadiusSignal`/`ActorMode`/`CapabilityEnvelope`/`CapabilityEnvelopeList` types extending `ChecklistRun`/`DeploymentReport`; `formatCents`/`centsOrNotTracked`/`parseRateLimit`/`rateToPerSecond`/`actorModeTier`/`isActorModeReachable` helpers; `SKILL_LABELS`/`RATE_UNITS`/`ACTOR_MODE_ORDER` constants; `BlastRadiusBlock`/`EnvelopeAcknowledgement`/`ActorModeTiles`/`CapabilityZone` components; `capabilityEnvelopesQuery`/`saveCapabilityEnvelope` react-query hooks; `envelopeAcknowledged`/`fieldErrors` state; the "Capabilities and limits" section; `.blast-*`/`.ack-*`/`.cap-*`/`.gate-chips`/`.tile-recessed` `PAGE_CSS` rules
 
@@ -132,7 +261,7 @@ None - no external service configuration required.
 **This plan is NOT complete.** Task 3 is a `checkpoint:human-verify` gate with `gate="blocking"` covering 18-VALIDATION.md's two Manual-Only verifications (blast-radius honesty, tighten-only physical-unreachability) plus two UI-Considerations backstops (no awkward wrapping at 1280/900px, the acknowledgement table correct at 1 and at 6 enabled skills). Per this execution's explicit instructions, Task 3 was not executed, self-approved, or marked complete.
 
 - **STATE.md, ROADMAP.md, and REQUIREMENTS.md have NOT been updated by this executor run** — that update belongs to the plan's final completion, which has not occurred. CAP-03 in particular must stay unchecked until Task 3 is discharged (see the `# CAP-03 remains unchecked` note above the `coverage` block).
-- The orchestrator should run an adversarial design review against the diff, then a human operator must start the local stack (Redis, PostgreSQL, `uvicorn`, the Celery worker, `pnpm dev` — no Docker, CLAUDE.md rule 9) and walk sections A through E of Task 3's `<how-to-verify>` against a real agent with real checklist-run and capability-envelope data.
+- The adversarial design review has been run (`18-UI-REVIEW.md`) and every finding remediated except three recorded carve-outs — see **Adversarial design review remediation** above. A human operator must still start the local stack (Redis, PostgreSQL, `uvicorn`, the Celery worker, `pnpm dev` — no Docker, CLAUDE.md rule 9) and walk sections A through E of Task 3's `<how-to-verify>` against a real agent with real checklist-run and capability-envelope data, plus the review's 7 pixel-only items.
 - If the operator reports a defect, it must be fixed against the named UI-SPEC decision (D1-D6) in `apps/admin/app/agents/[id]/deploy/page.tsx` and re-presented, not argued.
 - Once Task 3 is approved, the plan's final steps (SUMMARY status flip to `complete`, STATE.md/ROADMAP.md/REQUIREMENTS.md updates, the metadata commit) still need to run — they are deliberately not run by this executor pass.
 

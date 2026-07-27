@@ -125,7 +125,7 @@ states the *current fact* only (see §Locked Interaction Decisions D1 rationale)
 | Tighten-only field, loosening physically unavailable | Inline caption under the disabled option/control, e.g. "Already your tightest available limit." / "Verification is on — it cannot be turned off from here." / "Always-on is already required — nothing stricter exists." (control-specific, never a generic "loosening is disabled" legend) |
 | Tighten-only field, server-side rejection (bypass fallback) | "That would loosen an existing limit. Limits can only be tightened once configured." (`--fail`, inline under the field, not a toast) |
 | Capability row saving state (mirrors existing Appearance-section pattern) | "saving…" → "saved" (`.mono .stamp`, no button — auto-save on change) |
-| Empty state: agent has zero capability envelopes seeded (defensive case, see §UI Considerations) | Heading: "No capabilities configured yet." Body: "This agent cannot take any action on a customer's behalf until you enable a skill below." |
+| Empty state: agent has zero capability envelopes seeded (defensive case, see §UI Considerations) | Heading: "No capabilities configured yet." Body: "This agent cannot take any action on a customer's behalf. No transactional skill has been provisioned for it." <br>_(Copy corrected 2026-07-27 during 18-10 adversarial-review remediation, finding m7. The original body ended "until you enable a skill below", which is false: this state renders INSTEAD of the capability grid, so there is nothing below it. Copy correction only, no decision changed.)_ |
 | Destructive confirmation | Not applicable — this phase introduces no destructive action |
 
 ---
