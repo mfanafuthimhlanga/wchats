@@ -554,10 +554,11 @@ function BlastRadiusBlock({ blastRadius }: { blastRadius: BlastRadiusSignal | un
 
 // BLR-02 — D5: the object of attestation is the human-legible table the
 // envelope hash is computed over, with the checkbox bound directly beneath
-// it, never the hex string itself. D6: "Confirmation required" / "Verification
-// required" are plain `.help`-weight text, never a Chip — a chip on this
-// surface would dilute exactly the verdict signal the owner needs at the
-// moment they accept financial risk.
+// it, never the hex string itself. D6: the Confirmation and Verification cells
+// are plain `.help`-weight text present only when true, never a Chip — a chip on
+// this surface would dilute exactly the verdict signal the owner needs at the
+// moment they accept financial risk. (The cell reads "Required": the column
+// header already carries the word "Confirmation", see m4.)
 function EnvelopeAcknowledgement({
   latestRun,
   capabilityEnvelopes,
@@ -586,7 +587,10 @@ function EnvelopeAcknowledgement({
   const attestable = envelopesLoaded && hash !== null
 
   return (
-    <Zone className="ack-zone" aria-labelledby="ack-label">
+    // `as="section"` for the same reason the capability Zones carry it: on a
+    // role-less div, `aria-labelledby` has nothing to name and the name is
+    // discarded.
+    <Zone as="section" className="ack-zone" aria-labelledby="ack-label">
       <div className="section-head">
         <h3 className="label" id="ack-label">Capability envelope</h3>
         {drifted && <Chip verdict="fail">Changed since approval</Chip>}
@@ -2050,7 +2054,6 @@ const PAGE_CSS = `
   .cap-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-top: 16px; }
   @media (max-width: 900px) { .cap-grid { grid-template-columns: 1fr; } }
   .cap-head { margin-bottom: 18px; }
-  .cap-status:empty { display: none; }
   .cap-fieldset { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
   .cap-fieldset:last-child { margin-bottom: 0; }
   .cap-fieldset > legend { padding: 0; }
@@ -2120,8 +2123,13 @@ const PAGE_CSS = `
 
   .verdict-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 24px; }
   /* Approve uses aria-disabled rather than disabled so it stays reachable by
-     Tab (see M11). Without this, .btn-primary:hover would still brighten a
-     button that is announced as unavailable. */
+     Tab (see M11). Two consequences to absorb here. (1) .btn-primary:hover would
+     otherwise still brighten a button announced as unavailable. (2) WCAG 1.4.3
+     exempts text in an INACTIVE component, and .btn[disabled]'s --ink-3 on
+     --surface-2 measures 4.12:1 on that exemption; an aria-disabled button is
+     not inactive in the DOM sense, so its label is held to 4.5:1 and steps up to
+     --ink-2 (5.9:1 on the same fill). Both existing chroma-zero tokens. */
+  .verdict-bar .btn.is-disabled { color: var(--ink-2); }
   .verdict-bar .btn.is-disabled:hover { filter: none; }
   .consequence { margin-top: 16px; font-size: 16px; max-width: 62ch; }
 
