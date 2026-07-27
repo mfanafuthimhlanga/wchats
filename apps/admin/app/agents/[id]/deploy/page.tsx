@@ -643,8 +643,17 @@ function EnvelopeAcknowledgement({
               holds 320px until 1100px), which is not one of the three widths
               the parity suite asserts, so this scrolls in its own container
               rather than pushing the page. `tabIndex` keeps the scroll
-              reachable without a pointer. */}
-          <div className="ack-table-scroll" tabIndex={0}>
+              reachable without a pointer — but that put an unnamed generic in
+              the tab order immediately before the financial acknowledgement
+              checkbox, so it carries a role and a name. The name is its own
+              rather than `#ack-label` a second time: two regions both called
+              "Capability envelope" are indistinguishable in a landmark list. */}
+          <div
+            className="ack-table-scroll"
+            role="region"
+            aria-label="Capability limits"
+            tabIndex={0}
+          >
           <Ledger
             caption="The capability limits this checklist's envelope hash covers, one row per skill. Rows for skills that are not enabled are shown recessed."
             className="ack-table"
