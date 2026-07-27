@@ -115,3 +115,12 @@ Both DOC-01 and DOC-02 anchor gates pass; the full unit suite (`apps/api/tests/u
 ---
 *Phase: 19-documentation-v1-1-verification*
 *Completed: 2026-07-27*
+
+## Self-Check: PASSED
+
+- FOUND: docs/guides/tool-author-guide.md
+- FOUND: docs/guides/integration-provider-guide.md
+- FOUND: .planning/phases/19-documentation-v1-1-verification/19-01-SUMMARY.md
+- FOUND commit: e8ce72e
+- FOUND commit: c1bdb14
+- FOUND commit: dcf4fc0
