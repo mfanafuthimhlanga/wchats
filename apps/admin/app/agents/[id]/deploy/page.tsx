@@ -602,6 +602,27 @@ function EnvelopeAcknowledgement({
   // attestable either.
   const attestable = envelopesLoaded && hash !== null
 
+  // What the hash actually covers. `capability_envelopes` rows are created
+  // lazily, on a skill's FIRST successful PATCH (capability_envelopes.py:236),
+  // and canonical_envelope_hash reads `WHERE agent_id = :agent_id` with no
+  // seeding path anywhere — so on a never-configured agent the hash is computed
+  // over zero rows while the GET still synthesises all seven skills from the
+  // platform defaults. M13's "render every covered row" fix then printed seven
+  // rows under a caption claiming the hash covered them, which is the most
+  // common first-deploy path and the one place this table over-claimed.
+  //
+  // The GET reports `updated_at: null` for exactly the synthesised entries
+  // (capability_envelopes.py:137), which is what separates a stored row the
+  // hash covers from a default it does not.
+  const storedCount = capabilityEnvelopes.filter((env) => env.updated_at !== null).length
+  const unstoredCount = capabilityEnvelopes.length - storedCount
+  const hashScopeNote =
+    storedCount === 0
+      ? 'No capability limit has been configured for this agent yet, so this fingerprint covers none of the rows above. Every one of them is the platform default.'
+      : unstoredCount === 0
+        ? 'This fingerprint covers every row above.'
+        : `This fingerprint covers ${storedCount} of the ${capabilityEnvelopes.length} rows above. A row that has not been configured for this agent is a platform default and is not covered.`
+
   return (
     // `as="section"` for the same reason the capability Zones carry it: on a
     // role-less div, `aria-labelledby` has nothing to name and the name is
@@ -655,7 +676,7 @@ function EnvelopeAcknowledgement({
             tabIndex={0}
           >
           <Ledger
-            caption="The capability limits this checklist's envelope hash covers, one row per skill. Rows for skills that are not enabled are shown recessed."
+            caption="One row per capability skill. A row configured for this agent is covered by this checklist's envelope hash; a row still at its platform default is not. Rows for skills that are not enabled are shown recessed."
             className="ack-table"
           >
             <thead>
@@ -714,6 +735,11 @@ function EnvelopeAcknowledgement({
               real hash here — there is no "config unavailable" caption sitting
               above a tickable checkbox. */}
           <p className="ack-fingerprint mono">config {fingerprint}</p>
+          {/* The caption is visually hidden, so the scope claim also has to be
+              on screen: this is the count line M13 passed over, restored here
+              because it is the only place the owner learns which of the rows
+              they are being asked to attest to the hash actually pins. */}
+          <p className="help ack-scope">{hashScopeNote}</p>
           <label className="ack-checkbox">
             <input
               type="checkbox"
@@ -2062,7 +2088,11 @@ const PAGE_CSS = `
      always has a visible cause, and recessed, so it never reads as live. */
   .ack-table tr.ack-row-off th, .ack-table tr.ack-row-off td { color: var(--ink-3); }
   .ack-off-note { display: block; margin-top: 2px; }
-  .ack-fingerprint { color: var(--ink-3); font-size: 12px; margin-bottom: 14px; }
+  /* The fingerprint and the scope line are one unit — what the hash is, then
+     what it covers — so they sit tight together and the 14px gap to the
+     checkbox is carried by the second of them. */
+  .ack-fingerprint { color: var(--ink-3); font-size: 12px; margin-bottom: 4px; }
+  .ack-scope { margin-top: 0; margin-bottom: 14px; max-width: 68ch; }
   .ack-checkbox {
     display: flex; align-items: flex-start; gap: 12px; cursor: pointer;
     font-family: var(--sans); text-transform: none; letter-spacing: normal; color: var(--ink);
