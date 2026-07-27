@@ -258,7 +258,15 @@ Plans:
 2. A non-technical tester deploys a refund + Shopify-order agent end-to-end without code
 3. 100 synthetic adversarial messages → zero unauthorized state mutations escape L1–L3; 30-day synthetic audit-gap test passes (zero gaps)
 
-**Plans:** 0 — run `/gsd-plan-phase 19`
+**Plans:** 5 plans
+
+Plans:
+
+- [ ] 19-01-PLAN.md — DOC-01 tool-author guide + DOC-02 integration-provider guide under `docs/guides/`; carries the phase's five resolved open decisions *(wave 1)*
+- [ ] 19-02-PLAN.md — DOC-03 owner capability guide + the VER-01 demo tenant locked as executable data with its Actor skip-boundary proof *(wave 1)*
+- [ ] 19-03-PLAN.md — AUD-03 seeded-backdated-rows 30-day gate + DB-free per-day coverage-parity unit companion *(wave 1)*
+- [ ] 19-04-PLAN.md — VER-01 SC3 100-message adversarial harness on the shipped probe substrate + mocked-boundary unit companion *(wave 1)*
+- [ ] 19-05-PLAN.md — 19-UAT.md record, operator live-gate run/deferral, and planning-record reconciliation *(wave 2, autonomous:false)*
 
 *v1.1 roadmap added 2026-06-29 (safe parallel track). The standard new-milestone reset was deliberately NOT run — it would have cleared the paused Phase 13 directory and reset its checkpoint. Phase 13 stays paused & resumable (`/gsd-execute-phase 13 --wave 3` once the domain + Bedrock are ready). 6 phases, 43 requirements, all mapped. Out of scope: A2A/MCP (v1.2), schema-bound exfiltration + classifier firewall (v1.2), continuous alerting/audit-infra (v1.3).*
 

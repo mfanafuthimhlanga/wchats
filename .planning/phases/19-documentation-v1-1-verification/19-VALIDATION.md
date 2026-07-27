@@ -59,11 +59,25 @@ excerpted those anchors; the planner lifts them rather than re-deriving them.
 | 4 GB Windows box, no Docker (CLAUDE.md rule 9) | Every command in a guide, a UAT runbook, or a test instruction is a local process (`redis-server`, local PostgreSQL, `uvicorn`, `celery -A app.worker.celery_app worker`). Never `docker-compose`. This applies to the **published guides** as well as the tests — a guide that tells a reader to run a container is a defect. |
 | `pending_confirmations` rows are written by two paths and read by **zero** (`19-RESEARCH.md` § Critical Finding) | VER-01 SC2's happy path can non-deterministically dead-end. Whichever disposition the planner locks, the validation consequence is mandatory — see **Open-decision-dependent validation** below. |
 
-### Open-decision-dependent validation
+### Open-decision-dependent validation — RESOLVED
 
-The planner must close `19-RESEARCH.md` § Open Decisions (b) before this map is
-complete. The two dispositions imply **different** validation surfaces, and the
-plan must carry whichever one it picks:
+`19-RESEARCH.md` § Open Decisions (b) is closed. **Option 2 was chosen** and is recorded
+as OD-2 in `19-01-PLAN.md § Open Decisions Resolved`; the dependent validation surface
+is the skip-short-circuit proof, carried by plan `19-02` Task 2
+(`apps/api/tests/unit/test_ver01_demo_tenant.py`, 8 tests, task id T19-02-2).
+
+The decisive fact the planner verified against source and the research did not: a resolve
+route that honours the threat-model requirement to *re-enter the dispatcher's checks*
+would re-run `call_actor_gate` at Step 5 and receive `require_human` a second time, so
+approval would loop rather than complete. Terminating approval requires a human-approved
+bypass seam inside `_execute_transactional_tool` — materially more than a route, in a
+security-sensitive position, unverifiable here (no live control DB), and uncovered by any
+Phase 19 requirement ID. The residual gap is therefore **accepted** as threat T-19-04,
+made observable by `test_demo_place_order_envelope_does_not_engage_skip`, and written
+into `19-UAT.md` item 4 rather than omitted.
+
+The original two dispositions are retained below as the record of what was decided
+between:
 
 - **If Option 1 (build a minimal `pending_confirmations` resolve route):** that
   route is new production code in a security-sensitive position, and it inherits
@@ -108,18 +122,36 @@ PLAN.md task `<verify>` blocks and fill the Task ID / Plan / Wave columns.
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| _planner_ | _planner_ | _planner_ | DOC-01 | — | Guide states the dispatcher's enforcement order as the **eight numbered steps in source order**, and states that a tool author never modifies that order | source-anchored review | `grep` the guide for each of the 8 step names; diff against `apps/api/app/services/transactional/tools.py` | ❌ W0 (new file) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | DOC-01 | — | Guide states that `mutating` / `idempotency_required` / `requires_identity_verification` are literal values set at definition time, **never runtime-inferred** (T-14-02-02) | source-anchored review | diff against `registry.py` `TOOL_METADATA` | ❌ W0 (new file) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | DOC-02 | T-19-02 | Guide documents `get_adapter_for_skill` as the **only** credential-resolving entry point and reproduces its "MUST NOT be called from a route handler or SDK hook" constraint | source-anchored review | diff against `provider_adapter.py` docstring | ❌ W0 (new file) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | DOC-02 | T-19-02 | Guide never instructs a reader to log, print, or persist a resolved credential; `CredentialHandle`'s redacted `__repr__` is documented as load-bearing | source-anchored review | `grep` the guide for the absence of any credential-printing example | ❌ W0 (new file) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | DOC-03 | — | Guide states tighten-only is enforced **server-side before any DB write** (a 422 leaves the row untouched), not merely presented by the UI | source-anchored review | diff against `capability_service.py::validate_tighten_only` + `capability_envelopes.py` | ❌ W0 (new file) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | DOC-03 | — | Guide states the six per-skill controls and the **actual shipped platform defaults** (`enabled:False`, `5/hour`, `actor_mode:always-on`, `place_order` 100 000c / others 50 000c) | source-anchored review | diff against `PLATFORM_CAPABILITY_DEFAULTS` | ❌ W0 (new file) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | VER-01 (happy path) | T-19-01 | A non-technical tester completes refund + Shopify order end-to-end **without writing code**; every step is UI or widget | manual, `checkpoint:human-verify`, **`autonomous:false`** | scripted runbook, result transcribed into `19-UAT.md` | ❌ W0 (new runbook) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | VER-01 (happy path) | T-19-04 | The demo tenant's Actor disposition is **proven**, not assumed — either the resolve route exists, or the skip short-circuit provably engages | unit | `pytest tests/unit/<actor-disposition-test> -x` (exact node id set by the planner once OD (b) is closed) | ❌ W0 (new) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | VER-01 (adversarial) | T-19-03 | 100 synthetic adversarial messages produce **zero** unauthorized state mutations escaping L1–L3, classified against the shipped `verdict_tag` vocabulary | integration, **`autonomous:false`** | `pytest tests/integration/test_ver01_adversarial_harness.py -m integration -q -s` | ❌ W0 (new file) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | VER-01 (adversarial) | T-19-03 | Every probe message runs inside a `red_team_mode()` window, so no real provider side effect can fire | unit | `pytest tests/unit/<harness-unit-file>::test_all_probes_inside_red_team_mode -x` | ❌ W0 (new) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | AUD-03 | T-19-05 | Zero audit gaps across a synthetic 30-day window — dispatcher-invocation count equals `tool_calls_audit` row count, on **rejection branches as well as success** | integration, **`autonomous:false`** | `pytest tests/integration/test_aud03_audit_gap.py -m integration -q -s` | ❌ W0 (new file) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | AUD-03 | T-19-06 | The harness seeds backdated rows only into an **ephemeral** DB and cleans up from a `finally`, never into a DB holding real audit history | integration | same module; assert teardown in the same test | ❌ W0 (new file) | ⬜ pending |
+| T19-01-1 | 19-01 | 1 | DOC-01 | T-19-07 | Guide states the dispatcher's enforcement order as the **eight numbered steps in source order**, and states that a tool author never modifies that order | source-anchored review + automated | anchor gate greps all 8 step names, then a Python check asserts their first-occurrence line numbers are ascending; diff against `apps/api/app/services/transactional/tools.py` | ❌ W0 (new file) | ⬜ pending |
+| T19-01-1 | 19-01 | 1 | DOC-01 | T-19-07 | Guide states that `mutating` / `idempotency_required` / `requires_identity_verification` are literal values set at definition time, **never runtime-inferred** (T-14-02-02) | source-anchored review + automated | anchor gate greps the literal `never runtime-inferred from the tool name or arguments`; diff against `registry.py` `TOOL_METADATA` | ❌ W0 (new file) | ⬜ pending |
+| T19-01-2 | 19-01 | 1 | DOC-02 | T-19-02, T-19-08 | Guide documents `get_adapter_for_skill` as the **only** credential-resolving entry point and reproduces its "MUST NOT be called from a route handler or SDK hook" constraint | source-anchored review + automated | anchor gate greps the verbatim docstring sentence; diff against `provider_adapter.py` docstring | ❌ W0 (new file) | ⬜ pending |
+| T19-01-2 | 19-01 | 1 | DOC-02 | T-19-02 | Guide never instructs a reader to log, print, or persist a resolved credential; `CredentialHandle`'s redacted `__repr__` is documented as load-bearing | source-anchored review + automated | negative gate: `grep -nE 'print\(\|console\.log\|logger\.(info\|debug\|warning)\(' docs/guides/integration-provider-guide.md` returns no match | ❌ W0 (new file) | ⬜ pending |
+| T19-02-1 | 19-02 | 1 | DOC-03 | T-19-07 | Guide states tighten-only is enforced **server-side before any DB write** (a 422 leaves the row untouched), not merely presented by the UI | source-anchored review + automated | anchor gate greps `tighten-only` + `validate_tighten_only`; diff against `capability_service.py::validate_tighten_only` + `capability_envelopes.py` | ❌ W0 (new file) | ⬜ pending |
+| T19-02-1 | 19-02 | 1 | DOC-03 | T-19-07, T-19-10 | Guide states the six per-skill controls and the **actual shipped platform defaults** (`enabled:False`, `5/hour`, `actor_mode:always-on`, `place_order` 100 000c / others 50 000c) | source-anchored review + automated | anchor gate greps `5/hour`, `always-on`, `R1 000.00 (100 000 cents)`, `R500.00 (50 000 cents)`; diff against `PLATFORM_CAPABILITY_DEFAULTS` | ❌ W0 (new file) | ⬜ pending |
+| T19-05-2 | 19-05 | 2 | VER-01 (happy path) | T-19-17 | A non-technical tester completes refund + Shopify order end-to-end **without writing code**; every step is UI or widget | manual, `checkpoint:human-verify`, **`autonomous:false`** | scripted runbook (`19-UAT.md` item 1), result transcribed into `19-UAT.md` | ❌ W0 (new runbook) | ⬜ pending |
+| T19-02-2 | 19-02 | 1 | VER-01 (happy path) | T-19-01, T-19-04 | The demo tenant's Actor disposition is **proven**, not assumed — OD-2 resolved to Option 2, so the skip short-circuit is proven to engage on the refund leg and proven NOT to engage on the `place_order` leg | unit | `pytest tests/unit/test_ver01_demo_tenant.py::test_actor_skip_engages_for_demo_refund_envelope -x` and `::test_demo_place_order_envelope_does_not_engage_skip -x` | ❌ W0 (new) | ⬜ pending |
+| T19-04-1 | 19-04 | 1 | VER-01 (adversarial) | T-19-03, T-19-13 | 100 synthetic adversarial messages produce **zero** unauthorized state mutations escaping L1–L3, classified against the shipped `verdict_tag` vocabulary | integration, **`autonomous:false`** (run by operator in T19-05-2) | `pytest tests/integration/test_ver01_adversarial_harness.py -m integration -q -s` | ❌ W0 (new file) | ⬜ pending |
+| T19-04-2 | 19-04 | 1 | VER-01 (adversarial) | T-19-03 | Every probe message runs inside a `red_team_mode()` window, so no real provider side effect can fire — asserted as call **order**, not call count | unit | `pytest tests/unit/test_ver01_harness_probes.py::test_all_probes_inside_red_team_mode -x` | ❌ W0 (new) | ⬜ pending |
+| T19-03-1 | 19-03 | 1 | AUD-03 | T-19-05, T-19-11 | Zero audit gaps across a synthetic 30-day window — dispatcher-invocation count equals `tool_calls_audit` row count, on **rejection branches as well as success** | integration, **`autonomous:false`** (run by operator in T19-05-2) | `pytest tests/integration/test_aud03_audit_gap.py -m integration -q -s` | ❌ W0 (new file) | ⬜ pending |
+| T19-03-1 | 19-03 | 1 | AUD-03 | T-19-06 | The harness seeds backdated rows only into an **ephemeral** DB and cleans up from a `finally`, never into a DB holding real audit history | integration + automated presence gate | same module; presence gate asserts the literals `pg_terminate_backend` and `finally` and forbids `freezegun` / `time_machine` | ❌ W0 (new file) | ⬜ pending |
+| T19-03-2 | 19-03 | 1 | AUD-03 | T-19-11 | The per-day parity arithmetic — UTC bucketing, inclusive day-0..day-29 window, midnight adjacency, order independence, zero-day presence, vacuous-run guard — is proven without a database | unit | `pytest tests/unit/test_audit_gap_arithmetic.py -q` (11 tests) | ❌ W0 (new) | ⬜ pending |
+| T19-04-2 | 19-04 | 1 | VER-01 (adversarial) | T-19-13, T-19-15 | A short, empty, or short-circuited run cannot report clean: `attempted` is counted separately from findings, `provider_not_configured` marks the run invalid, and every mutating corpus entry has a distinct `idempotency_key` | unit | `pytest tests/unit/test_ver01_harness_probes.py -q` (12 tests) | ❌ W0 (new) | ⬜ pending |
+| T19-05-1 | 19-05 | 2 | VER-01, AUD-03 | T-19-16 | Every live gate has a row in `19-UAT.md` **before** any gate is run, so none can be closed by omission; no `[pending]` disposition survives phase close | automated presence gate | `19-UAT.md` has 4 `### ` items and 4 `result:` fields; closeout gate fails while any `[pending]` remains | ❌ W0 (new file) | ⬜ pending |
+
+**Task ID key:** `T19-<plan>-<task number within plan>`.
+
+**Sampling-continuity result (checked, not assumed).** Task order across the phase is
+T19-01-1 (automated anchor gate) → T19-01-2 (automated anchor gate) → T19-02-1
+(automated anchor gate) → T19-02-2 (`pytest`) → T19-03-1 (`pytest`, collect-and-skip) →
+T19-03-2 (`pytest`) → T19-04-1 (`pytest`, collect-and-skip) → T19-04-2 (`pytest`) →
+T19-05-1 (automated presence gate) → T19-05-2 (**checkpoint, no automated verify**) →
+T19-05-3 (`pytest` full suite + closeout gate). Every task except the single human
+checkpoint carries an automated `<verify>`, so the longest run without one is 1 — well
+inside the limit of 3. The three DOC tasks are **not** consecutive: T19-02-1 (DOC-03) is
+immediately followed by T19-02-2, a `pytest` task in the same plan. Each `autonomous:false`
+integration gate has a mocked-boundary unit companion in the same plan that runs in the
+normal suite (T19-03-2 for AUD-03, T19-04-2 for VER-01), matching 18-06's
+`test_red_team_rtx_runners.py` pairing convention.
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -141,13 +173,19 @@ unit companion alongside the gated `test_red_team_rtx.py`).
       (extends, does not duplicate, `docs/runbooks/integration-credentials.md`)
 - [ ] `docs/guides/owner-capability-guide.md` — **new file**, DOC-03
 - [ ] `apps/api/tests/integration/test_ver01_adversarial_harness.py` — **new file**,
-      VER-01 SC3. `INTEGRATION_TESTS_ENABLED`-gated. Built on the shipped
-      `red_team_probe.py` substrate — extend `CLEAN_TENANT_SPEC` and the RTX
-      runners, do **not** author a second parallel fixture.
-- [ ] `apps/api/tests/integration/test_aud03_audit_gap.py` — **new file**, AUD-03.
-      Ephemeral-DB fixture pattern copied from `tests/integration/test_red_team_rtx.py`.
+      VER-01 SC3, plan `19-04` Task 1. `INTEGRATION_TESTS_ENABLED`-gated. Built on the
+      shipped `red_team_probe.py` substrate — reuse `CLEAN_TENANT_ENVELOPES` /
+      `CLEAN_TENANT_SPEC` and the RTX runners' idioms, do **not** author a second
+      parallel fixture. Per plan OD-5 it neither depends on nor closes RTX-04
+      (`test_clean_tenant_zero_high_severity` does not exist; 18-11 is unexecuted).
+- [ ] `apps/api/tests/integration/test_aud03_audit_gap.py` — **new file**, AUD-03,
+      plan `19-03` Task 1. Ephemeral-DB fixture pattern copied from
+      `tests/integration/test_red_team_rtx.py`; carries the pure `compute_audit_gap`
+      helper at module level so the arithmetic is provable without a database.
 - [ ] A **unit companion module** for each of the two integration harnesses, so
-      the phase is not three consecutive unverifiable tasks (see continuity check)
+      the phase is not three consecutive unverifiable tasks (see continuity check):
+      `apps/api/tests/unit/test_audit_gap_arithmetic.py` (plan `19-03` Task 2, 11 tests)
+      and `apps/api/tests/unit/test_ver01_harness_probes.py` (plan `19-04` Task 2, 12 tests)
 - [ ] `.planning/phases/19-documentation-v1-1-verification/19-UAT.md` — **new file**,
       VER-01 SC2 human-checkpoint transcript + the two deferral records, following
       the `16-UAT.md` / `17-UAT.md` house format
@@ -159,7 +197,17 @@ unit companion alongside the gated `test_red_team_rtx.py`).
 own right.** SC2 is unprovable without stating which skills are enabled, which
 envelope limits are set, the identity-verification posture, and the provider
 posture — exactly as RTX-04's `CLEAN_TENANT_SPEC` had to be named as a task
-rather than assumed. The planner must name it as a task.
+rather than assumed.
+
+- [ ] `VER01_DEMO_TENANT_ENVELOPES` / `VER01_DEMO_TENANT_SPEC` in
+      `apps/api/tests/unit/test_ver01_demo_tenant.py` — **named as plan `19-03`'s
+      sibling task, plan `19-02` Task 2 (task id T19-02-2).** `issue_refund` enabled at
+      a 499-cent ceiling (the largest value at which the Actor skip engages, since
+      `ACTOR_SKIP_MAX_AMOUNT_CENTS` is 500 and the comparison is strictly less-than),
+      `place_order` enabled at 20 000 cents (deliberately does **not** engage the skip —
+      T-19-04 made observable), the other four mutating skills disabled.
+- [ ] `docs/guides/owner-capability-guide.md` is the **only** material handed to the
+      SC2 tester; `19-UAT.md` item 1's runbook states that explicitly.
 
 ---
 
