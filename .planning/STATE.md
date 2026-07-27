@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — v1.1 Phases 18–19 and Phase 13 still outstanding
-stopped_at: Planned Phase 19 (5 plans, 2 waves) — ready to execute
-last_updated: "2026-07-27T00:51:30.679Z"
+stopped_at: Executed 19-01-PLAN.md (DOC-01/DOC-02 guides)
+last_updated: "2026-07-27T22:11:09.717Z"
 progress:
   total_phases: 2
   completed_phases: 2
@@ -28,6 +28,8 @@ Three findings from this planning pass that matter beyond Phase 19:
 - **STATE.md was stale about 18-10.** This file previously implied 18-10 was unexecuted; `18-10-SUMMARY.md` and `apps/admin/app/agents/[id]/deploy/page.tsx` are both committed (`b6cc8e7`). DOC-03 therefore has no blocking dependency. **18-11 genuinely remains unexecuted** — `test_clean_tenant_zero_high_severity` does not exist, and Phase 19 neither depends on nor closes RTX-04 (18-11 stays its owner). Plan 19-05 Task 3 reconciles this file.
 
 Phase 19's three proofs (VER-01 SC2 human deploy, VER-01 SC3 100-message run, AUD-03 30-day window) are all `autonomous:false` operator gates and may be deferred — the plans make deferral explicit, dated and rationale-bearing in `19-UAT.md`, and the `verification: backstop` truths abstain to `human_needed` rather than passing silently. Worst case the phase seals with DOC-01/02/03 proven and VER-01/AUD-03 visibly deferred.
+
+**▶ 19-01 EXECUTED 2026-07-27 — DOC-01/DOC-02 developer guides, 2/2 tasks, wave 1.** `docs/guides/tool-author-guide.md` (196 lines): narrates `_execute_transactional_tool`'s 8-step enforcement order in the exact source-banner order and step names (`IN-03 agent_id precondition` → `Capability check` → `IDV gate` → `Reserve idempotency` → `Rate + constraint checks` → `Actor seam` → `Adapter execute` → `Audit row + finalize`), states the Step 2.5-before-Step-3 IDV ordering that protects an unverified call's idempotency slot (T-17-21), quotes `registry.py`'s own "never runtime-inferred from the tool name or arguments" sentence (T-14-02-02) verbatim, documents the T-14-02-01 typed-scalar schema rule, and states plainly that `confirm_action`'s `pending_confirmations` rows have no resolver anywhere in the codebase today. `docs/guides/integration-provider-guide.md` (206 lines): delta-scoped extension of `docs/runbooks/integration-credentials.md` — names all six `ProviderAdapter` abstract methods, quotes `get_adapter_for_skill`'s docstring constraint verbatim ("MUST NOT be imported or called from any FastAPI route handler or SDK hook"), documents the per-tenant HKDF/`CredentialHandle` runtime resolution the runbook doesn't cover, and explains the red-team-mode `ContextVar` short-circuit (default `False`, sole sanctioned setter `red_team_probe.red_team_mode()`) with no example that prints, logs, or persists a resolved credential; also corrects the runbook's Phase-18 forward-reference — the shipped capability admin UI configures envelopes, not credentials, so the credential-management stop-sign still stands. Both guides verified sentence-by-sentence against `tools.py`/`registry.py`/`schemas.py`/`provider_adapter.py`/`credential_service.py`/`red_team_probe.py` before writing; no plan-vs-source discrepancy found. Both DOC-01/DOC-02 automated anchor gates pass; full unit suite unchanged at 1103 passed / 8 skipped / 0 failed (pure-prose plan, touches no Python); `apps/api/pyproject.toml` byte-identical. Commits `e8ce72e`, `c1bdb14`. See `19-01-SUMMARY.md`.
 
 **▶ SESSION 2026-07-26 — repo + suite housekeeping (no phase work).**
 
@@ -98,7 +100,7 @@ Two findings from this planning pass that matter beyond Phase 18:
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** Phase 18 — Blast-radius gate, capability admin UI, transaction red-team & injection-defense extensions
+**Current focus:** Phase 19 — Documentation + v1.1 verification
 **Previous:** M3 (Hybrid Retrieval) ✓ Complete — demo_m3.sh passed, notebook 4 DataFrames verified, RET-01–RET-08 satisfied (2026-05-16)
 
 ## Milestone Progress
@@ -417,11 +419,13 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: [18-08] PATCH on an absent envelope row compares against the platform default as baseline, not an empty dict — enforces never-loosen-beyond-platform-defaults on first write, not only on update
 - [Phase ?]: [18-09] run_content_injection_agent seeds a throwaway documents row alongside the poisoned chunk (chunks.document_id NOT NULL FK) and removes it explicitly in remove_poisoned_chunk
 - [Phase ?]: [18-09] Both probe_fn builders are already synchronous Callable[[str], str] — run_content_injection_agent calls probe_fn directly with no asyncio.run wrapper
+- [Phase ?]: [19-01] Both v1.1 guides verified sentence-by-sentence against tools.py/registry.py/schemas.py/provider_adapter.py/credential_service.py before writing; no plan-vs-source discrepancy found
+- [Phase ?]: [19-01] DOC-02 corrects the runbook's Phase-18 admin-UI note: the shipped capability admin UI configures envelopes, not credentials, so the credential-management stop-sign still stands
 
 ## Session
 
-**Last session:** 2026-07-27T00:50:22.591Z
-**Stopped at:** Completed 18-09-PLAN.md
+**Last session:** 2026-07-27T22:11:09.661Z
+**Stopped at:** Executed 19-01-PLAN.md (DOC-01/DOC-02 guides)
 
 Earlier the same session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 

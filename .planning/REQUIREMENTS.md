@@ -363,8 +363,8 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 
 ### Documentation + Verification
 
-- [ ] **DOC-01**: Tool-author guide
-- [ ] **DOC-02**: Integration-provider guide
+- [x] **DOC-01**: Tool-author guide
+- [x] **DOC-02**: Integration-provider guide
 - [ ] **DOC-03**: Owner-facing capability-configuration guide
 - [ ] **VER-01**: v1.1 success-criteria gate — a non-technical tester deploys an agent that issues refunds up to a configured limit and places Shopify orders end-to-end without code; 100 synthetic adversarial messages produce zero unauthorized state mutations escaping L1–L3
 
