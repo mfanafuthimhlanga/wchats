@@ -23,8 +23,12 @@ Patch targets — note the ASYMMETRY versus the M7 runner tests:
       itself, so they patch at the usual red_team_service.X location.
     - app.worker.tasks.runtime.red_team.{_build_probe_fn,
       _build_transactional_probe_fn, build_tool_server, get_sync_db,
-      fernet_decrypt, psycopg2.connect} plus all six runner names — for the
-      run_red_team wiring proof (test_run_red_team_calls_all_six_runners).
+      fernet_decrypt, psycopg2.connect} plus all seven runner names — for the
+      run_red_team wiring proof (test_run_red_team_calls_all_six_runners,
+      updated by plan 18-09 to seven runners — see that plan's SUMMARY.md
+      Deviations section — after SEC-03/OD-7 split
+      run_prompt_injection_agent into run_conversation_injection_agent and
+      run_content_injection_agent).
 
 Covers:
     1.  test_rtx_runner_signatures_match_shipped_contract
@@ -39,7 +43,7 @@ Covers:
     10. test_identity_bypass_restores_verified_session_context_var
     11. test_confused_deputy_returns_empty_list_on_sdk_failure
     12. test_confused_deputy_system_prompt_instructs_block_is_not_a_finding
-    13. test_run_red_team_calls_all_six_runners
+    13. test_run_red_team_calls_all_six_runners (now asserts seven runners)
     14. test_run_red_team_introduces_no_concurrency
 """
 
@@ -426,11 +430,13 @@ def test_run_red_team_calls_all_six_runners():
 
     call_order: list[str] = []
     received_probe_fns: dict[str, object] = {}
+    received_kwargs: dict[str, dict] = {}
 
     def _make_runner(name):
-        def _runner(probe_fn, max_turns, attack_sequences):
+        def _runner(probe_fn, max_turns, attack_sequences, **kwargs):
             call_order.append(name)
             received_probe_fns[name] = probe_fn
+            received_kwargs[name] = kwargs
             return []
 
         return _runner
@@ -458,8 +464,12 @@ def test_run_red_team_calls_all_six_runners():
             return_value=MagicMock(),
         ),
         patch(
-            "app.worker.tasks.runtime.red_team.run_prompt_injection_agent",
-            side_effect=_make_runner("prompt_injection"),
+            "app.worker.tasks.runtime.red_team.run_conversation_injection_agent",
+            side_effect=_make_runner("conversation_injection"),
+        ),
+        patch(
+            "app.worker.tasks.runtime.red_team.run_content_injection_agent",
+            side_effect=_make_runner("content_injection"),
         ),
         patch(
             "app.worker.tasks.runtime.red_team.run_data_leakage_agent",
@@ -486,15 +496,16 @@ def test_run_red_team_calls_all_six_runners():
 
     assert "run_id" in result, f"run_id missing from result: {result}"
     assert call_order == [
-        "prompt_injection",
+        "conversation_injection",
+        "content_injection",
         "data_leakage",
         "hallucination",
         "confused_deputy",
         "value_bound_evasion",
         "identity_bypass",
-    ], "all six runners must be called exactly once, strictly sequentially, in this order"
+    ], "all seven runners must be called exactly once, strictly sequentially, in this order"
 
-    for name in ("prompt_injection", "data_leakage", "hallucination"):
+    for name in ("conversation_injection", "content_injection", "data_leakage", "hallucination"):
         assert received_probe_fns[name] is bare_probe_fn, (
             f"{name} must receive the bare (M7) probe_fn, not the transactional one"
         )
@@ -504,6 +515,11 @@ def test_run_red_team_calls_all_six_runners():
             "seam this plan owns: RTX-01/02/03 must actually be wired to the "
             "real dispatcher, not merely defined."
         )
+
+    assert received_kwargs["content_injection"].get("conn_str") == "postgresql://test:test@localhost/tenant", (
+        "run_content_injection_agent must receive conn_str as a keyword argument "
+        "(SEC-03 / OD-7) — a function argument, never a Celery task arg (CLAUDE.md rule 4)"
+    )
 
 
 # ---------------------------------------------------------------------------
