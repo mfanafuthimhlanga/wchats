@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — v1.1 Phases 18–19 and Phase 13 still outstanding
-stopped_at: Completed 18-08-PLAN.md
-last_updated: "2026-07-27T00:12:17.463Z"
+stopped_at: Completed 18-09-PLAN.md
+last_updated: "2026-07-27T00:51:30.679Z"
 progress:
   total_phases: 2
   completed_phases: 2
@@ -45,7 +45,9 @@ Two findings from this planning pass that matter beyond Phase 18:
 
 **▶ 18-08 EXECUTED 2026-07-27 — CAP-03 capability-envelope read + tighten-only PATCH routes, 3/3 tasks, wave 3.** Closes the cross-wave seam 18-04 shipped caller-free: `validate_tighten_only` now has its first and only caller. New `app/schemas/capability.py` (`CapabilityEnvelopeUpdate` all-optional PATCH body, `extra="forbid"`, shape-only field validators reusing `_parse_rate_limit`/`ACTOR_MODE_RE`; `CapabilityEnvelopeResponse`/`CapabilityEnvelopeListResponse` carrying `platform_default`+`mutating` so the UI never needs a second request). New `app/api/v1/capability_envelopes.py`: `_get_owned_agent` IDOR guard copied verbatim from `prompt_versions.py` (404 on both branches, identical detail string, first statement in both routes); `GET` returns a stable 7-entry list (one per `PLATFORM_CAPABILITY_DEFAULTS` key), synthesising an `enabled=False`/`updated_at=None` entry for any skill with no stored row; `PATCH` is the write gate — unknown skill 404, first-write baseline is the platform default (not an empty dict, enforcing "never loosen beyond platform defaults" on creation too), empty body is a 200 no-op that never touches `updated_at`, `validate_tighten_only` runs before any `db.add`/attribute-assignment/`db.commit` and converts a non-`None` reason into a 422 with the transaction untouched. Registered in `app/main.py` immediately after `prompt_versions.router`. New `tests/unit/test_capability_routes.py`: 18 route-level tests through `ASGITransport(app=app)` — every loosening direction on all six comparable fields proven rejected with no `db.commit` awaited (load-bearing: a route that wrote then raised would still return 422), tightening proven to write, a first write proven compared against the platform ceiling in both directions, and the foreign-agent 404 test deliberately sends a loosening body so a handler checking the body before ownership would fail it. Full unit suite 1074→1092 passed, 8 skipped, 0 failed; `apps/api/pyproject.toml` unchanged (no new dependency). Commits `5decd3d`, `d926ad1`, `61a9e4d`. See `18-08-SUMMARY.md`.
 
-**▶ NEXT: `/gsd-execute-phase 18`** to continue with the remaining wave-3+/4/5 plans (18-09..18-11 — 18-09 is SEC-03's remaining wave-3 work, 18-10 is the `autonomous:false` admin UI wave, 18-11 is the `autonomous:false` live-gate wave). Phase 19 (DOC/VER) still has 0 plans and depends on 18. Phase 13 stays paused at 7/11 on a real AWS account. **No v1.2 migration has been applied to a live Neon DB** (tenant 0009–0012, control 0017–0018) — that plus live Langfuse trace visibility, real Ragas numbers, and an end-to-end `POST /approve-deployment` → 422 are the deferred `/gsd-verify-work 21` gate. Phase 18's own control migration 0019 inherits the same constraint (its live roundtrip is `autonomous:false`), and BLR-01's live end-to-end signal against a real control DB is deferred alongside it to plan 18-11.
+**▶ 18-09 EXECUTED 2026-07-27 — SEC-03 conversation/content-injection red-team split, 3/3 tasks, wave 3.** Closes SEC-03's remaining wave-3 work (OD-7): `red_team_service.py`'s shipped `run_prompt_injection_agent` is renamed to `run_conversation_injection_agent` (behaviour unchanged) with a backward-compatible module-level alias so no importer breaks, and a new `run_content_injection_agent` seeds a canary-bearing poisoned chunk directly into the tenant `chunks` table with a fixed zero `vector(1024)` (no embedding call — `EMBEDDING_PROVIDER` defaults to bedrock with no AWS access here), deliberately bypassing `sanitize_chunk_text` to simulate an admit-time sanitiser gap, probes it as an ordinary customer question via the native tsvector BM25 half of hybrid retrieval, and decides the finding by canary substring test — always cleaning up from a `finally` even when the probe raises. `INJECTION_ATTACK_VECTORS` is the shared source of truth for the two new `attack_vector` strings, which become separate `red_team_strategies` rows through the existing free-TEXT + UNIQUE + `ON CONFLICT DO NOTHING` upsert with zero migration. `worker/tasks/runtime/red_team.py` Step 5 now runs **seven** runners sequentially (both injection variants receive the conversational probe; only content_injection also receives `conn_str` as a function argument, never a task arg per CLAUDE.md rule 4). New `test_conversation_content_split` (module-scope, node id pinned by 18-VALIDATION.md) plus `TestInjectionSplit` (10 cases) in `test_red_team_service.py`. Three pre-existing test files (`test_red_team_rtx_runners.py`, `test_red_team_task.py`, `test_redteam_findings.py`, `test_redteam_programme.py`) needed a Rule-1 fix: they all patched the now-removed `run_prompt_injection_agent` import name on the worker task module — updated to patch `run_conversation_injection_agent` + `run_content_injection_agent`. Full unit suite 1092→1103 passed, 8 skipped, 0 failed; `apps/api/pyproject.toml` unchanged. Commits `80c5cac`, `fe0577c`, `b8ae3fc`, `be44085`, `7dc8eb5`. See `18-09-SUMMARY.md`.
+
+**▶ NEXT: `/gsd-execute-phase 18`** to continue with the remaining wave-4/5 plans (18-10, 18-11 — both `autonomous:false`: 18-10 is the admin UI wave, 18-11 is the live-gate wave). Phase 19 (DOC/VER) still has 0 plans and depends on 18. Phase 13 stays paused at 7/11 on a real AWS account. **No v1.2 migration has been applied to a live Neon DB** (tenant 0009–0012, control 0017–0018) — that plus live Langfuse trace visibility, real Ragas numbers, and an end-to-end `POST /approve-deployment` → 422 are the deferred `/gsd-verify-work 21` gate. Phase 18's own control migration 0019 inherits the same constraint (its live roundtrip is `autonomous:false`), and BLR-01's live end-to-end signal against a real control DB is deferred alongside it to plan 18-11.
 
 **Security artifact status (corrected 2026-07-26 — the previous text below wrongly claimed 14/15/16 had none):** Phases 14, 15, 16, 17 and 21 each have a `SECURITY.md`. Phase 20 has none (pure frontend re-skin). Phase 13 has neither SECURITY nor VERIFICATION (paused mid-execution).
 
@@ -251,6 +253,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Phase 18 P06 | ~40min | 4 tasks | 7 files |
 | Phase 18 P07 | ~25min | 3 tasks | 6 files |
 | Phase 18 P08 | ~15min | 3 tasks | 4 files |
+| Phase 18 P09 | ~35min | 3 tasks | 7 files |
 
 ## Notes
 
@@ -402,11 +405,13 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: [18-07] The checklist task never stamps envelope_acknowledged_at — only approve_deployment does, since acknowledgement is the owner's act at approve time
 - [Phase ?]: [18-08] Tighten-only direction validation lives entirely in capability_service, never in the Pydantic schema — CapabilityEnvelopeUpdate validates shape only (rate_limit parses, max_amount_cents non-negative int or null, actor_mode in-domain)
 - [Phase ?]: [18-08] PATCH on an absent envelope row compares against the platform default as baseline, not an empty dict — enforces never-loosen-beyond-platform-defaults on first write, not only on update
+- [Phase ?]: [18-09] run_content_injection_agent seeds a throwaway documents row alongside the poisoned chunk (chunks.document_id NOT NULL FK) and removes it explicitly in remove_poisoned_chunk
+- [Phase ?]: [18-09] Both probe_fn builders are already synchronous Callable[[str], str] — run_content_injection_agent calls probe_fn directly with no asyncio.run wrapper
 
 ## Session
 
-**Last session:** 2026-07-27T00:12:17.407Z
-**Stopped at:** Completed 18-08-PLAN.md
+**Last session:** 2026-07-27T00:50:22.591Z
+**Stopped at:** Completed 18-09-PLAN.md
 
 Earlier the same session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 
