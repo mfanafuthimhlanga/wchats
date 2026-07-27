@@ -790,11 +790,20 @@ function CapabilityZone({
     (u) => RATE_UNIT_SECS[u] <= currentSecs && (maxForUnit(u) ?? 1) >= 1,
   )
 
-  const [unit, setUnit] = useState<RateUnit>(currentUnit)
+  // `''` is a real state, not a placeholder for `hour`: an envelope with no rate
+  // limit yet holds no window, and a select pre-showing "hour" displays a value
+  // the system does not hold while the caption says otherwise.
+  const [unit, setUnit] = useState<RateUnit | ''>(parsedRate ? currentUnit : '')
   const [rateInput, setRateInput] = useState<string>(parsedRate ? String(parsedRate.calls) : '')
   const [maxAmountInput, setMaxAmountInput] = useState<string>(
     currentMaxCents !== null ? String(currentMaxCents / 100) : '',
   )
+  // Neither numeric field writes on focus loss. Both stage the change here and
+  // wait for an explicit confirmation naming the old and the new value.
+  const [pendingRate, setPendingRate] = useState<{ calls: number; unit: RateUnit } | null>(null)
+  const [pendingMaxCents, setPendingMaxCents] = useState<number | null>(null)
+  const [rateNote, setRateNote] = useState<string | null>(null)
+  const [maxNote, setMaxNote] = useState<string | null>(null)
 
   // This Zone used to be keyed on `${skill}:${updated_at}`, which remounted it
   // after every successful PATCH purely to reset these three drafts — and
@@ -808,67 +817,129 @@ function CapabilityZone({
     // keystroke and clobber the draft being typed.
     const parsed = parseRateLimit(envelope.rate_limit)
     setUnit(
-      (RATE_UNITS.find((u) => RATE_UNIT_SECS[u] === parsed?.windowSecs) as RateUnit | undefined) ?? 'hour',
+      parsed
+        ? ((RATE_UNITS.find((u) => RATE_UNIT_SECS[u] === parsed.windowSecs) as RateUnit | undefined) ?? 'hour')
+        : '',
     )
     setRateInput(parsed ? String(parsed.calls) : '')
+    setPendingRate(null)
+    setRateNote(null)
   }, [envelope.rate_limit])
 
   useEffect(() => {
     setMaxAmountInput(currentMaxCents !== null ? String(currentMaxCents / 100) : '')
+    setPendingMaxCents(null)
+    setMaxNote(null)
   }, [currentMaxCents])
 
+  const rateCap = unit === '' ? undefined : maxForUnit(unit)
+
+  // The draft as an integer call count plus a chosen window, or null while it
+  // is not yet a rate the server could hold.
+  const draftRateCalls = Number(rateInput.trim())
+  const draftRate =
+    unit !== '' && rateInput.trim() !== '' && Number.isInteger(draftRateCalls)
+      ? { calls: draftRateCalls, unit }
+      : null
+  const rateDirty = draftRate !== null && `${draftRate.calls}/${draftRate.unit}` !== envelope.rate_limit
+
+  const draftMaxCents = (() => {
+    const trimmed = maxAmountInput.trim()
+    if (trimmed === '') return null
+    const num = Number(trimmed)
+    if (!Number.isFinite(num) || num < 0) return null
+    return Math.round(num * 100)
+  })()
+  const maxDirty = draftMaxCents !== null && draftMaxCents !== currentMaxCents
+
+  // No mid-typing clamp. Clamping on every keystroke meant a keystroke landed on
+  // top of an already-clamped value and was re-clamped: against a R500 ceiling,
+  // typing "600" passed through 6, then 500, then 5000, then 500 again. The
+  // ceiling is checked once, at commit.
   const handleRateNumberChange = (raw: string) => {
-    const cap = maxForUnit(unit)
-    const num = Number(raw)
-    if (cap !== undefined && Number.isFinite(num) && num > cap) {
-      setRateInput(String(cap))
-    } else {
-      setRateInput(raw)
-    }
-  }
-
-  const commitRate = () => {
-    const num = Number(rateInput)
-    if (!Number.isFinite(num) || num <= 0) return
-    const nextRate = `${num}/${unit}`
-    if (nextRate !== envelope.rate_limit) onSave(envelope.skill, { rate_limit: nextRate })
-  }
-
-  const handleUnitChange = (newUnit: RateUnit) => {
-    const cap = maxForUnit(newUnit)
-    const currentNum = Number(rateInput)
-    const nextNum = cap !== undefined ? Math.min(Number.isFinite(currentNum) ? currentNum : cap, cap) : currentNum
-    // Hard floor, independent of the option filter above: no code path in this
-    // component may emit a non-positive rate, because a zero written here
-    // cannot be raised again from this screen.
-    if (!Number.isFinite(nextNum) || nextNum < 1) return
-    setUnit(newUnit)
-    setRateInput(String(nextNum))
-    const nextRate = `${nextNum}/${newUnit}`
-    if (nextRate !== envelope.rate_limit) onSave(envelope.skill, { rate_limit: nextRate })
+    setRateInput(raw)
+    setPendingRate(null)
+    setRateNote(null)
   }
 
   const handleMaxAmountChange = (raw: string) => {
-    if (currentMaxCents === null) {
-      setMaxAmountInput(raw)
-      return
-    }
-    const capRand = currentMaxCents / 100
-    const num = Number(raw)
-    if (Number.isFinite(num) && num > capRand) {
-      setMaxAmountInput(String(capRand))
-    } else {
-      setMaxAmountInput(raw)
-    }
+    setMaxAmountInput(raw)
+    setPendingMaxCents(null)
+    setMaxNote(null)
   }
 
-  const commitMaxAmount = () => {
-    const num = Number(maxAmountInput)
-    if (!Number.isFinite(num) || num < 0) return
-    const nextCents = Math.round(num * 100)
-    if (nextCents !== currentMaxCents) {
-      onSave(envelope.skill, { constraints: { ...envelope.constraints, max_amount_cents: nextCents } })
+  // A window change IS a discrete action, so the draft count is re-fitted to the
+  // new window immediately and shown before anything is written. Nothing is
+  // saved here: this used to PATCH on the select's own change event, which is
+  // how one click could write `0/minute`.
+  const handleUnitChange = (newUnit: RateUnit) => {
+    const cap = maxCallsForUnit(parsedRate, newUnit)
+    const typed = Number(rateInput.trim())
+    const fitted = cap !== undefined && Number.isFinite(typed) ? Math.min(typed, cap) : typed
+    setUnit(newUnit)
+    if (Number.isFinite(fitted) && fitted >= 1) setRateInput(String(fitted))
+    setPendingRate(null)
+    setRateNote(null)
+  }
+
+  const requestRate = () => {
+    if (draftRate === null) return
+    // Hard floor, independent of the option filter above: no code path in this
+    // component may stage a non-positive rate, because a zero written here
+    // cannot be raised again from this screen.
+    if (draftRate.calls < 1) {
+      setRateInput(parsedRate ? String(parsedRate.calls) : '')
+      setPendingRate(null)
+      setRateNote('A rate limit has to allow at least one call.')
+      return
     }
+    if (rateCap !== undefined && draftRate.calls > rateCap) {
+      setRateInput(parsedRate ? String(parsedRate.calls) : '')
+      setUnit(parsedRate ? currentUnit : '')
+      setPendingRate(null)
+      setRateNote('That rate allows more calls than the current limit. Nothing was changed.')
+      return
+    }
+    if (`${draftRate.calls}/${draftRate.unit}` === envelope.rate_limit) return
+    setRateNote(null)
+    setPendingRate({ calls: draftRate.calls, unit: draftRate.unit })
+  }
+
+  const confirmRate = () => {
+    if (pendingRate === null) return
+    const next = `${pendingRate.calls}/${pendingRate.unit}`
+    setPendingRate(null)
+    onSave(envelope.skill, { rate_limit: next })
+  }
+
+  const cancelRate = () => {
+    setPendingRate(null)
+    setUnit(parsedRate ? currentUnit : '')
+    setRateInput(parsedRate ? String(parsedRate.calls) : '')
+  }
+
+  const requestMaxAmount = () => {
+    if (draftMaxCents === null || draftMaxCents === currentMaxCents) return
+    if (currentMaxCents !== null && draftMaxCents > currentMaxCents) {
+      setMaxAmountInput(String(currentMaxCents / 100))
+      setPendingMaxCents(null)
+      setMaxNote('That amount is higher than the current ceiling. Nothing was changed.')
+      return
+    }
+    setMaxNote(null)
+    setPendingMaxCents(draftMaxCents)
+  }
+
+  const confirmMaxAmount = () => {
+    if (pendingMaxCents === null) return
+    const next = pendingMaxCents
+    setPendingMaxCents(null)
+    onSave(envelope.skill, { constraints: { ...envelope.constraints, max_amount_cents: next } })
+  }
+
+  const cancelMaxAmount = () => {
+    setPendingMaxCents(null)
+    setMaxAmountInput(currentMaxCents !== null ? String(currentMaxCents / 100) : '')
   }
 
   return (
@@ -921,12 +992,17 @@ function CapabilityZone({
             id={`${envelope.skill}-rate-n`}
             type="number"
             min={1}
-            max={maxForUnit(unit)}
+            max={rateCap}
             value={rateInput}
             disabled={isSaving}
             aria-label={`Rate limit calls for ${skillLabel}`}
             onChange={(e) => handleRateNumberChange(e.target.value)}
-            onBlur={commitRate}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                requestRate()
+              }
+            }}
           />
           {allowedUnits.length === 1 ? (
             // One reachable window means there is no choice to present. A
@@ -939,6 +1015,11 @@ function CapabilityZone({
               aria-label={`Rate limit window for ${skillLabel}`}
               onChange={(e) => handleUnitChange(e.target.value as RateUnit)}
             >
+              {parsedRate === null && (
+                <option value="" disabled>
+                  window
+                </option>
+              )}
               {allowedUnits.map((u) => (
                 <option key={u} value={u}>{u}</option>
               ))}
@@ -948,6 +1029,29 @@ function CapabilityZone({
         <p className="help cap-caption">
           {parsedRate !== null ? `Currently ${parsedRate.calls} per ${currentUnit}.` : 'No rate limit set.'}
         </p>
+        {rateDirty && pendingRate === null && (
+          <div className="cap-commit">
+            <Btn variant="ghost" disabled={isSaving} onClick={requestRate}>Set rate limit</Btn>
+          </div>
+        )}
+        {pendingRate !== null && (
+          <div className="cap-confirm">
+            <p className="cap-confirm-q" role="status">
+              {parsedRate !== null
+                ? `Change the rate limit from ${parsedRate.calls} per ${currentUnit} to ${pendingRate.calls} per ${pendingRate.unit}?`
+                : `Set the rate limit to ${pendingRate.calls} per ${pendingRate.unit}?`}
+            </p>
+            <div className="cap-confirm-actions">
+              <Btn variant="ghost" disabled={isSaving} onClick={confirmRate}>
+                Set {pendingRate.calls} per {pendingRate.unit}
+              </Btn>
+              <Btn variant="ghost" disabled={isSaving} onClick={cancelRate}>
+                {parsedRate !== null ? `Keep ${parsedRate.calls} per ${currentUnit}` : 'Cancel'}
+              </Btn>
+            </div>
+          </div>
+        )}
+        {rateNote && <p className="help cap-caption" role="status">{rateNote}</p>}
         {fieldErrors[`${envelope.skill}.rate_limit`] && (
           <p className="help cap-error">{fieldErrors[`${envelope.skill}.rate_limit`]}</p>
         )}
@@ -966,11 +1070,39 @@ function CapabilityZone({
           disabled={isSaving}
           aria-label={`Max amount in rand for ${skillLabel}`}
           onChange={(e) => handleMaxAmountChange(e.target.value)}
-          onBlur={commitMaxAmount}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              requestMaxAmount()
+            }
+          }}
         />
         <p className="help cap-caption">
           {currentMaxCents !== null ? `Currently ${formatCents(currentMaxCents)}.` : 'No ceiling set.'}
         </p>
+        {maxDirty && pendingMaxCents === null && (
+          <div className="cap-commit">
+            <Btn variant="ghost" disabled={isSaving} onClick={requestMaxAmount}>Set max amount</Btn>
+          </div>
+        )}
+        {pendingMaxCents !== null && (
+          <div className="cap-confirm">
+            <p className="cap-confirm-q" role="status">
+              {currentMaxCents !== null
+                ? `Change the max amount from ${formatCents(currentMaxCents)} to ${formatCents(pendingMaxCents)}?`
+                : `Set the max amount to ${formatCents(pendingMaxCents)}?`}
+            </p>
+            <div className="cap-confirm-actions">
+              <Btn variant="ghost" disabled={isSaving} onClick={confirmMaxAmount}>
+                Set {formatCents(pendingMaxCents)}
+              </Btn>
+              <Btn variant="ghost" disabled={isSaving} onClick={cancelMaxAmount}>
+                {currentMaxCents !== null ? `Keep ${formatCents(currentMaxCents)}` : 'Cancel'}
+              </Btn>
+            </div>
+          </div>
+        )}
+        {maxNote && <p className="help cap-caption" role="status">{maxNote}</p>}
         {fieldErrors[`${envelope.skill}.constraints`] && (
           <p className="help cap-error">{fieldErrors[`${envelope.skill}.constraints`]}</p>
         )}
@@ -1879,6 +2011,20 @@ const PAGE_CSS = `
   .cap-rate-inputs input { flex: 2; }
   .cap-rate-inputs select { flex: 1; }
   .cap-unit-fixed { flex: 1; display: flex; align-items: center; font-size: 13.5px; color: var(--ink-2); }
+
+  /* Neither money field commits on blur. The staged change is confirmed against
+     the value it replaces, in the same "rule then decision" grammar .rig uses,
+     rather than in a box nested inside the Zone. Both buttons stay ghost:
+     UI-SPEC S4 reserves the --live fill for Approve, the acknowledgement
+     checkbox and the selected actor-mode tile, and S4 forbids variant="seal"
+     here because tightening a limit is not destructive. */
+  .cap-commit { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+  .cap-commit .btn { flex: none; }
+  .cap-confirm { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--hairline-soft); }
+  .cap-confirm-q { font-size: 13px; line-height: 1.5; color: var(--ink); }
+  .cap-confirm-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+  .cap-confirm-actions .btn { flex: none; }
+  .cap-confirm-actions .btn:first-child { border-color: var(--hairline-strong); }
   .cap-actor-tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 7px; }
   .tile-recessed { cursor: not-allowed; }
   .tile-recessed .name { color: var(--ink-3); }
