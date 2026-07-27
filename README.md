@@ -4,13 +4,20 @@
 
 Most "AI agent" products let you ship a chatbot and hope. This one refuses to. An agent cannot reach a customer until it has been grounded in the business's own documents, scored by an automated eval suite, and attacked by a red team — and every one of those results is a gate, not a dashboard widget.
 
-The target user is a non-technical business owner: a salon, a repair shop, an e-commerce store. They upload their documents and answer some questions. Everything below happens on their behalf.
+The target user is a non-technical business owner — a salon, a repair shop, an e-commerce store — who needs a support agent on their site without hiring a developer.
+
+There are two ways to drive it, and they are the same four steps either way:
+
+- **By hand, in the console.** The owner walks the journey themselves: name the agent, draft its soul, upload documents, run the evals and the red team, clear the gate.
+- **Programmatically, from a command line.** The whole journey is a REST + SSE surface behind `X-API-Key` auth, so a developer's coding agent can create the tenant, stream provisioning progress, ingest a corpus, trigger an eval or red-team run, and poll the deployment gate — without a browser.
+
+Same gates on both paths. The console is a client of the API, not a privileged one.
 
 ---
 
 ## The four steps
 
-The entire product is one journey, and the admin console is built around it.
+The entire product is one journey. The console is built around it, and the API exposes it step for step — so the sequence below is what an owner clicks through, and equally what a coding agent scripts.
 
 | | Step | What happens |
 |---|---|---|
