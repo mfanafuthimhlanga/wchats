@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — v1.1 Phases 18–19 and Phase 13 still outstanding
-stopped_at: Executed 19-02-PLAN.md (owner capability guide + VER-01 demo tenant)
-last_updated: "2026-07-27T22:26:25.682Z"
+stopped_at: Executed 19-03-PLAN.md (AUD-03 30-day audit-gap gate + compute_audit_gap)
+last_updated: "2026-07-27T22:47:18.756Z"
 progress:
   total_phases: 2
   completed_phases: 2
@@ -269,6 +269,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Phase 18 P08 | ~15min | 3 tasks | 4 files |
 | Phase 18 P09 | ~35min | 3 tasks | 7 files |
 | Phase 19 P02 | ~25min | 2 tasks | 2 files |
+| Phase 19 P03 | 20min | 2 tasks | 2 files |
 
 ## Notes
 
@@ -426,11 +427,14 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: [19-01] DOC-02 corrects the runbook's Phase-18 admin-UI note: the shipped capability admin UI configures envelopes, not credentials, so the credential-management stop-sign still stands
 - [Phase ?]: [19-02] validate_tighten_only rejects every enabled:False->True transition (every PLATFORM_CAPABILITY_DEFAULTS entry ships enabled=False) — the demo tenant's enabled skills must be seeded, not tighten-only PATCHed; test proves reachability only for the other 5 comparable fields
 - [Phase ?]: [19-02] Owner guide quotes apps/admin/app/agents/[id]/deploy/page.tsx verbatim by line number rather than paraphrasing shipped 18-10 copy
+- [Phase ?]: [19-03] AUD-03 harness built with seeded-backdated-rows via direct SQL against tool_calls_audit; no clock abstraction added to write_audit_row
+- [Phase ?]: [19-03] Harness envelope tunes place_order max_amount_cents below ACTOR_SKIP_MAX_AMOUNT_CENTS so the Actor skip engages deterministically per batch — no live ANTHROPIC_API_KEY needed for the gate
+- [Phase ?]: [19-03] Moved app.services.red_team_probe imports from module scope to lazy fixture/test-body imports so bare python -c import never triggers app.core.config Settings() validation outside pytest
 
 ## Session
 
-**Last session:** 2026-07-27T22:26:25.604Z
-**Stopped at:** Executed 19-02-PLAN.md (owner capability guide + VER-01 demo tenant)
+**Last session:** 2026-07-27T22:47:18.693Z
+**Stopped at:** Executed 19-03-PLAN.md (AUD-03 30-day audit-gap gate + compute_audit_gap)
 
 Earlier the same session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 
