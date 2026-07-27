@@ -343,10 +343,17 @@ function parseRateLimit(rateStr: string | null | undefined): { calls: number; wi
   return { calls, windowSecs }
 }
 
-function rateToPerSecond(rateStr: string | null | undefined): number | null {
-  const parsed = parseRateLimit(rateStr)
-  if (!parsed) return null
-  return parsed.calls / parsed.windowSecs
+// The largest integer call count expressible in `unit` without loosening
+// `parsed`. Deliberately integer arithmetic on the ORIGINAL calls/window pair
+// rather than a round-trip through a per-second float: `5/hour` computed as
+// `Math.floor((5 / 3600) * 3600)` can land on 4 in IEEE-754, which would set
+// the number input's `max` BELOW its own current value.
+function maxCallsForUnit(
+  parsed: { calls: number; windowSecs: number } | null,
+  unit: RateUnit,
+): number | undefined {
+  if (parsed === null) return undefined
+  return Math.floor((parsed.calls * RATE_UNIT_SECS[unit]) / parsed.windowSecs)
 }
 
 // Mirrors capability_service.py's `parse_actor_mode` ordinal pair exactly:
@@ -461,11 +468,17 @@ function BlastRadiusBlock({ blastRadius }: { blastRadius: BlastRadiusSignal | un
         <span className="num">{configuredSingle !== null ? `${formatCents(configuredSingle)} ceiling` : 'No ceiling'}</span>
         {configuredSingle === null && enabledSkillCount > 0 ? (
           <Chip verdict="fail">No ceiling</Chip>
-        ) : configuredSingle !== null && warnSingle !== null && configuredSingle > warnSingle ? (
+        ) : configuredSingle === null ? null : warnSingle === null ? (
+          // No threshold was resolved for this tenant, so nothing was measured
+          // against. "Within threshold" in --pass here would assert that a
+          // ceiling cleared a bar that does not exist. Same treatment the four
+          // signal rows above give a missing input.
+          <Chip verdict="mute">No threshold set</Chip>
+        ) : configuredSingle > warnSingle ? (
           <Chip verdict="fail">Exceeds threshold</Chip>
-        ) : configuredSingle !== null ? (
+        ) : (
           <Chip verdict="pass">Within threshold</Chip>
-        ) : null}
+        )}
       </div>
       <div className="blast-line">
         <span className="blast-label vh">Max single action, observed</span>
@@ -481,11 +494,13 @@ function BlastRadiusBlock({ blastRadius }: { blastRadius: BlastRadiusSignal | un
         <span className="num">{configuredHourly !== null ? `${formatCents(configuredHourly)} ceiling` : 'No ceiling'}</span>
         {configuredHourly === null && enabledSkillCount > 0 ? (
           <Chip verdict="fail">No ceiling</Chip>
-        ) : configuredHourly !== null && warnHourly !== null && configuredHourly > warnHourly ? (
+        ) : configuredHourly === null ? null : warnHourly === null ? (
+          <Chip verdict="mute">No threshold set</Chip>
+        ) : configuredHourly > warnHourly ? (
           <Chip verdict="fail">Exceeds threshold</Chip>
-        ) : configuredHourly !== null ? (
+        ) : (
           <Chip verdict="pass">Within threshold</Chip>
-        ) : null}
+        )}
       </div>
       <div className="blast-line">
         <span className="blast-label vh">Max hourly aggregate, observed</span>
@@ -508,11 +523,15 @@ function BlastRadiusBlock({ blastRadius }: { blastRadius: BlastRadiusSignal | un
 function EnvelopeAcknowledgement({
   latestRun,
   capabilityEnvelopes,
+  envelopesLoaded,
+  envelopesFailed,
   envelopeAcknowledged,
   onToggleAcknowledged,
 }: {
   latestRun: ChecklistRun
   capabilityEnvelopes: CapabilityEnvelope[]
+  envelopesLoaded: boolean
+  envelopesFailed: boolean
   envelopeAcknowledged: boolean
   onToggleAcknowledged: (checked: boolean) => void
 }) {
@@ -520,6 +539,14 @@ function EnvelopeAcknowledgement({
   const enabledEnvelopes = capabilityEnvelopes.filter((env) => env.enabled)
   const hash = latestRun.envelope_hash
   const fingerprint = hash ? `${hash.slice(0, 8)}…${hash.slice(-4)}` : null
+  // The signature is only collectable once the configuration being attested to
+  // is actually on screen. An in-flight or failed capability GET leaves
+  // `capabilityEnvelopes` empty, which would render this table as "no skill is
+  // enabled" and still take the owner's tick: a false claim about a
+  // money-moving configuration, collected at the moment of attestation. A run
+  // with no `envelope_hash` has nothing to fingerprint, so it is not
+  // attestable either.
+  const attestable = envelopesLoaded && hash !== null
 
   return (
     <Zone className="ack-zone" aria-labelledby="ack-label">
@@ -533,6 +560,23 @@ function EnvelopeAcknowledgement({
           <p className="voice">Capability limits changed since this checklist ran.</p>
           <p className="help">
             Re-run the checklist to review and acknowledge the new configuration before deploying.
+          </p>
+        </>
+      ) : !attestable ? (
+        <>
+          <p className="voice">
+            {envelopesFailed
+              ? 'The capability limits could not be loaded.'
+              : !envelopesLoaded
+                ? 'Reading the capability limits…'
+                : 'This checklist run carries no configuration fingerprint.'}
+          </p>
+          <p className="help">
+            {envelopesFailed
+              ? 'Reload the page. Approve stays disabled until these limits are on screen.'
+              : !envelopesLoaded
+                ? 'They appear here, with the acknowledgement, once they load.'
+                : 'Re-run the checklist to record the configuration this deploy would approve.'}
           </p>
         </>
       ) : (
@@ -574,7 +618,10 @@ function EnvelopeAcknowledgement({
               )}
             </tbody>
           </Ledger>
-          <p className="ack-fingerprint mono">{hash ? `config ${fingerprint}` : 'config unavailable'}</p>
+          {/* Reached only when `attestable`, so the fingerprint is always a
+              real hash here — there is no "config unavailable" caption sitting
+              above a tickable checkbox. */}
+          <p className="ack-fingerprint mono">config {fingerprint}</p>
           <label className="ack-checkbox">
             <input
               type="checkbox"
@@ -671,7 +718,7 @@ function ActorModeTiles({
         {currentTierNum === 2
           ? 'Currently: Always-on. Nothing stricter exists for this skill.'
           : currentTierNum === 1
-            ? `Currently: Sampled at ${currentTier?.n ?? 1} in 100. A higher rate is tighter.`
+            ? `Currently: Sampled at ${currentTier?.n ?? 1} in 100.`
             : 'Currently: Off. Turning this on adds Actor review before every call.'}
       </p>
     </div>
@@ -694,20 +741,29 @@ function CapabilityZone({
 }) {
   const enabledLocked = envelope.enabled === false && envelope.platform_default.enabled === false
   const currentMaxCents = envelope.constraints.max_amount_cents ?? null
-  const currentRps = rateToPerSecond(envelope.rate_limit)
   const parsedRate = parseRateLimit(envelope.rate_limit)
   const currentUnit: RateUnit =
     (RATE_UNITS.find((u) => RATE_UNIT_SECS[u] === parsedRate?.windowSecs) as RateUnit | undefined) ?? 'hour'
-  const allowedUnits = RATE_UNITS.filter((u) => RATE_UNIT_SECS[u] <= (parsedRate?.windowSecs ?? RATE_UNIT_SECS.day))
+  const currentSecs = parsedRate?.windowSecs ?? RATE_UNIT_SECS.day
+
+  const maxForUnit = (u: RateUnit): number | undefined => maxCallsForUnit(parsedRate, u)
+
+  // A window is only offered when it is at-or-narrower than the current one
+  // AND the tightest rate it can express is a reachable integer. Filtering on
+  // window length alone offers `minute` for the factory-default `5/hour`,
+  // where the only expressible value is `0/minute`: the server accepts it
+  // (`_parse_rate_limit` has no `> 0` guard, and `validate_tighten_only` reads
+  // 0 as tighter than everything), after which every nonzero rate is a loosen
+  // and the skill is capped at zero calls permanently.
+  const allowedUnits = RATE_UNITS.filter(
+    (u) => RATE_UNIT_SECS[u] <= currentSecs && (maxForUnit(u) ?? 1) >= 1,
+  )
 
   const [unit, setUnit] = useState<RateUnit>(currentUnit)
   const [rateInput, setRateInput] = useState<string>(parsedRate ? String(parsedRate.calls) : '')
   const [maxAmountInput, setMaxAmountInput] = useState<string>(
     currentMaxCents !== null ? String(currentMaxCents / 100) : '',
   )
-
-  const maxForUnit = (u: RateUnit): number | undefined =>
-    currentRps === null ? undefined : Math.floor(currentRps * RATE_UNIT_SECS[u])
 
   const handleRateNumberChange = (raw: string) => {
     const cap = maxForUnit(unit)
@@ -730,6 +786,10 @@ function CapabilityZone({
     const cap = maxForUnit(newUnit)
     const currentNum = Number(rateInput)
     const nextNum = cap !== undefined ? Math.min(Number.isFinite(currentNum) ? currentNum : cap, cap) : currentNum
+    // Hard floor, independent of the option filter above: no code path in this
+    // component may emit a non-positive rate, because a zero written here
+    // cannot be raised again from this screen.
+    if (!Number.isFinite(nextNum) || nextNum < 1) return
     setUnit(newUnit)
     setRateInput(String(nextNum))
     const nextRate = `${nextNum}/${newUnit}`
@@ -776,8 +836,8 @@ function CapabilityZone({
           {enabledLocked
             ? 'Cannot re-enable - the platform default is off for this skill.'
             : envelope.enabled
-              ? 'Enabled. Turning this off is always available.'
-              : 'Disabled. The platform default allows turning this on.'}
+              ? 'Enabled.'
+              : 'Disabled.'}
         </p>
         {fieldErrors[`${envelope.skill}.enabled`] && (
           <p className="help cap-error">{fieldErrors[`${envelope.skill}.enabled`]}</p>
@@ -797,14 +857,20 @@ function CapabilityZone({
             onChange={(e) => handleRateNumberChange(e.target.value)}
             onBlur={commitRate}
           />
-          <select value={unit} disabled={isSaving} onChange={(e) => handleUnitChange(e.target.value as RateUnit)}>
-            {allowedUnits.map((u) => (
-              <option key={u} value={u}>{u}</option>
-            ))}
-          </select>
+          {allowedUnits.length === 1 ? (
+            // One reachable window means there is no choice to present. A
+            // select holding a single option reads as an offer that isn't one.
+            <span className="cap-unit-fixed">per {allowedUnits[0]}</span>
+          ) : (
+            <select value={unit} disabled={isSaving} onChange={(e) => handleUnitChange(e.target.value as RateUnit)}>
+              {allowedUnits.map((u) => (
+                <option key={u} value={u}>{u}</option>
+              ))}
+            </select>
+          )}
         </div>
         <p className="help cap-caption">
-          Currently {envelope.rate_limit ?? 'not set'}. Only windows at or narrower than this one are offered.
+          {parsedRate !== null ? `Currently ${parsedRate.calls} per ${currentUnit}.` : 'No rate limit set.'}
         </p>
         {fieldErrors[`${envelope.skill}.rate_limit`] && (
           <p className="help cap-error">{fieldErrors[`${envelope.skill}.rate_limit`]}</p>
@@ -826,9 +892,7 @@ function CapabilityZone({
           onBlur={commitMaxAmount}
         />
         <p className="help cap-caption">
-          {currentMaxCents !== null
-            ? `Currently ${formatCents(currentMaxCents)}. Once set, a ceiling can only be tightened.`
-            : 'No ceiling set yet. Once you set one, it can only be tightened from here.'}
+          {currentMaxCents !== null ? `Currently ${formatCents(currentMaxCents)}.` : 'No ceiling set.'}
         </p>
         {fieldErrors[`${envelope.skill}.constraints`] && (
           <p className="help cap-error">{fieldErrors[`${envelope.skill}.constraints`]}</p>
@@ -1033,6 +1097,17 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['capability-envelopes', id] })
+      // A capability PATCH changes the live envelope, so the checklist run's
+      // `envelope_hash` / `envelope_drift` are now stale. Without refetching
+      // the run, the reset effect below never fires (it keys on the run's id
+      // and hash, neither of which changes while the run is not refetched):
+      // the tick survives, the caption keeps printing the OLD fingerprint over
+      // the NEW figures, `envelope_drift` stays false, and Approve stays
+      // enabled on a configuration nobody attested to. Dropping the tick here
+      // as well means the acknowledgement is never carried across an edit even
+      // for the moment before the refetch lands.
+      queryClient.invalidateQueries({ queryKey: ['checklist-runs', id] })
+      setEnvelopeAcknowledged(false)
     },
     onError: (err: unknown) => {
       // D1's server-side backstop: a rejection lands inline under the
@@ -1222,13 +1297,31 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     latestRun.status === 'complete' &&
     (latestRun.recommendation === 'ship' ||
       (latestRun.recommendation === 'ship_with_warnings' && latestRun.all_warnings_acknowledged))
-  const isApprovable = baseApprovable && latestRun?.envelope_drift === false && envelopeAcknowledged === true
+  // `capabilityEnvelopesQuery.isSuccess` is a precondition of approval, not a
+  // cosmetic detail: without it, a failed capability GET renders an empty
+  // attestation table and Approve would still light up behind a tick the owner
+  // gave to a configuration that was never on screen.
+  const isApprovable =
+    baseApprovable &&
+    latestRun?.envelope_drift === false &&
+    envelopeAcknowledged === true &&
+    capabilityEnvelopesQuery.isSuccess
 
   const loadError = useMemo(() => {
-    const errs = [agentQuery.error, checklistListQuery.error, widgetConfigQuery.error]
+    const errs = [
+      agentQuery.error,
+      checklistListQuery.error,
+      widgetConfigQuery.error,
+      capabilityEnvelopesQuery.error,
+    ]
     const first = errs.find((e): e is Error => e instanceof Error)
     return first?.message ?? null
-  }, [agentQuery.error, checklistListQuery.error, widgetConfigQuery.error])
+  }, [
+    agentQuery.error,
+    checklistListQuery.error,
+    widgetConfigQuery.error,
+    capabilityEnvelopesQuery.error,
+  ])
 
   const actionError = useMemo(() => {
     const errs = [triggerChecklist.error, acknowledgeWarning.error, approveDeployment.error]
@@ -1406,6 +1499,8 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                 <EnvelopeAcknowledgement
                   latestRun={latestRun}
                   capabilityEnvelopes={capabilityEnvelopes}
+                  envelopesLoaded={capabilityEnvelopesQuery.isSuccess}
+                  envelopesFailed={capabilityEnvelopesQuery.isError}
                   envelopeAcknowledged={envelopeAcknowledged}
                   onToggleAcknowledged={setEnvelopeAcknowledged}
                 />
@@ -1607,6 +1702,7 @@ const PAGE_CSS = `
   .cap-rate-inputs { display: flex; gap: 12px; }
   .cap-rate-inputs input { flex: 2; }
   .cap-rate-inputs select { flex: 1; }
+  .cap-unit-fixed { flex: 1; display: flex; align-items: center; font-size: 13.5px; color: var(--ink-2); }
   .cap-actor-tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 7px; }
   .tile-recessed { cursor: not-allowed; }
   .tile-recessed .name { color: var(--ink-3); }
