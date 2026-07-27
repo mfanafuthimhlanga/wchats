@@ -23,8 +23,9 @@ tech-stack:
   added: []
   patterns:
     - "Mutating-flag-only membership: capability Zones are derived exclusively from env.mutating === true, never a slice/length check/hard-coded skill-name list, so a future seventh mutating skill needs no second edit"
-    - "Remount-on-updated_at for uncontrolled tighten-only inputs: CapabilityZone keys on `${skill}:${updated_at}` so a successful PATCH remounts the Zone with fresh server-authoritative defaults instead of hand-rolled sync effects"
-    - "Physical-unreachability via clamped onChange + capped max/min attributes, never validate-after-submit — mirrors the server's validate_tighten_only comparator exactly (per-second rate comparison, actor-mode ordinal pairs)"
+    - "Draft-follows-server-value for tighten-only inputs: CapabilityZone keys on the SKILL ALONE and syncs each draft from the server-authoritative field via an effect. It originally keyed on `${skill}:${updated_at}`, which remounted the Zone after every PATCH purely to reset three drafts and destroyed focus doing it (M10, fixed in f271373) — a remount is not a state-reset mechanism when the thing being remounted holds focus"
+    - "Physical-unreachability via a capped max/min plus a filtered (never disabled) option list, and a clamp applied ONLY at commit time — never validate-after-submit, and never mid-typing (a keystroke landing on an already-clamped value is re-clamped: 600 against a R500 ceiling passed through 6, 500, 5000, 500). Mirrors the server's validate_tighten_only comparator exactly (integer calls/window rate comparison, actor-mode ordinal pairs)"
+    - "Explicit old-to-new confirmation for an irreversible narrowing: both money fields stage the change and require a confirmation whose two button labels each name the amount they commit to, so the write is never a side effect of focus loss (M12 deviation from the UI-SPEC, see below)"
 
 key-files:
   created: []
@@ -34,12 +35,14 @@ key-files:
 key-decisions:
   - "The envelope-acknowledgement summary table (D5) is filtered on enabled === true, not mutating === true — it mirrors the server's canonical_envelope_hash field set, which is not itself scoped to mutating skills, whereas the six capability Zones (D1/D2) are filtered on mutating === true per plan text"
   - "capabilityEnvelopesQuery (the GET) is defined once in Task 1 and reused by both the acknowledgement table and the Task 2 capability Zones — saveCapabilityEnvelope (the PATCH) is Task 2's own addition, so the two tasks share one query key without duplication"
-  - "Rate-limit and max-amount inputs commit on blur (or on unit/select change), not on every keystroke — 'auto-save on change' is honored without hammering the PATCH endpoint on each digit typed; the value is still clamped live via onChange so the looser direction is never briefly visible before commit"
+  - "SUPERSEDED by the M12 deviation (commit 4a71fb0) — recorded here as the Task 1-2 decision it actually was, not as a description of the shipped code: 'Rate-limit and max-amount inputs commit on blur (or on unit/select change), not on every keystroke; the value is still clamped live via onChange.' Both halves were wrong. Blur-commit makes an irreversible money narrowing a side effect of focus loss, and the live clamp re-clamped each keystroke. Neither survives — see 'The M12 deviation' below."
   - "The Approve-disabled inline reason (env drift vs unticked acknowledgement) only renders when baseApprovable is true, so it is never shown for the pre-existing block/warnings-unacknowledged cases those already have their own messaging for"
   - "Every UI-SPEC copy string that used an em dash was rewritten with a plain hyphen per the plan's own instruction ('the hyphen is a hyphen, never an em dash'); pre-existing code comments in this file already use em dashes as house style and were left untouched since the ban is scoped to string literals, not comments"
 
 patterns-established:
-  - "Pattern: server-mirrored client-side tightness comparator (parseRateLimit/rateToPerSecond/actorModeTier byte-match capability_service.py's _parse_rate_limit/parse_actor_mode) so a UI-offered value can never diverge from what the PATCH route accepts"
+  - "Pattern: server-mirrored client-side tightness comparator (parseRateLimit/maxCallsForUnit/actorModeTier byte-match capability_service.py's _parse_rate_limit/parse_actor_mode) so a UI-offered value can never diverge from what the PATCH route accepts. maxCallsForUnit deliberately does integer arithmetic on the original calls/window pair rather than round-tripping through a per-second float, which could floor the current value below its own input max (m6)"
+  - "Pattern: one vocabulary per field across every surface — actorModeLabel renders the actor_mode ordinal as 'Off' / 'Sampled at N in 100' / 'Always-on' for BOTH the attestation table and the capability Zone caption, so the machine token (sample_at_rate_25) never reaches an owner and the two surfaces can never drift apart"
+  - "Pattern: aria-disabled + a guarded handler, never `disabled`, for a control that is inert only for the length of one in-flight write — a focused element that becomes `disabled` leaves the tab order and focus falls to <body>. Carries a contrast consequence: WCAG 1.4.3's inactive-component exemption does not cover an aria-disabled control, so its text steps up from --ink-3 to --ink-2"
 
 requirements-completed: [BLR-01, BLR-02]
 
@@ -209,7 +212,14 @@ severity — is what this honors.
 
 ### Gates re-run after remediation
 
-- `pnpm --filter wchats-admin check:no-dusk-tokens` — **exit 0**.
+- `cd apps/admin && node scripts/check-no-dusk-tokens.mjs` — **exit 0**.
+
+  Command corrected (round-two finding NEW-7a): this was previously recorded as
+  `pnpm --filter wchats-admin check:no-dusk-tokens`, which **cannot run as
+  written**. There is no root `package.json` and no root `pnpm-workspace.yaml`
+  in this repo, so pnpm exits `ERR_PNPM_NO_PKG_MANIFEST` before it reaches the
+  filter. `apps/admin` carries its own `pnpm-workspace.yaml` and is not a member
+  of any parent workspace. The invocation above is the one that reproduces.
 - `cd apps/admin && npx tsc --noEmit -p tsconfig.json` — **no new error**. The one
   reported error is the pre-existing `tests/reduced-motion.spec.ts` Playwright
   fixture typing (`reducedMotion` not in `Fixtures<>`), identical before and after.
@@ -229,6 +239,99 @@ severity — is what this honors.
   rows' missing-input treatment, and the acknowledgement table still uses plain
   `.help` text).
 
+## Second-round verification remediation
+
+An independent verifier re-checked the five blockers (**all confirmed fixed**)
+and re-ran the review's 13 clean checks (**all HELD**), then found **7 new
+findings** — three of them introduced by round one's own fixes. All 7 are now
+fixed, in six commits grouped by concern:
+
+| Commit | Finding | Concern |
+|---|---|---|
+| `6973e66` | NEW-6 | Three pieces of dead code; `#blast-label` wired to a real `aria-labelledby` consumer |
+| `5e34d2a` | NEW-4 | The M15 scroll container was an unnamed, role-less generic in the tab order |
+| `2bd6b47` | NEW-5 | The M13 caption over-claimed the envelope hash's scope on a first deploy |
+| `f6ed0b2` | NEW-2 | Three of six capability fields had no inline error site at all |
+| `72f562a` | NEW-3 | Round one's own status regions were conditionally mounted |
+| `456645f` | NEW-1 | Focus fell to `<body>` on every capability write, by two routes |
+| this commit | NEW-7 | Two summary claims that did not reproduce |
+
+**Introduced by round one, not pre-existing:** NEW-1 route B and NEW-3 are both
+consequences of the M12 confirmation flow (`4a71fb0`); NEW-2 is a consequence of
+Task 2's own `fieldErrors` map (`1d2a258`).
+
+### Deviations from the prescribed fixes, recorded
+
+1. **NEW-1 used `autoFocus`, not the prescribed `useRef` + `useEffect` on
+   `pendingX !== null`.** React implements `autoFocus` as a `focus()` call on
+   mount, so it fires for a block that appears mid-session and fires exactly
+   once; an effect keyed on the `pendingRate` object would re-steal focus from
+   the input on every re-render while staged. `Btn` also lives under
+   `components/gotham/` and cannot be edited to forward a ref, which rules out
+   the ref form for a `Btn` regardless. The refs that were added point at the
+   two number inputs, for the return trip.
+2. **NEW-2's `actionError` backstop is conditional.** Adding
+   `saveCapabilityEnvelope.error` outright would double-report every rejection
+   that already has an inline home: a page-level alert plus the inline message,
+   two claims on screen for one fact, which is what D1 exists to prevent. The
+   aggregate admits a capability error only when it carries no `skill`/`patch`
+   context — `getToken()` refusing or `fetch` rejecting before a response
+   exists, both of which throw before the `mutationFn` can attach context, and
+   both of which previously vanished silently.
+3. **NEW-3 dropped `role="status"` from `.cap-confirm-q` rather than trying to
+   persist it.** The block containing it must mount (it holds the buttons), so a
+   live region inside it can never be persistent. The question is now the
+   confirm button's `aria-describedby`, and the button is focused on mount, so
+   the question is announced with the button's own name: a guarantee instead of
+   an unreliable promise.
+4. **NEW-4 gave the scroll region its own name, not `aria-labelledby="ack-label"`.**
+   The Zone already carries "Capability envelope"; two identically-named regions
+   are indistinguishable in a landmark list. `Ledger` renders a `<caption>` but
+   exposes no id for it and is off limits to edit, so the name is set on the
+   wrapper as `aria-label="Capability limits"`.
+5. **NEW-5 landed BOTH options, not either/or.** The `Ledger` caption is
+   visually hidden, so a caption-only fix leaves a sighted owner with no scope
+   information at all. The count line beneath the fingerprint is where they
+   actually learn it, which is M13's own argument for the option it passed over.
+   The all-rows rendering is unchanged, per the finding.
+6. **NEW-6 rewrote the tier-0 caption instead of deleting the branch.** Deleting
+   it would fold tier 0 into the "Always-on. Nothing stricter exists" arm, which
+   is a false claim rather than a B5 landmine. The caption now reads its label
+   from `actorModeLabel(envelope.actor_mode)` and appends the "nothing stricter"
+   sentence only at tier 2, so it states the present fact for every value and
+   narrates no mechanism. Removing `ACTOR_MODE_ORDER`'s tier-0 entry also made
+   the `envelope.mutating` tile filter vacuous, so the pair was removed together;
+   the grid still derives its column count from the tier count, so m12's
+   property survives, and `actorModeTier`/`actorModeLabel` keep tier 0 because
+   the attestation table must still be able to name an out-of-band `off`.
+
+### Residuals, reported not hidden
+
+- **The six `Btn` elements in `.cap-commit` / `.cap-confirm-actions` keep
+  `disabled={isSaving}`.** NEW-1 named eight form controls, not these. The only
+  route that focuses one of them *as* a save begins is the sampled stepper's
+  `onBlur`, which is unreachable from every state this UI can produce (see
+  judgement call 6 in the round-one list). Converting them would need
+  `.btn.is-disabled` treatment replicated at two more call sites for a state
+  nothing can reach.
+- **Nothing was verified by looking.** The stack was not started and no
+  screenshot was taken in this pass either. NEW-1's focus behaviour, NEW-3's
+  announcement behaviour and NEW-5's count line all want the operator's eyes and
+  a screen reader; NEW-1 in particular wants a Tab-only walkthrough of one
+  capability Zone through stage → confirm → cancel → refusal.
+
+### Known follow-up, deliberately not built in this pass
+
+**Unchecking `enabled` commits `enabled: false` immediately, with no
+confirmation.** That is a permanent kill of the skill and a larger consequence
+than the ceiling narrowings M12 wrapped in a confirmation. It is unreachable
+today: all seven platform defaults ship `enabled: False`, and
+`validate_tighten_only` rejects `false → true` unless the platform default is
+itself `true`, so no agent can reach a state where the box is ticked and
+therefore untickable. **Extend M12's confirmation to the Enabled toggle before
+re-enabling ever becomes reachable** — building the guard now would be a guard
+for an unreachable state on an already-large diff.
+
 ### Still owed to the operator
 
 The review's "Settled only by pixels" list (7 items) is **not** discharged by this
@@ -239,7 +342,15 @@ capability GET must be forced in devtools and the warn thresholds must be nulled
 the DB, and a clean happy-path walkthrough will show neither.
 
 ## Files Created/Modified
-- `apps/admin/app/agents/[id]/deploy/page.tsx` - `BlastRadiusSignal`/`ActorMode`/`CapabilityEnvelope`/`CapabilityEnvelopeList` types extending `ChecklistRun`/`DeploymentReport`; `formatCents`/`centsOrNotTracked`/`parseRateLimit`/`rateToPerSecond`/`actorModeTier`/`isActorModeReachable` helpers; `SKILL_LABELS`/`RATE_UNITS`/`ACTOR_MODE_ORDER` constants; `BlastRadiusBlock`/`EnvelopeAcknowledgement`/`ActorModeTiles`/`CapabilityZone` components; `capabilityEnvelopesQuery`/`saveCapabilityEnvelope` react-query hooks; `envelopeAcknowledged`/`fieldErrors` state; the "Capabilities and limits" section; `.blast-*`/`.ack-*`/`.cap-*`/`.gate-chips`/`.tile-recessed` `PAGE_CSS` rules
+- `apps/admin/app/agents/[id]/deploy/page.tsx` - `BlastRadiusSignal`/`ActorMode`/`CapabilityEnvelope`/`CapabilityEnvelopeList` types extending `ChecklistRun`/`DeploymentReport`; `formatCents`/`centsOrNotTracked`/`parseRateLimit`/`maxCallsForUnit`/`actorModeTier`/`isActorModeReachable`/`actorModeLabel` helpers; `SKILL_LABELS`/`RATE_UNITS`/`RATE_UNIT_SECS`/`ACTOR_MODE_ORDER` constants; `BlastRadiusBlock`/`EnvelopeAcknowledgement`/`ActorModeTiles`/`CapabilityZone` components; `capabilityEnvelopesQuery`/`saveCapabilityEnvelope` react-query hooks; `envelopeAcknowledged`/`fieldErrors`/`savingSkills`/`savedSkills` state; the "Capabilities and limits" section; `.blast-*`/`.ack-*`/`.cap-*`/`.gate-chips`/`.tile-recessed` `PAGE_CSS` rules
+
+  Helper-name correction (round-two finding NEW-7b): the interim summary named
+  `rateToPerSecond`, which commit `2d97e59` deleted while closing m6 — a
+  per-second float round-trip can floor `5/hour` to `4/hour` and set a number
+  input's `max` below its own current value. Its replacements are
+  `maxCallsForUnit` (integer arithmetic on the original calls/window pair) and
+  `actorModeLabel` (added in `8b86f17` for M14). `grep -c rateToPerSecond` on
+  the file returns 0.
 
 ## Decisions Made
 See `key-decisions` in the frontmatter above (envelope-acknowledgement table filtered on `enabled`, not `mutating`; shared `capabilityEnvelopesQuery` across Task 1/Task 2; blur-commit for numeric fields; scoped inline-reason rendering; em-dash-to-hyphen rewrite of every locked copy string while leaving the file's own pre-existing comment style untouched).
