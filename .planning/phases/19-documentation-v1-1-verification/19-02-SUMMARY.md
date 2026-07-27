@@ -135,3 +135,12 @@ Both `<verify>` blocks pass: the DOC-03 anchor gate exits `DOC-03-ANCHORS-OK`, a
 ---
 *Phase: 19-documentation-v1-1-verification*
 *Completed: 2026-07-28*
+
+## Self-Check: PASSED
+
+- FOUND: docs/guides/owner-capability-guide.md
+- FOUND: apps/api/tests/unit/test_ver01_demo_tenant.py
+- FOUND: .planning/phases/19-documentation-v1-1-verification/19-02-SUMMARY.md
+- FOUND commit: cf16cc3
+- FOUND commit: b398761
+- FOUND commit: 8938518
