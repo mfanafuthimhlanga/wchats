@@ -760,11 +760,13 @@ function EnvelopeAcknowledgement({
 function ActorModeTiles({
   envelope,
   skillLabel,
+  fieldErrors,
   isSaving,
   onSave,
 }: {
   envelope: CapabilityEnvelope
   skillLabel: string
+  fieldErrors: Record<string, string>
   isSaving: boolean
   onSave: (skill: string, patch: CapabilityEnvelopePatch) => void
 }) {
@@ -855,6 +857,12 @@ function ActorModeTiles({
         Currently: {actorModeLabel(envelope.actor_mode)}.
         {currentTierNum === 2 && ' Nothing stricter exists for this skill.'}
       </p>
+      {/* D1's server-side backstop for this field. Both writers of actor_mode
+          (a tile and the sampled stepper) land here, since onError keys the
+          message on the patch's field name, not on the control. */}
+      {fieldErrors[`${envelope.skill}.actor_mode`] && (
+        <p className="help cap-error">{fieldErrors[`${envelope.skill}.actor_mode`]}</p>
+      )}
     </fieldset>
   )
 }
@@ -1245,6 +1253,9 @@ function CapabilityZone({
             ? 'Confirmation is on - it cannot be turned off from here.'
             : 'Off. Turning this on requires the customer to confirm before this action runs.'}
         </p>
+        {fieldErrors[`${envelope.skill}.requires_confirmation`] && (
+          <p className="help cap-error">{fieldErrors[`${envelope.skill}.requires_confirmation`]}</p>
+        )}
       </div>
 
       <div className="field cap-row">
@@ -1273,9 +1284,20 @@ function CapabilityZone({
             ? 'Verification is on - it cannot be turned off from here.'
             : 'Off. Turning this on requires identity verification before this action runs.'}
         </p>
+        {fieldErrors[`${envelope.skill}.requires_identity_verification`] && (
+          <p className="help cap-error">
+            {fieldErrors[`${envelope.skill}.requires_identity_verification`]}
+          </p>
+        )}
       </div>
 
-      <ActorModeTiles envelope={envelope} skillLabel={skillLabel} isSaving={isSaving} onSave={onSave} />
+      <ActorModeTiles
+        envelope={envelope}
+        skillLabel={skillLabel}
+        fieldErrors={fieldErrors}
+        isSaving={isSaving}
+        onSave={onSave}
+      />
     </Zone>
   )
 }
@@ -1470,7 +1492,14 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     },
     onError: (err: unknown) => {
       // D1's server-side backstop: a rejection lands inline under the
-      // specific field it targeted — never a toast, never a page alert.
+      // specific field it targeted — never a toast, never a page alert. All
+      // six patchable fields have a render site keyed `<skill>.<field>`
+      // (enabled, rate_limit, constraints, requires_confirmation,
+      // requires_identity_verification, actor_mode); the three that did not
+      // used to swallow the message entirely — a rejected "turn Confirmation
+      // on" cleared the saving… stamp, left the box unchecked, and said
+      // nothing. An error with no skill/field context has no inline home at
+      // all and is picked up by `actionError` instead.
       const withContext = err as Error & { skill?: string; patch?: CapabilityEnvelopePatch }
       const skill = withContext.skill
       const field = withContext.patch ? Object.keys(withContext.patch)[0] : undefined
@@ -1707,10 +1736,35 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
   ])
 
   const actionError = useMemo(() => {
-    const errs = [triggerChecklist.error, acknowledgeWarning.error, approveDeployment.error]
+    // A capability rejection that carries its own skill + patch context is
+    // reported inline under the field it targeted (D1), so repeating it up here
+    // would put two claims on screen for one fact. A capability failure with NO
+    // context has no inline home at all — `getToken()` refusing, or `fetch`
+    // rejecting before any response exists, throws before the mutationFn can
+    // attach skill/patch — and used to vanish silently. That case, and only
+    // that case, is the backstop.
+    const capErr = saveCapabilityEnvelope.error as
+      | (Error & { skill?: string; patch?: CapabilityEnvelopePatch })
+      | null
+    const capErrHasInlineHome = !!(
+      capErr?.skill &&
+      capErr.patch &&
+      Object.keys(capErr.patch).length > 0
+    )
+    const errs = [
+      triggerChecklist.error,
+      acknowledgeWarning.error,
+      approveDeployment.error,
+      capErrHasInlineHome ? null : capErr,
+    ]
     const first = errs.find((e): e is Error => e instanceof Error)
     return first?.message ?? null
-  }, [triggerChecklist.error, acknowledgeWarning.error, approveDeployment.error])
+  }, [
+    triggerChecklist.error,
+    acknowledgeWarning.error,
+    approveDeployment.error,
+    saveCapabilityEnvelope.error,
+  ])
 
   const consequence = buildConsequence(latestRun)
   const gateStamp = latestRun && latestRun.status === 'complete' ? latestRun.created_at : null
