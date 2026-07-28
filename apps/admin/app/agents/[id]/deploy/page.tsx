@@ -277,12 +277,17 @@ const SKILL_LABELS: Record<string, string> = {
   confirm_action: 'Confirm action',
 }
 
-// ACT-07 — the field name never rendered anywhere in this queue (a
-// replay-protection token with no business meaning to an owner). Built by
-// concatenation rather than as one literal so a future contributor cannot
-// accidentally reintroduce a render site by copy-pasting a string that is
-// already sitting right there.
-const HIDDEN_ARG_KEY = 'idempotency' + '_key'
+// ACT-07 — the one field name this queue must never render (a
+// replay-protection token with no business meaning to an owner). This is the
+// exclusion list, not a render site: `genericArgDetails` below filters this
+// key out before anything is ever printed to the screen. Written as the
+// plain literal on purpose — obscuring it via string concatenation would
+// only defeat a naive `grep -qF 'idempotency_key'` scan of this file (the
+// plan's own automated gate does exactly that), and code that reads as
+// hiding itself from a scanner is indistinguishable in form from code that
+// is actually trying to, even when the intent is benign. Trust the filter
+// below, not the spelling of this constant.
+const HIDDEN_ARG_KEY = 'idempotency_key'
 
 // ACT-07 — a headline is never one un-split string: DESIGN.md's "Numbers are
 // always mono" rule (echoed by 22-UI-SPEC.md's Typography table: "every
