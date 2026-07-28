@@ -379,6 +379,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Phase 22 P03 | 55min | 3 tasks | 6 files |
 | Phase 22 P04 | 45min | 2 tasks | 1 files |
 | Phase 22 P05 | 65min | 3 tasks | 3 files |
+| Phase 22 P06 | 30min | 3 tasks | 5 files |
 
 ## Notes
 
@@ -555,13 +556,14 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: 22-03: commit-before-dispatch (OD-6) for the resolve claim; execution-outcome read-time lookup discriminated on actor_decision='approved_by_human' (OD-3); Celery task import kept local to the route function body because Task 1 must import cleanly before Task 2's task module exists
 - [Phase ?]: 22-04: unlocked the Enabled checkbox (no permanent platform-default lock; staged confirm only when agent.is_deployed) and shipped the ACT-07 pending-confirmation queue as the last left-bench section, both reusing the cap-confirm shape verbatim; verdict chips gated on the backend's read-time execution_outcome, never on resolution alone
 - [Phase ?]: 22-05: reworded two gated-module docstring sentences to avoid literal substring collisions with the plan's own negative-assertion grep gates (docker-compose, settings.CONTROL_DB_URL) — same over-broad-gate class already documented in 22-04
+- [Phase ?]: 22-06: all three operator-gated items (VER-01 SC2 re-run, ACT-07 live-DB gate, two held-out visual checks) deferred 2026-07-28 for confirmed, precisely-named causes (no local PostgreSQL server; no un-briefed non-technical tester); 19-UAT.md item 1 amended in place rather than rewritten so both the original failure and its now-closed causes stay readable together
 
 ## Session
 
-**Last session:** 2026-07-28T20:36:08.631Z
-**Stopped at:** Executed 22-05-PLAN.md (guide correction, ACT-07 live-DB proof, validation fill)
+**Last session:** 2026-07-28T21:12:32.000Z
+**Stopped at:** Completed 22-06-PLAN.md (operator gates deferred, 22-UAT.md, planning-doc reconciliation) — Phase 22 closed
 
 Earlier the same session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 
-**Outstanding:** Phase 19 has 0 plans (depends on 18). Phase 13 paused at 7/11 on a real AWS account. No v1.2 migration has been applied to a live Neon DB. **Next: `/gsd-execute-phase 18`.**
+**Outstanding:** Phase 13 paused at 7/11 on a real AWS account. `CAP-03` (18-10's own operator checkpoint, unrun), `VER-01` (SC2 re-run and SC3, both deferred — no local PostgreSQL), and `AUD-03` (deferred, same cause) are the remaining v1.1 gaps, all sharing one root precondition: a local PostgreSQL server does not exist on this machine. No v1.2 migration has been applied to a live Neon DB. **Next: install a local PostgreSQL server and re-run the deferred gates named in `22-UAT.md`, `19-UAT.md`, and `18-10-SUMMARY.md`; no further planning or code work is required to close them.**
 **Resume file:** None
