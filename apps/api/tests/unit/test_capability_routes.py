@@ -9,7 +9,9 @@ Tests:
     TestPatchCapabilityEnvelope
         test_patch_accepts_tighten_returns_200
         test_patch_rejects_loosen_returns_422              — pinned node id
-        test_patch_rejects_each_loosening_field             — parametrised, 6 fields
+        test_patch_rejects_each_loosening_field             — parametrised, 5 fields
+            (CAP-05: the `enabled` case moved out of this parametrize — it is
+            no longer a loosening direction. See the four new tests below.)
         test_patch_rejects_actor_mode_off_for_mutating_skill
         test_patch_rejects_out_of_domain_actor_mode_at_the_schema
         test_patch_rejects_unknown_field
@@ -17,6 +19,12 @@ Tests:
         test_patch_foreign_agent_returns_404                — pinned node id
         test_patch_first_write_compared_against_platform_default
         test_empty_patch_body_is_a_noop_200
+        test_patch_enables_a_disabled_skill_for_every_mutating_skill  — CAP-05
+        test_patch_enable_does_not_change_any_other_field             — CAP-05
+        test_patch_first_write_enable_creates_row_at_platform_defaults — CAP-05
+        test_enable_plus_illegal_other_field_still_rejected            — CAP-05
+
+    test_platform_defaults_still_ship_every_skill_disabled  — module-scope, CAP-05
 
 Mock strategy (mirrors test_deployment_routes.py):
     - FastAPI dependency_overrides for get_current_tenant and get_async_db
@@ -319,7 +327,6 @@ class TestPatchCapabilityEnvelope:
     @pytest.mark.parametrize(
         "current_overrides,payload",
         [
-            ({"enabled": False}, {"enabled": True}),
             ({"rate_limit": "5/hour"}, {"rate_limit": "10/hour"}),
             ({"constraints": {"max_amount_cents": 5000}}, {"constraints": {"max_amount_cents": 20000}}),
             ({"requires_confirmation": True}, {"requires_confirmation": False}),
@@ -330,7 +337,6 @@ class TestPatchCapabilityEnvelope:
             ({"actor_mode": "always-on"}, {"actor_mode": "sample_at_rate_10"}),
         ],
         ids=[
-            "enabled",
             "rate_limit",
             "max_amount_cents",
             "requires_confirmation",
@@ -460,3 +466,114 @@ class TestPatchCapabilityEnvelope:
         assert body["constraints"] == {"max_amount_cents": 5000}
         assert body["rate_limit"] == row.rate_limit
         mock_db.commit.assert_not_awaited()
+
+    # -----------------------------------------------------------------------
+    # CAP-05: enabled is now an owner-controlled authorization toggle, not a
+    # tightness dimension. These four tests are the route-level proof that
+    # the enable transition is reachable, and — the phase's central claim —
+    # that enabling a skill loosens nothing else on the row.
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "skill",
+        [s for s, d in PLATFORM_CAPABILITY_DEFAULTS.items() if d.get("mutating")],
+    )
+    async def test_patch_enables_a_disabled_skill_for_every_mutating_skill(self, skill):
+        fake_tenant = _make_fake_tenant()
+        agent_id = uuid4()
+        mock_agent = _make_ready_agent(fake_tenant, agent_id=agent_id)
+        row = _make_envelope_row(skill, agent_id=agent_id, enabled=False)
+        mock_db = _make_mock_db(mock_agent, patch_row=row)
+
+        response = await self._patch(agent_id, skill, {"enabled": True}, mock_db, fake_tenant)
+
+        assert response.status_code == 200
+        assert response.json()["enabled"] is True
+        mock_db.commit.assert_awaited()
+
+    async def test_patch_enable_does_not_change_any_other_field(self):
+        fake_tenant = _make_fake_tenant()
+        agent_id = uuid4()
+        mock_agent = _make_ready_agent(fake_tenant, agent_id=agent_id)
+        row = _make_envelope_row(
+            "issue_refund",
+            agent_id=agent_id,
+            enabled=False,
+            rate_limit="1/day",
+            constraints={"max_amount_cents": 100},
+            requires_confirmation=True,
+            requires_identity_verification=True,
+            actor_mode="always-on",
+        )
+        captured = {
+            "rate_limit": row.rate_limit,
+            "constraints": dict(row.constraints),
+            "requires_confirmation": row.requires_confirmation,
+            "requires_identity_verification": row.requires_identity_verification,
+            "actor_mode": row.actor_mode,
+        }
+        mock_db = _make_mock_db(mock_agent, patch_row=row)
+
+        response = await self._patch(agent_id, "issue_refund", {"enabled": True}, mock_db, fake_tenant)
+
+        assert response.status_code == 200
+        assert row.enabled is True
+        assert row.rate_limit == captured["rate_limit"]
+        assert row.constraints == captured["constraints"]
+        assert row.requires_confirmation == captured["requires_confirmation"]
+        assert row.requires_identity_verification == captured["requires_identity_verification"]
+        assert row.actor_mode == captured["actor_mode"]
+
+    async def test_patch_first_write_enable_creates_row_at_platform_defaults(self):
+        fake_tenant = _make_fake_tenant()
+        agent_id = uuid4()
+        mock_agent = _make_ready_agent(fake_tenant, agent_id=agent_id)
+        mock_db = _make_mock_db(mock_agent, patch_row=None)
+        default = PLATFORM_CAPABILITY_DEFAULTS["issue_refund"]
+
+        response = await self._patch(agent_id, "issue_refund", {"enabled": True}, mock_db, fake_tenant)
+
+        assert response.status_code == 200
+        mock_db.add.assert_called_once()
+        added_row = mock_db.add.call_args[0][0]
+        assert added_row.rate_limit == default["rate_limit"]
+        assert added_row.constraints == default["constraints"]
+        assert added_row.requires_confirmation == default["requires_confirmation"]
+        assert added_row.requires_identity_verification == default["requires_identity_verification"]
+        assert added_row.actor_mode == default["actor_mode"]
+
+    async def test_enable_plus_illegal_other_field_still_rejected(self):
+        fake_tenant = _make_fake_tenant()
+        agent_id = uuid4()
+        mock_agent = _make_ready_agent(fake_tenant, agent_id=agent_id)
+        platform_ceiling = PLATFORM_CAPABILITY_DEFAULTS["issue_refund"]["constraints"]["max_amount_cents"]
+        row = _make_envelope_row(
+            "issue_refund",
+            agent_id=agent_id,
+            enabled=False,
+            constraints={"max_amount_cents": platform_ceiling},
+        )
+        mock_db = _make_mock_db(mock_agent, patch_row=row)
+
+        response = await self._patch(
+            agent_id,
+            "issue_refund",
+            {"enabled": True, "constraints": {"max_amount_cents": platform_ceiling + 1}},
+            mock_db,
+            fake_tenant,
+        )
+
+        assert response.status_code == 422
+        assert "loosen_max_amount_cents" in response.json()["detail"]
+        mock_db.commit.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Module-scope: fail-closed platform posture (CAP-05)
+# ---------------------------------------------------------------------------
+
+
+def test_platform_defaults_still_ship_every_skill_disabled():
+    """CAP-05 changes what an owner may reach, never what a newly-provisioned
+    agent starts with. Every platform default must still ship enabled=False."""
+    assert all(entry.get("enabled") is False for entry in PLATFORM_CAPABILITY_DEFAULTS.values())
