@@ -141,7 +141,7 @@ async def add_cache_control(request: Request, call_next):
 # Routers
 # ---------------------------------------------------------------------------
 
-from app.api.v1 import agents, documents, health, jobs, tenants, query, agent_chat, widget, webhooks, evals, red_team, deployment, observability, traces, metrics, prompt_versions, capability_envelopes  # noqa: E402
+from app.api.v1 import agents, documents, health, jobs, tenants, query, agent_chat, widget, webhooks, evals, red_team, deployment, observability, traces, metrics, prompt_versions, capability_envelopes, pending_confirmations  # noqa: E402
 
 # webhooks router registered FIRST — ensures /webhooks/clerk and /me/provision are matched
 # before any wildcard route patterns
@@ -162,3 +162,4 @@ app.include_router(traces.router, prefix="/api/v1")
 app.include_router(metrics.router, prefix="/api/v1")
 app.include_router(prompt_versions.router, prefix="/api/v1")
 app.include_router(capability_envelopes.router, prefix="/api/v1")
+app.include_router(pending_confirmations.router, prefix="/api/v1")
