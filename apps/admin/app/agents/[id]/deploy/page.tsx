@@ -1418,11 +1418,19 @@ function CapabilityZone({
             }}
           />
         </div>
-        <p className="help cap-caption">
-          {envelope.enabled
-            ? 'On. The agent can use this skill.'
-            : 'Off. Turn this on to let the agent use this skill.'}
-        </p>
+        {/* Suppressed while staged (pendingEnabled === true): the box already
+            previews checked above, and the cap-confirm-q immediately below
+            states the pending destination in full sentence form — a resting
+            "Off." caption under a checked box would contradict what the
+            owner just did, and "On." would assert a write that has not
+            happened yet. Nothing is lost; the confirm question says it. */}
+        {pendingEnabled !== true && (
+          <p className="help cap-caption">
+            {envelope.enabled
+              ? 'On. The agent can use this skill.'
+              : 'Off. Turn this on to let the agent use this skill.'}
+          </p>
+        )}
         {pendingEnabled === true && (
           <div className="cap-confirm">
             <p className="cap-confirm-q" id={`${envelope.skill}-enabled-confirm-q`}>
