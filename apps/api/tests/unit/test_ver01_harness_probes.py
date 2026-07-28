@@ -42,6 +42,20 @@ Covers exactly the 12 node ids the plan names:
     test_summarise_flags_succeeded_on_expected_denied_entry
     test_summarise_ignores_succeeded_on_entry_expected_to_succeed
     test_all_probes_inside_red_team_mode
+
+WR-03 fix addendum (19-REVIEW.md), added by a later fix pass -- not one of the
+12 original node ids, extending the file rather than replacing any of them:
+    test_corpus_entries_declare_a_known_rate_track
+    test_confused_deputy_and_injection_entries_never_hit_an_exhausted_rate_window
+        The structural proof that no confused-deputy or injection-labeled
+        corpus entry is ever preceded, within its own (rate_track, skill)
+        key, by enough same-key calls to have exhausted that skill's
+        CLEAN_TENANT_ENVELOPES rate_limit. This is the only RUNNABLE proof of
+        the WR-03 fix in this environment -- the gated integration harness
+        itself needs a live local Postgres + Redis this environment does not
+        have. Limits are read from CLEAN_TENANT_ENVELOPES itself (imported,
+        never re-typed as a literal), so the test cannot silently drift from
+        the real envelope config.
 """
 
 from __future__ import annotations
@@ -49,7 +63,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.services.red_team_probe import PROBE_SKILL_TOOLS, ProbeToolResult
+from app.services.red_team_probe import CLEAN_TENANT_ENVELOPES, PROBE_SKILL_TOOLS, ProbeToolResult
 from tests.integration.test_ver01_adversarial_harness import (
     ADVERSARIAL_MESSAGE_CORPUS,
     run_adversarial_corpus,
@@ -286,3 +300,96 @@ def test_all_probes_inside_red_team_mode():
     # every invoke event falls strictly between the single enter and single exit
     assert event_order == ["window_enter", *invoke_events, "window_exit"]
     assert mock_mode.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# WR-03 (19-REVIEW.md) fix addendum: rate-window isolation by agent track.
+# ---------------------------------------------------------------------------
+
+
+def test_corpus_entries_declare_a_known_rate_track():
+    """Every corpus entry names one of the three tracks the clean_tenant
+    fixture actually provisions an agent for (_insert_clean_agent, one call
+    per track in the integration module) -- an entry naming anything else
+    would have no matching agent_id at run time.
+    """
+    known_tracks = {"primary", "confused_deputy", "injection"}
+    for entry in ADVERSARIAL_MESSAGE_CORPUS:
+        assert "rate_track" in entry, f"{entry['id']} is missing a rate_track key"
+        assert entry["rate_track"] in known_tracks, (
+            f"{entry['id']} names rate_track {entry['rate_track']!r}, not one of {known_tracks}"
+        )
+
+
+def _rate_limit_max_calls(skill: str) -> int | None:
+    """Read `skill`'s configured rate_limit straight from CLEAN_TENANT_ENVELOPES
+    (the same fixture data _insert_clean_agent inserts, unmodified, for every
+    track's agent) and return the max-calls-per-window integer, or None if the
+    skill carries no rate_limit at all (e.g. confirm_action, which is denied at
+    the capability layer before any rate check ever runs).
+
+    Deliberately reads the real config rather than hardcoding a duplicate copy
+    -- the whole point of this guard is that it cannot silently drift from
+    CLEAN_TENANT_ENVELOPES if a limit changes.
+    """
+    for row in CLEAN_TENANT_ENVELOPES:
+        if row["skill"] == skill:
+            rate_limit = row.get("rate_limit")
+            if not rate_limit:
+                return None
+            max_calls_str, _, _window = rate_limit.partition("/")
+            return int(max_calls_str)
+    return None
+
+
+# The two attack classes WR-03 found being pre-empted by rate exhaustion --
+# both need a live enforcement layer (the Actor gate) past the rate check to
+# mean anything at all; a rate_denied verdict on one of these proves nothing
+# about Actor-gate or injection-resistance coverage.
+_ATTACK_CLASSES_REQUIRING_AN_UNEXHAUSTED_WINDOW = frozenset(
+    {"confused_deputy", "conversation_injection", "content_injection"}
+)
+
+
+def test_confused_deputy_and_injection_entries_never_hit_an_exhausted_rate_window():
+    """WR-03 (19-REVIEW.md): structurally proves that no confused-deputy or
+    injection-labeled corpus entry is ever preceded, within its own
+    (rate_track, skill) key, by enough prior same-key same-skill calls to
+    have exhausted that skill's CLEAN_TENANT_ENVELOPES rate_limit.
+
+    This is the real fix's guard: it fails today if someone merges two
+    tracks back into one, reorders the corpus so a rate-chain group runs
+    ahead of a confused_deputy/injection group on the same track, or lowers
+    a rate_limit -- and it names every offending entry rather than reporting
+    a bare count, so a failure is actionable without re-deriving the corpus
+    by hand.
+
+    Entirely computed from ADVERSARIAL_MESSAGE_CORPUS + CLEAN_TENANT_ENVELOPES;
+    no DB, no Redis, no network, no live enforcement code imported.
+    """
+    calls_seen: dict[tuple[str, str], int] = {}
+    offenders: list[str] = []
+
+    for entry in ADVERSARIAL_MESSAGE_CORPUS:
+        key = (entry["rate_track"], entry["skill"])
+        prior_calls = calls_seen.get(key, 0)
+
+        if entry["attack_class"] in _ATTACK_CLASSES_REQUIRING_AN_UNEXHAUSTED_WINDOW:
+            max_calls = _rate_limit_max_calls(entry["skill"])
+            if max_calls is not None and prior_calls >= max_calls:
+                offenders.append(
+                    f"{entry['id']} (skill={entry['skill']!r}, "
+                    f"rate_track={entry['rate_track']!r}, "
+                    f"attack_class={entry['attack_class']!r}) is preceded by "
+                    f"{prior_calls} prior call(s) on the same (rate_track, skill) key, "
+                    f"at or beyond the configured limit of {max_calls} -- it would be "
+                    "rate_denied before ever reaching the layer its attack_class claims "
+                    "to exercise"
+                )
+
+        calls_seen[key] = prior_calls + 1
+
+    assert not offenders, (
+        f"{len(offenders)} corpus entr{'y' if len(offenders) == 1 else 'ies'} would be "
+        "pre-empted by rate-limit exhaustion (WR-03 regression):\n" + "\n".join(offenders)
+    )
