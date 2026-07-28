@@ -2019,9 +2019,21 @@ class TestFourNodeStructuralAssertion:
         """Node 1 (Actor) is synchronous and runs before get_adapter_for_skill (step 6).
 
         Structural proof: in the source of _execute_transactional_tool, the
-        call_actor_gate call site appears before the get_adapter_for_skill call site.
+        call_actor_gate call site appears before the step 6/7 call site that
+        leads to get_adapter_for_skill.
 
         Phase 16 update: get_adapter() replaced by get_adapter_for_skill() (INT-02 wiring).
+
+        Phase 22 (22-02, T-22-ACT-15) update: steps 6-7 (adapter execute + audit +
+        finalize) were extracted into the shared `_execute_adapter_and_audit`
+        helper so the confirmation resolver can call the identical
+        implementation instead of duplicating it. `get_adapter_for_skill(` is
+        therefore no longer a literal token inside `_execute_transactional_tool`'s
+        own source — it lives one level down, inside the helper. The dispatcher
+        now calls `_execute_adapter_and_audit(` as its step 6/7 entry point, so
+        that call site is the correct structural stand-in: call_actor_gate must
+        still appear before it, preserving the exact "Actor runs before the
+        adapter" invariant this test exists to prove.
         """
         src = self._tools_src()
         dispatcher_start = src.index("async def _execute_transactional_tool(")
@@ -2030,11 +2042,25 @@ class TestFourNodeStructuralAssertion:
         dispatcher_body = src[dispatcher_start : dispatcher_start + 20000]
 
         call_actor_pos = dispatcher_body.index("call_actor_gate(")
-        get_adapter_pos = dispatcher_body.index("get_adapter_for_skill(")
+        adapter_step_pos = dispatcher_body.index("_execute_adapter_and_audit(")
 
-        assert call_actor_pos < get_adapter_pos, (
-            f"call_actor_gate ({call_actor_pos}) must appear before get_adapter_for_skill ({get_adapter_pos})"
-            " in _execute_transactional_tool source (Actor is synchronous pre-mutation node 1)"
+        assert call_actor_pos < adapter_step_pos, (
+            f"call_actor_gate ({call_actor_pos}) must appear before "
+            f"_execute_adapter_and_audit ({adapter_step_pos}) in "
+            "_execute_transactional_tool source (Actor is synchronous pre-mutation node 1)"
+        )
+
+        # The adapter resolution itself must still happen strictly after the
+        # Actor gate — proven one level down, inside the extracted helper,
+        # since it is no longer inline in the dispatcher's own source.
+        helper_start = src.index("async def _execute_adapter_and_audit(")
+        assert helper_start < dispatcher_start, (
+            "_execute_adapter_and_audit must be defined above _execute_transactional_tool"
+        )
+        helper_body = src[helper_start:dispatcher_start]
+        assert "get_adapter_for_skill(" in helper_body, (
+            "get_adapter_for_skill must be called inside the extracted "
+            "_execute_adapter_and_audit helper"
         )
 
     def test_tools_py_contains_require_human_branch(self):

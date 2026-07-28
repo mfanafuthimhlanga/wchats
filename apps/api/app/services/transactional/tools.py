@@ -102,6 +102,148 @@ _CONFIRM_TTL_HOURS: int = 24
 
 
 # ---------------------------------------------------------------------------
+# Shared steps 6-7 — adapter execute + audit row + finalize
+# ---------------------------------------------------------------------------
+
+
+async def _execute_adapter_and_audit(
+    *,
+    skill: str,
+    validated,  # Pydantic-validated input model for the specific tool
+    raw_args: dict,
+    adapter_method: str,
+    agent_id: str,
+    conn_str: str,
+    conversation_id: str | None,
+    snapshot: dict,
+    decision: str,
+    rationale: str,
+) -> dict:
+    """Steps 6 (adapter execute) and 7 (audit + finalize), extracted once.
+
+    Called by both `_execute_transactional_tool` (the live-turn dispatcher,
+    step 5 having just produced `decision`/`rationale` from the Actor seam)
+    and `confirmation_resolution.execute_approved_confirmation` (the human-
+    approval resolver, which passes `decision="approved_by_human"` in place
+    of an Actor verdict). One implementation of "how to call a provider
+    adapter and audit it" avoids the two-copies drift 22-RESEARCH.md
+    § Don't Hand-Roll names as a future security-relevant inconsistency
+    (T-22-ACT-15).
+
+    This is a pure extraction of the former inline body of
+    `_execute_transactional_tool` steps 6-7 — no behaviour change.
+
+    Args:
+        skill:          Canonical tool/skill name (e.g. "place_order").
+        validated:      Pydantic-validated input model; provides .idempotency_key.
+        raw_args:       Original unvalidated args dict (passed to the audit row).
+        adapter_method: Method name on ProviderAdapter to call (e.g. "place_order").
+        agent_id:       UUID string of the calling agent.
+        conn_str:       Decrypted tenant DB connection string.
+        conversation_id: Current conversation id, or None outside a conversation.
+        snapshot:       JSON-safe capability envelope snapshot from step 2.
+        decision:       Actor verdict string ("approve") or "approved_by_human"
+                         for a resolver-driven execution — written to the audit row.
+        rationale:      Actor rationale text, or a resolver-supplied rationale.
+
+    Returns:
+        SDK-compatible tool response dict with "content" key.
+        On errors: also contains "is_error": True.
+    """
+    # -------------------------------------------------------- 6. Adapter execute
+    # get_adapter_for_skill fetches + decrypts the tenant credential and returns
+    # the correct concrete adapter (INT-02). The raw credential never leaves this
+    # function scope — only a CredentialHandle (redacted repr) enters the adapter.
+    try:
+        adapter = await get_adapter_for_skill(skill, agent_id, conn_str)
+    except (ProviderNotConfiguredError, CredentialDecryptionError) as exc:
+        # The provider is not configured or the credential is corrupted.
+        # Release the idempotency reservation so a retry can re-enter (T-16-cfg).
+        await release_idempotency(agent_id, skill, validated.idempotency_key)
+        await write_audit_row(
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            skill=skill,
+            arguments=raw_args,
+            result=None,
+            actor_decision=decision,
+            actor_rationale=rationale,
+            capability_snapshot=snapshot,
+            latency_ms=None,
+            error=f"provider.not_configured:{exc}",
+        )
+        return {
+            "content": [{"type": "text", "text": str(exc)}],
+            "is_error": True,
+        }
+    start_ms = int(time.time() * 1000)
+
+    try:
+        result_obj = await getattr(adapter, adapter_method)(validated, agent_id)
+        response = result_obj.model_dump()
+        latency_ms = int(time.time() * 1000) - start_ms
+    except Exception as exc:  # noqa: BLE001
+        latency_ms = int(time.time() * 1000) - start_ms
+        error_str = str(exc)
+        log.error(
+            "transactional_tool.adapter_error",
+            agent_id=agent_id,
+            skill=skill,
+            error=error_str,
+        )
+        await release_idempotency(agent_id, skill, validated.idempotency_key)
+        await write_audit_row(
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            skill=skill,
+            arguments=raw_args,
+            result=None,
+            actor_decision=decision,
+            actor_rationale=rationale,
+            capability_snapshot=snapshot,
+            latency_ms=latency_ms,
+            error=error_str,
+        )
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"Tool execution failed: {error_str}. Please try again.",
+                }
+            ],
+            "is_error": True,
+        }
+
+    # -------------------------------------------------------- 7. Audit row + finalize + return
+    tool_response: dict = {
+        "content": [{"type": "text", "text": response.get("message", str(response))}]
+    }
+
+    await write_audit_row(
+        agent_id=agent_id,
+        conversation_id=conversation_id,
+        skill=skill,
+        arguments=raw_args,
+        result=response,
+        actor_decision=decision,
+        actor_rationale=rationale,
+        capability_snapshot=snapshot,
+        latency_ms=latency_ms,
+        error=None,
+    )
+
+    await finalize_idempotency(agent_id, skill, validated.idempotency_key, tool_response)
+
+    log.info(
+        "transactional_tool.success",
+        agent_id=agent_id,
+        skill=skill,
+        latency_ms=latency_ms,
+    )
+    return tool_response
+
+
+# ---------------------------------------------------------------------------
 # Shared dispatcher — encodes the enforcement order ONCE
 # ---------------------------------------------------------------------------
 
@@ -484,97 +626,22 @@ async def _execute_transactional_tool(
             ]
         }
 
-    # -------------------------------------------------------- 6. Adapter execute
-    # get_adapter_for_skill fetches + decrypts the tenant credential and returns
-    # the correct concrete adapter (INT-02). The raw credential never leaves this
-    # function scope — only a CredentialHandle (redacted repr) enters the adapter.
-    try:
-        adapter = await get_adapter_for_skill(skill, agent_id, conn_str)
-    except (ProviderNotConfiguredError, CredentialDecryptionError) as exc:
-        # The provider is not configured or the credential is corrupted.
-        # Release the idempotency reservation so a retry can re-enter (T-16-cfg).
-        await release_idempotency(agent_id, skill, validated.idempotency_key)
-        await write_audit_row(
-            agent_id=agent_id,
-            conversation_id=conversation_id,
-            skill=skill,
-            arguments=raw_args,
-            result=None,
-            actor_decision=decision,
-            actor_rationale=rationale,
-            capability_snapshot=snapshot,
-            latency_ms=None,
-            error=f"provider.not_configured:{exc}",
-        )
-        return {
-            "content": [{"type": "text", "text": str(exc)}],
-            "is_error": True,
-        }
-    start_ms = int(time.time() * 1000)
-
-    try:
-        result_obj = await getattr(adapter, adapter_method)(validated, agent_id)
-        response = result_obj.model_dump()
-        latency_ms = int(time.time() * 1000) - start_ms
-    except Exception as exc:  # noqa: BLE001
-        latency_ms = int(time.time() * 1000) - start_ms
-        error_str = str(exc)
-        log.error(
-            "transactional_tool.adapter_error",
-            agent_id=agent_id,
-            skill=skill,
-            error=error_str,
-        )
-        await release_idempotency(agent_id, skill, validated.idempotency_key)
-        await write_audit_row(
-            agent_id=agent_id,
-            conversation_id=conversation_id,
-            skill=skill,
-            arguments=raw_args,
-            result=None,
-            actor_decision=decision,
-            actor_rationale=rationale,
-            capability_snapshot=snapshot,
-            latency_ms=latency_ms,
-            error=error_str,
-        )
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": f"Tool execution failed: {error_str}. Please try again.",
-                }
-            ],
-            "is_error": True,
-        }
-
-    # -------------------------------------------------------- 7. Audit row + finalize + return
-    tool_response: dict = {
-        "content": [{"type": "text", "text": response.get("message", str(response))}]
-    }
-
-    await write_audit_row(
+    # -------------------------------------------------------- 6-7. Adapter + audit
+    # Delegated to the shared helper (T-22-ACT-15) — see _execute_adapter_and_audit
+    # above for the full step 6/7 implementation. Pure extraction; no behaviour
+    # change from the formerly-inline body.
+    return await _execute_adapter_and_audit(
+        skill=skill,
+        validated=validated,
+        raw_args=raw_args,
+        adapter_method=adapter_method,
         agent_id=agent_id,
+        conn_str=conn_str,
         conversation_id=conversation_id,
-        skill=skill,
-        arguments=raw_args,
-        result=response,
-        actor_decision=decision,
-        actor_rationale=rationale,
-        capability_snapshot=snapshot,
-        latency_ms=latency_ms,
-        error=None,
+        snapshot=snapshot,
+        decision=decision,
+        rationale=rationale,
     )
-
-    await finalize_idempotency(agent_id, skill, validated.idempotency_key, tool_response)
-
-    log.info(
-        "transactional_tool.success",
-        agent_id=agent_id,
-        skill=skill,
-        latency_ms=latency_ms,
-    )
-    return tool_response
 
 
 # ---------------------------------------------------------------------------

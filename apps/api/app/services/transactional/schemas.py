@@ -346,3 +346,29 @@ class ConfirmActionOutput(BaseModel):
         str,
         Field(description="Human-readable result for the agent to convey to the customer."),
     ]
+
+
+# ---------------------------------------------------------------------------
+# SKILL_INPUT_MODELS — skill name -> Input model, for the six mutating skills
+# ---------------------------------------------------------------------------
+#
+# Definition-time mapping, written by hand — never derived from a tool name at
+# runtime, matching TOOL_REGISTRY's own stated rule (registry.py docstring:
+# "never runtime-inferred from the tool name or arguments", T-14-02-02).
+#
+# confirm_action is deliberately absent. It has no adapter method and no
+# idempotency_key (mutating=False) — including it here would make an
+# unexecutable skill look executable to a resolver that reads this mapping to
+# decide what it may re-validate and dispatch (ACT-07's confirmation_resolution.py).
+#
+# Its key set is asserted equal to the registry's mutating set by a unit test
+# (test_confirmation_resolution.py), so adding a seventh mutating skill without
+# adding an entry here is a red test, not a silent gap.
+SKILL_INPUT_MODELS: dict[str, type[BaseModel]] = {
+    "place_order": PlaceOrderInput,
+    "cancel_order": CancelOrderInput,
+    "issue_refund": IssueRefundInput,
+    "update_subscription": UpdateSubscriptionInput,
+    "book_slot": BookSlotInput,
+    "update_customer_record": UpdateCustomerRecordInput,
+}
