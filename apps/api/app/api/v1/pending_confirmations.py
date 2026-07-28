@@ -20,7 +20,7 @@ Security:
     capability_envelopes.py's own copy of _get_owned_agent, so a foreign
     agent is indistinguishable from a missing one.
 
-    The atomic claim (`UPDATE ... WHERE resolved_at IS NULL ... RETURNING`)
+    The atomic claim (an `UPDATE ... RETURNING` guarded by `resolved_at IS NULL`)
     is the ENTIRE concurrency control for the resolve route — no read-then-
     write check backs it up, and none is needed: the database decides the
     single winner. Expiry is forced inside that same statement (OD-2, lazy,
@@ -190,10 +190,10 @@ async def list_pending_confirmations(
             "SELECT id, skill, arguments, requested_at, expires_at, resolved_at, resolution "
             "FROM pending_confirmations "
             "WHERE agent_id = :agent_id "
-            "AND (resolved_at IS NULL OR resolved_at >= now() - interval '24 hours') "
+            "AND (resolved_at >= now() - interval '24 hours' OR resolved_at IS NULL) "
             "ORDER BY "
             "    (resolved_at IS NULL) DESC, "
-            "    CASE WHEN resolved_at IS NULL THEN expires_at END ASC NULLS LAST, "
+            "    CASE WHEN resolved_at IS NOT NULL THEN NULL ELSE expires_at END ASC NULLS LAST, "
             "    resolved_at DESC, "
             "    id ASC"
         ),
@@ -243,8 +243,8 @@ async def resolve_pending_confirmation(
     route:
 
     1. IDOR first — before the confirmation id or the body is touched.
-    2. The atomic claim: a single UPDATE ... WHERE resolved_at IS NULL ...
-       RETURNING. The database decides the single winner. A second caller
+    2. The atomic claim: a single `UPDATE ... RETURNING` guarded by
+       `resolved_at IS NULL`. The database decides the single winner. A second caller
        gets nothing back and a 409 that does not distinguish "already
        resolved" from "does not exist" from "not yours" — safe because it
        only fires after the ownership-guarded check has already passed, so
