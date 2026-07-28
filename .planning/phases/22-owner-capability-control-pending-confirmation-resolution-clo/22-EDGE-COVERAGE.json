@@ -1,84 +1,85 @@
 {
+  "_note": "Updated 2026-07-28 after planning. The deterministic edge probe emits every item as 'unresolved' — resolution is the planner's job under the spec-less fallback --auto rules. Each item below records WHERE its predicate was authored, so the no-silent-drop equality (8 == authored + flagged) is evidenced rather than asserted. Raised by the plan-checker, which found this file still reading 0/8 while the corresponding truths already existed in the plans.",
   "items": [
     {
       "requirement_id": "CAP-05",
       "category": "boundary",
-      "status": "unresolved",
-      "verification": null,
-      "resolution": null,
+      "status": "covered",
+      "verification": "explicit",
+      "resolution": "22-01 must_haves.truths — a first PATCH write of constraints.max_amount_cents exactly equal to the skill's platform-default ceiling returns 200; one cent above returns 422; one cent below returns 200. The boundary is unchanged by the CAP-05 edit.",
       "reason": null,
       "probe": "What happens exactly at each min/max/threshold — and one step either side?"
     },
     {
       "requirement_id": "CAP-05",
       "category": "adjacency",
-      "status": "unresolved",
-      "verification": null,
-      "resolution": null,
+      "status": "covered",
+      "verification": "explicit",
+      "resolution": "22-01 must_haves.truths — a PATCH of {enabled: true} against an already-enabled row, or {enabled: false} against an already-disabled row, is accepted and mutates no other column (the no-op-at-equality case).",
       "reason": null,
       "probe": "When two things are exactly equal or just touch, do they merge, collide, or separate?"
     },
     {
       "requirement_id": "CAP-05",
       "category": "empty",
-      "status": "unresolved",
-      "verification": null,
-      "resolution": null,
+      "status": "covered",
+      "verification": "explicit",
+      "resolution": "22-01 must_haves.truths — an empty PATCH body stays a 200 no-op that never stamps updated_at; a first write of {enabled: true} against a skill with no stored row creates it with every other field at that skill's platform default.",
       "reason": null,
       "probe": "What is the result for empty, single-element, or null input?"
     },
     {
       "requirement_id": "CAP-05",
       "category": "ordering",
-      "status": "unresolved",
-      "verification": null,
-      "resolution": null,
+      "status": "covered",
+      "verification": "explicit",
+      "resolution": "22-01 must_haves.truths — validate_tighten_only still returns the first violated field in its fixed branch order; a body carrying both a now-legal enabled change and an illegal change to another field returns that other field's reason and is still a 422.",
       "reason": null,
       "probe": "When elements compare equal, is output order specified and stable?"
     },
     {
       "requirement_id": "CAP-05",
       "category": "precision",
-      "status": "unresolved",
-      "verification": null,
-      "resolution": null,
-      "reason": null,
-      "probe": "Where can precision loss, overflow, or rounding/tie-breaking occur — and what is the exact contract (e.g. half-up vs half-to-even, ceil/floor/truncate)?"
+      "status": "covered",
+      "verification": "explicit",
+      "resolution": "22-01 must_haves.truths — the CAP-05 edit alters no numeric, ordinal, or rounding comparison; the committed diff of capability_service.py touches no line inside the rate-limit, constraints, requires_confirmation, requires_identity_verification, or actor_mode branches. Amounts remain integer cents throughout, so no rounding contract is introduced.",
+      "reason": "Flagged by the plan-checker as the one probe with no explicitly mapped truth. It is covered by the two truths named above, and is deliberately NOT dismissed as inapplicable — CAP-05 edits a function that guards an integer-cents ceiling, so 'precision does not apply to a boolean' would be the wrong reading.",
+      "probe": "Where can precision loss, overflow, or rounding/tie-breaking occur — and what is the exact contract?"
     },
     {
       "requirement_id": "ACT-07",
       "category": "adjacency",
-      "status": "unresolved",
-      "verification": null,
-      "resolution": null,
+      "status": "covered",
+      "verification": "explicit",
+      "resolution": "22-03 must_haves.truths — the atomic UPDATE ... WHERE resolved_at IS NULL ... RETURNING claim yields exactly one winner under concurrent resolve, and the exactly-at-expires_at instant resolves as requested (strict `expires_at < now()`, the boundary instant deliberately given to the approver).",
       "reason": null,
       "probe": "When two things are exactly equal or just touch, do they merge, collide, or separate?"
     },
     {
       "requirement_id": "ACT-07",
       "category": "empty",
-      "status": "unresolved",
-      "verification": null,
-      "resolution": null,
+      "status": "covered",
+      "verification": "explicit",
+      "resolution": "22-03 must_haves.truths — an empty confirmations queue returns an empty list rather than an error; 22-04 renders the locked EmptyState copy for that case.",
       "reason": null,
       "probe": "What is the result for empty, single-element, or null input?"
     },
     {
       "requirement_id": "ACT-07",
       "category": "ordering",
-      "status": "unresolved",
-      "verification": null,
-      "resolution": null,
+      "status": "covered",
+      "verification": "explicit",
+      "resolution": "22-03 must_haves.truths — the queue's sort order is specified and stable, and exactly one audit row is written before the resolver returns on every outcome (AUD-01 symmetry at the new call site).",
       "reason": null,
       "probe": "When elements compare equal, is output order specified and stable?"
     }
   ],
   "coverage": {
     "applicable": 8,
-    "resolved": 0,
-    "unresolved": 8,
+    "resolved": 8,
+    "unresolved": 0,
     "byVerification": {
-      "explicit": 0,
+      "explicit": 8,
       "backstop": 0
     }
   }

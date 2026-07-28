@@ -419,11 +419,25 @@ Plans:
 **Plans:** 6 plans / 5 waves
 
 Plans:
+**Wave 1**
+
 - [ ] 22-01-PLAN.md — (W1) CAP-05: remove the platform-default gate from `validate_tighten_only`'s `enabled` branch; prove the other five dimensions bit-for-bit as strict
 - [ ] 22-02-PLAN.md — (W1) ACT-07 core: `SKILL_INPUT_MODELS`, extract the dispatcher's steps 6-7, and build the steps-2/3/4/6/7 resolver that skips the Actor seam and the IDV gate
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 22-03-PLAN.md — (W2) ACT-07 surface: the queue read, the atomic `UPDATE … WHERE resolved_at IS NULL … RETURNING` claim, and the `runtime`-queue execution task
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 22-04-PLAN.md — (W3) Deploy-page UI: unlock the Enabled control with staged confirm for a live agent, and add the approver's pending-confirmation queue
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 22-05-PLAN.md — (W4) Correct `docs/guides/owner-capability-guide.md` (CAP-05 falsifies it), author the gated live-DB module, fill `22-VALIDATION.md`
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
 - [ ] 22-06-PLAN.md — (W5, `autonomous:false`) Operator gates: VER-01 SC2 re-run, the live ACT-07 proof, `22-UAT.md`, and planning-doc reconciliation
 
 *Planned 2026-07-28 with research + patterns + validation + UI-SPEC but **no CONTEXT.md** (no discuss-phase pass, matching Phases 15-19), so the planner owned and closed six Open Decisions, recorded in `22-01-PLAN.md § Open Decisions Resolved`: (1) identity verification is not re-checked at resolution, accepted as `T-22-ACT-08` and enforced as a source-absence assertion; (2) expiry is lazy inside the atomic claim, no sweep task; (3) the execution-outcome gap is closed by a read-time `tool_calls_audit` lookup, **not** a `0020` migration; (4) the queue lives on the Deploy page, confirmed; (5) the resolver's execution-context shim is an explicit parameter contract, not ContextVar seeding; (6) the claim commits **before** the task is dispatched, overturning the ordering shown in RESEARCH and PATTERNS. Wave 1 (22-01, 22-02) is autonomous with zero `files_modified` overlap; waves 2-4 are autonomous; wave 5 is `autonomous:false` (no local PostgreSQL, and the criterion needs an un-briefed non-technical tester).*
