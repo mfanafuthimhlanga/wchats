@@ -299,6 +299,19 @@ const HIDDEN_ARG_KEY = 'idempotency_key'
 // the flat template strings this replaced — only the markup changed.
 type HeadlineToken = { text: string; mono?: boolean }
 
+// I2 — a malformed or missing cents figure must never silently render as
+// R0.00. `arguments` is a JSONB column with no runtime validation on read;
+// for a non-technical owner deciding whether to approve real money
+// movement, a confidently-wrong "R0.00" is worse than an explicit unknown.
+// `readCents` distinguishes "genuinely zero" (a real, valid 0, which
+// `Number(v) || 0` cannot) from "not a valid number" — the two headline
+// templates below that carry real money use it on the one field that
+// decides whether the row is approvable.
+function readCents(v: unknown): number | null {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
 // ACT-07 — 22-UI-SPEC.md § Surface 2's headline table, copied verbatim from
 // the six real Input models (apps/api/app/services/transactional/schemas.py).
 // Every field referenced here is a real, typed field on the matching model —
@@ -306,19 +319,23 @@ type HeadlineToken = { text: string; mono?: boolean }
 // the generic fallback below, not to raw JSON.
 const CONFIRMATION_HEADLINES: Record<
   string,
-  (a: Record<string, unknown>) => { headline: HeadlineToken[]; secondary: string | null }
+  (a: Record<string, unknown>) => { headline: HeadlineToken[]; secondary: string | null; amountUnreadable?: boolean }
 > = {
-  place_order: (a) => ({
-    headline: [
-      { text: 'Place an order for ' },
-      { text: `${a.quantity}`, mono: true },
-      { text: ' × ' },
-      { text: `${a.product_id}`, mono: true },
-      { text: ' — ' },
-      { text: formatCents(Number(a.amount_cents) || 0), mono: true },
-    ],
-    secondary: `Customer: ${a.customer_email} · Ship to ${a.shipping_address}`,
-  }),
+  place_order: (a) => {
+    const amountCents = readCents(a.amount_cents)
+    return {
+      headline: [
+        { text: 'Place an order for ' },
+        { text: `${a.quantity}`, mono: true },
+        { text: ' × ' },
+        { text: `${a.product_id}`, mono: true },
+        { text: ' — ' },
+        amountCents === null ? { text: 'amount unavailable' } : { text: formatCents(amountCents), mono: true },
+      ],
+      secondary: `Customer: ${a.customer_email} · Ship to ${a.shipping_address}`,
+      amountUnreadable: amountCents === null,
+    }
+  },
   cancel_order: (a) => ({
     headline: [
       { text: 'Cancel order ' },
@@ -326,15 +343,19 @@ const CONFIRMATION_HEADLINES: Record<
     ],
     secondary: a.reason ? `Reason: ${a.reason}` : null,
   }),
-  issue_refund: (a) => ({
-    headline: [
-      { text: 'Refund ' },
-      { text: formatCents(Number(a.refund_amount_cents) || 0), mono: true },
-      { text: ' for order ' },
-      { text: `#${a.order_id}`, mono: true },
-    ],
-    secondary: a.reason ? `Reason: ${a.reason}` : null,
-  }),
+  issue_refund: (a) => {
+    const amountCents = readCents(a.refund_amount_cents)
+    return {
+      headline: [
+        { text: 'Refund ' },
+        amountCents === null ? { text: 'amount unavailable' } : { text: formatCents(amountCents), mono: true },
+        { text: ' for order ' },
+        { text: `#${a.order_id}`, mono: true },
+      ],
+      secondary: a.reason ? `Reason: ${a.reason}` : null,
+      amountUnreadable: amountCents === null,
+    }
+  },
   update_subscription: (a) => ({
     headline: [
       { text: 'Change subscription ' },
@@ -538,13 +559,20 @@ function confirmationHeadline(
   headlineText: string
   secondary: string | null
   details: { key: string; value: string }[] | null
+  amountUnreadable: boolean
 } {
   const skillLabel = SKILL_LABELS[skill] ?? skill
   const safeArgs = args ?? {}
   const template = CONFIRMATION_HEADLINES[skill]
   if (template) {
-    const { headline, secondary } = template(safeArgs)
-    return { headline, headlineText: headline.map((t) => t.text).join(''), secondary, details: null }
+    const { headline, secondary, amountUnreadable } = template(safeArgs)
+    return {
+      headline,
+      headlineText: headline.map((t) => t.text).join(''),
+      secondary,
+      details: null,
+      amountUnreadable: amountUnreadable ?? false,
+    }
   }
   const headline: HeadlineToken[] = [{ text: `${skillLabel} requested` }]
   return {
@@ -552,6 +580,7 @@ function confirmationHeadline(
     headlineText: headline.map((t) => t.text).join(''),
     secondary: null,
     details: genericArgDetails(safeArgs),
+    amountUnreadable: false,
   }
 }
 
@@ -1726,13 +1755,18 @@ function PendingConfirmationRow({
   onResolve: (confirmationId: string, resolution: 'approved' | 'rejected') => void
 }) {
   const [staged, setStaged] = useState<'approve' | 'reject' | null>(null)
-  const { headline, headlineText, secondary, details } = confirmationHeadline(row.skill, row.arguments)
+  const { headline, headlineText, secondary, details, amountUnreadable } = confirmationHeadline(row.skill, row.arguments)
   const clientExpired =
     row.resolution === null && row.expires_at !== null && new Date(row.expires_at).getTime() < Date.now()
   const chip = confirmationChip(row, clientExpired)
   const inFlight = isSaving !== false
   const headlineId = `pending-${row.id}-label`
   const actionsInert = clientExpired || inFlight
+  // I2 — Approve alone is gated on a readable amount: an owner must not
+  // approve an action whose amount cannot be displayed. Reject stays
+  // reachable — turning down a request with an unreadable amount is safe
+  // regardless of what that amount would have been.
+  const approveInert = actionsInert || amountUnreadable
 
   return (
     <Zone as="li" className="pcq-row" aria-labelledby={headlineId}>
@@ -1790,10 +1824,10 @@ function PendingConfirmationRow({
           <div className="pcq-actions">
             <Btn
               variant="ghost"
-              aria-disabled={actionsInert || undefined}
+              aria-disabled={approveInert || undefined}
               aria-label={`Approve: ${headlineText}`}
               onClick={() => {
-                if (actionsInert) return
+                if (approveInert) return
                 setStaged('approve')
               }}
             >
@@ -1813,6 +1847,9 @@ function PendingConfirmationRow({
           </div>
           {clientExpired && (
             <p className="help">This request expired before anyone acted on it. It cannot execute.</p>
+          )}
+          {!clientExpired && amountUnreadable && (
+            <p className="help">This request's amount could not be read. It cannot be approved until the data is corrected.</p>
           )}
         </>
       )}
