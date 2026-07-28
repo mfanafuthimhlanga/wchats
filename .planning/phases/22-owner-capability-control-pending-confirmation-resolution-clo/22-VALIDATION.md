@@ -104,22 +104,33 @@ PLAN.md task `<verify>` blocks and fill the Task ID / Plan / Wave columns.
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| _planner_ | _planner_ | _planner_ | CAP-05 | — | `enabled: False → True` PATCH returns 200 and commits | unit | `pytest tests/unit/test_capability_routes.py -k enabled -x` | ✅ extend | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | CAP-05 | T-22-CAP-01 | **Every other field's rejection is unchanged** — rate limit, `max_amount_cents`, `requires_confirmation`, `requires_identity_verification`, `actor_mode` all still reject loosening | unit (full class, unmodified) | `pytest tests/unit/test_capability_routes.py -x` | ✅ exists | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | CAP-05 | T-22-CAP-02 | A first write still cannot exceed the platform default on any **bounded** dimension, even though `enabled` is now free | unit | `pytest tests/unit/test_capability_routes.py -k platform_default -x` | ✅ extend | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | ACT-07 | — | Approving a `require_human` row executes the adapter **exactly once** and marks the row resolved | unit (mocked adapter) | `pytest tests/unit/test_confirmation_resolution.py -k approve -x` | ❌ W0 (new) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | ACT-07 | T-22-ACT-01 | Rejecting **never** calls the adapter | unit | `pytest tests/unit/test_confirmation_resolution.py -k reject -x` | ❌ W0 (new) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | ACT-07 | T-22-ACT-02 | An expired unresolved row **cannot** be approved after `expires_at` | unit | `pytest tests/unit/test_confirmation_resolution.py -k expir -x` | ❌ W0 (new) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | ACT-07 | T-22-ACT-03 | Concurrent resolve yields **one** adapter call — atomic `UPDATE ... WHERE resolved_at IS NULL ... RETURNING` claim | unit | `pytest tests/unit/test_confirmation_resolution.py -k concurrent -x` | ❌ W0 (new) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | ACT-07 (SC3) | T-22-ACT-04 | A confirmation created before a tightening **cannot** execute against the pre-tightening ceiling — checks re-run against the **live** envelope, never the stored snapshot | unit | `pytest tests/unit/test_confirmation_resolution.py -k tighten -x` | ❌ W0 (new) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | ACT-07 | T-22-ACT-05 | The resolver **never** calls `call_actor_gate` — the loop this phase exists to avoid | unit (`inspect.getsource` absence, per the 18-05 `derive_blast_radius_warnings` precedent) | `pytest tests/unit/test_confirmation_resolution.py -k actor_gate -x` | ❌ W0 (new) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | ACT-07 | T-22-ACT-06 | Exactly one `tool_calls_audit` row is written on **every** resolver outcome — success and deny alike (AUD-01 symmetry at a NEW call site) | unit | `pytest tests/unit/test_confirmation_resolution.py -k audit -x` | ❌ W0 (new) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | ACT-07 | T-22-ACT-07 | Both new routes reject a foreign-agent id with 404 on **both** branches (`_get_owned_agent`, verbatim) | unit (route-level, `ASGITransport`) | `pytest tests/unit/test_confirmation_resolution.py -k owned -x` | ❌ W0 (new) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | ACT-07 | — | Live proof: approval drives a real adapter call against a real control DB | integration, **`autonomous:false`** | `pytest tests/integration/test_act07_resolve_live.py -m integration -q -s` | ❌ W0 (new) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | CAP-05 + ACT-07 | — | `docs/guides/owner-capability-guide.md` no longer claims a skill cannot be enabled, and documents the approval queue | source-anchored review | grep the guide for the stale locked-enabled wording; diff against `capability_service.py` | ✅ exists (correct today, falsified by CAP-05) | ⬜ pending |
-| _planner_ | _planner_ | _planner_ | VER-01 SC2 | — | Owner enables the two skills through the shipped UI and completes a `require_human` approval end-to-end, without code | manual, `checkpoint:human-verify`, **`autonomous:false`** | scripted runbook re-using `19-UAT.md` item 1's steps, transcribed into `22-UAT.md` | ❌ W0 (new) | ⬜ pending |
+| 22-01-T2 | 22-01 | 1 | CAP-05 | — | `enabled: False → True` PATCH returns 200 and commits | unit | `pytest tests/unit/test_capability_routes.py -k enabled -x` | ✅ extend | ⬜ pending |
+| 22-01-T2 | 22-01 | 1 | CAP-05 | T-22-CAP-01 | **Every other field's rejection is unchanged** — rate limit, `max_amount_cents`, `requires_confirmation`, `requires_identity_verification`, `actor_mode` all still reject loosening | unit (full class, unmodified) | `pytest tests/unit/test_capability_routes.py -x` | ✅ exists | ⬜ pending |
+| 22-01-T2 | 22-01 | 1 | CAP-05 | T-22-CAP-02 | A first write still cannot exceed the platform default on any **bounded** dimension, even though `enabled` is now free | unit | `pytest tests/unit/test_capability_routes.py -k platform_default -x` | ✅ extend | ⬜ pending |
+| 22-02-T3 | 22-02 | 1 | ACT-07 | — | Approving a `require_human` row executes the adapter **exactly once** and marks the row resolved | unit (mocked adapter) | `pytest tests/unit/test_confirmation_resolution.py -k approve -x` | ❌ W0 (new) | ⬜ pending |
+| 22-03-T3 | 22-03 | 2 | ACT-07 | T-22-ACT-01 | Rejecting **never** calls the adapter | unit (route-level, reassigned — see note below the table) | `pytest tests/unit/test_pending_confirmation_routes.py -k reject_never -x` | ❌ W0 (new) | ⬜ pending |
+| 22-03-T3 | 22-03 | 2 | ACT-07 | T-22-ACT-02 | An expired unresolved row **cannot** be approved after `expires_at` | unit (route-level, reassigned — see note below the table) | `pytest tests/unit/test_pending_confirmation_routes.py -k expired -x` | ❌ W0 (new) | ⬜ pending |
+| 22-03-T3 | 22-03 | 2 | ACT-07 | T-22-ACT-03 | Concurrent resolve yields **one** adapter call — atomic `UPDATE ... WHERE resolved_at IS NULL ... RETURNING` claim | unit (route-level, reassigned — see note below the table) | `pytest tests/unit/test_pending_confirmation_routes.py -k second_resolve -x` | ❌ W0 (new) | ⬜ pending |
+| 22-02-T3 | 22-02 | 1 | ACT-07 (SC3) | T-22-ACT-04 | A confirmation created before a tightening **cannot** execute against the pre-tightening ceiling — checks re-run against the **live** envelope, never the stored snapshot | unit | `pytest tests/unit/test_confirmation_resolution.py -k tighten -x` | ❌ W0 (new) | ⬜ pending |
+| 22-02-T3 | 22-02 | 1 | ACT-07 | T-22-ACT-05 | The resolver **never** calls `call_actor_gate` — the loop this phase exists to avoid | unit (`inspect.getsource` absence, per the 18-05 `derive_blast_radius_warnings` precedent) | `pytest tests/unit/test_confirmation_resolution.py -k actor_gate -x` | ❌ W0 (new) | ⬜ pending |
+| 22-02-T3 | 22-02 | 1 | ACT-07 | T-22-ACT-06 | Exactly one `tool_calls_audit` row is written on **every** resolver outcome — success and deny alike (AUD-01 symmetry at a NEW call site) | unit | `pytest tests/unit/test_confirmation_resolution.py -k audit -x` | ❌ W0 (new) | ⬜ pending |
+| 22-03-T3 | 22-03 | 2 | ACT-07 | T-22-ACT-07 | Both new routes reject a foreign-agent id with 404 on **both** branches (`_get_owned_agent`, verbatim) | unit (route-level, `ASGITransport`, reassigned — see note below the table) | `pytest tests/unit/test_pending_confirmation_routes.py -k foreign_agent -x` | ❌ W0 (new) | ⬜ pending |
+| 22-06-T2 | 22-06 | 5 | ACT-07 | — | Live proof: approval drives a real adapter call against a real control DB | integration, **`autonomous:false`** | `pytest tests/integration/test_act07_resolve_live.py -m integration -q -s` | ❌ W0 (new) | ⬜ pending |
+| 22-05-T1 | 22-05 | 4 | CAP-05 + ACT-07 | — | `docs/guides/owner-capability-guide.md` no longer claims a skill cannot be enabled, and documents the approval queue | source-anchored review | grep the guide for the stale locked-enabled wording; diff against `capability_service.py` | ✅ exists (correct today, falsified by CAP-05) | ⬜ pending |
+| 22-06-T1 | 22-06 | 5 | VER-01 SC2 | — | Owner enables the two skills through the shipped UI and completes a `require_human` approval end-to-end, without code | manual, `checkpoint:human-verify`, **`autonomous:false`** | scripted runbook re-using `19-UAT.md` item 1's steps, transcribed into `22-UAT.md` | ❌ W0 (new) | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+
+**Reassignment note:** this draft originally routed the reject, expiry, concurrent-resolve, and
+ownership assertions (T-22-ACT-01, T-22-ACT-02, T-22-ACT-03, T-22-ACT-07) to
+`test_confirmation_resolution.py`, the resolver's own unit module. Plan 22-03 (task 3) instead put
+all four in `tests/unit/test_pending_confirmation_routes.py`, because all four are route-level
+facts — a 409 status code, a dispatch that did or did not happen, an ownership check that must
+precede a body read — and asserting them below the route, against the resolver alone, would not
+prove them: the resolver has no route to 409 from, no dispatch call to make or withhold, and no
+agent-ownership guard of its own (`_get_owned_agent` lives in the route module). The route module
+is authoritative for these four rows; the Automated Command column above reflects the plan as
+executed, not the original draft.
 
 **Sampling continuity check:** no three consecutive tasks may lack an automated
 `<verify>`. This phase is well-placed for that — nearly every task is
@@ -133,6 +144,22 @@ the plan must require the executor to confirm the test **fails when the guard is
 removed**, the same way Phase 19's WR-03 guard was validated by reintroducing the
 defect. A negative test that has never been seen to fail is indistinguishable
 from a tautology.
+
+**Guard-removal demonstration inventory.** Six demonstrations ran across this phase's plans, each
+observed red-then-green (mutation applied, named test confirmed to fail, file restored from HEAD,
+named test confirmed green again) and recorded in that plan's own SUMMARY:
+
+| # | Guard | Plan | Mutation applied | Test(s) confirmed to go red |
+|---|-------|------|-------------------|------------------------------|
+| 1 | The ceiling guard (T-22-CAP-01) | 22-01 | `validate_tighten_only`'s `if proposed_max > current_max:` replaced with `if False:` | `test_capability_routes.py -k "max_amount or illegal_other_field"` |
+| 2 | The resolver's rate-and-constraint call (T-22-ACT-04) | 22-02 | The resolver's `apply_rate_and_constraint_checks` call replaced with a hard-coded no-denial result | `TestLiveEnvelope::test_tightened_ceiling_denies_execution` |
+| 3 | The Actor-symbol absence (T-22-ACT-05) | 22-02 | A line referencing `call_actor_gate` appended to the resolver module | `TestResolverAbsence::test_resolver_never_references_call_actor_gate` |
+| 4 | The unconditional dispatch guard (T-22-ACT-01/02) | 22-03 | The resolve route's dispatch made unconditional instead of gated on `resolution == 'approved'` | `TestResolveRoute::test_reject_never_enqueues` and `test_expired_row_is_forced_to_expired_and_never_enqueues` |
+| 5 | The atomic claim guard (T-22-ACT-03) | 22-03 | `resolved_at IS NULL ` dropped from the claim's `WHERE` clause | `TestResolveRoute::test_second_resolve_returns_409_and_never_enqueues` |
+| 6 | The actor-decision predicate (execution-outcome lookup) | 22-03 | The `actor_decision = 'approved_by_human'` predicate dropped from the outcome lookup | `TestExecutionOutcome::test_outcome_ignores_the_original_require_human_audit_row` |
+
+A reader of this document can confirm all six ran without opening 22-01/22-02/22-03 individually —
+each plan's own SUMMARY carries the same red-then-green observation as its source of record.
 
 ---
 
@@ -161,6 +188,15 @@ populated per agent turn by `build_tool_server()`, and that a resolver runs
 entirely outside that lifecycle. Whatever stands in for those values must be a
 named, tested artifact — not incidental setup inside a route handler.
 
+**OD-5 closed:** the resolver's execution-context shim resolved to an explicit, keyword-only
+parameter contract (`execute_approved_confirmation(*, confirmation_id, agent_id, skill, arguments,
+conn_str)`), not ContextVar seeding — a resolver has no per-turn context to seed a ContextVar from
+in the first place. `conversation_id` is minted fresh inside the resolver (`uuid4()`), informational
+on the audit row only. The named, tested artifact this decision produced is the resolver's
+keyword-only signature itself, plus the three `TestResolverAbsence` source-absence assertions
+(`test_resolver_never_references_call_actor_gate`, `test_resolver_never_references_identity_verification`,
+`test_resolver_reads_no_dispatcher_contextvar`) in `apps/api/tests/unit/test_confirmation_resolution.py`.
+
 ---
 
 ## Manual-Only Verifications
@@ -170,7 +206,7 @@ named, tested artifact — not incidental setup inside a route handler.
 | Owner enables a skill through the shipped UI | CAP-05 / VER-01 SC2 | The claim is that a **non-technical** person succeeds unaided; automating it asserts the opposite of what is being proven | Hand the tester only `docs/guides/owner-capability-guide.md` (as corrected by this phase). Any step requiring a terminal, curl, or SQL fails the criterion and is recorded as such. |
 | Approval queue is comprehensible to a non-developer | ACT-07 | Whether a pending confirmation reads as an actionable decision rather than a log row is a judgement, not an assertion | Confirm the queue states what action is awaiting approval, its amount, who requested it, and when it expires — in business language, before any identifier. Must honour the GOTHAM "Bone on Graphite" contract in `DESIGN.md` (verdict-only colour, no decorative hue). |
 | Live adapter call on approval | ACT-07 | Needs a real control DB and a real provider credential | Operator runs the gated integration module; records adapter invocation count (must be exactly 1) and the resolved row state in `22-UAT.md`. |
-| Control migration `0020` up/down roundtrip | ACT-07 | Only if the planner adds a column; no live DB is available here | Apply up + down against a real control DB once provisioned; record in `22-UAT.md`. Skip this row entirely if OD-(c) is closed as "no new column". |
+| ~~Control migration `0020` up/down roundtrip~~ | ~~ACT-07~~ | — | **Struck.** This row's own instruction said to skip it entirely if OD-(c) closed as "no new column" — it did: OD-3 (`22-01-PLAN.md § Open Decisions Resolved`) closed the execution-outcome gap with a read-time lookup against the existing `tool_calls_audit` row instead of a new column, so no `0020` migration ships in this phase and there is nothing to roundtrip. |
 | VER-01 SC2 re-run | VER-01 | The disposition being replaced is itself a human observation | Re-run `19-UAT.md` item 1's original script end to end. Replace its `[failed — blocked]` with the observed result and cross-reference from `22-UAT.md`. |
 
 ---
