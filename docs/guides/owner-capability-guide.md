@@ -38,9 +38,21 @@ shipped behaviour.
 all.
 
 **Shipped behaviour:** every skill ships **off**. Nothing acts on a customer's
-behalf until you deliberately turn a skill on. There is no skill that starts
-active by default — this is true for every tenant, on day one, with no
-exception.
+behalf until a skill is turned on. There is no skill that starts active by
+default — this is true for every tenant, on day one, with no exception.
+
+Be aware, though, that today this is not a switch you can flip yourself. The
+platform default for every one of the seven skills also ships `enabled: off`,
+and the tighten-only rule treats "off" as the tightest legal value for this
+field — so a proposal to turn a disabled skill on is rejected, from this
+screen and from any API call, for every skill shipped today. The deploy
+screen already reflects this: the checkbox is permanently disabled, with the
+caption "Cannot re-enable - the platform default is off for this skill."
+This is a deliberate v1.1 platform limitation, not a bug in the screen — a
+skill is switched on today only by a direct database action outside the
+owner's control, never through anything this screen or this guide can walk
+you through. If a skill needs to be enabled, that is currently a request to
+make of whoever operates the platform, not a setting you can reach yourself.
 
 ### Rate limit
 
