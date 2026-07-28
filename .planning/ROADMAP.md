@@ -411,12 +411,12 @@ Plans:
 **Depends on:** Phase 14, Phase 15, Phase 18, Phase 19
 **Success criteria:**
 
-1. An owner can enable a previously-disabled skill through the shipped admin UI, with no direct database action, and the tighten-only guarantee still holds on every other field and dimension
-2. An approver can approve or reject a `pending_confirmations` row; on approval the mutating action executes exactly once and the row is marked resolved; on rejection and on expiry it never executes
-3. An approval created before an owner tightened a capability cannot execute against the looser envelope it was created under
-4. VER-01 SC2 is re-run and its `[failed — blocked]` disposition in `19-UAT.md` is replaced by an observed result
+1. An owner can enable a previously-disabled skill through the shipped admin UI, with no direct database action, and the tighten-only guarantee still holds on every other field and dimension — **met, code-level.** Shipped (22-01/22-04) and unit-proven (diff-scope gate, guard-removal demonstrations); the live non-technical-tester walkthrough that would observe it end to end was attempted and deferred (`22-06/22-UAT.md` item 1) — **not marked met by a live observation.**
+2. An approver can approve or reject a `pending_confirmations` row; on approval the mutating action executes exactly once and the row is marked resolved; on rejection and on expiry it never executes — **NOT marked met.** Shipped (22-02/22-03/22-04) and proven at the unit-boundary level only; the live-database gate that would prove exactly-once execution against real rows was attempted and deferred, unobserved (`22-06/22-UAT.md` item 2). No real database has ever run this code path.
+3. An approval created before an owner tightened a capability cannot execute against the looser envelope it was created under — **met, code-level.** The resolver re-checks the live envelope, not a stored snapshot (`22-02`), proven by `TestLiveEnvelope` unit tests; the same live-database gate as SC2 above would additionally prove it against real rows and was deferred with it.
+4. VER-01 SC2 is re-run and its `[failed — blocked]` disposition in `19-UAT.md` is replaced by an observed result — **NOT marked met.** The re-run itself was attempted and deferred (`22-06/22-UAT.md` item 1); `19-UAT.md` item 1's disposition is amended in place (dated 2026-07-28) to record that both original causes are closed in code and the criterion's status moved from `blocked` to `unproven` — that is not the same as an observed pass, and this criterion stays open pending a live re-run.
 
-**Plans:** 5/6 plans executed
+**Plans:** 6/6 plans executed
 
 Plans:
 **Wave 1**
@@ -438,7 +438,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 22-06-PLAN.md — (W5, `autonomous:false`) Operator gates: VER-01 SC2 re-run, the live ACT-07 proof, `22-UAT.md`, and planning-doc reconciliation
+- [x] 22-06-PLAN.md — (W5, `autonomous:false`) Operator gates: VER-01 SC2 re-run, the live ACT-07 proof, `22-UAT.md`, and planning-doc reconciliation. **All three operator-gated items (SC2 re-run, ACT-07 live-DB gate, two held-out visual checks) deferred 2026-07-28** — no un-briefed non-technical tester available, no local PostgreSQL server installed on the executing machine; see `22-UAT.md`.
 
 *Planned 2026-07-28 with research + patterns + validation + UI-SPEC but **no CONTEXT.md** (no discuss-phase pass, matching Phases 15-19), so the planner owned and closed six Open Decisions, recorded in `22-01-PLAN.md § Open Decisions Resolved`: (1) identity verification is not re-checked at resolution, accepted as `T-22-ACT-08` and enforced as a source-absence assertion; (2) expiry is lazy inside the atomic claim, no sweep task; (3) the execution-outcome gap is closed by a read-time `tool_calls_audit` lookup, **not** a `0020` migration; (4) the queue lives on the Deploy page, confirmed; (5) the resolver's execution-context shim is an explicit parameter contract, not ContextVar seeding; (6) the claim commits **before** the task is dispatched, overturning the ordering shown in RESEARCH and PATTERNS. Wave 1 (22-01, 22-02) is autonomous with zero `files_modified` overlap; waves 2-4 are autonomous; wave 5 is `autonomous:false` (no local PostgreSQL, and the criterion needs an un-briefed non-technical tester).*
 

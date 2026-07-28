@@ -104,6 +104,39 @@ live credentials or unprovisioned infrastructure that closes with
 provisioning. This is a capability the product does not have; provisioning
 more infrastructure does not close it. Operator disposition, 2026-07-28.]
 
+> **Amended 2026-07-28 — both causes above are now closed in code.** The
+> disposition text above is kept exactly as originally written; nothing in
+> it is rewritten or deleted. This note records what changed since.
+>
+> Cause 1 (`validate_tighten_only` rejecting every `enabled: False -> True`
+> transition) is closed by **CAP-05**: the server-side comparator fix landed
+> in `22-01` (`apps/api/app/services/capability_service.py:307-313` no
+> longer reads `default_entry` or rejects on the `enabled` branch, proven by
+> a diff-scope gate showing zero sibling-branch touches), and UI
+> reachability closed in `22-04` (the Deploy page's Enabled checkbox has no
+> permanent lock left). Commits: `618d705`, `38d5d4f`, `45ad4c8` (22-01),
+> `70dbb48`, `21e34f6` (22-04).
+>
+> Cause 2 (`T-19-04`'s unresolved `require_human` branch) is closed by
+> **ACT-07**: a resolver (`confirmation_resolution.py`, 22-02) re-runs the
+> checks a resolver can safely re-run and skips only the two it cannot
+> (Actor seam, IDV — see `22-06/22-UAT.md` item 4 / `T-22-ACT-08`), the
+> queue-read/atomic-claim routes and the `runtime`-queue Celery task closed
+> in `22-03`, and the Deploy page's approver-facing queue closed in `22-04`.
+> Commits: `503eb08`, `69468fa`, `bbe6e40` (22-02); `a50d5dd`, `7da8d58`,
+> `258e330`, `2600674` (22-03); `70dbb48`, `21e34f6` (22-04).
+>
+> Both are unit-proven (18 mocked-boundary tests for the resolver, six
+> guard-removal demonstrations observed red-then-green, full suite
+> 1136 -> 1179 passed / 0 failed) but **neither has been re-run live against
+> the shipped build by a non-technical tester** — `22-06`'s operator
+> checkpoint deferred that re-run (no local PostgreSQL server, no
+> un-briefed tester available; see `22-06/22-UAT.md` item 1). **The
+> criterion's status is therefore corrected from "blocked" to "unproven":**
+> the structural blockers that made it *impossible* are gone, but the
+> end-to-end proof that it now *works* has not been observed. `VER-01`
+> stays unticked in `REQUIREMENTS.md` pending that live re-run.
+
 ### 2. VER-01 SC3 — 100 synthetic adversarial messages, zero unauthorized mutations
 
 expected: |
