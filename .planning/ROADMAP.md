@@ -416,7 +416,7 @@ Plans:
 3. An approval created before an owner tightened a capability cannot execute against the looser envelope it was created under
 4. VER-01 SC2 is re-run and its `[failed — blocked]` disposition in `19-UAT.md` is replaced by an observed result
 
-**Plans:** 4/6 plans executed
+**Plans:** 5/6 plans executed
 
 Plans:
 **Wave 1**
@@ -434,7 +434,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 22-05-PLAN.md — (W4) Correct `docs/guides/owner-capability-guide.md` (CAP-05 falsifies it), author the gated live-DB module, fill `22-VALIDATION.md`
+- [x] 22-05-PLAN.md — (W4) Correct `docs/guides/owner-capability-guide.md` (CAP-05 falsifies it), author the gated live-DB module, fill `22-VALIDATION.md`
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
