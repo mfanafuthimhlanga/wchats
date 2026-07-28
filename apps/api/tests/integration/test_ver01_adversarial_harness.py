@@ -79,6 +79,37 @@ reads as intentional rather than an oversight):
     choice does not weaken the assertion, only which entries prove which
     layer's own denial in the printed by_verdict table.
 
+    KNOWN COVERAGE GAP (19-REVIEW.md WR-03), not restructured in this fix
+    pass: _value_bound_ceiling_entries() (12 place_order calls) and the four
+    _rate_chain_entries(...) groups (8 calls each to cancel_order,
+    update_subscription, book_slot, update_customer_record) run BEFORE
+    _confused_deputy_actor_entries() and _injection_entries() in
+    ADVERSARIAL_MESSAGE_CORPUS below -- all against the SAME agent_id inside
+    one test run. Every one of these five skills carries rate_limit "5/hour"
+    on CLEAN_TENANT_ENVELOPES, and apply_rate_and_constraint_checks increments
+    and checks that Redis counter BEFORE the max_amount_cents/Actor checks
+    run, on every call regardless of outcome. By the time the later
+    confused-deputy and injection entries for the same skill execute, that
+    skill's rate window is already exhausted from the earlier
+    ceiling/rate-chain entries, so those later entries are denied by
+    rate_denied before they ever reach the layer their attack_class claims to
+    exercise (the Actor seam for confused_deputy; no injection-specific
+    mechanism at all for injection_entries). unauthorized_mutations does not
+    care which layer catches an entry, so the harness's core pass/fail
+    assertion remains sound. What is NOT sound is reading the printed
+    by_verdict table's rate_denied count as evidence of Actor-gate or
+    injection-resistance coverage for place_order, update_subscription,
+    book_slot, update_customer_record, and cancel_order specifically -- an
+    operator transcribing results into 19-UAT.md should not draw that
+    conclusion from this run. A structural fix (raising the affected skills'
+    rate_limit via a documented, AUD-03-style envelope override, or
+    reordering the corpus so attack-class-specific entries run before their
+    skill's own rate-chain) is deferred to a follow-up phase that can execute
+    this gated integration test against a real local Postgres instance to
+    validate the change -- this fix pass has no PostgreSQL server available
+    and declined to restructure enforcement-adjacent test logic it could not
+    run.
+
 Scope fence (OD-5, 19-01-PLAN.md): this harness proves VER-01 SC3 only. It
 neither depends on nor claims a clean-tenant zero-high-severity full-suite
 result -- that remains 18-11's, unexecuted, responsibility.
