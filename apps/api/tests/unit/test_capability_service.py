@@ -40,17 +40,20 @@ from app.services.capability_service import (
 
 
 def test_validate_tighten_only():
-    """Every one of the six comparable fields rejects its loosening direction
-    and accepts its tightening direction, plus mixed-payload and no-op cases."""
+    """Five of the six comparable fields reject their loosening direction and
+    accept their tightening direction. `enabled` (CAP-05) is an
+    owner-controlled authorization toggle, not a tightness dimension, and
+    accepts both directions unconditionally. Plus mixed-payload and no-op
+    cases."""
 
-    # --- enabled ---------------------------------------------------------
+    # --- enabled (CAP-05: both directions unconditional) ------------------
     assert (
         validate_tighten_only(
             {"skill": "issue_refund", "enabled": False},
             {"enabled": True},
         )
-        == "loosen_enabled"
-    ), "enabled False->True must be rejected (no platform default has enabled=True)"
+        is None
+    ), "enabled False->True must be accepted — an owner-controlled toggle, not a tightness dimension"
     assert (
         validate_tighten_only(
             {"skill": "issue_refund", "enabled": True},
@@ -257,12 +260,13 @@ def test_tighten_only_enforced_below_route():
     )
 
     # Calling it directly with a loosening payload returns a reason string —
-    # no HTTP machinery involved at all.
+    # no HTTP machinery involved at all. `enabled` (CAP-05) is no longer a
+    # loosening direction, so rate_limit exercises this proof instead.
     reason = validate_tighten_only(
-        {"skill": "issue_refund", "enabled": False},
-        {"enabled": True},
+        {"skill": "issue_refund", "rate_limit": "2/hour"},
+        {"rate_limit": "10/hour"},
     )
-    assert reason == "loosen_enabled"
+    assert reason == "loosen_rate_limit"
 
     source = inspect.getsource(validate_tighten_only)
     assert "raise HTTPException(" not in source
