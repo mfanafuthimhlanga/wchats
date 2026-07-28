@@ -886,16 +886,25 @@ function CapabilityZone({
   fieldErrors,
   isSaving,
   justSaved,
+  isDeployed,
   onSave,
 }: {
   envelope: CapabilityEnvelope
   fieldErrors: Record<string, string>
   isSaving: boolean
   justSaved: boolean
+  // CAP-05: whether this agent is already live. A bare `enabled: true` PATCH
+  // takes effect on this agent's very next customer turn once it is
+  // deployed — nothing else in this codebase interposes another gate — so
+  // ticking Enabled on a deployed agent stages a confirmation instead of
+  // writing immediately. An agent record that has not loaded yet reads as
+  // not-deployed and therefore takes the unstaged path deliberately: nothing
+  // is reachable by a customer while the checklist/approval gate still
+  // stands between this change and any live effect.
+  isDeployed: boolean
   onSave: (skill: string, patch: CapabilityEnvelopePatch) => void
 }) {
   const skillLabel = SKILL_LABELS[envelope.skill] ?? envelope.skill
-  const enabledLocked = envelope.enabled === false && envelope.platform_default.enabled === false
   const currentMaxCents = envelope.constraints.max_amount_cents ?? null
   const parsedRate = parseRateLimit(envelope.rate_limit)
   const currentUnit: RateUnit =
@@ -929,6 +938,11 @@ function CapabilityZone({
   const [pendingMaxCents, setPendingMaxCents] = useState<number | null>(null)
   const [rateNote, setRateNote] = useState<string | null>(null)
   const [maxNote, setMaxNote] = useState<string | null>(null)
+  // CAP-05: the one staged decision on this Zone that needs no intermediate
+  // stage button — a checkbox click is already the discrete, deliberate
+  // action the numeric fields' `cap-commit` step exists to manufacture.
+  // `true` previews the box as checked while nothing has been written yet.
+  const [pendingEnabled, setPendingEnabled] = useState<true | null>(null)
 
   // M12's confirmation blocks mount and unmount, so the node that held focus
   // at the moment of a stage / commit / cancel / client-side refusal is removed
@@ -968,6 +982,14 @@ function CapabilityZone({
     setPendingMaxCents(null)
     setMaxNote(null)
   }, [currentMaxCents])
+
+  // Follows the SERVER value, same as the two effects above: a refetch that
+  // confirms the write (or one that returns what was already on screen)
+  // clears the staged intent rather than leaving a stale confirm block
+  // mounted over an already-resolved state.
+  useEffect(() => {
+    setPendingEnabled(null)
+  }, [envelope.enabled])
 
   const rateCap = unit === '' ? undefined : maxForUnit(unit)
 
@@ -1126,30 +1148,63 @@ function CapabilityZone({
       <div className="field cap-row">
         <div className="cap-bool">
           <label htmlFor={`${envelope.skill}-enabled`}>Enabled</label>
-          {/* `disabled` is reserved for `enabledLocked`, which is a permanent
-              state of the envelope. The in-flight case is `aria-disabled`, so
-              the box the owner just ticked does not vanish from under their
-              focus for the length of a round trip. */}
+          {/* This control has no permanent lock at all — CAP-05 removed the
+              platform-default floor that used to hold it. The in-flight case
+              remains `aria-disabled`, so the box the owner just ticked does
+              not vanish from under their focus for the length of a round
+              trip. The box previews visually checked while staged, below. */}
           <input
             id={`${envelope.skill}-enabled`}
             type="checkbox"
-            checked={envelope.enabled}
-            disabled={enabledLocked}
+            checked={pendingEnabled === true ? true : envelope.enabled}
             aria-disabled={isSaving || undefined}
             aria-label={`Enabled for ${skillLabel}`}
             onChange={(e) => {
               if (isSaving) return
-              onSave(envelope.skill, { enabled: e.target.checked })
+              const checked = e.target.checked
+              // The one asymmetric branch (UI-SPEC S1): ticking on for a
+              // deployed agent stages a confirmation, because the write is
+              // live against a real customer with no downstream gate. Every
+              // other direction — unticking, or ticking on a not-yet-deployed
+              // agent — writes immediately and unstaged, exactly as before.
+              if (checked && isDeployed) {
+                setPendingEnabled(true)
+                return
+              }
+              setPendingEnabled(null)
+              onSave(envelope.skill, { enabled: checked })
             }}
           />
         </div>
         <p className="help cap-caption">
-          {enabledLocked
-            ? 'Cannot re-enable - the platform default is off for this skill.'
-            : envelope.enabled
-              ? 'Enabled.'
-              : 'Disabled.'}
+          {envelope.enabled
+            ? 'On. The agent can use this skill.'
+            : 'Off. Turn this on to let the agent use this skill.'}
         </p>
+        {pendingEnabled === true && (
+          <div className="cap-confirm">
+            <p className="cap-confirm-q" id={`${envelope.skill}-enabled-confirm-q`}>
+              {`Let this live agent use ${skillLabel} now? Customers can trigger it on their next turn.`}
+            </p>
+            <div className="cap-confirm-actions">
+              <Btn
+                variant="ghost"
+                autoFocus
+                disabled={isSaving}
+                aria-describedby={`${envelope.skill}-enabled-confirm-q`}
+                onClick={() => {
+                  setPendingEnabled(null)
+                  onSave(envelope.skill, { enabled: true })
+                }}
+              >
+                {`Turn on ${skillLabel}`}
+              </Btn>
+              <Btn variant="ghost" disabled={isSaving} onClick={() => setPendingEnabled(null)}>
+                Keep it off
+              </Btn>
+            </div>
+          </div>
+        )}
         {fieldErrors[`${envelope.skill}.enabled`] && (
           <p className="help cap-error">{fieldErrors[`${envelope.skill}.enabled`]}</p>
         )}
@@ -2156,6 +2211,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                     fieldErrors={fieldErrors}
                     isSaving={savingSkills[env.skill] === true}
                     justSaved={savedSkills[env.skill] === true}
+                    isDeployed={!!agent?.is_deployed}
                     onSave={handleSaveCapability}
                   />
                 ))}
@@ -2280,12 +2336,6 @@ const PAGE_CSS = `
   .cap-row input[type="checkbox"] {
     width: 16px; height: 16px; flex: none; padding: 0;
     accent-color: var(--live);
-  }
-  /* The only permanently-disabled control left in a Zone: the Enabled box of a
-     skill whose platform default is off. WCAG 1.4.3 exempts text in an inactive
-     component, so --ink-3 is legitimate here. */
-  .cap-row input[type="checkbox"]:disabled {
-    background: var(--surface-2); color: var(--ink-3); cursor: not-allowed;
   }
   /* Inert for the length of one PATCH, not disabled. A focused element that
      becomes disabled leaves the tab order and focus falls to <body>, which is
