@@ -231,7 +231,7 @@ Plans:
 3. Transaction red-team probes (confused-deputy, value-bound evasion, identity-bypass) run with zero high-severity findings on a clean tenant
 4. PII output-firewall pass live; retrieval "treat as data, not instructions" wrapper in place; injection agent split into conversation/content variants
 
-**Plans:** 9/11 plans executed
+**Plans:** 10/11 plans executed
 
 Plans:
 
@@ -244,7 +244,7 @@ Plans:
 - [x] 18-07-PLAN.md — BLR-02/CAP-04 envelope-hash persistence, drift on read, approve-deployment 422 at the route *(wave 3)*
 - [x] 18-08-PLAN.md — CAP-03 capability-envelope GET/PATCH routes with server-side tighten-only enforcement *(wave 3)*
 - [x] 18-09-PLAN.md — SEC-03 injection agent split into conversation and content variants *(wave 3)*
-- [ ] 18-10-PLAN.md — CAP-03/BLR admin UI in the Pre-Deploy screen (GOTHAM, UI-SPEC D1-D6) + human verify *(wave 4, autonomous:false)*
+- [x] 18-10-PLAN.md — CAP-03/BLR admin UI in the Pre-Deploy screen (GOTHAM, UI-SPEC D1-D6) + human verify *(wave 4, autonomous:false — executed and committed, `18-10-SUMMARY.md`; CAP-03 itself stays open per that plan's own note pending its checkpoint disposition)*
 - [ ] 18-11-PLAN.md — RTX-04 clean-tenant zero-high-severity gate + live-gate UAT + STATE.md closeout *(wave 5, autonomous:false)*
 
 ### Phase 19: Documentation + v1.1 verification
@@ -258,7 +258,7 @@ Plans:
 2. A non-technical tester deploys a refund + Shopify-order agent end-to-end without code
 3. 100 synthetic adversarial messages → zero unauthorized state mutations escape L1–L3; 30-day synthetic audit-gap test passes (zero gaps)
 
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans executed
 
 Plans:
 **Wave 1**
@@ -270,7 +270,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 19-05-PLAN.md — 19-UAT.md record, operator live-gate run/deferral, and planning-record reconciliation *(wave 2, autonomous:false)*
+- [x] 19-05-PLAN.md — 19-UAT.md record, operator live-gate run/deferral, and planning-record reconciliation *(wave 2, autonomous:false — operator recorded VER-01 SC2 `failed — blocked`, VER-01 SC3 and AUD-03 `deferred` on 2026-07-28; the phase's success criteria 2 and 3 are therefore not met — see `19-UAT.md`)*
 
 *v1.1 roadmap added 2026-06-29 (safe parallel track). The standard new-milestone reset was deliberately NOT run — it would have cleared the paused Phase 13 directory and reset its checkpoint. Phase 13 stays paused & resumable (`/gsd-execute-phase 13 --wave 3` once the domain + Bedrock are ready). 6 phases, 43 requirements, all mapped. Out of scope: A2A/MCP (v1.2), schema-bound exfiltration + classifier firewall (v1.2), continuous alerting/audit-infra (v1.3).*
 

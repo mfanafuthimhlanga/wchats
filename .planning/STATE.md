@@ -33,6 +33,52 @@ Phase 19's three proofs (VER-01 SC2 human deploy, VER-01 SC3 100-message run, AU
 
 **▶ 19-02 EXECUTED 2026-07-28 — DOC-03 owner guide + VER-01 demo tenant, 2/2 tasks, wave 1.** `docs/guides/owner-capability-guide.md` (256 lines): plain-language narration for a non-technical business owner of the seven capability envelopes, the six controls (Enabled, Rate limit, Ceiling, Requires confirmation, Requires identity verification, Actor review mode), tighten-only's exact boundary behaviour, the shipped platform-default table, and blast-radius reporting — quoting six shipped copy strings verbatim from `apps/admin/app/agents/[id]/deploy/page.tsx` (`"No transactional skill is enabled for this agent. There is no blast radius to report."`, `"That amount is higher than the current ceiling. Nothing was changed."`, etc.) rather than paraphrasing them, and explicitly prohibited from presenting a loosened control as a remedy for friction. `apps/api/tests/unit/test_ver01_demo_tenant.py` (338 lines, 8 tests): defines `VER01_DEMO_TENANT_ENVELOPES`/`SPEC` (issue_refund at 499 cents, place_order at 20 000 cents, both enabled; four skills at platform default) and pins the Actor skip short-circuit's strict `<` boundary against `settings.ACTOR_SKIP_MAX_AMOUNT_CENTS` on both sides (499 skips with zero Anthropic calls, 500 does not), proves the `requires_confirmation` AND-term and the absent-`max_amount_cents` case, and proves `place_order` deliberately does NOT engage the skip — making the accepted `require_human` residual gap (T-19-04) a tested fact. **Discrepancy found and recorded (not silently followed either way, per CLAUDE.md):** the plan's general claim that the demo posture is "reachable through the shipped tighten-only PATCH route" is only true for 5 of the 6 comparable fields — `validate_tighten_only` unconditionally rejects every `enabled:False -> True` transition because every `PLATFORM_CAPABILITY_DEFAULTS` entry ships `enabled=False` (confirmed by the function's own docstring and by `test_capability_routes.py`'s existing `test_patch_rejects_each_loosening_field` case); the new test proves reachability only for the 5 fields the plan's own field list already named (which itself omits `enabled`). Both `<verify>` blocks pass; full unit suite 1103→1111 passed, 8 skipped, 0 failed; no file under `apps/api/app/` touched; `apps/api/pyproject.toml` byte-identical. Commits `cf16cc3`, `b398761`. See `19-02-SUMMARY.md`.
 
+**▶ PHASE 19 PLANNED / EXECUTED 2026-07-27..28 — 5/5 plans, wave 2 closed by the
+operator 2026-07-28.** All five plans ran: `19-01` (DOC-01 tool-author guide +
+DOC-02 integration-provider guide), `19-02` (DOC-03 owner capability guide +
+the VER-01 demo tenant locked as executable data), `19-03` (AUD-03's
+seeded-backdated-rows 30-day gate + `compute_audit_gap`'s DB-free per-day
+coverage-parity unit companion), `19-04` (VER-01 SC3's 100-message adversarial
+harness on the shipped probe substrate + its mocked-boundary unit companion),
+`19-05` (the `19-UAT.md` record, the operator's live-gate dispositions, and
+this reconciliation). Three guides published under `docs/guides/`; two gated
+integration harnesses (`tests/integration/test_aud03_audit_gap.py`,
+`tests/integration/test_ver01_adversarial_harness.py`) authored and unit-proven
+but never run live in this environment. Final unit suite: 1134 passed,
+8 skipped, 0 failed (baseline 1103 at phase start) —
+`--ignore=tests/unit/test_chunking_service.py --ignore=tests/unit/test_docling_service.py`.
+
+**Operator dispositions, verbatim from `19-UAT.md` (2026-07-28):**
+
+- **VER-01 SC2 — `[failed — blocked]`.** Two structural causes, both
+  confirmed against the current build and neither environmental:
+  (1) `validate_tighten_only` (`apps/api/app/services/capability_service.py:307-313`)
+  rejects every `enabled: False -> True` transition because every
+  `PLATFORM_CAPABILITY_DEFAULTS` entry ships `enabled: False`, and no other
+  code path in `apps/api/app/` sets `enabled=True` — enabling `issue_refund`
+  and `place_order` for the demo tenant requires direct database seeding, a
+  non-technical tester cannot perform that, and SC2's own wording is
+  "end-to-end without code". (2) `T-19-04` — the Actor's `require_human`
+  branch writes a `PendingConfirmation` row that no route, task, or script
+  resolves, so the `place_order` leg can dead-end with no way to complete.
+  Recorded failed rather than deferred because these are capabilities the
+  product does not have, not missing infrastructure. VER-01 stays unticked
+  in `REQUIREMENTS.md`.
+- **VER-01 SC3 (adversarial harness) — `[deferred]`.** Operator attempted a
+  real run. `redis-server` is running and `ANTHROPIC_API_KEY` is present;
+  **there is no PostgreSQL server installed on this machine** (stale
+  `postgresql-x64-17` service pointing at a deleted binary, an orphaned
+  `C:\Program Files\PostgreSQL\18\data\` with no `bin\`, nothing on PATH,
+  nothing listening on 5432-5435). The harness has never run against a live
+  database — unobserved, not a pass. Follow-up: install and start a local
+  PostgreSQL server, then run the recorded command in `19-UAT.md` item 2.
+- **AUD-03 — `[deferred]`.** Same confirmed cause as SC3 (no local
+  PostgreSQL). `compute_audit_gap`'s per-day parity arithmetic is proven by
+  11 DB-free unit tests; the live 30-day window wiring is unproven — the
+  harness has never run against a live database. AUD-03 stays unticked in
+  `REQUIREMENTS.md`. Follow-up: install and start a local PostgreSQL server,
+  then run the recorded command in `19-UAT.md` item 3.
+
 **▶ SESSION 2026-07-26 — repo + suite housekeeping (no phase work).**
 
 - **Pushed 273 commits to `origin/main`** (`c05c076`→`655b42c`). Origin had been 8 weeks stale; all of v1.1 and v1.2 existed only on the local machine. Verified no secrets in the range first (only `.env.example` files tracked; the only `sk_live_`/`sk-ant-` hits are the pre-commit guard's own pattern list, docs, and fake fixtures).
@@ -61,7 +107,17 @@ Two findings from this planning pass that matter beyond Phase 18:
 
 **▶ 18-09 EXECUTED 2026-07-27 — SEC-03 conversation/content-injection red-team split, 3/3 tasks, wave 3.** Closes SEC-03's remaining wave-3 work (OD-7): `red_team_service.py`'s shipped `run_prompt_injection_agent` is renamed to `run_conversation_injection_agent` (behaviour unchanged) with a backward-compatible module-level alias so no importer breaks, and a new `run_content_injection_agent` seeds a canary-bearing poisoned chunk directly into the tenant `chunks` table with a fixed zero `vector(1024)` (no embedding call — `EMBEDDING_PROVIDER` defaults to bedrock with no AWS access here), deliberately bypassing `sanitize_chunk_text` to simulate an admit-time sanitiser gap, probes it as an ordinary customer question via the native tsvector BM25 half of hybrid retrieval, and decides the finding by canary substring test — always cleaning up from a `finally` even when the probe raises. `INJECTION_ATTACK_VECTORS` is the shared source of truth for the two new `attack_vector` strings, which become separate `red_team_strategies` rows through the existing free-TEXT + UNIQUE + `ON CONFLICT DO NOTHING` upsert with zero migration. `worker/tasks/runtime/red_team.py` Step 5 now runs **seven** runners sequentially (both injection variants receive the conversational probe; only content_injection also receives `conn_str` as a function argument, never a task arg per CLAUDE.md rule 4). New `test_conversation_content_split` (module-scope, node id pinned by 18-VALIDATION.md) plus `TestInjectionSplit` (10 cases) in `test_red_team_service.py`. Three pre-existing test files (`test_red_team_rtx_runners.py`, `test_red_team_task.py`, `test_redteam_findings.py`, `test_redteam_programme.py`) needed a Rule-1 fix: they all patched the now-removed `run_prompt_injection_agent` import name on the worker task module — updated to patch `run_conversation_injection_agent` + `run_content_injection_agent`. Full unit suite 1092→1103 passed, 8 skipped, 0 failed; `apps/api/pyproject.toml` unchanged. Commits `80c5cac`, `fe0577c`, `b8ae3fc`, `be44085`, `7dc8eb5`. See `18-09-SUMMARY.md`.
 
-**▶ NEXT: `/gsd-execute-phase 18`** to continue with the remaining wave-4/5 plans (18-10, 18-11 — both `autonomous:false`: 18-10 is the admin UI wave, 18-11 is the live-gate wave). Phase 19 (DOC/VER) still has 0 plans and depends on 18. Phase 13 stays paused at 7/11 on a real AWS account. **No v1.2 migration has been applied to a live Neon DB** (tenant 0009–0012, control 0017–0018) — that plus live Langfuse trace visibility, real Ragas numbers, and an end-to-end `POST /approve-deployment` → 422 are the deferred `/gsd-verify-work 21` gate. Phase 18's own control migration 0019 inherits the same constraint (its live roundtrip is `autonomous:false`), and BLR-01's live end-to-end signal against a real control DB is deferred alongside it to plan 18-11.
+**▶ CORRECTED 2026-07-28 (was stale): 18-10 is executed and committed**, not
+outstanding. `18-10-SUMMARY.md` exists and
+`apps/admin/app/agents/[id]/deploy/page.tsx` is committed (`b6cc8e7`) with the
+locked capability and blast-radius copy. **18-11 is the only outstanding
+Phase 18 plan** (`autonomous:false`, the RTX-04 live-gate wave) — it does not
+exist as a SUMMARY on disk. The line below ("NEXT: `/gsd-execute-phase 18`
+... 18-10, 18-11 — both autonomous:false") was itself the stale claim this
+correction fixes; it is retained for the historical record rather than
+deleted, per this file's own convention of correcting in place.
+
+**▶ NEXT (superseded by the correction above): `/gsd-execute-phase 18`** to continue with the remaining wave-4/5 plans (18-10, 18-11 — both `autonomous:false`: 18-10 is the admin UI wave, 18-11 is the live-gate wave). Phase 19 (DOC/VER) still has 0 plans and depends on 18. Phase 13 stays paused at 7/11 on a real AWS account. **No v1.2 migration has been applied to a live Neon DB** (tenant 0009–0012, control 0017–0018) — that plus live Langfuse trace visibility, real Ragas numbers, and an end-to-end `POST /approve-deployment` → 422 are the deferred `/gsd-verify-work 21` gate. Phase 18's own control migration 0019 inherits the same constraint (its live roundtrip is `autonomous:false`), and BLR-01's live end-to-end signal against a real control DB is deferred alongside it to plan 18-11.
 
 **Security artifact status (corrected 2026-07-26 — the previous text below wrongly claimed 14/15/16 had none):** Phases 14, 15, 16, 17 and 21 each have a `SECURITY.md`. Phase 20 has none (pure frontend re-skin). Phase 13 has neither SECURITY nor VERIFICATION (paused mid-execution).
 
@@ -123,6 +179,12 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Key Decisions
 
+- [19-01] guides live under `docs/guides/`, not in-product, because `apps/admin` has no markdown renderer
+- [19-01] OD-2 resolved to Option 2 — the `require_human` resolution route is **not** built, because re-entering `_execute_transactional_tool` re-runs the Actor and loops without a human-approved bypass seam, which is uncovered by Phase 19's requirement IDs; accepted as `T-19-04`, later confirmed by the operator (2026-07-28) as one of VER-01 SC2's two failure causes
+- [19-02] the VER-01 demo refund ceiling is `499` cents because `ACTOR_SKIP_MAX_AMOUNT_CENTS` is `500` and the comparison is strictly less-than
+- [19-03] AUD-03's 30-day window is built by seeded backdated rows via SQL — no clock injection, no `created_at` parameter on `write_audit_row`
+- [19-04] Phase 19 neither depends on nor closes RTX-04, which stays owned by the unexecuted `18-11`
+- [19-05] operator recorded VER-01 SC2 as `failed`, not `deferred` — the distinction preserved deliberately: prior phases' deferrals (13/14/15/16) were environment gaps that close with provisioning, while SC2's two blockers (capability `enabled=True` unreachable through any shipped API; `T-19-04`'s unresolved `require_human` branch) are capabilities the product does not have
 - [17-06] Step 2.5 IDV gate placed BEFORE reserve_idempotency (Step 3) — T-17-21: blocked unverified calls never consume the idempotency slot; key remains reusable after verification
 - [17-06] check_verified_session lazily imported inside dispatcher body (inner function-body import) — avoids circular import chain (Pitfall 7); consistent with existing _conn_str_var lazy-import convention
 - [17-06] AUD-01 symmetry: both IDV block branches use the same write_audit_row keyword signature as capability.denial; errors are identity_verification.required and identity_verification.invalid_or_expired
@@ -274,6 +336,13 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Notes
 
+- **v1.2 follow-up:** the `pending_confirmations` resolution route (`T-19-04`)
+  is not built. `_execute_transactional_tool` reaches `call_actor_gate`
+  unconditionally at Step 5, so a resolve route that re-enters the
+  dispatcher's checks would re-run the Actor and get `require_human` again —
+  approval loops rather than completes. Closing it needs a human-approved
+  bypass seam inside the dispatcher, at exactly the position the threat
+  model warns about. See `19-UAT.md` item 4 and `19-01-PLAN.md § OD-2`.
 - Phase 2 planned 2026-05-13 — 7 plans, 7 waves, all ING-01–ING-10 covered, verification passed.
 - Wave 7 (02-07) marked autonomous: false — two human checkpoints: source demo_business.pdf + visual SSE verify.
 - M1 PRD (`prd-M1.md`) is complete and ready for phase planning.

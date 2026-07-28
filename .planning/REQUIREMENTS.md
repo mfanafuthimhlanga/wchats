@@ -341,7 +341,7 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 
 - [x] **AUD-01**: `tool_calls_audit` control-DB table captures 100% of mutating calls — `agent_id, conversation_id, skill, arguments, result, actor_decision, actor_rationale, capability_snapshot, latency_ms, error`
 - [x] **AUD-02**: `pending_confirmations` control-DB table — `skill, arguments, requested_at, expires_at, resolved_at, resolution`
-- [x] **AUD-03**: Zero audit gaps across 30 days of synthetic mutating traffic (verification target)
+- [ ] **AUD-03**: Zero audit gaps across 30 days of synthetic mutating traffic (verification target) *(the gated harness `tests/integration/test_aud03_audit_gap.py` and its 11 DB-free unit companion are authored and unit-proven; the live run was attempted 2026-07-28 and deferred — no PostgreSQL server is installed on the executing machine, so the harness has never run against a live database. `19-UAT.md` item 3.)*
 
 ### Blast-Radius Gate
 
@@ -366,7 +366,7 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 - [x] **DOC-01**: Tool-author guide
 - [x] **DOC-02**: Integration-provider guide
 - [x] **DOC-03**: Owner-facing capability-configuration guide
-- [x] **VER-01**: v1.1 success-criteria gate — a non-technical tester deploys an agent that issues refunds up to a configured limit and places Shopify orders end-to-end without code; 100 synthetic adversarial messages produce zero unauthorized state mutations escaping L1–L3
+- [ ] **VER-01**: v1.1 success-criteria gate — a non-technical tester deploys an agent that issues refunds up to a configured limit and places Shopify orders end-to-end without code; 100 synthetic adversarial messages produce zero unauthorized state mutations escaping L1–L3 *(SC2 recorded `[failed — blocked]` by the operator 2026-07-28: `validate_tighten_only` makes capability `enabled=True` unreachable through any shipped API, and `T-19-04`'s `require_human` branch has no resolution route — both are capabilities the product does not have, not environment gaps. SC3's 100-message adversarial harness is authored and unit-proven; its live run was deferred the same day — no PostgreSQL server is installed on the executing machine. See `19-UAT.md` items 1-2.)*
 
 ### v1.1 Out of Scope (deferred)
 
@@ -386,11 +386,11 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 | ACT-01..06 | Phase 15 | ✓ Complete (3/3 plans; live-verified ACT-04/05 + T-15-01/02; **ACT-06 p95<1s deferred to prod infra** — 4660ms p95 on the local 4GB box; 15-SECURITY.md) |
 | INT-01..07 | Phase 16 | ✓ Complete (7/7 plans; 16-VERIFICATION human_needed 2/3; **live Stripe test-mode refund gate deferred to prod, operator-accepted 2026-07-01**; 16-SECURITY.md) |
 | IDV-01..05 | Phase 17 | ✓ Complete (6/6 plans; 17-VERIFICATION.md; 17-SECURITY.md 20/20) |
-| BLR-01, BLR-02, CAP-03, CAP-04, RTX-01..04, SEC-01..03 | Phase 18 | ◐ In progress — 7/11 plans executed (18-01..18-07; BLR-01 blast-radius collector shipped; RTX-01/02/03 red-team probes wired into run_red_team, RTX-04 live gate deferred to 18-11; capability_service.py's canonical_envelope_hash/envelope_drift wired by 18-07 (BLR-02/CAP-04 complete for the backend gate); validate_tighten_only still caller-free, wired by 18-08) |
-| DOC-01..03, VER-01, AUD-03 | Phase 19 | ◐ In progress — 4/5 plans executed (19-01 DOC-01/02 guides; 19-02 DOC-03 guide + VER-01 demo tenant; 19-03 AUD-03 gated harness + compute_audit_gap; 19-04 VER-01 SC3 104-message adversarial harness — all three gated live runs deferred to 19-05). VER-01's live gate (19-05) and AUD-03's live run remain `autonomous:false`. |
+| BLR-01, BLR-02, CAP-03, CAP-04, RTX-01..04, SEC-01..03 | Phase 18 | ◐ In progress — 10/11 plans executed (18-01..18-10; BLR-01 blast-radius collector shipped; RTX-01/02/03 red-team probes wired into run_red_team, RTX-04 live gate deferred to 18-11; capability_service.py's canonical_envelope_hash/envelope_drift wired by 18-07 (BLR-02/CAP-04 complete for the backend gate); validate_tighten_only wired by 18-08; CAP-03/BLR admin UI shipped by 18-10). **18-11 is the only outstanding Phase 18 plan** — RTX-04 stays open. |
+| DOC-01..03, VER-01, AUD-03 | Phase 19 | ✓ 5/5 plans executed (19-01..19-05), phase closed 2026-07-28. **DOC-01/02/03 complete** (guides published, anchor gates pass). **VER-01 recorded `failed — blocked`** — SC2 has two structural causes the product does not currently support (capability `enabled=True` unreachable through any shipped API; `T-19-04`'s unresolved `require_human` branch); SC3's harness is authored and unit-proven but its live run was deferred (no local PostgreSQL). **AUD-03 recorded `deferred`** for the same reason — its harness is authored and unit-proven but never run live. See `19-UAT.md` for the full dispositions. |
 
 **v1.1 coverage:** 43 requirements across phases 14–19, all mapped. (TXN 5, CAP 4, ACT 6, INT 7, IDV 5, AUD 3, BLR 2, RTX 4, SEC 3, DOC 3, VER 1 = 43.)
-**v1.1 delivered:** 30 of 43 (Phases 14–17). **Outstanding:** 13 (Phase 18's 11 + Phase 19's 5, less AUD-03/VER-01 overlap accounting — see the two rows above).
+**v1.1 delivered:** 37 of 43. **Outstanding (6):** `CAP-03` (admin UI shipped by 18-10, held open pending its own operator checkpoint per `18-10-SUMMARY.md`), `INT-01`/`INT-06` (pre-existing, Phase 16, not touched by Phases 18-19), `RTX-04` (owned by unexecuted `18-11`), `VER-01` (recorded `failed — blocked` by Phase 19), `AUD-03` (recorded `deferred` by Phase 19, needs a local PostgreSQL server to close).
 
 ---
 
@@ -420,3 +420,4 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 *Last updated: 2026-05-12 after 01-04 — CTL-01, CTL-05, CTL-09, CTL-10 marked complete*
 *Last updated: 2026-05-13 after 01-06 — CTL-13 marked complete (80.41% unit test coverage)*
 *Last updated: 2026-07-26 — traceability refresh. v1.1 rows corrected from "Pending" to their real status (Phases 14–17 complete, each with a SECURITY.md; 18–19 have 0 plans). v1.2 traceability added (UI2-01..08, OPS-01..16 — 24 requirements, previously absent from this file entirely). Phase 13 PROD-01..15 row added with its paused-at-7/11 status. Live-gate debt recorded explicitly rather than left implied.*
+*Last updated: 2026-07-28 after 19-05 — Phase 19 closed (5/5 plans). DOC-01/02/03 ticked (guides published, anchor gates pass). VER-01 and AUD-03 un-ticked and corrected: both were prematurely marked `[x]` during earlier planning; the operator's 2026-07-28 dispositions in `19-UAT.md` are `[failed — blocked]` (VER-01 SC2) and `[deferred]` (VER-01 SC3, AUD-03) — neither has been proven, so neither is ticked. Phase 18 traceability corrected from 7/11 to 10/11 plans executed (18-10 was stale-recorded as unexecuted; its own SUMMARY holds CAP-03 open pending its separate operator checkpoint). v1.1 delivered count corrected to 37/43 against the actual checkbox state (previous "30 of 43" / "13 outstanding" arithmetic did not reconcile).*
