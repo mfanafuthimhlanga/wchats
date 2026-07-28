@@ -1,20 +1,15 @@
 ---
-status: testing
+status: deferred
 phase: 19-documentation-v1-1-verification
 source: [19-02-SUMMARY.md, 19-03-SUMMARY.md, 19-04-SUMMARY.md]
 started: 2026-07-27T23:16:00Z
-updated: 2026-07-27T23:16:00Z
+updated: 2026-07-28T10:30:00Z
 ---
 
 ## Current Test
 
-number: 1
-name: VER-01 SC2 — non-technical tester deploys a refund + Shopify-order agent end to end
-expected: |
-  A person who cannot code completes signup through deployment and drives a
-  successful refund and a successful Shopify order using only the admin UI
-  and the widget, with no terminal, no curl, and no code edit.
-awaiting: operator run or explicit deferral
+[none remain — items 1-3 each carry a final, dated disposition (item 1 failed-blocked,
+items 2 and 3 deferred), item 4 is a written record. See `## Summary` and `## Gaps`.]
 
 ## Tests
 
@@ -92,7 +87,22 @@ how: |
   must be seeded directly. This bears on whether SC2 is satisfiable as
   written, independent of how the tester's own run goes.
 
-result: [pending]
+result: [failed — blocked. Two distinct structural causes, both confirmed against the
+current build rather than worked around, and neither environmental: (1)
+`validate_tighten_only` (`apps/api/app/services/capability_service.py:307-313`)
+rejects every `enabled: False -> True` transition because every
+`PLATFORM_CAPABILITY_DEFAULTS` entry ships `enabled: False`, and no other code
+path in `apps/api/app/` sets `enabled=True` — enabling `issue_refund` and
+`place_order` for the demo tenant therefore requires direct database seeding,
+which a non-technical tester cannot perform unaided. SC2's own wording is
+"end-to-end without code"; this build cannot deliver that. (2) Threat `T-19-04`
+— the Actor's `require_human` branch writes a `PendingConfirmation` row that no
+route, task, or script resolves, so the `place_order` leg can dead-end with no
+way to complete the transaction. Recorded as failed rather than deferred: the
+prior phases' deferrals (13, 14, 15, 16) were environment deferrals — missing
+live credentials or unprovisioned infrastructure that closes with
+provisioning. This is a capability the product does not have; provisioning
+more infrastructure does not close it. Operator disposition, 2026-07-28.]
 
 ### 2. VER-01 SC3 — 100 synthetic adversarial messages, zero unauthorized mutations
 
@@ -117,7 +127,26 @@ how: |
   attempted count is what distinguishes a clean run from a vacuous one
   (`19-VALIDATION.md § Manual-Only Verifications`).
 
-result: [pending]
+result: [deferred — 2026-07-28, operator accepted the deferral after attempting to run
+the gate for real, not before. Cause, confirmed rather than assumed:
+`redis-server` IS running (`redis-cli ping` → `PONG`) and `ANTHROPIC_API_KEY`
+IS present in `apps/api/.env` — neither is the blocker. **There is no
+PostgreSQL server installed on this machine.** The `postgresql-x64-17`
+Windows service is a stale registration whose `ImagePath` points at
+`C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe`, a path that no longer exists;
+`C:\Program Files\PostgreSQL\18\` contains only an orphaned `data\` directory
+(`PG_VERSION=18`) and `pg_env.bat`, no `bin\`; none of `psql`, `postgres`,
+`pg_ctl`, or `initdb` is on PATH or anywhere under Program Files, LOCALAPPDATA,
+scoop, chocolatey, or `C:\tools`; nothing listens on ports 5432-5435. This
+harness's `TEST_ADMIN_DB_URL` target runs `CREATE DATABASE` against
+`localhost:5432`, so it cannot run until a PostgreSQL server is installed and
+running. What remains true despite the deferral: the harness is authored and
+its corpus shape, summariser accounting, and window ordering are proven by
+12 unit tests — only the live run against the real dispatcher is unproven.
+**The harness has never been executed against a live database, so this
+result is unobserved, not a pass.** Follow-up: install and start a local
+PostgreSQL server, then run
+`cd apps/api && INTEGRATION_TESTS_ENABLED=1 ./.venv/Scripts/python.exe -m pytest tests/integration/test_ver01_adversarial_harness.py -m integration -q -s`.]
 
 ### 3. AUD-03 — zero audit gaps across a synthetic 30-day window
 
@@ -137,7 +166,26 @@ how: |
   Transcribe the invocation count, the audit-row count, and the delta
   (must be 0) into `result:`.
 
-result: [pending]
+result: [deferred — 2026-07-28, operator accepted the deferral after attempting to run
+the gate for real, not before. Same confirmed cause as item 2: `redis-server`
+IS running (`redis-cli ping` → `PONG`) and `ANTHROPIC_API_KEY` IS present in
+`apps/api/.env` — neither is the blocker. **There is no PostgreSQL server
+installed on this machine.** The `postgresql-x64-17` Windows service is a
+stale registration whose `ImagePath` points at
+`C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe`, a path that no longer exists;
+`C:\Program Files\PostgreSQL\18\` contains only an orphaned `data\` directory
+(`PG_VERSION=18`) and `pg_env.bat`, no `bin\`; none of `psql`, `postgres`,
+`pg_ctl`, or `initdb` is on PATH or anywhere under Program Files, LOCALAPPDATA,
+scoop, chocolatey, or `C:\tools`; nothing listens on ports 5432-5435. This
+gate builds its 30-day backdated window against a control DB reachable only
+via `CREATE DATABASE` against `localhost:5432`, so it cannot run until a
+PostgreSQL server is installed and running. What remains true despite the
+deferral: `compute_audit_gap`'s per-day parity arithmetic is proven by
+11 unit tests with no database — only the live wiring against a real control
+DB is unproven. **The harness has never been executed against a live
+database, so this result is unobserved, not a pass.** Follow-up: install and
+start a local PostgreSQL server, then run
+`cd apps/api && INTEGRATION_TESTS_ENABLED=1 ./.venv/Scripts/python.exe -m pytest tests/integration/test_aud03_audit_gap.py -m integration -q -s`.]
 
 ### 4. Accepted gaps and open items (record only, no run)
 
@@ -205,22 +253,40 @@ still needs against its source anchors.
 
 total: 4
 passed: 0
-issues: 0
-pending: 4
+issues: 1
+pending: 0
 skipped: 0
 blocked: 0
+deferred: 2
+
+Note: item 4 ("Accepted gaps and open items") is a written record, not a
+scored test — its own `expected:` states this explicitly — so it is not
+counted in the buckets above. The four items are: 1 failed (`issues`), 2
+deferred (items 2-3), 1 recorded (item 4). 1 + 2 + 1 = 4 = `total`.
 
 ## Gaps
 
-- Items 1-3 above (VER-01 SC2, VER-01 SC3, AUD-03) each require real local
-  infrastructure (Postgres, Redis, and for item 1 a live Shopify test-mode
-  credential and an un-briefed non-technical tester) that this execution
-  environment does not provide. This mirrors the Phase 13 AWS live-gate
-  deferral (`13-08..11`), the Phase 14 live-DB deferral (`14-UAT.md`
-  items 1-3), the Phase 15 ACT-06 latency deferral (`15-03-SUMMARY.md`), and
-  the Phase 16 live-Stripe deferral (`16-UAT.md`). All deferred items are
-  recorded in UAT files so `/gsd-verify-work` surfaces them.
-- Item 1 (VER-01 SC2) additionally carries a structural blocker independent
-  of environment availability: capability `enabled=True` cannot be reached
-  through any shipped API, so the demo tenant's own precondition setup
-  requires a step no non-technical owner could perform unaided. See item 4.
+- Items 2-3 above (VER-01 SC3, AUD-03) each require real local infrastructure
+  this execution environment does not provide. Confirmed rather than assumed:
+  `redis-server` is running and `ANTHROPIC_API_KEY` is present — **there is
+  no PostgreSQL server installed on this machine** (a stale Windows service
+  registration pointing at a deleted binary, an orphaned data directory with
+  no `bin\`, nothing on PATH, nothing listening on 5432-5435). Deferred by
+  the operator on 2026-07-28 after a real attempt to run both gates, not in
+  place of one. Neither harness has ever been executed against a live
+  database — both results are unobserved, not passes. This mirrors the
+  Phase 13 AWS live-gate deferral (`13-08..11`), the Phase 14 live-DB
+  deferral (`14-UAT.md` items 1-3), the Phase 15 ACT-06 latency deferral
+  (`15-03-SUMMARY.md`), and the Phase 16 live-Stripe deferral (`16-UAT.md`).
+  All deferred items are recorded in UAT files so `/gsd-verify-work`
+  surfaces them.
+- Item 1 (VER-01 SC2) is recorded **failed**, not deferred — a deliberate
+  distinction the operator preserved on 2026-07-28: the gaps above are
+  environment gaps that close with provisioning (install Postgres, run the
+  harness). Item 1's two blockers are capabilities the product does not
+  have — `validate_tighten_only` makes capability `enabled=True` unreachable
+  through any shipped API, and `T-19-04`'s `require_human` branch has no
+  resolution route anywhere in the codebase. Neither closes by provisioning
+  infrastructure; both require code changes outside Phase 19's scope. This
+  leaves VER-01 unticked in `REQUIREMENTS.md` rather than softened into an
+  environment deferral. See item 4 for the underlying structural detail.
