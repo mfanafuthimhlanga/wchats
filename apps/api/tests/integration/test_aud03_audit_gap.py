@@ -655,6 +655,19 @@ def test_zero_audit_gaps_across_synthetic_30_day_window(aud03_tenant, require_re
     try:
         with _control_db_redirected(aud03_tenant.control_db_url):
             for batch_index in range(AUDIT_WINDOW_DAYS):
+                # 19-REVIEW.md WR-04: batch_started_at is captured on THIS
+                # (Python test-runner) clock, but the WHERE created_at >= :since
+                # comparison below is evaluated against Postgres's own
+                # server_default=now() timestamps on tool_calls_audit. This is
+                # only correct if the two clocks agree to well under the
+                # sub-second gap between capturing batch_started_at and the
+                # batch's rows landing in the DB. CLAUDE.md rule 9 (NO DOCKER)
+                # requires a local Postgres install for this suite -- same
+                # machine, same clock -- which is what makes that true here.
+                # If this harness is ever pointed at a non-local Postgres
+                # instance, this same-clock assumption would need revisiting
+                # (e.g. a negative skew tolerance on :since) before the
+                # per-day backdating below can be trusted.
                 batch_started_at = datetime.now(timezone.utc)
                 batch_attempts = asyncio.run(_run_batch())
 
