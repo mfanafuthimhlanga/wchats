@@ -416,7 +416,7 @@ Plans:
 3. An approval created before an owner tightened a capability cannot execute against the looser envelope it was created under
 4. VER-01 SC2 is re-run and its `[failed — blocked]` disposition in `19-UAT.md` is replaced by an observed result
 
-**Plans:** 3/6 plans executed
+**Plans:** 4/6 plans executed
 
 Plans:
 **Wave 1**
@@ -430,7 +430,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 22-04-PLAN.md — (W3) Deploy-page UI: unlock the Enabled control with staged confirm for a live agent, and add the approver's pending-confirmation queue
+- [x] 22-04-PLAN.md — (W3) Deploy-page UI: unlock the Enabled control with staged confirm for a live agent, and add the approver's pending-confirmation queue
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
