@@ -416,13 +416,13 @@ Plans:
 3. An approval created before an owner tightened a capability cannot execute against the looser envelope it was created under
 4. VER-01 SC2 is re-run and its `[failed — blocked]` disposition in `19-UAT.md` is replaced by an observed result
 
-**Plans:** 1/6 plans executed
+**Plans:** 2/6 plans executed
 
 Plans:
 **Wave 1**
 
 - [x] 22-01-PLAN.md — (W1) CAP-05: remove the platform-default gate from `validate_tighten_only`'s `enabled` branch; prove the other five dimensions bit-for-bit as strict
-- [ ] 22-02-PLAN.md — (W1) ACT-07 core: `SKILL_INPUT_MODELS`, extract the dispatcher's steps 6-7, and build the steps-2/3/4/6/7 resolver that skips the Actor seam and the IDV gate
+- [x] 22-02-PLAN.md — (W1) ACT-07 core: `SKILL_INPUT_MODELS`, extract the dispatcher's steps 6-7, and build the steps-2/3/4/6/7 resolver that skips the Actor seam and the IDV gate
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
