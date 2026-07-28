@@ -416,7 +416,7 @@ Plans:
 3. An approval created before an owner tightened a capability cannot execute against the looser envelope it was created under
 4. VER-01 SC2 is re-run and its `[failed — blocked]` disposition in `19-UAT.md` is replaced by an observed result
 
-**Plans:** 2/6 plans executed
+**Plans:** 3/6 plans executed
 
 Plans:
 **Wave 1**
@@ -426,7 +426,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 22-03-PLAN.md — (W2) ACT-07 surface: the queue read, the atomic `UPDATE … WHERE resolved_at IS NULL … RETURNING` claim, and the `runtime`-queue execution task
+- [x] 22-03-PLAN.md — (W2) ACT-07 surface: the queue read, the atomic `UPDATE … WHERE resolved_at IS NULL … RETURNING` claim, and the `runtime`-queue execution task
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
