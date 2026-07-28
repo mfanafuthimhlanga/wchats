@@ -74,12 +74,16 @@ it can run unconditionally ahead of the idempotency reservation without cost —
 an agent, envelope, or skill that is disabled between the original call and a
 retry is caught on the retry too.
 
-Every rejection branch — capability denial, the two IDV block branches, the
-`args_mismatch` branch, the rate/constraint denial, and the Actor `block`
-decision — writes exactly one `tool_calls_audit` row before returning (AUD-01
-symmetry). Replays and the benign `in_progress` concurrent-duplicate branch are
-the only paths that do **not** write a row, because they represent no new attempt
-at the underlying action.
+Every rejection branch — capability denial, the **three** IDV block branches
+at Step 2.5 (`identity_verification.required`, the fail-closed
+`identity_verification.check_failed` branch that fires when
+`check_verified_session` itself raises, and
+`identity_verification.invalid_or_expired`), the `args_mismatch` branch, the
+rate/constraint denial, the Actor `block` decision, and every other early
+return in `_execute_transactional_tool` — writes exactly one `tool_calls_audit`
+row before returning (AUD-01 symmetry). Replays and the benign `in_progress`
+concurrent-duplicate branch are the only paths that do **not** write a row,
+because they represent no new attempt at the underlying action.
 
 Adding a skill means adding a new `@tool` handler that calls
 `_execute_transactional_tool(skill, validated, args, adapter_method)` after its
