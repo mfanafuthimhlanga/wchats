@@ -110,6 +110,8 @@ celery_app.conf.update(
         "app.worker.tasks.pipeline.staleness",
         # Phase 21 (OPS-11): promote-trace-to-scenario flywheel task (runtime queue)
         "app.worker.tasks.runtime.bench",
+        # Phase 22 (ACT-07): pending-confirmation resolver execution task (runtime queue)
+        "app.worker.tasks.runtime.confirmations",
     ],
 
     # --- Queue topology -------------------------------------------------
