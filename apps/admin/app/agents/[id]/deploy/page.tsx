@@ -284,6 +284,16 @@ const SKILL_LABELS: Record<string, string> = {
 // already sitting right there.
 const HIDDEN_ARG_KEY = 'idempotency' + '_key'
 
+// ACT-07 — a headline is never one un-split string: DESIGN.md's "Numbers are
+// always mono" rule (echoed by 22-UI-SPEC.md's Typography table: "every
+// cents figure, every #id, every timestamp in the queue must be mono")
+// applies inside prose headlines exactly as it does to the timing lines
+// below them. `mono: true` marks the fragments that rule covers (cents,
+// ids, dates/times); everything else is plain sentence text. The wording
+// produced by joining every token's `text` in order is byte-identical to
+// the flat template strings this replaced — only the markup changed.
+type HeadlineToken = { text: string; mono?: boolean }
+
 // ACT-07 — 22-UI-SPEC.md § Surface 2's headline table, copied verbatim from
 // the six real Input models (apps/api/app/services/transactional/schemas.py).
 // Every field referenced here is a real, typed field on the matching model —
@@ -291,30 +301,65 @@ const HIDDEN_ARG_KEY = 'idempotency' + '_key'
 // the generic fallback below, not to raw JSON.
 const CONFIRMATION_HEADLINES: Record<
   string,
-  (a: Record<string, unknown>) => { headline: string; secondary: string | null }
+  (a: Record<string, unknown>) => { headline: HeadlineToken[]; secondary: string | null }
 > = {
   place_order: (a) => ({
-    headline: `Place an order for ${a.quantity} × ${a.product_id} — ${formatCents(Number(a.amount_cents) || 0)}`,
+    headline: [
+      { text: 'Place an order for ' },
+      { text: `${a.quantity}`, mono: true },
+      { text: ' × ' },
+      { text: `${a.product_id}`, mono: true },
+      { text: ' — ' },
+      { text: formatCents(Number(a.amount_cents) || 0), mono: true },
+    ],
     secondary: `Customer: ${a.customer_email} · Ship to ${a.shipping_address}`,
   }),
   cancel_order: (a) => ({
-    headline: `Cancel order #${a.order_id}`,
+    headline: [
+      { text: 'Cancel order ' },
+      { text: `#${a.order_id}`, mono: true },
+    ],
     secondary: a.reason ? `Reason: ${a.reason}` : null,
   }),
   issue_refund: (a) => ({
-    headline: `Refund ${formatCents(Number(a.refund_amount_cents) || 0)} for order #${a.order_id}`,
+    headline: [
+      { text: 'Refund ' },
+      { text: formatCents(Number(a.refund_amount_cents) || 0), mono: true },
+      { text: ' for order ' },
+      { text: `#${a.order_id}`, mono: true },
+    ],
     secondary: a.reason ? `Reason: ${a.reason}` : null,
   }),
   update_subscription: (a) => ({
-    headline: `Change subscription #${a.subscription_id} to the ${a.new_plan} plan, effective ${a.effective_date}`,
+    headline: [
+      { text: 'Change subscription ' },
+      { text: `#${a.subscription_id}`, mono: true },
+      { text: ' to the ' },
+      { text: `${a.new_plan}` },
+      { text: ' plan, effective ' },
+      { text: `${a.effective_date}`, mono: true },
+    ],
     secondary: null,
   }),
   book_slot: (a) => ({
-    headline: `Book ${a.service_type} for ${a.customer_name} on ${a.preferred_date} at ${a.preferred_time}`,
+    headline: [
+      { text: 'Book ' },
+      { text: `${a.service_type}` },
+      { text: ' for ' },
+      { text: `${a.customer_name}` },
+      { text: ' on ' },
+      { text: `${a.preferred_date}`, mono: true },
+      { text: ' at ' },
+      { text: `${a.preferred_time}`, mono: true },
+    ],
     secondary: null,
   }),
   update_customer_record: (a) => ({
-    headline: `Update ${titleCase(String(a.field_name ?? ''))} to "${a.new_value}"`,
+    headline: [
+      { text: `Update ${titleCase(String(a.field_name ?? ''))} to "` },
+      { text: `${a.new_value}` },
+      { text: '"' },
+    ],
     secondary: null,
   }),
 }
@@ -476,19 +521,30 @@ function genericArgDetails(args: Record<string, unknown>): { key: string; value:
 // The headline + secondary line for a queue row, business language over raw
 // JSON. `details` is only populated for a skill CONFIRMATION_HEADLINES does
 // not name — the primary path for the six shipped skills never reaches it.
+// `headlineText` is the flat, un-tokenised string every non-visual consumer
+// (aria-label, the staged confirm question) needs — derived from the same
+// token array the row renders, never a second hand-written template, so the
+// two can never drift apart.
 function confirmationHeadline(
   skill: string,
   args: Record<string, unknown> | null,
-): { headline: string; secondary: string | null; details: { key: string; value: string }[] | null } {
+): {
+  headline: HeadlineToken[]
+  headlineText: string
+  secondary: string | null
+  details: { key: string; value: string }[] | null
+} {
   const skillLabel = SKILL_LABELS[skill] ?? skill
   const safeArgs = args ?? {}
   const template = CONFIRMATION_HEADLINES[skill]
   if (template) {
     const { headline, secondary } = template(safeArgs)
-    return { headline, secondary, details: null }
+    return { headline, headlineText: headline.map((t) => t.text).join(''), secondary, details: null }
   }
+  const headline: HeadlineToken[] = [{ text: `${skillLabel} requested` }]
   return {
-    headline: `${skillLabel} requested`,
+    headline,
+    headlineText: headline.map((t) => t.text).join(''),
     secondary: null,
     details: genericArgDetails(safeArgs),
   }
@@ -1657,7 +1713,7 @@ function PendingConfirmationRow({
   onResolve: (confirmationId: string, resolution: 'approved' | 'rejected') => void
 }) {
   const [staged, setStaged] = useState<'approve' | 'reject' | null>(null)
-  const { headline, secondary, details } = confirmationHeadline(row.skill, row.arguments)
+  const { headline, headlineText, secondary, details } = confirmationHeadline(row.skill, row.arguments)
   const clientExpired =
     row.resolution === null && row.expires_at !== null && new Date(row.expires_at).getTime() < Date.now()
   const chip = confirmationChip(row, clientExpired)
@@ -1668,7 +1724,17 @@ function PendingConfirmationRow({
   return (
     <Zone as="li" className="pcq-row" aria-labelledby={headlineId}>
       <div className="pcq-head">
-        <h3 id={headlineId} className="pcq-headline">{headline}</h3>
+        <h3 id={headlineId} className="pcq-headline">
+          {headline.map((token, i) =>
+            token.mono ? (
+              <span key={i} className="mono">
+                {token.text}
+              </span>
+            ) : (
+              token.text
+            ),
+          )}
+        </h3>
         <Chip verdict={chip.verdict}>{chip.label}</Chip>
       </div>
       {chip.help && <p className="help">{chip.help}</p>}
@@ -1712,7 +1778,7 @@ function PendingConfirmationRow({
             <Btn
               variant="ghost"
               aria-disabled={actionsInert || undefined}
-              aria-label={`Approve: ${headline}`}
+              aria-label={`Approve: ${headlineText}`}
               onClick={() => {
                 if (actionsInert) return
                 setStaged('approve')
@@ -1723,7 +1789,7 @@ function PendingConfirmationRow({
             <Btn
               variant="ghost"
               aria-disabled={actionsInert || undefined}
-              aria-label={`Reject: ${headline}`}
+              aria-label={`Reject: ${headlineText}`}
               onClick={() => {
                 if (actionsInert) return
                 setStaged('reject')
@@ -1741,7 +1807,7 @@ function PendingConfirmationRow({
       {staged !== null && (
         <div className="cap-confirm">
           <p className="cap-confirm-q" id={`pending-${row.id}-${staged}-confirm-q`}>
-            {staged === 'approve' ? `Approve: ${headline}?` : `Reject: ${headline}?`}
+            {staged === 'approve' ? `Approve: ${headlineText}?` : `Reject: ${headlineText}?`}
           </p>
           <p className="help">
             {staged === 'approve'
