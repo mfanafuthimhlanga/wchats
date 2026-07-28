@@ -91,10 +91,20 @@ new value side by side and asks you to confirm before anything is saved.
 skill may move in one action.
 
 **Shipped behaviour:** if you try to raise a ceiling above what it is
-currently set to, the change is refused and nothing is written. You see the
-exact sentence:
+currently set to, the change is refused and nothing is written. On this
+screen, you see this sentence:
 
 > That amount is higher than the current ceiling. Nothing was changed.
+
+That sentence is the deploy screen's own copy, shown by a pre-flight check
+before the API is even called. The refusal itself is genuinely enforced by
+the server too — unlike the rate-limit floor above, there is no gap here —
+but a request that reaches the server directly (a raw API call instead of a
+click) receives a different, machine-oriented message instead of this
+sentence: a 422 response reading "Capability envelope change rejected:
+loosen_max_amount_cents". The outcome is identical either way — refused,
+nothing written — only the wording differs depending on whether you're
+looking at the screen or a direct API response.
 
 Every amount in the system — the ceiling you set, the amount the agent
 proposes to move, everything — is held internally as a whole number of
@@ -158,19 +168,24 @@ At the boundary, this is exactly what happens:
 - Propose **exactly** the current value — accepted, and nothing changes. This
   is treated as a no-op, not an error.
 - Propose **one cent above** the current ceiling — refused. The stored
-  setting is left completely untouched, and you see the sentence quoted
-  above: "That amount is higher than the current ceiling. Nothing was
-  changed."
+  setting is left completely untouched, and on this screen you see the
+  sentence quoted above: "That amount is higher than the current ceiling.
+  Nothing was changed."
 - Propose **one cent below** the current ceiling — accepted immediately.
 
 **This refusal happens on the server, before anything is written to the
 database.** Even a request that somehow bypassed the screen entirely — a
-raw API call instead of a click — would be refused in exactly the same way,
-for exactly the same reason. The screen is a convenience that shows you this
-rule clearly; it is never the thing actually enforcing it. The enforcement
-lives in the server function `validate_tighten_only`, and it runs before any
-database write is made — a rejected change leaves the stored row byte-for-byte
-untouched.
+raw API call instead of a click — would be refused with the same outcome
+(rejected, nothing written), for exactly the same reason, though not with the
+same wording: as noted under "Ceiling (maximum amount)" above, the screen
+shows its own copy while a direct API call gets the server's own message
+instead. The screen is a convenience that shows you this rule clearly; it is
+never the thing actually enforcing it. The enforcement lives in the server
+function `validate_tighten_only`, and it runs before any database write is
+made — a rejected change leaves the stored row byte-for-byte untouched. (This
+guarantee is specific to the ceiling and does not hold for every control on
+this screen — see the rate-limit floor described above, which has no
+server-side equivalent at all.)
 
 ---
 
