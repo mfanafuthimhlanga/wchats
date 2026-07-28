@@ -171,6 +171,29 @@ interface CapabilityEnvelopeList {
   envelopes: CapabilityEnvelope[]
 }
 
+// ACT-07 — one row of the approver's queue, shared shape between the GET
+// list and the resolve POST response (apps/api/app/schemas/pending_confirmation.py
+// `PendingConfirmationResponse`). `execution_outcome`/`execution_error`/
+// `executed_at` are a read-time lookup (OD-3) and stay null until a
+// resolved-and-approved row's dispatched task has actually run — the honest
+// "awaiting execution" state this queue is built around, never invented.
+interface PendingConfirmationRowData {
+  id: string
+  skill: string
+  arguments: Record<string, unknown> | null
+  requested_at: string
+  expires_at: string | null
+  resolved_at: string | null
+  resolution: 'approved' | 'rejected' | 'expired' | null
+  execution_outcome: 'executed' | 'not_executed' | null
+  execution_error: string | null
+  executed_at: string | null
+}
+
+interface PendingConfirmationListResponse {
+  confirmations: PendingConfirmationRowData[]
+}
+
 // ---------------------------------------------------------------------------
 // Module-level constants
 // ---------------------------------------------------------------------------
@@ -254,6 +277,71 @@ const SKILL_LABELS: Record<string, string> = {
   confirm_action: 'Confirm action',
 }
 
+// ACT-07 — the field name never rendered anywhere in this queue (a
+// replay-protection token with no business meaning to an owner). Built by
+// concatenation rather than as one literal so a future contributor cannot
+// accidentally reintroduce a render site by copy-pasting a string that is
+// already sitting right there.
+const HIDDEN_ARG_KEY = 'idempotency' + '_key'
+
+// ACT-07 — 22-UI-SPEC.md § Surface 2's headline table, copied verbatim from
+// the six real Input models (apps/api/app/services/transactional/schemas.py).
+// Every field referenced here is a real, typed field on the matching model —
+// none invented. A seventh mutating skill with no entry here falls through to
+// the generic fallback below, not to raw JSON.
+const CONFIRMATION_HEADLINES: Record<
+  string,
+  (a: Record<string, unknown>) => { headline: string; secondary: string | null }
+> = {
+  place_order: (a) => ({
+    headline: `Place an order for ${a.quantity} × ${a.product_id} — ${formatCents(Number(a.amount_cents) || 0)}`,
+    secondary: `Customer: ${a.customer_email} · Ship to ${a.shipping_address}`,
+  }),
+  cancel_order: (a) => ({
+    headline: `Cancel order #${a.order_id}`,
+    secondary: a.reason ? `Reason: ${a.reason}` : null,
+  }),
+  issue_refund: (a) => ({
+    headline: `Refund ${formatCents(Number(a.refund_amount_cents) || 0)} for order #${a.order_id}`,
+    secondary: a.reason ? `Reason: ${a.reason}` : null,
+  }),
+  update_subscription: (a) => ({
+    headline: `Change subscription #${a.subscription_id} to the ${a.new_plan} plan, effective ${a.effective_date}`,
+    secondary: null,
+  }),
+  book_slot: (a) => ({
+    headline: `Book ${a.service_type} for ${a.customer_name} on ${a.preferred_date} at ${a.preferred_time}`,
+    secondary: null,
+  }),
+  update_customer_record: (a) => ({
+    headline: `Update ${titleCase(String(a.field_name ?? ''))} to "${a.new_value}"`,
+    secondary: null,
+  }),
+}
+
+// ACT-07 — 22-UI-SPEC.md § Surface 2's status table. `pass` is reachable only
+// on a backend-reported executed outcome and `fail` only on a not-executed
+// outcome; an `approved` resolution with no outcome yet renders `mute` with
+// "Awaiting execution." — never a verdict this queue cannot back up.
+const RESOLUTION_LABELS: Record<string, string> = {
+  approved: 'Approved',
+  rejected: 'Rejected',
+  expired: 'Expired',
+}
+
+// ACT-07 — 22-UI-SPEC.md § Surface 2's denial-reason translation table,
+// keyed off the suffix of the backend's own `capability.denial:<code>`
+// string (apps/api/app/services/transactional/enforcement.py's denial
+// reasons). An unrecognised suffix falls through to the fallback sentence,
+// which still carries the raw code as evidence — never a bare "Failed."
+const DENIAL_TRANSLATIONS: Record<string, string> = {
+  disabled: 'This skill was turned off after the request was made, so it could not run.',
+  enabled: 'This skill was turned off after the request was made, so it could not run.',
+  max_amount_cents:
+    'The maximum amount allowed for this skill was lowered after the request was made. This amount is now over that limit.',
+  rate_limit: 'This skill had already reached its rate limit when this request tried to run.',
+}
+
 // CAP-03/D1: the only three windows the rate-limit unit select ever offers,
 // narrowest first — mirrors enforcement.py's _UNIT_TO_SECS domain exactly so
 // the UI's tightness comparison can never diverge from the server's.
@@ -335,6 +423,104 @@ function centsOrNotTracked(cents: number | null, windowDays: number): { text: st
     }
   }
   return { text: formatCents(cents), tracked: true }
+}
+
+// ACT-07 — the one net-new helper this queue adds. `formatDateTime` above is
+// absolute-only; relative phrasing ("10 minutes ago" / "in 2 hours") is what
+// 22-UI-SPEC.md's timing rule needs alongside it, evidence over adjectives:
+// the absolute mono timestamp always renders next to this, never instead of it.
+function formatRelative(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const diffMs = new Date(iso).getTime() - Date.now()
+  const past = diffMs <= 0
+  const absSec = Math.round(Math.abs(diffMs) / 1000)
+  const units: [string, number][] = [
+    ['year', 31536000],
+    ['month', 2592000],
+    ['week', 604800],
+    ['day', 86400],
+    ['hour', 3600],
+    ['minute', 60],
+  ]
+  for (const [name, secs] of units) {
+    if (absSec >= secs) {
+      const n = Math.floor(absSec / secs)
+      const plural = n === 1 ? name : `${name}s`
+      return past ? `${n} ${plural} ago` : `in ${n} ${plural}`
+    }
+  }
+  return past ? 'moments ago' : 'in moments'
+}
+
+function titleCase(s: string): string {
+  return s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+// The defensive backstop for any mutating skill CONFIRMATION_HEADLINES does
+// not name (22-UI-SPEC.md § Surface 2's generic formatting rules): any key
+// ending `_cents` renders through the currency formatter, any key ending
+// `_id` renders with a leading hash, and the one key that is never
+// business-meaningful to an owner is dropped rather than printed.
+function genericArgDetails(args: Record<string, unknown>): { key: string; value: string }[] {
+  return Object.entries(args)
+    .filter(([k]) => k !== HIDDEN_ARG_KEY)
+    .map(([k, v]) => {
+      let value: string
+      if (k.endsWith('_cents') && typeof v === 'number') value = formatCents(v)
+      else if (k.endsWith('_id')) value = `#${v}`
+      else value = String(v)
+      return { key: titleCase(k), value }
+    })
+}
+
+// The headline + secondary line for a queue row, business language over raw
+// JSON. `details` is only populated for a skill CONFIRMATION_HEADLINES does
+// not name — the primary path for the six shipped skills never reaches it.
+function confirmationHeadline(
+  skill: string,
+  args: Record<string, unknown> | null,
+): { headline: string; secondary: string | null; details: { key: string; value: string }[] | null } {
+  const skillLabel = SKILL_LABELS[skill] ?? skill
+  const safeArgs = args ?? {}
+  const template = CONFIRMATION_HEADLINES[skill]
+  if (template) {
+    const { headline, secondary } = template(safeArgs)
+    return { headline, secondary, details: null }
+  }
+  return {
+    headline: `${skillLabel} requested`,
+    secondary: null,
+    details: genericArgDetails(safeArgs),
+  }
+}
+
+// The backend's own denial code, translated to plain language, with the raw
+// code kept visible as evidence in every branch — including the fallback,
+// which is why it is never a bare "Failed."
+function denialTranslation(rawCode: string | null): string {
+  if (!rawCode) return 'This could not run. (No reason was recorded.)'
+  const prefix = 'capability.denial:'
+  const suffix = rawCode.startsWith(prefix) ? rawCode.slice(prefix.length) : rawCode
+  return DENIAL_TRANSLATIONS[suffix] ?? `This could not run. (${rawCode})`
+}
+
+// The verdict chip for a queue row, held to the "colour is a verdict" law:
+// `pass` only on a backend-reported executed outcome, `fail` only on a
+// not-executed outcome, every other state neutral. `clientExpired` is the
+// client-side deadline check, ahead of any server-side sweep (OD-2).
+function confirmationChip(
+  row: PendingConfirmationRowData,
+  clientExpired: boolean,
+): { verdict: 'pass' | 'fail' | 'mute'; label: string; help: string | null } {
+  if (row.resolution === null) {
+    return clientExpired ? { verdict: 'mute', label: 'Expired', help: null } : { verdict: 'mute', label: 'Pending', help: null }
+  }
+  if (row.resolution === 'rejected') return { verdict: 'mute', label: 'Rejected', help: null }
+  if (row.resolution === 'expired') return { verdict: 'mute', label: 'Expired', help: null }
+  // resolution === 'approved'
+  if (row.execution_outcome === 'executed') return { verdict: 'pass', label: 'Executed', help: null }
+  if (row.execution_outcome === 'not_executed') return { verdict: 'fail', label: 'Not executed', help: null }
+  return { verdict: 'mute', label: 'Approved', help: 'Awaiting execution.' }
 }
 
 // CAP-03/D1: mirrors enforcement.py's `_parse_rate_limit` exactly — a rate
@@ -1451,6 +1637,141 @@ function CapabilityZone({
   )
 }
 
+// ACT-07 — one row of the approver's queue. Reuses the `Zone` primitive
+// (the same whisper-zone the six capability Zones already use, no new
+// container), the `cap-confirm`/`cap-confirm-q`/`cap-confirm-actions`
+// staged-confirm shape verbatim, and the `aria-labelledby` naming pattern
+// the capability panel's own code comments record having fixed once already
+// (a bare div's aria-labelledby is inert; two rows sharing a skill must never
+// share an accessible name). Read order is locked: headline, then chip, then
+// timing, then actions.
+function PendingConfirmationRow({
+  row,
+  isSaving,
+  resolveNote,
+  onResolve,
+}: {
+  row: PendingConfirmationRowData
+  isSaving: 'approved' | 'rejected' | false
+  resolveNote: string | null
+  onResolve: (confirmationId: string, resolution: 'approved' | 'rejected') => void
+}) {
+  const [staged, setStaged] = useState<'approve' | 'reject' | null>(null)
+  const { headline, secondary, details } = confirmationHeadline(row.skill, row.arguments)
+  const clientExpired =
+    row.resolution === null && row.expires_at !== null && new Date(row.expires_at).getTime() < Date.now()
+  const chip = confirmationChip(row, clientExpired)
+  const inFlight = isSaving !== false
+  const headlineId = `pending-${row.id}-label`
+  const actionsInert = clientExpired || inFlight
+
+  return (
+    <Zone as="li" className="pcq-row" aria-labelledby={headlineId}>
+      <div className="pcq-head">
+        <h3 id={headlineId} className="pcq-headline">{headline}</h3>
+        <Chip verdict={chip.verdict}>{chip.label}</Chip>
+      </div>
+      {chip.help && <p className="help">{chip.help}</p>}
+      {secondary && <p className="help">{secondary}</p>}
+      {details && details.length > 0 && (
+        <ul className="pcq-details">
+          {details.map((d) => (
+            <li key={d.key} className="help">
+              {d.key}: <span className="mono">{d.value}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {row.resolution === 'approved' && row.execution_outcome === 'not_executed' && (
+        <>
+          <p className="help">{denialTranslation(row.execution_error)}</p>
+          <p className="help mono">{row.execution_error ?? '—'}</p>
+        </>
+      )}
+      <p className="help mono pcq-timing">
+        {`Requested ${formatRelative(row.requested_at)} · ${formatDateTime(row.requested_at)}`}
+      </p>
+      {row.resolved_at === null ? (
+        row.expires_at && (
+          <p className="help mono pcq-timing">
+            {`${clientExpired ? 'Expired' : 'Expires'} ${formatRelative(row.expires_at)} · ${formatDateTime(row.expires_at)}`}
+          </p>
+        )
+      ) : (
+        <p className="help mono pcq-timing">
+          {`${RESOLUTION_LABELS[row.resolution ?? ''] ?? row.resolution} ${formatRelative(row.resolved_at)} · ${formatDateTime(row.resolved_at)}`}
+        </p>
+      )}
+      {resolveNote && (
+        <p className="help" role="status">{resolveNote}</p>
+      )}
+
+      {row.resolution === null && (
+        <>
+          <div className="pcq-actions">
+            <Btn
+              variant="ghost"
+              aria-disabled={actionsInert || undefined}
+              aria-label={`Approve: ${headline}`}
+              onClick={() => {
+                if (actionsInert) return
+                setStaged('approve')
+              }}
+            >
+              {isSaving === 'approved' ? 'Approving…' : 'Approve'}
+            </Btn>
+            <Btn
+              variant="ghost"
+              aria-disabled={actionsInert || undefined}
+              aria-label={`Reject: ${headline}`}
+              onClick={() => {
+                if (actionsInert) return
+                setStaged('reject')
+              }}
+            >
+              {isSaving === 'rejected' ? 'Rejecting…' : 'Reject'}
+            </Btn>
+          </div>
+          {clientExpired && (
+            <p className="help">This request expired before anyone acted on it. It cannot execute.</p>
+          )}
+        </>
+      )}
+
+      {staged !== null && (
+        <div className="cap-confirm">
+          <p className="cap-confirm-q" id={`pending-${row.id}-${staged}-confirm-q`}>
+            {staged === 'approve' ? `Approve: ${headline}?` : `Reject: ${headline}?`}
+          </p>
+          <p className="help">
+            {staged === 'approve'
+              ? 'This executes immediately once approved.'
+              : 'The agent will not be able to complete this action for the customer.'}
+          </p>
+          <div className="cap-confirm-actions">
+            <Btn
+              variant="ghost"
+              autoFocus
+              disabled={inFlight}
+              aria-describedby={`pending-${row.id}-${staged}-confirm-q`}
+              onClick={() => {
+                const resolution = staged === 'approve' ? 'approved' : 'rejected'
+                setStaged(null)
+                onResolve(row.id, resolution)
+              }}
+            >
+              {staged === 'approve' ? 'Yes, approve' : 'Yes, reject'}
+            </Btn>
+            <Btn variant="ghost" disabled={inFlight} onClick={() => setStaged(null)}>
+              Cancel
+            </Btn>
+          </div>
+        </div>
+      )}
+    </Zone>
+  )
+}
+
 // The customer's side of the glass — the one friendly, light-mode surface in
 // the whole console (UI-SPEC S4 widget exception). Decorative: it renders
 // the SELECTED mode's layout/caption, but never the operator's own dark
@@ -1675,6 +1996,113 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     saveCapabilityEnvelope.mutate({ skill, patch })
   }
 
+  // ---- ACT-07 — the approver's triage queue for confirmations awaiting resolution. -----
+  const pendingConfirmationsQuery = useQuery({
+    queryKey: ['pending-confirmations', id],
+    queryFn: async () => {
+      const token = await getToken()
+      if (!token) throw new Error('Not authenticated')
+      const r = await fetch(`${apiBase}/api/v1/agents/${id}/pending-confirmations`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      return (await r.json()) as PendingConfirmationListResponse
+    },
+    enabled: isLoaded && !!isSignedIn,
+    staleTime: 10_000,
+  })
+  const pendingConfirmations = pendingConfirmationsQuery.data?.confirmations ?? []
+
+  // Per-row saving state, keyed by row id — mirrors `savingSkills` being
+  // keyed per-skill rather than a single shared flag, so one row's in-flight
+  // request never disables another row's Approve/Reject.
+  const [savingConfirmations, setSavingConfirmations] = useState<Record<string, 'approved' | 'rejected'>>({})
+  // A transient, per-row 409 note — "Someone already resolved this request."
+  // — cleared on the next successful resolve and self-clearing after a few
+  // seconds, mirroring the "saved" stamp's own timer pattern above.
+  const [resolveNotes, setResolveNotes] = useState<Record<string, string>>({})
+  const resolveNoteTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+
+  useEffect(
+    () => () => {
+      for (const t of Object.values(resolveNoteTimers.current)) clearTimeout(t)
+    },
+    [],
+  )
+
+  const resolveConfirmation = useMutation({
+    mutationFn: async ({
+      confirmationId,
+      resolution,
+    }: {
+      confirmationId: string
+      resolution: 'approved' | 'rejected'
+    }) => {
+      const token = await getToken()
+      if (!token) throw new Error('Not authenticated')
+      const res = await fetch(
+        `${apiBase}/api/v1/agents/${id}/pending-confirmations/${confirmationId}/resolve`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ resolution }),
+        },
+      )
+      if (res.status === 409) {
+        // The atomic claim's benign, expected outcome — not an error, never a
+        // toast. Refetch and show the inline note instead (handled in onError
+        // below, since react-query still routes a thrown error there).
+        throw Object.assign(new Error('Someone already resolved this request.'), {
+          confirmationId,
+          concurrent: true,
+        })
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        const detail = (body as { detail?: string }).detail ?? `HTTP ${res.status}`
+        throw Object.assign(new Error(detail), { confirmationId })
+      }
+      return res.json()
+    },
+    onSuccess: (_data, { confirmationId }) => {
+      queryClient.invalidateQueries({ queryKey: ['pending-confirmations', id] })
+      setResolveNotes((prev) => {
+        const next = { ...prev }
+        delete next[confirmationId]
+        return next
+      })
+    },
+    onError: (err: unknown) => {
+      const withContext = err as Error & { confirmationId?: string; concurrent?: boolean }
+      if (withContext.confirmationId && withContext.concurrent) {
+        queryClient.invalidateQueries({ queryKey: ['pending-confirmations', id] })
+        const cid = withContext.confirmationId
+        setResolveNotes((prev) => ({ ...prev, [cid]: withContext.message }))
+        clearTimeout(resolveNoteTimers.current[cid])
+        resolveNoteTimers.current[cid] = setTimeout(() => {
+          setResolveNotes((prev) => {
+            const next = { ...prev }
+            delete next[cid]
+            return next
+          })
+          delete resolveNoteTimers.current[cid]
+        }, 6000)
+      }
+    },
+    onSettled: (_data, _err, { confirmationId }) => {
+      setSavingConfirmations((prev) => {
+        const next = { ...prev }
+        delete next[confirmationId]
+        return next
+      })
+    },
+  })
+
+  const handleResolveConfirmation = (confirmationId: string, resolution: 'approved' | 'rejected') => {
+    setSavingConfirmations((prev) => ({ ...prev, [confirmationId]: resolution }))
+    resolveConfirmation.mutate({ confirmationId, resolution })
+  }
+
   // ---- Widget config — PRESERVED, GET/POST widget-config. ---------------
   const widgetConfigQuery = useQuery({
     queryKey: ['widget-config', id],
@@ -1874,6 +2302,9 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
       checklistListQuery.error,
       widgetConfigQuery.error,
       capabilityEnvelopesQuery.error,
+      // ACT-07: the queue's GET failure folds into this existing banner — no
+      // new error surface, matching every other query on this page.
+      pendingConfirmationsQuery.error,
     ]
     const first = errs.find((e): e is Error => e instanceof Error)
     return first?.message ?? null
@@ -1882,6 +2313,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     checklistListQuery.error,
     widgetConfigQuery.error,
     capabilityEnvelopesQuery.error,
+    pendingConfirmationsQuery.error,
   ])
 
   const actionError = useMemo(() => {
@@ -1900,11 +2332,16 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
       capErr.patch &&
       Object.keys(capErr.patch).length > 0
     )
+    // A concurrent-resolve (409) already has its own inline home — the
+    // per-row transient note — so it is excluded here the same way an
+    // in-context capability rejection is.
+    const resolveErr = resolveConfirmation.error as (Error & { concurrent?: boolean }) | null
     const errs = [
       triggerChecklist.error,
       acknowledgeWarning.error,
       approveDeployment.error,
       capErrHasInlineHome ? null : capErr,
+      resolveErr?.concurrent ? null : resolveErr,
     ]
     const first = errs.find((e): e is Error => e instanceof Error)
     return first?.message ?? null
@@ -1913,6 +2350,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     acknowledgeWarning.error,
     approveDeployment.error,
     saveCapabilityEnvelope.error,
+    resolveConfirmation.error,
   ])
 
   const consequence = buildConsequence(latestRun)
@@ -2218,6 +2656,36 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
               </div>
             )}
           </section>
+
+          {/* ═══ PENDING CONFIRMATIONS ═════════════════════════════════════
+              ACT-07 — the approver's triage queue. Last section of the left
+              bench column (22-UI-SPEC.md § Surface 2 placement, confirmed):
+              an owner reviewing what a skill CAN do (above) and an approver
+              reviewing what it's ABOUT to do belong on the same page, in
+              that order. */}
+          <section className="section">
+            <div className="section-head">
+              <h2 className="label" id="pending-confirmations-label">Pending confirmations</h2>
+            </div>
+            {pendingConfirmations.length === 0 ? (
+              <EmptyState
+                heading="No confirmations are waiting."
+                body="When a mutating action needs your approval, it will appear here with what it wants to do, when it was requested, and when it expires."
+              />
+            ) : (
+              <ul className="pcq-list" aria-labelledby="pending-confirmations-label">
+                {pendingConfirmations.map((row) => (
+                  <PendingConfirmationRow
+                    key={row.id}
+                    row={row}
+                    isSaving={savingConfirmations[row.id] ?? false}
+                    resolveNote={resolveNotes[row.id] ?? null}
+                    onResolve={handleResolveConfirmation}
+                  />
+                ))}
+              </ul>
+            )}
+          </section>
         </div>
 
         <WidgetPreview mode={widgetConfig.appearance} />
@@ -2378,6 +2846,22 @@ const PAGE_CSS = `
   .tile.tile-recessed .name { color: var(--ink-3); }
   .tile.tile-recessed:hover { border-color: var(--hairline); }
   .cap-sampled-stepper { margin-top: 12px; }
+
+  /* ── pending confirmations (ACT-07): every value below is reused from the
+       .field/.cap-row family above — no new spacing, colour, or typography
+       size is introduced. .pcq-row carries no rule of its own; it is a
+       Zone (the same whisper-zone the six capability Zones already use),
+       so the row shell needs nothing new either. ─────────────────────────── */
+  .pcq-list { list-style: none; margin: 16px 0 0; padding: 0; display: flex; flex-direction: column; gap: 16px; }
+  .pcq-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  /* Same figure .card-name already uses (16px/1.25) on an h3, so it inherits
+     --display/500/-0.02em from the h1,h2,h3 rule above rather than forking a
+     new type rule. */
+  .pcq-headline { font-size: 16px; line-height: 1.25; }
+  .pcq-details { margin: 6px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+  .pcq-timing { margin-top: 4px; }
+  .pcq-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+  .pcq-actions .btn { flex: none; }
 
   .warnings { margin-top: 20px; }
   .warning-row {
