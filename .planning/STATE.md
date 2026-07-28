@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — v1.1 Phases 18–19 and Phase 13 still outstanding
-stopped_at: Executed 19-04-PLAN.md (VER-01 SC3 100-message adversarial harness)
-last_updated: "2026-07-27T23:09:11.144Z"
+stopped_at: Executed 22-01-PLAN.md (CAP-05 enabled-toggle backend closure)
+last_updated: "2026-07-28T14:34:53.182Z"
 progress:
   total_phases: 2
   completed_phases: 2
@@ -29,6 +29,8 @@ Four things from this planning pass that matter beyond Phase 22:
 - **CAP-05 is a ~6-line deletion, and that is what makes it dangerous.** `validate_tighten_only` guards five other fields; an over-applied deletion would leave every existing test green, because those tests assert rejection paths that would still exist. `22-01` Task 1 therefore carries a **diff-scope gate** — the committed diff may contain no added/removed line mentioning any sibling branch's verdict token, parser call, or the platform-defaults dict — plus six **guard-removal demonstrations** written as runnable `<verify>` commands that mutate, assert red, restore from HEAD, and assert green. A negative test never seen to fail is indistinguishable from a tautology.
 
 Also note: shipping CAP-05 **falsifies `docs/guides/owner-capability-guide.md`**, which currently states correctly (as of Phase 19's CR-01 fix) that a skill can never be enabled. The correction is a task in `22-05`, in the same phase as the behaviour change — leaving it would reintroduce in one commit the exact Critical defect class Phase 19's review just closed.
+
+**▶ 22-01 EXECUTED 2026-07-28 — CAP-05 enabled-toggle backend closure, 2/2 tasks + 1 unplanned Rule-1 fix, wave 1.** `validate_tighten_only`'s `enabled` branch (`capability_service.py:307-313`) no longer reads `default_entry` or rejects — both `False->True` and `True->False` return `None` unconditionally, kept as a named `if "enabled" in proposed: pass` branch (not deleted) per explicit plan instruction, with a comment explaining the removed rule at the exact site a future reader would otherwise have to re-derive it. **Both mechanical gates run for real, not merely asserted:** the diff-scope gate (grepping the committed diff for any of the five sibling branches' verdict/parser tokens, or `PLATFORM_CAPABILITY_DEFAULTS`) returned zero hits — one self-check false-positive along the way, where the branch's own explanatory comment used the literal string `PLATFORM_CAPABILITY_DEFAULTS`, reworded to "platform-default entry" to close it. The guard-removal demonstration was observed directly: mutating the ceiling guard (`if proposed_max > current_max:` → `if False:`) turned `test_patch_rejects_each_loosening_field[max_amount_cents]` and the new `test_enable_plus_illegal_other_field_still_rejected` red (2 failed), restoring from `HEAD` unconditionally (before any pass/fail assertion) turned both green again — `T-22-CAP-01-GUARD-DEMONSTRATED`. `test_capability_routes.py`: `enabled` retired from `test_patch_rejects_each_loosening_field`'s parametrize (6→5 ids); four new route-level CAP-05 tests added (`test_patch_enables_a_disabled_skill_for_every_mutating_skill` parametrised over all six mutating skills derived from `PLATFORM_CAPABILITY_DEFAULTS`, `test_patch_enable_does_not_change_any_other_field` — the direct proof enabling loosens nothing else, `test_patch_first_write_enable_creates_row_at_platform_defaults`, `test_enable_plus_illegal_other_field_still_rejected`) plus module-scope `test_platform_defaults_still_ship_every_skill_disabled` (fail-closed posture guard — `PLATFORM_CAPABILITY_DEFAULTS` itself untouched, every entry still `enabled: False`). **Unplanned Rule-1 fix, outside the plan's stated `files_modified`:** the full-suite run surfaced `test_capability_service.py` (Phase 18) still hard-asserting the removed `loosen_enabled` rejection in two places — fixed both assertions to the shipped rule, swapping the HTTP-machinery-free demonstration payload in `test_tighten_only_enforced_below_route` from `enabled` to `rate_limit` since `enabled` no longer has a loosening direction to demonstrate; every other assertion in that file (rate_limit/ceiling/requires_confirmation/requires_identity_verification/actor_mode/mixed-payload/no-op/drift/hash) is untouched. Full unit suite 1136→**1145 passed, 8 skipped, 0 failed**; `apps/api/pyproject.toml` and `apps/api/alembic/` byte-unchanged; no migration, no new dependency. Commits `618d705`, `38d5d4f`, `45ad4c8`. See `22-01-SUMMARY.md`.
 
 **▶ PHASE 19 GAP CLOSURE 2026-07-28 — 2 of 3 verification gaps closed; the third is now an owned phase, not an open gap.** `19-VERIFICATION.md` returned `gaps_found` (3/8 must-haves). Disposition:
 
@@ -84,6 +86,7 @@ but never run live in this environment. Final unit suite: 1134 passed,
   Recorded failed rather than deferred because these are capabilities the
   product does not have, not missing infrastructure. VER-01 stays unticked
   in `REQUIREMENTS.md`.
+
 - **VER-01 SC3 (adversarial harness) — `[deferred]`.** Operator attempted a
   real run. `redis-server` is running and `ANTHROPIC_API_KEY` is present;
   **there is no PostgreSQL server installed on this machine** (stale
@@ -92,6 +95,7 @@ but never run live in this environment. Final unit suite: 1134 passed,
   nothing listening on 5432-5435). The harness has never run against a live
   database — unobserved, not a pass. Follow-up: install and start a local
   PostgreSQL server, then run the recorded command in `19-UAT.md` item 2.
+
 - **AUD-03 — `[deferred]`.** Same confirmed cause as SC3 (no local
   PostgreSQL). `compute_audit_gap`'s per-day parity arithmetic is proven by
   11 DB-free unit tests; the live 30-day window wiring is unproven — the
@@ -178,7 +182,7 @@ deleted, per this file's own convention of correcting in place.
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** Phase 19 — Documentation + v1.1 verification
+**Current focus:** Phase 22 — Owner capability control + pending-confirmation resolution
 **Previous:** M3 (Hybrid Retrieval) ✓ Complete — demo_m3.sh passed, notebook 4 DataFrames verified, RET-01–RET-08 satisfied (2026-05-16)
 
 ## Milestone Progress
@@ -353,6 +357,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Phase 19 P02 | ~25min | 2 tasks | 2 files |
 | Phase 19 P03 | 20min | 2 tasks | 2 files |
 | Phase 19 P04 | 30min | 2 tasks | 2 files |
+| Phase 22 P01 | 46min | 2 tasks | 3 files |
 
 ## Notes
 
@@ -363,6 +368,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
   approval loops rather than completes. Closing it needs a human-approved
   bypass seam inside the dispatcher, at exactly the position the threat
   model warns about. See `19-UAT.md` item 4 and `19-01-PLAN.md § OD-2`.
+
 - Phase 2 planned 2026-05-13 — 7 plans, 7 waves, all ING-01–ING-10 covered, verification passed.
 - Wave 7 (02-07) marked autonomous: false — two human checkpoints: source demo_business.pdf + visual SSE verify.
 - M1 PRD (`prd-M1.md`) is complete and ready for phase planning.
@@ -523,11 +529,13 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: [19-04] Capability-layer probes routed through confirm_action referencing an unconfigured skill string, since all six real mutating skills are enabled on the clean tenant
 - [Phase ?]: [19-04] Attack-class vocabulary strictly limited to shipped RTX_ATTACK_VECTORS + INJECTION_ATTACK_VECTORS (5 strings) — capability-layer confirm_action probes labelled confused_deputy as closest fit, no sixth invented label
 - [Phase ?]: [19-04] invoke_probe_tool/red_team_mode/ProbeToolResult bound as deferred None module globals populated by _load_probe_substrate() -- resolves conflict between the plan's bare-python-c-import acceptance check and its module-level-patchability action text
+- [Phase ?]: 22-01: kept the empty if "enabled" in proposed: pass branch (explicit plan instruction, no ruff lint cost) rather than deleting the guard
+- [Phase ?]: 22-01: fixed apps/api/tests/unit/test_capability_service.py (outside plan's files_modified) as a Rule-1 auto-fix for two stale Phase-18 assertions of the removed loosen_enabled rejection
 
 ## Session
 
-**Last session:** 2026-07-27T23:08:48.267Z
-**Stopped at:** Executed 19-04-PLAN.md (VER-01 SC3 100-message adversarial harness)
+**Last session:** 2026-07-28T14:34:53.104Z
+**Stopped at:** Executed 22-01-PLAN.md (CAP-05 enabled-toggle backend closure)
 
 Earlier the same session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 
