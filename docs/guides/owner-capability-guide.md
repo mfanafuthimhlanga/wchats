@@ -1,8 +1,12 @@
 # Owner Guide: Configuring What Your Agent Is Allowed To Do
 
 **Audience:** Business owners configuring what their agent is allowed to do
-**Phase:** 19 (narrates the Phase 18 admin UI shipped by plan 18-10)
-**Scope:** What each capability control means and what tighten-only implies — not a click-by-click tour of the screen.
+**Phase:** 19 (narrates the Phase 18 admin UI shipped by plan 18-10). Corrected and extended by
+Phase 22: the Enabled section below now describes the control as it actually ships today — Phase
+22 removed the platform-default lock this guide used to correctly describe — and a new section
+covers the approval queue Phase 22 shipped alongside that change.
+**Scope:** What each capability control means, what tighten-only implies, and what the approval
+queue does and does not do — not a click-by-click tour of the screen.
 
 ---
 
@@ -41,18 +45,37 @@ all.
 behalf until a skill is turned on. There is no skill that starts active by
 default — this is true for every tenant, on day one, with no exception.
 
-Be aware, though, that today this is not a switch you can flip yourself. The
-platform default for every one of the seven skills also ships `enabled: off`,
-and the tighten-only rule treats "off" as the tightest legal value for this
-field — so a proposal to turn a disabled skill on is rejected, from this
-screen and from any API call, for every skill shipped today. The deploy
-screen already reflects this: the checkbox is permanently disabled, with the
-caption "Cannot re-enable - the platform default is off for this skill."
-This is a deliberate v1.1 platform limitation, not a bug in the screen — a
-skill is switched on today only by a direct database action outside the
-owner's control, never through anything this screen or this guide can walk
-you through. If a skill needs to be enabled, that is currently a request to
-make of whoever operates the platform, not a setting you can reach yourself.
+You can now turn a skill on yourself, from this screen, with no request to
+anybody. The checkbox carries one of two resting captions, depending on
+whether the skill is currently on or off:
+
+> Off. Turn this on to let the agent use this skill.
+
+> On. The agent can use this skill.
+
+**If your agent is already live** — it has been through the checklist and
+approved for deployment — ticking the box does not save immediately. It
+stages a confirmation first, and asks you a direct question before anything
+changes:
+
+> Let this live agent use {skill} now? Customers can trigger it on their next turn.
+
+The primary button reads "Turn on {skill}"; the secondary button reads "Keep it off." Nothing is
+written to your configuration until you choose one of the two. The reason for this extra step is
+specific, not decorative: for a live agent, turning a skill on takes effect on the agent's very
+next customer turn, with nothing else standing in between — no checklist, no approval, no further
+gate downstream. Confirming is the one moment this screen gives you to say "yes, right now, for
+real" before that happens.
+
+**If your agent has not been approved for deployment yet,** the box saves immediately, with no
+staged confirmation at all — the checklist and the approval step still stand fully between this
+change and any customer, so there is nothing live yet for a confirmation to protect against.
+
+**Turning a skill off is unchanged in both cases:** it always saves immediately, whether or not
+the agent is live. Disabling is always safe, so it never needs a confirmation.
+
+(See "Tighten-only, and what happens at the edge," below, for what turning a skill on does — and
+does not — change about every other setting on that skill.)
 
 ### Rate limit
 
@@ -163,6 +186,15 @@ strict as what is there now**, and the very first change you ever make to a
 skill is compared against the platform default — so you can never start
 looser than the platform allows, even on day one.
 
+That sentence is true of five of the six controls, not all six. The ceiling, the rate limit, and
+the Actor review mode are still compared against the platform default on a first write, exactly as
+described, and can never start looser than that default allows. The **Enabled** control is the one
+field the platform default no longer bounds, in either direction: turning a skill on is a
+permission you hold, not a limit the platform sets, so tighten-only simply does not apply to it the
+way it applies to the other five. Turning a skill on does not reset, raise, or unlock any other
+setting on that skill — every ceiling and rate limit you configured before disabling it is still
+exactly where you left it, completely unaffected by the Enabled checkbox in either direction.
+
 At the boundary, this is exactly what happens:
 
 - Propose **exactly** the current value — accepted, and nothing changes. This
@@ -186,6 +218,101 @@ made — a rejected change leaves the stored row byte-for-byte untouched. (This
 guarantee is specific to the ceiling and does not hold for every control on
 this screen — see the rate-limit floor described above, which has no
 server-side equivalent at all.)
+
+---
+
+## When an action needs your approval
+
+Some skills are marked **Requires confirmation** (see above). When a live agent tries to use one
+of those, the action does not run immediately — it is held back as a **pending confirmation**,
+waiting for a person to decide. The queue for these requests lives on this same screen, under the
+**Pending confirmations** heading, below the capability panel for all six skills.
+
+When nothing is waiting, the queue says so plainly:
+
+> No confirmations are waiting.
+>
+> When a mutating action needs your approval, it will appear here with what it wants to do, when it was requested, and when it expires.
+
+### What a row tells you
+
+Each row states, in plain business language before any identifier, what the agent wants to do and
+for how much, when it was asked, and when the request expires. A refund row names the order and the
+amount; a booking row names the customer, the service, and the time — never a raw dump of the
+underlying data.
+
+### Approving
+
+Click Approve, and the screen asks you to confirm before anything runs:
+
+> This executes immediately once approved.
+
+That sentence is accurate, not a simplification: once you confirm, the action runs once, in the
+background, shortly after you approve it. There is no further step for you to take.
+
+### Rejecting
+
+Click Reject, and the screen tells you plainly what that means:
+
+> The agent will not be able to complete this action for the customer.
+
+Rejecting is final. The action never runs, under any circumstance, once you reject it.
+
+### Expiry
+
+Every request carries a deadline. A request that passes that deadline before anyone acts on it
+cannot be approved afterwards, and it never runs:
+
+> This request expired before anyone acted on it. It cannot execute.
+
+Nothing tidies an expired row away automatically today — no background sweep ships in this phase to
+clear the queue for you. The screen simply shows an expired request as expired for as long as it
+sits there, and refuses to act on it either way.
+
+### The honest outcome, in two steps
+
+Approving and executing are two different moments, and this screen never conflates them. The
+instant after you approve, the row reads as approved and waiting:
+
+> Awaiting execution.
+
+Only once the action has actually been attempted does the row become either executed or not
+executed — never before, and never assumed on your behalf.
+
+### Why an approved request can still be refused
+
+If you tighten the ceiling, lower the rate limit, or turn a skill off **after** a request was made
+but **before** anyone approves it, the checks run again against your *current* settings at the
+exact moment the action tries to run — never against whatever was true when the request was first
+made. If your current settings would refuse it, it is refused, even though it was already approved:
+
+> This skill was turned off after the request was made, so it could not run.
+
+> The maximum amount allowed for this skill was lowered after the request was made. This amount is now over that limit.
+
+> This skill had already reached its rate limit when this request tried to run.
+
+This is the intended behaviour, not a fault. An approval granted under looser settings never
+executes under them — a limit you tighten always wins, even against a request that was approved
+before you tightened it.
+
+### What approving does not do
+
+Say this plainly, because it matters: **approving a request authorises the action. It does not verify the customer's identity.** If a skill requires identity verification, the customer was
+verified when they originally made the request — potentially hours before you ever see the row.
+Approving it later does not check that again. Approval and identity verification are different
+acts, done at different times by different people, and this screen never lets you mistake one for
+the other.
+
+### Two people, one request
+
+If two people — or the same person in two browser tabs — try to resolve the same request at the
+same moment, the first one wins. The second is told plainly what happened:
+
+> Someone already resolved this request.
+
+This is expected behaviour, not an error. Nothing was lost; the request was simply already decided
+by the time the second attempt reached it.
 
 ---
 
@@ -271,6 +398,13 @@ would be presenting a safety control as an obstacle. It is not an obstacle.
 It is the reason a customer-facing agent is safe to give money-moving
 authority to in the first place.
 
+The same principle now covers two more surfaces this screen exposes. Enabling a skill is a
+decision to grant an authority — the right question is never whether turning it on would make a
+refusal go away, it is whether the agent should hold that authority at all. And approving a
+pending request is a decision about that one action, and only that one action. It is never a way
+to bypass a limit you have set elsewhere, and it is never a substitute for verifying who you are
+actually dealing with — see "What approving does not do," above.
+
 ---
 
 ## How this is enforced
@@ -285,6 +419,17 @@ codebase, not merely to what the screen happens to display:
   for every skill listed in the table above.
 - The routes in `apps/api/app/api/v1/capability_envelopes.py` — the read and
   tighten-only-write endpoints the deploy screen calls.
+- The routes in `apps/api/app/api/v1/pending_confirmations.py` — the queue
+  read and the atomic resolve claim the Approve/Reject buttons call.
+- `execute_approved_confirmation` in
+  `apps/api/app/services/transactional/confirmation_resolution.py` — the
+  resolver that re-runs every check whose live answer can have changed
+  since the request was made, and that never re-verifies a customer's
+  identity.
+- `resolve_approved_confirmation` in
+  `apps/api/app/worker/tasks/runtime/confirmations.py` — the background task
+  that actually executes an approved action, once, only after the resolve
+  claim above has committed.
 - The shipped screen at `apps/admin/app/agents/[id]/deploy/page.tsx` — every
   sentence quoted above is copied verbatim from this file, not paraphrased.
 
@@ -292,5 +437,8 @@ codebase, not merely to what the screen happens to display:
 
 - `apps/api/app/services/capability_service.py`
 - `apps/api/app/api/v1/capability_envelopes.py`
+- `apps/api/app/api/v1/pending_confirmations.py`
+- `apps/api/app/services/transactional/confirmation_resolution.py`
+- `apps/api/app/worker/tasks/runtime/confirmations.py`
 - `apps/admin/app/agents/[id]/deploy/page.tsx`
 - `docs/runbooks/integration-credentials.md`
