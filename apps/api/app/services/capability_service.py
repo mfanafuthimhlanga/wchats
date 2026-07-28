@@ -253,12 +253,9 @@ def validate_tighten_only(
     rejected identically.
 
     Per-field rules:
-      - enabled: True -> False always allowed (disabling is always tighter).
-        False -> True allowed ONLY when the platform default for that skill
-        has enabled=True; otherwise "loosen_enabled". Every platform default
-        ships enabled=False, so in practice re-enabling a disabled skill is
-        not reachable through this route — a chosen consequence, not a
-        surprise.
+      - enabled: both directions are unconditional (CAP-05). `enabled` is an
+        owner-controlled authorization toggle, not a tightness dimension —
+        the platform default no longer bounds it in either direction.
       - rate_limit: parsed with the shared `_parse_rate_limit` helper. A
         proposed None (explicit "remove the limit") against a non-None
         current is "loosen_rate_limit_removed". A malformed proposed value is
@@ -306,11 +303,18 @@ def validate_tighten_only(
 
     # --- enabled --------------------------------------------------------
     if "enabled" in proposed:
-        current_enabled = bool(current.get("enabled", False))
-        proposed_enabled = bool(proposed["enabled"])
-        if proposed_enabled and not current_enabled:
-            if not default_entry.get("enabled", False):
-                return _reject("loosen_enabled", "enabled")
+        # CAP-05: `enabled` is an owner-controlled authorization toggle, not a
+        # tightness dimension -- unlike the rate limit, the ceiling, and the
+        # actor mode it has no numeric or ordinal "how much" to bound. The
+        # platform-default gate that used to live here made every skill
+        # permanently un-enablable, because every platform-default entry
+        # ships enabled=False and no code path in apps/api/app/ ever set
+        # enabled=True. Both directions are now legal, mirroring how the two
+        # boolean safety switches below are treated in their own direction.
+        # Enabling a skill does not by itself loosen any other field -- every
+        # other field on this envelope remains governed by tighten-only
+        # exactly as before.
+        pass
 
     # --- rate_limit -------------------------------------------------------
     if "rate_limit" in proposed:
