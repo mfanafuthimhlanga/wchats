@@ -198,6 +198,15 @@ how: |
 
 result: [recorded]
 
+> **Ownership assigned 2026-07-28.** Both structural blockers below now have a
+> named owner: **Phase 22 — Owner capability control + pending-confirmation
+> resolution**, requirements **CAP-05** (the enable path) and **ACT-07** (the
+> confirmation resolution seam). They are no longer accepted-and-unowned. The
+> same pass corrected two stale requirement states this analysis exposed:
+> `ACT-04` was marked complete although only its row-creation half ever shipped,
+> and `CAP-03`'s note claimed plan 18-10 had not run when it had. Item 1's
+> `[failed — blocked]` disposition stands until Phase 22 ships and SC2 is re-run.
+
 **T-19-04 — accepted.** The `require_human` branch writes a
 `pending_confirmations` row that nothing in the codebase reads or resolves;
 there is no admin route, no Celery task, and no CLI script that sets

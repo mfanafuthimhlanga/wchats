@@ -307,7 +307,7 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 
 - [x] **CAP-01**: `capability_envelopes` control-DB table — `(agent_id, skill, enabled, rate_limit, constraints JSONB, requires_confirmation, requires_identity_verification, UNIQUE(agent_id, skill))`
 - [x] **CAP-02**: Enforcement middleware rejects a tool call (logged as `capability.denial`) when the skill is disabled, over its rate limit, or violates a constraint (`max_amount_cents`, scope filters)
-- [ ] **CAP-03**: Capability-and-limits admin UI in the M8 checklist — per-skill envelope config, tighten-only (never loosen beyond platform defaults), identity-verification requirement, Actor mode per skill *(backend complete: comparator + platform defaults in 18-04, GET/PATCH routes with server-side tighten-only enforcement in 18-08. The **admin UI** this requirement names is plan 18-10, which is `autonomous:false` and has not run — so the requirement is not met yet.)*
+- [ ] **CAP-03**: Capability-and-limits admin UI in the M8 checklist — per-skill envelope config, tighten-only (never loosen beyond platform defaults), identity-verification requirement, Actor mode per skill *(backend complete: comparator + platform defaults in 18-04, GET/PATCH routes with server-side tighten-only enforcement in 18-08. **Note corrected 2026-07-28** — plan 18-10 (the admin UI) HAS executed and is committed (`18-10-SUMMARY.md`, `apps/admin/app/agents/[id]/deploy/page.tsx`); the earlier "has not run" text was stale. The requirement is still not met, but for a different reason: the UI's per-skill `enabled` control is permanently locked, because `validate_tighten_only` rejects every `enabled: False → True` transition while every `PLATFORM_CAPABILITY_DEFAULTS` entry ships `enabled: False`. An owner can tighten every field but can never turn a skill on. Closure owned by **Phase 22 / CAP-05**.)*
 - [x] **CAP-04**: Envelope configured at deploy time and surfaced in the M8 pre-deployment report; any later envelope change re-triggers the pre-deployment checklist (acknowledged via envelope hash) *(complete: `envelope_drift` shipped caller-free in 18-04; 18-07 wires the checklist-time hash persistence, the approve-time 422, and `envelope_drift` on both checklist reads)*
 
 ### Actor Validator (L3)
@@ -315,7 +315,7 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 - [x] **ACT-01**: Actor validator — single-shot Claude (Haiku) call before any `mutating:true` tool executes; reads conversation + proposed tool call + envelope; outputs `approve | block | require_human` with rationale
 - [x] **ACT-02**: Integrated as a pre-execution hook in the Claude Agent SDK tool loop; fires only for mutating tools
 - [x] **ACT-03**: Short-circuit skip when the envelope marks `requires_confirmation:false` AND `max_amount_cents` is below a per-tenant skip threshold (cost control on low-value actions)
-- [x] **ACT-04**: `require_human` creates a `pending_confirmations` row and routes through `confirm_action`; the action executes only on approval and expires otherwise
+- [ ] **ACT-04**: `require_human` creates a `pending_confirmations` row and routes through `confirm_action`; the action executes only on approval and expires otherwise *(corrected from a stale `[x]` on 2026-07-28. **Only the first half shipped.** The row is created (`tools.py` `require_human` branch) and `confirm_action_tool` creates its own row, but a full route inventory of `apps/api/app/api/v1/*.py` found **zero** routes, Celery tasks, or scripts that read or resolve a `pending_confirmations` row — nothing sets `resolved_at`/`resolution`, so "the action executes only on approval" is unimplemented and there is no expiry sweep. Tracked as threat `T-19-04`; closure owned by **Phase 22 / ACT-07**.)*
 - [x] **ACT-05**: Validation chain extended to four nodes — Actor runs synchronously pre-mutation; Gatekeeper/Auditor/Strategist continue async post-response
 - [x] **ACT-06**: Actor p95 latency < 1s; total added latency on a mutating call < 1.5s end-to-end
 
@@ -367,6 +367,16 @@ Deferred to post-v1. Acknowledged but not in current roadmap.
 - [x] **DOC-02**: Integration-provider guide
 - [x] **DOC-03**: Owner-facing capability-configuration guide
 - [ ] **VER-01**: v1.1 success-criteria gate — a non-technical tester deploys an agent that issues refunds up to a configured limit and places Shopify orders end-to-end without code; 100 synthetic adversarial messages produce zero unauthorized state mutations escaping L1–L3 *(SC2 recorded `[failed — blocked]` by the operator 2026-07-28: `validate_tighten_only` makes capability `enabled=True` unreachable through any shipped API, and `T-19-04`'s `require_human` branch has no resolution route — both are capabilities the product does not have, not environment gaps. SC3's 100-message adversarial harness is authored and unit-proven; its live run was deferred the same day — no PostgreSQL server is installed on the executing machine. See `19-UAT.md` items 1-2.)*
+
+### VER-01 Blocker Closure (Phase 22)
+
+Added 2026-07-28. Phase 19's verification established that VER-01 SC2 cannot pass against the
+current build for two reasons that are **missing product capabilities, not environment gaps**.
+Neither was covered by any existing v1.1 requirement ID, so they are given their own here rather
+than left as prose in a UAT file. Both are prerequisites for VER-01 and for CAP-03 / ACT-04.
+
+- [ ] **CAP-05**: An owner-reachable path to **enable** a capability. Today `validate_tighten_only` rejects every `enabled: False → True` transition because every `PLATFORM_CAPABILITY_DEFAULTS` entry ships `enabled: False`, and no code path anywhere in `apps/api/app/` writes `enabled=True` — so a skill can only be switched on by direct database action. A non-technical owner therefore cannot deploy a working transactional agent unaided, which is precisely what VER-01 SC2 asserts they can do. The fix must preserve the tighten-only guarantee for every other field and must not let an owner exceed a platform default on any dimension.
+- [ ] **ACT-07**: A **resolution path for `pending_confirmations`** — approve and reject, with expiry. Rows are created by two code paths and read by none (threat `T-19-04`). Note this is *not* a plain CRUD route: `_execute_transactional_tool` reaches `call_actor_gate` unconditionally at Step 5, so a resolver that re-enters the dispatcher to honour the "re-run the checks" requirement will receive `require_human` a second time and loop rather than complete. Terminating approval requires a human-approved bypass seam inside the dispatcher, positioned so that an approval granted before an owner tightened a capability cannot execute against the loosened envelope it was created under.
 
 ### v1.1 Out of Scope (deferred)
 

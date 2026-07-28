@@ -402,9 +402,28 @@ Plans:
 - [x] 21-08-PLAN.md — (W5) OPS-14/15: red_team_findings rows + contain→file scenario + deploy-gate rewire (422)
 - [x] 21-09-PLAN.md — (W5) OPS-16: control migration 0017 (prompt_versions) + diff/canary/rollback + canary at dispatch
 
+## Milestone v1.1 completion — VER-01 blocker closure (Phase 22)
+
+### Phase 22: Owner capability control + pending-confirmation resolution — close VER-01's two structural blockers
+
+**Goal:** Make a transactional agent deployable and completable by a non-technical owner — give the owner a way to turn a capability on, and give an approver a way to resolve a `require_human` confirmation so the action actually executes.
+**Requirements:** CAP-05, ACT-07
+**Depends on:** Phase 14, Phase 15, Phase 18, Phase 19
+**Success criteria:**
+
+1. An owner can enable a previously-disabled skill through the shipped admin UI, with no direct database action, and the tighten-only guarantee still holds on every other field and dimension
+2. An approver can approve or reject a `pending_confirmations` row; on approval the mutating action executes exactly once and the row is marked resolved; on rejection and on expiry it never executes
+3. An approval created before an owner tightened a capability cannot execute against the looser envelope it was created under
+4. VER-01 SC2 is re-run and its `[failed — blocked]` disposition in `19-UAT.md` is replaced by an observed result
+
+**Plans:** 0 — run `/gsd-plan-phase 22`
+
+*Added 2026-07-28 from Phase 19's verification. These are **missing product capabilities, not environment gaps** — which is why VER-01 SC2 was recorded `[failed]` rather than `[deferred]`. Phase 19 was scoped as documentation-plus-verification and deliberately shipped zero production code; both fixes require changes under `apps/api/app/`, one of them a human-approved bypass seam inside `_execute_transactional_tool` at exactly the position `19-VERIFICATION.md`'s threat model flags as highest-risk. Bolting that onto a docs phase's gap-closure pass was rejected in favour of planning it properly here. Note the non-obvious constraint recorded in ACT-07: a resolver that re-enters the dispatcher will re-run the Actor and receive `require_human` again, so approval loops rather than completes — this is not a plain CRUD route. Also corrects two stale requirement states this analysis surfaced: ACT-04 (marked complete, but only its row-creation half ever shipped) and CAP-03's note (which claimed plan 18-10 had not run; it has).*
+
 ---
 
 *Roadmap created: 2026-05-12*
 *Last updated: 2026-05-29 — Phase 12 host pivot (no credit card): Oracle ARM VM + Caddy/DuckDNS TLS (D-01/D-02/D-05) superseded by local Windows PC + Cloudflare quick tunnel. 12-05/12-06 re-planned in place (tunnel bring-up + live gate); 12-01/02/03/04 unchanged. The VM/systemd/Caddy deploy artifacts (12-04) are retained as the AWS-VM reference for ADR 0001. Still 6 plans / 3 waves; all D-01..D-15 (as amended) covered.*
 *Updated 2026-06-28 — Phase 13 added (Production Hosting and Durable Deployment): turns "deploy" from a control-DB flag into a durable always-on multi-tenant serving substrate + working self-serve embed. Four waves (PROD-01..PROD-15): durable managed hosting, CDN widget + working embed snippet, object storage for uploads, concurrency-safe horizontal workers. Executes the ADR-0001 D-14 env seam onto always-on infra. Out of scope: Neon project-cap/Aurora migration and the Post-M10 transactional/A2A/MCP security layers. Not planned yet — run /gsd-plan-phase 13.*
+*Updated 2026-07-28 — Phase 22 added (VER-01 blocker closure, CAP-05 + ACT-07). Phase 19 executed 5/5 and shipped DOC-01/02/03, but its verification recorded VER-01 SC2 `failed — blocked` on two missing product capabilities: no shipped API can set a capability's `enabled=True`, and nothing resolves a `pending_confirmations` row. Phase 22 owns both. VER-01 SC3 and AUD-03 remain deferred pending a local PostgreSQL server — their harnesses are authored and unit-proven but have never run against a live database. Unplanned — run /gsd-plan-phase 22.*
 *Updated 2026-07-15 — Milestone v1.2 added (Phases 20–21). Phase 20: frontend cutover from the retired dusk/skyline admin UI to the Gotham "Bone on Graphite" console (UI2-01..UI2-08; pure re-skin+re-IA, provisioning flow preserved). Phase 21: agent-management backend completion (OPS-01..OPS-16) closing the non-provisioning E2E gaps in AGENT-MGMT-GAPS.md — live-performance metrics, RAG-health instrumentation, the failure-triage flywheel, first-class red-team programme, and prompt versioning. Both unplanned — run /gsd-plan-phase 20 / 21.*
