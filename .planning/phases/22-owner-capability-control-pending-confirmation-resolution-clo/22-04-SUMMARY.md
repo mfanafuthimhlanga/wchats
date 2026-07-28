@@ -129,3 +129,72 @@ None - no external service configuration required.
 `apps/admin/app/agents/[id]/deploy/page.tsx` exists on disk. Both task commit
 hashes (`70dbb48`, `21e34f6`) resolve in `git log --oneline --all`. This
 SUMMARY.md exists at its declared path.
+
+## Adversarial review fixes
+
+An adversarial design review of this plan's UI surfaced four findings, all
+fixed in four atomic follow-up commits against the same file. All 12
+UI-SPEC-locked copy strings verified byte-identical after every fix; the
+verdict-only chip logic (`confirmationChip()`, gated strictly on
+`execution_outcome === 'executed'` / `'not_executed'`) was never touched.
+
+- **W1 (Warning) — queue headline numbers/ids/timestamps were not mono.**
+  `CONFIRMATION_HEADLINES` concatenated cents figures, order/subscription
+  ids, and dates into one flat prose string with no markup, so none of it
+  rendered mono despite `DESIGN.md` and the UI-SPEC's Typography table both
+  locking "every cents figure, every `#id`, every timestamp in the queue
+  must be mono." `confirmationHeadline()` now returns a `HeadlineToken[]`
+  (plain vs. mono fragments) that the row renders piecewise, wrapping only
+  the numeric/id/date fragments in `<span className="mono">`. Joining every
+  token's text in order is byte-identical to the flat template strings this
+  replaced — no headline wording changed. `aria-label` and the staged
+  Approve/Reject confirm question now read from a `headlineText` flat string
+  derived from the same token array. Commit `e5951f5`.
+
+- **W2 (Warning) — the Enabled checkbox and its caption contradicted each
+  other while staged.** The checkbox previewed checked once a live-agent
+  toggle-on was staged (`pendingEnabled === true`), but the caption below it
+  keyed only on `envelope.enabled` and still read "Off. Turn this on..."
+  under a checked box. Resolved by **suppressing** the caption while
+  `pendingEnabled === true`, rather than rewording it to read "On." — the
+  `cap-confirm-q` immediately below already states the pending destination
+  in full sentence form, so nothing is lost, and suppression avoids
+  asserting "On." for a write that has not happened yet. Both locked caption
+  strings are unchanged; only the condition under which they render changed.
+  Commit `b1e2c22`.
+
+- **I1 (Info) — the idempotency-key exclusion constant was written to
+  defeat its own grep gate.** `HIDDEN_ARG_KEY = 'idempotency' + '_key'` was
+  functionally correct (the key never renders — `genericArgDetails` filters
+  it before anything reaches the screen) but existed specifically so the
+  plan's own `grep -qF 'idempotency_key'` gate (22-04-PLAN.md:300) could not
+  see the literal in this file's text. Code built to be invisible to a
+  scanner is indistinguishable in form from code built to defeat one, even
+  when the intent is benign. Rewritten as the plain literal
+  `'idempotency_key'` with a comment pointing at the actual filter site as
+  the source of truth. **This makes the plan's Task 2 automated gate a false
+  positive against a spec-compliant implementation** — the same category of
+  gate defect already documented above for the `data-gate` whole-file grep;
+  the gate is the thing that is wrong here, not the code. Commit `a165a32`.
+
+- **I2 (Info) — a malformed amount silently rendered as R0.00.**
+  `formatCents(Number(a.amount_cents) || 0)` coalesced a missing or
+  non-numeric `amount_cents`/`refund_amount_cents` to a confident-looking
+  "R0.00." `arguments` is an unvalidated JSONB column read at render time;
+  for an owner deciding whether to approve real money movement, a
+  silently-wrong zero is worse than an explicit unknown. Added `readCents()`
+  to distinguish a genuinely valid (possibly zero) cents figure from an
+  unreadable one. `place_order` and `issue_refund` now render "amount
+  unavailable" instead of a coalesced number when the field cannot be read,
+  and that row's Approve action goes `aria-disabled` with an explicit
+  message ("This request's amount could not be read. It cannot be approved
+  until the data is corrected.") — an owner must not approve an action whose
+  amount cannot be displayed. Reject stays reachable, since turning down a
+  request is safe regardless of what the unreadable amount would have been.
+  Commit `b66d9d4`.
+
+**Verification re-run after all four fixes:** `tsc --noEmit` clean (only the
+pre-existing unrelated `reduced-motion.spec.ts` error); `pnpm run
+check:no-dusk-tokens` PASS; all 12 UI-SPEC-locked copy strings present
+byte-identical via targeted grep; Python unit suite unchanged at 1179
+passed, 8 skipped, 0 failed.
