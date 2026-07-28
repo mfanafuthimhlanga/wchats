@@ -63,14 +63,27 @@ a customer asks for.
 **Shipped behaviour:** every skill starts at `5/hour`. If you try to raise the
 number of allowed calls, the change is refused outright — the server will
 never let you widen a rate limit from this screen. If you try to set a rate
-limit of zero calls, you see the exact sentence the server returns:
+limit of zero calls, the screen refuses to send the request at all and shows
+you this sentence:
 
 > A rate limit has to allow at least one call.
 
-Nothing was written when you see that sentence. Lowering a rate limit (fewer
-calls, or a narrower window) is always allowed and takes effect the moment
-you confirm it — the screen shows you the old and new value side by side and
-asks you to confirm before anything is saved.
+That sentence is the deploy screen's own safeguard, checked before any API
+call is made — it is not something the server enforces, and nothing was
+written when you see it. The server itself has **no lower bound on a rate
+limit at all**: a proposal of `0/hour` passes the server's tighten-only check
+unconditionally, because zero is mathematically the tightest value a rate
+limit can take, so nothing on the server side ever refuses it. This matters
+because it means a raw API call bypassing the screen — something this guide
+cannot prevent — could write a `0/hour` rate limit today, and once written,
+the tighten-only rule makes it permanent: every future attempt to raise it
+back above zero is a loosening, and is refused forever after. This is a real
+gap in the shipped platform, not a documented safety feature; the "at least
+one call" floor exists only in the screen you are looking at right now.
+
+Lowering a rate limit (fewer calls, or a narrower window) is always allowed
+and takes effect the moment you confirm it — the screen shows you the old and
+new value side by side and asks you to confirm before anything is saved.
 
 ### Ceiling (maximum amount)
 
