@@ -209,6 +209,38 @@ class TestResolveRoute:
         assert response.json()["resolution"] == "approved"
         mock_task.delay.assert_called_once_with(str(confirmation_id))
 
+    async def test_dispatch_failure_does_not_500_and_writes_audit_row(self):
+        """WR-03: a `.delay()` failure after the claim has committed must not
+        propagate uncaught (no 500) — the approval is already durable. It
+        must instead be caught, logged, and audited via write_audit_row with
+        actor_decision="approved_by_human" so the failure surfaces through
+        the SAME OD-3 execution_outcome lookup the GET queue already reads,
+        rather than leaving the row silently "Awaiting execution" forever."""
+        fake_tenant = _make_fake_tenant()
+        agent_id = uuid4()
+        confirmation_id = uuid4()
+        mock_agent = _make_ready_agent(fake_tenant, agent_id=agent_id)
+        mock_db = _make_db_for_agent(mock_agent)
+        row = _claim_row(skill=MUTATING_SKILL, resolution="approved", row_id=confirmation_id)
+        mock_db.execute = AsyncMock(return_value=_mock_result(single=row))
+
+        with (
+            patch(_DISPATCH_TARGET) as mock_task,
+            patch("app.api.v1.pending_confirmations.write_audit_row") as mock_audit,
+        ):
+            mock_task.delay.side_effect = RuntimeError("broker unreachable")
+            mock_audit.return_value = None
+            response = await _resolve(agent_id, confirmation_id, {"resolution": "approved"}, mock_db, fake_tenant)
+
+        # The claim already committed — this must still report success, not 500.
+        assert response.status_code == 200
+        assert response.json()["resolution"] == "approved"
+        mock_task.delay.assert_called_once_with(str(confirmation_id))
+        mock_audit.assert_awaited_once()
+        audit_kwargs = mock_audit.await_args.kwargs
+        assert audit_kwargs["actor_decision"] == "approved_by_human"
+        assert audit_kwargs["error"].startswith("confirmation.dispatch_failed")
+
     async def test_reject_never_enqueues(self):
         fake_tenant = _make_fake_tenant()
         agent_id = uuid4()

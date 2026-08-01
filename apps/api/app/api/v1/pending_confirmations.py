@@ -390,8 +390,49 @@ async def resolve_pending_confirmation(
     if claimed["resolution"] == "approved" and claimed["skill"] in SKILL_INPUT_MODELS:
         from app.worker.tasks.runtime.confirmations import resolve_approved_confirmation
 
-        resolve_approved_confirmation.delay(str(claimed["id"]))
-        enqueued = True
+        # WR-03 (T-22-ACT-09's named residual, sharpened): the claim is
+        # already durable at this point, so a `.delay()` failure (broker
+        # unreachable, network blip) must never propagate uncaught — that
+        # would 500 the response even though the approval WAS recorded, and
+        # an approver retrying after the 500 finds the atomic claim's own
+        # WHERE resolved_at IS NULL now matches nothing, getting the SAME
+        # 409 "already resolved" response used for a genuinely concurrent
+        # colleague. Catching this here can't undo that specific retry-time
+        # ambiguity (the 409 branch has no way to know WHY the row is
+        # already resolved), but it closes the actual harm the finding
+        # names: "the row is stuck approved/unexecuted forever with no
+        # operator-visible signal". Writing this audit row with
+        # actor_decision="approved_by_human" — the same discriminator the
+        # resolver itself uses — makes this failure show up through the
+        # EXISTING OD-3 execution_outcome lookup the GET queue already reads
+        # (_execution_outcome_for below): "Not executed" /
+        # "confirmation.dispatch_failed" the next time the approver's queue
+        # refreshes (WR-02's polling gets them there sooner), instead of an
+        # indefinite, indistinguishable "Awaiting execution".
+        try:
+            resolve_approved_confirmation.delay(str(claimed["id"]))
+            enqueued = True
+        except Exception as exc:  # noqa: BLE001
+            log.error(
+                "resolve_pending_confirmation.dispatch_failed",
+                agent_id=str(agent_id),
+                tenant_id=str(tenant.id),
+                confirmation_id=str(confirmation_id),
+                skill=claimed["skill"],
+                error=str(exc),
+            )
+            await write_audit_row(
+                agent_id=str(agent_id),
+                conversation_id=str(uuid4()),
+                skill=claimed["skill"],
+                arguments=claimed["arguments"],
+                result=None,
+                actor_decision="approved_by_human",
+                actor_rationale=f"pending_confirmation:{claimed['id']}",
+                capability_snapshot={},
+                latency_ms=None,
+                error=f"confirmation.dispatch_failed:{exc}",
+            )
 
     log.info(
         "resolve_pending_confirmation.ok",
