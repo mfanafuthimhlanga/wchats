@@ -250,6 +250,15 @@ Click Approve, and the screen asks you to confirm before anything runs:
 That sentence is accurate, not a simplification: once you confirm, the action runs once, in the
 background, shortly after you approve it. There is no further step for you to take.
 
+There is one narrow edge case worth naming plainly, the same way the rate-limit section above
+does. If the background worker running this action crashes at the exact wrong moment — after it
+has told the provider (Stripe, your store, etc.) to do something, but before it has recorded that
+this succeeded — the system does not guess what happened. It will never run the action a second
+time to find out, because that could mean, for example, a second refund going out. Instead it stops
+and marks the request as needing a human to check what actually happened before anything is retried.
+This is rare, and it trades a small chance of needing you to double-check one request for a real,
+load-bearing guarantee: this system will never knowingly take the same money-moving action twice.
+
 ### Rejecting
 
 Click Reject, and the screen tells you plainly what that means:
@@ -428,8 +437,15 @@ codebase, not merely to what the screen happens to display:
   identity.
 - `resolve_approved_confirmation` in
   `apps/api/app/worker/tasks/runtime/confirmations.py` — the background task
-  that actually executes an approved action, once, only after the resolve
-  claim above has committed.
+  that actually executes an approved action, only after the resolve claim
+  above has committed.
+- `mark_reservation_in_flight` / `reserve_idempotency` in
+  `apps/api/app/services/transactional/idempotency.py` — the durable
+  "adapter call is about to happen" marker written before every provider
+  call and the reclaim logic that refuses to auto-retry a call whose outcome
+  is unknown, which is what makes "runs once" (never twice) true even if the
+  background worker crashes mid-call, at the cost of occasionally needing a
+  human to check a request the system could not safely retry on its own.
 - The shipped screen at `apps/admin/app/agents/[id]/deploy/page.tsx` — every
   sentence quoted above is copied verbatim from this file, not paraphrased.
 
@@ -439,6 +455,7 @@ codebase, not merely to what the screen happens to display:
 - `apps/api/app/api/v1/capability_envelopes.py`
 - `apps/api/app/api/v1/pending_confirmations.py`
 - `apps/api/app/services/transactional/confirmation_resolution.py`
+- `apps/api/app/services/transactional/idempotency.py`
 - `apps/api/app/worker/tasks/runtime/confirmations.py`
 - `apps/admin/app/agents/[id]/deploy/page.tsx`
 - `docs/runbooks/integration-credentials.md`
