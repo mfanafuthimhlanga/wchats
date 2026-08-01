@@ -308,9 +308,12 @@ def validate_tighten_only(
         # actor mode it has no numeric or ordinal "how much" to bound. The
         # platform-default gate that used to live here made every skill
         # permanently un-enablable, because every platform-default entry
-        # ships enabled=False and no code path in apps/api/app/ ever set
-        # enabled=True. Both directions are now legal, mirroring how the two
-        # boolean safety switches below are treated in their own direction.
+        # ships enabled=False and no code path in apps/api/app/, other than
+        # red_team_probe.py's in-memory CLEAN_TENANT_ENVELOPES fixture
+        # constant (never written to a real capability_envelopes row), ever
+        # set enabled=True. Both directions are now legal, mirroring how the
+        # two boolean safety switches below are treated in their own
+        # direction.
         # Enabling a skill does not by itself loosen any other field -- every
         # other field on this envelope remains governed by tighten-only
         # exactly as before.
