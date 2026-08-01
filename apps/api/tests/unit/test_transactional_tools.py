@@ -148,8 +148,20 @@ def _mock_adapter(message: str = "Order placed [STUB]") -> MagicMock:
 
 
 def _mock_db_session() -> tuple:
-    """Return (contextmanager_factory, session_mock) for get_sync_db patching."""
+    """Return (contextmanager_factory, session_mock) for get_sync_db patching.
+
+    session.query(...).filter(...).order_by(...).first() defaults to None —
+    "no pre-existing duplicate row found" — matching the honest default state
+    for both confirm_action_tool's post-IntegrityError dedup lookup and the
+    require_human branch's WR-01 pre-insert dedup lookup (tools.py). Without
+    this, a bare MagicMock() would make db.query(...)....first() return a
+    truthy MagicMock by default, which every WR-01 require_human test would
+    then misread as "a duplicate already exists" and skip the insert it
+    means to assert on. Tests that DO want to simulate a duplicate hit
+    override this explicitly (see TestConfirmActionTool's dedup test).
+    """
     session = MagicMock()
+    session.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
     session.__enter__ = lambda s: s
     session.__exit__ = MagicMock(return_value=False)
 
@@ -1988,6 +2000,48 @@ class TestActorRequireHuman:
             f"Expected 1 audit row even on IntegrityError dedup, got {audit_mock.call_count}"
         )
 
+    def test_require_human_dedup_on_repeat_idempotency_key_skips_insert(self):
+        """WR-01: a second require_human call with the SAME idempotency_key
+        while the first confirmation is still unresolved must NOT insert a
+        second pending_confirmations row — this is the no-migration,
+        application-level dedup the finding's Fix section names, since
+        uq_pending_confirmations_unresolved (keyed on action_reference, which
+        a require_human row never has) does not cover this write path."""
+        _set_context()
+        db_cm, session = _mock_db_session()
+        existing_row = MagicMock()
+        existing_row.id = "existing-require-human-uuid"
+        session.query.return_value.filter.return_value.order_by.return_value.first.return_value = (
+            existing_row
+        )
+        audit_mock = AsyncMock()
+
+        with (
+            _p("check_capability_access", _mock_access_pass()),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("release_idempotency", _mock_release()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", _mock_gate_require_human()),
+            patch(f"{_T}.write_audit_row", audit_mock),
+            patch(f"{_T}.get_sync_db", db_cm),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=_mock_adapter())),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            result = asyncio.run(
+                place_order_tool.handler(_valid_place_order_args("idem-rh-dedup"))
+            )
+
+        # No new row inserted — the existing unresolved row is reused.
+        session.add.assert_not_called()
+        session.commit.assert_not_called()
+        assert result.get("is_error") is not True
+        assert "existing-require-human-uuid" in result["content"][0]["text"]
+        # Still exactly one audit row, matching AUD-01 symmetry.
+        assert audit_mock.call_count == 1
+
 
 # ===========================================================================
 # ACT-02 — mutating-only gating: confirm_action (mutating=False) does NOT
@@ -2131,9 +2185,13 @@ class TestFourNodeStructuralAssertion:
         """
         src = self._tools_src()
         dispatcher_start = src.index("async def _execute_transactional_tool(")
-        # 20 000-char slice covers the full dispatcher body (steps 1-7 + 2.5 IDV gate + require_human branch).
-        # Increased from 14 000 in 17-06 after Step 2.5 IDV gate added ~1 500 chars before get_adapter_for_skill.
-        dispatcher_body = src[dispatcher_start : dispatcher_start + 20000]
+        # 22 000-char slice covers the full dispatcher body (steps 1-7 + 2.5 IDV gate + require_human branch).
+        # Increased from 14 000 to 20 000 in 17-06 after Step 2.5 IDV gate added
+        # ~1 500 chars before get_adapter_for_skill. Increased from 20 000 to
+        # 22 000 in the 22-REVIEW-FIX WR-01 pass: the require_human branch's
+        # idempotency_key pre-insert dedup check (WR-01) landed before the
+        # adapter step, pushing _execute_adapter_and_audit( past 20 000 chars.
+        dispatcher_body = src[dispatcher_start : dispatcher_start + 22000]
 
         call_actor_pos = dispatcher_body.index("call_actor_gate(")
         adapter_step_pos = dispatcher_body.index("_execute_adapter_and_audit(")

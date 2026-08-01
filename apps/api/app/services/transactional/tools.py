@@ -622,32 +622,79 @@ async def _execute_transactional_tool(
         # proceed. Free the reservation so a later retry (after approval) can re-enter.
         await release_idempotency(agent_id, skill, validated.idempotency_key)
         now = datetime.now(timezone.utc)
-        confirmation_id = uuid4()
         expires_at = now + timedelta(hours=_CONFIRM_TTL_HOURS)
-        row = PendingConfirmation(
-            id=confirmation_id,
-            agent_id=agent_id,
-            skill=skill,
-            arguments=raw_args,
-            requested_at=now,
-            expires_at=expires_at,
-        )
-        # Mirror confirm_action_tool's synchronous get_sync_db pattern exactly.
-        # WR-03 asyncio.to_thread offload is a tracked follow-up, out of scope here.
-        with get_sync_db() as db:
-            db.add(row)
-            try:
-                db.commit()
-            except IntegrityError:
-                # uq_pending_confirmations_unresolved race: a duplicate require_human for
-                # the same (agent_id, skill, action) already has an unresolved pending row.
-                # Silent dedup — consistent with confirm_action_tool (T-14-08-05).
-                db.rollback()
-                log.info(
-                    "actor_require_human.duplicate_suppressed",
-                    agent_id=agent_id,
-                    skill=skill,
+
+        # WR-01: uq_pending_confirmations_unresolved (migration 0016) is built
+        # on (agent_id, skill, arguments->>'action_reference'). This branch
+        # stores raw_args — the target skill's FULL validated arguments —
+        # which never contains an "action_reference" key (no mutating Input
+        # model in schemas.py defines that field; only ConfirmActionInput
+        # does). arguments->>'action_reference' is therefore always NULL for
+        # a require_human row, and Postgres never treats two NULLs as equal
+        # for a unique index, so that index silently never dedupes this
+        # write path — only confirm_action_tool's own rows are covered by
+        # it. Extending the index to also key on idempotency_key would need
+        # a new migration (out of scope: apps/api/alembic/ and pyproject.toml
+        # are byte-unchanged this phase). This pre-insert existence check is
+        # the no-migration alternative the finding's Fix section names. It is
+        # best-effort, not atomic (a SELECT-then-INSERT race window exists
+        # between two truly concurrent require_human calls for the same key —
+        # unlike the DB-enforced index below, which IS atomic for its own,
+        # narrower action_reference case), but it bounds the common case
+        # (retries of the same logical request) without a schema change.
+        idempotency_key = raw_args.get("idempotency_key") if isinstance(raw_args, dict) else None
+        existing_confirmation_id = None
+        if idempotency_key:
+            with get_sync_db() as db:
+                existing_row = (
+                    db.query(PendingConfirmation)
+                    .filter(
+                        PendingConfirmation.agent_id == agent_id,
+                        PendingConfirmation.skill == skill,
+                        PendingConfirmation.arguments["idempotency_key"].astext == idempotency_key,
+                        PendingConfirmation.resolved_at.is_(None),
+                    )
+                    .order_by(PendingConfirmation.requested_at)
+                    .first()
                 )
+                existing_confirmation_id = existing_row.id if existing_row is not None else None
+
+        if existing_confirmation_id is not None:
+            confirmation_id = existing_confirmation_id
+            log.info(
+                "actor_require_human.duplicate_suppressed",
+                agent_id=agent_id,
+                skill=skill,
+            )
+        else:
+            confirmation_id = uuid4()
+            row = PendingConfirmation(
+                id=confirmation_id,
+                agent_id=agent_id,
+                skill=skill,
+                arguments=raw_args,
+                requested_at=now,
+                expires_at=expires_at,
+            )
+            # Mirror confirm_action_tool's synchronous get_sync_db pattern exactly.
+            # WR-03 asyncio.to_thread offload is a tracked follow-up, out of scope here.
+            with get_sync_db() as db:
+                db.add(row)
+                try:
+                    db.commit()
+                except IntegrityError:
+                    # uq_pending_confirmations_unresolved race: this specific
+                    # index only ever fires here if raw_args happened to carry
+                    # an "action_reference" key (it never does today for the
+                    # six mutating skills — kept as defense in depth, not the
+                    # primary dedup mechanism for this branch; the
+                    # idempotency_key pre-check above is).
+                    db.rollback()
+                    log.info(
+                        "actor_require_human.duplicate_suppressed",
+                        agent_id=agent_id,
+                        skill=skill,
+                    )
         await write_audit_row(
             agent_id=agent_id,
             conversation_id=conversation_id,
