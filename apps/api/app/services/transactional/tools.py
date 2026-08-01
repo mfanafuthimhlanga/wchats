@@ -10,6 +10,8 @@ The single _execute_transactional_tool dispatcher encodes the enforcement order 
        "replay"       → return stored result immediately (WR-01: BEFORE rate checks)
        "args_mismatch"→ explicit is_error (WR-02 closed)
        "in_progress"  → benign is_error (concurrent duplicate delivery)
+       "unknown"      → is_error + audit (CR-01: stale 'in_flight' row — adapter may
+                        already have run; never auto-reclaimed)
        "reserved"     → proceed as the winner
   4. Rate + constraint checks (apply_rate_and_constraint_checks — Redis INCR+EXPIRE;
      runs ONLY for the fresh reserved winner, never for replays)
@@ -76,6 +78,7 @@ from app.services.transactional.enforcement import (
 from app.services.transactional.idempotency import (
     compute_args_hash,
     finalize_idempotency,
+    mark_reservation_in_flight,
     release_idempotency,
     reserve_idempotency,
 )
@@ -179,6 +182,13 @@ async def _execute_adapter_and_audit(
     start_ms = int(time.time() * 1000)
 
     try:
+        # CR-01: durably record "the adapter call is about to happen" BEFORE
+        # making it. If this worker dies right after the adapter call
+        # succeeds but before finalize_idempotency below runs, a later
+        # reclaim attempt (reserve_idempotency) sees status='in_flight' and
+        # refuses to auto re-execute — it surfaces the row as "unknown"
+        # instead of risking a second, real provider call.
+        await mark_reservation_in_flight(agent_id, skill, validated.idempotency_key)
         result_obj = await getattr(adapter, adapter_method)(validated, agent_id)
         response = result_obj.model_dump()
         latency_ms = int(time.time() * 1000) - start_ms
@@ -268,6 +278,7 @@ async def _execute_transactional_tool(
                            "replay"       → return stored result BEFORE rate checks (WR-01)
                            "args_mismatch"→ is_error (WR-02)
                            "in_progress"  → benign is_error (concurrent duplicate delivery)
+                           "unknown"      → is_error + audit (CR-01: stale in-flight row)
                            "reserved"     → proceed as winner
       4. Rate checks     — apply_rate_and_constraint_checks: Redis INCR+EXPIRE (side-effecting)
                            ONLY for the fresh reserved winner — never for replays
@@ -500,6 +511,44 @@ async def _execute_transactional_tool(
                     "text": (
                         "This request is already being processed. "
                         "Please wait a moment and retry if you do not receive a response."
+                    ),
+                }
+            ],
+            "is_error": True,
+        }
+
+    if reservation.state == "unknown":
+        # CR-01: a stale 'in_flight' reservation exists — the adapter may
+        # already have been called by a worker that then vanished before it
+        # could finalize. Never auto-reclaimed (that risks a second, real
+        # provider call). Fail closed: audit it and surface for manual
+        # reconciliation instead of executing or silently dropping it.
+        log.error(
+            "transactional_tool.idempotency_stranded",
+            agent_id=agent_id,
+            skill=skill,
+        )
+        await write_audit_row(
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            skill=skill,
+            arguments=raw_args,
+            result=None,
+            actor_decision="",
+            actor_rationale="",
+            capability_snapshot=snapshot,
+            latency_ms=None,
+            error="idempotency.stranded_reservation",
+        )
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "This request cannot be completed automatically: a previous "
+                        "attempt may still be running or may have already completed. "
+                        "Please contact support before retrying to avoid a possible "
+                        "duplicate."
                     ),
                 }
             ],

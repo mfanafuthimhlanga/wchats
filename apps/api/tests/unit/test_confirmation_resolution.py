@@ -11,10 +11,11 @@ own `from X import Y`, so each module's local binding is patched separately:
     reserve_idempotency, release_idempotency, write_audit_row are patched at
     `app.services.transactional.confirmation_resolution.*` for the resolver's
     own steps 1-6.
-  - get_adapter_for_skill, write_audit_row, finalize_idempotency,
-    release_idempotency are patched at `app.services.transactional.tools.*`
-    for the shared `_execute_adapter_and_audit` helper's steps 6-7, which the
-    resolver calls but does not reimplement (T-22-ACT-15).
+  - get_adapter_for_skill, write_audit_row, mark_reservation_in_flight (CR-01),
+    finalize_idempotency, release_idempotency are patched at
+    `app.services.transactional.tools.*` for the shared
+    `_execute_adapter_and_audit` helper's steps 6-7, which the resolver calls
+    but does not reimplement (T-22-ACT-15).
 
 Env preamble: tests/conftest.py already sets every required environment
 variable at module level before any `app.*` import (pytest auto-loads
@@ -138,6 +139,10 @@ def _patch_resolver_boundary(
             AsyncMock(),
         ) as mock_audit_helper,
         patch(
+            "app.services.transactional.tools.mark_reservation_in_flight",
+            AsyncMock(),
+        ) as mock_mark_in_flight,
+        patch(
             "app.services.transactional.tools.finalize_idempotency",
             AsyncMock(),
         ) as mock_finalize,
@@ -155,6 +160,7 @@ def _patch_resolver_boundary(
             "get_adapter": mock_get_adapter,
             "adapter": mock_adapter,
             "audit_helper": mock_audit_helper,
+            "mark_in_flight": mock_mark_in_flight,
             "finalize": mock_finalize,
             "release_helper": mock_release_helper,
         }
@@ -424,3 +430,22 @@ class TestIdempotency:
         assert mocks["adapter"].issue_refund.await_count == 0
         assert mocks["audit_resolver"].await_count == 1
         assert mocks["audit_resolver"].await_args.kwargs["error"] == "idempotency.args_mismatch"
+
+    async def test_unknown_reservation_denies_never_reclaims(self):
+        """CR-01: a stale 'in_flight' reservation (Reservation(state="unknown"))
+        must never be treated as a green light to execute the adapter — the
+        resolver must deny and audit it, exactly like args_mismatch, not fall
+        through to the "reserved" branch below it."""
+        reservation = Reservation(state="unknown")
+        with _patch_resolver_boundary(reservation=reservation) as mocks:
+            outcome = await _resolve()
+
+        assert outcome.outcome == "denied"
+        assert outcome.reason == "idempotency.stranded_reservation"
+        assert mocks["adapter"].issue_refund.await_count == 0
+        assert mocks["audit_resolver"].await_count == 1
+        assert mocks["audit_resolver"].await_args.kwargs["error"] == "idempotency.stranded_reservation"
+        # A stranded reservation is never released here — releasing it would
+        # let a fresh reserve_idempotency call reclaim and re-execute a key
+        # that may already have hit the adapter once.
+        mocks["release_resolver"].assert_not_awaited()

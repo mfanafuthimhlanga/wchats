@@ -517,6 +517,111 @@ class TestReservationEngine:
         assert reservation.result == stored
 
     # ------------------------------------------------------------------
+    # reserve_idempotency: in_flight paths (CR-01)
+    # ------------------------------------------------------------------
+
+    def test_reserve_in_progress_recent_in_flight(self):
+        """INSERT conflict + status='in_flight' + recent reserved_at → state 'in_progress'."""
+        from app.services.transactional.idempotency import reserve_idempotency
+
+        args_hash = "hash-in-flight-recent"
+        cm, session = _make_reserve_session(
+            _first_result(None),
+            _mappings_first_result({
+                "status": "in_flight",
+                "result": None,
+                "args_hash": args_hash,
+                "reserved_at": datetime.now(timezone.utc),  # recent
+            }),
+        )
+        with patch("app.services.transactional.idempotency.get_sync_db", cm):
+            reservation = asyncio.run(
+                reserve_idempotency(uuid4(), "issue_refund", "key-if01", args_hash)
+            )
+
+        assert reservation.state == "in_progress"
+
+    def test_reserve_stale_in_flight_returns_unknown_never_reclaimed(self):
+        """CR-01: stale 'in_flight' row → state 'unknown', and NO reclaim UPDATE
+        is ever issued (only 2 execute() calls: the INSERT and the SELECT —
+        there must be no third, reclaim-UPDATE call for an in_flight row)."""
+        from app.services.transactional.idempotency import (
+            reserve_idempotency,
+            _RESERVATION_LEASE_SECONDS,
+        )
+
+        args_hash = "hash-in-flight-stale"
+        old_ts = datetime.now(timezone.utc) - timedelta(seconds=_RESERVATION_LEASE_SECONDS + 60)
+
+        cm, session = _make_reserve_session(
+            _first_result(None),
+            _mappings_first_result({
+                "status": "in_flight",
+                "result": None,
+                "args_hash": args_hash,
+                "reserved_at": old_ts,
+            }),
+        )
+        with patch("app.services.transactional.idempotency.get_sync_db", cm):
+            reservation = asyncio.run(
+                reserve_idempotency(uuid4(), "issue_refund", "key-if02", args_hash)
+            )
+
+        assert reservation.state == "unknown"
+        # Exactly the INSERT + the SELECT — never a third (reclaim) execute()
+        # call. A stale in_flight row must never be UPDATEd/reclaimed.
+        assert session.execute.call_count == 2
+
+    def test_reserve_stale_pending_still_reclaimed_unaffected_by_in_flight(self):
+        """A stale 'pending' row (adapter never touched) must still be safely
+        reclaimable after CR-01 — only 'in_flight' rows are protected."""
+        from app.services.transactional.idempotency import (
+            reserve_idempotency,
+            _RESERVATION_LEASE_SECONDS,
+        )
+
+        args_hash = "hash-pending-stale-cr01"
+        old_ts = datetime.now(timezone.utc) - timedelta(seconds=_RESERVATION_LEASE_SECONDS + 60)
+
+        cm, session = _make_reserve_session(
+            _first_result(None),
+            _mappings_first_result({
+                "status": "pending",
+                "result": None,
+                "args_hash": args_hash,
+                "reserved_at": old_ts,
+            }),
+            _first_result(MagicMock()),  # reclaim UPDATE RETURNING → row
+        )
+        with patch("app.services.transactional.idempotency.get_sync_db", cm):
+            reservation = asyncio.run(
+                reserve_idempotency(uuid4(), "issue_refund", "key-p01", args_hash)
+            )
+
+        assert reservation.state == "reserved"
+
+    # ------------------------------------------------------------------
+    # mark_reservation_in_flight (CR-01)
+    # ------------------------------------------------------------------
+
+    def test_mark_in_flight_issues_update_scoped_to_pending(self):
+        """mark_reservation_in_flight issues an UPDATE setting status='in_flight',
+        scoped to status='pending', and commits."""
+        from app.services.transactional.idempotency import mark_reservation_in_flight
+
+        cm, session = _mock_db_for_store()
+
+        with patch("app.services.transactional.idempotency.get_sync_db", cm):
+            asyncio.run(mark_reservation_in_flight(uuid4(), "issue_refund", "key-mif01"))
+
+        session.execute.assert_called_once()
+        executed_sql = str(session.execute.call_args[0][0]).upper()
+        assert "UPDATE" in executed_sql
+        assert "IN_FLIGHT" in executed_sql
+        assert "PENDING" in executed_sql, "must scope the UPDATE to status='pending'"
+        session.commit.assert_called_once()
+
+    # ------------------------------------------------------------------
     # finalize_idempotency
     # ------------------------------------------------------------------
 
@@ -536,6 +641,21 @@ class TestReservationEngine:
         assert "COMPLETED" in executed_sql, "Expected 'completed' in finalize SQL"
         session.commit.assert_called_once()
 
+    def test_finalize_where_clause_covers_pending_and_in_flight(self):
+        """CR-01: finalize's WHERE clause must match BOTH 'pending' (legacy/
+        back-compat) and 'in_flight' (the normal post-CR-01 path) — a row
+        stuck at 'in_flight' must still be finalizable on adapter success."""
+        from app.services.transactional.idempotency import finalize_idempotency
+
+        cm, session = _mock_db_for_store()
+        result = _make_result("ORD-FINALIZE-IF")
+
+        with patch("app.services.transactional.idempotency.get_sync_db", cm):
+            asyncio.run(finalize_idempotency(uuid4(), "issue_refund", "key-f02", result))
+
+        executed_sql = str(session.execute.call_args[0][0]).upper()
+        assert "IN_FLIGHT" in executed_sql
+
     # ------------------------------------------------------------------
     # release_idempotency
     # ------------------------------------------------------------------
@@ -553,6 +673,14 @@ class TestReservationEngine:
         executed_sql = str(session.execute.call_args[0][0]).upper()
         assert "DELETE" in executed_sql, f"Expected DELETE in SQL, got: {executed_sql}"
         assert "PENDING" in executed_sql, "release_idempotency must scope DELETE to status='pending'"
+        # CR-01: release must ALSO cover 'in_flight' — a synchronous adapter
+        # exception can happen after mark_reservation_in_flight has already
+        # flipped the row past 'pending'; without this, that row would be
+        # left un-releasable and eventually misreported as a stranded
+        # ("unknown") reservation instead of cleanly retriable.
+        assert "IN_FLIGHT" in executed_sql, (
+            "release_idempotency must also scope DELETE to status='in_flight' (CR-01)"
+        )
         session.commit.assert_called_once()
 
     # ------------------------------------------------------------------

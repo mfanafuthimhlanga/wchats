@@ -13,10 +13,28 @@ Re-run (against the LIVE state, never a stored snapshot):
                                                      row exist any more?
     Step 3   — reserve_idempotency (fresh):          a Celery redelivery of the
                                                      resolve task must find
-                                                     replay/in_progress, not
-                                                     execute twice (T-22-ACT-13,
+                                                     replay/in_progress/unknown,
+                                                     never re-execute the adapter
+                                                     a second time (T-22-ACT-13,
                                                      CLAUDE.md rule 5's
-                                                     idempotency half).
+                                                     idempotency half). CR-01
+                                                     closed the gap where a
+                                                     redelivery arriving after
+                                                     _RESERVATION_LEASE_SECONDS
+                                                     (120s) but within Celery's
+                                                     broker visibility_timeout
+                                                     (3600s) would have found a
+                                                     stale 'pending' row and
+                                                     silently reclaimed it: the
+                                                     row is now flipped to
+                                                     'in_flight' before the
+                                                     adapter call
+                                                     (mark_reservation_in_flight),
+                                                     and a stale 'in_flight' row
+                                                     is NEVER auto-reclaimed — it
+                                                     surfaces as "unknown"
+                                                     instead (idempotency.py's
+                                                     CR-01 anchor).
     Step 4   — apply_rate_and_constraint_checks:     has the owner tightened
                                                      the ceiling or rate limit
                                                      below what the confirmation
@@ -294,6 +312,35 @@ async def execute_approved_confirmation(
             outcome="denied",
         )
         return ResolutionOutcome(outcome="denied", reason="idempotency.args_mismatch")
+
+    if reservation.state == "unknown":
+        # CR-01: a stale 'in_flight' reservation exists on this key — a prior
+        # attempt (this same task, redelivered after the worker that ran it
+        # vanished, or a live-turn call on the same key) may already have
+        # called the adapter. Never auto-reclaimed here either: re-running
+        # this resolver's own adapter call would risk a second, real
+        # provider call. Fail closed and surface for manual reconciliation,
+        # exactly like the live-turn dispatcher's own handling of this state
+        # (tools.py::_execute_transactional_tool).
+        await write_audit_row(
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            skill=skill,
+            arguments=arguments,
+            result=None,
+            actor_decision="",
+            actor_rationale="",
+            capability_snapshot=snapshot,
+            latency_ms=None,
+            error="idempotency.stranded_reservation",
+        )
+        log.error(
+            "confirmation_resolution.idempotency_stranded",
+            agent_id=agent_id,
+            skill=skill,
+            outcome="denied",
+        )
+        return ResolutionOutcome(outcome="denied", reason="idempotency.stranded_reservation")
 
     # reservation.state == "reserved" — proceed as the winner.
 

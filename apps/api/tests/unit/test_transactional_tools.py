@@ -257,6 +257,7 @@ class TestCapabilityDenial:
         with (
             _p("check_capability_access", _mock_access_deny("disabled")),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
             patch(f"{_T}.get_adapter_for_skill", get_adapter_mock),
@@ -343,6 +344,7 @@ class TestDispatcherHappyPath:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("finalize_idempotency", _mock_finalize()),
             _p("release_idempotency", release_mock),
@@ -366,6 +368,7 @@ class TestDispatcherHappyPath:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("finalize_idempotency", finalize_mock),
             _p("release_idempotency", release_mock),
@@ -388,6 +391,7 @@ class TestDispatcherHappyPath:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("finalize_idempotency", _mock_finalize()),
             _p("release_idempotency", _mock_release()),
@@ -413,6 +417,7 @@ class TestDispatcherHappyPath:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("finalize_idempotency", _mock_finalize()),
             _p("release_idempotency", _mock_release()),
@@ -558,6 +563,7 @@ class TestReplayShortCircuit:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", reserve_mock),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("finalize_idempotency", _mock_finalize()),
             _p("release_idempotency", _mock_release()),
@@ -596,6 +602,7 @@ class TestReplayShortCircuit:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", reserve_mock),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("finalize_idempotency", _mock_finalize()),
             _p("release_idempotency", _mock_release()),
@@ -847,6 +854,73 @@ class TestConcurrentInProgress:
 
 
 # ===========================================================================
+# CR-01 — a stale 'in_flight' reservation is never auto-reclaimed
+# ===========================================================================
+
+
+class TestStrandedReservation:
+    """reserve_idempotency returning state="unknown" (CR-01: a stale
+    'in_flight' row — the adapter may already have run) must deny and audit,
+    never execute the adapter and never fall through to the winner path."""
+
+    def test_unknown_returns_is_error(self):
+        _set_context()
+
+        with (
+            _p("check_capability_access", _mock_access_pass()),
+            _p("reserve_idempotency", _mock_reserve("unknown")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.write_audit_row", AsyncMock()),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            result = asyncio.run(place_order_tool.handler(_valid_place_order_args()))
+
+        assert result.get("is_error") is True
+
+    def test_unknown_adapter_never_called(self):
+        _set_context()
+        adapter_mock = _mock_adapter()
+        get_adapter_mock = AsyncMock(return_value=adapter_mock)
+
+        with (
+            _p("check_capability_access", _mock_access_pass()),
+            _p("reserve_idempotency", _mock_reserve("unknown")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.write_audit_row", AsyncMock()),
+            patch(f"{_T}.get_adapter_for_skill", get_adapter_mock),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            asyncio.run(place_order_tool.handler(_valid_place_order_args()))
+
+        get_adapter_mock.assert_not_called()
+        adapter_mock.place_order.assert_not_called()
+
+    def test_unknown_writes_one_audit_row_with_stranded_error(self):
+        _set_context()
+        audit_mock = AsyncMock()
+
+        with (
+            _p("check_capability_access", _mock_access_pass()),
+            _p("reserve_idempotency", _mock_reserve("unknown")),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.write_audit_row", audit_mock),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock()),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            asyncio.run(place_order_tool.handler(_valid_place_order_args()))
+
+        assert audit_mock.call_count == 1
+        assert audit_mock.call_args.kwargs["error"] == "idempotency.stranded_reservation"
+
+
+# ===========================================================================
 # Rate/constraint denial after reservation → must release
 # ===========================================================================
 
@@ -860,6 +934,7 @@ class TestRateDenialAfterReserve:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_deny("rate_limit")),
             _p("release_idempotency", _mock_release()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
@@ -879,6 +954,7 @@ class TestRateDenialAfterReserve:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_deny("rate_limit")),
             _p("release_idempotency", release_mock),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
@@ -899,6 +975,7 @@ class TestRateDenialAfterReserve:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_deny("rate_limit")),
             _p("release_idempotency", _mock_release()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
@@ -920,6 +997,7 @@ class TestRateDenialAfterReserve:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_deny("rate_limit")),
             _p("release_idempotency", _mock_release()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
@@ -951,6 +1029,7 @@ class TestActorBlock:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", _mock_release()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
@@ -971,6 +1050,7 @@ class TestActorBlock:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", release_mock),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
@@ -992,6 +1072,7 @@ class TestActorBlock:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", _mock_release()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
@@ -1014,6 +1095,7 @@ class TestActorBlock:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", _mock_release()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
@@ -1050,6 +1132,7 @@ class TestAdapterError:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", _mock_release()),
             _p("finalize_idempotency", _mock_finalize()),
@@ -1071,6 +1154,7 @@ class TestAdapterError:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", release_mock),
             _p("finalize_idempotency", _mock_finalize()),
@@ -1092,6 +1176,7 @@ class TestAdapterError:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", _mock_release()),
             _p("finalize_idempotency", finalize_mock),
@@ -1113,6 +1198,7 @@ class TestAdapterError:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", _mock_release()),
             _p("finalize_idempotency", _mock_finalize()),
@@ -1198,6 +1284,7 @@ class TestAgentIdPrecondition:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
             patch(f"{_T}.write_audit_row", AsyncMock()),
         ):
@@ -1706,6 +1793,7 @@ class TestActorRequireHuman:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", release_mock),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
@@ -1761,6 +1849,7 @@ class TestActorRequireHuman:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", release_mock),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
@@ -1783,6 +1872,7 @@ class TestActorRequireHuman:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", _mock_release()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
@@ -1812,6 +1902,7 @@ class TestActorRequireHuman:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", _mock_release()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
@@ -1845,6 +1936,7 @@ class TestActorRequireHuman:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", _mock_release()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
@@ -1872,6 +1964,7 @@ class TestActorRequireHuman:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", _mock_release()),
             _p("compute_args_hash", MagicMock(return_value="fakehash")),
@@ -1943,6 +2036,7 @@ class TestActorMutatingGating:
         with (
             _p("check_capability_access", _mock_access_pass()),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("finalize_idempotency", _mock_finalize()),
             _p("release_idempotency", _mock_release()),
@@ -2129,6 +2223,7 @@ class TestIDVGate:
         with (
             _p("check_capability_access", AsyncMock(return_value=(self._snapshot_idv(True), None))),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", _mock_release()),
             _p("finalize_idempotency", _mock_finalize()),
@@ -2155,6 +2250,7 @@ class TestIDVGate:
         with (
             _p("check_capability_access", AsyncMock(return_value=(self._snapshot_idv(True), None))),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", _mock_release()),
             _p("finalize_idempotency", _mock_finalize()),
@@ -2187,6 +2283,7 @@ class TestIDVGate:
         with (
             _p("check_capability_access", AsyncMock(return_value=(self._snapshot_idv(True), None))),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", _mock_release()),
             _p("finalize_idempotency", _mock_finalize()),
@@ -2221,6 +2318,7 @@ class TestIDVGate:
         with (
             _p("check_capability_access", AsyncMock(return_value=(self._snapshot_idv(False), None))),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", _mock_release()),
             _p("finalize_idempotency", _mock_finalize()),
@@ -2255,6 +2353,7 @@ class TestIDVGate:
         with (
             _p("check_capability_access", AsyncMock(return_value=(self._snapshot_idv(True), None))),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", _mock_release()),
             _p("finalize_idempotency", _mock_finalize()),
@@ -2283,6 +2382,7 @@ class TestIDVGate:
         with (
             _p("check_capability_access", AsyncMock(return_value=(self._snapshot_idv(True), None))),
             _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
             _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
             _p("release_idempotency", _mock_release()),
             _p("finalize_idempotency", _mock_finalize()),

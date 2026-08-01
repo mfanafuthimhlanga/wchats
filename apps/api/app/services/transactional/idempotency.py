@@ -25,13 +25,28 @@ Provides:
           "replay"        — prior completed result available; return it.
           "in_progress"   — another worker is executing; caller should wait/retry.
           "args_mismatch" — key reused with different business args; return error.
+          "unknown"       — a stale 'in_flight' row exists (CR-01): the adapter may
+                            already have been called by a worker that then vanished
+                            before it could finalize. Never auto-reclaimed — the
+                            caller must surface this for manual reconciliation
+                            rather than guess.
+
+    mark_reservation_in_flight(agent_id, skill, idempotency_key) -> None
+        Durably record "the adapter call is about to happen" (CR-01 fix)
+        immediately before the (possibly irreversible) adapter call. Flips a
+        'pending' row to 'in_flight'. This is what lets a later stale-reclaim
+        tell "adapter never touched" (safe to reclaim) apart from "adapter
+        call may already have run" (never safe to auto re-execute).
 
     finalize_idempotency(agent_id, skill, idempotency_key, result) -> None
-        Mark the pending reservation completed and persist the result.
+        Mark the pending/in_flight reservation completed and persist the result.
 
     release_idempotency(agent_id, skill, idempotency_key) -> None
-        Delete a *pending* reservation so a legitimate retry can re-run.
-        Never deletes a completed row.
+        Delete a *pending or in_flight* reservation so a legitimate retry can
+        re-run. Never deletes a completed row. Only called from a live worker
+        that has just synchronously observed the outcome (a caught exception,
+        a pre-adapter denial) — never from a crash-recovery/reclaim path,
+        which must use the stale-reclaim logic in reserve_idempotency instead.
 
 PER-TOOL vs TURN-LEVEL GUARD:
     This module implements the *tool-level* idempotency guard, which is orthogonal
@@ -60,8 +75,20 @@ UNIQUE CONTRACT (TXN-02 anchor):
 RESERVATION CONTRACT (CR-02 anchor):
     The reserve-before-execute engine inserts a 'pending' row BEFORE the adapter
     runs.  Only the insert winner proceeds; losers read the existing row and return
-    in_progress / replay / args_mismatch WITHOUT executing.  Crash-orphaned 'pending'
-    rows are reclaimable after _RESERVATION_LEASE_SECONDS via an UPDATE...RETURNING.
+    in_progress / replay / args_mismatch WITHOUT executing.  A 'pending' row that
+    goes stale (crashed before the adapter was ever called) is reclaimable after
+    _RESERVATION_LEASE_SECONDS via an UPDATE...RETURNING — safe, because the
+    adapter was never reached.
+
+    CR-01 anchor: a row is flipped to 'in_flight' immediately before the adapter
+    call (mark_reservation_in_flight). A stale 'in_flight' row means the adapter
+    call may have already happened before the worker vanished — Celery's
+    visibility_timeout (broker redelivery window) is 30x longer than
+    _RESERVATION_LEASE_SECONDS, so "stale" does not mean "safe": the reclaim path
+    NEVER re-executes a stale 'in_flight' row automatically (that risks a second,
+    real provider call for something like a refund). It instead returns
+    Reservation(state="unknown") so the caller can surface the row for manual
+    reconciliation, fail-closed rather than guessing.
 
 EXECUTOR OFFLOAD (WR-03):
     All functions that touch get_sync_db use asyncio.to_thread to keep the
@@ -86,8 +113,16 @@ from app.core.database import get_sync_db
 log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Reservation lease — stale pending rows older than this are reclaimable.
-# A pending reservation left by a crash cannot deadlock a key forever.
+# Reservation lease — stale 'pending' rows older than this are reclaimable
+# (the adapter was never called for them, so re-executing is safe). A stale
+# 'in_flight' row older than this is NEVER reclaimed (CR-01) — it means the
+# adapter call may already have happened, and this constant deliberately
+# does NOT need to exceed Celery's broker visibility_timeout (3600s,
+# celery_app.py) for correctness anymore: staleness here only decides
+# in_progress vs unknown, never whether to re-execute. A 'pending' reservation
+# left by a crash-before-the-adapter-call cannot deadlock a key forever; an
+# 'in_flight' reservation left by a crash-during-or-after the adapter call is
+# deliberately left stuck (state="unknown") for a human to reconcile.
 # ---------------------------------------------------------------------------
 _RESERVATION_LEASE_SECONDS: int = 120
 
@@ -106,13 +141,17 @@ class Reservation:
         "in_progress"   — another worker is executing; caller should wait/retry.
         "args_mismatch" — stored args_hash differs from incoming; key reused with
                           different business arguments; return an error to the caller.
+        "unknown"       — (CR-01) a stale 'in_flight' row exists: the adapter may
+                          already have run. Never reclaimed automatically — the
+                          caller must treat this as a denial and surface it for
+                          manual reconciliation, never retry the adapter itself.
 
     result:
         None unless state == "replay", in which case it is the previously stored
         tool response dict (already JSON-decoded).
     """
 
-    state: Literal["reserved", "replay", "in_progress", "args_mismatch"]
+    state: Literal["reserved", "replay", "in_progress", "args_mismatch", "unknown"]
     result: dict | None = None
 
 
@@ -163,6 +202,14 @@ async def reserve_idempotency(
       status = 'pending', stale (> lease) → attempt a reclaim UPDATE:
           UPDATE success → Reservation("reserved")         — this agent reclaims.
           UPDATE miss    → Reservation("in_progress")      — someone else reclaimed first.
+          (Safe: a 'pending' row means the adapter was never called.)
+      status = 'in_flight', recent → Reservation("in_progress") — adapter call may
+          be genuinely running right now; wait/retry.
+      status = 'in_flight', stale (> lease) → Reservation("unknown") — CR-01: NEVER
+          reclaimed. The adapter may already have been called by a worker that
+          then vanished before finalize_idempotency ran. Re-executing here could
+          be a second, real provider call; the row is surfaced instead for manual
+          reconciliation.
 
     The blocking get_sync_db calls are offloaded via asyncio.to_thread (WR-03).
     """
@@ -239,16 +286,43 @@ async def reserve_idempotency(
                 )
                 return Reservation(state="replay", result=raw_result)
 
-            # status == "pending": check staleness
+            # status == "pending" or "in_flight": check staleness.
             threshold = datetime.now(timezone.utc) - timedelta(
                 seconds=_RESERVATION_LEASE_SECONDS
             )
             reserved_at: datetime = existing["reserved_at"]
             if reserved_at.tzinfo is None:
                 reserved_at = reserved_at.replace(tzinfo=timezone.utc)
+            is_stale = reserved_at < threshold
 
-            if reserved_at < threshold:
-                # Stale pending row — try to reclaim it atomically.
+            if status == "in_flight":
+                # CR-01: the adapter call may already have been made by the
+                # worker that owns this reservation. Never safe to auto-reclaim,
+                # stale or not — a reclaim-and-retry here risks a second, real
+                # provider call (e.g. a duplicate refund).
+                if is_stale:
+                    log.error(
+                        "reserve_idempotency.stranded_in_flight",
+                        agent_id=agent_id_str,
+                        skill=skill,
+                    )
+                    return Reservation(state="unknown")
+                # Recent in_flight row — the owning worker is (most likely)
+                # still genuinely mid-call. Same caller-facing behaviour as a
+                # recent pending row: wait/retry, do not execute.
+                log.info(
+                    "reserve_idempotency.in_progress",
+                    agent_id=agent_id_str,
+                    skill=skill,
+                )
+                return Reservation(state="in_progress")
+
+            # status == "pending": the adapter has never been called for this
+            # reservation, so a stale row is safe to reclaim and re-execute.
+            if is_stale:
+                # Stale pending row — try to reclaim it atomically. The WHERE
+                # clause is scoped to status = 'pending' specifically (not
+                # 'in_flight') so this UPDATE can never touch an in-flight row.
                 reclaimed = db.execute(
                     sa_text(
                         "UPDATE tool_idempotency_keys "
@@ -296,6 +370,61 @@ async def reserve_idempotency(
 
 
 # ---------------------------------------------------------------------------
+# mark_reservation_in_flight (CR-01)
+# ---------------------------------------------------------------------------
+
+async def mark_reservation_in_flight(
+    agent_id: Any,
+    skill: str,
+    idempotency_key: str,
+) -> None:
+    """Flip a 'pending' reservation to 'in_flight' immediately before the adapter call.
+
+    CR-01: this durably records "an adapter call is about to happen" BEFORE
+    the potentially-irreversible provider call, so that if the worker crashes
+    between this call and finalize_idempotency, a later reclaim can tell the
+    difference between "adapter never touched" (a 'pending' row — safe to
+    reclaim) and "adapter call may already have run" (an 'in_flight' row —
+    never safe to auto re-execute; reserve_idempotency's stale-reclaim path
+    returns "unknown" for it instead).
+
+    Only updates a row in status='pending' — a no-op (not an error) if the
+    row is already 'in_flight' or 'completed'.
+
+    Args:
+        agent_id: UUID of the calling agent.
+        skill: Tool/skill name.
+        idempotency_key: The reservation key to mark.
+    """
+    agent_id_str = str(agent_id)
+
+    def _inner() -> None:
+        with get_sync_db() as db:
+            db.execute(
+                sa_text(
+                    "UPDATE tool_idempotency_keys "
+                    "SET status = 'in_flight' "
+                    "WHERE agent_id = :a AND skill = :s "
+                    "  AND idempotency_key = :k "
+                    "  AND status = 'pending'"
+                ),
+                {
+                    "a": agent_id_str,
+                    "s": skill,
+                    "k": idempotency_key,
+                },
+            )
+            db.commit()
+
+    await asyncio.to_thread(_inner)
+    log.info(
+        "mark_reservation_in_flight.committed",
+        agent_id=agent_id_str,
+        skill=skill,
+    )
+
+
+# ---------------------------------------------------------------------------
 # finalize_idempotency
 # ---------------------------------------------------------------------------
 
@@ -305,11 +434,13 @@ async def finalize_idempotency(
     idempotency_key: str,
     result: dict,
 ) -> None:
-    """Mark the pending reservation as completed and persist the result.
+    """Mark the pending/in_flight reservation as completed and persist the result.
 
-    Only updates a row in status='pending' — safe to call idempotently if a
-    prior finalize already committed (the UPDATE matches no rows, which is a
-    no-op, not an error).
+    Only updates a row in status IN ('pending', 'in_flight') — safe to call
+    idempotently if a prior finalize already committed (the UPDATE matches no
+    rows, which is a no-op, not an error). 'pending' is matched too for
+    back-compat with any reservation that reached this call without going
+    through mark_reservation_in_flight first.
 
     Args:
         agent_id: UUID of the calling agent.
@@ -327,7 +458,7 @@ async def finalize_idempotency(
                     "SET result = CAST(:r AS JSONB), status = 'completed' "
                     "WHERE agent_id = :a AND skill = :s "
                     "  AND idempotency_key = :k "
-                    "  AND status = 'pending'"
+                    "  AND status IN ('pending', 'in_flight')"
                 ),
                 {
                     "a": agent_id_str,
@@ -355,11 +486,15 @@ async def release_idempotency(
     skill: str,
     idempotency_key: str,
 ) -> None:
-    """Delete a *pending* reservation so a legitimate retry can re-run.
+    """Delete a *pending or in_flight* reservation so a legitimate retry can re-run.
 
-    Scoped to status='pending' so a completed row is NEVER deleted.
-    Safe to call after a denial, actor block, adapter error, or any graceful
-    exception path — a legitimate retry can then reserve and execute.
+    Scoped to status IN ('pending', 'in_flight') so a completed row is NEVER
+    deleted. Safe to call after a denial, actor block, or an adapter call
+    that raised synchronously within the SAME live worker (CR-01: this is a
+    worker that is still alive and has just observed the outcome directly —
+    not a crash-recovery/reclaim path. A reservation abandoned by a worker
+    that vanished must go through reserve_idempotency's stale-reclaim logic
+    instead, which refuses to auto-release/reclaim an 'in_flight' row).
 
     Args:
         agent_id: UUID of the calling agent.
@@ -375,7 +510,7 @@ async def release_idempotency(
                     "DELETE FROM tool_idempotency_keys "
                     "WHERE agent_id = :a AND skill = :s "
                     "  AND idempotency_key = :k "
-                    "  AND status = 'pending'"
+                    "  AND status IN ('pending', 'in_flight')"
                 ),
                 {"a": agent_id_str, "s": skill, "k": idempotency_key},
             )
