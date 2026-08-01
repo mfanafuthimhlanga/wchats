@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — Phase 22 closed with operator gates deferred (no local PostgreSQL); Phase 13 still outstanding
-stopped_at: Executed 22-06-PLAN.md (operator gates deferred, 22-UAT.md, planning-doc reconciliation) — Phase 22 closed
-last_updated: "2026-07-28T21:15:00.000Z"
+stopped_at: Session resumed 2026-08-01 from HANDOFF.json (paused at 22-06 task 3/3) — proceeding to /gsd-secure-phase 22 (no 22-SECURITY.md exists; this phase added a human-approved bypass seam inside the mutating-tool dispatcher). Three UAT gates remain deferred on the missing local PostgreSQL server.
+last_updated: "2026-08-01T00:00:00.000Z"
 progress:
   total_phases: 2
   completed_phases: 2
