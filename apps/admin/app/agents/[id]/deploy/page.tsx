@@ -2126,6 +2126,21 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     },
     enabled: isLoaded && !!isSignedIn,
     staleTime: 10_000,
+    // WR-02: without this, "Approved · Awaiting execution" can sit stale
+    // indefinitely — nothing re-queries this endpoint after the one
+    // invalidation in resolveConfirmation's onSuccess, until the tab
+    // regains focus or the approver takes another action. Poll (mirroring
+    // the checklist-runs query's own conditional-refetch pattern above)
+    // only while at least one row is actually awaiting a real outcome —
+    // approved, with no execution_outcome recorded yet — so the queue does
+    // not poll forever once every row has settled.
+    refetchInterval: (query) => {
+      const rows = query.state.data?.confirmations ?? []
+      const stillAwaiting = rows.some(
+        (row) => row.resolution === 'approved' && row.execution_outcome === null,
+      )
+      return stillAwaiting ? 3000 : false
+    },
   })
   const pendingConfirmations = pendingConfirmationsQuery.data?.confirmations ?? []
 
