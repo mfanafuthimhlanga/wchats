@@ -47,13 +47,25 @@ log = structlog.get_logger(__name__)
 @celery_app.task(
     bind=True,
     acks_late=True,
-    max_retries=2,
-    default_retry_delay=5,
     queue="runtime",
     name="app.worker.tasks.runtime.confirmations.resolve_approved_confirmation",
 )
 def resolve_approved_confirmation(self, confirmation_id: str) -> dict:
     """Execute a human-approved pending_confirmations row.
+
+    WR-07 (22-REVIEW-FIX.md): this task previously declared
+    `max_retries=2, default_retry_delay=5` on the decorator, but the task
+    body never calls `self.retry(...)` and the decorator carried no
+    `autoretry_for=` — those two kwargs did nothing. They read as a bounded,
+    automatic Celery-level retry that this task does not actually have,
+    which is misleading both to a future maintainer and to CR-01's
+    crash-safety argument (this module's own docstring, above). Removed
+    rather than wired: distinguishing which failures inside
+    execute_approved_confirmation are safely self.retry()-able (a transient
+    DB connectivity blip) from which are not (a business-logic denial that
+    would just be denied identically on retry) is a design decision this fix
+    pass is not making unilaterally. `bind=True` is kept — `self` is still a
+    normal, harmless parameter even with no retry call using it.
 
     Args:
         confirmation_id: UUID string of the pending_confirmations row to
