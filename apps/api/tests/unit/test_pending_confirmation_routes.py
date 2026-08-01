@@ -309,6 +309,45 @@ class TestResolveRoute:
         assert response.json()["resolution"] == "approved"
         mock_task.delay.assert_not_called()
 
+    async def test_confirm_action_shaped_mutating_row_refused_with_422_never_enqueued(self):
+        """CR-02: a row written by confirm_action_tool carries `skill` = the
+        TARGET mutating skill (a key of SKILL_INPUT_MODELS — the OLD dispatch
+        condition alone would enqueue it) but `arguments` = only
+        `{"action_reference": ...}`, never the full argument set the
+        resolver's re-validation requires. This exact row shape — the one
+        confirm_action_tool actually produces (tools.py:949), NOT the
+        unreachable skill="confirm_action" literal shape tested above — must
+        be refused at approve-time with a 422 and never dispatched."""
+        fake_tenant = _make_fake_tenant()
+        agent_id = uuid4()
+        confirmation_id = uuid4()
+        mock_agent = _make_ready_agent(fake_tenant, agent_id=agent_id)
+        mock_db = _make_db_for_agent(mock_agent)
+        row = _claim_row(
+            skill=MUTATING_SKILL,
+            resolution="approved",
+            row_id=confirmation_id,
+            arguments={"action_reference": "ref-1"},
+        )
+        mock_db.execute = AsyncMock(return_value=_mock_result(single=row))
+
+        with (
+            patch(_DISPATCH_TARGET) as mock_task,
+            patch("app.api.v1.pending_confirmations.write_audit_row") as mock_audit,
+        ):
+            mock_audit.return_value = None
+            response = await _resolve(agent_id, confirmation_id, {"resolution": "approved"}, mock_db, fake_tenant)
+
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert MUTATING_SKILL in detail
+        mock_task.delay.assert_not_called()
+        # The claim itself still committed — only the dispatch was skipped.
+        mock_db.commit.assert_awaited_once()
+        mock_audit.assert_awaited_once()
+        assert mock_audit.await_args.kwargs["error"] == "confirmation.incomplete_arguments"
+        assert mock_audit.await_args.kwargs["arguments"] == {"action_reference": "ref-1"}
+
     async def test_body_rejects_an_action_payload(self):
         fake_tenant = _make_fake_tenant()
         agent_id = uuid4()

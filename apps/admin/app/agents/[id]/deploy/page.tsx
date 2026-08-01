@@ -2190,7 +2190,13 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     },
     onError: (err: unknown) => {
       const withContext = err as Error & { confirmationId?: string; concurrent?: boolean }
-      if (withContext.confirmationId && withContext.concurrent) {
+      // CR-02: not just the 409/"concurrent" case — any resolve failure with
+      // a confirmationId (e.g. the 422 a confirm_action-shaped row now
+      // returns instead of silently dispatching a request that can never
+      // execute) must be shown to the approver, not swallowed. The claim
+      // may already be durably committed server-side even when this request
+      // errors, so refetch here too.
+      if (withContext.confirmationId) {
         queryClient.invalidateQueries({ queryKey: ['pending-confirmations', id] })
         const cid = withContext.confirmationId
         setResolveNotes((prev) => ({ ...prev, [cid]: withContext.message }))

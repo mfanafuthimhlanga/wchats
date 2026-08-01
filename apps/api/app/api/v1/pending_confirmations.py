@@ -38,11 +38,24 @@ Security:
     Neither route imports the provider-adapter resolution function or its
     module. The Celery task this module dispatches by id (never a route)
     does the one thing this module structurally must not.
+
+    CR-02 (22-REVIEW.md): a row written by confirm_action_tool carries
+    `skill` = the target mutating skill (a key of SKILL_INPUT_MODELS) but
+    `arguments` = only `{"action_reference": ...}` — never the full argument
+    set the resolver's re-validation requires. Dispatching that row to the
+    Celery task always fails re-validation silently (fail-closed, but
+    opaque). `_is_confirm_action_shaped` detects this exact shape and this
+    route refuses to dispatch it, returning a 422 with an actionable message
+    instead — the claim itself still commits (the approver's decision is
+    real and durable), only the dispatch is skipped. Writing an
+    argument-recovery mechanism that reconstructs the original request from
+    an earlier audit row is an explicit non-goal here (a design change
+    requiring product input, out of scope for this fix).
 """
 
 from __future__ import annotations
 
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
@@ -58,6 +71,7 @@ from app.schemas.pending_confirmation import (
     PendingConfirmationResolve,
     PendingConfirmationResponse,
 )
+from app.services.transactional.audit import write_audit_row
 from app.services.transactional.schemas import SKILL_INPUT_MODELS
 
 router = APIRouter(tags=["pending-confirmations"])
@@ -80,6 +94,31 @@ async def _get_owned_agent(agent_id: UUID, db: AsyncSession, tenant: Tenant) -> 
     if agent.tenant_id != tenant.id:
         raise HTTPException(status_code=404, detail="Agent not found")
     return agent
+
+
+# ---------------------------------------------------------------------------
+# CR-02: detect a confirm_action_tool-shaped row before ever dispatching it
+# ---------------------------------------------------------------------------
+
+
+def _is_confirm_action_shaped(arguments: dict | None) -> bool:
+    """True when `arguments` is the exact shape confirm_action_tool writes.
+
+    There are two distinct writers of pending_confirmations rows (tools.py):
+      - The Actor gate's require_human verdict stores the FULL validated
+        arguments for the target mutating skill — always including
+        `idempotency_key` (required on every one of the six mutating Input
+        models; `transactional/schemas.py`), never `action_reference` (no
+        mutating Input model defines that field at all).
+      - confirm_action_tool stores ONLY `{"action_reference": <str>}`
+        (tools.py:949) against `skill=<target mutating skill>` — never the
+        literal string "confirm_action" as the row's skill.
+
+    `"action_reference" in arguments` is therefore an exact, unambiguous
+    discriminator: no require_human-originated row can ever contain that
+    key, so this can never misclassify a real, executable row.
+    """
+    return isinstance(arguments, dict) and "action_reference" in arguments
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +337,54 @@ async def resolve_pending_confirmation(
     claimed = dict(claimed_row)
 
     await db.commit()
+
+    # CR-02: a row written by confirm_action_tool carries `skill` = the
+    # TARGET mutating skill (so it IS a key of SKILL_INPUT_MODELS — it WOULD
+    # be dispatched by the check below) but `arguments` = only
+    # `{"action_reference": ...}`, never the full argument set the target
+    # skill's Input model requires. Routing that through the generic
+    # resolver as if it carried complete arguments always fails re-validation
+    # (fail-closed — no adapter call ever happens), but silently: the
+    # approver gets an opaque "invalid" outcome with no path to recovery.
+    # Detect this row shape here, BEFORE ever dispatching, and refuse it with
+    # a clear, actionable message instead. The claim itself is NOT undone —
+    # the approver's decision is durably recorded — only the dispatch is
+    # skipped, exactly like the confirm_action-skill non-mutating branch
+    # below already skips dispatch for a row with nothing to execute.
+    if (
+        claimed["resolution"] == "approved"
+        and claimed["skill"] in SKILL_INPUT_MODELS
+        and _is_confirm_action_shaped(claimed["arguments"])
+    ):
+        await write_audit_row(
+            agent_id=str(agent_id),
+            conversation_id=str(uuid4()),
+            skill=claimed["skill"],
+            arguments=claimed["arguments"],
+            result=None,
+            actor_decision="",
+            actor_rationale="",
+            capability_snapshot={},
+            latency_ms=None,
+            error="confirmation.incomplete_arguments",
+        )
+        log.warning(
+            "resolve_pending_confirmation.confirm_action_shape_not_executable",
+            agent_id=str(agent_id),
+            tenant_id=str(tenant.id),
+            confirmation_id=str(confirmation_id),
+            skill=claimed["skill"],
+        )
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This confirmation was created without the arguments needed to "
+                f"execute '{claimed['skill']}' automatically. Your approval has "
+                "been recorded, but no action was taken — this request cannot "
+                "be completed through this queue. Please contact support to "
+                "resolve it manually."
+            ),
+        )
 
     enqueued = False
     if claimed["resolution"] == "approved" and claimed["skill"] in SKILL_INPUT_MODELS:
