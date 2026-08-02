@@ -444,7 +444,43 @@ Plans:
 
 *Added 2026-07-28 from Phase 19's verification. These are **missing product capabilities, not environment gaps** — which is why VER-01 SC2 was recorded `[failed]` rather than `[deferred]`. Phase 19 was scoped as documentation-plus-verification and deliberately shipped zero production code; both fixes require changes under `apps/api/app/`, one of them a human-approved bypass seam inside `_execute_transactional_tool` at exactly the position `19-VERIFICATION.md`'s threat model flags as highest-risk. Bolting that onto a docs phase's gap-closure pass was rejected in favour of planning it properly here. Note the non-obvious constraint recorded in ACT-07: a resolver that re-enters the dispatcher will re-run the Actor and receive `require_human` again, so approval loops rather than completes — this is not a plain CRUD route. Also corrects two stale requirement states this analysis surfaced: ACT-04 (marked complete, but only its row-creation half ever shipped) and CAP-03's note (which claimed plan 18-10 had not run; it has).*
 
+## Milestone v1.2 completion — operations-room wiring (Phase 23)
+
+### Phase 23: Wire the Gotham operations room to the Phase 21 backends and add widget feedback capture — close the v1.2 milestone-audit integration gaps (INT-01..04)
+
+**Goal:** Make the 13 Phase-21 requirements that have complete, tested, secured backends actually reachable by a user. Phase 20 shipped the six-region operations room with honest empty states for regions whose backends did not exist; Phase 21 then built those backends as an explicitly *"backend-only phase, no frontend artifacts"*. Neither phase owned the seam between them, so the wiring pass was never run — and the empty states that were honest in Phase 20 became false statements in Phase 21. This phase closes that seam and nothing else. It ships no new backend capability: every endpoint it consumes already exists, is unit-tested, and (for Phase 21) is covered by `21-SECURITY.md`'s 33/33 threat closure.
+
+**Requirements:** INT-01 through INT-04, defined in `.planning/v1.2-MILESTONE-AUDIT.md`. No new REQ-IDs are minted — this phase makes existing UI2-05 and OPS-01..16 reachable rather than adding scope.
+
+- INT-01 (critical) — the six operations-room regions call their real Phase 21 endpoints. Today a grep of all `apps/admin` and `apps/widget` for `/metrics`, `retrieval-health`, `/traces`, `prompt-versions`, `red-team/programme` and `/contain` returns **zero files**. Four of six regions are hardcoded `EmptyState` (`apps/admin/app/agents/[id]/page.tsx:387-395` Live, `:398-407` Retrieval health, `:409-418` The bench, `:580-591` The prompt). Covers UI2-05, OPS-01, OPS-03, OPS-04, OPS-05..OPS-09, OPS-16.
+- INT-02 (high) — the Judgement region renders the ORRERY ledger counts it already receives. `evals.py:99,179-187` returns `born_in_production_count`/`authored_count` on the response the region **already fetches**; `page.tsx:462,467,488` hardcode `not tracked yet` over them and the `EvalRunSummary` interface (`page.tsx:47-59`) does not declare the fields. Covers OPS-12's display half.
+- INT-03 (high) — remove three false capability claims. `page.tsx:405`, `:548`, `:587` each tell the operator a capability "ships in a future release"; all three shipped in Phase 21. Covers OPS-05..08, OPS-13, OPS-16.
+- INT-04 (high) — the Adversary region can contain a finding. `POST /agents/{id}/red-team/findings/{id}/contain` (`red_team.py:414`) has no trigger anywhere in the console, so an operator correctly blocked from deploying by OPS-15's 422 has no console-side way to clear the block. Covers OPS-14.
+- INT-05 (high) — widget feedback capture. `apps/widget/src` contains no feedback/thumbs/CSAT code at all, so `POST /widget/agents/{id}/feedback` has no possible caller and `GET /agents/{id}/metrics` can never aggregate real CSAT. Covers OPS-02, and unblocks OPS-03's CSAT inputs.
+
+**Success criteria:**
+
+1. Every one of the six operations-room regions either calls a real endpoint or renders an empty state that is *true at the time it renders* — no hardcoded "future release" copy for a shipped capability anywhere in `apps/admin`.
+2. The bench flywheel is reachable end to end **from the console**: an operator can list a failing trace, grade it `filed`, and see the born-in-production count increment. The backend chain (`traces.py:84` → `:126` → `:167` → `evals.py:99`) is already correct and must not be modified.
+3. A critical red-team finding can be contained from the console, and doing so clears the deploy block that OPS-15 correctly raised.
+4. The widget captures feedback and it reaches `message_feedback`, with the widget bundle still under 20 KB gzipped (UI2-06 / the Preact budget is a hard constraint, not a target).
+5. A region wired to an endpoint that returns `not_tracked` sentinels renders that honestly — Phase 21 deliberately ships honest sentinels and the UI must not present them as data, nor present real data as absent.
+
+**Design constraint:** this is a Gotham-console phase. The "Bone on Graphite" system's laws apply — colour is a verdict (verdict-only `Chip`), the fixed rail, the `data-gate` shutter, `--ch-1..4` channel luminances, three.js confined to landing/auth. `check:no-dusk-tokens` must exit 0. Per the project's frontend gate, the work goes through an adversarial design review before it is presented.
+
+**Out of scope (explicit):** any new backend capability or migration — every endpoint consumed here already exists; the Nyquist `status: draft` reconciliation for Phases 20/21 (`/gsd-validate-phase 20`/`21` owns that); Phase 20's missing `20-SECURITY.md`; the `OPS-01..06` requirement-ID collision between M10/Phase 10 and Phase 21 (a `REQUIREMENTS.md` correction, not a code change); and Phase 13's four unexecuted live-AWS plans.
+
+**Depends on:** Phase 20 (the console and its six regions), Phase 21 (every endpoint consumed). Not Phase 22 — that phase touched only `deploy/page.tsx` and shares no file with this one.
+
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 23 to break down)
+
 ---
+
+*Added 2026-08-02 from `.planning/v1.2-MILESTONE-AUDIT.md`. Both Phase 20 and Phase 21 passed their own verification; the milestone still failed, because the connecting work was never assigned to either. This is the same defect class Phase 21's verifier already caught **inside** the phase — plan 21-05 shipped in Wave 1 before 21-06 created `promote_trace_to_scenario` in Wave 3, so the later plan should have owned the wiring and didn't. `STATE.md` recorded the lesson as "when a seam crosses waves, the LATER plan must own the wiring." The identical failure then recurred one level up, across phases instead of waves. The lesson did not scale with the seam, and that is the reason this phase exists.*
 
 *Roadmap created: 2026-05-12*
 *Last updated: 2026-05-29 — Phase 12 host pivot (no credit card): Oracle ARM VM + Caddy/DuckDNS TLS (D-01/D-02/D-05) superseded by local Windows PC + Cloudflare quick tunnel. 12-05/12-06 re-planned in place (tunnel bring-up + live gate); 12-01/02/03/04 unchanged. The VM/systemd/Caddy deploy artifacts (12-04) are retained as the AWS-VM reference for ADR 0001. Still 6 plans / 3 waves; all D-01..D-15 (as amended) covered.*
