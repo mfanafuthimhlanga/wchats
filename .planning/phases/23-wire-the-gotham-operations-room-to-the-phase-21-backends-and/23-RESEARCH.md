@@ -6,28 +6,28 @@
 
 ## Summary
 
-Phase 23 is not a "build" phase. Every backend endpoint it consumes exists, is unit-tested, and (for the five it reads) is covered by `21-SECURITY.md`'s 33/33 closed threats. The work is: (1) replace six hardcoded `<EmptyState>`/false-claim blocks in `apps/admin/app/agents/[id]/page.tsx` with real `useQuery`/`useMutation` calls following the exact pattern already shipped in `apps/agents/[id]/deploy/page.tsx` (React Query v5.100.11, per-row `aria-disabled` in-flight state, staged-confirm for anything live-the-instant-you-click-it, honest sentinel handling); (2) add a feedback control to the Preact widget under the 20 KB gzip budget (currently at 8.09 KB, 11.9 KB of headroom); and (3) close two backend read-path gaps that block INT-04/INT-05 entirely, both of which are one-field/one-query completions of code that already computes the missing value, not new capability.
+Phase 23 is not a "build" phase. Every backend endpoint it consumes exists, is unit-tested, and (for the five it reads) is covered by `21-SECURITY.md`'s 33/33 closed threats. The work is: (1) replace six hardcoded `<EmptyState>`/false-claim blocks in `apps/admin/app/agents/[id]/page.tsx` with real `useQuery`/`useMutation` calls following the exact pattern already shipped in `apps/agents/[id]/deploy/page.tsx` (React Query v5.100.11, per-row `aria-disabled` in-flight state, staged-confirm for anything live-the-instant-you-click-it, honest sentinel handling); (2) add a feedback control to the Preact widget under the 20 KB gzip budget (currently at 8.09 KB, 11.9 KB of headroom); and (3) close two backend read-path gaps that block WIRE-04/WIRE-05 entirely, both of which are one-field/one-query completions of code that already computes the missing value, not new capability.
 
 The two backend gaps deserve emphasis because they are easy to underscope. Gap A (widget `message_id`) is **not** "add a field to a dict" — `assistant_msg_id` is generated and used entirely inside `_persist_messages()` (`agent.py:281-341`), a function that returns `None`. `run_agent_turn()` (the caller, and the function that owns the `agent.response` emit) has **no access to that value today**. The fix requires changing `_persist_messages`'s return type, updating its one call site (`agent.py:946-952`), and touching the emit at `agent.py:973-983` — and this function is mocked in seven existing unit tests (`test_agent_task.py`) with no `return_value` set, meaning those tests currently receive a `MagicMock` wherever `_persist_messages(...)`'s result is used. This is a small, contained fix, but it is not a one-line one.
 
 Gap B (red-team finding IDs) is exactly as scoped in `23-UI-SPEC.md` §3.2 — verified directly against `redteam_programme_service.py` and migration `0012`: `red_team_findings` has no `description` column, so recovering a human-readable description for the contain UI requires the JSONB-correlation technique already established in `bench_service.py` (per that module's own docstring, cited in `traces.py:14-20`), not a new column.
 
-The stale-verdict bug (§3.3 of the UI-SPEC, `page.tsx:251-260,303`) is a real correctness defect, independently confirmed by reading `page.tsx` in full this session: `redTeamBlocked` derives from `latestRedTeamRun?.deployment_blocked`, a value written once when a red-team run completes and never touched again — containing a finding cannot ever un-stick it under the current code. This must be fixed in the same pass as INT-04 or INT-04 introduces a new false-verdict class the project has already named and prohibited (`T-22-ACT-17`).
+The stale-verdict bug (§3.3 of the UI-SPEC, `page.tsx:251-260,303`) is a real correctness defect, independently confirmed by reading `page.tsx` in full this session: `redTeamBlocked` derives from `latestRedTeamRun?.deployment_blocked`, a value written once when a red-team run completes and never touched again — containing a finding cannot ever un-stick it under the current code. This must be fixed in the same pass as WIRE-04 or WIRE-04 introduces a new false-verdict class the project has already named and prohibited (`T-22-ACT-17`).
 
 **Primary recommendation:** Treat this as six independent, parallelizable wiring tasks (one per operations-room region) plus one widget task plus the two backend-gap fixes, all following the `deploy/page.tsx` house pattern verbatim — no new frontend architecture, no new library, no new test framework decision beyond what's flagged in Validation Architecture below.
 
 <phase_requirements>
 ## Phase Requirements
 
-No new REQ-IDs are minted by this phase (per `ROADMAP.md`'s own framing) — it makes existing UI2-05 and OPS-01..16 reachable. The IDs below (INT-01..05) are the milestone-audit integration gaps this phase closes, defined in `.planning/v1.2-MILESTONE-AUDIT.md`.
+No new REQ-IDs are minted by this phase (per `ROADMAP.md`'s own framing) — it makes existing UI2-05 and OPS-01..16 reachable. The IDs below (WIRE-01..05) are the milestone-audit integration gaps this phase closes, defined in `.planning/v1.2-MILESTONE-AUDIT.md`.
 
 | ID | Description | Research Support |
 |----|-------------|------------------|
-| INT-01 | Six operations-room regions call their real Phase 21 endpoints (currently 4/6 hardcoded `EmptyState`) | Architecture Patterns (house pattern to reuse verbatim), §2 backend response shapes verified per-region in `23-UI-SPEC.md` and independently re-verified against `metrics.py`, `traces.py`, `red_team.py`, `prompt_versions.py` this session |
-| INT-02 | Judgement region renders the ORRERY ledger counts it already fetches (`evals.py`'s `ledger` field, currently discarded) | Pattern 1 (honest-sentinel rendering, "a zero is not a sentinel"), `evals.py:97-189` verified, Validation Architecture's INT-02 test row |
-| INT-03 | Remove three false "ships in a future release" capability claims | Common Pitfalls (none specific — this is a deletion, not a build); Validation Architecture's static-grep gate row |
-| INT-04 | Adversary region can contain a finding from the console, clearing the deploy block | Gap B (backend read-path completion), Pitfall 4 (stale-verdict bug that must be fixed in the same pass), Pattern 3 (staged-confirm), Security Domain's stale-gate risk row |
-| INT-05 | Widget captures feedback, reaching `message_feedback`, bundle stays under 20 KB gzipped | Gap A (backend `message_id` completion, Pitfall 1/2), §6 of `23-UI-SPEC.md` (widget interaction contract), Validation Architecture's widget-gap note |
+| WIRE-01 | Six operations-room regions call their real Phase 21 endpoints (currently 4/6 hardcoded `EmptyState`) | Architecture Patterns (house pattern to reuse verbatim), §2 backend response shapes verified per-region in `23-UI-SPEC.md` and independently re-verified against `metrics.py`, `traces.py`, `red_team.py`, `prompt_versions.py` this session |
+| WIRE-02 | Judgement region renders the ORRERY ledger counts it already fetches (`evals.py`'s `ledger` field, currently discarded) | Pattern 1 (honest-sentinel rendering, "a zero is not a sentinel"), `evals.py:97-189` verified, Validation Architecture's WIRE-02 test row |
+| WIRE-03 | Remove three false "ships in a future release" capability claims | Common Pitfalls (none specific — this is a deletion, not a build); Validation Architecture's static-grep gate row |
+| WIRE-04 | Adversary region can contain a finding from the console, clearing the deploy block | Gap B (backend read-path completion), Pitfall 4 (stale-verdict bug that must be fixed in the same pass), Pattern 3 (staged-confirm), Security Domain's stale-gate risk row |
+| WIRE-05 | Widget captures feedback, reaching `message_feedback`, bundle stays under 20 KB gzipped | Gap A (backend `message_id` completion, Pitfall 1/2), §6 of `23-UI-SPEC.md` (widget interaction contract), Validation Architecture's widget-gap note |
 </phase_requirements>
 
 ## Architectural Responsibility Map
@@ -372,11 +372,11 @@ onResponse: (p) => {
 
 | Old Approach | Current Approach | When Changed | Impact |
 |--------------|------------------|---------------|--------|
-| Hardcoded `<EmptyState>` for Live/Retrieval-health/Bench/Prompt regions | Real `useQuery`/`useMutation` against Phase-21 endpoints | This phase | Closes INT-01 |
-| Judgement region discards `ledger` field it already fetches | Declare `ledger` on the response type, render the two real integers | This phase (INT-02) | Zero new network call — the data is already in the response |
-| Three hardcoded "ships in a future release" strings | Deleted, replaced with real UI | This phase (INT-03) | The console stops asserting a falsehood about its own capabilities |
-| `redTeamBlocked` derived from a per-run JSONB snapshot | Derived from live `open_findings` (Gap B) | This phase (§3.3 fix, bundled with INT-04) | Prevents a permanently-stuck-blocked or falsely-cleared gate |
-| `_persist_messages` returns `None` | Returns `assistant_msg_id` | This phase (Gap A) | Enables INT-05 entirely; no other consumer of `_persist_messages` is affected (verified: its only call site is `agent.py:946-952`) |
+| Hardcoded `<EmptyState>` for Live/Retrieval-health/Bench/Prompt regions | Real `useQuery`/`useMutation` against Phase-21 endpoints | This phase | Closes WIRE-01 |
+| Judgement region discards `ledger` field it already fetches | Declare `ledger` on the response type, render the two real integers | This phase (WIRE-02) | Zero new network call — the data is already in the response |
+| Three hardcoded "ships in a future release" strings | Deleted, replaced with real UI | This phase (WIRE-03) | The console stops asserting a falsehood about its own capabilities |
+| `redTeamBlocked` derived from a per-run JSONB snapshot | Derived from live `open_findings` (Gap B) | This phase (§3.3 fix, bundled with WIRE-04) | Prevents a permanently-stuck-blocked or falsely-cleared gate |
+| `_persist_messages` returns `None` | Returns `assistant_msg_id` | This phase (Gap A) | Enables WIRE-05 entirely; no other consumer of `_persist_messages` is affected (verified: its only call site is `agent.py:946-952`) |
 
 **Deprecated/outdated:** none — no library or pattern in this phase is being replaced; everything here is net-new wiring of already-current code.
 
@@ -420,14 +420,14 @@ Skipped per the skip condition — this phase has no new external tool/service/r
 
 ### The core gap this section must close
 
-The milestone audit's INT-02/INT-03 defects (real data discarded, false "future release" strings) would **not** have been caught by any test that exists in this repo today, because:
+The milestone audit's WIRE-02/WIRE-03 defects (real data discarded, false "future release" strings) would **not** have been caught by any test that exists in this repo today, because:
 1. No render-level assertion exists anywhere in `apps/admin` (`smoke.spec.ts` only asserts "no console pageerror" and element/canvas counts, never text content).
 2. `NEXT_PUBLIC_DEMO=true` does not mock the `/agents/[id]/*` sub-route API calls — those routes' queries stay `enabled: false` under demo mode with no real Clerk session, so they render their natural loading/empty shell, never populated data (`playwright.config.ts:18-30`, confirmed by reading `agents/page.tsx:51-54` — only the dashboard list is demo-mocked, not the operations room).
 3. Zero uses of `page.route()` interception exist anywhere in `apps/admin` (Grep-verified this session, zero matches) — there is no established fixture-mocking pattern to extend.
 
-**This means the cheapest regression gate that would actually have caught INT-02/INT-03-class defects is new infrastructure, not an extension of something that already exists.** The smallest correct addition:
+**This means the cheapest regression gate that would actually have caught WIRE-02/WIRE-03-class defects is new infrastructure, not an extension of something that already exists.** The smallest correct addition:
 
-- Add `page.route('**/api/v1/agents/*/eval-runs', ...)` (and one route per region: `/metrics`, `/retrieval-health`, `/traces*`, `/red-team/programme`, `/prompt-versions`) interception in a new Playwright spec (`apps/admin/tests/agent-room.spec.ts`) that fulfills each route with a **fixture JSON matching the exact verified response shape** from §2 of `23-UI-SPEC.md` (e.g. the ORRERY ledger fixture must include `ledger.born_in_production_count: 0` to specifically test the "a zero is not a sentinel" rule, §7 rule 4 — the exact class of bug INT-02 was).
+- Add `page.route('**/api/v1/agents/*/eval-runs', ...)` (and one route per region: `/metrics`, `/retrieval-health`, `/traces*`, `/red-team/programme`, `/prompt-versions`) interception in a new Playwright spec (`apps/admin/tests/agent-room.spec.ts`) that fulfills each route with a **fixture JSON matching the exact verified response shape** from §2 of `23-UI-SPEC.md` (e.g. the ORRERY ledger fixture must include `ledger.born_in_production_count: 0` to specifically test the "a zero is not a sentinel" rule, §7 rule 4 — the exact class of bug WIRE-02 was).
 - This still requires a real Clerk session or a Clerk-bypass — `NEXT_PUBLIC_DEMO=true` only fakes the dashboard list, not `useAuth()`/`getToken()` on `[id]` sub-routes (confirmed above). The plan must either extend demo mode to also short-circuit `getToken()` on these routes (smallest change, consistent with the existing demo-mode philosophy) or accept these specs run only against a real signed-in session (heavier, likely `autonomous:false`).
 - This is Playwright-only, no new framework dependency, and directly extends the existing 3-viewport project structure.
 
@@ -435,11 +435,11 @@ The milestone audit's INT-02/INT-03 defects (real data discarded, false "future 
 
 | Req ID | Behavior | Test Type | Automated Command | File Exists? |
 |--------|----------|-----------|-------------------|-------------|
-| INT-01 | Six regions call real endpoints, no hardcoded `EmptyState` remains for a backed region | render (Playwright + `page.route` fixture) | `pnpm exec playwright test tests/agent-room.spec.ts -g "renders real data"` | ❌ Wave 0 |
-| INT-02 | Judgement tiles render `ledger.born_in_production_count`/`authored_count`, **including literal 0** | render (Playwright + `page.route` fixture, zero-value case) | `pnpm exec playwright test tests/agent-room.spec.ts -g "orrery ledger zero"` | ❌ Wave 0 |
-| INT-03 | Zero occurrences of the three locked false strings remain in `page.tsx` | static grep gate | `grep -c "ships in a future release" apps/admin/app/agents/\[id\]/page.tsx` (expect 0) | ❌ Wave 0 (trivial to add to CI, not a Playwright spec) |
-| INT-04 | Contain a critical finding → gate reopens; `open_findings`/`redTeamBlocked` recompute from live data, not the stale snapshot | render (Playwright + `page.route` fixture, before/after contain) | `pnpm exec playwright test tests/agent-room.spec.ts -g "contain clears the gate"` | ❌ Wave 0 |
-| INT-05 | Widget feedback POST fires with a real `message_id`; degrades to no-render when `message_id` is absent | unit-equivalent (no widget test framework exists — see Wave 0 Gaps) | none — manual/visual verification only until Wave 0 gap is closed | ❌ Wave 0 |
+| WIRE-01 | Six regions call real endpoints, no hardcoded `EmptyState` remains for a backed region | render (Playwright + `page.route` fixture) | `pnpm exec playwright test tests/agent-room.spec.ts -g "renders real data"` | ❌ Wave 0 |
+| WIRE-02 | Judgement tiles render `ledger.born_in_production_count`/`authored_count`, **including literal 0** | render (Playwright + `page.route` fixture, zero-value case) | `pnpm exec playwright test tests/agent-room.spec.ts -g "orrery ledger zero"` | ❌ Wave 0 |
+| WIRE-03 | Zero occurrences of the three locked false strings remain in `page.tsx` | static grep gate | `grep -c "ships in a future release" apps/admin/app/agents/\[id\]/page.tsx` (expect 0) | ❌ Wave 0 (trivial to add to CI, not a Playwright spec) |
+| WIRE-04 | Contain a critical finding → gate reopens; `open_findings`/`redTeamBlocked` recompute from live data, not the stale snapshot | render (Playwright + `page.route` fixture, before/after contain) | `pnpm exec playwright test tests/agent-room.spec.ts -g "contain clears the gate"` | ❌ Wave 0 |
+| WIRE-05 | Widget feedback POST fires with a real `message_id`; degrades to no-render when `message_id` is absent | unit-equivalent (no widget test framework exists — see Wave 0 Gaps) | none — manual/visual verification only until Wave 0 gap is closed | ❌ Wave 0 |
 | Gap A | `_persist_messages` returns `assistant_msg_id`; `agent.response` payload carries `message_id` | unit (pytest, existing framework) | `apps/api/.venv/Scripts/python.exe -m pytest tests/unit/test_agent_task.py -k message_id -x` | ❌ Wave 0 (new assertion in existing file) |
 | Gap B | `open_findings` query returns real ids, description-correlation degrades gracefully on no match | unit (pytest) | `apps/api/.venv/Scripts/python.exe -m pytest tests/unit/test_redteam_programme.py -k open_findings -x` | ❌ Wave 0 (new test in existing file, `test_redteam_programme.py` already exists per `21-VERIFICATION.md`'s targeted-test-runs table) |
 
@@ -451,7 +451,7 @@ The milestone audit's INT-02/INT-03 defects (real data discarded, false "future 
 
 ### Wave 0 Gaps
 
-- [ ] `apps/admin/tests/agent-room.spec.ts` — new Playwright spec with `page.route()` fixtures for all six regions, covering INT-01/02/04's render-level assertions (the class of defect that shipped undetected in Phase 20/21).
+- [ ] `apps/admin/tests/agent-room.spec.ts` — new Playwright spec with `page.route()` fixtures for all six regions, covering WIRE-01/02/04's render-level assertions (the class of defect that shipped undetected in Phase 20/21).
 - [ ] A demo-mode / Clerk-bypass extension so `[id]` sub-routes' queries can be exercised under Playwright without a real signed-in session — either extend `NEXT_PUBLIC_DEMO` to short-circuit `getToken()`, or explicitly scope `agent-room.spec.ts` as requiring a real session (and therefore likely `autonomous:false`, matching the pattern Phase 20's `20-15-SUMMARY.md` already used for a similar constraint).
 - [ ] `apps/api/tests/unit/test_agent_task.py` — 7 existing `_persist_messages` mock sites need `return_value=` added once Gap A ships (Pitfall 2); new assertions on `response_payload["message_id"]`.
 - [ ] `apps/api/tests/unit/test_redteam_programme.py` (exists per `21-VERIFICATION.md`) — new test(s) for `open_findings`, including the JSONB-correlation-miss fallback path (Gap B).
@@ -483,7 +483,7 @@ The milestone audit's INT-02/INT-03 defects (real data discarded, false "future 
 ## Sources
 
 ### Primary (HIGH confidence — direct source read this session)
-- `.planning/ROADMAP.md` — Phase 23 entry (goal, INT-01..05, success criteria, backend exposure gaps, design constraint, out-of-scope), read in full
+- `.planning/ROADMAP.md` — Phase 23 entry (goal, WIRE-01..05, success criteria, backend exposure gaps, design constraint, out-of-scope), read in full
 - `.planning/v1.2-MILESTONE-AUDIT.md` — full audit report, read in full
 - `.planning/phases/23-.../23-UI-SPEC.md` — the approved design contract, read in full (490 lines)
 - `.planning/phases/21-.../21-VERIFICATION.md`, `21-SECURITY.md` — read in full

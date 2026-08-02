@@ -104,7 +104,7 @@ The response the page **already fetches** carries a `ledger` key it currently di
   ledger: { born_in_production_count: int, red_team_count: int, authored_count: int } }
 ```
 
-`_LEDGER_SQL` (`evals.py:97-105`) computes this over **all** `eval_scenarios`, not scoped to the latest run — it is a suite-wide count, not a per-run count. `page.tsx:47-59`'s `EvalRunSummary` interface does not declare `ledger` at all (it's a sibling of `eval_runs`, not a field on each run) and `page.tsx:462,467,488` hardcode `not tracked yet` over exactly this data. This is INT-02's literal fix: add `ledger` to the response type as its own top-level field (not nested in `EvalRunSummary`), read `data.ledger` alongside `data.eval_runs` in the existing `evalRunsQuery`, render the two real integers.
+`_LEDGER_SQL` (`evals.py:97-105`) computes this over **all** `eval_scenarios`, not scoped to the latest run — it is a suite-wide count, not a per-run count. `page.tsx:47-59`'s `EvalRunSummary` interface does not declare `ledger` at all (it's a sibling of `eval_runs`, not a field on each run) and `page.tsx:462,467,488` hardcode `not tracked yet` over exactly this data. This is WIRE-02's literal fix: add `ledger` to the response type as its own top-level field (not nested in `EvalRunSummary`), read `data.ledger` alongside `data.eval_runs` in the existing `evalRunsQuery`, render the two real integers.
 
 **`provenance IS NULL` rows are deliberately folded into `authored_count`** (`evals.py:101-103` comment: "predate provenance tracking... always treated as authored, never as an error state") — never render these as a third bucket or as an error.
 
@@ -129,13 +129,13 @@ The response the page **already fetches** carries a `ledger` key it currently di
 
 Following the `22-UI-SPEC.md` precedent (its Surface 2 "Data model gap found" section): two genuine backend read-path gaps exist that block requirements this phase is explicitly asked to close. Both are real, both were verified by reading source (not inferred), and both are resolved below rather than deferred to a question mark.
 
-### 3.1 Gap A — the widget has no `message_id` to send with feedback (blocks INT-05 entirely)
+### 3.1 Gap A — the widget has no `message_id` to send with feedback (blocks WIRE-05 entirely)
 
 `POST /widget/agents/{id}/feedback` requires `message_id: UUID` with **no default** (`apps/api/app/schemas/widget.py:118`, `WidgetFeedbackRequest`). The assistant message's real ID is generated server-side (`assistant_msg_id = str(uuid.uuid4())`, `apps/api/app/worker/tasks/runtime/agent.py:311`) and written to the tenant `messages` table (`agent.py:312-318`) — but the terminal `agent.response` SSE event the widget actually receives (`agent.py:973-983`) emits only `{ text, citations, conversation_id }`. **`assistant_msg_id` is never sent to the client anywhere.** Confirmed by reading `sse.js:6` (the widget's only handler for this event) and grepping the whole `apps/widget/src` tree — no `message_id` reference exists, and no other endpoint lists messages by ID.
 
-**Resolution:** this is a one-field completion of an emit call that already exists and already computes the value it's missing — not a new endpoint, not a new table, not a new capability. Add `"message_id": assistant_msg_id` to the `agent.response` payload at `agent.py:973-983`. This is in scope under the phase's own framing ("close the seam", "wire... nothing new") even though the phase's literal out-of-scope line says "no new backend capability" — exposing an already-computed local variable on an already-existing emit is the same class of change as Phase 21's own `21-06` grade→promote wiring fix, not new capability. **Flagged for the planner to execute or explicitly decline with the operator's sign-off recorded** — if declined, INT-05 cannot ship a functioning feedback control (see the degrade path in §6.2, which the widget must implement regardless).
+**Resolution:** this is a one-field completion of an emit call that already exists and already computes the value it's missing — not a new endpoint, not a new table, not a new capability. Add `"message_id": assistant_msg_id` to the `agent.response` payload at `agent.py:973-983`. This is in scope under the phase's own framing ("close the seam", "wire... nothing new") even though the phase's literal out-of-scope line says "no new backend capability" — exposing an already-computed local variable on an already-existing emit is the same class of change as Phase 21's own `21-06` grade→promote wiring fix, not new capability. **Flagged for the planner to execute or explicitly decline with the operator's sign-off recorded** — if declined, WIRE-05 cannot ship a functioning feedback control (see the degrade path in §6.2, which the widget must implement regardless).
 
-### 3.2 Gap B — no endpoint returns individual open findings with real IDs (blocks INT-04's contain trigger)
+### 3.2 Gap B — no endpoint returns individual open findings with real IDs (blocks WIRE-04's contain trigger)
 
 `POST .../contain` needs a `red_team_findings.id`. The only two places findings are exposed today:
 - `GET /agents/{id}/red-team-runs` → `findings` is a raw JSONB dump of `RedTeamResult.findings` (`red_team_service.py:49-58`, fields: `severity, description, attack_vector, probe_message, agent_response, turn_count`) — **no `id` field exists on this model at all**, confirmed by reading the Pydantic class.
@@ -150,11 +150,11 @@ open_findings: [{ id, severity, attack_vector, probe_message, agent_response, tu
                    description: string | null }]
 ```
 
-**Flagged for the planner**, same status as Gap A: this is presented as the minimal, evidence-grounded read completion the requirement cannot be met without; if the planner or operator declines it, **INT-04 cannot ship a working contain trigger** and the Adversary region must ship §4.5's coverage/summary work only, with the contain button omitted rather than built non-functional (never ship a button with no ID to call).
+**Flagged for the planner**, same status as Gap A: this is presented as the minimal, evidence-grounded read completion the requirement cannot be met without; if the planner or operator declines it, **WIRE-04 cannot ship a working contain trigger** and the Adversary region must ship §4.5's coverage/summary work only, with the contain button omitted rather than built non-functional (never ship a button with no ID to call).
 
 ### 3.3 Consequence of Gap B's fix — a stale-verdict bug this phase must also close
 
-Reading `page.tsx:251-260,303` against `deployment_service.py:216-263` surfaced a third, related defect that Gap B's fix makes fixable and that must be fixed in the same pass, or INT-04 introduces a false verdict:
+Reading `page.tsx:251-260,303` against `deployment_service.py:216-263` surfaced a third, related defect that Gap B's fix makes fixable and that must be fixed in the same pass, or WIRE-04 introduces a false verdict:
 
 `latestRedTeamRun.deployment_blocked` (`page.tsx:303`, feeding `gateBlocked = redTeamBlocked || checklistBlocked || ...` at line 305) is a **snapshot written once, at the moment a red-team run completes** (`RedTeamResult.deployment_blocked`, `red_team_service.py:66`: `True iff max_severity == "critical"`). It is never updated by `POST .../contain`. Once any run ever produced a critical finding, `redTeamBlocked` stays `true` forever in this page's local state, **even after the operator contains it** — because `gateBlocked` is an OR across three sources, a permanently-stuck `true` on this one source means the gate can never honestly reopen through this code path again, regardless of what `checklistBlocked` (the live, correct signal `deployment_service.py` already reads) says. This is the exact class of false verdict `DESIGN.md`/`22-UI-SPEC.md`'s `T-22-ACT-17` prohibits, and it is *created*, not merely exposed, by shipping a contain button without this fix.
 
@@ -213,24 +213,24 @@ Two-pane layout per `20-UI-SPEC.md §6.4.1`'s interaction contract (roving-listb
 
 **Empty:** `EmptyState` — `heading: "Nothing on the bench"`, `body: "No failing production traces right now. Every recent turn passed its judge."` (a materially different, more confident empty-state message than the placeholder-era `"No failing production traces to review yet."` — this phase's data is real, so "yet" implying a future promise is no longer accurate; "right now" is honest about a genuinely good state).
 
-### 4.4 Judgement (`page.tsx:420-511`) — the ORRERY fix (INT-02)
+### 4.4 Judgement (`page.tsx:420-511`) — the ORRERY fix (WIRE-02)
 
-Minimal, surgical change. Keep the existing wired structure; fix exactly what INT-02 names:
+Minimal, surgical change. Keep the existing wired structure; fix exactly what WIRE-02 names:
 
 1. Declare `ledger: { born_in_production_count: number; red_team_count: number; authored_count: number }` on the response type read by `evalRunsQuery`, sibling to `eval_runs` (§2.4 — it is NOT nested per-run).
-2. `page.tsx:462` (`born in production` tile) → render `ledger.born_in_production_count` as a plain mono numeral, **including when it is `0`** — a real zero is a real, meaningful, populated state (INT-02's own instruction), never the "not tracked yet" string.
+2. `page.tsx:462` (`born in production` tile) → render `ledger.born_in_production_count` as a plain mono numeral, **including when it is `0`** — a real zero is a real, meaningful, populated state (WIRE-02's own instruction), never the "not tracked yet" string.
 3. `page.tsx:467` (`authored` tile) → render `ledger.authored_count` the same way.
-4. `page.tsx:488` (the per-scenario "Added" column) → **this one genuinely has no backing field** (`EvalScenarioResult`, §2.4, carries no timestamp) — keep `not tracked yet` here, verbatim, because unlike the two tiles above, this really is "not tracked at all," not "zero rows." Do not change this cell; INT-02 only names the two summary tiles.
+4. `page.tsx:488` (the per-scenario "Added" column) → **this one genuinely has no backing field** (`EvalScenarioResult`, §2.4, carries no timestamp) — keep `not tracked yet` here, verbatim, because unlike the two tiles above, this really is "not tracked at all," not "zero rows." Do not change this cell; WIRE-02 only names the two summary tiles.
 
 No other part of this region changes — the eval-runs/results wiring, the `originLabel()` mapping, the pass/fail chip on `res.passed` are all already correct per the Phase 20 verification and stay untouched.
 
-### 4.5 Adversary (`page.tsx:513-578`) — INT-03 copy fix + INT-04 contain trigger
+### 4.5 Adversary (`page.tsx:513-578`) — WIRE-03 copy fix + WIRE-04 contain trigger
 
 **Severity tiles and gate input — recomputed from live data (§3.3, locked):**
 
 Replace `severityCounts` (currently derived from `latestRedTeamRun?.findings`, `page.tsx:251-257`) and `redTeamBlocked` (`page.tsx:303`) with values derived from the new `open_findings` array (§3.2). `criticalFinding` (`page.tsx:259-260`, feeds the `.critical` banner) becomes `open_findings.find(f => f.severity === 'critical')`. `latestRedTeamRun` is retained **only** for the section-head timestamp (`page.tsx:517-521`) — never as a verdict input again.
 
-**Coverage table — real data, real (corrected) columns, replacing the INT-03 false claim at `page.tsx:548`:**
+**Coverage table — real data, real (corrected) columns, replacing the WIRE-03 false claim at `page.tsx:548`:**
 
 `GET /agents/{id}/red-team/programme` → render `coverage` (§2.5) as a `Ledger`:
 
@@ -248,7 +248,7 @@ This replaces the exact locked false string:
 
 **Empty (zero strategies — a genuinely possible state if no red-team run has ever completed):** `EmptyState` — `heading: "No coverage data yet"`, `body: "Run the programme to populate strategy coverage."` (reuses the existing "Run the programme" `Btn` already on this page, `page.tsx:568-577` — no new CTA needed, point the empty state at the same control).
 
-**The contain trigger (INT-04, net-new):**
+**The contain trigger (WIRE-04, net-new):**
 
 Each row in the `.critical` banner (and, if more than one open finding exists, a small list below the coverage table — see below) gets a `Btn` `ghost` "Contain" action, following the **exact staged-confirm shape** `22-UI-SPEC.md` Surface 2 already established and this session verified in the shipped `PendingConfirmationRow` (`apps/admin/app/agents/[id]/deploy/page.tsx:1746-1889`) — the house pattern for "this action is live the moment you click it." **It applies here, and more so than the CAP-05 enable checkbox did**: containing a finding immediately removes the console's own block on `POST /approve-deployment` (§2.5, §3.3) — the single highest-consequence effect a click on this page can have, since it can put a previously-blocked agent one Approve-click away from serving customers. Non-critical findings' contain action is lower-stakes (no gate effect) but stages identically for consistency — a caller should never have to remember which findings are staged and which aren't.
 
@@ -266,7 +266,7 @@ Each row in the `.critical` banner (and, if more than one open finding exists, a
 
 **Per-row `aria-disabled` during save, keyed per finding id, not shared** — identical convention to `22-UI-SPEC.md`'s locked ACT-07 rule and the reason given there (two findings should never share a busy state).
 
-### 4.6 The prompt (`page.tsx:580-591`) — INT-03 copy fix, full version UI
+### 4.6 The prompt (`page.tsx:580-591`) — WIRE-03 copy fix, full version UI
 
 Replace the `EmptyState` entirely with real data from all four `prompt-versions` endpoints (§2's file, already fully shipped: list/diff/canary/rollback).
 
@@ -304,9 +304,9 @@ Locked verbatim, per `22-UI-SPEC.md`'s own precedent ("a locked string is checka
 
 | Element | Copy |
 |---|---|
-| INT-03 deletion #1 (was `page.tsx:405`) | `"Retrieval health instrumentation ships in a future release."` → **removed entirely**, replaced by §4.2's real content |
-| INT-03 deletion #2 (was `page.tsx:548`) | `"Per-strategy coverage detail ships in a future release; showing the latest run summary above."` → **removed entirely**, replaced by §4.5's coverage table |
-| INT-03 deletion #3 (was `page.tsx:587`) | `"Version history, canary releases and rollback ship in a future release."` → **removed entirely**, replaced by §4.6's version UI |
+| WIRE-03 deletion #1 (was `page.tsx:405`) | `"Retrieval health instrumentation ships in a future release."` → **removed entirely**, replaced by §4.2's real content |
+| WIRE-03 deletion #2 (was `page.tsx:548`) | `"Per-strategy coverage detail ships in a future release; showing the latest run summary above."` → **removed entirely**, replaced by §4.5's coverage table |
+| WIRE-03 deletion #3 (was `page.tsx:587`) | `"Version history, canary releases and rollback ship in a future release."` → **removed entirely**, replaced by §4.6's version UI |
 | Live — no-data sentinel translation | `No data in the last {window_days} days.` |
 | Retrieval health — averages no-data translation | `No queries in this window yet.` |
 | Retrieval health — staleness scan failure | `Staleness scan unavailable.` |
@@ -332,7 +332,7 @@ Zero em-dashes anywhere in the locked copy above (self-audited and corrected bef
 
 ---
 
-## 6. Widget feedback capture (INT-05)
+## 6. Widget feedback capture (WIRE-05)
 
 `apps/widget/src` contains zero feedback code today (confirmed by reading every file in the tree, listed in the research). Current bundle: **8.09 KB gzipped** (`dist/widget.iife.js`, measured this session via `npm run build`) against the **20 KB hard budget** (`scripts/check-size.mjs:5`, UI2-06) — **11.9 KB of headroom**. This feature does not risk the budget; the smallest-thing-that-works instruction below is about interaction simplicity and honesty, not byte-shaving.
 
@@ -370,7 +370,7 @@ This is the phase's one hard design problem, worked out precisely rather than le
 1. **A backend sentinel string is not a number, and must never be coerced into one.** Any region rendering a metric must check `typeof value === 'string'` (or equivalent) before formatting — treating `"not_tracked"` as `0` (e.g. by accidental `Number("not_tracked")` → `NaN` → rendered as `0%`) is exactly the false-verdict class this project's `T-22-ACT-17` names, applied to a number instead of a chip.
 2. **The backend's sentinel spelling is not always the right customer-facing word choice.** Verified this session (§2.1, §2.2): `metrics_service.py` and `retrieval_metrics_service.py` both use their sentinel to mean *zero rows in the window*, not *this capability doesn't exist* — the instrumentation is live in both cases (Phase 21 shipped it). Rendering the literal string `"not tracked yet"` to a business owner reads as "we don't measure this," which is the opposite of true. This phase's copy (§5) translates that semantic correctly: `No data in the last N days.` / `No queries in this window yet.` — never a verbatim echo of a backend sentinel whose literal wording would mislead.
 3. **Genuinely absent fields keep the literal "not tracked" wording**, because for those it is accurate: the Judgement region's per-scenario "Added" column (§4.4) and the coverage table's non-existent "Last run"/"Coverage %" columns (§4.5, corrected out of the design entirely rather than faked) are fields this phase's actual endpoints do not compute at all.
-4. **A zero is not a sentinel.** INT-02's own instruction (§4.4): `born_in_production_count: 0` is real, meaningful data and renders as `0`, never as an empty-state message.
+4. **A zero is not a sentinel.** WIRE-02's own instruction (§4.4): `born_in_production_count: 0` is real, meaningful data and renders as `0`, never as an empty-state message.
 5. **No new hue anywhere.** Every colored element introduced by this phase — the drift-detected chip (§4.2), the high-severity coverage cells (§4.5), the contain action — reuses the existing three-hue system (`--live`/`--pass`/`--fail`/`--seal`, bone-neutral otherwise) through the existing `Chip` component, which enforces this by construction (`Chip.tsx:14-22`, a closed `ChipVerdict` union with no raw-color prop). This phase adds zero new `Chip` verdicts.
 6. **A verdict must never outlive the event that produced it.** §3.3 is this rule's concrete instance: `latestRedTeamRun.deployment_blocked` is a snapshot, and rendering it as if it were live state (after a contain action has changed reality) is the same failure class as Phase 22's execution-outcome gap — asserting a state the current data does not, in fact, support.
 
@@ -461,7 +461,7 @@ Applicable state considerations resolved: 14 covered, 3 backstop, 2 unresolved.
 | in-flight / double-submit | contain, canary, rollback, bench grade | ✅ covered | Per-item `aria-disabled`, not global, matching the established convention exactly |
 | widget feedback — degrade without message_id | `FeedbackRow` | ✅ covered | Renders nothing rather than a broken control (§6.2) — the honest backstop if Gap A (§3.1) is not closed |
 | widget feedback — duplicate CSAT rows | message_feedback table | ⚠ unresolved | No unique constraint on `(message_id)` was verified this session (out of scope to check the migration for this UI-focused pass) — two POSTs (rating-only, then rating+csat) may produce two rows. Accepted as a minor data-quality nit per §6.3, not a blocker; the planner should confirm the actual constraint and decide whether a client-side "already rated" lock is worth adding, but the UI contract does not require it to ship |
-| open_findings gap | Adversary contain trigger | ⚠ unresolved | §3.2 — the whole INT-04 feature is contingent on the planner accepting the minimal read-path extension; if declined, ship §4.5's coverage/summary work without the contain button, never a non-functional one |
+| open_findings gap | Adversary contain trigger | ⚠ unresolved | §3.2 — the whole WIRE-04 feature is contingent on the planner accepting the minimal read-path extension; if declined, ship §4.5's coverage/summary work without the contain button, never a non-functional one |
 | accent-color misuse | any new element, either package | ✅ covered | §7 rule 5 (admin, closed by `Chip`'s construction) and §6.3 (widget, explicit no-green/no-red reasoning) |
 | empty-vs-genuinely-good state copy | The bench | ✅ covered | §5 — "No failing production traces right now. Every recent turn passed its judge." replaces the placeholder-era "...to review yet." now that the data is real and a clean bench is a real, confident state |
 

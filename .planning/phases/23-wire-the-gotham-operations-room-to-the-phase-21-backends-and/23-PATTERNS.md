@@ -81,7 +81,7 @@ function formatCents(cents: number): string {
 **Judgement ledger fix — minimal, surgical, in place at exactly `page.tsx:462,467,488`:**
 ```typescript
 // page.tsx:460-464 today — replace ledger.born_in_production_count in, keep
-// the render-a-real-zero rule (INT-02, UI-SPEC §4.4/§7 rule 4):
+// the render-a-real-zero rule (WIRE-02, UI-SPEC §4.4/§7 rule 4):
 <div className="chan">
   <span className="chan-name">born in production</span>
   <div className="chan-read"><span className="num chan-val">{ledger.born_in_production_count}</span></div>
@@ -91,7 +91,7 @@ function formatCents(cents: number): string {
 // timestamp field (verified, §2.4 of UI-SPEC) — do not touch this cell.
 ```
 
-**Adversary gate/severity recompute (§3.3 fix, bundled with INT-04) — the exact lines to change:**
+**Adversary gate/severity recompute (§3.3 fix, bundled with WIRE-04) — the exact lines to change:**
 - `page.tsx:251-260` `severityCounts`/`criticalFinding` — currently derived from `latestRedTeamRun?.findings` (JSONB snapshot). Must derive from the new `open_findings` array on the `red-team/programme` response instead.
 - `page.tsx:303` `redTeamBlocked = latestRedTeamRun?.deployment_blocked === true` — must become `open_findings.some(f => f.severity === 'critical')`.
 - `page.tsx:517-521` — `latestRedTeamRun` is retained **only** here (section-head "last programme run" timestamp).
