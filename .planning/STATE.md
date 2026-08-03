@@ -4,7 +4,7 @@ milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — Phase 22 closed with operator gates deferred (no local PostgreSQL); Phase 13 still outstanding
 stopped_at: Completed 23-04-PLAN.md
-last_updated: "2026-08-03T09:27:20.063Z"
+last_updated: "2026-08-03T09:28:17.220Z"
 progress:
   total_phases: 2
   completed_phases: 2
@@ -572,6 +572,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: 22-05: reworded two gated-module docstring sentences to avoid literal substring collisions with the plan's own negative-assertion grep gates (docker-compose, settings.CONTROL_DB_URL) — same over-broad-gate class already documented in 22-04
 - [Phase ?]: 22-06: all three operator-gated items (VER-01 SC2 re-run, ACT-07 live-DB gate, two held-out visual checks) deferred 2026-07-28 for confirmed, precisely-named causes (no local PostgreSQL server; no un-briefed non-technical tester); 19-UAT.md item 1 amended in place rather than rewritten so both the original failure and its now-closed causes stay readable together
 - [Phase ?]: 23-05: Live/Retrieval health regions wired to Phase 21 endpoints; Judgement ledger now renders real born-in-production/authored counts (WIRE-02); shared region-error callback established as the seam 23-06/07/08 wire into
+- [Phase ?]: 23-04: FeedbackRow's hooks reordered to run before its early-return guard, fixing a Rules-of-Hooks violation the plan's own action text had directed — Inert under the current call pattern (message_id is fixed per message once created) but a real fragility landmine for any future change that mutates a message object in place; found via self-review, fixed in commit 88bedda
 
 ## Session
 
