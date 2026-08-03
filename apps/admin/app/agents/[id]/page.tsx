@@ -11,6 +11,7 @@ import { AlertsBanner, type Alert } from './components/AlertsBanner'
 import LivePanel from './components/LivePanel'
 import RetrievalHealthPanel from './components/RetrievalHealthPanel'
 import AdversaryPanel from './components/AdversaryPanel'
+import PromptVersionPanel from './components/PromptVersionPanel'
 import { type OpenFinding, isGateBlocked, firstCriticalFinding, gateMessage as buildGateMessage } from './components/opsFormat'
 
 /**
@@ -29,9 +30,12 @@ import { type OpenFinding, isGateBlocked, firstCriticalFinding, gateMessage as b
  * same live open-findings list — lifted here via `onOpenFindingsChange` —
  * rather than a run's own once-written blocked flag, which this page never
  * reads (23-UI-SPEC.md §3.3: a verdict must never outlive the event that
- * produced it). The bench and The prompt remain unwired as of this plan
- * and render an honest `<EmptyState>`; 23-08 and 23-07 wire them
- * respectively.
+ * produced it). The prompt now calls all four prompt-version endpoints
+ * (list, diff, canary, rollback) through its own component
+ * (WIRE-01/WIRE-03, 23-07), including the two staged live actions —
+ * setting a canary share and rolling back — behind the shipped
+ * staged-confirm shape. The bench remains unwired as of this plan and
+ * renders an honest `<EmptyState>`; 23-08 wires it.
  */
 
 interface AgentDetail {
@@ -599,16 +603,15 @@ export default function AgentOperationsRoom({
         </div>
       </section>
 
-      {/* ═══ THE PROMPT ═════════════════════════════════════════════════ */}
+      {/* ═══ THE PROMPT — real prompt-version data (WIRE-01, WIRE-03, 23-07) ═ */}
       <section className="section" aria-labelledby="prompt-h">
         <div className="section-head">
           <h2 className="label" id="prompt-h">The prompt</h2>
         </div>
-        <EmptyState
-          heading="No version history yet"
-          body="Version history, canary releases and rollback ship in a future release."
-          linkHref={`/agents/${id}/soul`}
-          linkLabel="Edit in the soul editor"
+        <PromptVersionPanel
+          agentId={id}
+          enabled={isLoaded && !!isSignedIn && step1Done}
+          onError={setRegionError}
         />
       </section>
     </div>
