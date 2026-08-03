@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "test:e2e": "playwright test",
+    "test:unit": "playwright test -c playwright.unit.config.ts",
     "check:no-dusk-tokens": "node scripts/check-no-dusk-tokens.mjs"
   },
   "dependencies": {
