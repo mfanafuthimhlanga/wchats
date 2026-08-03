@@ -1,5 +1,5 @@
 'use client'
-import { use, useCallback, useEffect, useMemo, useState } from 'react'
+import { use, useCallback, useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
 import Btn from '../../components/gotham/Btn'
@@ -10,6 +10,8 @@ import { useGate } from '../../components/gotham/GateProvider'
 import { AlertsBanner, type Alert } from './components/AlertsBanner'
 import LivePanel from './components/LivePanel'
 import RetrievalHealthPanel from './components/RetrievalHealthPanel'
+import AdversaryPanel from './components/AdversaryPanel'
+import { type OpenFinding, isGateBlocked, firstCriticalFinding, gateMessage as buildGateMessage } from './components/opsFormat'
 
 /**
  * The agent operations room — `/agents/[id]` (UI-SPEC S6.4, UI2-05, ported
@@ -20,13 +22,16 @@ import RetrievalHealthPanel from './components/RetrievalHealthPanel'
  * Live and Retrieval health call their Phase 21 endpoints via
  * `LivePanel`/`RetrievalHealthPanel` (WIRE-01, 23-05) — never the
  * prototype's client-side seeded-noise demo data (hardcoded channel/version
- * arrays). Judgement and Adversary wire to the real eval-runs /
- * red-team-runs endpoints; the gatebar derives from real checklist-runs +
- * red-team `deployment_blocked` + a folded `red_team_critical` alert (OQ2)
- * — never a page-local toggle (UI-SPEC S8.6, Pitfall 5). The bench and The
- * prompt remain unwired as of this plan and render an honest
- * `<EmptyState>`; 23-08 and 23-07 wire them respectively, and 23-06
- * recomputes the Adversary gate/severity inputs from live data.
+ * arrays). Adversary calls its own endpoint via `AdversaryPanel`
+ * (WIRE-03/WIRE-04, 23-06): coverage and the live open-findings list both
+ * come from the programme read, never the per-run history endpoint's
+ * frozen snapshot. The gatebar's red-team input is recomputed from that
+ * same live open-findings list — lifted here via `onOpenFindingsChange` —
+ * rather than a run's own once-written blocked flag, which this page never
+ * reads (23-UI-SPEC.md §3.3: a verdict must never outlive the event that
+ * produced it). The bench and The prompt remain unwired as of this plan
+ * and render an honest `<EmptyState>`; 23-08 and 23-07 wire them
+ * respectively.
  */
 
 interface AgentDetail {
@@ -94,27 +99,16 @@ interface EvalScenarioResult {
 }
 
 // GET /api/v1/agents/{id}/red-team-runs — response shape from red_team.py.
-// findings is the raw JSONB list; each entry matches RedTeamFinding
-// (severity/description/attack_vector/probe_message/agent_response/turn_count)
-// in app/services/red_team_service.py.
-interface RedTeamFinding {
-  severity: 'low' | 'medium' | 'high' | 'critical'
-  description: string
-  attack_vector: string
-  probe_message: string
-  agent_response: string
-  turn_count: number
-}
-
+// Read on this page only for its two run-completion timestamps (the
+// gatebar stamp's fallback, the Adversary section-head stamp) — never for
+// a per-run findings snapshot or a per-run blocked flag, both frozen the
+// moment a run completed and never updated by a contain action. The live,
+// containable findings list and the gate input this page actually reads
+// both come from AdversaryPanel's lifted open-findings list instead
+// (opsFormat.ts).
 interface RedTeamRun {
-  id: string
-  kind: string
-  status: string
   started_at: string | null
   finished_at: string | null
-  findings: RedTeamFinding[]
-  max_severity: string | null
-  deployment_blocked: boolean
 }
 
 // GET /api/v1/agents/{id}/checklist-runs — response shape from deployment.py.
@@ -157,6 +151,10 @@ export default function AgentOperationsRoom({
   const queryClient = useQueryClient()
   const { setGate } = useGate()
   const [alerts, setAlerts] = useState<Alert[]>([])
+  // The Adversary component's own live open-findings list, lifted here so
+  // this page's gate computation and that component's severity tiles read
+  // the identical array rather than two fetches that can disagree.
+  const [openFindings, setOpenFindings] = useState<OpenFinding[]>([])
 
   // The single error path every operations-room region reports into,
   // keyed by region id. Live and Retrieval health are the first two
@@ -294,17 +292,13 @@ export default function AgentOperationsRoom({
   })
   const redTeamRuns = redTeamQuery.data ?? []
   const latestRedTeamRun = redTeamRuns[0] ?? null
-
-  const severityCounts = useMemo(() => {
-    const counts = { critical: 0, high: 0, medium: 0, low: 0 }
-    for (const f of latestRedTeamRun?.findings ?? []) {
-      if (f.severity in counts) counts[f.severity] += 1
-    }
-    return counts
-  }, [latestRedTeamRun])
-
-  const criticalFinding =
-    (latestRedTeamRun?.findings ?? []).find((f) => f.severity === 'critical') ?? null
+  // The run row survives on this page as a display fact only — WHEN
+  // something happened, never a verdict about WHETHER anything is wrong.
+  // Destructured once, immediately, so its two display uses below read
+  // these locals instead of re-deriving from the row a second time.
+  const { finished_at: lastRedTeamFinishedAt = null, started_at: lastRedTeamStartedAt = null } =
+    latestRedTeamRun ?? {}
+  const hasProgrammeRun = latestRedTeamRun !== null
 
   const runRedTeam = useMutation({
     mutationFn: async () => {
@@ -322,7 +316,7 @@ export default function AgentOperationsRoom({
     },
   })
 
-  // ---- Gatebar: real checklist-runs + red-team deployment_blocked -------
+  // ---- Gatebar: real checklist-runs + the live red-team open-findings list
   const checklistQuery = useQuery({
     queryKey: ['checklist-runs', id],
     queryFn: async () => {
@@ -347,13 +341,21 @@ export default function AgentOperationsRoom({
     (a) => a.alert_type === 'eval_regression' && !a.resolved_at
   )
 
-  const redTeamBlocked = latestRedTeamRun?.deployment_blocked === true
+  // The stale-verdict fix (23-UI-SPEC.md §3.3): the old source here was a
+  // per-run blocked flag written once when a run completed and never
+  // updated by a contain action — once any run had ever produced a
+  // critical finding, this page could never honestly reopen its gate
+  // again through that flag. isGateBlocked derives it fresh, every render,
+  // from the live open-findings list AdversaryPanel lifts up, so
+  // containing the last open critical finding reopens the gate the moment
+  // the panel refetches.
+  const redTeamBlocked = isGateBlocked(openFindings)
   const checklistBlocked = latestChecklistRun?.recommendation === 'block'
   const gateBlocked = redTeamBlocked || checklistBlocked || hasUnresolvedCriticalAlert
 
   // This is the single authoritative computation of the real deploy-gate
-  // state on this page (checklist recommendation + red-team
-  // deployment_blocked + the folded red_team_critical alert, UI-SPEC S8.6 /
+  // state on this page (checklist recommendation + the live red-team
+  // open-findings gate + the folded red_team_critical alert, UI-SPEC S8.6 /
   // OQ2) — the one effect that ever calls setGate('open'). AlertsBanner may
   // independently call setGate('blocked') the instant it sees a critical
   // alert (defense in depth, same signal folded in below), but never
@@ -362,11 +364,9 @@ export default function AgentOperationsRoom({
     setGate(gateBlocked ? 'blocked' : 'open')
   }, [gateBlocked, setGate])
 
-  const gateStamp = latestChecklistRun?.created_at ?? latestRedTeamRun?.finished_at ?? null
+  const gateStamp = latestChecklistRun?.created_at ?? lastRedTeamFinishedAt ?? null
   const gateMessage = gateBlocked
-    ? criticalFinding
-      ? criticalFinding.description
-      : 'A blocking signal is open. Nothing new reaches a customer until it clears.'
+    ? buildGateMessage(firstCriticalFinding(openFindings))
     : 'Every build ships. No critical finding is open.'
 
   return (
@@ -391,10 +391,11 @@ export default function AgentOperationsRoom({
           </div>
         </div>
 
-        {/* Real gatebar — derives entirely from checklist-runs + red-team
-            deployment_blocked + the folded red_team_critical alert (UI-SPEC
-            S8.6, Pitfall 5). No component hand-colours itself here; setGate
-            is called once above and the token cascade repaints the room. */}
+        {/* Real gatebar — derives entirely from checklist-runs + the live
+            red-team open-findings gate + the folded red_team_critical alert
+            (UI-SPEC S8.6, Pitfall 5). No component hand-colours itself
+            here; setGate is called once above and the token cascade
+            repaints the room. */}
         <div className="gatebar rule-double">
           <Chip verdict={gateBlocked ? 'seal' : 'pass'}>{gateBlocked ? 'Gate shut' : 'Gate open'}</Chip>
           <p>{gateMessage}</p>
@@ -568,60 +569,23 @@ export default function AgentOperationsRoom({
         )}
       </section>
 
-      {/* ═══ ADVERSARY — real red-team-runs data (UI-SPEC S6.4 region 5) ══ */}
+      {/* ═══ ADVERSARY — real red-team programme data (WIRE-03, WIRE-04, 23-06) ═ */}
       <section className="section" aria-labelledby="adv-h">
         <div className="section-head">
           <h2 className="label" id="adv-h">Adversary</h2>
           <p className="mono head-count">
-            {latestRedTeamRun
-              ? `last programme ${formatDateTime(latestRedTeamRun.finished_at ?? latestRedTeamRun.started_at)}`
+            {hasProgrammeRun
+              ? `last programme ${formatDateTime(lastRedTeamFinishedAt ?? lastRedTeamStartedAt)}`
               : 'no programme run yet'}
           </p>
         </div>
 
-        {latestRedTeamRun ? (
-          <>
-            <div className="sev">
-              <div className="sev-cell" data-hot={severityCounts.critical > 0 ? 'true' : 'false'}>
-                <span className="num sev-n">{severityCounts.critical}</span>
-                <span className="label">Critical</span>
-              </div>
-              <div className="sev-cell">
-                <span className="num sev-n">{severityCounts.high}</span>
-                <span className="label">High</span>
-              </div>
-              <div className="sev-cell">
-                <span className="num sev-n">{severityCounts.medium}</span>
-                <span className="label">Medium</span>
-              </div>
-              <div className="sev-cell">
-                <span className="num sev-n">{severityCounts.low}</span>
-                <span className="label">Low</span>
-              </div>
-            </div>
-
-            <EmptyState
-              className="adv-coverage-empty"
-              heading="Per-strategy coverage"
-              body="Per-strategy coverage detail ships in a future release; showing the latest run summary above."
-            />
-
-            {criticalFinding && (
-              <div className="critical">
-                <Chip verdict="seal">Critical</Chip>
-                <p>
-                  {criticalFinding.description}
-                  <span className="mono"> {criticalFinding.attack_vector} · turn {criticalFinding.turn_count}</span>
-                </p>
-              </div>
-            )}
-          </>
-        ) : (
-          <EmptyState
-            heading="No red-team programme run yet"
-            body="Run the programme to test this agent against adversarial probes."
-          />
-        )}
+        <AdversaryPanel
+          agentId={id}
+          enabled={isLoaded && !!isSignedIn && step1Done}
+          onError={setRegionError}
+          onOpenFindingsChange={setOpenFindings}
+        />
 
         <div className="prompt-acts">
           <Btn onClick={() => runRedTeam.mutate()} disabled={runRedTeam.isPending || agent?.status !== 'ready'}>
@@ -712,7 +676,21 @@ const PAGE_CSS = `
   .foot-note { margin-top: 10px; font-size: 11.5px; color: var(--ink-3); }
   .prompt-acts { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
   .judge-alert-chip { margin-bottom: 14px; }
-  .adv-coverage-empty { margin-bottom: 4px; }
+
+  /* Staged-confirm shape (OD-3, 23-01-PLAN.md § Open Decisions Resolved).
+     These five rules exist ONLY in deploy/page.tsx's own PAGE_CSS (lines
+     2970-2974) — globals.css has none of them — so a staged confirmation
+     block rendered in this room would be unstyled without a copy here.
+     Ported verbatim rather than lifted into the shared stylesheet: lifting
+     would require editing deploy/page.tsx, and this phase's roadmap entry
+     states plainly it shares no file with the phase that produced it. A
+     gate (23-06's Task 2 verify) asserts these two blocks stay textually
+     identical, so the duplication is checked, not merely hoped over. */
+  .cap-confirm { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--hairline-soft); }
+  .cap-confirm-q { font-size: 13px; line-height: 1.5; color: var(--ink); }
+  .cap-confirm-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+  .cap-confirm-actions .btn { flex: none; }
+  .cap-confirm-actions .btn:first-child { border-color: var(--hairline-strong); }
 
   @media (max-width: 720px) {
     .page-head .row { flex-direction: column; }
