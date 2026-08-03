@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
 status: Milestone complete — Phase 22 closed with operator gates deferred (no local PostgreSQL); Phase 13 still outstanding
-stopped_at: Session resumed 2026-08-01 from HANDOFF.json (paused at 22-06 task 3/3) — proceeding to /gsd-secure-phase 22 (no 22-SECURITY.md exists; this phase added a human-approved bypass seam inside the mutating-tool dispatcher). Three UAT gates remain deferred on the missing local PostgreSQL server.
-last_updated: "2026-08-01T00:00:00.000Z"
+stopped_at: Completed 23-05-PLAN.md
+last_updated: "2026-08-03T09:21:59.199Z"
 progress:
   total_phases: 2
   completed_phases: 2
@@ -393,6 +393,7 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 | Phase 22 P04 | 45min | 2 tasks | 1 files |
 | Phase 22 P05 | 65min | 3 tasks | 3 files |
 | Phase 22 P06 | 30min | 3 tasks | 5 files |
+| Phase 23 P05 | 45min | 3 tasks | 3 files |
 
 ## Notes
 
@@ -570,11 +571,12 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 - [Phase ?]: 22-04: unlocked the Enabled checkbox (no permanent platform-default lock; staged confirm only when agent.is_deployed) and shipped the ACT-07 pending-confirmation queue as the last left-bench section, both reusing the cap-confirm shape verbatim; verdict chips gated on the backend's read-time execution_outcome, never on resolution alone
 - [Phase ?]: 22-05: reworded two gated-module docstring sentences to avoid literal substring collisions with the plan's own negative-assertion grep gates (docker-compose, settings.CONTROL_DB_URL) — same over-broad-gate class already documented in 22-04
 - [Phase ?]: 22-06: all three operator-gated items (VER-01 SC2 re-run, ACT-07 live-DB gate, two held-out visual checks) deferred 2026-07-28 for confirmed, precisely-named causes (no local PostgreSQL server; no un-briefed non-technical tester); 19-UAT.md item 1 amended in place rather than rewritten so both the original failure and its now-closed causes stay readable together
+- [Phase ?]: 23-05: Live/Retrieval health regions wired to Phase 21 endpoints; Judgement ledger now renders real born-in-production/authored counts (WIRE-02); shared region-error callback established as the seam 23-06/07/08 wire into
 
 ## Session
 
-**Last session:** 2026-07-28T21:12:32.000Z
-**Stopped at:** Completed 22-06-PLAN.md (operator gates deferred, 22-UAT.md, planning-doc reconciliation) — Phase 22 closed
+**Last session:** 2026-08-03T09:21:49.996Z
+**Stopped at:** Completed 23-05-PLAN.md
 
 Earlier the same session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 

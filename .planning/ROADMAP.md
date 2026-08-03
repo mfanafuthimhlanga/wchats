@@ -478,15 +478,15 @@ Plans:
 
 **Depends on:** Phase 20 (the console and its six regions), Phase 21 (every endpoint consumed). Not Phase 22 — that phase touched only `deploy/page.tsx` and shares no file with this one.
 
-**Plans:** 9 plans / 6 waves
+**Plans:** 4/9 plans executed
 
 Plans:
 
-- [ ] 23-01-PLAN.md — (W1) Gap A: the assistant message id returned, captured and emitted on the terminal SSE event; the eight test mock sites it breaks. Carries the phase-wide `## Open Decisions Resolved` and `## Source Verification Findings`.
-- [ ] 23-02-PLAN.md — (W1) Gap B: open findings with real ids on the existing programme read, description recovered per-run in Python, plus the three existing service tests this breaks.
-- [ ] 23-03-PLAN.md — (W1) Wave-0 validation layer: `opsFormat.ts` (every sentinel check, formatter, verdict mapping and gate derivation as pure functions), a browserless runner config and spec, and `check-ops-room-wiring.mjs` — the standing reachability-and-honesty gate.
+- [x] 23-01-PLAN.md — (W1) Gap A: the assistant message id returned, captured and emitted on the terminal SSE event; the eight test mock sites it breaks. Carries the phase-wide `## Open Decisions Resolved` and `## Source Verification Findings`.
+- [x] 23-02-PLAN.md — (W1) Gap B: open findings with real ids on the existing programme read, description recovered per-run in Python, plus the three existing service tests this breaks.
+- [x] 23-03-PLAN.md — (W1) Wave-0 validation layer: `opsFormat.ts` (every sentinel check, formatter, verdict mapping and gate derivation as pure functions), a browserless runner config and spec, and `check-ops-room-wiring.mjs` — the standing reachability-and-honesty gate.
 - [ ] 23-04-PLAN.md — (W2, depends 23-01) WIRE-05: the widget feedback transport, control, styles, and the one handler line that keeps the emitted id. Bundle budget proven on a real build.
-- [ ] 23-05-PLAN.md — (W2, depends 23-03) WIRE-01/02/03: Live and Retrieval health wired, the ORRERY ledger counts rendered, false claim 1 deleted, one shared region-error surface.
+- [x] 23-05-PLAN.md — (W2, depends 23-03) WIRE-01/02/03: Live and Retrieval health wired, the ORRERY ledger counts rendered, false claim 1 deleted, one shared region-error surface.
 - [ ] 23-06-PLAN.md — (W3, depends 23-02, 23-05) WIRE-03/04: the coverage table with the columns the rollup really computes, the staged contain action, and the deploy-gate input recomputed from live open findings.
 - [ ] 23-07-PLAN.md — (W4, depends 23-06) WIRE-01/03: the prompt region across all four version endpoints, two staged live actions, false claim 3 deleted.
 - [ ] 23-08-PLAN.md — (W5, depends 23-07) WIRE-01: the bench as a two-pane roving listbox with three grades, closing the flywheel from the console.
