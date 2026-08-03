@@ -284,7 +284,7 @@ def _persist_messages(
     user_msg: str,
     assistant_msg: str,
     tool_calls_log: list[dict],
-) -> None:
+) -> str:
     """Insert user message, assistant message, and tool_call rows.
 
     Inserts in a single transaction:
@@ -295,6 +295,10 @@ def _persist_messages(
     All values are passed as %s parameters (T-04-03-07).
     The caller owns the connection lifecycle — this helper does NOT open or
     close the connection (PROD-05: one pooled connection per turn).
+
+    Returns the assistant message's id (WIRE-05): the caller needs it to put
+    on the terminal agent.response event's payload, because the customer
+    widget cannot submit feedback for a reply it has no way to name.
     """
     with conn.cursor() as cur:
         # Insert user message
@@ -339,6 +343,8 @@ def _persist_messages(
         conversation_id=conv_id,
         tool_call_count=len(tool_calls_log),
     )
+
+    return assistant_msg_id
 
 
 def _write_turn_metrics(
@@ -943,7 +949,7 @@ def run_agent_turn(
             # --------------------------------------------------------------
             # Persist messages and tool calls to tenant DB
             # --------------------------------------------------------------
-            _persist_messages(
+            assistant_msg_id = _persist_messages(
                 conn=tenant_conn,
                 conv_id=local_conversation_id,
                 user_msg=message,
@@ -977,6 +983,12 @@ def run_agent_turn(
                     "text": response_text,
                     "citations": citations_list,
                     "conversation_id": str(local_conversation_id),
+                    # WIRE-05: the assistant message's own id — the non-secret
+                    # correlation key the widget feedback route already
+                    # requires as a body field. Useless to a caller who does
+                    # not also hold a valid widget token scoped to this agent
+                    # (T-23-GA-01).
+                    "message_id": assistant_msg_id,
                 },
                 db,
                 _redis,
