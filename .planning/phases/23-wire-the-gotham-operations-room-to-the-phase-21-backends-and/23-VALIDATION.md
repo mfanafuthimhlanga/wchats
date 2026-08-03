@@ -96,7 +96,7 @@ rather than implying otherwise.
 | 23-08-02 | 08 | 5 | **WIRE-01 (all six regions)** | — | The standing wiring gate exits zero with no flag, for the first time since it was written | static + rendered | `cd apps/admin && node scripts/check-ops-room-wiring.mjs && npx playwright test tests/overflow.spec.ts` | ❌ W0 (23-03) | ✅ green |
 | 23-09-01 | 09 | 6 | WIRE-01..05 | T-23-GATE-02 / T-23-GATE-03 / T-23-GATE-05 | Every design-review finding fixed or declined with a reason; every gate still green after the fixes; pixel findings distinguished from code findings | rendered + static | `cd apps/admin && npx playwright test tests/overflow.spec.ts tests/a11y.spec.ts` | ✅ | ✅ green |
 | 23-09-02 | 09 | 6 | WIRE-01..05 | T-23-GATE-04 / T-23-GATE-06 | This document reconciled against what actually ran; no row left naming a gate that could not catch its own defect; both follow-ups recorded | static | `node -e "<contract-filled gate, 23-09 T2>"` (run this session — `VALIDATION-CONTRACT-FILLED-OK rows=21`) | ✅ (this file) | ✅ green |
-| 23-09-03 | 09 | 6 | WIRE-01..05 | T-23-GATE-01 / T-23-SC | Every recorded number is observed; the API manifest and both migration trees clean; no dependency added to either front-end package | full sweep | see `23-09` Task 3's four verify commands | ✅ | ⬜ pending |
+| 23-09-03 | 09 | 6 | WIRE-01..05 | T-23-GATE-01 / T-23-SC | Every recorded number is observed; the API manifest and both migration trees clean; no dependency added to either front-end package | full sweep | see `23-09` Task 3's four verify commands (run this session — see the observed-sweep table in the Validation Sign-Off section) | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -226,12 +226,27 @@ changed; all three remain manual-only, deferred with the causes above, dated tod
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 20s per task commit
-- [ ] Every row's named gate could have failed on the defect it is listed against
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 20s per task commit
+- [x] Every row's named gate could have failed on the defect it is listed against — six exceptions found and corrected, recorded in the reconciliation note above (23-09 Task 2)
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending — ticked by `23-09` Task 3 against observed output only.
+**Approval: ticked 2026-08-04 (23-09 Task 3), against the observed sweep below — every number is a
+transcript, not a claim.**
+
+| Gate | Observed |
+|---|---|
+| Backend unit suite (`--ignore` chunking/docling) | 1199 passed, 8 skipped, 0 failed (baseline 1191; stable at 1199 since 23-01/23-02 landed their own new tests; no regression) |
+| Two targeted backend modules (`test_agent_task.py`, `test_redteam_programme.py`) | 30 passed |
+| Console type check (`npx tsc --noEmit`) | 1 pre-existing error only (`tests/reduced-motion.spec.ts:18`, unrelated, present since Phase 20 commit `7f64005`), 0 new |
+| Retired-token gate | PASS — no retired dusk/skyline/amber-console markers |
+| Standing wiring gate, no flag | PASS — 11/11, exits 0 |
+| Browserless pure-function spec | 45 passed |
+| Full shipped e2e suite, all 4 specs, 3 viewports | 113 passed, 0 failed |
+| Widget build + size gate | 8968 / 20480 bytes gzipped |
+| API manifest (`apps/api/pyproject.toml`) | byte-unchanged |
+| Both migration trees (`alembic`, `alembic_tenant`) | clean, `git status --porcelain` empty |
+| Dependency diff, both front-end packages, whole phase | unchanged, compared against `5bd9e9e` (the commit before Phase 23 wave 1 began, not a fixed relative offset) |
