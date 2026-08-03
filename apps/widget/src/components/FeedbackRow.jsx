@@ -5,15 +5,18 @@ import { sendFeedback } from '../api.js'
 const MAX_SUBMISSIONS = 2
 
 export function FeedbackRow({ apiBase, agentId, messageId, conversationId }) {
+  // Hooks first, unconditionally, on every render — the Rules of Hooks
+  // forbid calling them after an early return. The degrade guard (below)
+  // still governs what gets rendered; it just can't come before these.
+  const [rating, setRating] = useState(null)
+  const [score, setScore] = useState(null)
+  const [sentCount, setSentCount] = useState(0)
+
   // A rating button with nothing to name is not a smaller version of this
   // feature — it is a control that cannot work. An older cached payload, or
   // a turn served before the identifier shipped, degrades to no control
   // rather than a broken one (23-UI-SPEC.md §6.2).
   if (!messageId) return null
-
-  const [rating, setRating] = useState(null)
-  const [score, setScore] = useState(null)
-  const [sentCount, setSentCount] = useState(0)
 
   // OD-7's bound: at most two requests ever leave for one message, so a
   // customer cannot flood the rate limiter or skew the aggregate from a
