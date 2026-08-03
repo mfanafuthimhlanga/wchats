@@ -17,6 +17,16 @@ no agent_id filtering is needed inside these queries — the connection is
 already scoped to the correct agent (mirrors red_team_runs / red_team.py's
 existing IDOR + conn_str resolution and deployment_service.py's
 _fetch_red_team_summary_sync read idiom).
+
+open_findings adds the agent's currently-open findings, each with its real
+red_team_findings primary key, so the console has an identifier to call the
+contain route with — ordered by an explicit severity rank, most severe
+first, never the lexical order of the severity text. Each finding's
+description is recovered per request by correlating against its own run's
+findings JSONB snapshot in Python, not stored as a column on
+red_team_findings — there has never been a description column on that
+table — and a correlation miss simply leaves description null rather than
+dropping the finding.
 """
 
 from __future__ import annotations
@@ -55,14 +65,97 @@ _COVERAGE_ROLLUP_SQL = """
     ORDER BY s.attack_vector
 """
 
+# Open findings: the agent's currently-open red_team_findings rows, each with
+# its real primary key (the identifier the contain route needs) and its own
+# run's findings JSONB snapshot (r.findings), left-joined so the Python-side
+# description correlation below is scoped to the finding's OWN run rather
+# than the latest one. Severity orders by an explicit rank — critical, high,
+# medium, low — never a plain descending sort on the severity column, which
+# is TEXT and would sort lexically (medium, low, high, critical), burying
+# the one severity that shuts the deploy gate at the end of the list.
+_OPEN_FINDINGS_SQL = """
+    SELECT
+        f.id,
+        f.run_id,
+        f.strategy_id,
+        f.severity,
+        f.attack_vector,
+        f.probe_message,
+        f.agent_response,
+        f.turn_count,
+        f.created_at,
+        r.findings
+    FROM red_team_findings f
+    LEFT JOIN red_team_runs r ON r.id = f.run_id
+    WHERE f.status = 'open'
+    ORDER BY
+        CASE f.severity
+            WHEN 'critical' THEN 0
+            WHEN 'high' THEN 1
+            WHEN 'medium' THEN 2
+            WHEN 'low' THEN 3
+            ELSE 4
+        END,
+        f.created_at DESC
+"""
+
+
+def _correlate_description(
+    run_findings: object,
+    attack_vector: str | None,
+    probe_message: str | None,
+    turn_count: int | None,
+) -> str | None:
+    """Recover a finding's description from its own run's findings JSONB snapshot.
+
+    red_team_findings has no description column (0012_red_team_programme.py)
+    — the only place a human-readable description exists is the per-run
+    JSONB snapshot on red_team_runs.findings, written once when the run
+    completed. Matching is scoped to the finding's OWN run (via the SQL
+    join in _OPEN_FINDINGS_SQL, never the latest run) on the (attack_vector,
+    probe_message, turn_count) triple — the only fields both sides carry.
+    The first matching entry's description wins when it is a non-empty
+    string; otherwise the finding still returns with description=None.
+
+    Never raises. A malformed or absent snapshot (wrong type, missing keys,
+    non-dict entries) degrades to "no match" rather than taking the whole
+    programme read down with it — the coverage table is served from the
+    same read and must not fail because one finding's snapshot is odd.
+    """
+    try:
+        if not isinstance(run_findings, list):
+            return None
+        for entry in run_findings:
+            if not isinstance(entry, dict):
+                continue
+            if (
+                entry.get("attack_vector") == attack_vector
+                and entry.get("probe_message") == probe_message
+                and entry.get("turn_count") == turn_count
+            ):
+                description = entry.get("description")
+                return description if isinstance(description, str) and description else None
+        return None
+    except Exception:
+        # Defensive: correlation must never sink the programme read. Only
+        # attack_vector is logged — probe_message/agent_response/conn_str
+        # never belong in a log line (T-23-GB-01).
+        log.warning("redteam_programme.correlation_failed", attack_vector=attack_vector)
+        return None
+
 
 def read_programme(conn_str: str, agent_id: str) -> dict:
-    """Return {strategies, probes, coverage} for the given agent's tenant DB.
+    """Return {strategies, probes, coverage, open_findings} for the agent's tenant DB.
 
     coverage is the harm-category x attack-strategy rollup: one cell per
     strategy with probes_tested and attack_success_rate (findings_count /
     probes_tested, or 0.0 when no probes have been tested yet — honest
     empty, never a divide-by-zero).
+
+    open_findings is the agent's currently-open findings (contained/closed
+    findings never appear), ordered by real severity rank, each carrying
+    its real primary key and a best-effort description recovered from its
+    own run's findings snapshot (null when no match is found).
     """
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:
@@ -75,6 +168,9 @@ def read_programme(conn_str: str, agent_id: str) -> dict:
 
             cur.execute(_COVERAGE_ROLLUP_SQL)
             coverage_rows = cur.fetchall()
+
+            cur.execute(_OPEN_FINDINGS_SQL)
+            open_finding_rows = cur.fetchall()
     finally:
         conn.close()
 
@@ -116,12 +212,34 @@ def read_programme(conn_str: str, agent_id: str) -> dict:
             }
         )
 
+    open_findings = [
+        {
+            "id": str(row[0]),
+            "run_id": str(row[1]) if row[1] else None,
+            "strategy_id": str(row[2]) if row[2] else None,
+            "severity": row[3],
+            "attack_vector": row[4],
+            "probe_message": row[5],
+            "agent_response": row[6],
+            "turn_count": row[7],
+            "created_at": row[8].isoformat() if row[8] else None,
+            "description": _correlate_description(row[9], row[4], row[5], row[7]),
+        }
+        for row in open_finding_rows
+    ]
+
     log.info(
         "redteam_programme.read",
         agent_id=agent_id,
         strategy_count=len(strategies),
         probe_count=len(probes),
         coverage_cells=len(coverage),
+        open_finding_count=len(open_findings),
     )
 
-    return {"strategies": strategies, "probes": probes, "coverage": coverage}
+    return {
+        "strategies": strategies,
+        "probes": probes,
+        "coverage": coverage,
+        "open_findings": open_findings,
+    }
