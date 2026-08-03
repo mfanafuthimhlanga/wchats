@@ -12,6 +12,7 @@ import LivePanel from './components/LivePanel'
 import RetrievalHealthPanel from './components/RetrievalHealthPanel'
 import AdversaryPanel from './components/AdversaryPanel'
 import PromptVersionPanel from './components/PromptVersionPanel'
+import BenchPane from './components/BenchPane'
 import { type OpenFinding, isGateBlocked, firstCriticalFinding, gateMessage as buildGateMessage } from './components/opsFormat'
 
 /**
@@ -34,8 +35,12 @@ import { type OpenFinding, isGateBlocked, firstCriticalFinding, gateMessage as b
  * (list, diff, canary, rollback) through its own component
  * (WIRE-01/WIRE-03, 23-07), including the two staged live actions —
  * setting a canary share and rolling back — behind the shipped
- * staged-confirm shape. The bench remains unwired as of this plan and
- * renders an honest `<EmptyState>`; 23-08 wires it.
+ * staged-confirm shape. The bench now lists, reads, and grades failing
+ * production traces through its own component (WIRE-01, 23-08) — the last
+ * of the six regions to leave its empty-state placeholder. Filing a trace
+ * dispatches the promotion that raises the born-in-production count
+ * Judgement renders server-side; this page's only job is to call the
+ * grade route and render the tally it returns.
  */
 
 interface AgentDetail {
@@ -469,14 +474,15 @@ export default function AgentOperationsRoom({
         />
       </section>
 
-      {/* ═══ THE BENCH ══════════════════════════════════════════════════ */}
+      {/* ═══ THE BENCH — real failing-trace data (WIRE-01, 23-08) ═══════ */}
       <section className="section" aria-labelledby="bench-h">
         <div className="section-head">
           <h2 className="label" id="bench-h">The bench</h2>
         </div>
-        <EmptyState
-          heading="Nothing on the bench yet"
-          body="No failing production traces to review yet."
+        <BenchPane
+          agentId={id}
+          enabled={isLoaded && !!isSignedIn && step1Done}
+          onError={setRegionError}
         />
       </section>
 
@@ -694,6 +700,44 @@ const PAGE_CSS = `
   .cap-confirm-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
   .cap-confirm-actions .btn { flex: none; }
   .cap-confirm-actions .btn:first-child { border-color: var(--hairline-strong); }
+
+  /* The bench's two-pane layout (WIRE-01, 23-08). Net-new: Phase 20 shipped
+     this region as an empty state, so no two-pane shell was ever built —
+     neither globals.css nor this file's own prior rules have one. Named
+     distinctly from deploy/page.tsx's own .bench grid, a different
+     two-column layout for a different page that this page never loads
+     alongside; sharing the name would be a trap for the next reader even
+     though the two never collide at runtime. Both panes get a zero
+     minimum width so a long unbroken customer-turn string cannot force
+     the grid wider than its container — the specific mechanism behind
+     horizontal overflow in a grid, and the three-viewport overflow check
+     is an existing gate on this repository. The sheet is bounded and
+     independently scrollable so a long trace list can never push the
+     enlarger off screen. */
+  .bench-panes {
+    display: grid;
+    grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
+    gap: 24px;
+    align-items: start;
+  }
+  .bench-sheet {
+    min-width: 0;
+    max-height: 560px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .bench-enlarger {
+    min-width: 0;
+    padding-left: 24px;
+    border-left: 1px solid var(--hairline-soft);
+  }
+  @media (max-width: 900px) {
+    .bench-panes { grid-template-columns: minmax(0, 1fr); }
+    .bench-sheet { max-height: 320px; }
+    .bench-enlarger { padding-left: 0; border-left: none; margin-top: 20px; }
+  }
 
   @media (max-width: 720px) {
     .page-head .row { flex-direction: column; }
