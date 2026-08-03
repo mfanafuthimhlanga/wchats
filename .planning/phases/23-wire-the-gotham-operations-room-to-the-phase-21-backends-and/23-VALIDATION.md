@@ -76,26 +76,26 @@ rather than implying otherwise.
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 23-01-01 | 01 | 1 | WIRE-05 | T-23-GA-01 / T-23-GA-04 | Only the assistant message id crosses to the browser; the user message id never does, and no second id is minted between the row insert and the emit | unit (AST + source shape) | `cd apps/api && ./.venv/Scripts/python.exe -c "<emit-shape gate, 23-01 T1>"` | ✅ (`agent.py`) | ⬜ pending |
-| 23-01-02 | 01 | 1 | WIRE-05 | T-23-GA-03 | No patch site can hand a mock object into the emitted payload; the emit field and the correct local are each proven by a mutation observed red | unit | `cd apps/api && ./.venv/Scripts/python.exe -m pytest tests/unit/test_agent_task.py -q` | ✅ (repaired, not created — finding F-1: **eight** sites, not seven) | ⬜ pending |
-| 23-02-01 | 02 | 1 | WIRE-04 | T-23-GB-01 / T-23-GB-03 / T-23-GB-05 | Only open findings are returned; severity ranks explicitly so a critical is never buried last; no probe text or connection string is logged | unit (SQL + source shape) | `cd apps/api && ./.venv/Scripts/python.exe -c "<Gap-B shape gate, 23-02 T1>"` | ✅ (`redteam_programme_service.py`) | ⬜ pending |
-| 23-02-02 | 02 | 1 | WIRE-04 | T-23-GB-02 / T-23-GB-04 | A correlation miss still yields a containable finding; a lexical severity sort is proven to break the ordering test | unit | `cd apps/api && ./.venv/Scripts/python.exe -m pytest tests/unit/test_redteam_programme.py -q` | ✅ (repaired, not created — finding F-7: three existing tests break and nothing upstream said so) | ⬜ pending |
-| 23-03-01 | 03 | 1 | WIRE-01, WIRE-02, WIRE-04 | T-23-VAL-03 / T-23-VAL-04 | A sentinel never becomes a number; a measured zero never becomes an absence; the gate derivation over an open-findings list is provable before any component exists | unit (browserless) | `cd apps/admin && npx playwright test -c playwright.unit.config.ts` | ❌ **Wave 0 — created by this task** | ⬜ pending |
-| 23-03-02 | 03 | 1 | WIRE-01, WIRE-03 | T-23-VAL-01 / T-23-VAL-02 | The gate cannot be satisfied by a comment and cannot scan itself; it is observed both firing and staying silent | static | `cd apps/admin && node scripts/check-ops-room-wiring.mjs --report` | ❌ **Wave 0 — created by this task** | ⬜ pending |
-| 23-04-01 | 04 | 2 | WIRE-05 | T-23-WF-03 / T-23-WF-05 / T-23-WF-06 | The request body carries exactly the schema's fields and no customer text; a 204 answer is never parsed; a message with no id renders no control | unit (network-stubbed module import) | `cd apps/widget && node --input-type=module -e "<transport gate, 23-04 T1>"` | ❌ **Wave 0 — created by this task** | ⬜ pending |
-| 23-04-02 | 04 | 2 | WIRE-05 | T-23-WF-01 / T-23-WF-02 / T-23-WF-04 | The field the handler reads is character-identical to the key the task emits; at most two submissions per message; the bundle stays under its ceiling | structural + build gate | `cd apps/widget && npm run build && node scripts/check-size.mjs` | ✅ (`check-size.mjs`) | ⬜ pending |
-| 23-05-01 | 05 | 2 | WIRE-01 | T-23-UI-01 / T-23-UI-04 / T-23-UI-06 | Every metric checks its sentinel before formatting; the cost is dollars; no local error surface | static + browserless | `cd apps/admin && npx tsc --noEmit && npx playwright test -c playwright.unit.config.ts` | ❌ W0 (23-03) | ⬜ pending |
-| 23-05-02 | 05 | 2 | WIRE-01, WIRE-03 | T-23-UI-02 / T-23-UI-07 | Two sentinel spellings are checked by two predicates, neither of which recognises the other's literal; one chip, no fourth hue | static + browserless | `cd apps/admin && npx tsc --noEmit && node scripts/check-no-dusk-tokens.mjs && npx playwright test -c playwright.unit.config.ts` | ❌ W0 (23-03) | ⬜ pending |
-| 23-05-03 | 05 | 2 | **WIRE-02 (half 1 — the field is read)** | T-23-UI-03 | The response type declares the ledger as a sibling, the query returns it, and the untracked treatment is gone from the Judgement channel block | static | `cd apps/admin && node scripts/check-ops-room-wiring.mjs --report` (Judgement check flips to PASS) | ❌ W0 (23-03) | ⬜ pending |
-| 23-05-03 | 05 | 2 | **WIRE-02 (half 2 — a zero is a zero)** | T-23-VAL-04 | A literal zero from a real measurement renders as a zero, never as an absence message | unit (browserless) | `cd apps/admin && npx playwright test -c playwright.unit.config.ts` (zero cases) | ❌ W0 (23-03) | ⬜ pending |
-| 23-06-01 | 06 | 3 | WIRE-01, WIRE-03, WIRE-04 | T-23-ADV-02 / T-23-ADV-04 / T-23-ADV-06 / T-23-ADV-07 | Every contain control stages; the panel never fetches the runs endpoint; busy state is per finding; no toast and no optimistic removal | static + copy gate | `cd apps/admin && node -e "<Adversary shape + locked-copy gates, 23-06 T1>"` | ❌ W0 (23-03) | ⬜ pending |
-| 23-06-02 | 06 | 3 | **WIRE-04 (the stale-verdict fix)** | T-23-ADV-01 | The page references neither the per-run blocked flag nor the per-run findings snapshot; the gate input is the live open-findings derivation | static + browserless | `cd apps/admin && node -e "<gate-recompute gate, 23-06 T2>" && npx playwright test -c playwright.unit.config.ts` | ❌ W0 (23-03) | ⬜ pending |
-| 23-07-01 | 07 | 4 | WIRE-01, WIRE-03 | T-23-PRM-01 / T-23-PRM-02 / T-23-PRM-03 / T-23-PRM-07 | Both live actions stage; the "nothing is deleted" clause is verbatim; unchanged fields render; no diff package | static + copy gate | `cd apps/admin && node -e "<prompt shape + locked-copy gates, 23-07 T1>"` | ❌ W0 (23-03) | ⬜ pending |
-| 23-07-02 | 07 | 4 | WIRE-03 | — | All three false claims are gone and the phrase behind them appears nowhere under the app directory | static | `cd apps/admin && node scripts/check-ops-room-wiring.mjs --report` (every honesty check PASS) | ❌ W0 (23-03) | ⬜ pending |
-| 23-08-01 | 08 | 5 | WIRE-01 | T-23-BCH-01 / T-23-BCH-03 / T-23-BCH-04 / T-23-BCH-06 / T-23-BCH-07 | All four shortcut guards present; the tally comes from a response; the grade badge is neutral; a polite live region announces every grade | static + copy gate | `cd apps/admin && node -e "<bench shape + locked-copy gates, 23-08 T1>"` | ❌ W0 (23-03) | ⬜ pending |
-| 23-08-02 | 08 | 5 | **WIRE-01 (all six regions)** | — | The standing wiring gate exits zero with no flag, for the first time since it was written | static + rendered | `cd apps/admin && node scripts/check-ops-room-wiring.mjs && npx playwright test tests/overflow.spec.ts` | ❌ W0 (23-03) | ⬜ pending |
-| 23-09-01 | 09 | 6 | WIRE-01..05 | T-23-GATE-02 / T-23-GATE-03 / T-23-GATE-05 | Every design-review finding fixed or declined with a reason; every gate still green after the fixes; pixel findings distinguished from code findings | rendered + static | `cd apps/admin && npx playwright test tests/overflow.spec.ts tests/a11y.spec.ts` | ✅ | ⬜ pending |
-| 23-09-02 | 09 | 6 | WIRE-01..05 | T-23-GATE-04 / T-23-GATE-06 | This document reconciled against what actually ran; no row left naming a gate that could not catch its own defect; both follow-ups recorded | static | `node -e "<contract-filled gate, 23-09 T2>"` | ✅ (this file) | ⬜ pending |
+| 23-01-01 | 01 | 1 | WIRE-05 | T-23-GA-01 / T-23-GA-04 | Only the assistant message id crosses to the browser; the user message id never does, and no second id is minted between the row insert and the emit | unit (AST + source shape) | `cd apps/api && ./.venv/Scripts/python.exe -c "<emit-shape gate, 23-01 T1>"` — superseded by an AST-accurate re-check; see reconciliation note below the table | ✅ (`agent.py`) | ✅ green |
+| 23-01-02 | 01 | 1 | WIRE-05 | T-23-GA-03 | No patch site can hand a mock object into the emitted payload; the emit field and the correct local are each proven by a mutation observed red | unit | `cd apps/api && ./.venv/Scripts/python.exe -m pytest tests/unit/test_agent_task.py -q` | ✅ (repaired, not created — finding F-1: **eight** sites, not seven) | ✅ green |
+| 23-02-01 | 02 | 1 | WIRE-04 | T-23-GB-01 / T-23-GB-03 / T-23-GB-05 | Only open findings are returned; severity ranks explicitly so a critical is never buried last; no probe text or connection string is logged | unit (SQL + source shape) | `cd apps/api && ./.venv/Scripts/python.exe -c "<Gap-B shape gate, 23-02 T1>"` | ✅ (`redteam_programme_service.py`) | ✅ green |
+| 23-02-02 | 02 | 1 | WIRE-04 | T-23-GB-02 / T-23-GB-04 | A correlation miss still yields a containable finding; a lexical severity sort is proven to break the ordering test | unit | `cd apps/api && ./.venv/Scripts/python.exe -m pytest tests/unit/test_redteam_programme.py -q` | ✅ (repaired, not created — finding F-7: three existing tests break and nothing upstream said so) | ✅ green |
+| 23-03-01 | 03 | 1 | WIRE-01, WIRE-02, WIRE-04 | T-23-VAL-03 / T-23-VAL-04 | A sentinel never becomes a number; a measured zero never becomes an absence; the gate derivation over an open-findings list is provable before any component exists | unit (browserless) | `cd apps/admin && npx playwright test -c playwright.unit.config.ts` | ❌ **Wave 0 — created by this task** | ✅ green |
+| 23-03-02 | 03 | 1 | WIRE-01, WIRE-03 | T-23-VAL-01 / T-23-VAL-02 | The gate cannot be satisfied by a comment and cannot scan itself; it is observed both firing and staying silent | static | `cd apps/admin && node scripts/check-ops-room-wiring.mjs --report` | ❌ **Wave 0 — created by this task** | ✅ green |
+| 23-04-01 | 04 | 2 | WIRE-05 | T-23-WF-03 / T-23-WF-05 / T-23-WF-06 | The request body carries exactly the schema's fields and no customer text; a 204 answer is never parsed; a message with no id renders no control | unit (network-stubbed module import) | `cd apps/widget && node --input-type=module -e "<transport gate, 23-04 T1>"` | ❌ **Wave 0 — created by this task** | ✅ green |
+| 23-04-02 | 04 | 2 | WIRE-05 | T-23-WF-01 / T-23-WF-02 / T-23-WF-04 | The field the handler reads is character-identical to the key the task emits; at most two submissions per message; the bundle stays under its ceiling | structural + build gate | `cd apps/widget && npm run build && node scripts/check-size.mjs` | ✅ (`check-size.mjs`) | ✅ green |
+| 23-05-01 | 05 | 2 | WIRE-01 | T-23-UI-01 / T-23-UI-04 / T-23-UI-06 | Every metric checks its sentinel before formatting; the cost is dollars; no local error surface | static + browserless | `cd apps/admin && npx tsc --noEmit && npx playwright test -c playwright.unit.config.ts` | ❌ W0 (23-03) | ✅ green |
+| 23-05-02 | 05 | 2 | WIRE-01, WIRE-03 | T-23-UI-02 / T-23-UI-07 | Two sentinel spellings are checked by two predicates, neither of which recognises the other's literal; one chip, no fourth hue | static + browserless | `cd apps/admin && npx tsc --noEmit && node scripts/check-no-dusk-tokens.mjs && npx playwright test -c playwright.unit.config.ts` — the plan's own row-count assertion undercounted; see reconciliation note below the table | ❌ W0 (23-03) | ✅ green |
+| 23-05-03 | 05 | 2 | **WIRE-02 (half 1 — the field is read)** | T-23-UI-03 | The response type declares the ledger as a sibling, the query returns it, and the untracked treatment is gone from the Judgement channel block | static | `cd apps/admin && node scripts/check-ops-room-wiring.mjs --report` (Judgement check flips to PASS) | ❌ W0 (23-03) | ✅ green |
+| 23-05-03 | 05 | 2 | **WIRE-02 (half 2 — a zero is a zero)** | T-23-VAL-04 | A literal zero from a real measurement renders as a zero, never as an absence message | unit (browserless) | `cd apps/admin && npx playwright test -c playwright.unit.config.ts` (zero cases) | ❌ W0 (23-03) | ✅ green |
+| 23-06-01 | 06 | 3 | WIRE-01, WIRE-03, WIRE-04 | T-23-ADV-02 / T-23-ADV-04 / T-23-ADV-06 / T-23-ADV-07 | Every contain control stages; the panel never fetches the runs endpoint; busy state is per finding; no toast and no optimistic removal | static + copy gate | `cd apps/admin && node -e "<Adversary shape + locked-copy gates, 23-06 T1>"` — the plan's own column-count assertion undercounted; see reconciliation note below the table | ❌ W0 (23-03) | ✅ green |
+| 23-06-02 | 06 | 3 | **WIRE-04 (the stale-verdict fix)** | T-23-ADV-01 | The page references neither the per-run blocked flag nor the per-run findings snapshot; the gate input is the live open-findings derivation | static + browserless | `cd apps/admin && node -e "<gate-recompute gate, 23-06 T2>" && npx playwright test -c playwright.unit.config.ts` — the plan's own whole-file future-release check was unscoped; see reconciliation note below the table | ❌ W0 (23-03) | ✅ green |
+| 23-07-01 | 07 | 4 | WIRE-01, WIRE-03 | T-23-PRM-01 / T-23-PRM-02 / T-23-PRM-03 / T-23-PRM-07 | Both live actions stage; the "nothing is deleted" clause is verbatim; unchanged fields render; no diff package | static + copy gate | `cd apps/admin && node -e "<prompt shape + locked-copy gates, 23-07 T1>"` — the plan's own column-count assertion undercounted, a third instance; see reconciliation note below the table | ❌ W0 (23-03) | ✅ green |
+| 23-07-02 | 07 | 4 | WIRE-03 | — | All three false claims are gone and the phrase behind them appears nowhere under the app directory | static | `cd apps/admin && node scripts/check-ops-room-wiring.mjs --report` (every honesty check PASS) | ❌ W0 (23-03) | ✅ green |
+| 23-08-01 | 08 | 5 | WIRE-01 | T-23-BCH-01 / T-23-BCH-03 / T-23-BCH-04 / T-23-BCH-06 / T-23-BCH-07 | All four shortcut guards present; the tally comes from a response; the grade badge is neutral; a polite live region announces every grade | static + copy gate | `cd apps/admin && node -e "<bench shape + locked-copy gates, 23-08 T1>"` | ❌ W0 (23-03) | ✅ green |
+| 23-08-02 | 08 | 5 | **WIRE-01 (all six regions)** | — | The standing wiring gate exits zero with no flag, for the first time since it was written | static + rendered | `cd apps/admin && node scripts/check-ops-room-wiring.mjs && npx playwright test tests/overflow.spec.ts` | ❌ W0 (23-03) | ✅ green |
+| 23-09-01 | 09 | 6 | WIRE-01..05 | T-23-GATE-02 / T-23-GATE-03 / T-23-GATE-05 | Every design-review finding fixed or declined with a reason; every gate still green after the fixes; pixel findings distinguished from code findings | rendered + static | `cd apps/admin && npx playwright test tests/overflow.spec.ts tests/a11y.spec.ts` | ✅ | ✅ green |
+| 23-09-02 | 09 | 6 | WIRE-01..05 | T-23-GATE-04 / T-23-GATE-06 | This document reconciled against what actually ran; no row left naming a gate that could not catch its own defect; both follow-ups recorded | static | `node -e "<contract-filled gate, 23-09 T2>"` (run this session — `VALIDATION-CONTRACT-FILLED-OK rows=21`) | ✅ (this file) | ✅ green |
 | 23-09-03 | 09 | 6 | WIRE-01..05 | T-23-GATE-01 / T-23-SC | Every recorded number is observed; the API manifest and both migration trees clean; no dependency added to either front-end package | full sweep | see `23-09` Task 3's four verify commands | ✅ | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
@@ -111,6 +111,50 @@ claim coverage it does not have.
 firing on a literal outside a comment and staying silent on the same literal inside one.
 Without the second observation the gate fires on this phase's own explanatory comments about
 what it deleted, and the reflex fix for a noisy gate is to weaken it.
+
+**Reconciliation note (23-09 Task 2) — six verify-script defects, all in the plans' own inline
+checks, none in the delivered code.** Reading every SUMMARY this phase produced against this
+document's own epigraph question — could this gate have failed on the defect it names? —
+surfaced six cases where a task's own bespoke `<verify>` command could not have, and each was
+independently caught and corrected by its own executor before that task's row could honestly
+turn green. Recorded here because a reader of this table alone would not otherwise learn any
+of this happened.
+
+- **Docstring-collision false negatives (23-01 Task 1, 23-04 Task 2).** Two of `agent.py`'s own
+  pre-existing docstrings contain the literal quoted phrase `"agent.response"` before the real
+  `emit(...)` call does, so a naive `source.indexOf('"agent.response"')` anchors on prose and
+  never reaches the real payload — the check fails identically whether the implementation is
+  correct or broken. Both executors independently substituted an AST walk over the real
+  `ast.Call`/`emit(...)` nodes, immune to docstring text, and confirmed the same claim the
+  naive script was written to prove (`agent.response` carries four keys including `message_id`;
+  `agent.escalated` carries three and never gains one). Neither `agent.py` docstring was edited
+  — both are accurate, and out of scope for the plans that found the collision.
+- **Bare-identifier row/column-count regexes (23-05 Task 2, 23-06 Task 1, 23-07 Task 1) — the
+  same bug, three times.** Each plan's own structural check counted occurrences of a bare
+  component name (`LedgerRowHead`, `LedgerColHead`) instead of anchoring on the opening angle
+  bracket (`/<LedgerColHead/`). A bare identifier matches the import statement once and then
+  matches *both* the opening and closing tag of every real usage, so 12 real readings-ledger
+  rows counted as 25, 5 real coverage columns counted as 11, and 4 real prompt-version columns
+  counted as 9 — every one of these components was correct and every one of these checks was
+  wrong. Each executor proved the true count with the corrected pattern (`/<TagName/g`) plus an
+  independent `<tr>`-count or call-count cross-check, and none contorted a correct component to
+  satisfy a broken regex. `.continue-here.md`'s own anti-pattern table already names this
+  recurrence; this is the fourth confirmation, not a new instance, and no fifth has appeared
+  since 23-08.
+- **Unscoped whole-file phrase scan (23-06 Task 2).** A `/future release/i` check against the
+  entire raw `page.tsx` necessarily fails while any sibling region's own false claim hasn't yet
+  been deleted by its own, later plan — at the moment 23-06 ran, 23-07 had not yet landed, so
+  the prompt region's claim was still present and the check failed for a reason outside 23-06's
+  own scope. The phase's standing gate (`check-ops-room-wiring.mjs`) already scopes each claim
+  check to its own literal and returned the correct `PASS` throughout; 23-06's inline duplicate
+  was the only thing that fired wrongly, and it fired on a region 23-06's own diff-scope gate
+  explicitly forbade it from touching.
+
+None of these six is a defect in delivered code — every one is a defect in a one-off inline
+verify script that existed for exactly one task's commit and is not itself a standing gate this
+phase carries forward. The properties they were written to prove were all independently proven
+by a corrected or substitute check in the same session, observed and recorded in each plan's own
+SUMMARY, before that task's commit landed.
 
 ---
 
@@ -155,6 +199,16 @@ production and is not an acceptable substitute. Redis runs and the API key is pr
 is the blocker. If these rows are deferred, they are recorded as deferred with that cause and
 a date, never silently skipped.
 
+**Reconciled 2026-08-04 (23-09 Task 2):** the constraint above was re-checked, not assumed —
+still true; no PostgreSQL server is reachable on this machine in this session either. Rows 1
+and 2 remain deferred for that stated cause. Row 3 (long-text wrapping, populated-table
+overflow) was independently exercised this phase: `tests/overflow.spec.ts` and
+`tests/a11y.spec.ts` both ran this session (66/66 passed, 23-09 Task 1) against the console
+**shell** at all three widths, exactly as this row's own text already said the shipped
+specification can reach — it still cannot reach a populated readings ledger, coverage table,
+or enlarger, for the same session-dependency reason as rows 1 and 2. No row's disposition
+changed; all three remain manual-only, deferred with the causes above, dated today.
+
 ---
 
 ## Deliberate Follow-Ups (not closed by this phase)
@@ -166,6 +220,7 @@ a date, never silently skipped.
 | ~~Requirement-identifier collision: this phase's ids are already Phase 16's~~ **CLOSED 2026-08-02** | OD-8 / finding F-3. The planner correctly declined to renumber identifiers two committed documents already used, and logged it. The orchestrator then renamed `INT-01..INT-05` → `WIRE-01..WIRE-05` across every Phase 23 artifact and the Phase 23 sections of ROADMAP/STATE/audit, before execution. `WIRE-` was verified unused repo-wide first; Phase 16's `INT-01..06` were verified intact after. No open risk remains for THIS phase. | — |
 | Pre-existing `OPS-01..06` collision (M10/Phase 10 vs Phase 21) | Untouched and still open — a different register, out of scope here, and named in `v1.2-MILESTONE-AUDIT.md` as a standing generator of wrong requirement ticks. | A `REQUIREMENTS.md` correction pass that namespaces one of the two OPS registers. |
 | `evals.py`'s response-shape docstring omits the ledger key it returns | Finding F-6. A file no plan in this phase owns, and the out-of-scope line is explicit. Recorded because it is WIRE-02's defect one layer down and plausibly contributed to it: a frontend author reading the route's documentation would never learn the field exists. | One docstring line in `apps/api/app/api/v1/evals.py:120-121`. |
+| `eval/page.tsx` has the same unguarded nested-read pattern UI-6 fixed in `page.tsx:560`, at five call sites | Surfaced by 23-09's adversarial review, task 1. `run.aggregate_scores[c.key]`/`s.scores.faithfulness` are read with no optional chaining at `eval/page.tsx:172,184,289,291,385` — the identical defect class as the operations-room bug that blanked all six regions, on a route that renders the same Judgement data one level down. `eval/page.tsx` is not in this task's eight-file scope (`.planning/.../23-09-PLAN.md <scope>` names the six region components, `page.tsx`, and the two widget files only) and this plan does not widen scope to fix it. | Add optional chaining (`res.scores?.faithfulness`, `run.aggregate_scores?.[c.key]`) at the five named lines — the same one-line pattern already applied in `page.tsx`. |
 
 ---
 
