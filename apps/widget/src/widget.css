@@ -310,3 +310,113 @@ body, #root {
   color: var(--text-3);
   margin-bottom: 2px;
 }
+
+.feedback-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.feedback-thumbs {
+  display: flex;
+  gap: 6px;
+}
+
+.feedback-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.feedback-thumb svg {
+  width: 24px;
+  height: 24px;
+}
+
+.feedback-thumb[aria-pressed="true"] {
+  color: var(--accent);
+}
+
+.feedback-thumb[aria-pressed="true"] svg {
+  fill: currentColor;
+}
+
+.feedback-thumb:focus-visible {
+  box-shadow: var(--shadow-focus);
+  outline: none;
+}
+
+.feedback-score {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: feedback-score-in 0.15s ease-out;
+}
+
+.feedback-score-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+.feedback-score-options {
+  display: flex;
+  gap: 6px;
+}
+
+.feedback-star {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.feedback-star svg {
+  width: 20px;
+  height: 20px;
+}
+
+.feedback-star[aria-checked="true"] {
+  color: var(--accent);
+}
+
+.feedback-star[aria-checked="true"] svg {
+  fill: currentColor;
+}
+
+.feedback-star:focus-visible {
+  box-shadow: var(--shadow-focus);
+  outline: none;
+}
+
+@keyframes feedback-score-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Widget's first reduced-motion rule (23-UI-SPEC.md §6.5) — scoped to only
+   the score row's entrance; nothing else in this widget animates besides
+   the typing indicator's dot pulse, which stays exempt by the same
+   convention that exempts a spinner. */
+@media (prefers-reduced-motion: reduce) {
+  .feedback-score {
+    animation: none;
+  }
+}
