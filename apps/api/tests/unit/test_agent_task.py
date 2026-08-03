@@ -137,6 +137,19 @@ _CANNED_RESULT_ESCALATED = {
     "sdk_session_id": "sdk-esc-789",
 }
 
+# ---------------------------------------------------------------------------
+# WIRE-05 (23-01): fixed, obviously-synthetic _persist_messages return values.
+# A bare patch() of _persist_messages hands back a MagicMock; emit() is also
+# separately patched at every site below, so a MagicMock message_id would
+# flow straight into a captured payload silently rather than crash (T-23-GA-03,
+# the "false green" this repair closes). Every patch site below therefore
+# supplies an explicit return_value. Sites whose test asserts on the exact
+# value use their own distinct per-test literal (not this shared constant) so
+# two asserting tests can never be satisfied by the same string by accident.
+# ---------------------------------------------------------------------------
+
+_PERSISTED_ASSISTANT_MSG_ID = "test-assistant-msg-id-shared"
+
 
 # ---------------------------------------------------------------------------
 # Test 1: Idempotency skip
@@ -231,7 +244,10 @@ def test_first_turn_creates_conversation_and_stores_sdk_session_id():
         patch("app.worker.tasks.runtime.agent.psycopg2.connect") as mock_connect,
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
         patch("app.worker.tasks.runtime.agent._set_sdk_session_id") as mock_set_sdk,
-        patch("app.worker.tasks.runtime.agent._persist_messages") as mock_persist,
+        patch(
+            "app.worker.tasks.runtime.agent._persist_messages",
+            return_value="test-assistant-msg-id-first-turn",
+        ) as mock_persist,
         patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
         patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys prompt"),
         patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_RESULT_WITH_CITATION),
@@ -263,6 +279,13 @@ def test_first_turn_creates_conversation_and_stores_sdk_session_id():
     )
     assert str(local_conv_id) in str(response_payload.get("conversation_id", "")), (
         f"conversation_id not in response payload: {response_payload}"
+    )
+
+    # WIRE-05: message_id must equal the exact string this test's own patch
+    # returned -- not a MagicMock, not a second freshly-minted identifier.
+    assert response_payload["message_id"] == "test-assistant-msg-id-first-turn", (
+        f"message_id must equal the value _persist_messages returned, "
+        f"got: {response_payload.get('message_id')!r}"
     )
 
     # _persist_messages must be called
@@ -302,7 +325,10 @@ def test_subsequent_turn_resumes_with_stored_sdk_session_id():
             "app.worker.tasks.runtime.agent._validate_conversation_owner",
             return_value={"id": existing_conv_id, "metadata": {"sdk_session_id": stored_sdk_session_id}},
         ),
-        patch("app.worker.tasks.runtime.agent._persist_messages"),
+        patch(
+            "app.worker.tasks.runtime.agent._persist_messages",
+            return_value=_PERSISTED_ASSISTANT_MSG_ID,
+        ),
         patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
         patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
         patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys prompt"),
@@ -341,10 +367,10 @@ def test_escalation_emits_agent_escalated_event():
     mock_db.execute.return_value.fetchone.return_value = None
     mock_db.get.side_effect = [agent, job]
 
-    emitted_events: list[str] = []
+    emitted_events: list[tuple[str, dict]] = []
 
     def fake_emit(jid, event_type, payload, db, redis):
-        emitted_events.append(event_type)
+        emitted_events.append((event_type, payload or {}))
 
     with (
         patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
@@ -352,7 +378,10 @@ def test_escalation_emits_agent_escalated_event():
         patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
         patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
-        patch("app.worker.tasks.runtime.agent._persist_messages"),
+        patch(
+            "app.worker.tasks.runtime.agent._persist_messages",
+            return_value="test-assistant-msg-id-escalation",
+        ),
         patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
         patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys prompt"),
         patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_RESULT_ESCALATED),
@@ -366,12 +395,27 @@ def test_escalation_emits_agent_escalated_event():
         )
 
     # agent.escalated must appear before agent.response
-    assert "agent.escalated" in emitted_events, f"agent.escalated missing from {emitted_events}"
-    assert "agent.response" in emitted_events, f"agent.response missing from {emitted_events}"
-    escalated_idx = emitted_events.index("agent.escalated")
-    response_idx = emitted_events.index("agent.response")
+    event_types = [et for et, _ in emitted_events]
+    assert "agent.escalated" in event_types, f"agent.escalated missing from {event_types}"
+    assert "agent.response" in event_types, f"agent.response missing from {event_types}"
+    escalated_idx = event_types.index("agent.escalated")
+    response_idx = event_types.index("agent.response")
     assert escalated_idx < response_idx, (
         f"agent.escalated ({escalated_idx}) must come before agent.response ({response_idx})"
+    )
+
+    # WIRE-05: the terminal payload carries message_id on an escalating turn
+    # too (escalation fires BEFORE, not INSTEAD OF, the terminal event) --
+    # and the escalation payload itself never gains an identifier, since it
+    # is not the event the widget attaches feedback to.
+    escalated_payload = next(p for et, p in emitted_events if et == "agent.escalated")
+    response_payload = next(p for et, p in emitted_events if et == "agent.response")
+    assert response_payload.get("message_id") == "test-assistant-msg-id-escalation", (
+        f"agent.response payload must carry message_id on an escalating turn too, "
+        f"got: {response_payload}"
+    )
+    assert "message_id" not in escalated_payload, (
+        f"agent.escalated payload must never carry message_id, got: {escalated_payload}"
     )
 
 
@@ -405,7 +449,10 @@ def test_citations_missing_returns_empty_list_and_warns():
         patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
         patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
-        patch("app.worker.tasks.runtime.agent._persist_messages"),
+        patch(
+            "app.worker.tasks.runtime.agent._persist_messages",
+            return_value=_PERSISTED_ASSISTANT_MSG_ID,
+        ),
         patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
         patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys prompt"),
         patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_RESULT_NO_CITATIONS),
@@ -480,7 +527,10 @@ def test_validators_dispatched():
         patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
         patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
-        patch("app.worker.tasks.runtime.agent._persist_messages"),
+        patch(
+            "app.worker.tasks.runtime.agent._persist_messages",
+            return_value=_PERSISTED_ASSISTANT_MSG_ID,
+        ),
         patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
         patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys prompt"),
         patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_RESULT_WITH_RETRIEVE),
@@ -579,7 +629,10 @@ def test_max_turns_allows_synthesis_after_retrieve():
         patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
         patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
-        patch("app.worker.tasks.runtime.agent._persist_messages"),
+        patch(
+            "app.worker.tasks.runtime.agent._persist_messages",
+            return_value=_PERSISTED_ASSISTANT_MSG_ID,
+        ),
         patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
         patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys prompt"),
         patch("app.worker.tasks.runtime.agent.ClaudeAgentOptions", side_effect=FakeClaudeAgentOptions),
@@ -634,7 +687,10 @@ def test_wall_clock_guard_is_ninety_seconds():
         patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
         patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
-        patch("app.worker.tasks.runtime.agent._persist_messages"),
+        patch(
+            "app.worker.tasks.runtime.agent._persist_messages",
+            return_value=_PERSISTED_ASSISTANT_MSG_ID,
+        ),
         patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
         patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys prompt"),
         # Patch wait_for but keep asyncio.run real so it drives the fake coroutine.
@@ -695,7 +751,10 @@ def test_max_budget_uses_settings_not_hardcoded():
         patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
         patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
-        patch("app.worker.tasks.runtime.agent._persist_messages"),
+        patch(
+            "app.worker.tasks.runtime.agent._persist_messages",
+            return_value=_PERSISTED_ASSISTANT_MSG_ID,
+        ),
         patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
         patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys prompt"),
         patch("app.worker.tasks.runtime.agent.ClaudeAgentOptions", side_effect=FakeClaudeAgentOptions),
@@ -834,4 +893,79 @@ def test_result_message_stop_reason_logged():
     assert len(error_logs) >= 1, (
         f"Expected _run_sdk_turn.sdk_error warning for is_error=True. "
         f"log_calls_warn={log_calls_warn}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 23 (23-01) -- WIRE-05 Gap A: agent.response carries the assistant
+# message id, proven by name so removing the emit field or returning the
+# wrong local turns THIS test red rather than merely changing a value.
+# ---------------------------------------------------------------------------
+
+_TERMINAL_RESPONSE_MSG_ID = "test-assistant-msg-id-terminal-response"
+
+
+def test_agent_response_carries_assistant_message_id():
+    """The terminal agent.response payload's message_id is the exact string
+    _persist_messages returned for this turn -- not a MagicMock (a bare patch
+    site regression, T-23-GA-03) and not a second, independently-minted id
+    (T-23-GA-04)."""
+    from app.worker.tasks.runtime.agent import run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    agent = _make_agent(str(agent_id))
+    job = _make_job(job_id)
+    local_conv_id = "00000000-0000-0000-0000-000000000030"
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None  # no idempotency row
+    mock_db.get.side_effect = [agent, job]
+
+    response_payloads: list[dict] = []
+
+    def fake_emit(jid, event_type, payload, db, redis):
+        if event_type == "agent.response":
+            response_payloads.append(payload or {})
+
+    with (
+        patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
+        patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
+        patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
+        patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
+        patch(
+            "app.worker.tasks.runtime.agent._persist_messages",
+            return_value=_TERMINAL_RESPONSE_MSG_ID,
+        ),
+        patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
+        patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys prompt"),
+        patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_RESULT_WITH_CITATION),
+        patch("app.worker.tasks.runtime.agent.emit", side_effect=fake_emit),
+    ):
+        run_agent_turn.run(
+            job_id=job_id,
+            agent_id=agent_id,
+            message="What is the return policy?",
+            conversation_id=None,
+        )
+
+    assert len(response_payloads) == 1, (
+        f"Expected exactly 1 agent.response event, got: {response_payloads}"
+    )
+    payload = response_payloads[0]
+
+    # 1. the key is present
+    assert "message_id" in payload, f"agent.response payload missing message_id: {payload}"
+    # 2. its value is the exact string the patch returned
+    assert payload["message_id"] == _TERMINAL_RESPONSE_MSG_ID, (
+        f"message_id must equal the value _persist_messages returned, "
+        f"got: {payload['message_id']!r}"
+    )
+    # 3. its value is a string rather than an object -- the assertion that makes
+    #    a bare-patch regression (a MagicMock silently flowing through) impossible
+    #    to reintroduce without this test catching it.
+    assert isinstance(payload["message_id"], str), (
+        f"message_id must be a string, not {type(payload['message_id'])}; "
+        f"a non-str here means a bare patch site is handing a MagicMock to the emit."
     )
