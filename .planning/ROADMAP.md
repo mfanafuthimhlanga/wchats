@@ -478,7 +478,7 @@ Plans:
 
 **Depends on:** Phase 20 (the console and its six regions), Phase 21 (every endpoint consumed). Not Phase 22 — that phase touched only `deploy/page.tsx` and shares no file with this one.
 
-**Plans:** 7/9 plans executed
+**Plans:** 8/9 plans executed
 
 Plans:
 
@@ -489,7 +489,7 @@ Plans:
 - [x] 23-05-PLAN.md — (W2, depends 23-03) WIRE-01/02/03: Live and Retrieval health wired, the ORRERY ledger counts rendered, false claim 1 deleted, one shared region-error surface.
 - [x] 23-06-PLAN.md — (W3, depends 23-02, 23-05) WIRE-03/04: the coverage table with the columns the rollup really computes, the staged contain action, and the deploy-gate input recomputed from live open findings.
 - [x] 23-07-PLAN.md — (W4, depends 23-06) WIRE-01/03: the prompt region across all four version endpoints, two staged live actions, false claim 3 deleted.
-- [ ] 23-08-PLAN.md — (W5, depends 23-07) WIRE-01: the bench as a two-pane roving listbox with three grades, closing the flywheel from the console.
+- [x] 23-08-PLAN.md — (W5, depends 23-07) WIRE-01: the bench as a two-pane roving listbox with three grades, closing the flywheel from the console.
 - [ ] 23-09-PLAN.md — (W6) Adversarial design review and its fixes, the filled `23-VALIDATION.md`, and one observed gate sweep.
 
 ---
