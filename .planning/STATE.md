@@ -2,20 +2,28 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
-status: Milestone complete — Phase 22 closed with operator gates deferred (no local PostgreSQL); Phase 13 still outstanding
-stopped_at: Completed 23-04-PLAN.md
-last_updated: "2026-08-03T09:29:03.525Z"
+status: "Phase 23 executed 9/9 — the v1.2 integration seam is closed and all six ops-room regions are reachable. NOT a complete milestone: /gsd-secure-phase 23 (no 23-SECURITY.md exists), /gsd-verify-work 23, and a re-run of /gsd-audit-milestone v1.2 are all outstanding. Phase 13 (7/11) and the v1.1 live gates (no local PostgreSQL) also remain."
+stopped_at: Completed 23-09-PLAN.md — Phase 23 all 9 plans executed
+last_updated: "2026-08-04T00:55:00.000Z"
 progress:
-  total_phases: 2
-  completed_phases: 2
-  total_plans: 24
-  completed_plans: 24
+  total_phases: 3
+  completed_phases: 3
+  total_plans: 33
+  completed_plans: 33
   percent: 100
 ---
 
 # Project State
 
 ## Current Status
+
+**▶ PHASE 23 EXECUTED 2026-08-04 — 9/9 plans. The v1.2 integration seam the milestone audit found is closed. The phase is NOT yet verified or secured.** Every one of the six operations-room regions now calls its own Phase 21 endpoint, and `check-ops-room-wiring.mjs` exits 0 at **11/11** — the milestone audit's own grep, made permanent as a standing gate. All three "ships in a future release" claims are gone; the ORRERY ledger renders the `born_in_production_count`/`authored_count` it was already receiving; the deploy gate recomputes from live `open_findings` instead of a frozen per-run JSONB snapshot; and the bench flywheel (`traces.py:84 → :126 → :167 → evals.py:99`), complete on the backend since Phase 21 and never once reachable by a human, has a UI entrance. The widget gained feedback capture at **8968 / 20480 bytes**. `apps/api/pyproject.toml` and both migration trees are byte-unchanged across the entire phase — no migration shipped, no dependency added to either front-end package.
+
+**`23-09` closed the phase with a real adversarial review rather than a self-assessment.** Six findings came from an actual rendered pixel session (a throwaway Playwright harness, fully reverted); a reviewer subagent given no severity floor returned **31 more** from code. Of 37 total: **26 fixed, 3 split fix/decline, 8 declined with written reasons, 0 silently dropped.** The declines are the interesting part, because they went in both directions — `23-UI-SPEC.md §4.3` locks `aria-disabled` on a filed trace's grade buttons, so the reviewer's dead-tab-stop objection lost to the contract; the reading-ledger's red hairline is `20-UI-SPEC.md §2.10`'s own site-wide gate mechanism living in `globals.css`, outside the eight-file scope, so it was recorded rather than reached for. Two fixes worth naming: the context-window bar painted a healthy 7.1% reading in `--live`, a token GOTHAM reserves for verdicts (now `--ink-2`); and one unguarded `res.scores.faithfulness` read could blank **all six regions** to a single error boundary, not just its own. Its twin at `eval/page.tsx` (5 call sites, grep-confirmed) is real, out of scope, and logged as a fifth follow-up instead of fixed by silently widening the diff.
+
+**Orchestrator-verified, not taken from the executor's report:** all four commits exist with matching messages; `check:no-dusk-tokens` and `check:ops-room-wiring` both re-run to exit 0; `tsc --noEmit` shows exactly the one pre-existing `tests/reduced-motion.spec.ts:18` error and zero new ones; the browserless spec re-runs 45/45; the widget rebuilds to 8968 bytes. `git diff --name-only` across the phase's four commits touches only the nine files the plan declared — `apps/api`, both `package.json`s, `playwright.config.ts` and `apps/admin/tests/` are all untouched. Not independently re-run by the orchestrator: the backend suite (1199 passed / 8 skipped / 0 failed — inherited and safe, since `apps/api` is byte-unchanged) and the full e2e sweep (113/113 across three viewports), both recorded from the executor's observed output.
+
+**Outstanding before `/gsd-complete-milestone v1.2`:** `/gsd-secure-phase 23` (every plan carries a `<threat_model>` but no `23-SECURITY.md` exists), `/gsd-verify-work 23`, then a re-run of `/gsd-audit-milestone v1.2`. Also open and deliberately not closed by this phase: the browser-level render spec with fixture interception (OD-6), the duplicate feedback row and its double-weighted thumbs rate (OD-7, needs a migration), the `OPS-01..06` requirement-id collision, the stale response-shape docstring in the evals route, and the `eval/page.tsx` unguarded-read twin.
 
 **▶ MILESTONE v1.2 AUDIT 2026-08-02 — `gaps_found`. The milestone was NOT complete; Phase 23 now owns the closure.** `.planning/v1.2-MILESTONE-AUDIT.md`: both Phase 20 and Phase 21 passed their own verification and all 24 requirements are satisfied at phase-acceptance level, yet **only 11 of 24 are reachable by a user**. Phase 20 shipped the six-region ops room with honest empty states for backends that did not exist; Phase 21 built those backends as an explicitly *"backend-only phase, no frontend artifacts"*; neither phase owned the seam, so the wiring pass was never run. A grep of all `apps/admin` + `apps/widget` for `/metrics`, `retrieval-health`, `/traces`, `prompt-versions`, `red-team/programme`, `/contain` returns **zero files**. The console additionally states three capabilities "ship in a future release" (`page.tsx:405,548,587`) that shipped in Phase 21, and renders the ORRERY ledger counts as `not tracked yet` from a payload it already fetches (`evals.py:99,179-187` vs `page.tsx:462,467,488`). **This is the same defect class the Phase 21 verifier caught INSIDE the phase** (21-05 shipped in Wave 1 before 21-06 created `promote_trace_to_scenario` in Wave 3) — the lesson recorded below as "the LATER plan must own the wiring" did not scale from waves to phases. Do not run `/gsd-complete-milestone v1.2` until Phase 23 lands.
 
@@ -213,7 +221,7 @@ deleted, per this file's own convention of correcting in place.
 See: .planning/PROJECT.md (updated 2026-05-12)
 
 **Core value:** A non-technical business owner completes signup → ingest → deploy and gets a customer service agent that is defensible: grounded, evaluated, and red-teamed before it goes live.
-**Current focus:** Phase 22 — Owner capability control + pending-confirmation resolution
+**Current focus:** Phase 23 — wire-the-gotham-operations-room-to-the-phase-21-backends-and
 **Previous:** M3 (Hybrid Retrieval) ✓ Complete — demo_m3.sh passed, notebook 4 DataFrames verified, RET-01–RET-08 satisfied (2026-05-16)
 
 ## Milestone Progress
@@ -577,10 +585,12 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Session
 
-**Last session:** 2026-08-03T09:27:20.010Z
-**Stopped at:** Completed 23-04-PLAN.md
+**Last session:** 2026-08-04
+**Stopped at:** Phase 23 complete at 9/9 plans. `23-09` executed the adversarial design review (37 findings, 26 fixed / 3 split / 8 declined with reasons), reconciled `23-VALIDATION.md` against what every plan's SUMMARY actually recorded, and ran one observed sweep. **The central STATE.md reconcile deferred during execution is done — this block and the frontmatter above are now current.** The six pre-found UI findings were fed to the executor as input rather than re-derived; the render recipe that produced them survives in `.planning/phases/23-.../.continue-here.md` if a populated render is ever needed again.
 
-Earlier the same session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
+**Next:** `/gsd-secure-phase 23` → `/gsd-verify-work 23` → `/gsd-audit-milestone v1.2`. Do not run `/gsd-complete-milestone v1.2` before those three.
+
+**Prior session note** (2026-08-03T09:27:20.010Z, stopped at: Completed 23-04-PLAN.md) — earlier that session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 
 **Outstanding:** Phase 13 paused at 7/11 on a real AWS account. `CAP-03` (18-10's own operator checkpoint, unrun), `VER-01` (SC2 re-run and SC3, both deferred — no local PostgreSQL), and `AUD-03` (deferred, same cause) are the remaining v1.1 gaps, all sharing one root precondition: a local PostgreSQL server does not exist on this machine. No v1.2 migration has been applied to a live Neon DB. **Next: install a local PostgreSQL server and re-run the deferred gates named in `22-UAT.md`, `19-UAT.md`, and `18-10-SUMMARY.md`; no further planning or code work is required to close them.**
 **Resume file:** None
