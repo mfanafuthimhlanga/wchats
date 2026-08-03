@@ -1,0 +1,125 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-08-03T17:54:49.741Z",
+  "context": "phase",
+  "phase": "23",
+  "phase_name": "Wire the Gotham operations room to the Phase 21 backends + widget feedback capture",
+  "phase_dir": ".planning/phases/23-wire-the-gotham-operations-room-to-the-phase-21-backends-and",
+  "plan": 9,
+  "task": 0,
+  "total_tasks": 9,
+  "status": "paused",
+  "head": "48a7a13",
+  "completed_tasks": [
+    {"id": 1, "name": "23-01 Gap A — message_id onto the terminal agent.response SSE emit + 8 mock-site repairs", "status": "done", "commits": ["249a94e", "1fed4e1", "266ce71"]},
+    {"id": 2, "name": "23-02 Gap B — open_findings with real ids, CASE severity rank (never lexical), defensive description correlation", "status": "done", "commits": ["432888b", "039bba3", "972f23e"]},
+    {"id": 3, "name": "23-03 wave-0 validation layer — opsFormat.ts (20 pure exports), browserless runner, check-ops-room-wiring.mjs", "status": "done", "commits": ["52d3e27", "0a7f771", "4a09274", "cca4d12"]},
+    {"id": 4, "name": "23-04 widget feedback capture (WIRE-05) — bundle 8094 -> 8764 bytes vs 20480 ceiling", "status": "done", "commits": ["a43f7cf", "3904ab4", "88bedda", "4d90be0"]},
+    {"id": 5, "name": "23-05 Live + Retrieval health panels, ORRERY ledger fix (WIRE-02), shared region-error surface", "status": "done", "commits": ["2867cb1", "10353b3", "fedd8f8", "f2ee5ba"]},
+    {"id": 6, "name": "23-06 Adversary region + THE STALE-VERDICT FIX (gate now derives from live open_findings)", "status": "done", "commits": ["57a5b72", "27f328e"]},
+    {"id": 7, "name": "23-07 The prompt region — list/diff/canary/rollback, third false claim deleted", "status": "done", "commits": ["aa39ac2", "af46949", "9fc587b"]},
+    {"id": 8, "name": "23-08 The bench — roving-listbox contact sheet + enlarger + three grades; wiring gate reached 11/11", "status": "done", "commits": ["3c34a1e", "1efed6b", "48a7a13"]}
+  ],
+  "remaining_tasks": [
+    {"id": 9, "name": "23-09 — adversarial design review + fixes, contract reconciliation, one observed sweep. THE SIX UI FINDINGS BELOW ARE ITS INPUT; they are already found, do not re-derive them.", "status": "not_started"},
+    {"id": 10, "name": "Reconcile .planning/STATE.md centrally — frontmatter still says 'Milestone complete' / 24-of-24 / 100%, unaware Phase 23 exists", "status": "not_started"},
+    {"id": 11, "name": "/gsd-secure-phase 23 — every plan carries a <threat_model>; no 23-SECURITY.md exists yet", "status": "not_started"},
+    {"id": 12, "name": "/gsd-verify-work 23 then re-run /gsd-audit-milestone v1.2", "status": "not_started"}
+  ],
+  "ui_findings_from_rendered_review": [
+    {
+      "id": "UI-1",
+      "severity": "high",
+      "title": "Adversary header says 'no programme run yet' while the region displays a full programme",
+      "evidence": "Rendered at 1440px with populated GET /red-team/programme. Top-right of the ADVERSARY region reads 'no programme run yet' while directly beneath it sit severity counts (1 critical / 1 high / 1 medium / 0 low), a three-row coverage table, and three findings with Contain buttons.",
+      "why_it_matters": "The page contradicts itself on screen. This is the same false-status class WIRE-03 existed to remove — it survived by living in a region header instead of an EmptyState, so check-ops-room-wiring.mjs does not catch it.",
+      "fix_hint": "The header status label is derived from the wrong source (likely latestRedTeamRun rather than the programme/open_findings query that populates the body). Derive both from one source."
+    },
+    {
+      "id": "UI-2",
+      "severity": "high",
+      "title": "Bench 'File' is irrevocable but visually identical to reversible Hold/Dismiss, with no staged confirmation",
+      "evidence": "All three grade buttons render as equal-weight neutral buttons in the enlarger pane. bench_service.py:378 refuses any transition away from 'filed' and the route answers 409 — it is permanent, server-enforced.",
+      "why_it_matters": "Contain, also irreversible, correctly got the staged .cap-confirm treatment in 23-06. The bench did not. The one-way action is the easiest to hit by accident.",
+      "fix_hint": "Apply the same staged-confirm pattern to File only; leave Hold and Dismiss immediate. Locked copy should state that filing cannot be undone."
+    },
+    {
+      "id": "UI-3",
+      "severity": "high",
+      "title": "Red used as chrome rather than as a verdict in Retrieval health",
+      "evidence": "Every reading-ledger row (BM25 TOP SCORE, VECTOR TOP SCORE, RRF, RERANK, RECALL@K, NDCG@10, MRR, CITED-CHUNK RANK, COMPACTION RATIO, CITATION COVERAGE) carries a maroon hairline rule, and the context-window utilisation bar renders red at 7.1% — a healthy value.",
+      "why_it_matters": "GOTHAM's single governing law is 'colour is a verdict'. Nothing in this region has failed. Painting neutral readings in the alarm colour is the same category of dishonesty as a false verdict chip.",
+      "fix_hint": "Hairlines should use the neutral engraved-rule token from 20-UI-SPEC.md §2.2. The utilisation bar should be bone/neutral unless it crosses a defined threshold."
+    },
+    {
+      "id": "UI-4",
+      "severity": "medium",
+      "title": "'1 documents' — unpluralised count",
+      "evidence": "Top-right of the RETRIEVAL HEALTH region with exactly one document.",
+      "fix_hint": "Singular/plural helper; check the other regions' count labels for the same bug while there."
+    },
+    {
+      "id": "UI-5",
+      "severity": "medium",
+      "title": "'Agent · Serving since —' renders an em-dash placeholder in the page header",
+      "evidence": "Page header subtitle, immediately under the agent name, with a deployed agent.",
+      "why_it_matters": "Reads as broken data rather than absent data, in the most prominent line on the page. The three-state law applies here too.",
+      "fix_hint": "Either omit the clause when the date is unknown, or state the absence in words."
+    },
+    {
+      "id": "UI-6",
+      "severity": "high",
+      "title": "Unguarded nested reads crash ALL SIX regions to an error boundary",
+      "evidence": "page.tsx:560 reads res.scores.faithfulness.toFixed(2), and the run tiles read run.aggregate_scores.faithfulness, with no optional chaining. A payload missing either nested object produced 'This page couldn't load' — the whole ops room, not just the Judgement region. Reproduced twice during the rendered review.",
+      "why_it_matters": "An in-progress eval run, or any partial payload, takes down Live, Retrieval health, Bench, Judgement, Adversary and Prompt together. Everything else in this phase was built to degrade honestly; this one path does not degrade at all.",
+      "fix_hint": "Guard the nested reads and render the region's own honest empty/loading state. Consider a per-region error boundary so one region's bad payload cannot blank the other five."
+    }
+  ],
+  "how_the_render_was_obtained": {
+    "why_it_matters": "Every executor in this phase reported 'no rendered verification' as a known limitation. This is how it was finally done, and the next session should not rediscover it.",
+    "blockers_solved": [
+      "No PostgreSQL and no API server: irrelevant — Playwright page.route() intercepts at the network layer, so real backends are not needed.",
+      "Clerk auth: /agents/[id] gates every query on `isLoaded && !!isSignedIn && step1Done` (12 sites) and every queryFn throws 'Not authenticated' when getToken() returns null (17 sites). NEXT_PUBLIC_DEMO=true only makes routes public via proxy.ts — it does NOT make the sub-routes demo-aware.",
+      "Route precedence: a catch-all glob competing with specific globs is ambiguous in either registration order. Use ONE page.route('**/api/v1/**') handler that switches on URL pathname.",
+      "Port 3100 had a stale dev server from the 23-08 executor returning 500; killing it also released ~1.2 GB of held .next files."
+    ],
+    "method": "Temporarily relax the 12 enabled-gates and the 17 getToken sites to accept a demo fallback, run `next dev -p 3100` with NEXT_PUBLIC_DEMO=true, drive it with a throwaway Playwright spec whose single router returns realistic payloads, screenshot fullPage at 1440, then `git checkout --` every touched file and delete the harness.",
+    "payload_shapes_that_bit": [
+      "EvalRunSummary needs nested aggregate_scores.{faithfulness,...} — NOT flat.",
+      "EvalScenarioResult needs nested scores.{faithfulness,...} — NOT flat.",
+      "/prompt-versions/diff needs the DiffSide/fields shape, not the versions list — match it BEFORE the /prompt-versions rule.",
+      "/eval-runs/{id}/results needs { results: [...] } — match '/results' BEFORE '/eval-runs'."
+    ],
+    "revert_status": "FULLY REVERTED. `git status --short -- apps/admin/` is empty; zero NEXT_PUBLIC_DEMO or demo-token residue under app/agents/[id]/; tests-review/ and playwright.review.config.ts deleted. Both gates re-verified green after revert."
+  },
+  "blockers": [
+    {
+      "description": "Disk space. C: was at 103 MB free of 115 GB and a git commit failed mid-execution with 'unable to write loose object file'. Reclaimed to ~1.8 GB by clearing user Temp, npm cache, the superseded chromium-1223 Playwright build, and killing the stale dev server that held .next handles open. Still tight for repeated Next builds.",
+      "type": "external",
+      "workaround": "Largest remaining safe reclaims: ~/AppData/Local/pnpm store (666 MB) and apps/admin/node_modules (472 MB), both restorable by `pnpm install`. Do NOT delete ms-playwright/chromium-1228 — that is the build playwright-core@1.61.1 in apps/admin actually uses; chromium-1234 may belong to the sibling `buzz` project."
+    },
+    {
+      "description": "No PostgreSQL server on this machine (postgresql-x64-17 is a stale registration whose ImagePath points at a deleted pg_ctl.exe; verified Test-Path False; nothing on 5432-5435). Blocks the Phase 22 UAT gates and 22-SECURITY.md's live-proof deficit — NOT Phase 23, which needs no live DB.",
+      "type": "external",
+      "workaround": "Install a local PostgreSQL server. Unrelated to finishing Phase 23."
+    },
+    {
+      "description": "tsc --noEmit has ONE pre-existing error at apps/admin/tests/reduced-motion.spec.ts:18 (reducedMotion fixture type mismatch). Untouched since Phase 20 commit 7f64005; confirmed not caused by Phase 23 by removing this phase's files and reproducing it. Logged in the phase's deferred-items.md.",
+      "type": "pre_existing",
+      "workaround": "Out of scope — fixing it requires touching apps/admin/tests/ or playwright.config.ts, both asserted byte-unchanged by 23-03's acceptance criteria."
+    }
+  ],
+  "human_actions_pending": [
+    {"action": "Decide whether 23-09 fixes the six UI findings, or whether they become a follow-up phase", "context": "They are real and specific; 23-09 already owns 'adversarial design review + fixes'.", "blocking": false},
+    {"action": "Free more disk before further Next builds", "context": "~1.8 GB free; a full build plus Playwright run consumes a large fraction of it.", "blocking": false}
+  ],
+  "decisions": [
+    {"decision": "Renamed this phase's requirement ids INT-01..05 -> WIRE-01..05 before execution", "rationale": "REQUIREMENTS.md:324-329 already assigns INT-01..06 to Phase 16's integration adapters. Minting a colliding set in the same breath as the v1.2 audit flagged the OPS-01..06 collision as 'a standing generator' of wrong ticks was indefensible. WIRE- verified unused repo-wide first; Phase 16's ids verified intact after. Commit 7af761d.", "phase": "23"},
+    {"decision": "Waves 3-5 are single-plan on purpose", "rationale": "Each region plan creates its component AND mounts it, so no seam crosses a wave at all — a stronger form of the lesson than 'the later plan owns the wiring', which is the lesson this phase exists because the project failed to apply across phases.", "phase": "23"},
+    {"decision": "OD-6: no browser render spec and no auth short-circuit shipped", "rationale": "Building one needs a demo/Clerk bypass inside production auth. Shipped instead: opsFormat.ts pure functions + a browserless Playwright config + check-ops-room-wiring.mjs. The rendered review was done with a THROWAWAY harness and fully reverted, which is consistent with that decision rather than a reversal of it.", "phase": "23"},
+    {"decision": "STATE.md left stale deliberately during execution", "rationale": "Two Wave-2 executors wrote to it concurrently; state.advance-plan and state.update-progress both failed cleanly. Later executors were instructed not to touch it. It gets one central reconcile at phase end.", "phase": "23"}
+  ],
+  "uncommitted_files": [],
+  "next_action": "Run /gsd-execute-phase 23 --wave 6 to execute 23-09, feeding it the six ui_findings_from_rendered_review above as its input rather than having it re-derive them. Then reconcile STATE.md centrally, run /gsd-secure-phase 23, and re-run /gsd-audit-milestone v1.2.",
+  "context_notes": "Phase 23 is 8/9 plans done and the working tree is clean. check-ops-room-wiring.mjs exits 0 (11/11) for the first time since it was written — every region calls its own Phase 21 endpoint and all three false 'ships in a future release' claims are gone. Python suite 1199 passed / 8 skipped / 0 failed, independently re-run by the orchestrator. apps/api/pyproject.toml and apps/api/alembic/ byte-unchanged across the entire phase; no migration shipped. Widget 8764 bytes against its 20480 ceiling. The bench flywheel (traces.py:84 -> :126 -> :167 -> evals.py:99), complete on the backend since Phase 21 and never once reachable by a human, now has a UI entrance. What remains is 23-09's design pass — and it now has six concrete, evidenced findings from an actual render instead of a blank brief."
+}
