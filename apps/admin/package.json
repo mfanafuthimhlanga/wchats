@@ -9,7 +9,8 @@
     "lint": "next lint",
     "test:e2e": "playwright test",
     "test:unit": "playwright test -c playwright.unit.config.ts",
-    "check:no-dusk-tokens": "node scripts/check-no-dusk-tokens.mjs"
+    "check:no-dusk-tokens": "node scripts/check-no-dusk-tokens.mjs",
+    "check:ops-room-wiring": "node scripts/check-ops-room-wiring.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.3.5",
