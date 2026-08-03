@@ -1,5 +1,5 @@
 'use client'
-import { use, useEffect, useMemo, useState } from 'react'
+import { use, useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@clerk/nextjs'
 import Btn from '../../components/gotham/Btn'
@@ -8,19 +8,25 @@ import EmptyState from '../../components/gotham/EmptyState'
 import Ledger, { LedgerCell, LedgerColHead, LedgerRowHead } from '../../components/gotham/Ledger'
 import { useGate } from '../../components/gotham/GateProvider'
 import { AlertsBanner, type Alert } from './components/AlertsBanner'
+import LivePanel from './components/LivePanel'
+import RetrievalHealthPanel from './components/RetrievalHealthPanel'
 
 /**
  * The agent operations room — `/agents/[id]` (UI-SPEC S6.4, UI2-05, ported
  * from prototypes/gotham/agent.html). Six `.section` regions in a fixed
  * order: Live, Retrieval health, The bench, Judgement, Adversary, The
- * prompt. Four of the six (Live / Retrieval health / The bench / The
- * prompt) have no backing endpoint yet (AGENT-MGMT-GAPS.md) and render an
- * honest `<EmptyState>` — never the prototype's client-side seeded-noise
- * demo data (hardcoded channel/version arrays). Judgement and Adversary
- * wire to the real eval-runs / red-team-runs endpoints; the gatebar derives
- * from real checklist-runs + red-team `deployment_blocked` + a folded
- * `red_team_critical` alert (OQ2) — never a page-local toggle (UI-SPEC S8.6,
- * Pitfall 5).
+ * prompt.
+ *
+ * Live and Retrieval health call their Phase 21 endpoints via
+ * `LivePanel`/`RetrievalHealthPanel` (WIRE-01, 23-05) — never the
+ * prototype's client-side seeded-noise demo data (hardcoded channel/version
+ * arrays). Judgement and Adversary wire to the real eval-runs /
+ * red-team-runs endpoints; the gatebar derives from real checklist-runs +
+ * red-team `deployment_blocked` + a folded `red_team_critical` alert (OQ2)
+ * — never a page-local toggle (UI-SPEC S8.6, Pitfall 5). The bench and The
+ * prompt remain unwired as of this plan and render an honest
+ * `<EmptyState>`; 23-08 and 23-07 wire them respectively, and 23-06
+ * recomputes the Adversary gate/severity inputs from live data.
  */
 
 interface AgentDetail {
@@ -56,6 +62,21 @@ interface EvalRunSummary {
     context_precision: number
     context_recall: number
   }
+}
+
+// OPS-12 ORRERY ledger (evals.py:97-105,182-189) — a SIBLING of eval_runs on
+// the same response, not a per-run field. Always present on a successful
+// response; a suite with zero production-born or zero authored scenarios
+// reports a real 0, never a sentinel (WIRE-02).
+interface EvalLedger {
+  born_in_production_count: number
+  red_team_count: number
+  authored_count: number
+}
+
+interface EvalRunsResponse {
+  eval_runs: EvalRunSummary[]
+  ledger: EvalLedger
 }
 
 // GET /api/v1/agents/{id}/eval-runs/{runId}/results — per-scenario results.
@@ -137,6 +158,27 @@ export default function AgentOperationsRoom({
   const { setGate } = useGate()
   const [alerts, setAlerts] = useState<Alert[]>([])
 
+  // The single error path every operations-room region reports into,
+  // keyed by region id. Live and Retrieval health are the first two
+  // consumers (23-05); the Adversary, prompt and bench regions wire into
+  // this same callback in their own later plans (23-06/07/08), each owning
+  // its own wiring rather than assuming it. One stable identity (empty dep
+  // array, functional updater) so a child effect that lists this callback
+  // in its own deps never re-fires on an unrelated parent render.
+  const [regionErrors, setRegionErrors] = useState<Record<string, string>>({})
+  const setRegionError = useCallback((region: string, message: string | null) => {
+    setRegionErrors((prev) => {
+      if (message === null) {
+        if (!(region in prev)) return prev
+        const next = { ...prev }
+        delete next[region]
+        return next
+      }
+      if (prev[region] === message) return prev
+      return { ...prev, [region]: message }
+    })
+  }, [])
+
   // ---- Agent + documents — preserved verbatim from the prior dusk build --
   const agentQuery = useQuery({
     queryKey: ['agent', id],
@@ -167,6 +209,11 @@ export default function AgentOperationsRoom({
   const loadError = agentQuery.isError
     ? (agentQuery.error as Error).message || 'Failed to load agent. Please refresh.'
     : null
+
+  // The page's one error surface — the agent-load failure plus every
+  // region's own reported failure, folded together rather than each region
+  // owning a second banner (T-23-UI-06).
+  const allErrors = [loadError, ...Object.values(regionErrors)].filter((m): m is string => !!m)
 
   const step1Done =
     !!agent &&
@@ -201,13 +248,13 @@ export default function AgentOperationsRoom({
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      const data = await r.json()
-      return (data.eval_runs ?? []) as EvalRunSummary[]
+      return (await r.json()) as EvalRunsResponse
     },
     enabled: isLoaded && !!isSignedIn && step1Done,
     staleTime: 15_000,
   })
-  const evalRuns = evalRunsQuery.data ?? []
+  const evalRuns = evalRunsQuery.data?.eval_runs ?? []
+  const ledger = evalRunsQuery.data?.ledger ?? null
   const latestEvalRun = evalRuns[0] ?? null
 
   const evalResultsQuery = useQuery({
@@ -362,7 +409,7 @@ export default function AgentOperationsRoom({
         </p>
       </header>
 
-      {loadError && (
+      {allErrors.length > 0 && (
         <div
           role="alert"
           style={{
@@ -375,7 +422,15 @@ export default function AgentOperationsRoom({
             color: 'var(--fail)',
           }}
         >
-          {loadError}
+          {allErrors.length === 1 ? (
+            allErrors[0]
+          ) : (
+            <ul style={{ margin: 0, paddingLeft: '18px' }}>
+              {allErrors.map((message, i) => (
+                <li key={i}>{message}</li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 
@@ -383,26 +438,29 @@ export default function AgentOperationsRoom({
         <AlertsBanner agentId={id} onAlertsChange={setAlerts} />
       )}
 
-      {/* ═══ LIVE ═══════════════════════════════════════════════════════ */}
+      {/* ═══ LIVE — real metrics data (WIRE-01, 23-05) ═════════════════ */}
       <section className="section" aria-labelledby="live-h">
         <div className="section-head">
           <h2 className="label" id="live-h">Live</h2>
         </div>
-        <EmptyState
-          heading="No live telemetry yet"
-          body="Live performance metrics are not available yet."
+        <LivePanel
+          agentId={id}
+          enabled={isLoaded && !!isSignedIn && step1Done}
+          onError={setRegionError}
         />
       </section>
 
-      {/* ═══ RETRIEVAL HEALTH ═══════════════════════════════════════════ */}
+      {/* ═══ RETRIEVAL HEALTH — real retrieval-health data (WIRE-01, 23-05) ═ */}
       <section className="section" aria-labelledby="rag-h">
         <div className="section-head">
           <h2 className="label" id="rag-h">Retrieval health</h2>
           <p className="mono head-count">{documents.length} documents</p>
         </div>
-        <EmptyState
-          heading="No retrieval instrumentation yet"
-          body="Retrieval health instrumentation ships in a future release."
+        <RetrievalHealthPanel
+          agentId={id}
+          documentCount={documents.length}
+          enabled={isLoaded && !!isSignedIn && step1Done}
+          onError={setRegionError}
         />
       </section>
 
@@ -435,7 +493,7 @@ export default function AgentOperationsRoom({
           </Chip>
         )}
 
-        {latestEvalRun ? (
+        {latestEvalRun && ledger ? (
           <>
             <div className="chans">
               <div className="chan">
@@ -459,12 +517,12 @@ export default function AgentOperationsRoom({
               </div>
               <div className="chan">
                 <span className="chan-name">born in production</span>
-                <div className="chan-read"><span className="chan-untracked">not tracked yet</span></div>
+                <div className="chan-read"><span className="num chan-val">{ledger.born_in_production_count}</span></div>
                 <p className="chan-thr">promoted from a trace</p>
               </div>
               <div className="chan">
                 <span className="chan-name">authored</span>
-                <div className="chan-read"><span className="chan-untracked">not tracked yet</span></div>
+                <div className="chan-read"><span className="num chan-val">{ledger.authored_count}</span></div>
                 <p className="chan-thr">written by hand</p>
               </div>
             </div>
