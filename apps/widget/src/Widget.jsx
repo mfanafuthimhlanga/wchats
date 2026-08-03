@@ -12,6 +12,7 @@ import { InputBar } from './components/InputBar.jsx'
 import { AgentCluster } from './components/AgentCluster.jsx'
 import { UserMeta } from './components/UserMeta.jsx'
 import { EmptyState } from './components/EmptyState.jsx'
+import { FeedbackRow } from './components/FeedbackRow.jsx'
 
 export function Widget({ agentId, apiBase }) {
   const [messages, setMessages] = useState([])
@@ -53,7 +54,7 @@ export function Widget({ agentId, apiBase }) {
         onToolCall: (p) => { setStatus('tool_call'); setToolCallText(p.tool_name) },
         onToolResult: () => setStatus('thinking'),
         onResponse: (p) => {
-          setMessages(m => [...m, { role: 'agent', text: p.text, citations: p.citations }])
+          setMessages(m => [...m, { role: 'agent', text: p.text, citations: p.citations, message_id: p.message_id }])
           if (p.conversation_id) setConversationId(p.conversation_id)
           setStatus('idle')
         },
@@ -80,6 +81,7 @@ export function Widget({ agentId, apiBase }) {
               ? <AgentCluster agentName={agentName}>
                   <MessageBubble role="agent" text={m.text} />
                   <CitationRow citations={m.citations} />
+                  <FeedbackRow apiBase={apiBase} agentId={agentId} messageId={m.message_id} conversationId={conversationId} />
                 </AgentCluster>
               : <div style="display:flex;flex-direction:column;align-items:flex-end;">
                   <MessageBubble role="user" text={m.text} />
