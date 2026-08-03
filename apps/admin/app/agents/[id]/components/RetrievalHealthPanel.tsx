@@ -135,6 +135,19 @@ export default function RetrievalHealthPanel({
         <p className="foot-note">{renderRetrievalAverageCell(data.avg_ctx_window_utilization)}</p>
       ) : (
         <>
+          {/* 23-09 adversarial review (UI-3): this fill used var(--live), which
+              is not one of GOTHAM's reserved --live usages (20-UI-SPEC.md §4) —
+              it is a passive measurement, not a verdict. --live also inherits
+              --seal (red) site-wide whenever the deploy gate is blocked
+              (globals.css :root[data-gate="blocked"]), which painted a healthy
+              7.1% utilisation reading in alarm-red during the rendered review.
+              --ink-2 is bone-neutral and untouched by the gate cascade, so the
+              bar now stays a plain instrument reading regardless of gate
+              state, matching the fix hint: "bone/neutral unless it crosses a
+              defined threshold" (no threshold is defined for this reading). */}
+          <p className="mono help" style={{ marginBottom: 6 }}>
+            {formatPercent(Math.min(1, Math.max(0, data.avg_ctx_window_utilization)))} of the context window
+          </p>
           <div
             role="progressbar"
             aria-label="Context window utilisation"
@@ -152,14 +165,30 @@ export default function RetrievalHealthPanel({
               style={{
                 height: '100%',
                 width: formatPercent(Math.min(1, Math.max(0, data.avg_ctx_window_utilization))),
-                background: 'var(--live)',
+                background: 'var(--ink-2)',
               }}
             />
           </div>
-          <p className="mono help">
-            {renderRetrievalAverageCell(data.avg_retrieved_tokens, formatInteger)} tokens retrieved ·{' '}
-            {renderRetrievalAverageCell(data.avg_carried_never_cited_tokens, formatInteger)} carried but never cited
-          </p>
+          {/* 23-09 adversarial review: avg_retrieved_tokens and
+              avg_carried_never_cited_tokens are independently-typed sentinel
+              unions. renderRetrievalAverageCell returns a full sentence
+              ("No queries in this window yet.") for the sentinel case, built
+              to REPLACE a value, not fill a numeral slot mid-sentence —
+              interpolating that sentence into "{sentence} tokens retrieved ·
+              {n} carried but never cited" would read as a broken composite.
+              Both fields share the same underlying zero-rows cause as
+              avg_ctx_window_utilization (retrieval_metrics_service.py's one
+              query populates the whole avg_* group together), so this guards
+              the whole line rather than trusting that lockstep at the type
+              level. */}
+          {isRetrievalSentinel(data.avg_retrieved_tokens) || isRetrievalSentinel(data.avg_carried_never_cited_tokens) ? (
+            <p className="mono help">No queries in this window yet.</p>
+          ) : (
+            <p className="mono help">
+              {renderRetrievalAverageCell(data.avg_retrieved_tokens, formatInteger)} tokens retrieved ·{' '}
+              {renderRetrievalAverageCell(data.avg_carried_never_cited_tokens, formatInteger)} carried but never cited
+            </p>
+          )}
         </>
       )}
 
@@ -236,8 +265,14 @@ export default function RetrievalHealthPanel({
             <Chip verdict={driftDetected ? 'fail' : 'pass'}>{driftDetected ? 'Drift detected' : 'No drift'}</Chip>
             <span className="label">Embedding drift</span>
           </div>
-          <div className="sev-cell">
-            <span className="mono sev-n">{data.index_staleness.current_embedding_model}</span>
+          <div className="sev-cell" style={{ minWidth: 0 }}>
+            {/* 23-09 adversarial review: no wrap guard existed on this
+                identifier string; defensively guarded against overflow at
+                narrow widths rather than trusting every embedding model
+                name to contain a soft-wrap-friendly hyphen. */}
+            <span className="mono sev-n" style={{ overflowWrap: 'break-word' }}>
+              {data.index_staleness.current_embedding_model}
+            </span>
             <span className="label">Embedding model</span>
           </div>
         </div>

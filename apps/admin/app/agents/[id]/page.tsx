@@ -139,6 +139,15 @@ function formatDateTime(iso: string | null | undefined): string {
   return new Date(iso).toISOString().slice(0, 16).replace('T', ' ')
 }
 
+// A count noun with the correct plural, e.g. `pluralize(1, 'document')` ->
+// "1 document", `pluralize(2, 'document')` -> "2 documents". Adversarial
+// review (23-09) found "1 documents" and "1 scenarios" both hardcoded
+// plural — this is the single helper both call sites share instead of two
+// independent inline ternaries drifting apart.
+function pluralize(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`
+}
+
 // Maps the coarse `source` enum (D-13/D-16 LOCKED) to the Origin column copy.
 // No trace-id linkage is returned by the results endpoint (fine-grained
 // provenance is Phase 21 OPS-12) — this never invents one.
@@ -164,6 +173,15 @@ export default function AgentOperationsRoom({
   // this page's gate computation and that component's severity tiles read
   // the identical array rather than two fetches that can disagree.
   const [openFindings, setOpenFindings] = useState<OpenFinding[]>([])
+  // Whether AdversaryPanel's own programme query actually returned coverage
+  // data — lifted the same way, so the section head's "no programme run
+  // yet" / "last programme ..." choice reads the SAME source the body
+  // renders from. 23-09 adversarial review (UI-1): before this fix the
+  // header derived its answer from the separate red-team-runs history
+  // query while the body derived from the programme query, and the two can
+  // disagree — the header said "no programme run yet" while the body
+  // showed a full coverage table and open findings underneath it.
+  const [hasProgrammeData, setHasProgrammeData] = useState(false)
 
   // The single error path every operations-room region reports into,
   // keyed by region id. Live and Retrieval health are the first two
@@ -307,7 +325,12 @@ export default function AgentOperationsRoom({
   // these locals instead of re-deriving from the row a second time.
   const { finished_at: lastRedTeamFinishedAt = null, started_at: lastRedTeamStartedAt = null } =
     latestRedTeamRun ?? {}
-  const hasProgrammeRun = latestRedTeamRun !== null
+  // Display fact only (OD-4) — the timestamp shown beside "last programme"
+  // once hasProgrammeData (above) says there is one. Never a presence
+  // check on its own: a programme can have coverage data with no matching
+  // run-history row (a different table), which is exactly the case UI-1
+  // surfaced.
+  const lastProgrammeTimestamp = lastRedTeamFinishedAt ?? lastRedTeamStartedAt
 
   const runRedTeam = useMutation({
     mutationFn: async () => {
@@ -388,7 +411,12 @@ export default function AgentOperationsRoom({
             <h1>{agent?.name ?? 'Loading agent…'}</h1>
             <p className="sub">
               {agent?.role || 'Agent'}
-              {agent ? ` · Serving since ${formatDate(agent.created_at)}` : ''}
+              {/* 23-09 adversarial review (UI-5): an unknown created_at rendered
+                  "Serving since —", an em-dash in the middle of a sentence that
+                  reads as broken data rather than absent data. The three-state
+                  law applies here too — omit the whole clause rather than assert
+                  a date this page does not have. */}
+              {agent && agent.created_at ? ` · Serving since ${formatDate(agent.created_at)}` : ''}
             </p>
           </div>
           <div className="ident">
@@ -464,7 +492,7 @@ export default function AgentOperationsRoom({
       <section className="section" aria-labelledby="rag-h">
         <div className="section-head">
           <h2 className="label" id="rag-h">Retrieval health</h2>
-          <p className="mono head-count">{documents.length} documents</p>
+          <p className="mono head-count">{pluralize(documents.length, 'document')}</p>
         </div>
         <RetrievalHealthPanel
           agentId={id}
@@ -492,7 +520,9 @@ export default function AgentOperationsRoom({
           <h2 className="label" id="judge-h">Judgement</h2>
           <p className="mono head-count">
             {latestEvalRun
-              ? `run ${formatDateTime(latestEvalRun.started_at)} · ${latestEvalRun.scenario_count} scenarios`
+              ? latestEvalRun.started_at
+                ? `run ${formatDateTime(latestEvalRun.started_at)} · ${pluralize(latestEvalRun.scenario_count, 'scenario')}`
+                : pluralize(latestEvalRun.scenario_count, 'scenario')
               : 'no runs yet'}
           </p>
         </div>
@@ -557,7 +587,13 @@ export default function AgentOperationsRoom({
                         <LedgerCell className="dim mono">not tracked yet</LedgerCell>
                         <LedgerCell className="verdict">
                           <Chip verdict={res.passed ? 'pass' : 'fail'}>
-                            {res.scores.faithfulness.toFixed(2)}
+                            {/* 23-09 adversarial review (UI-6): this read had no
+                                optional chaining. A scenario result missing its
+                                nested `scores` object threw here with nothing
+                                catching it — no error.tsx exists anywhere under
+                                apps/admin/app — which blanked the whole page to
+                                "This page couldn't load," not just this cell. */}
+                            {res.scores?.faithfulness != null ? res.scores.faithfulness.toFixed(2) : '—'}
                           </Chip>
                         </LedgerCell>
                       </tr>
@@ -584,8 +620,10 @@ export default function AgentOperationsRoom({
         <div className="section-head">
           <h2 className="label" id="adv-h">Adversary</h2>
           <p className="mono head-count">
-            {hasProgrammeRun
-              ? `last programme ${formatDateTime(lastRedTeamFinishedAt ?? lastRedTeamStartedAt)}`
+            {hasProgrammeData
+              ? lastProgrammeTimestamp
+                ? `last programme ${formatDateTime(lastProgrammeTimestamp)}`
+                : 'programme data available'
               : 'no programme run yet'}
           </p>
         </div>
@@ -595,6 +633,7 @@ export default function AgentOperationsRoom({
           enabled={isLoaded && !!isSignedIn && step1Done}
           onError={setRegionError}
           onOpenFindingsChange={setOpenFindings}
+          onCoverageChange={setHasProgrammeData}
         />
 
         <div className="prompt-acts">
@@ -677,7 +716,12 @@ const PAGE_CSS = `
     border: 1px solid color-mix(in oklch, var(--seal) 32%, transparent);
     border-radius: var(--r-panel);
     padding: 14px 16px;
-    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    /* flex-start, not center (23-09 adversarial review): once the contain
+       action's staged confirm expands to a multi-line question plus two
+       buttons, centering against that taller sibling pulls the chip and
+       description text down into an odd mid-row float. Top-aligned reads
+       correctly in both the resting and staged states. */
+    display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap;
   }
   .critical p { flex: 1; min-width: 220px; font-size: 13.5px; margin: 0; }
   .critical .mono { font-size: 11px; color: var(--ink-2); }

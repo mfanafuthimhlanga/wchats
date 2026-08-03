@@ -31,6 +31,15 @@ import {
  * caption would read as two confirmations where there is one measurement.
  */
 
+// `pluralize(1, 'day')` -> "1 day", `pluralize(7, 'day')` -> "7 days".
+// window_days is a general int on the response (not hardcoded to 7), so a
+// bare template literal here would read "last 1 days" once a per-agent
+// window selector ships — 23-09 adversarial review flagged the same class
+// of bug already fixed in page.tsx for "documents"/"scenarios".
+function pluralize(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`
+}
+
 interface AgentMetricsResponse {
   containment: number | typeof METRICS_SENTINEL
   deflection: number | typeof METRICS_SENTINEL
@@ -84,15 +93,24 @@ export default function LivePanel({
   const data = metricsQuery.data
   const windowDays = data?.window_days ?? 7
 
+  // 23-09 adversarial review: 23-UI-SPEC.md §4.1 locks the pre-data shell
+  // as "`--` mono placeholders (matching `.metrics .pending` treatment
+  // already established at globals.css:387)" — two ASCII hyphens, the
+  // established loading-shell glyph elsewhere in this codebase, not a
+  // typographic em-dash. This single constant is shared by every cell
+  // below so the nine call sites cannot drift onto two different
+  // characters again.
+  const PENDING = '--'
+
   return (
     <>
-      <p className="mono head-count">{data ? `last ${windowDays} days` : '—'}</p>
+      <p className="mono head-count">{data ? `last ${pluralize(windowDays, 'day')}` : PENDING}</p>
       <div className="chans">
         <div className="chan">
           <span className="chan-name">sessions</span>
           <div className="chan-read">
             <span className="num chan-val">
-              {data ? renderLiveMetricCell(data.sample_size, windowDays, formatInteger) : '—'}
+              {data ? renderLiveMetricCell(data.sample_size, windowDays, formatInteger) : PENDING}
             </span>
           </div>
         </div>
@@ -100,7 +118,7 @@ export default function LivePanel({
           <span className="chan-name">containment</span>
           <div className="chan-read">
             <span className="num chan-val">
-              {data ? renderLiveMetricCell(data.containment, windowDays, formatPercent) : '—'}
+              {data ? renderLiveMetricCell(data.containment, windowDays, formatPercent) : PENDING}
             </span>
           </div>
         </div>
@@ -108,7 +126,7 @@ export default function LivePanel({
           <span className="chan-name">deflection</span>
           <div className="chan-read">
             <span className="num chan-val">
-              {data ? renderLiveMetricCell(data.deflection, windowDays, formatPercent) : '—'}
+              {data ? renderLiveMetricCell(data.deflection, windowDays, formatPercent) : PENDING}
             </span>
           </div>
           <p className="chan-thr">Same signal as containment until an independent measure ships.</p>
@@ -117,7 +135,7 @@ export default function LivePanel({
           <span className="chan-name">escalation to human</span>
           <div className="chan-read">
             <span className="num chan-val">
-              {data ? renderLiveMetricCell(data.escalation_rate, windowDays, formatPercent) : '—'}
+              {data ? renderLiveMetricCell(data.escalation_rate, windowDays, formatPercent) : PENDING}
             </span>
           </div>
         </div>
@@ -125,7 +143,7 @@ export default function LivePanel({
           <span className="chan-name">CSAT</span>
           <div className="chan-read">
             <span className="num chan-val">
-              {data ? renderLiveMetricCell(data.csat_avg, windowDays, formatCsatScore) : '—'}
+              {data ? renderLiveMetricCell(data.csat_avg, windowDays, formatCsatScore) : PENDING}
             </span>
           </div>
         </div>
@@ -133,7 +151,7 @@ export default function LivePanel({
           <span className="chan-name">thumbs down</span>
           <div className="chan-read">
             <span className="num chan-val">
-              {data ? renderLiveMetricCell(data.thumbs_down_rate, windowDays, formatPercent) : '—'}
+              {data ? renderLiveMetricCell(data.thumbs_down_rate, windowDays, formatPercent) : PENDING}
             </span>
           </div>
         </div>
@@ -141,7 +159,7 @@ export default function LivePanel({
           <span className="chan-name">p95 latency</span>
           <div className="chan-read">
             <span className="num chan-val">
-              {data ? renderLiveMetricCell(data.p95_latency_ms, windowDays, formatMilliseconds) : '—'}
+              {data ? renderLiveMetricCell(data.p95_latency_ms, windowDays, formatMilliseconds) : PENDING}
             </span>
           </div>
         </div>
@@ -149,7 +167,7 @@ export default function LivePanel({
           <span className="chan-name">cost / session</span>
           <div className="chan-read">
             <span className="num chan-val">
-              {data ? renderLiveMetricCell(data.cost_per_session, windowDays, formatDollars) : '—'}
+              {data ? renderLiveMetricCell(data.cost_per_session, windowDays, formatDollars) : PENDING}
             </span>
           </div>
         </div>

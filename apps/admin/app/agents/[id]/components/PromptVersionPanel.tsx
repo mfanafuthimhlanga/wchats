@@ -373,8 +373,23 @@ export default function PromptVersionPanel({
             <p className="foot-note">Fetching the comparison…</p>
           )}
 
-          {diffData && (
-            <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* 23-09 adversarial review (finding 21): picking the same version
+              for both sides used to leave the LAST successfully-fetched
+              (different-pair) diff on screen with nothing indicating it no
+              longer matched the current selection — react-query keeps prior
+              `data` once a query goes `enabled: false`, it doesn't clear it.
+              Gating the render on diffEnabled (not just diffData) plus this
+              explicit message closes that gap honestly. */}
+          {!diffEnabled && sideA && sideB && sideA === sideB && (
+            <p className="foot-note">Select two different versions to compare.</p>
+          )}
+
+          {diffEnabled && diffData && (
+            <div
+              role="status"
+              aria-live="polite"
+              style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 14 }}
+            >
               {SOUL_FIELD_ROWS.map(({ key, label }) => {
                 const field = diffData.fields[key]
                 return (
@@ -430,6 +445,19 @@ function VersionActions({
 }) {
   const [staged, setStaged] = useState<'canary' | 'rollback' | null>(null)
   const [percent, setPercent] = useState<number>(version.canary_percent ?? 0)
+  // 23-09 adversarial review (finding 20): this component is keyed by
+  // version.id (page-stable across refetches), so useState's initializer
+  // only ran once. Setting a canary on one version demotes any prior
+  // canary elsewhere server-side — the Ledger row for the demoted version
+  // correctly re-renders from the refetched `canary_percent` prop, but this
+  // input's local `percent` never re-synced, silently disagreeing with the
+  // Ledger cell sitting right next to it. Re-sync whenever the server value
+  // actually changes; an in-progress edit is untouched otherwise, since the
+  // effect only re-fires when this specific version's own canary_percent
+  // changes, not on every refetch.
+  useEffect(() => {
+    setPercent(version.canary_percent ?? 0)
+  }, [version.canary_percent])
   const isBusy = busy !== null
   const canaryQuestionId = `version-${version.id}-canary-confirm-q`
   const rollbackQuestionId = `version-${version.id}-rollback-confirm-q`
@@ -452,7 +480,7 @@ function VersionActions({
           <input
             type="number"
             min={0}
-            max="100"
+            max={100}
             step={1}
             value={percent}
             disabled={isBusy}

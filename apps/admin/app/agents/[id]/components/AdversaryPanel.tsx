@@ -12,6 +12,7 @@ import {
   firstCriticalFinding,
   formatInteger,
   formatPercent,
+  gateMessage,
 } from './opsFormat'
 
 /**
@@ -71,11 +72,18 @@ export default function AdversaryPanel({
   enabled,
   onError,
   onOpenFindingsChange,
+  onCoverageChange,
 }: {
   agentId: string
   enabled: boolean
   onError: (region: string, message: string | null) => void
   onOpenFindingsChange: (findings: OpenFinding[]) => void
+  /** 23-09 adversarial review (UI-1): lifted so the page's section head can
+   * render "no programme run yet" / "last programme ..." from the SAME
+   * query this panel's own body renders from, instead of the separate
+   * red-team-runs history query the header used before this fix — the two
+   * can disagree, and did, in the rendered review that found this. */
+  onCoverageChange: (hasCoverage: boolean) => void
 }) {
   const { getToken } = useAuth()
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || ''
@@ -135,6 +143,16 @@ export default function AdversaryPanel({
   useEffect(() => {
     onOpenFindingsChange(openFindings)
   }, [openFindings, onOpenFindingsChange])
+
+  // Lifted alongside openFindings, same idiom: only fires once the query
+  // has actually resolved, so the page's header keeps its own "no
+  // programme run yet" default while this panel is still fetching rather
+  // than flashing a premature answer.
+  useEffect(() => {
+    if (data) {
+      onCoverageChange(data.coverage.length > 0)
+    }
+  }, [data, onCoverageChange])
 
   const containMutation = useMutation({
     mutationFn: async (findingId: string) => {
@@ -251,7 +269,14 @@ export default function AdversaryPanel({
             <tr>
               <LedgerColHead>Strategy</LedgerColHead>
               <LedgerColHead numeric>Probes tested</LedgerColHead>
-              <LedgerColHead numeric>Findings</LedgerColHead>
+              {/* 23-09 adversarial review: the caption already explains this
+                  column is all-time/all-status, but Ledger's caption is
+                  always visually hidden (screen-reader only) — a sighted
+                  operator saw only the bare word "Findings" next to a
+                  three-row severity summary above it and could easily read
+                  it as "open findings." "All findings" disambiguates without
+                  using the specific phrase 23-UI-SPEC.md says not to use. */}
+              <LedgerColHead numeric>All findings</LedgerColHead>
               <LedgerColHead numeric>High severity</LedgerColHead>
               <LedgerColHead numeric>Attack success rate</LedgerColHead>
             </tr>
@@ -280,8 +305,28 @@ export default function AdversaryPanel({
         <div className="critical">
           <Chip verdict="seal">Critical</Chip>
           <p>
-            {critical.description}
-            <span className="mono"> {critical.attack_vector} · turn {critical.turn_count}</span>
+            {/* 23-09 adversarial review (finding 15): description,
+                attack_vector and turn_count are all typed nullable
+                (OpenFinding, opsFormat.ts) — description can miss its JSONB
+                correlation, attack_vector/turn_count come straight from the
+                findings table's own nullable columns. This banner rendered
+                all three raw with no fallback, so a null description could
+                blank the single most consequential sentence on this page
+                (the one explaining the deployment block) while the metadata
+                span below it rendered a stray " · turn 4" with no vector, or
+                "prompt_injection · turn " with no count. gateMessage() is
+                the same locked fallback (OD-5) the page's own gatebar
+                already uses for this exact situation — reused here rather
+                than inventing a second apologetic string. attack_vector's
+                fallback matches FindingContain's own aria-label three lines
+                below, which already guarded it; turn_count's clause is
+                omitted entirely rather than rendered empty. */}
+            {gateMessage(critical)}
+            <span className="mono">
+              {' '}
+              {critical.attack_vector ?? 'unrecorded attack vector'}
+              {critical.turn_count != null ? ` · turn ${critical.turn_count}` : ''}
+            </span>
           </p>
           <FindingContain
             finding={critical}
@@ -299,7 +344,11 @@ export default function AdversaryPanel({
               key={f.id}
               style={{
                 display: 'flex',
-                alignItems: 'center',
+                // flex-start, not center (23-09 adversarial review): the same
+                // reasoning as the .critical banner above — a staged contain
+                // confirmation is taller than the resting Chip/description
+                // and centering against it misaligns the shorter siblings.
+                alignItems: 'flex-start',
                 gap: 14,
                 flexWrap: 'wrap',
                 padding: '12px 0',
@@ -308,10 +357,15 @@ export default function AdversaryPanel({
             >
               <Chip verdict={f.severity === 'critical' ? 'seal' : 'mute'}>{f.severity}</Chip>
               <p style={{ flex: 1, minWidth: 220, fontSize: 13.5, margin: 0, color: 'var(--ink-2)' }}>
-                {f.description}
+                {/* Same null-guard as the critical banner above (finding 15).
+                    This list's findings are not necessarily critical, so
+                    gateMessage()'s "a blocking signal is open" text would be
+                    inaccurate here — a plain, honest fallback instead. */}
+                {f.description || 'No description recorded.'}
                 <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
                   {' '}
-                  {f.attack_vector} · turn {f.turn_count}
+                  {f.attack_vector ?? 'unrecorded attack vector'}
+                  {f.turn_count != null ? ` · turn ${f.turn_count}` : ''}
                 </span>
               </p>
               <FindingContain

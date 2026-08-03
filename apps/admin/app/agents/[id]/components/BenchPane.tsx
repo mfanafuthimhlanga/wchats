@@ -24,11 +24,12 @@ import { judgeVerdictToChip, gradeToChip } from './opsFormat'
  * roving tab index, arrow/Home/End moving both selection and focus together,
  * and the P/H/X grade shortcuts acting on the selected trace from anywhere
  * within the region. Filing is irrevocable (TERRARIUM law, traces.py:142-145)
- * and the three grade actions are deliberately unstaged, per the approved
- * design contract (23-UI-SPEC.md S4.3) — no confirmation ships in this
- * region, so the "confirmation open" guard the plan's threat register names
- * has nothing to check; see confirmationOpen below for why that is
- * documented rather than silently dropped.
+ * and, since the 23-09 adversarial design review, stages behind the same
+ * `.cap-confirm` shape Adversary's Contain action uses (see
+ * stagedFileTraceId/confirmationOpen below) — Hold and Dismiss stay
+ * immediate, single-click actions. §4.3 was silent on this, not opposed to
+ * it: it locks the post-filed disabled state, not whether filing itself
+ * confirms.
  */
 
 interface Trace {
@@ -123,7 +124,14 @@ export default function BenchPane({
   // tabIndex 0.
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const effectiveSelectedId = selectedId ?? traces[0]?.trace_id ?? null
-  const selectedTrace = traces.find((t) => t.trace_id === effectiveSelectedId) ?? null
+  // 23-09 adversarial review (finding 26): list_failing_traces has no
+  // upper-bound guarantee for a previously-selected trace — it is capped at
+  // `limit` (50) rows, so a trace can fall out of a later refetch as new
+  // failing traces accumulate even though grading itself never removes a
+  // row. Falling back to the first trace (rather than `?? null`) means a
+  // stale id never blanks the enlarger while traces genuinely still exist.
+  const selectedTrace =
+    traces.find((t) => t.trace_id === effectiveSelectedId) ?? traces[0] ?? null
 
   const optionRefs = useRef<Record<string, HTMLButtonElement | null>>({})
 
@@ -146,6 +154,19 @@ export default function BenchPane({
   )
 
   const [liveMessage, setLiveMessage] = useState('')
+
+  // 23-09 adversarial review (UI-2): File is server-enforced irrevocable
+  // (bench_service.py refuses any transition away from 'filed', the route
+  // answers 409) exactly like Adversary's Contain action, which correctly
+  // got a staged .cap-confirm in 23-06. File shipped without one — all
+  // three grade buttons rendered as equal-weight, immediately-firing
+  // controls, so the one-way action was the easiest to hit by accident.
+  // Keyed by trace id (not a bare boolean) so switching traces can never
+  // leave a stale confirmation open against the wrong trace.
+  const [stagedFileTraceId, setStagedFileTraceId] = useState<string | null>(null)
+  useEffect(() => {
+    setStagedFileTraceId(null)
+  }, [effectiveSelectedId])
 
   const gradeMutation = useMutation({
     mutationFn: async ({ traceId, grade }: { traceId: string; grade: Grade }) => {
@@ -249,17 +270,17 @@ export default function BenchPane({
     moveSelection(traces[nextIndex].trace_id)
   }
 
-  // No staged confirmation ships anywhere in this region — file/hold/
-  // dismiss are plain, unstaged actions by the approved design contract
-  // (23-UI-SPEC.md S4.3: "Do not add a confirmation here; a planner does
-  // not redesign an approved contract"). The plan's threat register still
-  // names "a confirmation is open anywhere in the region" as a fourth
-  // shortcut guard alongside the modifier/form-control/already-filed ones.
-  // With no staged UI in this build there is nothing that can ever be
-  // open, so this constant is the honest, structural form of that guard:
-  // always false, never a state that changes, and never a condition the
-  // shortcut can be blocked by in error.
-  const confirmationOpen = false
+  // 23-09 adversarial review (UI-2) added File's staged confirmation (see
+  // stagedFileTraceId above) — the 23-08-PLAN.md action text that
+  // originally left this at a hardcoded `false` cited "23-UI-SPEC.md S4.3:
+  // do not add a confirmation here," but §4.3 never actually says that; it
+  // only describes the post-filed disabled state and is silent on whether
+  // filing itself stages. The plan's own threat register already named "a
+  // confirmation is open anywhere in the region" as a fourth shortcut
+  // guard, anticipating exactly this — it is now wired to the real state
+  // instead of a constant, so P/H/X cannot fire while the file question is
+  // on screen.
+  const confirmationOpen = stagedFileTraceId !== null
 
   const handleBenchKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const grade = GRADE_KEYS[e.key.toLowerCase()]
@@ -334,7 +355,9 @@ export default function BenchPane({
                   font: 'inherit',
                 }}
               >
-                <span style={{ fontSize: 13.5, lineHeight: 1.4 }}>{firstLine(trace.customer_turn)}</span>
+                <span style={{ fontSize: 13.5, lineHeight: 1.4, overflowWrap: 'break-word' }}>
+                  {firstLine(trace.customer_turn)}
+                </span>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8 }} aria-hidden="true">
                   <Chip verdict={judgeVerdictToChip(trace.verdict)}>{trace.verdict}</Chip>
                   {isGraded && (
@@ -353,21 +376,45 @@ export default function BenchPane({
           {selectedTrace && (
             <>
               <p className="label">Customer</p>
-              <p style={{ fontSize: 13.5, lineHeight: 1.55, color: 'var(--ink)', whiteSpace: 'pre-wrap' }}>
+              {/* 23-09 adversarial review (finding 24): the PAGE_CSS comment on
+                  .bench-panes claims a long unbroken customer_turn string
+                  "cannot force the grid wider than its container," but that
+                  comment describes min-width: 0 on the grid TRACK, which
+                  stops the track from being forced wider — it does nothing
+                  once the track is sized, to stop an unbroken run of text
+                  from overflowing past its own box. pre-wrap alone does not
+                  force-break a token with no whitespace. overflowWrap does. */}
+              <p
+                style={{
+                  fontSize: 13.5,
+                  lineHeight: 1.55,
+                  color: 'var(--ink)',
+                  whiteSpace: 'pre-wrap',
+                  overflowWrap: 'break-word',
+                }}
+              >
                 {selectedTrace.customer_turn || 'No customer turn recorded.'}
               </p>
 
               <p className="label" style={{ marginTop: 16 }}>
                 Agent
               </p>
-              <p style={{ fontSize: 13.5, lineHeight: 1.55, color: 'var(--ink)', whiteSpace: 'pre-wrap' }}>
+              <p
+                style={{
+                  fontSize: 13.5,
+                  lineHeight: 1.55,
+                  color: 'var(--ink)',
+                  whiteSpace: 'pre-wrap',
+                  overflowWrap: 'break-word',
+                }}
+              >
                 {selectedTrace.agent_turn || 'No agent turn recorded.'}
               </p>
 
               <p className="label" style={{ marginTop: 16 }}>
                 Judge
               </p>
-              <p className="voice" style={{ whiteSpace: 'pre-wrap' }}>
+              <p className="voice" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
                 {selectedTrace.judge_rationale || 'No rationale recorded.'}
               </p>
 
@@ -377,33 +424,84 @@ export default function BenchPane({
                 </p>
               )}
 
-              <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
-                {GRADE_ORDER.map((grade) => {
-                  const traceId = selectedTrace.trace_id
-                  const isFiled = selectedTrace.graded_status === 'filed'
-                  const busyGrade = busy[traceId]
-                  const isBusy = busyGrade !== undefined
-                  const label = !isFiled && busyGrade === grade ? GRADE_BUSY_LABEL[grade] : GRADE_LABEL[grade]
-                  return (
-                    <Btn
-                      key={grade}
-                      variant="ghost"
-                      disabled={isBusy}
-                      aria-disabled={isFiled || undefined}
-                      className={isFiled ? 'is-disabled' : undefined}
-                      onClick={() => {
-                        if (!isFiled) handleGrade(traceId, grade)
-                      }}
-                    >
-                      {label}
-                    </Btn>
-                  )
-                })}
-              </div>
+              {(() => {
+                const traceId = selectedTrace.trace_id
+                const isFiled = selectedTrace.graded_status === 'filed'
+                const busyGrade = busy[traceId]
+                const isBusy = busyGrade !== undefined
+                const isFileStaged = stagedFileTraceId === traceId
+                const filedNoteId = `trace-${traceId}-filed-note`
+                const fileQuestionId = `trace-${traceId}-file-confirm-q`
+                return (
+                  <>
+                    <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
+                      {GRADE_ORDER.map((grade) => {
+                        const label =
+                          !isFiled && busyGrade === grade ? GRADE_BUSY_LABEL[grade] : GRADE_LABEL[grade]
+                        return (
+                          <Btn
+                            key={grade}
+                            variant="ghost"
+                            // Staging blocks the whole row, not just File —
+                            // grading Hold/Dismiss while the file question is
+                            // still on screen would answer a question the
+                            // operator hasn't resolved yet.
+                            disabled={isBusy || isFileStaged}
+                            aria-disabled={isFiled || undefined}
+                            aria-describedby={isFiled ? filedNoteId : undefined}
+                            className={isFiled ? 'is-disabled' : undefined}
+                            onClick={() => {
+                              if (isFiled) return
+                              // 23-09 adversarial review (UI-2): File is the
+                              // one irrevocable grade (409 on any re-grade
+                              // attempt, server-enforced) — it now stages
+                              // exactly like Adversary's Contain action
+                              // instead of firing on the first click.
+                              if (grade === 'filed') {
+                                setStagedFileTraceId(traceId)
+                                return
+                              }
+                              handleGrade(traceId, grade)
+                            }}
+                          >
+                            {label}
+                          </Btn>
+                        )
+                      })}
+                    </div>
 
-              {selectedTrace.graded_status === 'filed' && (
-                <p className="help">This trace has been filed. It cannot be re-graded.</p>
-              )}
+                    {isFileStaged && (
+                      <div className="cap-confirm">
+                        <p className="cap-confirm-q" id={fileQuestionId}>
+                          File this trace? It cannot be re-graded afterward.
+                        </p>
+                        <div className="cap-confirm-actions">
+                          <Btn
+                            variant="ghost"
+                            autoFocus
+                            aria-describedby={fileQuestionId}
+                            onClick={() => {
+                              setStagedFileTraceId(null)
+                              handleGrade(traceId, 'filed')
+                            }}
+                          >
+                            Yes, file
+                          </Btn>
+                          <Btn variant="ghost" onClick={() => setStagedFileTraceId(null)}>
+                            Cancel
+                          </Btn>
+                        </div>
+                      </div>
+                    )}
+
+                    {isFiled && (
+                      <p className="help" id={filedNoteId}>
+                        This trace has been filed. It cannot be re-graded.
+                      </p>
+                    )}
+                  </>
+                )
+              })()}
             </>
           )}
         </div>
