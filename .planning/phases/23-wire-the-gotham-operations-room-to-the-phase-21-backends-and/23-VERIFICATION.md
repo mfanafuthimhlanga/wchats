@@ -130,7 +130,21 @@ Scope discipline held: exactly 19 files changed phase-wide (`git diff --stat 5bd
 | `cd apps/widget && npm run build && node scripts/check-size.mjs` | orchestrator, earlier this session | `Bundle size OK: 8968 bytes` | PASS (observed) |
 | `npx playwright test` (113 e2e), `pytest tests/unit` (1199 backend) | — | NOT re-run by orchestrator or verifier — taken from the executor's recorded output. `apps/api` is byte-unchanged across the phase, so the backend count is inherited rather than newly claimed. | SKIP (see Human Verification) |
 
-> **Toolchain note.** The four rows marked *(observed)* were run with `node_modules` present, earlier in this same session. An out-of-band disk cleanup subsequently removed `apps/admin/node_modules`, `apps/widget/node_modules`, `apps/api/.venv` and `.next` (free space moved 665 MB → 8.9 GB). No git-tracked file was lost and the pnpm store survived, so `pnpm install` restores the state these rows were observed in. The verifier's own report was written *after* that sweep, which is why it recorded them as un-runnable.
+> **Toolchain note.** The four rows marked *(observed)* were run with `node_modules` present, earlier in this same session. An out-of-band disk cleanup subsequently removed `apps/admin/node_modules`, `apps/widget/node_modules`, `apps/api/.venv` and `.next` (free space moved 665 MB → 8.9 GB). No git-tracked file was lost and the pnpm store survived. The verifier's own report was written *after* that sweep, which is why it recorded them as un-runnable.
+>
+> **Toolchain restored and gates re-reproduced (2026-08-04, after the verifier ran).** `apps/admin` and `apps/widget` were reinstalled from the surviving pnpm store via `corepack pnpm install --frozen-lockfile` (both exit 0). All frontend gates were then re-run on the rebuilt toolchain and reproduced the pre-sweep numbers **exactly**:
+>
+> | gate | pre-sweep | post-restore |
+> |---|---|---|
+> | `npx tsc --noEmit` | 1 pre-existing error, 0 new | identical — `tests/reduced-motion.spec.ts:18` only |
+> | `npx playwright test -c playwright.unit.config.ts` | 45 passed | 45 passed |
+> | `cd apps/widget && npm run build && node scripts/check-size.mjs` | 8968 bytes | 8968 bytes |
+> | `node scripts/check-ops-room-wiring.mjs` | exit 0 | exit 0 |
+> | `node scripts/check-no-dusk-tokens.mjs` | exit 0 | exit 0 |
+>
+> The widget figure is now stronger evidence than it was: this was a real `vite build` from source on a freshly installed toolchain, not a re-gzip of a pre-existing `dist/`, and it landed on the identical byte count.
+>
+> **The `apps/api` virtualenv was NOT successfully restored.** Three `pip install -e ".[dev]"` attempts failed on intermittent `No matching distribution found` errors for packages that demonstrably exist on PyPI (`sqlalchemy==2.0.49`, `aiohttp>=3.8.4`) — an unreliable package index in this environment, not a bad pin. `pyproject.toml` was deliberately left byte-unchanged. **Consequence: the 1199-test backend suite remains un-re-run by anyone other than the 23-09 executor.** This does not change any conclusion in this report: `apps/api` is byte-unchanged across the entire phase (`git diff --name-only 249a94e~1..HEAD -- apps/api` is empty for non-test files and the two touched test modules were re-run green by the security auditor at 30 passed), so the backend count is inherited from before the phase rather than newly claimed by it.
 
 ### Requirements Coverage
 
