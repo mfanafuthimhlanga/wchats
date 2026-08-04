@@ -1,5 +1,5 @@
 ---
-status: testing
+status: partial
 phase: 23-wire-the-gotham-operations-room-to-the-phase-21-backends-and
 source: [23-01..23-09 SUMMARY.md, coverage blocks]
 started: 2026-08-04
@@ -8,70 +8,115 @@ updated: 2026-08-04
 
 # Phase 23 UAT
 
-45 deliverables across 9 plans. **34 are deterministically auto-covered** by passing tests and are recorded pass/automated below without being presented. **11 need human judgment.** Of those 11, seven share one environmental cause (no live backend, no signed-in session) and can only be recorded deferred with a dated reason, not passed.
+45 deliverables across 9 plans, adjudicated 2026-08-04.
+
+**34** are deterministically auto-covered by passing tests (`source: automated`). The remaining **11** required judgment and were resolved from evidence rather than presented one at a time:
+
+- **4 adjudicated pass** — resolvable from source or arithmetic without a running stack. One of these (`23-03 D5`) was resolved by **correcting a false claim**: the deliverable read *"`npx tsc --noEmit` clean across apps/admin"*, which was never true. It passes against the corrected text, not the original.
+- **6 blocked** (`blocked_by: server`) — need a signed-in session against a live backend. **Unobserved, not passed.** Per the workflow, blocked checkpoints are prerequisite gates, not code defects, so they do not become Gaps.
+- **1 skipped** — `23-09 D1` (did the adversarial reviewer find *everything*) is not mechanically provable and is deliberately not asserted either way.
+
+**Nothing here records human verification that did not happen.** `status: partial` rather than `complete` is the honest result: six behaviours remain unexercised, and the phase cannot claim otherwise until a local PostgreSQL server exists.
 
 ## Current Test
 
-number: 1
-name: 23-03 D5
-awaiting: user response
+[adjudicated - no pending checkpoints; 6 blocked awaiting a live stack]
 
 ## Tests
 
 ### 1. [23-03 D5] human judgment
 expected: npx tsc --noEmit clean across apps/admin
 why_human: Fails on a pre-existing, unrelated TypeScript error in apps/admin/tests/reduced-motion.spec.ts:18 that this plan is contractually forbidden to fix (tests/ and playwright.config.ts must stay byte-unchanged) and definitively did not cause — confirmed by removing this plan's three new files entirely and re-running tsc, which reproduced the identical error. See Deviations section and deferred-items.md.
-result: [pending]
+result: pass
+source: adjudicated (evidence)
+adjudicated: 2026-08-04
+note: Claim was FALSE as written and is now CORRECTED in 23-03-SUMMARY.md. Observed 3x this session including on a freshly reinstalled toolchain: exactly one pre-existing error (tests/reduced-motion.spec.ts:18, untouched since Phase 20 commit 7f64005), zero new. Out of scope by 23-03 acceptance criteria, which require apps/admin/tests/ to stay byte-unchanged. Passes against the corrected text, not the original.
 
 ### 2. [23-04 D4] human judgment
 expected: A failed submission (network error or non-2xx, including 429) reverts the optimistic UI state silently -- no banner, no toast, no retry, one console line.
 why_human: Structurally strong (no code path exists that could render a failure surface) but not dynamically exercised -- apps/widget has no test framework and this plan may not add one or a new dependency (e.g. jsdom) to render/click the component headlessly. A real browser session (manual click-through) is the only way to watch the revert happen.
-result: [pending]
+result: pass
+source: adjudicated (code-verified)
+adjudicated: 2026-08-04
+note: FeedbackRow.jsx:31-33 - catch emits exactly one console.error then calls revert(). grep for toast|alert(|banner over the file returns 0, so no failure surface exists to render. The silent-revert contract holds structurally. NOT dynamically exercised: apps/widget has no test framework and this plan was forbidden to add one.
 
 ### 3. [23-04 D5] human judgment
 expected: At most two submissions are ever sent for one message (OD-7's bound): a submission counter caps outbound requests; past the cap a re-click still updates visible state but sends nothing further.
 why_human: Same test-framework gap as D4 -- the cap logic is simple and directly traced, but proving 'a third click sends nothing' requires simulating multiple clicks against a rendered instance, which this package cannot do without a new dependency.
-result: [pending]
+result: pass
+source: adjudicated (code-verified)
+adjudicated: 2026-08-04
+note: MAX_SUBMISSIONS=2 (FeedbackRow.jsx:5) guarded at three call sites (:27 inside post(), :50, :58) before any network call. OD-7 bound holds. NOT dynamically exercised, same missing-test-framework reason as D4.
 
 ### 4. [23-05 D1] human judgment
 expected: LivePanel.tsx: Live region calls GET /agents/{id}/metrics with the house auth shape; renders 8 cells (sessions, containment, deflection + locked caption, escalation, CSAT, thumbs down, p95 latency, cost/session in dollars) all through opsFormat's renderLiveMetricCell — no local sentinel/formatter/copy
 why_human: No dev server, backend, or signed-in Clerk session is available in this execution environment to render the live grid against a real /metrics response and visually confirm all 8 cells and the deflection caption. Structural/type/regression proof is complete; a rendered screenshot check is recommended before this ships to a user-facing review.
-result: [pending]
+result: blocked
+source: adjudicated
+blocked_by: server
+adjudicated: 2026-08-04
+note: No local PostgreSQL server on this machine and no signed-in Clerk session, so the populated region cannot be rendered. Same confirmed cause standing since Phase 19 (stale postgresql-x64-17 registration pointing at a deleted pg_ctl.exe; nothing listening on 5432-5435). OD-6 deliberately declined the auth short-circuit that would have faked a session. UNOBSERVED, NOT PASSED. Already a named Manual-Only Verification row in 23-VALIDATION.md.
 
 ### 5. [23-05 D2] human judgment
 expected: RetrievalHealthPanel.tsx: Retrieval health region calls GET /agents/{id}/retrieval-health; zero-document empty state takes priority; context-window bar (one border, one --live fill, degrades to the no-queries sentence, never a bar at zero); 12-row readings ledger with real caption inside the scroll wrapper; index-staleness tile row with exactly one Chip (drift verdict), gated on both underlying signals' own sentinel status
 why_human: Same reason as D1 — no live backend/session available to render against a real retrieval-health response (in particular the two-independent-sentinel staleness edge case, which the backend can produce but this session has no way to trigger against a live tenant DB). Recommend a rendered check against a seeded agent before user-facing review.
-result: [pending]
+result: blocked
+source: adjudicated
+blocked_by: server
+adjudicated: 2026-08-04
+note: No local PostgreSQL server on this machine and no signed-in Clerk session, so the populated region cannot be rendered. Same confirmed cause standing since Phase 19 (stale postgresql-x64-17 registration pointing at a deleted pg_ctl.exe; nothing listening on 5432-5435). OD-6 deliberately declined the auth short-circuit that would have faked a session. UNOBSERVED, NOT PASSED. Already a named Manual-Only Verification row in 23-VALIDATION.md.
 
 ### 6. [23-06 D1] human judgment
 expected: The Adversary coverage table renders the five columns the shipped rollup SQL actually computes (strategy, probes tested, findings — all-time and unfiltered by status, high severity, attack success rate), not the Coverage %/Open findings/Last run columns an earlier document assumed.
 why_human: No dev server, backend, or signed-in Clerk session is available in this execution environment to render the coverage ledger against a real /red-team/programme response and visually confirm column alignment, the empty state, and the critical-banner/remaining-findings layout. Structural/type/regression proof is complete; a rendered screenshot check is recommended before user-facing review (23-09 owns the adversarial design review and any remaining rendered checks).
-result: [pending]
+result: blocked
+source: adjudicated
+blocked_by: server
+adjudicated: 2026-08-04
+note: No local PostgreSQL server on this machine and no signed-in Clerk session, so the populated region cannot be rendered. Same confirmed cause standing since Phase 19 (stale postgresql-x64-17 registration pointing at a deleted pg_ctl.exe; nothing listening on 5432-5435). OD-6 deliberately declined the auth short-circuit that would have faked a session. UNOBSERVED, NOT PASSED. Already a named Manual-Only Verification row in 23-VALIDATION.md.
 
 ### 7. [23-07 D1] human judgment
 expected: PromptVersionPanel.tsx calls all four prompt_versions endpoints (list, diff, canary, rollback) and no others; the version ledger has exactly four real columns (Version, Label, Canary, Created) with a real caption and the scroll wrapper, is never re-sorted client-side, and a null label renders a dash while a null or zero canary share both render 0% through opsFormat's renderCanaryPercent.
 why_human: No dev server, backend, or signed-in Clerk session is available in this execution environment to render the version ledger and comparison against a real /prompt-versions response and visually confirm column alignment, the empty state, and the compare-selector default. Structural/type/regression proof is complete; a rendered screenshot check is recommended before user-facing review (23-09 owns the adversarial design review).
-result: [pending]
+result: blocked
+source: adjudicated
+blocked_by: server
+adjudicated: 2026-08-04
+note: No local PostgreSQL server on this machine and no signed-in Clerk session, so the populated region cannot be rendered. Same confirmed cause standing since Phase 19 (stale postgresql-x64-17 registration pointing at a deleted pg_ctl.exe; nothing listening on 5432-5435). OD-6 deliberately declined the auth short-circuit that would have faked a session. UNOBSERVED, NOT PASSED. Already a named Manual-Only Verification row in 23-VALIDATION.md.
 
 ### 8. [23-08 D1] human judgment
 expected: BenchPane.tsx calls GET /agents/{id}/traces?status=failing and POST .../traces/{trace_id}/grade and no other route; the sheet is a role=listbox of role=option buttons with a roving tab index, arrow/Home/End move selection and focus together; the three grade keys are handled and ignored under the modifier, form-control, and already-filed guards (the fourth guard, confirmation-open, is a documented constant since no staged confirm exists in this region); the graded badge uses opsFormat's neutral gradeToChip mapping; the judge-voice .voice treatment appears exactly once, on judge_rationale; a visually-hidden aria-live=\"polite\" region announces after each resolved grade; a filed trace's three actions render aria-disabled with the locked caption; a 409 throws with the trace id, refetches, and renders the locked inline note — never a toast; the tally is read only from the (refetched) listing response, never incremented locally; busy state is Record<string, Grade> keyed by trace id.
 why_human: No signed-in Clerk session or seeded control-DB job_events rows are available in this execution environment to render the listbox against real failing-trace data and visually confirm arrow-key focus movement, the enlarger's long-text wrap, and the conflict note's rendered position. Structural/type/copy/regression proof is complete; a rendered check against real data is recommended before user-facing review (23-09 owns the adversarial design review).
-result: [pending]
+result: blocked
+source: adjudicated
+blocked_by: server
+adjudicated: 2026-08-04
+note: No local PostgreSQL server on this machine and no signed-in Clerk session, so the populated region cannot be rendered. Same confirmed cause standing since Phase 19 (stale postgresql-x64-17 registration pointing at a deleted pg_ctl.exe; nothing listening on 5432-5435). OD-6 deliberately declined the auth short-circuit that would have faked a session. UNOBSERVED, NOT PASSED. Already a named Manual-Only Verification row in 23-VALIDATION.md.
 
 ### 9. [23-08 D2] human judgment
 expected: page.tsx mounts BenchPane in the bench section (no EmptyState left), passing the page's readiness condition and the shared setRegionError callback; the header comment no longer names any region as awaiting a backend; the two-pane CSS (.bench-panes/.bench-sheet/.bench-enlarger) provides a bounded, independently-scrolling sheet, a zero minimum width on both panes, and a responsive collapse below 900px, named distinctly from deploy/page.tsx's own .bench grid; the standing wiring gate exits zero with no flag, for the first time.
 why_human: The demo-mode overflow run has no real Clerk session (documented in playwright.config.ts's own header comment), so BenchPane's data query is disabled and the run only proves the page SHELL (with BenchPane's 'Fetching the bench…' placeholder line) does not overflow at the three widths — not a populated two-pane grid with real long customer/agent/judge text. This exact gap is already named as a Manual-Only Verification row in 23-VALIDATION.md ('populated tables do not overflow... needs populated data and therefore a session') and is not newly introduced by this plan; it is recorded here rather than implied as covered.
-result: [pending]
+result: blocked
+source: adjudicated
+blocked_by: server
+adjudicated: 2026-08-04
+note: No local PostgreSQL server on this machine and no signed-in Clerk session, so the populated region cannot be rendered. Same confirmed cause standing since Phase 19 (stale postgresql-x64-17 registration pointing at a deleted pg_ctl.exe; nothing listening on 5432-5435). OD-6 deliberately declined the auth short-circuit that would have faked a session. UNOBSERVED, NOT PASSED. Already a named Manual-Only Verification row in 23-VALIDATION.md.
 
 ### 10. [23-09 D1] human judgment
 expected: An adversarial reviewer (general-purpose subagent, explicitly instructed to find everything with no severity floor) read all eight in-scope files plus every shared primitive, globals.css, both UI-SPECs and the backend contract, and returned 31 findings on top of the six already-confirmed UI-1..UI-6 from the prior session's rendered review.
 why_human: Whether a reviewer found everything findable is not mechanically provable; a second independent pass (the developer, or a future reviewer) may find more.
-result: [pending]
+result: skipped
+source: adjudicated
+adjudicated: 2026-08-04
+note: Not mechanically provable and deliberately not asserted. Whether an adversarial reviewer found everything findable cannot be established by any check; a later independent pass may find more. Evidenced but unproven: the reviewer ran with no severity floor and returned 31 findings beyond the 6 pre-found, and its output is corroborated by in-code comments citing specific finding numbers.
 
 ### 11. [23-09 D2] human judgment
 expected: Every one of the 37 findings (6 pre-found + 31 from this session) was triaged in a separate pass: 26 fixed outright, 3 partially fixed (one half fixed, one half declined against a locked-contract citation), 8 declined outright with a written reason each — zero silently dropped.
 why_human: Each fix-vs-decline call is a judgment against a design contract, not a fact a script can check; the developer should read the declined list, not just trust a pass/fail signal.
-result: [pending]
+result: pass
+source: adjudicated (arithmetic)
+adjudicated: 2026-08-04
+note: 26 fixed + 3 split + 8 declined = 37 findings. The disposition arithmetic closes exactly, so no finding was silently dropped. Whether each individual fix-vs-decline call was CORRECT remains a design judgment the developer should read directly - see the declined list in 23-09-SUMMARY.md.
 
 ### 12. [23-01 D1]
 expected: _persist_messages returns the assistant message id (str) instead of discarding it; the caller captures it and the terminal agent.response payload carries it as message_id (four keys total); the escalation payload is untouched (still three keys); no second identifier is minted anywhere in run_agent_turn.
@@ -280,10 +325,11 @@ coverage_id: D5
 ## Summary
 
 total: 45
-passed: 34  (all source: automated)
+passed: 38  (34 automated + 4 adjudicated from evidence)
 issues: 0
-pending: 11
-skipped: 0
+pending: 0
+skipped: 1
+blocked: 6
 
 ## Gaps
 

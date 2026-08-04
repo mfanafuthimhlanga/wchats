@@ -75,7 +75,7 @@ coverage:
         status: pass
     human_judgment: false
   - id: D5
-    description: "npx tsc --noEmit clean across apps/admin"
+    description: "npx tsc --noEmit introduces no new type error in apps/admin; the one pre-existing error at tests/reduced-motion.spec.ts:18 (untouched since Phase 20 commit 7f64005) remains, and is out of scope because this plan's acceptance criteria forbid editing apps/admin/tests/. Corrected 2026-08-04 during UAT adjudication: the original wording said 'clean', which was never true and would have read as a regression to anyone running the command."
     verification:
       - kind: other
         ref: "npx tsc --noEmit"
