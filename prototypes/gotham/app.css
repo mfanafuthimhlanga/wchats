@@ -1,0 +1,273 @@
+/* =========================================================================
+   GOTHAM — the bench. Import after tokens.css.
+   No boxes (AERIAL). Engraved fittings (ORRERY). A command deck (WARDEN).
+   ========================================================================= */
+
+* { box-sizing: border-box; }
+
+html { color-scheme: dark; background: var(--bg); }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--live); color: var(--live-ink); }
+
+h1, h2, h3 { margin: 0; font-family: var(--display); font-weight: 500; letter-spacing: -0.02em; }
+p { margin: 0; }
+a { color: inherit; }
+
+/* ── the graticule: the whole bench is one engraved surface ─────────────── */
+.graticule {
+  position: fixed; inset: 0; z-index: var(--z-grid);
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--hairline-soft) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--hairline-soft) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(120% 100% at 50% 40%, #000 40%, transparent 88%);
+  mask-image: radial-gradient(120% 100% at 50% 40%, #000 40%, transparent 88%);
+  opacity: 0.5;
+}
+
+/* the pool of light the work sits in */
+.bloom {
+  position: fixed; inset: 0; z-index: var(--z-grid);
+  pointer-events: none;
+  background: radial-gradient(52% 48% at 50% 34%,
+    color-mix(in oklch, var(--live) 8%, transparent), transparent 70%);
+}
+
+/* registration crosshairs — the plate furniture of a survey drawing */
+.cross {
+  position: fixed; width: 9px; height: 9px;
+  z-index: var(--z-bench); pointer-events: none; opacity: 0.55;
+}
+.cross::before, .cross::after { content: ''; position: absolute; background: var(--hairline-strong); }
+.cross::before { left: 50%; top: 0; bottom: 0; width: 1px; }
+.cross::after  { top: 50%; left: 0; right: 0; height: 1px; }
+
+/* ── the command deck: a fixed 56px rail. Content never scrolls under it ── */
+.rail {
+  position: fixed; left: 0; top: 0; bottom: 0; width: 56px;
+  z-index: var(--z-rail);
+  display: flex; flex-direction: column; align-items: center;
+  gap: 4px; padding: 14px 0;
+  background: var(--bg);
+  border-right: 1px solid var(--hairline);
+}
+.rail-mark {
+  width: 26px; height: 26px; margin-bottom: 14px;
+  display: grid; place-items: center;
+  font-family: var(--mono); font-size: 12px; font-weight: 700;
+  color: var(--live-ink); background: color-mix(in srgb, var(--live) 70%, transparent);
+  border-radius: var(--r-control);
+  text-decoration: none;
+}
+.rail a.rail-btn {
+  width: 36px; height: 36px;
+  display: grid; place-items: center;
+  color: var(--ink-3); border-radius: var(--r-control);
+  text-decoration: none;
+  transition: color 140ms ease, background 140ms ease;
+}
+.rail a.rail-btn:hover { color: var(--ink); background: var(--surface); }
+.rail a.rail-btn[aria-current="page"] { color: var(--live); background: var(--live-dim); }
+.rail .spacer { flex: 1; }
+
+.deck { padding-left: 56px; }
+
+/* ── page furniture ─────────────────────────────────────────────────────── */
+.page { position: relative; z-index: var(--z-bench); max-width: 1280px; padding: 34px 40px 72px; }
+
+.page-head { margin-bottom: 30px; }
+.page-head h1 { font-size: 22px; }
+.page-head .sub { margin-top: 6px; color: var(--ink-2); max-width: 68ch; }
+.page-head .row { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+
+/* a section is silk-screened onto the bench: a rule and a label, never a box */
+.section { padding-top: 26px; margin-top: 30px; border-top: 1px solid var(--hairline); }
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+
+/* the double rule — an engraved plate flourish (ORRERY) */
+.rule-double { border-top: 1px solid var(--hairline-strong); box-shadow: 0 3px 0 -2px var(--hairline); }
+
+/* the whisper-zone: the only "container" on the bench. A tint and a hairline. */
+.zone {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-panel);
+  padding: 20px;
+}
+.zone[data-live="true"] {
+  border-color: color-mix(in oklch, var(--live) 40%, transparent);
+  box-shadow: 0 0 26px -14px var(--live);
+}
+
+/* ── lettering ──────────────────────────────────────────────────────────── */
+.label {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink-3);
+}
+.num, .mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+/* the judge's hand: the only serif on the bench, and always italic (CHORUS) */
+.voice { font-family: var(--voice); font-style: italic; line-height: 1.62; color: var(--ink); }
+
+/* the compositor's caret, while a verdict is being set */
+.caret {
+  display: inline-block; width: 0.4em; height: 1.02em;
+  margin-left: 0.06em; vertical-align: -0.14em;
+  background: var(--live);
+  animation: caret 0.9s step-end infinite;
+}
+@keyframes caret { 50% { opacity: 0; } }
+
+/* ── controls ───────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--sans); font-size: 13px; font-weight: 600;
+  padding: 9px 16px; border-radius: var(--r-control);
+  border: 1px solid transparent; cursor: pointer;
+  text-decoration: none; white-space: nowrap;
+  transition: filter 140ms ease, transform 140ms ease, background 140ms ease;
+}
+.btn:active { transform: translateY(1px); }
+.btn-primary { background: color-mix(in srgb, var(--live) 70%, transparent); color: var(--live-ink); }
+.btn-primary:hover { filter: brightness(1.08); }
+.btn-ghost { background: transparent; color: var(--ink); border-color: var(--hairline); }
+.btn-ghost:hover { background: var(--surface); }
+.btn-seal { background: transparent; color: var(--seal-hot); border-color: var(--seal-dim); }
+.btn-seal:hover { background: var(--seal-dim); }
+.btn[disabled], .btn.is-disabled {
+  background: var(--surface-2); color: var(--ink-3);
+  border-color: transparent; cursor: not-allowed;
+}
+
+:focus-visible { outline: 2px solid var(--live); outline-offset: 2px; }
+
+label { display: block; font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em;
+        text-transform: uppercase; color: var(--ink-3); margin-bottom: 7px; }
+.help { font-size: 12.5px; color: var(--ink-3); margin-top: 7px; }
+input, select, textarea {
+  width: 100%; padding: 9px 12px;
+  background: var(--well); color: var(--ink);
+  border: 1px solid var(--hairline); border-radius: var(--r-control);
+  font-family: var(--sans); font-size: 13.5px;
+}
+input::placeholder, textarea::placeholder { color: var(--ink-3); }
+input:focus, select:focus, textarea:focus { border-color: color-mix(in oklch, var(--live) 55%, transparent); }
+textarea { resize: vertical; }
+.field { margin-bottom: 18px; }
+
+/* the slider: a brass rail (used by the soul editor) */
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 2px; padding: 0;
+  background: var(--hairline-strong); border: none; border-radius: 0;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 13px; height: 13px; border-radius: 50%;
+  background: var(--live); border: 2px solid var(--bg);
+  box-shadow: 0 0 0 1px var(--live); cursor: grab;
+}
+input[type="range"]::-moz-range-thumb {
+  width: 13px; height: 13px; border-radius: 50%;
+  background: var(--live); border: 2px solid var(--bg);
+  box-shadow: 0 0 0 1px var(--live); cursor: grab;
+}
+
+/* ── chips + verdicts ───────────────────────────────────────────────────── */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: 10.5px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: var(--r-pill);
+}
+.chip-live { background: var(--live-dim); color: var(--live-hot); }
+.chip-pass { background: var(--pass-dim);  color: var(--pass); }
+.chip-fail { background: var(--fail-dim);  color: var(--fail); }
+.chip-seal { background: var(--seal-dim);  color: var(--seal-hot); }
+.chip-mute { background: var(--surface-2); color: var(--ink-2); }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.dot-live { animation: breathe 2.4s ease-in-out infinite; }
+@keyframes breathe { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+/* ── the ledger: evidence is the decoration ─────────────────────────────── */
+.ledger { width: 100%; border-collapse: collapse; }
+.ledger th {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.16em;
+  color: var(--ink-3); text-align: left;
+  padding: 0 14px 10px; border-bottom: 1px solid var(--hairline);
+}
+.ledger td {
+  font-size: 13.5px; padding: 12px 14px;
+  border-bottom: 1px solid var(--hairline-soft); vertical-align: middle;
+}
+.ledger tr:last-child td { border-bottom: none; }
+.ledger tbody tr { transition: background 140ms ease; }
+.ledger tbody tr:hover { background: var(--surface); }
+.ledger .num { text-align: right; font-size: 13px; }
+.ledger th.num { text-align: right; }
+
+/* ── code / logs ────────────────────────────────────────────────────────── */
+.well {
+  background: var(--well);
+  border: 1px solid var(--hairline-soft);
+  border-radius: var(--r-control);
+  padding: 15px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.75;
+  color: var(--ink-2);
+  overflow-x: auto;
+}
+
+/* ── the command strip: permanent, never a modal (MERIDIAN) ─────────────── */
+.command {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-panel);
+}
+.command input { background: transparent; border: none; padding: 4px 2px; font-size: 14px; }
+.command input:focus { outline: none; border: none; }
+.kbd {
+  font-family: var(--mono); font-size: 10px; color: var(--ink-3);
+  border: 1px solid var(--hairline); border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.skip {
+  position: absolute; left: -9999px; top: 0;
+  background: var(--live); color: var(--live-ink);
+  padding: 8px 16px; font-family: var(--mono); z-index: var(--z-toast);
+}
+.skip:focus { left: 68px; top: 8px; }
+
+@media (max-width: 900px) {
+  .rail { flex-direction: row; inset: auto 0 0 0; width: auto; height: 56px;
+          border-right: none; border-top: 1px solid var(--hairline); padding: 0 12px; }
+  .rail-mark { margin-bottom: 0; }
+  .rail .spacer { flex: 1; }
+  .deck { padding-left: 0; padding-bottom: 56px; }
+  .page { padding: 24px 20px 48px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

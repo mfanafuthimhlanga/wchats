@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en" data-gate="open">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Agents · W Chats</title>
+<meta name="description" content="Every agent on the bench, with its documents, its pass rate and the state of its gate.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&family=Newsreader:ital,opsz,wght@1,6..72,400&family=Space+Grotesk:wght@500;600&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="app.css">
+
+<style>
+  /* ── layout unique to the agents bench ───────────────────────────────── */
+  .vh {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+
+  /* the left crosses clear the 56px rail */
+  .cross-tl { left: 78px; top: 22px; }
+  .cross-tr { right: 22px; top: 22px; }
+  .cross-bl { left: 78px; bottom: 22px; }
+  .cross-br { right: 22px; bottom: 22px; }
+
+  /* ── the command strip: permanent, in place, never a modal (MERIDIAN) ─── */
+  .command { margin-bottom: 6px; }
+  .command input { flex: 1; min-width: 0; }
+  .cmd-out {
+    display: flex; gap: 9px; align-items: baseline;
+    margin: 11px 0 0; padding-left: 13px;
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.7;
+    color: var(--ink-2);
+  }
+  .cmd-out .arrow { color: var(--live); }
+  .cmd-out[hidden] { display: none; }
+
+  /* ── the agents: a column grid, not a list ───────────────────────────── */
+  .agents {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 16px; margin-top: 26px;
+  }
+  @media (max-width: 1000px) { .agents { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 700px)  { .agents { grid-template-columns: 1fr; } }
+
+  .card {
+    position: relative; display: flex; flex-direction: column;
+    transition: border-color 140ms ease;
+  }
+  .card:hover { border-color: var(--hairline-strong); }
+  .card:has(a:focus-visible) { outline: 2px solid var(--live); outline-offset: 2px; }
+
+  /* the heads are cut to one height so every hairline, metric and footer on
+     the row reads across the grid, even when a card carries two chips */
+  .card-top {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 12px; min-height: 52px;   /* two stacked chips measure 50.55px */
+  }
+  .card-name { font-size: 16px; line-height: 1.25; }
+  .card-id { display: block; margin-top: 5px; font-size: 11.5px; color: var(--ink-3); }
+  .card-chips { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: none; }
+
+  .hair { height: 1px; background: var(--hairline); margin: 16px 0 14px; }
+  .card[data-shut="true"] .hair { background: color-mix(in oklch, var(--seal) 62%, transparent); }
+
+  .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 18px; }
+  .metrics div { display: flex; flex-direction: column; gap: 4px; }
+  .metrics .num, .metrics .mono { font-size: 15px; color: var(--ink); }
+  .metrics .pending { color: var(--ink-3); font-size: 13px; }
+
+  .card-foot {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin-top: auto; padding-top: 13px;
+    border-top: 1px solid var(--hairline-soft);
+    font-size: 11.5px; color: var(--ink-3);
+  }
+  .card-open {
+    font-family: var(--sans); font-size: 12.5px; font-weight: 600;
+    color: var(--ink); text-decoration: none;
+  }
+  /* the whole zone is the target, but only one link is in the tree */
+  .card-open::after { content: ''; position: absolute; inset: 0; border-radius: var(--r-panel); }
+  .card:hover .card-open { color: var(--live); }
+
+  @media (max-width: 900px) {
+    .cross-tl, .cross-bl { left: 22px; }
+    .cross-bl, .cross-br { bottom: 78px; }
+  }
+  @media (max-width: 620px) {
+    .page-head .row { flex-direction: column; }
+  }
+</style>
+</head>
+
+<body class="tint">
+  <div class="graticule"></div>
+  <div class="bloom"></div>
+  <div class="cross cross-tl"></div>
+  <div class="cross cross-tr"></div>
+  <div class="cross cross-bl"></div>
+  <div class="cross cross-br"></div>
+
+  <a class="skip" href="#main">Skip to content</a>
+
+  <!-- ── the command deck ───────────────────────────────────────────────── -->
+  <nav class="rail" aria-label="Console">
+    <a class="rail-mark" href="index.html" aria-label="W Chats home">w</a>
+
+    <a class="rail-btn" href="agents.html" aria-current="page" aria-label="Agents">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 1.8 15.4 5.4v7.2L9 16.2 2.6 12.6V5.4z"/>
+        <circle cx="9" cy="9" r="2.6"/>
+      </svg>
+    </a>
+
+    <a class="rail-btn" href="ingest.html" aria-label="Ingest">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 2.2v7.6"/>
+        <path d="M6 6.8 9 9.8l3-3"/>
+        <path d="M3 12.2v2.6h12v-2.6"/>
+      </svg>
+    </a>
+
+    <a class="rail-btn" href="eval.html" aria-label="Eval">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 15h12"/>
+        <path d="M5.6 15V9.2"/>
+        <path d="M9 15V4.4"/>
+        <path d="M12.4 15v-3.4"/>
+      </svg>
+    </a>
+
+    <a class="rail-btn" href="deploy.html" aria-label="Deploy">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="9" cy="9" r="6.4"/>
+        <path d="M2.6 9h12.8"/>
+        <path d="M9 2.6c3.2 3.4 3.2 9.4 0 12.8-3.2-3.4-3.2-9.4 0-12.8z"/>
+      </svg>
+    </a>
+
+    <span class="spacer"></span>
+  </nav>
+
+  <main class="deck" id="main">
+    <div class="page">
+
+      <div class="page-head">
+        <div class="row">
+          <div>
+            <h1>Agents</h1>
+            <p class="sub">
+              Three agents on the bench. Only one has cleared its gate, and only
+              that one is answering customers.
+            </p>
+          </div>
+          <a class="btn btn-primary" href="agent-new.html">New agent</a>
+        </div>
+      </div>
+
+      <!-- ── the command strip ────────────────────────────────────────────
+           It is not a modal. It never leaves, and the run lands in place. -->
+      <form class="command" id="cmd">
+        <label class="vh" for="cmd-input">Run a command</label>
+        <input
+          id="cmd-input"
+          type="text"
+          name="command"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Run a command. Try: run evals on lindiwe"
+          aria-describedby="cmd-hint">
+        <span class="kbd" aria-hidden="true">/</span>
+        <span class="vh" id="cmd-hint">Press the slash key to focus this field, then Enter to run.</span>
+      </form>
+      <p class="cmd-out" id="cmd-out" role="status" aria-live="polite" hidden></p>
+
+      <!-- ── the agents ───────────────────────────────────────────────────── -->
+      <h2 class="vh">All agents</h2>
+      <div class="agents">
+
+        <article class="zone card" data-live="true">
+          <div class="card-top">
+            <div>
+              <h3 class="card-name">Lindiwe&#8217;s Beauty Bar</h3>
+              <span class="card-id mono">agent.lindiwe-beauty</span>
+            </div>
+            <div class="card-chips">
+              <span class="chip chip-live"><i class="dot dot-live"></i>Live</span>
+            </div>
+          </div>
+
+          <div class="hair"></div>
+
+          <div class="metrics">
+            <div>
+              <span class="label">Docs</span>
+              <span class="num">34</span>
+            </div>
+            <div>
+              <span class="label">Pass rate</span>
+              <span class="num">0.94</span>
+            </div>
+            <div>
+              <span class="label">Sessions</span>
+              <span class="num">1,208</span>
+            </div>
+          </div>
+
+          <div class="card-foot">
+            <span class="mono">created 2026-07-02</span>
+            <a class="card-open" href="agent.html" aria-label="Open Lindiwe&#8217;s Beauty Bar">Open -&gt;</a>
+          </div>
+        </article>
+
+        <article class="zone card" data-shut="true">
+          <div class="card-top">
+            <div>
+              <h3 class="card-name">Yeoville Hardware</h3>
+              <span class="card-id mono">agent.yeoville-hardware</span>
+            </div>
+            <div class="card-chips">
+              <span class="chip chip-mute">Testing</span>
+              <span class="chip chip-seal">Gate shut</span>
+            </div>
+          </div>
+
+          <div class="hair"></div>
+
+          <div class="metrics">
+            <div>
+              <span class="label">Docs</span>
+              <span class="num">12</span>
+            </div>
+            <div>
+              <span class="label">Pass rate</span>
+              <span class="num">0.87</span>
+            </div>
+            <div>
+              <span class="label">Sessions</span>
+              <span class="num">0</span>
+            </div>
+          </div>
+
+          <div class="card-foot">
+            <span class="mono">created 2026-07-06</span>
+            <a class="card-open" href="agent.html" aria-label="Open Yeoville Hardware">Open -&gt;</a>
+          </div>
+        </article>
+
+        <article class="zone card">
+          <div class="card-top">
+            <div>
+              <h3 class="card-name">Melville Stationers</h3>
+              <span class="card-id mono">agent.melville-books</span>
+            </div>
+            <div class="card-chips">
+              <span class="chip chip-mute">Building</span>
+            </div>
+          </div>
+
+          <div class="hair"></div>
+
+          <div class="metrics">
+            <div>
+              <span class="label">Docs</span>
+              <span class="num">3</span>
+            </div>
+            <div>
+              <span class="label">Pass rate</span>
+              <span class="mono pending">pending</span>
+            </div>
+            <div>
+              <span class="label">Sessions</span>
+              <span class="num">0</span>
+            </div>
+          </div>
+
+          <div class="card-foot">
+            <span class="mono">created 2026-07-09</span>
+            <a class="card-open" href="agent.html" aria-label="Open Melville Stationers">Open -&gt;</a>
+          </div>
+        </article>
+
+      </div>
+    </div>
+  </main>
+
+<script>
+  (function () {
+    'use strict';
+
+    var form  = document.getElementById('cmd');
+    var input = document.getElementById('cmd-input');
+    var out   = document.getElementById('cmd-out');
+
+    /* slash focuses the strip, wherever you are on the bench */
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
+      var el = document.activeElement;
+      var tag = el ? el.tagName.toLowerCase() : '';
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || (el && el.isContentEditable)) return;
+      e.preventDefault();
+      input.focus();
+      input.select();
+    });
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') input.blur();
+    });
+
+    function reply(text) {
+      out.textContent = '';
+      var arrow = document.createElement('span');
+      arrow.className = 'arrow';
+      arrow.textContent = '->';
+      var body = document.createElement('span');
+      body.textContent = text;              /* never innerHTML: this echoes input */
+      out.appendChild(arrow);
+      out.appendChild(body);
+      out.hidden = false;
+    }
+
+    /* the run lands beneath the strip. The strip stays. Nothing navigates. */
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var q = input.value.trim();
+      var k = q.toLowerCase();
+
+      if (!q) {
+        reply('type a command. Try: run evals on lindiwe');
+      } else if (k.indexOf('eval') > -1) {
+        reply('queued eval suite on agent.lindiwe-beauty. 64 scenarios. Results land on the eval bench.');
+      } else if (k.indexOf('ingest') > -1) {
+        reply('ingest queued on agent.melville-books. 3 documents already chunked and cited.');
+      } else if (k.indexOf('deploy') > -1) {
+        reply('deploy refused on agent.yeoville-hardware. Pass rate 0.87 is under the 0.90 the gate requires.');
+      } else if (k.indexOf('red team') > -1 || k.indexOf('redteam') > -1) {
+        reply('red team queued. 40 probes, 0 critical findings on the last run.');
+      } else {
+        reply('no command matched "' + q + '". Try: run evals on lindiwe');
+      }
+    });
+  })();
+</script>
+</body>
+</html>

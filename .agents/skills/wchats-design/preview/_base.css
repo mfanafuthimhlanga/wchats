@@ -1,0 +1,31 @@
+/* Preview card base — used by every card in preview/ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  font-family: "Inter", system-ui, sans-serif;
+  background: var(--bg-deep, #0B0717);
+  color: var(--text-1, #F4EDE5);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+body {
+  min-height: 100vh;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background:
+    radial-gradient(ellipse 60% 40% at 80% 0%, rgba(244, 116, 140, 0.06) 0%, transparent 60%),
+    radial-gradient(ellipse 40% 30% at 0% 100%, rgba(183, 154, 224, 0.05) 0%, transparent 60%),
+    var(--bg-deep, #0B0717);
+}
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.col { display: flex; flex-direction: column; gap: 8px; }
+.grid { display: grid; gap: 12px; }
+.label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3, #8A82A0);
+}
+.mono { font-family: "JetBrains Mono", monospace; }

@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deploy · W Chats</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="app.css">
+<style>
+  /* deploy page - solid ground, no scene, no effects */
+
+  .sr-only {
+    position: absolute; width: 1px; height: 1px;
+    padding: 0; margin: -1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+
+  .head-meta { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+  .head-meta .agent-id { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+
+  /* two-column: work column + widget preview */
+  .deploy-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 48px;
+    align-items: start;
+  }
+  .deploy-main { min-width: 0; }
+  .block { margin-bottom: 44px; }
+  .block > .section-label { display: block; margin-bottom: 16px; }
+
+  /* pre-deploy gate: single ledger list, not cards */
+  .gate { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--hairline-soft); }
+  .gate li {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center; gap: 20px;
+    padding: 13px 4px;
+    border-bottom: 1px solid var(--hairline-soft);
+  }
+  .gate .g-name { font-family: var(--mono); font-size: 13px; color: var(--ink); }
+  .gate .g-value { font-family: var(--mono); font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; text-align: right; }
+  .gate .g-verdict { width: 16px; height: 16px; display: grid; place-items: center; color: var(--green); }
+
+  .approve-row { display: flex; align-items: center; gap: 16px; margin-top: 22px; }
+  .approve-row .note { font-family: var(--sans); font-size: 12.5px; color: var(--ink-3); max-width: 44ch; }
+
+  /* embed code well with copy button */
+  .well-wrap { position: relative; }
+  .well-wrap .well { padding-right: 96px; }
+  .copy-btn {
+    position: absolute; top: 10px; right: 10px;
+    font-family: var(--mono); font-size: 12px; font-weight: 500;
+    padding: 6px 12px; border-radius: var(--r-control);
+    background: transparent; color: var(--ink); border: 1px solid var(--hairline);
+    cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+    transition: background 150ms ease-out, color 150ms ease-out, border-color 150ms ease-out;
+  }
+  .copy-btn:hover { background: var(--surface-2); }
+  .copy-btn:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  .copy-btn.copied { color: var(--green); border-color: var(--green-dim); }
+  .well .tok-tag { color: var(--ink-3); }
+  .well .tok-attr { color: var(--amber); }
+  .well .tok-str { color: var(--ink); }
+
+  /* appearance radio tiles */
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .tile { position: relative; }
+  .tile input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .tile label {
+    display: block; margin: 0; cursor: pointer;
+    background: var(--surface-2); border: 1px solid var(--hairline);
+    border-radius: var(--r-panel); padding: 16px 14px;
+    transition: border-color 150ms ease-out, background 150ms ease-out;
+  }
+  .tile label .glyph { display: block; color: var(--ink-2); margin-bottom: 12px; }
+  .tile label .t-name { font-family: var(--mono); font-size: 13px; color: var(--ink); }
+  .tile label .t-sub { font-family: var(--sans); font-size: 12px; color: var(--ink-3); margin-top: 3px; }
+  .tile input:hover + label { border-color: var(--hairline); background: var(--surface); }
+  .tile input:checked + label { border-color: var(--amber-line); background: var(--amber-dim); }
+  .tile input:checked + label .glyph { color: var(--amber); }
+  .tile input:focus-visible + label { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+  /* widget preview - the only friendly surface. white card, sans, rounded. */
+  .preview-col .section-label { display: block; margin-bottom: 16px; }
+  .widget {
+    background: #ffffff;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 12px 32px oklch(0 0 0 / 0.45);
+    font-family: var(--sans);
+  }
+  .widget-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 16px;
+    background: #ffffff;
+    border-bottom: 1px solid #ececec;
+  }
+  .widget-avatar {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: #f0e0bf; color: #7a5a12;
+    display: grid; place-items: center;
+    font-family: var(--sans); font-size: 13px; font-weight: 600;
+  }
+  .widget-title { font-size: 13px; font-weight: 600; color: #1a1a1a; }
+  .widget-sub { font-size: 11px; color: #6b7280; margin-top: 1px; }
+  .widget-body { padding: 16px; display: grid; gap: 12px; background: #f7f7f8; }
+  .bubble { font-size: 13.5px; line-height: 1.5; padding: 10px 13px; max-width: 82%; }
+  .bubble.agent {
+    background: #ffffff; color: #1f2937;
+    border: 1px solid #ececec;
+    border-radius: 12px 12px 12px 4px;
+    justify-self: start;
+  }
+  .bubble.user {
+    background: #1a1a1a; color: #f4f4f5;
+    border-radius: 12px 12px 4px 12px;
+    justify-self: end;
+  }
+  .widget-input {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px; background: #ffffff; border-top: 1px solid #ececec;
+  }
+  .widget-input .ph { flex: 1; font-size: 12.5px; color: #9ca3af; }
+  .widget-input .send {
+    width: 26px; height: 26px; border-radius: 6px;
+    background: #F4748C; color: #0B0717;
+    display: grid; place-items: center;
+  }
+  .preview-caption { font-family: var(--sans); font-size: 12px; color: var(--ink-3); margin-top: 14px; }
+
+  @media (max-width: 1100px) {
+    .deploy-grid { grid-template-columns: 1fr; gap: 36px; }
+    .preview-col { max-width: 360px; }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="wordmark" href="index.html"><b>w.</b>chats</a>
+  <nav aria-label="Main">
+    <a href="agents.html">Agents</a>
+  </nav>
+  <span class="spacer"></span>
+  <div class="account" title="Lindiwe Nkosi" aria-label="Account, Lindiwe Nkosi">LN</div>
+</header>
+
+<div class="frame">
+  <!-- left rail: journey steps -->
+  <nav class="rail" aria-label="Agent journey"><!-- mock -->
+    <div class="agent-name">Lindiwe's Beauty Bar</div>
+    <div class="agent-id">agent.lindiwe-beauty</div>
+    <ol>
+      <li>
+        <a href="agent.html">
+          <span class="glyph done" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2"><path d="M2.5 7.5 6 11l6-7.5"/></svg>
+          </span>
+          Configure
+          <span class="sr-only">, done</span>
+        </a>
+      </li>
+      <li>
+        <a href="ingest.html">
+          <span class="glyph done" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2"><path d="M2.5 7.5 6 11l6-7.5"/></svg>
+          </span>
+          Ingest
+          <span class="sr-only">, done</span>
+        </a>
+      </li>
+      <li>
+        <a href="eval.html">
+          <span class="glyph done" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2"><path d="M2.5 7.5 6 11l6-7.5"/></svg>
+          </span>
+          Evals
+          <span class="sr-only">, done</span>
+        </a>
+      </li>
+      <li>
+        <a href="deploy.html" aria-current="page">
+          <span class="glyph active" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 14 14"><rect x="3" y="3" width="8" height="8" rx="1" fill="currentColor"/></svg>
+          </span>
+          Deploy
+          <span class="sr-only">, current step</span>
+        </a>
+      </li>
+    </ol>
+    <div class="foot">
+      <ol style="margin:0">
+        <li><a href="settings.html">Settings</a></li>
+      </ol>
+    </div>
+  </nav>
+
+  <main class="content" id="main">
+    <div class="page">
+      <div class="page-head">
+        <h1>Deploy</h1>
+        <p>Clear the pre-deploy gate, then drop one script tag into your site.</p>
+      </div>
+
+      <div class="deploy-grid">
+        <div class="deploy-main">
+
+          <!-- pre-deploy gate: single ledger list -->
+          <section class="block" aria-labelledby="gate-label">
+            <span class="section-label" id="gate-label">Pre-deploy gate</span>
+            <ul class="gate"><!-- mock data -->
+              <li>
+                <span class="g-name">Evals pass rate</span>
+                <span class="g-value">0.94 of 0.90 required</span>
+                <span class="g-verdict" aria-label="pass">
+                  <svg width="15" height="15" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2.5 7.5 6 11l6-7.5"/></svg>
+                </span>
+              </li>
+              <li>
+                <span class="g-name">Red team critical findings</span>
+                <span class="g-value">0 open</span>
+                <span class="g-verdict" aria-label="pass">
+                  <svg width="15" height="15" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2.5 7.5 6 11l6-7.5"/></svg>
+                </span>
+              </li>
+              <li>
+                <span class="g-name">Knowledge base</span>
+                <span class="g-value">34 documents parsed</span>
+                <span class="g-verdict" aria-label="pass">
+                  <svg width="15" height="15" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2.5 7.5 6 11l6-7.5"/></svg>
+                </span>
+              </li>
+              <li>
+                <span class="g-name">Soul</span>
+                <span class="g-value">saved 2026-07-08 09:12</span>
+                <span class="g-verdict" aria-label="pass">
+                  <svg width="15" height="15" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2.5 7.5 6 11l6-7.5"/></svg>
+                </span>
+              </li>
+            </ul>
+            <div class="approve-row">
+              <button class="btn btn-primary" type="button">Approve deploy</button>
+              <p class="note">All four signals cleared. Approving makes the agent live on your site within a minute.</p>
+            </div>
+          </section>
+
+          <!-- embed code -->
+          <section class="block" aria-labelledby="embed-label">
+            <span class="section-label" id="embed-label">Embed code</span>
+            <div class="well-wrap">
+              <div class="well" id="embed-code"><!-- mock: HTML-escaped script tag --><span class="tok-tag">&lt;script</span> <span class="tok-attr">src</span>=<span class="tok-str">"https://cdn.wchats.co.za/widget.js"</span> <span class="tok-attr">data-agent</span>=<span class="tok-str">"agent.lindiwe-beauty"</span> <span class="tok-attr">async</span><span class="tok-tag">&gt;&lt;/script&gt;</span></div>
+              <button class="copy-btn" type="button" id="copy-embed" aria-label="Copy embed code"
+                      data-embed='&lt;script src="https://cdn.wchats.co.za/widget.js" data-agent="agent.lindiwe-beauty" async&gt;&lt;/script&gt;'>
+                <span class="copy-text">Copy</span>
+              </button>
+            </div>
+            <p class="help">Paste before the closing body tag. The widget loads async and will not block your page.</p>
+          </section>
+
+          <!-- appearance -->
+          <section class="block" aria-labelledby="appear-label">
+            <span class="section-label" id="appear-label">Appearance</span>
+            <div class="tiles" role="radiogroup" aria-labelledby="appear-label"><!-- mock -->
+              <div class="tile">
+                <input type="radio" name="appearance" id="ap-float" checked>
+                <label for="ap-float">
+                  <span class="glyph" aria-hidden="true">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="17.5" cy="17.5" r="3.2" fill="currentColor" stroke="none"/></svg>
+                  </span>
+                  <span class="t-name">Floating button</span>
+                  <span class="t-sub">Corner bubble, opens on click</span>
+                </label>
+              </div>
+              <div class="tile">
+                <input type="radio" name="appearance" id="ap-panel">
+                <label for="ap-panel">
+                  <span class="glyph" aria-hidden="true">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="18" height="18" rx="2"/><rect x="13" y="3" width="8" height="18" rx="1" fill="currentColor" stroke="none"/></svg>
+                  </span>
+                  <span class="t-name">Side panel</span>
+                  <span class="t-sub">Docked to the right edge</span>
+                </label>
+              </div>
+              <div class="tile">
+                <input type="radio" name="appearance" id="ap-inline">
+                <label for="ap-inline">
+                  <span class="glyph" aria-hidden="true">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="18" height="18" rx="2"/><rect x="6" y="9" width="12" height="6" rx="1" fill="currentColor" stroke="none"/></svg>
+                  </span>
+                  <span class="t-name">Inline</span>
+                  <span class="t-sub">Embedded in the page body</span>
+                </label>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- widget preview: the only friendly surface -->
+        <aside class="preview-col" aria-label="Widget preview">
+          <span class="section-label">Preview</span>
+          <div class="widget"><!-- mock: customer-facing widget -->
+            <div class="widget-head">
+              <div class="widget-avatar" aria-hidden="true">L</div>
+              <div>
+                <div class="widget-title">Lindiwe's Beauty Bar</div>
+                <div class="widget-sub">Usually replies instantly</div>
+              </div>
+            </div>
+            <div class="widget-body">
+              <div class="bubble agent">Hi there 👋 welcome to Lindiwe's Beauty Bar. How can I help you today?</div>
+              <div class="bubble user">Do you take walk-ins on a Saturday?</div>
+              <div class="bubble agent">We do keep a few walk-in slots on Saturdays, but booking ahead is safest. Would you like me to check this Saturday for you?</div>
+            </div>
+            <div class="widget-input">
+              <span class="ph">Type your message</span>
+              <span class="send" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
+              </span>
+            </div>
+          </div>
+          <p class="preview-caption">This is how the floating widget looks to your customers. Colours follow your appearance choice.</p>
+        </aside>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+  // copy embed snippet; the raw tag lives in the button's data-embed attribute
+  (function () {
+    var btn = document.getElementById('copy-embed');
+    if (!btn) return;
+    var text = btn.querySelector('.copy-text');
+    var reset;
+    btn.addEventListener('click', function () {
+      var snippet = btn.getAttribute('data-embed');
+      function ok() {
+        btn.classList.add('copied');
+        text.textContent = 'Copied';
+        clearTimeout(reset);
+        reset = setTimeout(function () {
+          btn.classList.remove('copied');
+          text.textContent = 'Copy';
+        }, 1600);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(snippet).then(ok).catch(ok);
+      } else {
+        ok();
+      }
+    });
+  })();
+</script>
+</body>
+</html>

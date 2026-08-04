@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Borders</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..800,0..100&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../colors_and_type.css">
+<link rel="stylesheet" href="_base.css">
+<style>
+html, body { width: 700px; height: 180px; }
+
+</style>
+</head>
+<body>
+
+<div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; height: 100%;">
+  
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div style="flex: 1; background: var(--bg); border: 1.5px solid rgba(196, 154, 232, 0.18); border-radius: 14px; min-height: 70px;"></div>
+      <span style="font-size: 11px; font-weight: 600; color: var(--text-1);">--border</span>
+      <span class="mono" style="font-size: 9.5px; color: var(--text-3); word-break: break-word; line-height: 1.4;">rgba(196, 154, 232, 0.18)</span>
+      <span style="font-size: 10px; color: var(--text-4);">default</span>
+    </div>
+  
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div style="flex: 1; background: var(--bg); border: 1.5px solid rgba(196, 154, 232, 0.10); border-radius: 14px; min-height: 70px;"></div>
+      <span style="font-size: 11px; font-weight: 600; color: var(--text-1);">--border-soft</span>
+      <span class="mono" style="font-size: 9.5px; color: var(--text-3); word-break: break-word; line-height: 1.4;">rgba(196, 154, 232, 0.10)</span>
+      <span style="font-size: 10px; color: var(--text-4);">hairline</span>
+    </div>
+  
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div style="flex: 1; background: var(--bg); border: 1.5px solid rgba(244, 116, 140, 0.32); border-radius: 14px; min-height: 70px;"></div>
+      <span style="font-size: 11px; font-weight: 600; color: var(--text-1);">--border-hard</span>
+      <span class="mono" style="font-size: 9.5px; color: var(--text-3); word-break: break-word; line-height: 1.4;">rgba(244, 116, 140, 0.32)</span>
+      <span style="font-size: 10px; color: var(--text-4);">hover · focus</span>
+    </div>
+  
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div style="flex: 1; background: var(--bg); border: 1.5px solid rgba(232, 168, 124, 0.22); border-radius: 14px; min-height: 70px;"></div>
+      <span style="font-size: 11px; font-weight: 600; color: var(--text-1);">--border-warm</span>
+      <span class="mono" style="font-size: 9.5px; color: var(--text-3); word-break: break-word; line-height: 1.4;">rgba(232, 168, 124, 0.22)</span>
+      <span style="font-size: 10px; color: var(--text-4);">amber edge</span>
+    </div>
+  
+</div>
+
+</body>
+</html>

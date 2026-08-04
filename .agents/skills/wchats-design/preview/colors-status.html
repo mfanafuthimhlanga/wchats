@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Status colors</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..800,0..100&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../colors_and_type.css">
+<link rel="stylesheet" href="_base.css">
+<style>
+html, body { width: 700px; height: 200px; }
+
+</style>
+</head>
+<body>
+
+<div class="row" style="gap: 14px; height: 100%; align-items: stretch;">
+  
+    <div style="flex:1; display:flex; flex-direction:column; gap:10px;">
+      <div style="flex:1; border-radius: 14px; background: #6FE8AA; min-height: 90px; position: relative;">
+        <div style="position: absolute; bottom: 10px; left: 12px; right: 12px; display: flex; gap: 8px; align-items: center;">
+          <span style="font-size: 10px; font-weight: 700; color: rgba(11,7,23,0.7); text-transform: uppercase; letter-spacing: 0.1em;">green</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 6px;">
+        <div style="flex: 1; border-radius: 100px; padding: 4px 10px; background: rgba(111,232,170,0.1); border: 1px solid rgba(111,232,170,0.25); display: flex; align-items: center; gap: 6px;">
+          <span style="width:6px;height:6px;border-radius:50%;background:#6FE8AA;"></span>
+          <span style="font-size:9.5px; font-weight:600; color: #6FE8AA; letter-spacing:0.08em; text-transform: uppercase;">Live</span>
+        </div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap: 2px;">
+        <span style="font-size: 11px; font-weight: 600; color: var(--text-1);">--green</span>
+        <span class="mono" style="font-size: 10px; color: var(--text-3);">#6FE8AA</span>
+        <span style="font-size: 10px; color: var(--text-4);">live · ok</span>
+      </div>
+    </div>
+  
+    <div style="flex:1; display:flex; flex-direction:column; gap:10px;">
+      <div style="flex:1; border-radius: 14px; background: #F0C674; min-height: 90px; position: relative;">
+        <div style="position: absolute; bottom: 10px; left: 12px; right: 12px; display: flex; gap: 8px; align-items: center;">
+          <span style="font-size: 10px; font-weight: 700; color: rgba(11,7,23,0.7); text-transform: uppercase; letter-spacing: 0.1em;">gold</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 6px;">
+        <div style="flex: 1; border-radius: 100px; padding: 4px 10px; background: rgba(240,198,116,0.1); border: 1px solid rgba(240,198,116,0.25); display: flex; align-items: center; gap: 6px;">
+          <span style="width:6px;height:6px;border-radius:50%;background:#F0C674;"></span>
+          <span style="font-size:9.5px; font-weight:600; color: #F0C674; letter-spacing:0.08em; text-transform: uppercase;">Testing</span>
+        </div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap: 2px;">
+        <span style="font-size: 11px; font-weight: 600; color: var(--text-1);">--gold</span>
+        <span class="mono" style="font-size: 10px; color: var(--text-3);">#F0C674</span>
+        <span style="font-size: 10px; color: var(--text-4);">testing · warn</span>
+      </div>
+    </div>
+  
+    <div style="flex:1; display:flex; flex-direction:column; gap:10px;">
+      <div style="flex:1; border-radius: 14px; background: #FF8585; min-height: 90px; position: relative;">
+        <div style="position: absolute; bottom: 10px; left: 12px; right: 12px; display: flex; gap: 8px; align-items: center;">
+          <span style="font-size: 10px; font-weight: 700; color: rgba(11,7,23,0.7); text-transform: uppercase; letter-spacing: 0.1em;">red</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 6px;">
+        <div style="flex: 1; border-radius: 100px; padding: 4px 10px; background: rgba(255,133,133,0.1); border: 1px solid rgba(255,133,133,0.25); display: flex; align-items: center; gap: 6px;">
+          <span style="width:6px;height:6px;border-radius:50%;background:#FF8585;"></span>
+          <span style="font-size:9.5px; font-weight:600; color: #FF8585; letter-spacing:0.08em; text-transform: uppercase;">Critical</span>
+        </div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap: 2px;">
+        <span style="font-size: 11px; font-weight: 600; color: var(--text-1);">--red</span>
+        <span class="mono" style="font-size: 10px; color: var(--text-3);">#FF8585</span>
+        <span style="font-size: 10px; color: var(--text-4);">error · critical</span>
+      </div>
+    </div>
+  
+</div>
+
+</body>
+</html>

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings · W Chats</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="app.css">
+<style>
+  /* settings-only */
+  .settings-col { max-width: 640px; }
+
+  /* danger zone: single top hairline, no double rules, no nested box */
+  .danger {
+    margin-top: 32px; padding-top: 24px;
+    border-top: 1px solid var(--hairline);
+  }
+  .danger .section-label { color: var(--red); }
+  .danger .row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 24px; margin-top: 16px;
+  }
+  .danger .row p { color: var(--ink-2); max-width: 46ch; font-size: 13.5px; }
+  .danger .row .btn { flex-shrink: 0; }
+
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+</style>
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="wordmark" href="index.html"><b>w.</b>chats</a>
+  <nav aria-label="Main">
+    <a href="agents.html">Agents</a>
+  </nav>
+  <span class="spacer"></span>
+  <div class="account" aria-label="Signed in as Lindiwe">LB</div>
+</header>
+
+<div class="frame">
+
+  <!-- shared agent rail - agent.lindiwe-beauty. Settings is the rail foot link (current) -->
+  <nav class="rail" aria-label="Agent journey">
+    <div class="agent-name">Lindiwe's Beauty Bar</div>
+    <div class="agent-id mono">agent.lindiwe-beauty</div>
+    <ol>
+      <li>
+        <a href="agent.html">
+          <span class="glyph done" aria-hidden="true">
+            <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 7.5 5.5 10.5 11.5 3.5"/></svg>
+          </span>
+          Configure
+          <span class="sr-only"> - done</span>
+        </a>
+      </li>
+      <li>
+        <a href="ingest.html">
+          <span class="glyph done" aria-hidden="true">
+            <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 7.5 5.5 10.5 11.5 3.5"/></svg>
+          </span>
+          Ingest
+          <span class="sr-only"> - done</span>
+        </a>
+      </li>
+      <li>
+        <a href="eval.html">
+          <span class="glyph active" aria-hidden="true">
+            <svg viewBox="0 0 14 14" width="14" height="14" fill="currentColor"><rect x="3" y="3" width="8" height="8" rx="1"/></svg>
+          </span>
+          Evals
+          <span class="sr-only"> - active</span>
+        </a>
+      </li>
+      <li>
+        <a href="deploy.html">
+          <span class="glyph locked" aria-hidden="true">
+            <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6.5" width="8" height="5" rx="1"/><path d="M4.75 6.5V5a2.25 2.25 0 0 1 4.5 0v1.5"/></svg>
+          </span>
+          Deploy
+          <span class="sr-only"> - locked</span>
+        </a>
+      </li>
+    </ol>
+    <div class="foot">
+      <ol>
+        <li><a href="settings.html" aria-current="page">Settings</a></li>
+      </ol>
+    </div>
+  </nav>
+
+  <main class="content" id="main">
+    <div class="page">
+
+      <div class="page-head">
+        <h1>Settings</h1>
+        <p>Manage this agent. Deleting an agent removes its knowledge base, evaluations and deployed widget.</p>
+      </div>
+
+      <div class="settings-col">
+        <div class="panel">
+
+          <div class="field" style="margin-bottom:0">
+            <label for="agent-name">Agent name</label>
+            <input id="agent-name" type="text" value="Lindiwe's Beauty Bar" disabled><!-- mock -->
+            <p class="help">Renaming arrives with multi-agent workspaces.</p>
+          </div>
+
+          <!-- danger zone -->
+          <div class="danger">
+            <div class="section-label">Danger zone</div>
+            <div class="row">
+              <p>Permanently delete agent.lindiwe-beauty and all 34 documents, evaluation runs and its live widget. This cannot be undone.</p>
+              <button type="button" class="btn btn-danger">Delete agent</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+</body>
+</html>

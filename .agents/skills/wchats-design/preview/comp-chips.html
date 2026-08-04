@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Status chips</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..800,0..100&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../colors_and_type.css">
+<link rel="stylesheet" href="_base.css">
+<style>
+html, body { width: 700px; height: 180px; }
+.btn { font-family: var(--font-sans); font-size: 14px; font-weight: 600; letter-spacing: -0.005em; padding: 10px 18px; border-radius: 8px; cursor: pointer; border: none; display: inline-flex; align-items: center; gap: 8px; transition: all 0.15s ease; white-space: nowrap; }
+.btn-primary { background: var(--accent); color: var(--text-on-accent); box-shadow: 0 0 0 1px var(--accent-deep) inset, var(--shadow-glow); }
+.btn-ghost { background: transparent; color: var(--text-1); border: 1px solid var(--border); }
+.btn-secondary { background: var(--surface-2); color: var(--text-1); border: 1px solid var(--border); }
+.btn-sm { font-size: 12.5px; padding: 7px 14px; }
+.btn-lg { font-size: 15px; padding: 13px 24px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 10px; border-radius: 100px; }
+.chip .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.chip-live   { background: var(--green-bg);  color: var(--green);  border: 1px solid var(--green-border); }
+.chip-test   { background: var(--gold-bg);   color: var(--gold);   border: 1px solid var(--gold-border); }
+.chip-draft  { background: var(--surface-2); color: var(--text-3); border: 1px solid var(--border-soft); }
+.chip-red    { background: var(--red-bg);    color: var(--red);    border: 1px solid var(--red-border); }
+.chip-coral  { background: var(--accent-dim);color: var(--accent); border: 1px solid rgba(244,116,140,0.25); }
+.chip-cyan   { background: var(--cyan-dim);  color: var(--cyan);   border: 1px solid rgba(94,223,211,0.25); }
+.chip-lilac  { background: var(--lilac-dim); color: var(--lilac);  border: 1px solid rgba(183,154,224,0.25); }
+
+</style>
+</head>
+<body>
+
+<div style="display: flex; flex-direction: column; gap: 18px; height: 100%; justify-content: center;">
+  <div class="label">Status chips · pulse dot for live states</div>
+  <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+    <span class="chip chip-live"><span class="dot"></span>Live</span>
+    <span class="chip chip-test"><span class="dot"></span>Testing</span>
+    <span class="chip chip-coral"><span class="dot"></span>Building</span>
+    <span class="chip chip-draft">Draft</span>
+    <span class="chip chip-red"><span class="dot"></span>Critical</span>
+    <span class="chip chip-cyan"><span class="dot"></span>Verified</span>
+    <span class="chip chip-lilac">Beta</span>
+  </div>
+  <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+    <span class="chip chip-coral">Open Source · AGPL-3.0</span>
+    <span class="chip chip-coral">v0.4.2 · M8</span>
+    <span class="chip chip-draft">queued</span>
+  </div>
+</div>
+
+</body>
+</html>

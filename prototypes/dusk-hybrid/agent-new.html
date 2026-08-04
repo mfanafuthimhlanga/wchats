@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New agent · W Chats</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..800,0..100,0..1&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<!--
+  HYBRID PROTOTYPE — this page reproduces the PRODUCTION React create-agent
+  layout (apps/admin/app/agents/new/page.tsx + components/JourneyStepper.tsx).
+  It renders the FORM state only. In production there are two further phases
+  on this same panel:
+    · provisioning — a coral spinner + mono "status: pending — working…" block,
+      an elapsed-seconds counter and the agent_id, shown while the tenant
+      database is created (~30–60s), then it redirects to the agent page.
+    · error — a red-bg alert + "Try again" reset button.
+  Both are omitted here; only the form is rendered. The page sits on solid
+  --bg (#110C24), NOT the skyline photo. Tokens are copied from globals.css.
+-->
+<style>
+  /* ── Production tokens — copied from apps/admin/app/globals.css ─────────── */
+  :root {
+    --bg-deep:    #0B0717;
+    --bg:         #110C24;
+    --bg-elev:    #181232;
+    --surface-1:  #1E1638;
+
+    /* Glass tiers */
+    --glass-bg:        rgba(17, 12, 31, 0.55);
+    --glass-bg-strong: rgba(24, 17, 45, 0.70);
+    --glass-bg-dense:  rgba(13, 9, 24, 0.74);
+    --glass-border:    rgba(244, 232, 220, 0.10);
+    --glass-blur:      blur(24px) saturate(115%);
+    --glass-blur-dense: blur(28px) saturate(105%);
+    --glass-highlight: inset 0 1px 0 rgba(244, 232, 220, 0.07);
+    /* Blend-with-parent surfaces (never nest blur) */
+    --well: rgba(11, 7, 23, 0.42);
+    --chip: rgba(40, 30, 66, 0.42);
+
+    /* Borders */
+    --border:      rgba(196, 154, 232, 0.18);
+    --border-soft: rgba(196, 154, 232, 0.10);
+    --border-hard: rgba(244, 116, 140, 0.32);
+
+    /* Accent — sunset coral */
+    --accent:       #F4748C;
+    --accent-hover: #F5899E;
+    --accent-deep:  #C4435C;
+    --accent-dim:   rgba(244, 116, 140, 0.10);
+
+    /* Secondary — jacaranda lilac */
+    --lilac:     #B79AE0;
+    --lilac-dim: rgba(183, 154, 224, 0.12);
+
+    /* Text */
+    --text-1: #F4EDE5;
+    --text-2: #C4BCD0;
+    --text-3: #8A82A0;
+    --text-4: #5A5470;
+    --text-on-accent: #0B0717;
+
+    /* Status */
+    --green:    #34D399;
+    --green-bg: rgba(52, 211, 153, 0.12);
+    --red:      #F87171;
+    --red-bg:   rgba(248, 113, 113, 0.12);
+    --gold:     #FBBF24;
+    --gold-bg:  rgba(251, 191, 36, 0.12);
+
+    /* Radii */
+    --radius-xs:   8px;
+    --radius-sm:   14px;
+    --radius-md:   20px;
+    --radius-lg:   28px;
+    --radius-pill: 100px;
+
+    /* Shadows — violet-tinted */
+    --shadow-card:  0 1px 2px rgba(0,0,0,0.3), 0 4px 16px rgba(11,7,23,0.5);
+    --shadow-lift:  0 4px 12px rgba(0,0,0,0.35), 0 24px 48px rgba(11,7,23,0.6);
+    --shadow-focus: 0 0 0 3px rgba(244, 116, 140, 0.28);
+    --shadow-glow:  0 0 32px rgba(244, 116, 140, 0.18);
+
+    /* Typography */
+    --font-display: 'Fraunces', Georgia, serif;
+    --font-sans:    'Inter', system-ui, sans-serif;
+    --font-mono:    'JetBrains Mono', ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { margin: 0; }
+
+  /* Skyline surface at 25% over the dark ground */
+  html { background: var(--bg); }
+  body {
+    background: transparent;
+    font-family: var(--font-sans);
+    color: var(--text-1);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    min-height: 100vh;
+  }
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background: url('skyline-w-chats.png') center / cover no-repeat;
+    opacity: 0.25;
+    pointer-events: none;
+  }
+
+  /* ── Glass tiers — copied from globals.css ─────────────────────────────── */
+  .glass-strong {
+    background: var(--glass-bg-dense);
+    backdrop-filter: var(--glass-blur-dense);
+    -webkit-backdrop-filter: var(--glass-blur-dense);
+    border: 1px solid var(--border-soft);
+    box-shadow: var(--glass-highlight), var(--shadow-card);
+  }
+  .glass-nav {
+    position: relative;
+    background: transparent;
+    border: none;
+  }
+  /* nav scrim removed */
+  @supports not (backdrop-filter: blur(1px)) {
+    .glass-strong { background: rgba(13, 9, 24, 0.93); }
+  }
+
+  /* ── Focus + input rules — copied from globals.css ─────────────────────── */
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: none;
+    box-shadow: var(--shadow-focus);
+  }
+  input::placeholder,
+  textarea::placeholder {
+    color: rgba(244, 237, 229, 0.45);
+    opacity: 1;
+  }
+  button:focus-visible,
+  a:focus-visible,
+  [role="button"]:focus-visible {
+    outline: none;
+    box-shadow: var(--shadow-focus);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* Skip link */
+  .skip {
+    position: absolute;
+    left: -9999px;
+    top: 8px;
+    z-index: 200;
+    background: var(--accent);
+    color: var(--text-on-accent);
+    padding: 8px 14px;
+    border-radius: var(--radius-xs);
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .skip:focus { left: 12px; }
+
+  /* ── TopNav shell — reproduces components/TopNav.tsx ───────────────────── */
+  .topnav {
+    height: 60px;
+    display: flex;
+    align-items: center;
+    padding: 0 28px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .wordmark {
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-variation-settings: "opsz" 40, "SOFT" 30;
+    font-size: 20px;
+    letter-spacing: -0.02em;
+    color: var(--text-1);
+    text-decoration: none;
+    margin-right: 32px;
+  }
+  .wordmark .dot { color: var(--accent); }
+  .nav-links {
+    display: flex;
+    gap: 4px;
+    margin-left: auto;
+    margin-right: 12px;
+  }
+  .nav-links a {
+    padding: 6px 14px;
+    border-radius: var(--radius-xs);
+    color: var(--text-2);
+    font-weight: 400;
+    font-size: 14px;
+    text-decoration: none;
+    transition: color 0.15s, background 0.15s;
+  }
+  .nav-links a:hover { color: var(--text-1); }
+  .nav-links a[aria-current="page"] {
+    background: var(--accent-dim);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .account {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--bg-deep);
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+
+  /* ── Two-panel create layout — reproduces new/page.tsx ─────────────────── */
+  .create-shell {
+    display: flex;
+    min-height: calc(100vh - 60px);
+    font-family: var(--font-sans);
+  }
+
+  /* Left panel: JourneyStepper aside */
+  .stepper {
+    width: 280px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--glass-border);
+    padding: 32px 24px;
+  }
+  .stepper .agent-name {
+    font-family: var(--font-display);
+    font-variation-settings: "opsz" 144, "SOFT" 30;
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text-1);
+    margin: 0;
+  }
+  .stepper .agent-role {
+    font-size: 13px;
+    color: var(--text-3);
+    margin: 4px 0 32px 0;
+    min-height: 18px;
+  }
+
+  .step {
+    position: relative;
+    padding: 12px;
+    border-radius: var(--radius-xs);
+    margin-bottom: 8px;
+  }
+  .step-row { display: flex; align-items: center; gap: 12px; }
+  .step-circle {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .step-title { font-size: 14px; font-weight: 600; color: var(--text-1); }
+  .step-sub   { font-size: 12px; color: var(--text-2); }
+  .step-connector {
+    position: absolute;
+    left: 25px;
+    top: 52px;
+    bottom: -8px;
+    width: 2px;
+    background: var(--border-soft);
+  }
+  /* active step */
+  .step.active {
+    background: rgba(244,116,140,0.28);
+    border: 1px solid var(--accent);
+    box-shadow: 0 0 0 3px rgba(244,116,140,0.12);
+  }
+  .step.active .step-circle {
+    background: rgba(244,116,140,0.22);
+    border: 2px solid var(--accent);
+    color: var(--accent);
+  }
+  /* locked steps */
+  .step.locked {
+    background: transparent;
+    border: 1px solid transparent;
+    opacity: 0.65;
+  }
+  .step.locked .step-circle {
+    background: var(--chip);
+    border: 1px solid var(--border);
+    color: var(--text-4);
+  }
+
+  /* Right panel: form content */
+  .create-main {
+    flex: 1;
+    padding: 40px 48px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+  .form-panel {
+    border-radius: var(--radius-md);
+    padding: 28px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .step-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-2);
+    margin: 0 0 8px 0;
+  }
+  .form-title {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-variation-settings: "opsz" 144, "SOFT" 30;
+    font-size: 24px;
+    color: var(--text-1);
+    margin: 0 0 8px 0;
+  }
+  .form-intro {
+    font-size: 14px;
+    color: var(--text-1);
+    line-height: 1.6;
+    max-width: 520px;
+    margin: 0 0 32px 0;
+  }
+
+  .field { margin-bottom: 20px; }
+  .field label {
+    display: block;
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--text-1);
+    margin-bottom: 7px;
+  }
+  .field input,
+  .field select {
+    width: 100%;
+    padding: 11px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    font-family: var(--font-sans);
+    background: var(--well);
+    color: var(--text-1);
+    outline: none;
+  }
+  .field select { appearance: none; cursor: pointer; }
+  .field .help {
+    font-size: 12px;
+    color: var(--text-2);
+    margin: 5px 0 0 0;
+  }
+
+  .panel-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 32px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border-soft);
+  }
+  .panel-footer .spacer-left { display: inline-block; width: 110px; }
+  .panel-footer .step-count {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-2);
+    letter-spacing: 0.08em;
+  }
+  .continue-btn {
+    padding: 11px 28px;
+    background: var(--accent);
+    color: var(--text-on-accent);
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    font-family: var(--font-sans);
+    text-decoration: none;
+    display: inline-block;
+    box-shadow: var(--shadow-glow);
+    transition: background 0.15s;
+  }
+  .continue-btn:hover { background: var(--accent-hover); }
+
+  @media (max-width: 860px) {
+    .create-shell { flex-direction: column; }
+    .stepper { width: 100%; border-right: none; border-bottom: 1px solid var(--glass-border); }
+    .create-main { padding: 28px 20px; }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<!-- TopNav shell: wordmark → index, Agents link, account square -->
+<nav class="topnav glass-nav" aria-label="Main">
+  <a class="wordmark" href="index.html"><b>w.</b><span class="dot">chats</span></a>
+  <div class="nav-links">
+    <a href="agents.html" aria-current="page">Agents</a>
+    <a href="eval.html">Evals</a>
+    <a href="settings.html">Settings</a>
+  </div>
+  <span class="account" aria-label="Account" title="Account">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+    </svg>
+  </span>
+</nav>
+
+<div class="create-shell" id="main">
+
+  <!-- Left panel: JourneyStepper — Provision active, others locked -->
+  <aside class="stepper glass-strong" aria-label="Agent journey">
+    <h2 class="agent-name">New Agent</h2>
+    <p class="agent-role" aria-hidden="true"></p>
+
+    <div class="step active">
+      <div class="step-row">
+        <span class="step-circle" aria-hidden="true">1</span>
+        <span style="flex:1">
+          <span class="step-title" style="display:block">Provision</span>
+          <span class="step-sub" style="display:block">Dedicated tenant database</span>
+        </span>
+      </div>
+      <span class="step-connector" aria-hidden="true"></span>
+    </div>
+
+    <div class="step locked">
+      <div class="step-row">
+        <span class="step-circle" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+        </span>
+        <span style="flex:1">
+          <span class="step-title" style="display:block">Configure</span>
+          <span class="step-sub" style="display:block">Soul, voice, knowledge base</span>
+        </span>
+      </div>
+      <span class="step-connector" aria-hidden="true"></span>
+    </div>
+
+    <div class="step locked">
+      <div class="step-row">
+        <span class="step-circle" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+        </span>
+        <span style="flex:1">
+          <span class="step-title" style="display:block">Test</span>
+          <span class="step-sub" style="display:block">Evaluations + adversarial probes</span>
+        </span>
+      </div>
+      <span class="step-connector" aria-hidden="true"></span>
+    </div>
+
+    <div class="step locked">
+      <div class="step-row">
+        <span class="step-circle" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+        </span>
+        <span style="flex:1">
+          <span class="step-title" style="display:block">Deploy</span>
+          <span class="step-sub" style="display:block">Embed snippet + design</span>
+        </span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Right panel: form (form phase) -->
+  <div class="create-main">
+    <div class="form-panel glass-strong">
+      <form onsubmit="return false"><!-- mock: submit is a static link, see Continue -->
+        <p class="step-eyebrow">Step 1 of 4</p>
+        <h1 class="form-title">Provision your agent</h1>
+        <p class="form-intro">
+          Give your agent a name and define its primary role. This sets the context for all downstream configuration.
+        </p>
+
+        <div class="field">
+          <label for="agentName">Agent name</label>
+          <input id="agentName" type="text" value="Lindiwe's Beauty Bar" maxlength="60" autocomplete="off">
+        </div>
+
+        <div class="field">
+          <label for="agentPrimaryRole">Primary role</label>
+          <input id="agentPrimaryRole" type="text" placeholder="e.g. Customer service agent for a Melville salon" maxlength="120" autocomplete="off">
+          <p class="help">Used as the role context in the system prompt. Be specific.</p>
+        </div>
+
+        <div class="field">
+          <label for="agentDomain">Business domain</label>
+          <input id="agentDomain" type="text" placeholder="e.g. Salon and beauty, hardware and trade, retail" maxlength="120" autocomplete="off">
+        </div>
+
+        <div class="panel-footer">
+          <span class="spacer-left" aria-hidden="true"></span>
+          <span class="step-count">Step 1 of 4</span>
+          <a class="continue-btn" href="agent.html">Continue →</a>
+        </div>
+      </form>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

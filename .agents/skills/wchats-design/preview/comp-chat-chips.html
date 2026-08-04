@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Chat chips</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..800,0..100&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../colors_and_type.css">
+<link rel="stylesheet" href="_base.css">
+<style>
+html, body { width: 700px; height: 200px; }
+.btn { font-family: var(--font-sans); font-size: 14px; font-weight: 600; letter-spacing: -0.005em; padding: 10px 18px; border-radius: 8px; cursor: pointer; border: none; display: inline-flex; align-items: center; gap: 8px; transition: all 0.15s ease; white-space: nowrap; }
+.btn-primary { background: var(--accent); color: var(--text-on-accent); box-shadow: 0 0 0 1px var(--accent-deep) inset, var(--shadow-glow); }
+.btn-ghost { background: transparent; color: var(--text-1); border: 1px solid var(--border); }
+.btn-secondary { background: var(--surface-2); color: var(--text-1); border: 1px solid var(--border); }
+.btn-sm { font-size: 12.5px; padding: 7px 14px; }
+.btn-lg { font-size: 15px; padding: 13px 24px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 10px; border-radius: 100px; }
+.chip .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.chip-live   { background: var(--green-bg);  color: var(--green);  border: 1px solid var(--green-border); }
+.chip-test   { background: var(--gold-bg);   color: var(--gold);   border: 1px solid var(--gold-border); }
+.chip-draft  { background: var(--surface-2); color: var(--text-3); border: 1px solid var(--border-soft); }
+.chip-red    { background: var(--red-bg);    color: var(--red);    border: 1px solid var(--red-border); }
+.chip-coral  { background: var(--accent-dim);color: var(--accent); border: 1px solid rgba(244,116,140,0.25); }
+.chip-cyan   { background: var(--cyan-dim);  color: var(--cyan);   border: 1px solid rgba(94,223,211,0.25); }
+.chip-lilac  { background: var(--lilac-dim); color: var(--lilac);  border: 1px solid rgba(183,154,224,0.25); }
+
+</style>
+</head>
+<body>
+
+<div style="display: flex; flex-direction: column; gap: 14px; height: 100%; justify-content: center;">
+  <div class="label">Source chips · during retrieval</div>
+  <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+    <span style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: linear-gradient(110deg, var(--surface-2) 0%, var(--surface-3) 50%, var(--surface-2) 100%); background-size: 200% 100%; border: 1px solid var(--border-soft); border-radius: 100px; font-size: 11.5px; color: var(--text-2); font-family: var(--font-mono);">📄 Delivery Policy.pdf</span>
+    <span style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: linear-gradient(110deg, var(--surface-2) 0%, var(--surface-3) 50%, var(--surface-2) 100%); background-size: 200% 100%; border: 1px solid var(--border-soft); border-radius: 100px; font-size: 11.5px; color: var(--text-2); font-family: var(--font-mono);">📄 Opening Hours.pdf</span>
+  </div>
+  <div class="label">Citation chips · in the final answer</div>
+  <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+    <span style="display: inline-flex; align-items: center; padding: 4px 10px; background: var(--accent-dim); border: 1px solid rgba(244,116,140,0.25); border-radius: 100px; color: var(--accent); font-family: var(--font-mono); font-size: 11px; font-weight: 500;">[1] Delivery Policy</span>
+    <span style="display: inline-flex; align-items: center; padding: 4px 10px; background: var(--accent-dim); border: 1px solid rgba(244,116,140,0.25); border-radius: 100px; color: var(--accent); font-family: var(--font-mono); font-size: 11px; font-weight: 500;">[2] Opening Hours</span>
+  </div>
+</div>
+
+</body>
+</html>

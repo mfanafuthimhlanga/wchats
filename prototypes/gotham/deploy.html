@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en" data-gate="open">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Deploy · W Chats</title>
+<meta name="description" content="Four signals stand between this agent and your customers. All four have to hold.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&family=Newsreader:ital,opsz,wght@1,6..72,400&family=Space+Grotesk:wght@500;600&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="app.css">
+
+<style>
+  /* ── layout unique to the deploy bench ───────────────────────────────── */
+  .vh {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+
+  .cross-tl { left: 78px; top: 22px; }
+  .cross-tr { right: 22px; top: 22px; }
+  .cross-bl { left: 78px; bottom: 22px; }
+  .cross-br { right: 22px; bottom: 22px; }
+
+  /* ── DARKROOM: when the gate flips, the room changes temperature. It does
+       not cut. tokens.css repaints every fitting off one attribute; this is
+       only the easing, and it lives on the page that owns the gate. ────── */
+  .rail, .zone, .well, .btn, .chip, .ledger td, .ledger th, .hairline-rule,
+  .cross::before, .cross::after {
+    transition: background-color 600ms ease, border-color 600ms ease, color 600ms ease;
+  }
+
+  .bench {
+    display: grid; grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 44px; align-items: start;
+  }
+  @media (max-width: 1100px) {
+    .bench { grid-template-columns: minmax(0, 1fr); }
+    .preview { display: none; }
+  }
+
+  /* ── the gate: the hero of the page ──────────────────────────────────── */
+  .gate th.sig { width: 42%; }
+  .gate td.sig { font-weight: 500; }
+  .gate td .why { display: block; margin-top: 2px; font-size: 12px; color: var(--ink-3); }
+  .gate td.val { color: var(--ink-2); }
+
+  .stamp { color: var(--ink-3); font-size: 12px; }
+
+  .verdict-bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 14px;
+    margin-top: 24px;
+  }
+  .consequence { margin-top: 16px; font-size: 16px; max-width: 62ch; }
+
+  .rig { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 26px; padding-top: 20px;
+         border-top: 1px solid var(--hairline-soft); }
+  .rig .label { width: 100%; margin-bottom: 2px; }
+
+  /* .btn sets display:inline-flex, which outranks the UA sheet's
+     [hidden] { display: none }. Only one of the two rig buttons is ever real. */
+  .btn[hidden] { display: none; }
+
+  /* ── the embed ────────────────────────────────────────────────────────── */
+  .embed-row { display: flex; align-items: flex-start; gap: 12px; }
+  .embed-row .well { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-all; }
+  .embed-row .btn { flex: none; }
+
+  /* ── appearance: three tiles, and only the chosen one is lit ──────────── */
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  @media (max-width: 700px) { .tiles { grid-template-columns: 1fr; } }
+
+  /* a <label> is the tile, so the global label styling has to be undone once */
+  .tile {
+    position: relative; padding: 16px; cursor: pointer; margin-bottom: 0;
+    font-family: var(--sans); text-transform: none; letter-spacing: 0; color: var(--ink);
+  }
+  .tile:hover { border-color: var(--hairline-strong); }
+  .tile:has(input:focus-visible) { outline: 2px solid var(--live); outline-offset: 2px; }
+  .tile input {
+    position: absolute; width: 1px; height: 1px; opacity: 0;
+    clip-path: inset(50%); margin: 0; padding: 0;
+  }
+  .tile svg { display: block; color: var(--ink-3); margin-bottom: 12px; }
+  .tile[data-live="true"] svg { color: var(--live); }
+  .tile .name { display: block; font-size: 13.5px; font-weight: 600; }
+  .tile .note { display: block; margin-top: 3px; font-size: 12px; color: var(--ink-3); }
+
+  /* ── the widget preview: the ONE friendly surface in the whole console.
+       Hardcoded light values, on purpose. The gate must never repaint what
+       the customer sees. ───────────────────────────────────────────────── */
+  .preview { position: sticky; top: 34px; }
+  .preview .label { display: block; margin-bottom: 12px; }
+  .stage {
+    background: var(--well);
+    border: 1px solid var(--hairline-soft);
+    border-radius: var(--r-panel);
+    padding: 18px;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 12px;
+  }
+
+  .widget {
+    width: 100%;
+    /* The customer's widget is white in the wild. Here it is a PREVIEW sitting
+       on a dark bench, so it is dropped back to let the bench read through it
+       rather than punching a hole in the room. */
+    background: rgba(255, 255, 255, 0.7);
+    border-radius: 12px;
+    overflow: hidden;
+    font-family: var(--sans);
+    color: #12181A;
+  }
+  .w-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px; border-bottom: 1px solid #ECEAE4;
+  }
+  .w-avatar {
+    width: 30px; height: 30px; flex: none; border-radius: 50%;
+    background: #C79A3C; color: #0A1416;
+    display: grid; place-items: center;
+    font-family: var(--display); font-size: 13px; font-weight: 600;
+  }
+  .w-name { display: block; font-size: 13px; font-weight: 600; line-height: 1.3; }
+  .w-state { display: block; font-size: 11px; color: #7C8687; }
+  .w-body { padding: 14px; display: flex; flex-direction: column; gap: 9px; }
+  .w-msg {
+    max-width: 88%; padding: 9px 12px;
+    font-size: 12.5px; line-height: 1.5; border-radius: 12px;
+  }
+  .w-agent { align-self: flex-start; background: #F3F1EB; border-bottom-left-radius: 4px; }
+  .w-user  { align-self: flex-end; background: #12181A; color: #F6F5F1; border-bottom-right-radius: 4px; }
+  .w-input {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    margin: 0 14px 14px; padding: 9px 12px;
+    border: 1px solid #E4E1D9; border-radius: 100px;
+    font-size: 12.5px; color: #9AA3A3;
+  }
+  .w-send { color: #C79A3C; font-weight: 600; }
+
+  .launcher {
+    width: 46px; height: 46px; flex: none; border-radius: 50%;
+    background: #C79A3C; color: #0A1416;
+    display: grid; place-items: center;
+  }
+
+  /* the three appearances are three different objects, not three swatches */
+  .stage[data-mode="panel"] .widget { border-radius: 12px 0 0 12px; }
+  .stage[data-mode="panel"] .w-body { min-height: 190px; }
+  .stage[data-mode="panel"] .launcher,
+  .stage[data-mode="inline"] .launcher { display: none; }
+  .stage[data-mode="inline"] .widget { border-radius: 12px; border: 1px solid #E4E1D9; }
+  .stage[data-mode="inline"] .w-head { display: none; }
+
+  .caption { margin-top: 12px; font-size: 12px; color: var(--ink-3); }
+
+  @media (max-width: 900px) {
+    .cross-tl, .cross-bl { left: 22px; }
+    .cross-bl, .cross-br { bottom: 78px; }
+  }
+  @media (max-width: 640px) {
+    .embed-row { flex-direction: column; }
+    .embed-row .btn { width: 100%; justify-content: center; }
+  }
+</style>
+</head>
+
+<body class="tint">
+  <div class="graticule"></div>
+  <div class="bloom"></div>
+  <div class="cross cross-tl"></div>
+  <div class="cross cross-tr"></div>
+  <div class="cross cross-bl"></div>
+  <div class="cross cross-br"></div>
+
+  <a class="skip" href="#main">Skip to content</a>
+
+  <!-- ── the command deck ───────────────────────────────────────────────── -->
+  <nav class="rail" aria-label="Console">
+    <a class="rail-mark" href="index.html" aria-label="W Chats home">w</a>
+
+    <a class="rail-btn" href="agents.html" aria-label="Agents">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 1.8 15.4 5.4v7.2L9 16.2 2.6 12.6V5.4z"/>
+        <circle cx="9" cy="9" r="2.6"/>
+      </svg>
+    </a>
+
+    <a class="rail-btn" href="ingest.html" aria-label="Ingest">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 2.2v7.6"/>
+        <path d="M6 6.8 9 9.8l3-3"/>
+        <path d="M3 12.2v2.6h12v-2.6"/>
+      </svg>
+    </a>
+
+    <a class="rail-btn" href="eval.html" aria-label="Eval">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 15h12"/>
+        <path d="M5.6 15V9.2"/>
+        <path d="M9 15V4.4"/>
+        <path d="M12.4 15v-3.4"/>
+      </svg>
+    </a>
+
+    <a class="rail-btn" href="deploy.html" aria-current="page" aria-label="Deploy">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="9" cy="9" r="6.4"/>
+        <path d="M2.6 9h12.8"/>
+        <path d="M9 2.6c3.2 3.4 3.2 9.4 0 12.8-3.2-3.4-3.2-9.4 0-12.8z"/>
+      </svg>
+    </a>
+
+    <span class="spacer"></span>
+
+    <a class="rail-btn" href="settings.html" aria-label="Settings">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M2.6 5.4h7.7"/>
+        <path d="M13.7 5.4h1.7"/>
+        <circle cx="12" cy="5.4" r="1.7"/>
+        <path d="M2.6 12.6h1.7"/>
+        <path d="M7.7 12.6h7.7"/>
+        <circle cx="6" cy="12.6" r="1.7"/>
+      </svg>
+    </a>
+  </nav>
+
+  <main class="deck" id="main">
+    <div class="page">
+
+      <div class="page-head">
+        <div class="row">
+          <div>
+            <h1>Deploy</h1>
+            <p class="sub">
+              Four signals stand between this agent and a paying customer. The gate
+              opens only while all four hold, and it shuts itself the moment one does not.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="bench">
+        <div>
+
+          <!-- ── THE GATE ─────────────────────────────────────────────────
+               Not a badge in a corner. The state of this table is the
+               temperature of the whole room (see tokens.css, data-gate). -->
+          <section>
+            <div class="section-head">
+              <h2 class="label" id="gate-label">The gate</h2>
+              <span class="chip chip-live" id="gate-chip">
+                <i class="dot dot-live"></i><span>Open</span>
+              </span>
+            </div>
+
+            <table class="ledger gate" aria-labelledby="gate-label">
+              <thead>
+                <tr>
+                  <th scope="col" class="sig">Signal</th>
+                  <th scope="col">Value</th>
+                  <th scope="col">Verdict</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="sig">
+                    Evals pass rate
+                    <span class="why">52 scenarios, graded on four channels</span>
+                  </td>
+                  <td class="val mono">0.94 of 0.90 required</td>
+                  <td><span class="chip chip-pass">Pass</span></td>
+                </tr>
+
+                <tr id="rt-row">
+                  <td class="sig">
+                    Red team
+                    <span class="why">40 adversarial probes, run nightly</span>
+                  </td>
+                  <td class="val mono" id="rt-val">0 critical findings</td>
+                  <td id="rt-verdict"><span class="chip chip-pass">Pass</span></td>
+                </tr>
+
+                <tr>
+                  <td class="sig">
+                    Knowledge base
+                    <span class="why">Everything the agent is allowed to cite</span>
+                  </td>
+                  <td class="val mono">34 documents parsed</td>
+                  <td><span class="chip chip-pass">Pass</span></td>
+                </tr>
+
+                <tr>
+                  <td class="sig">
+                    Soul
+                    <span class="why">Tone, refusals and escalation rules</span>
+                  </td>
+                  <td class="val mono">saved 2026-07-08</td>
+                  <td><span class="chip chip-pass">Pass</span></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <div class="verdict-bar">
+              <button class="btn btn-primary" type="button" id="approve"
+                      aria-describedby="consequence">Approve deploy</button>
+              <span class="mono stamp" id="approve-note">
+                agent.lindiwe-beauty · 1,208 sessions served
+              </span>
+            </div>
+
+            <p class="voice consequence" id="consequence">
+              Every signal holds. Approving puts this agent in front of every customer
+              who opens the Melville storefront.
+            </p>
+            <p class="vh" id="gate-status" role="status" aria-live="polite"></p>
+
+            <!-- the rig: prove the gate is real by shutting it -->
+            <div class="rig">
+              <span class="label">Test the gate</span>
+              <button class="btn btn-seal" type="button" id="break">
+                Simulate a critical red-team finding
+              </button>
+              <button class="btn btn-ghost" type="button" id="clear" hidden>
+                Clear the finding
+              </button>
+            </div>
+          </section>
+
+          <!-- ── the embed ────────────────────────────────────────────────── -->
+          <section class="section">
+            <div class="section-head">
+              <h2 class="label" id="embed-label">Embed</h2>
+              <span class="mono stamp">one tag, before the closing body</span>
+            </div>
+
+            <div class="embed-row">
+              <code class="well" id="snippet">&lt;script src="https://cdn.wchats.co.za/widget.js" data-agent="agent.lindiwe-beauty" async&gt;&lt;/script&gt;</code>
+              <button class="btn btn-ghost" type="button" id="copy"
+                      aria-describedby="embed-label">Copy</button>
+            </div>
+            <p class="vh" id="copy-status" role="status" aria-live="polite"></p>
+            <p class="help">
+              The widget loads on its own, after your page has painted. It adds nothing
+              to your first render.
+            </p>
+          </section>
+
+          <!-- ── appearance ───────────────────────────────────────────────── -->
+          <section class="section">
+            <div class="section-head">
+              <h2 class="label" id="appearance-label">Appearance</h2>
+            </div>
+
+            <fieldset style="border:0;padding:0;margin:0">
+              <legend class="vh">Where the widget sits on your page</legend>
+              <div class="tiles">
+
+                <label class="zone tile" data-live="true">
+                  <input type="radio" name="mode" value="float" checked>
+                  <svg width="30" height="30" viewBox="0 0 30 30" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="2.4" y="2.4" width="25.2" height="25.2" rx="2.6"/>
+                    <circle cx="21.6" cy="21.6" r="3.6" fill="currentColor" fill-opacity="0.18"/>
+                  </svg>
+                  <span class="name">Floating button</span>
+                  <span class="note">A bubble in the corner</span>
+                </label>
+
+                <label class="zone tile">
+                  <input type="radio" name="mode" value="panel">
+                  <svg width="30" height="30" viewBox="0 0 30 30" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="2.4" y="2.4" width="25.2" height="25.2" rx="2.6"/>
+                    <path d="M19.4 2.4v25.2"/>
+                    <path d="M22.2 9.6h2.6"/><path d="M22.2 13.2h2.6"/>
+                  </svg>
+                  <span class="name">Side panel</span>
+                  <span class="note">Slides in from the right</span>
+                </label>
+
+                <label class="zone tile">
+                  <input type="radio" name="mode" value="inline">
+                  <svg width="30" height="30" viewBox="0 0 30 30" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="2.4" y="2.4" width="25.2" height="25.2" rx="2.6"/>
+                    <rect x="7" y="10.4" width="16" height="9.2" rx="1.6" fill="currentColor" fill-opacity="0.18"/>
+                  </svg>
+                  <span class="name">Inline</span>
+                  <span class="note">Sits in the page itself</span>
+                </label>
+
+              </div>
+            </fieldset>
+          </section>
+
+        </div>
+
+        <!-- ── the customer's side of the glass ────────────────────────────
+             The only friendly surface in this console. White, sans, round,
+             and it may smile. The operator may not. -->
+        <aside class="preview" aria-labelledby="preview-label">
+          <span class="label" id="preview-label">Preview</span>
+
+          <div class="stage" id="stage" data-mode="float">
+            <div class="widget" aria-hidden="true">
+              <div class="w-head">
+                <span class="w-avatar">L</span>
+                <span>
+                  <span class="w-name">Lindiwe&#8217;s Beauty Bar</span>
+                  <span class="w-state">Usually replies in a few seconds</span>
+                </span>
+              </div>
+              <div class="w-body">
+                <p class="w-msg w-agent">
+                  Hi 👋 I am the booking assistant for Lindiwe&#8217;s Beauty Bar. Ask me about
+                  prices, bookings or opening hours.
+                </p>
+                <p class="w-msg w-user">How much is a full set of acrylics</p>
+                <p class="w-msg w-agent">
+                  A full set of acrylics is R450 and takes about 90 minutes. I have Saturday
+                  at 10:30 open if you would like it.
+                </p>
+              </div>
+              <div class="w-input">
+                <span>Ask a question</span>
+                <span class="w-send">Send</span>
+              </div>
+            </div>
+
+            <div class="launcher" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17 9.6a6.6 6.6 0 0 1-7.1 6.6L4 17.5l1.4-4.6A6.6 6.6 0 1 1 17 9.6z"/>
+              </svg>
+            </div>
+          </div>
+
+          <p class="caption" id="caption">
+            The customer sees a floating bubble in the bottom corner of your site.
+          </p>
+        </aside>
+      </div>
+
+    </div>
+  </main>
+
+<script>
+  (function () {
+    'use strict';
+
+    var root = document.documentElement;
+
+    /* =====================================================================
+       THE GATE (from WARDEN)
+       One attribute on the root. tokens.css repaints every hairline, every
+       chip and the bloom itself off [data-gate="blocked"]. Nothing below
+       hand-colours a single pixel: it only states the facts and lets the
+       room follow.
+       ===================================================================== */
+    var approve   = document.getElementById('approve');
+    var breakBtn  = document.getElementById('break');
+    var clearBtn  = document.getElementById('clear');
+    var rtVal     = document.getElementById('rt-val');
+    var rtVerdict = document.getElementById('rt-verdict');
+    var gateChip  = document.getElementById('gate-chip');
+    var conseq    = document.getElementById('consequence');
+    var status    = document.getElementById('gate-status');
+
+    var OPEN_LINE =
+      'Every signal holds. Approving puts this agent in front of every customer ' +
+      'who opens the Melville storefront.';
+    var SHUT_LINE = 'The gate is shut. This agent cannot reach a customer.';
+
+    function setChip(el, cls, text) {
+      el.className = 'chip ' + cls;
+      el.textContent = '';
+      var dot = document.createElement('i');
+      dot.className = cls === 'chip-live' ? 'dot dot-live' : 'dot';
+      var span = document.createElement('span');
+      span.textContent = text;
+      el.appendChild(dot);
+      el.appendChild(span);
+    }
+
+    function setGate(open) {
+      root.dataset.gate = open ? 'open' : 'blocked';
+
+      rtVal.textContent = open ? '0 critical findings' : '1 critical finding';
+
+      rtVerdict.textContent = '';
+      var v = document.createElement('span');
+      v.className = open ? 'chip chip-pass' : 'chip chip-fail';
+      v.textContent = open ? 'Pass' : 'Fail';
+      rtVerdict.appendChild(v);
+
+      setChip(gateChip, open ? 'chip-live' : 'chip-seal', open ? 'Open' : 'Shut');
+
+      approve.disabled = !open;
+      conseq.textContent = open ? OPEN_LINE : SHUT_LINE;
+      status.textContent = open
+        ? 'The gate is open. All four signals pass.'
+        : 'The gate is shut. A critical red-team finding is open.';
+
+      breakBtn.hidden = !open;
+      clearBtn.hidden = open;
+    }
+
+    breakBtn.addEventListener('click', function () {
+      setGate(false);
+      clearBtn.focus();          /* the button that vanished had the focus */
+    });
+    clearBtn.addEventListener('click', function () {
+      setGate(true);
+      breakBtn.focus();
+    });
+
+    approve.addEventListener('click', function () {
+      if (approve.disabled) return;
+      approve.textContent = 'Deployed';
+      approve.disabled = true;
+      status.textContent = 'Deployed. agent.lindiwe-beauty is answering customers.';
+      window.setTimeout(function () {
+        approve.textContent = 'Approve deploy';
+        approve.disabled = root.dataset.gate === 'blocked';
+      }, 2400);
+    });
+
+    /* ── copy the tag ────────────────────────────────────────────────────── */
+    var copy = document.getElementById('copy');
+    var snippet = document.getElementById('snippet');
+    var copyStatus = document.getElementById('copy-status');
+    var copyTimer = null;
+
+    function flip() {
+      copy.textContent = 'Copied';
+      copyStatus.textContent = 'Embed tag copied to the clipboard.';
+      if (copyTimer) clearTimeout(copyTimer);
+      copyTimer = window.setTimeout(function () { copy.textContent = 'Copy'; }, 1500);
+    }
+
+    /* the old way, for a page served over file:// or an insecure origin */
+    function fallback(text) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); flip(); }
+      catch (err) { copyStatus.textContent = 'Copy failed. Select the tag and copy it by hand.'; }
+      document.body.removeChild(ta);
+    }
+
+    copy.addEventListener('click', function () {
+      var text = snippet.textContent;
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(flip, function () { fallback(text); });
+      } else {
+        fallback(text);
+      }
+    });
+
+    /* ── appearance: the preview is the setting's output, not a swatch ───── */
+    var stage = document.getElementById('stage');
+    var caption = document.getElementById('caption');
+    var tiles = Array.prototype.slice.call(document.querySelectorAll('.tile'));
+
+    var CAPTIONS = {
+      float:  'The customer sees a floating bubble in the bottom corner of your site.',
+      panel:  'The widget slides in from the right edge and holds the full height of the screen.',
+      inline: 'The widget is part of the page, wherever you drop the tag.'
+    };
+
+    tiles.forEach(function (tile) {
+      var input = tile.querySelector('input');
+      input.addEventListener('change', function () {
+        tiles.forEach(function (t) { t.removeAttribute('data-live'); });
+        tile.dataset.live = 'true';
+        stage.dataset.mode = input.value;
+        caption.textContent = CAPTIONS[input.value];
+      });
+    });
+  })();
+</script>
+</body>
+</html>

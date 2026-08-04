@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evals · W Chats</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="app.css">
+<style>
+  /* eval page - solid ground, no scene, no effects */
+
+  .sr-only {
+    position: absolute; width: 1px; height: 1px;
+    padding: 0; margin: -1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+
+  /* status chip with agent id in header */
+  .head-meta { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+  .head-meta .agent-id { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+
+  /* stat strip: plain numbers, no boxes */
+  .stat-strip {
+    display: flex; flex-wrap: wrap; gap: 48px;
+    padding-bottom: 28px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .stat .value { font-family: var(--mono); font-size: 28px; font-weight: 500; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .stat .value.pass { color: var(--amber); }
+  .stat .value.fail { color: var(--red); }
+  .stat .label { font-family: var(--mono); font-size: 12px; color: var(--ink-2); margin-top: 8px; }
+
+  /* chart */
+  .chart-block { margin: 40px 0 48px; }
+  .chart-block .section-label { display: block; margin-bottom: 4px; }
+  .chart-block .caption { font-family: var(--sans); font-size: 12.5px; color: var(--ink-3); margin-bottom: 18px; }
+  .chart svg { display: block; width: 100%; max-width: 560px; height: auto; }
+  .chart .grid-line { stroke: var(--hairline-soft); stroke-width: 1; }
+  .chart .grid-label { fill: var(--ink-3); font-family: var(--mono); font-size: 10px; }
+  .chart .trend { fill: none; stroke: var(--amber); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .chart .node { fill: var(--amber); }
+  .chart .x-label { fill: var(--ink-3); font-family: var(--mono); font-size: 10px; text-anchor: middle; }
+
+  /* ledger frame */
+  .ledger-frame {
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-panel);
+    overflow: hidden;
+    background: var(--surface);
+  }
+  .ledger-frame .section-label { display: block; padding: 18px 24px 0; }
+  .verdict-cell { text-align: right; }
+  .expand-note { color: var(--ink-3); }
+
+  /* failed row expand (documented; toggle by removing hidden) */
+  .fail-detail td {
+    background: var(--well);
+    border-bottom: 1px solid var(--hairline-soft);
+    padding: 0;
+  }
+  .fail-detail .inner {
+    padding: 14px 24px 18px;
+    font-family: var(--mono); font-size: 12px; color: var(--ink-2); line-height: 1.7;
+  }
+  .fail-detail .inner .k { color: var(--ink-3); }
+  .fail-detail .inner .miss { color: var(--red); }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="wordmark" href="index.html"><b>w.</b>chats</a>
+  <nav aria-label="Main">
+    <a href="agents.html">Agents</a>
+  </nav>
+  <span class="spacer"></span>
+  <div class="account" title="Lindiwe Nkosi" aria-label="Account, Lindiwe Nkosi">LN</div>
+</header>
+
+<div class="frame">
+  <!-- left rail: journey steps -->
+  <nav class="rail" aria-label="Agent journey"><!-- mock -->
+    <div class="agent-name">Lindiwe's Beauty Bar</div>
+    <div class="agent-id">agent.lindiwe-beauty</div>
+    <ol>
+      <li>
+        <a href="agent.html">
+          <span class="glyph done" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2"><path d="M2.5 7.5 6 11l6-7.5"/></svg>
+          </span>
+          Configure
+          <span class="sr-only">, done</span>
+        </a>
+      </li>
+      <li>
+        <a href="ingest.html">
+          <span class="glyph done" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2"><path d="M2.5 7.5 6 11l6-7.5"/></svg>
+          </span>
+          Ingest
+          <span class="sr-only">, done</span>
+        </a>
+      </li>
+      <li>
+        <a href="eval.html" aria-current="page">
+          <span class="glyph active" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 14 14"><rect x="3" y="3" width="8" height="8" rx="1" fill="currentColor"/></svg>
+          </span>
+          Evals
+          <span class="sr-only">, current step</span>
+        </a>
+      </li>
+      <li>
+        <a href="deploy.html">
+          <span class="glyph locked" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6.5" width="8" height="5" rx="1"/><path d="M4.5 6.5V5a2.5 2.5 0 0 1 5 0v1.5"/></svg>
+          </span>
+          Deploy
+        </a>
+      </li>
+    </ol>
+    <div class="foot">
+      <ol style="margin:0">
+        <li><a href="settings.html">Settings</a></li>
+      </ol>
+    </div>
+  </nav>
+
+  <main class="content" id="main">
+    <div class="page">
+      <div class="page-head">
+        <div class="row">
+          <div>
+            <h1>Run evaluations</h1>
+            <div class="head-meta">
+              <span class="agent-id">agent.lindiwe-beauty</span>
+            </div>
+          </div>
+          <button class="btn btn-primary" type="button">Run evals</button>
+        </div>
+      </div>
+
+      <!-- stat strip: 4 plain stats, no boxes -->
+      <div class="stat-strip" aria-label="Evaluation summary"><!-- mock -->
+        <div class="stat">
+          <div class="value pass">0.94</div>
+          <div class="label">Pass rate</div>
+        </div>
+        <div class="stat">
+          <div class="value">52</div>
+          <div class="label">Scenarios</div>
+        </div>
+        <div class="stat">
+          <div class="value fail">3</div>
+          <div class="label">Failures</div>
+        </div>
+        <div class="stat">
+          <div class="value">2026-07-09</div>
+          <div class="label">Last run</div>
+        </div>
+      </div>
+
+      <!-- pass-rate trend: hand-authored inline SVG line chart, no library -->
+      <div class="chart-block">
+        <span class="section-label">Pass rate trend</span>
+        <p class="caption">Eight most recent runs. Each deploy gate requires 0.90 or higher.</p>
+        <div class="chart">
+          <!-- mock: 8 pass rates 0.86 -> 0.94 mapped onto viewBox 0 0 560 160.
+               y = 40 + (1.00 - rate) / (1.00 - 0.80) * 100  (0.80 at y=140, 1.00 at y=40) -->
+          <svg viewBox="0 0 560 160" role="img"
+               aria-label="Line chart of pass rate across the last eight runs, rising from 0.86 on 2026-07-02 to 0.94 on 2026-07-09.">
+            <!-- gridlines at 1.00, 0.90, 0.80 -->
+            <line class="grid-line" x1="40" y1="40"  x2="548" y2="40"></line>
+            <line class="grid-line" x1="40" y1="90"  x2="548" y2="90"></line>
+            <line class="grid-line" x1="40" y1="140" x2="548" y2="140"></line>
+            <text class="grid-label" x="0" y="44">1.00</text>
+            <text class="grid-label" x="0" y="94">0.90</text>
+            <text class="grid-label" x="0" y="144">0.80</text>
+
+            <!-- trend polyline: 8 points, x from 76 to 524 step 64 -->
+            <!-- rates 0.86 0.88 0.87 0.90 0.91 0.92 0.93 0.94 -->
+            <polyline class="trend"
+              points="76,110 140,100 204,105 268,90 332,85 396,80 460,75 524,70"></polyline>
+
+            <circle class="node" cx="76"  cy="110" r="2.5"></circle>
+            <circle class="node" cx="140" cy="100" r="2.5"></circle>
+            <circle class="node" cx="204" cy="105" r="2.5"></circle>
+            <circle class="node" cx="268" cy="90"  r="2.5"></circle>
+            <circle class="node" cx="332" cy="85"  r="2.5"></circle>
+            <circle class="node" cx="396" cy="80"  r="2.5"></circle>
+            <circle class="node" cx="460" cy="75"  r="2.5"></circle>
+            <circle class="node" cx="524" cy="70"  r="2.5"></circle>
+
+            <text class="x-label" x="76"  y="156">07-02</text>
+            <text class="x-label" x="204" y="156">07-04</text>
+            <text class="x-label" x="332" y="156">07-06</text>
+            <text class="x-label" x="460" y="156">07-08</text>
+          </svg>
+        </div>
+      </div>
+
+      <!-- scenario ledger -->
+      <div class="ledger-frame">
+        <span class="section-label">Scenario ledger</span>
+        <table class="ledger" style="margin-top:12px" aria-label="Evaluation scenarios">
+          <thead>
+            <tr>
+              <th style="padding-left:24px">Scenario</th>
+              <th>Source</th>
+              <th class="num">Faithfulness</th>
+              <th class="num">Relevancy</th>
+              <th>Verdict</th>
+              <th class="num" style="padding-right:24px">Ran</th>
+            </tr>
+          </thead>
+          <tbody><!-- mock data: 8 rows, 2 FAIL -->
+            <tr>
+              <td class="body-cell" style="padding-left:24px">Returns window on unopened products</td>
+              <td><span class="chip chip-neutral">returns-policy</span></td>
+              <td class="num">0.97</td>
+              <td class="num">0.95</td>
+              <td><span class="chip chip-live">PASS</span></td>
+              <td class="num" style="padding-right:24px">2026-07-09 14:32</td>
+            </tr>
+            <tr>
+              <td class="body-cell" style="padding-left:24px">Booking change under 24h before appointment</td>
+              <td><span class="chip chip-neutral">bookings</span></td>
+              <td class="num">0.94</td>
+              <td class="num">0.96</td>
+              <td><span class="chip chip-live">PASS</span></td>
+              <td class="num" style="padding-right:24px">2026-07-09 14:32</td>
+            </tr>
+            <tr>
+              <td class="body-cell" style="padding-left:24px">Price of a treatment not in the documents</td>
+              <td><span class="chip chip-neutral">pricing</span></td>
+              <td class="num">0.99</td>
+              <td class="num">0.91</td>
+              <td><span class="chip chip-live">PASS</span></td>
+              <td class="num" style="padding-right:24px">2026-07-09 14:32</td>
+            </tr>
+            <!-- FAIL row 1 -->
+            <tr>
+              <td class="body-cell" style="padding-left:24px">Refund on a gift voucher bought in store</td>
+              <td><span class="chip chip-neutral">returns-policy</span></td>
+              <td class="num" style="color:var(--red)">0.71</td>
+              <td class="num">0.88</td>
+              <td><span class="chip chip-fail">FAIL</span></td>
+              <td class="num" style="padding-right:24px">2026-07-09 14:32</td>
+            </tr>
+            <!-- expansion detail for the failed row above; remove hidden to preview -->
+            <tr class="fail-detail" hidden>
+              <td colspan="6">
+                <div class="inner">
+                  <span class="k">answer</span> claimed store vouchers are refundable to the original card<br>
+                  <span class="k">reference</span> vouchers are exchangeable for services only, not refundable<br>
+                  <span class="k">verdict</span> <span class="miss">faithfulness below 0.90 threshold, unsupported claim</span>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td class="body-cell" style="padding-left:24px">Opening hours on public holidays</td>
+              <td><span class="chip chip-neutral">hours</span></td>
+              <td class="num">0.98</td>
+              <td class="num">0.97</td>
+              <td><span class="chip chip-live">PASS</span></td>
+              <td class="num" style="padding-right:24px">2026-07-09 14:32</td>
+            </tr>
+            <tr>
+              <td class="body-cell" style="padding-left:24px">Which payment methods are accepted</td>
+              <td><span class="chip chip-neutral">payments</span></td>
+              <td class="num">0.96</td>
+              <td class="num">0.93</td>
+              <td><span class="chip chip-live">PASS</span></td>
+              <td class="num" style="padding-right:24px">2026-07-09 14:32</td>
+            </tr>
+            <!-- FAIL row 2 -->
+            <tr>
+              <td class="body-cell" style="padding-left:24px">Whether a deposit is required for group bookings</td>
+              <td><span class="chip chip-neutral">bookings</span></td>
+              <td class="num" style="color:var(--red)">0.82</td>
+              <td class="num">0.79</td>
+              <td><span class="chip chip-fail">FAIL</span></td>
+              <td class="num" style="padding-right:24px">2026-07-09 14:32</td>
+            </tr>
+            <tr>
+              <td class="body-cell" style="padding-left:24px">Directions and parking near the Melville salon</td>
+              <td><span class="chip chip-neutral">location</span></td>
+              <td class="num">0.95</td>
+              <td class="num">0.94</td>
+              <td><span class="chip chip-live">PASS</span></td>
+              <td class="num" style="padding-right:24px">2026-07-09 14:32</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- running state (documented): while a run is in progress the Run evals button
+           reads "Running" disabled, and a mono line above the ledger shows
+           "Evaluating scenario 34 of 52 · started 2026-07-10 09:04" with an amber dot. -->
+
+      <!-- empty state (documented): before the first run the stat strip reads em-dash-free
+           "not run yet", the chart is replaced by a mono line "No runs yet. Run evals to
+           score your scenarios.", and the ledger shows a single centered mono row. -->
+    </div>
+  </main>
+</div>
+
+</body>
+</html>

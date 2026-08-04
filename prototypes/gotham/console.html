@@ -1,0 +1,1133 @@
+<!DOCTYPE html>
+<html lang="en" data-gate="blocked">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Console · W Chats</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Newsreader:ital,opsz,wght@0,6..72,400;1,6..72,400;1,6..72,500&family=Space+Grotesk:wght@500;600;700&display=swap">
+
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="app.css">
+
+<style>
+/* =========================================================================
+   CONSOLE — one surface. No pages, no nav, no cards.
+
+   The room is a single 100svh plate. The agent sits dead centre of the
+   viewport and never leaves it. Choosing a tool re-tools the surface around
+   the same specimen. The gate is not a badge: it is a shutter, and it comes
+   down in front of you.
+   ========================================================================= */
+
+/* app.css still reaches for the retired brass tokens. Shim them onto LIVE so
+   the shared classes obey the new law (live is brightness, and it follows the
+   gate). This is a repair, not a parallel style layer. */
+:root {
+  --brass:     var(--live);
+  --brass-hot: var(--live-hot);
+  --brass-dim: var(--live-dim);
+  --brass-ink: var(--live-ink);
+
+  --gate-h: 216px;      /* the drop of the shutter */
+  --spine:  208px;
+  --instr:  240px;
+  --tools:  48px;
+}
+
+html, body { height: 100%; }
+body { height: 100svh; overflow: hidden; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+[hidden] { display: none !important; }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   THE ROOM
+   ───────────────────────────────────────────────────────────────────────── */
+.room {
+  position: fixed; inset: 0;
+  display: grid;
+  grid-template-columns: var(--tools) var(--spine) 1fr var(--instr);
+  height: 100svh;
+  z-index: var(--z-bench);
+}
+
+/* the registration marks sit at the corners of the stage, not the page */
+.cross-tl { left: calc(var(--tools) + var(--spine) + 18px); top: calc(var(--gate-h) + 96px); }
+.cross-tr { right: calc(var(--instr) + 18px);              top: calc(var(--gate-h) + 96px); }
+.cross-bl { left: calc(var(--tools) + var(--spine) + 18px); bottom: 132px; }
+.cross-br { right: calc(var(--instr) + 18px);              bottom: 132px; }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   THE SPECIMEN — dead centre of the viewport, always. Everything else is
+   drawn over it. It is the one thing that never moves.
+   ───────────────────────────────────────────────────────────────────────── */
+.specimen {
+  position: fixed;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: clamp(300px, 46vh, 520px);
+  aspect-ratio: 1 / 1;
+  z-index: var(--z-bench);
+  pointer-events: none;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   THE GATE — a real shutter. It spans the full width of the screen and it
+   comes DOWN. Raised, only its lit lip shows at the very top of the room.
+   ───────────────────────────────────────────────────────────────────────── */
+.shutter {
+  position: fixed; top: 0; left: 0; right: 0;
+  height: var(--gate-h);
+  z-index: var(--z-gate);
+  display: grid; place-items: center;
+  padding: 22px 40px 30px;
+  background:
+    repeating-linear-gradient(
+      180deg,
+      transparent 0 9px,
+      var(--hairline-soft) 9px 10px),
+    linear-gradient(180deg, #090B0C 0%, var(--surface) 58%, #101316 100%);
+  border-bottom: 2px solid var(--live);
+  transform: translateY(0);
+  transition: transform 600ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+:root[data-gate="open"] .shutter {
+  /* raised. A thin lit lip is all that is left of it. */
+  transform: translateY(calc(-100% + 8px));
+}
+.shutter-face { text-align: center; max-width: 760px; }
+.shutter-face h1 {
+  font-size: clamp(26px, 3.4vw, 40px);
+  line-height: 1.1; color: var(--ink);
+}
+.shutter-why {
+  margin-top: 12px;
+  font-family: var(--mono); font-size: 12px; letter-spacing: 0.03em;
+  color: var(--seal-hot);
+}
+.shutter-stamp {
+  position: absolute; right: 20px; bottom: 12px;
+  font-family: var(--mono); font-size: 9px; font-weight: 700;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--ink-3);
+}
+.shutter-serial {
+  position: absolute; left: 20px; bottom: 12px;
+  font-family: var(--mono); font-size: 9px; font-weight: 700;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--ink-3);
+}
+@media (prefers-reduced-motion: reduce) {
+  .shutter { transition: none; }   /* it snaps */
+}
+
+/* the line under the lip. It is only true while the gate is up. */
+.gate-line {
+  position: fixed; top: 22px; left: 0; right: 0;
+  z-index: var(--z-strip);
+  text-align: center;
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em;
+  color: var(--ink-3);
+  opacity: 0;
+  transition: opacity 500ms ease 260ms;
+}
+:root[data-gate="open"] .gate-line { opacity: 1; }
+.gate-line b { color: var(--ink-2); font-weight: 400; }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   THE SIGNALS — the four things the gate checks. The shutter lands on them.
+   ───────────────────────────────────────────────────────────────────────── */
+.signals-wrap {
+  position: fixed;
+  top: calc(var(--gate-h) + 2px);
+  left: calc(var(--tools) + var(--spine));
+  right: var(--instr);
+  z-index: var(--z-strip);
+  display: grid; justify-items: center; gap: 10px;
+  padding: 18px 0 34px;
+  /* the light under the shutter falls off. A fade, never a box: it keeps the
+     signals legible where the specimen passes behind them. */
+  background: linear-gradient(180deg,
+    var(--bg) 0%,
+    color-mix(in oklch, var(--bg) 78%, transparent) 58%,
+    transparent 100%);
+}
+.signals-wrap > .label { color: var(--ink-3); }
+.signals { display: flex; align-items: stretch; }
+.sig + .sig { border-left: 1px solid var(--hairline-soft); }
+.sig-lab {
+  display: grid; gap: 5px; justify-items: center;
+  margin: 0; padding: 6px 18px;
+  cursor: pointer; text-transform: none; letter-spacing: 0;
+  transition: opacity 140ms ease;
+}
+.sig-lab:hover { opacity: 1; }
+.sig-lab:hover .sig-name { color: var(--ink); }
+.sig-mark {
+  width: 9px; height: 9px; border-radius: 2px;
+  border: 1px solid var(--hairline-strong);
+  background: transparent;
+}
+.sig-name {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 700;
+  letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-3);
+  transition: color 140ms ease;
+}
+.sig-state {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.1em;
+  color: var(--ink-3);
+}
+.sig-in:checked + .sig-lab .sig-mark { background: var(--pass); border-color: var(--pass); }
+.sig-in:checked + .sig-lab .sig-state { color: var(--ink-2); }
+.sig-in:not(:checked) + .sig-lab .sig-mark { background: var(--fail); border-color: var(--fail); }
+.sig-in:not(:checked) + .sig-lab .sig-state { color: var(--fail); }
+.sig-in:not(:checked) + .sig-lab .sig-name { color: var(--ink-2); }
+.sig-in:focus-visible + .sig-lab { outline: 2px solid var(--live); outline-offset: 2px; }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   THE TOOLS — a 48px strip. Four positions. Choosing one does not navigate.
+   ───────────────────────────────────────────────────────────────────────── */
+.tools {
+  grid-column: 1;
+  z-index: var(--z-strip);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 4px;
+  border-right: 1px solid var(--hairline);
+  background: var(--bg);
+}
+.tool {
+  appearance: none; background: transparent; border: 0;
+  position: relative; cursor: pointer;
+  padding: 14px 0; width: 100%;
+  display: grid; justify-items: center;
+  font-family: var(--mono); font-size: 9.5px; font-weight: 700;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--ink-3);
+  writing-mode: vertical-rl; transform: rotate(180deg);
+  transition: color 140ms ease, background 140ms ease;
+}
+.tool:hover { color: var(--ink); background: var(--surface); }
+.tool[aria-pressed="true"] { color: var(--live); background: var(--live-dim); }
+.tool[aria-pressed="true"]::after {
+  content: ''; position: absolute;
+  right: 0; top: 0; bottom: 0; width: 2px;   /* rotated: reads as the left edge */
+  background: var(--live);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   THE EVIDENCE SPINE — the knowledge base as sediment. A core sample.
+   Width is chunk count. You read the shape of what it knows from across
+   the room.
+   ───────────────────────────────────────────────────────────────────────── */
+.spine {
+  grid-column: 2;
+  z-index: var(--z-rail);
+  display: grid; grid-template-rows: 1fr auto;
+  align-content: center;
+  border-right: 1px solid var(--hairline);
+  padding: 0 0 18px;
+}
+.strata { display: grid; align-content: center; padding: 0 12px 0 16px; }
+.stratum {
+  appearance: none; border: 0; background: transparent;
+  position: relative; display: block; width: 100%;
+  height: 34px; padding: 0; cursor: pointer; text-align: left;
+  border-bottom: 1px solid var(--hairline-soft);
+}
+.stratum:first-child { border-top: 1px solid var(--hairline-soft); }
+.stratum-bar {
+  position: absolute; left: 0; top: 1px; bottom: 1px;
+  width: 4px;
+  background: linear-gradient(90deg,
+    rgba(231, 229, 225, 0.13), rgba(231, 229, 225, 0.035));
+  border-right: 1px solid var(--hairline-strong);
+  transition: width 700ms cubic-bezier(0.22, 1, 0.36, 1),
+              background 400ms ease, border-color 400ms ease;
+}
+.stratum-name {
+  position: relative; display: block;
+  padding: 0 44px 0 8px;
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.02em;
+  color: var(--ink-2); line-height: 32px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: color 140ms ease;
+}
+.stratum-n {
+  position: absolute; right: 0; top: 0;
+  font-family: var(--mono); font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3); line-height: 32px;
+  transition: color 140ms ease;
+}
+.stratum:hover .stratum-bar,
+.stratum:focus-visible .stratum-bar { background: linear-gradient(90deg,
+    rgba(231, 229, 225, 0.30), rgba(231, 229, 225, 0.08)); }
+.stratum:hover .stratum-name,
+.stratum:focus-visible .stratum-name { color: var(--ink); }
+.stratum:hover .stratum-n,
+.stratum:focus-visible .stratum-n { color: var(--ink); }
+
+.stratum[data-failed="true"] .stratum-bar {
+  background: linear-gradient(90deg, var(--fail-dim), transparent);
+  border-right: 1px solid var(--fail);
+}
+.stratum[data-failed="true"] .stratum-name,
+.stratum[data-failed="true"] .stratum-n { color: var(--fail); }
+
+.spine-foot { padding: 14px 12px 0 16px; display: grid; gap: 4px; }
+.spine-foot .mono { font-size: 10px; color: var(--ink-3); }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   THE STAGE — the specimen floats over it. Judge, then the command bar.
+   ───────────────────────────────────────────────────────────────────────── */
+.stage {
+  grid-column: 3;
+  position: relative;
+  display: grid; grid-template-rows: 1fr auto auto;
+  padding: 0 36px 26px;
+  min-width: 0;
+}
+.stage-fill { min-height: 0; }
+
+.judge-wrap {
+  z-index: var(--z-strip);
+  text-align: center;
+  padding: 0 0 20px;
+  min-height: 62px;
+}
+.judge { font-size: 16.5px; max-width: 60ch; margin: 0 auto; }
+
+.deck-wrap { z-index: var(--z-strip); max-width: 640px; width: 100%; margin: 0 auto; }
+.result {
+  font-size: 11.5px; line-height: 1.7; color: var(--ink-2);
+  padding: 0 2px 9px;
+  min-height: 28px;
+}
+.result[data-verdict="fail"] { color: var(--fail); }
+.result[data-verdict="pass"] { color: var(--pass); }
+.cmd-sigil { color: var(--ink-3); font-size: 13px; }
+.command input { font-family: var(--sans); }
+.cmd-run {
+  padding: 5px 12px; font-size: 12px;
+  background: transparent; color: var(--ink-2); border-color: var(--hairline);
+}
+.cmd-run:hover { background: var(--surface-2); color: var(--ink); }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   THE INSTRUMENTS — four live vertical traces. Four values of bone. The
+   only colour permitted here is a failing channel.
+   ───────────────────────────────────────────────────────────────────────── */
+.instruments {
+  grid-column: 4;
+  z-index: var(--z-rail);
+  display: grid; grid-template-rows: 1fr auto;
+  border-left: 1px solid var(--hairline);
+  padding: 0 0 18px;
+  min-height: 0;
+}
+.chans { display: flex; justify-content: center; gap: 0; min-height: 0; }
+.chan { position: relative; width: 56px; }
+.chan-trace { position: absolute; left: 14px; right: 0; top: 0; bottom: 52px; }
+.chan-trace svg { display: block; width: 100%; height: 100%; }
+.chan-name {
+  position: absolute; left: 1px; bottom: 58px;
+  writing-mode: vertical-rl; transform: rotate(180deg);
+  font-family: var(--mono); font-size: 9px; font-weight: 700;
+  letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--ink-3);
+  transition: color 400ms ease;
+}
+.chan-tick {
+  position: absolute; left: 14px; right: 0; bottom: 51px;
+  height: 1px; background: var(--hairline);
+}
+.chan-val {
+  position: absolute; left: 14px; right: 0; bottom: 28px;
+  text-align: center; font-size: 12px; color: var(--ink-2);
+  transition: color 400ms ease;
+}
+.chan[data-failing="true"] .chan-val,
+.chan[data-failing="true"] .chan-name { color: var(--fail); }
+
+.instr-foot { padding: 14px 16px 0; display: grid; gap: 4px; justify-items: center; }
+.instr-foot .mono { font-size: 10px; color: var(--ink-3); }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   THE OVERLAY — a tool floats beside the specimen. It re-tools the surface.
+   It never navigates, and it is never a card grid.
+   ───────────────────────────────────────────────────────────────────────── */
+.overlay {
+  position: fixed;
+  left: calc(var(--tools) + var(--spine) + 16px);
+  top: 50%; transform: translateY(-50%);
+  width: 300px;
+  z-index: 22;
+  background: color-mix(in oklch, var(--bg) 88%, transparent);
+  backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-panel);
+  padding: 14px 16px 16px;
+}
+.overlay-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding-bottom: 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+.oclose {
+  appearance: none; background: transparent; border: 0; cursor: pointer;
+  color: var(--ink-3); padding: 2px; line-height: 0; border-radius: 3px;
+}
+.oclose:hover { color: var(--ink); }
+.orow {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
+  padding: 9px 0; border-bottom: 1px solid var(--hairline-soft);
+  font-size: 12.5px; color: var(--ink-2);
+}
+.orow:last-of-type { border-bottom: 0; }
+.orow .mono { font-size: 11.5px; color: var(--ink); white-space: nowrap; }
+.orow .mono[data-verdict="fail"] { color: var(--fail); }
+.orow .mono[data-verdict="pass"] { color: var(--pass); }
+.oact { margin-top: 12px; display: flex; align-items: center; gap: 10px; }
+.oact .btn { font-size: 12px; padding: 7px 13px; }
+.onote { font-size: 11px; color: var(--ink-3); }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   the room is a fixed instrument face. It compresses, it does not reflow.
+   ───────────────────────────────────────────────────────────────────────── */
+@media (max-width: 1180px) {
+  :root { --spine: 176px; --instr: 216px; }
+  .cross { display: none; }
+  .overlay { width: 264px; }
+}
+@media (max-width: 900px) {
+  :root { --spine: 148px; --instr: 200px; --gate-h: 190px; }
+  .specimen { width: clamp(220px, 34vh, 340px); }
+  .overlay { left: 50%; transform: translate(-50%, -50%); }
+}
+</style>
+</head>
+
+<body class="tint">
+
+<a class="skip" href="#cmd">Skip to the command bar</a>
+
+<div class="graticule" aria-hidden="true"></div>
+<div class="bloom" aria-hidden="true"></div>
+<div class="cross cross-tl" aria-hidden="true"></div>
+<div class="cross cross-tr" aria-hidden="true"></div>
+<div class="cross cross-bl" aria-hidden="true"></div>
+<div class="cross cross-br" aria-hidden="true"></div>
+
+<!-- the specimen. It is at the centre of the viewport and it never leaves. -->
+<div class="specimen" id="specimen" aria-hidden="true"></div>
+
+<!-- the one authoritative announcement of gate state -->
+<p class="sr-only" role="status" aria-live="polite" id="gateStatus"></p>
+
+<!-- ═══ THE GATE ═══════════════════════════════════════════════════════════ -->
+<div class="shutter" id="shutter" aria-hidden="true">
+  <span class="shutter-serial">gate 01 · lindiwe's beauty bar</span>
+  <div class="shutter-face">
+    <h1 id="shutterTitle">The gate is shut.</h1>
+    <p class="shutter-why mono" id="shutterWhy">
+      context recall 0.89 is below the 0.90 threshold. gift-vouchers.md did not ingest.
+    </p>
+  </div>
+  <span class="shutter-stamp" id="shutterStamp">2 signals failed</span>
+</div>
+
+<p class="gate-line" id="gateLine" aria-hidden="true">
+  the gate is open. <b>the agent is answering customers.</b>
+</p>
+
+<!-- ═══ THE SIGNALS ════════════════════════════════════════════════════════ -->
+<div class="signals-wrap">
+  <p class="label">what the gate checks</p>
+  <div class="signals" role="group" aria-label="Gate signals">
+
+    <div class="sig">
+      <input type="checkbox" class="sig-in sr-only" id="sig-evidence" data-sig="evidence">
+      <label class="sig-lab" for="sig-evidence">
+        <span class="sig-mark" aria-hidden="true"></span>
+        <span class="sig-name">evidence</span>
+        <span class="sig-state" data-state>failed</span>
+      </label>
+    </div>
+
+    <div class="sig">
+      <input type="checkbox" class="sig-in sr-only" id="sig-evals" data-sig="evals">
+      <label class="sig-lab" for="sig-evals">
+        <span class="sig-mark" aria-hidden="true"></span>
+        <span class="sig-name">evals</span>
+        <span class="sig-state" data-state>failed</span>
+      </label>
+    </div>
+
+    <div class="sig">
+      <input type="checkbox" class="sig-in sr-only" id="sig-redteam" data-sig="redteam" checked>
+      <label class="sig-lab" for="sig-redteam">
+        <span class="sig-mark" aria-hidden="true"></span>
+        <span class="sig-name">red team</span>
+        <span class="sig-state" data-state>held</span>
+      </label>
+    </div>
+
+    <div class="sig">
+      <input type="checkbox" class="sig-in sr-only" id="sig-handoff" data-sig="handoff" checked>
+      <label class="sig-lab" for="sig-handoff">
+        <span class="sig-mark" aria-hidden="true"></span>
+        <span class="sig-name">handoff</span>
+        <span class="sig-state" data-state>held</span>
+      </label>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══ THE ROOM ═══════════════════════════════════════════════════════════ -->
+<div class="room">
+
+  <!-- the tools. Four positions. Nothing here navigates. -->
+  <nav class="tools" aria-label="Tools">
+    <button class="tool" type="button" aria-pressed="false" data-tool="ingest">ingest</button>
+    <button class="tool" type="button" aria-pressed="false" data-tool="evaluate">evaluate</button>
+    <button class="tool" type="button" aria-pressed="false" data-tool="redteam">red team</button>
+    <button class="tool" type="button" aria-pressed="false" data-tool="deploy">deploy</button>
+  </nav>
+
+  <!-- the evidence spine -->
+  <aside class="spine" aria-label="Evidence">
+    <div class="strata" id="strata"></div>
+    <div class="spine-foot">
+      <p class="label">the knowledge base</p>
+      <p class="mono"><span id="chunkTotal">120</span> chunks · <span id="docTotal">7</span> sources</p>
+    </div>
+  </aside>
+
+  <!-- the stage -->
+  <main class="stage" id="stage">
+    <div class="stage-fill"></div>
+
+    <div class="judge-wrap">
+      <p class="voice judge" id="judge" aria-hidden="true"></p>
+    </div>
+
+    <div class="deck-wrap">
+      <p class="result mono" id="result" role="status">
+        7 sources. 52 scenarios. 2 signals failed. The gate will not open.
+      </p>
+      <form class="command" id="cmdForm" autocomplete="off">
+        <span class="cmd-sigil mono" aria-hidden="true">&gt;</span>
+        <label class="sr-only" for="cmd">Run a command</label>
+        <input id="cmd" name="cmd" type="text" spellcheck="false"
+               placeholder="Run a command. Try: ingest gift-vouchers">
+        <span class="kbd" aria-hidden="true">/</span>
+        <button class="btn cmd-run" type="submit">Run</button>
+      </form>
+    </div>
+  </main>
+
+  <!-- the instruments -->
+  <aside class="instruments" aria-label="Eval channels">
+    <div class="chans" id="chans"></div>
+    <div class="instr-foot">
+      <p class="label">gate 0.90</p>
+      <p class="mono">ragas · 52 scenarios</p>
+    </div>
+  </aside>
+
+</div>
+
+<!-- ═══ THE TOOL OVERLAY ═══════════════════════════════════════════════════ -->
+<section class="overlay" id="overlay" hidden aria-labelledby="overlayTitle">
+  <div class="overlay-head">
+    <h2 class="label" id="overlayTitle">ingest</h2>
+    <button class="oclose" type="button" id="overlayClose" aria-label="Close the panel">
+      <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+        <path d="M1 1l11 11M12 1L1 12" stroke="currentColor" stroke-width="1.2"/>
+      </svg>
+    </button>
+  </div>
+  <div id="overlayBody"></div>
+</section>
+
+<script src="scene.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var THRESHOLD = 0.90;
+
+  /* ───────────────────────────────────────────────────────────────────────
+     THE MODEL. One agent. Four signals. The gate is a function of them.
+     ─────────────────────────────────────────────────────────────────────── */
+  var state = {
+    docs: [
+      { name: 'price-list-2026.pdf',  chunks: 48, failed: false },
+      { name: 'returns-policy.docx',  chunks: 12, failed: false },
+      { name: 'booking-terms.md',     chunks:  9, failed: false },
+      { name: 'services-menu.pdf',    chunks: 31, failed: false },
+      { name: 'gift-vouchers.md',     chunks:  0, failed: true  },
+      { name: 'holiday-hours.md',     chunks:  6, failed: false },
+      { name: 'staff-bios.pdf',       chunks: 14, failed: false }
+    ],
+    channels: [
+      { key: 'faithfulness', name: 'faithfulness',      value: 0.97, hex: '#E7E5E1' },
+      { key: 'relevancy',    name: 'answer relevancy',  value: 0.93, hex: '#A9AFB1' },
+      { key: 'recall',       name: 'context recall',    value: 0.89, hex: '#7C8386' },
+      { key: 'precision',    name: 'context precision', value: 0.84, hex: '#565C5F' }
+    ],
+    signals: { evidence: false, evals: false, redteam: true, handoff: true },
+    deployed: false
+  };
+
+  var SIGNAL_ORDER = ['evidence', 'evals', 'redteam', 'handoff'];
+  var SIGNAL_LABEL = {
+    evidence: 'evidence', evals: 'evals', redteam: 'red team', handoff: 'handoff'
+  };
+  var FAIL_HEX = '#E5484D';
+
+  var JUDGE_OPEN =
+    'Fifty-two scenarios ran. Forty-nine held, and the three that failed are all ' +
+    'gift vouchers bought in store.';
+  var JUDGE_SHUT =
+    'The gate is shut. This agent cannot reach a customer.';
+
+  function gateIsOpen() {
+    return SIGNAL_ORDER.every(function (k) { return state.signals[k]; });
+  }
+  function failingSignals() {
+    return SIGNAL_ORDER.filter(function (k) { return !state.signals[k]; });
+  }
+  function failingChannels() {
+    return state.channels.filter(function (c) { return c.value < THRESHOLD; });
+  }
+  function totalChunks() {
+    return state.docs.reduce(function (n, d) { return n + d.chunks; }, 0);
+  }
+
+  /* derive the two signals the owner cannot simply assert */
+  function recompute() {
+    state.signals.evidence = state.docs.every(function (d) { return !d.failed; });
+    state.signals.evals = failingChannels().length === 0;
+  }
+
+  /* ───────────────────────────────────────────────────────────────────────
+     THE EVIDENCE SPINE — sediment. Width is chunk count.
+     ─────────────────────────────────────────────────────────────────────── */
+  var strataEl = document.getElementById('strata');
+  var MAXC = 48;
+
+  function buildSpine() {
+    strataEl.innerHTML = '';
+    state.docs.forEach(function (d, i) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'stratum';
+      b.dataset.i = String(i);
+      b.innerHTML =
+        '<span class="stratum-bar"></span>' +
+        '<span class="stratum-name">' + d.name +
+          '<span class="stratum-n num"></span></span>';
+      b.addEventListener('click', function () {
+        var doc = state.docs[i];
+        if (doc.failed) {
+          say('right', doc.name + ' did not ingest. 0 chunks. the file is password protected.', 'fail');
+        } else {
+          say('right', doc.name + '. ' + doc.chunks + ' chunks. last ingested 2026-07-11.', '');
+        }
+      });
+      strataEl.appendChild(b);
+    });
+    paintSpine();
+  }
+
+  function paintSpine() {
+    var rows = strataEl.querySelectorAll('.stratum');
+    state.docs.forEach(function (d, i) {
+      var row = rows[i];
+      var pct = d.chunks === 0 ? 0 : Math.max(6, (d.chunks / MAXC) * 100);
+      row.dataset.failed = d.failed ? 'true' : 'false';
+      row.querySelector('.stratum-bar').style.width = d.chunks === 0 ? '4px' : pct + '%';
+      row.querySelector('.stratum-n').textContent = d.failed ? 'failed' : String(d.chunks);
+      row.setAttribute('aria-label',
+        d.name + ', ' + (d.failed ? 'failed to ingest' : d.chunks + ' chunks'));
+    });
+    document.getElementById('chunkTotal').textContent = String(totalChunks());
+    document.getElementById('docTotal').textContent = String(state.docs.length);
+  }
+
+  /* ───────────────────────────────────────────────────────────────────────
+     THE INSTRUMENTS — four live vertical traces. Literal hex on the stroke:
+     CSS custom properties do not resolve in SVG presentation attributes.
+     ─────────────────────────────────────────────────────────────────────── */
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  var chansEl = document.getElementById('chans');
+  var N = 56;            // samples down a trace
+  var LO = 0.80, HI = 1.00;
+  var VW = 42;           // the trace lane, in px
+
+  function xOf(v) {
+    var x = 5 + ((v - LO) / (HI - LO)) * (VW - 10);
+    return Math.max(3, Math.min(VW - 3, x));
+  }
+
+  function buildChans() {
+    state.channels.forEach(function (c) {
+      c.shown = c.value;
+      c.noise = [];
+      for (var j = 0; j < N; j++) c.noise.push((Math.random() - 0.5) * 0.010);
+
+      var wrap = document.createElement('div');
+      wrap.className = 'chan';
+      wrap.dataset.ch = c.key;
+
+      var name = document.createElement('span');
+      name.className = 'chan-name';
+      name.textContent = c.name;
+
+      var lane = document.createElement('div');
+      lane.className = 'chan-trace';
+
+      var svg = document.createElementNS(SVGNS, 'svg');
+      svg.setAttribute('preserveAspectRatio', 'none');
+      svg.setAttribute('aria-hidden', 'true');
+
+      var thr = document.createElementNS(SVGNS, 'line');
+      thr.setAttribute('stroke', '#E7E5E1');
+      thr.setAttribute('stroke-opacity', '0.10');
+      thr.setAttribute('stroke-dasharray', '2 5');
+      thr.setAttribute('stroke-width', '1');
+
+      var line = document.createElementNS(SVGNS, 'polyline');
+      line.setAttribute('fill', 'none');
+      line.setAttribute('stroke', c.hex);
+      line.setAttribute('stroke-width', '1.2');
+      line.setAttribute('stroke-linejoin', 'round');
+      line.setAttribute('stroke-linecap', 'round');
+
+      var head = document.createElementNS(SVGNS, 'circle');
+      head.setAttribute('r', '1.9');
+      head.setAttribute('fill', c.hex);
+
+      svg.appendChild(thr); svg.appendChild(line); svg.appendChild(head);
+      lane.appendChild(svg);
+
+      var tick = document.createElement('span');
+      tick.className = 'chan-tick';
+
+      var val = document.createElement('span');
+      val.className = 'chan-val num';
+      val.textContent = c.value.toFixed(2);
+
+      wrap.appendChild(name);
+      wrap.appendChild(lane);
+      wrap.appendChild(tick);
+      wrap.appendChild(val);
+      chansEl.appendChild(wrap);
+
+      c.el = wrap; c.svg = svg; c.line = line; c.head = head;
+      c.thr = thr; c.valEl = val; c.lane = lane;
+    });
+    sizeChans();
+    addEventListener('resize', sizeChans);
+  }
+
+  function sizeChans() {
+    state.channels.forEach(function (c) {
+      var h = c.lane.clientHeight || 300;
+      c.h = h;
+      c.svg.setAttribute('viewBox', '0 0 ' + VW + ' ' + h);
+      c.svg.setAttribute('width', VW);
+      c.svg.setAttribute('height', h);
+      c.thr.setAttribute('x1', xOf(THRESHOLD)); c.thr.setAttribute('y1', 0);
+      c.thr.setAttribute('x2', xOf(THRESHOLD)); c.thr.setAttribute('y2', h);
+    });
+    drawChans();
+  }
+
+  function drawChans() {
+    state.channels.forEach(function (c) {
+      var failing = c.value < THRESHOLD;
+      var hex = failing ? FAIL_HEX : c.hex;
+      var h = c.h || 300;
+      var pts = '';
+      for (var j = 0; j < N; j++) {
+        var y = (j / (N - 1)) * h;
+        var x = xOf(c.shown + c.noise[j] * (j === N - 1 ? 0.2 : 1));
+        pts += x.toFixed(2) + ',' + y.toFixed(2) + ' ';
+      }
+      c.line.setAttribute('points', pts.trim());
+      c.line.setAttribute('stroke', hex);
+      c.head.setAttribute('cx', xOf(c.shown).toFixed(2));
+      c.head.setAttribute('cy', h);
+      c.head.setAttribute('fill', hex);
+      c.el.dataset.failing = failing ? 'true' : 'false';
+      c.valEl.textContent = c.shown.toFixed(2);
+    });
+  }
+
+  var lastShift = 0;
+  function traceLoop(ts) {
+    var moving = false;
+    state.channels.forEach(function (c) {
+      if (Math.abs(c.shown - c.value) > 0.0005) {
+        c.shown += (c.value - c.shown) * 0.06;
+        moving = true;
+      } else { c.shown = c.value; }
+    });
+    if (!REDUCED && ts - lastShift > 90) {
+      lastShift = ts;
+      state.channels.forEach(function (c) {
+        c.noise.pop();
+        c.noise.unshift((Math.random() - 0.5) * 0.010);
+      });
+      moving = true;
+    }
+    if (moving) drawChans();
+    requestAnimationFrame(traceLoop);
+  }
+
+  /* ───────────────────────────────────────────────────────────────────────
+     THE JUDGE — typeset word by word, with a caret. It rewrites itself
+     whenever the gate moves.
+     ─────────────────────────────────────────────────────────────────────── */
+  var judgeEl = document.getElementById('judge');
+  var caret = document.createElement('span');
+  caret.className = 'caret';
+  var judgeTimer = null;
+
+  function typeJudge(text) {
+    if (judgeTimer) { clearInterval(judgeTimer); judgeTimer = null; }
+    if (REDUCED) {
+      judgeEl.textContent = text;
+      judgeEl.appendChild(caret);
+      return;
+    }
+    var words = text.split(' ');
+    var i = 0;
+    judgeEl.textContent = '';
+    judgeEl.appendChild(caret);
+    judgeTimer = setInterval(function () {
+      i += 1;
+      judgeEl.textContent = words.slice(0, i).join(' ') + ' ';
+      judgeEl.appendChild(caret);
+      if (i >= words.length) { clearInterval(judgeTimer); judgeTimer = null; }
+    }, 30);
+  }
+
+  /* ───────────────────────────────────────────────────────────────────────
+     THE GATE. One function moves the room.
+     ─────────────────────────────────────────────────────────────────────── */
+  var shutterTitle = document.getElementById('shutterTitle');
+  var shutterWhy = document.getElementById('shutterWhy');
+  var shutterStamp = document.getElementById('shutterStamp');
+  var gateStatus = document.getElementById('gateStatus');
+  var lastGate = null;
+
+  function whyShut() {
+    var bits = [];
+    var fc = failingChannels();
+    if (fc.length) {
+      bits.push(fc.map(function (c) {
+        return c.name + ' ' + c.value.toFixed(2);
+      }).join(' and ') + ' below the 0.90 threshold.');
+    }
+    var bad = state.docs.filter(function (d) { return d.failed; });
+    if (bad.length) bits.push(bad[0].name + ' did not ingest.');
+    if (!state.signals.redteam) bits.push('an open critical red team finding.');
+    if (!state.signals.handoff) bits.push('no human handoff is configured.');
+    return bits.length ? bits.join(' ') : 'a signal was withdrawn by the owner.';
+  }
+
+  function applyGate() {
+    var open = gateIsOpen();
+    var changed = (lastGate === null) || (open !== lastGate);
+    lastGate = open;
+
+    document.documentElement.dataset.gate = open ? 'open' : 'blocked';
+    if (window.gotham && window.gotham.setGate) {
+      window.gotham.setGate(open ? 'open' : 'blocked');
+    }
+
+    /* the face only re-prints while it is shut, so the reason stays legible
+       on the shutter the whole way up as it lifts away */
+    if (!open) {
+      var failed = failingSignals();
+      shutterTitle.textContent = 'The gate is shut.';
+      shutterWhy.textContent = whyShut();
+      shutterStamp.textContent = failed.length === 1
+        ? '1 signal failed'
+        : failed.length + ' signals failed';
+    }
+
+    gateStatus.textContent = open
+      ? 'The gate is open. The agent is answering customers. All four signals hold.'
+      : 'The gate is shut. This agent cannot reach a customer. ' + whyShut();
+
+    /* the signal row */
+    SIGNAL_ORDER.forEach(function (k) {
+      var input = document.querySelector('[data-sig="' + k + '"]');
+      var held = !!state.signals[k];
+      input.checked = held;
+      input.closest('.sig').querySelector('[data-state]').textContent = held ? 'held' : 'failed';
+    });
+
+    paintSpine();
+    drawChans();
+    renderOverlay();
+
+    if (changed) typeJudge(open ? JUDGE_OPEN : JUDGE_SHUT);
+  }
+
+  /* ───────────────────────────────────────────────────────────────────────
+     THE SIGNAL TOGGLES
+     ─────────────────────────────────────────────────────────────────────── */
+  Array.prototype.forEach.call(document.querySelectorAll('.sig-in'), function (input) {
+    input.addEventListener('change', function () {
+      var k = input.dataset.sig;
+      state.signals[k] = input.checked;
+      applyGate();
+      say(
+        input.checked ? '' : 'fail',
+        SIGNAL_LABEL[k] + (input.checked ? ' holds. ' : ' withdrawn. ') +
+          (gateIsOpen() ? 'the gate is open.' : 'the gate is shut.'),
+        input.checked && gateIsOpen() ? 'pass' : (input.checked ? '' : 'fail')
+      );
+    });
+  });
+
+  /* ───────────────────────────────────────────────────────────────────────
+     THE RESULT LINE
+     ─────────────────────────────────────────────────────────────────────── */
+  var resultEl = document.getElementById('result');
+  function say(_ignore, text, verdict) {
+    resultEl.textContent = text;
+    if (verdict) resultEl.dataset.verdict = verdict;
+    else resultEl.removeAttribute('data-verdict');
+  }
+
+  /* ───────────────────────────────────────────────────────────────────────
+     THE TOOLS — they re-tool this surface. They never navigate.
+     ─────────────────────────────────────────────────────────────────────── */
+  var overlay = document.getElementById('overlay');
+  var overlayTitle = document.getElementById('overlayTitle');
+  var overlayBody = document.getElementById('overlayBody');
+  var activeTool = null;
+
+  function row(k, v, verdict) {
+    return '<div class="orow"><span>' + k + '</span>' +
+      '<span class="mono"' + (verdict ? ' data-verdict="' + verdict + '"' : '') + '>' +
+      v + '</span></div>';
+  }
+
+  function renderOverlay() {
+    if (!activeTool) { overlay.hidden = true; overlayBody.innerHTML = ''; return; }
+    overlay.hidden = false;
+    var voucher = state.docs[4];
+    var open = gateIsOpen();
+    var html = '';
+
+    if (activeTool === 'ingest') {
+      overlayTitle.textContent = 'ingest';
+      html += row('gift-vouchers.md',
+        voucher.failed ? 'failed' : voucher.chunks + ' chunks',
+        voucher.failed ? 'fail' : 'pass');
+      html += row('reason', voucher.failed ? 'password protected' : 'cleared');
+      html += row('the base', totalChunks() + ' chunks');
+      html += '<div class="oact">' +
+        '<button class="btn btn-primary" type="button" data-run="ingest gift-vouchers"' +
+        (voucher.failed ? '' : ' disabled') + '>Ingest gift-vouchers</button>' +
+        '<span class="onote">' + (voucher.failed ? 'one source is missing.' : 'all sources held.') +
+        '</span></div>';
+    }
+
+    if (activeTool === 'evaluate') {
+      overlayTitle.textContent = 'evaluate';
+      state.channels.forEach(function (c) {
+        var f = c.value < THRESHOLD;
+        html += row(c.name, c.value.toFixed(2), f ? 'fail' : 'pass');
+      });
+      html += '<div class="oact">' +
+        '<button class="btn btn-primary" type="button" data-run="run evals">Run evals</button>' +
+        '<span class="onote">52 scenarios.</span></div>';
+    }
+
+    if (activeTool === 'redteam') {
+      overlayTitle.textContent = 'red team';
+      html += row('prompt injection', '0 critical', 'pass');
+      html += row('pii exfiltration', '0 critical', 'pass');
+      html += row('refusal bypass', '2 low');
+      html += '<div class="oact">' +
+        '<button class="btn btn-primary" type="button" data-run="red team">Run red team</button>' +
+        '<span class="onote">84 probes.</span></div>';
+    }
+
+    if (activeTool === 'deploy') {
+      overlayTitle.textContent = 'deploy';
+      html += row('web widget', state.deployed ? 'live' : 'staged', state.deployed ? 'pass' : '');
+      html += row('whatsapp', state.deployed ? 'live' : 'staged', state.deployed ? 'pass' : '');
+      html += row('the gate', open ? 'open' : 'shut', open ? 'pass' : 'fail');
+      html += '<div class="oact">' +
+        '<button class="btn btn-primary" type="button" data-run="deploy"' +
+        (open ? '' : ' disabled') + '>Deploy</button>' +
+        '<span class="onote">' +
+        (open ? 'the gate is open.' : 'nothing ships through a shut gate.') +
+        '</span></div>';
+    }
+
+    overlayBody.innerHTML = html;
+    Array.prototype.forEach.call(overlayBody.querySelectorAll('[data-run]'), function (b) {
+      b.addEventListener('click', function () { run(b.dataset.run); });
+    });
+  }
+
+  function selectTool(tool) {
+    activeTool = (activeTool === tool) ? null : tool;
+    Array.prototype.forEach.call(document.querySelectorAll('.tool'), function (t) {
+      t.setAttribute('aria-pressed', t.dataset.tool === activeTool ? 'true' : 'false');
+    });
+    renderOverlay();
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll('.tool'), function (t) {
+    t.addEventListener('click', function () { selectTool(t.dataset.tool); });
+  });
+  document.getElementById('overlayClose').addEventListener('click', function () {
+    selectTool(activeTool);
+    var btn = document.querySelector('.tool[data-tool]');
+    if (btn) btn.focus();
+  });
+
+  /* ───────────────────────────────────────────────────────────────────────
+     THE COMMAND BAR — permanent. It re-tools the surface in place.
+     ─────────────────────────────────────────────────────────────────────── */
+  var cmd = document.getElementById('cmd');
+
+  function run(raw) {
+    var c = String(raw || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    if (!c) return;
+
+    /* ingest the failed source. The stratum recovers and the evals climb. */
+    if (/^(ingest|retry)\s+gift[- ]vouchers(\.md)?$/.test(c)) {
+      var v = state.docs[4];
+      if (!v.failed) {
+        say('', 'gift-vouchers.md is already ingested. 18 chunks.', '');
+        return;
+      }
+      v.failed = false;
+      v.chunks = 18;
+      var recall = state.channels[2];
+      var precision = state.channels[3];
+      recall.value = 0.92;
+      precision.value = 0.91;
+      recompute();
+      applyGate();
+      say('',
+        'ingested gift-vouchers.md. 18 chunks. context recall 0.89 -> 0.92. ' +
+        'context precision 0.84 -> 0.91.' +
+        (gateIsOpen() ? ' every signal holds. the gate is open.' : ''),
+        gateIsOpen() ? 'pass' : '');
+      return;
+    }
+
+    if (/^ingest\b/.test(c)) {
+      say('', 'no source by that name. try: ingest gift-vouchers', 'fail');
+      return;
+    }
+
+    if (/^(run )?evals?$/.test(c) || c === 'run evals') {
+      recompute();
+      applyGate();
+      var f = failingChannels();
+      say('',
+        '52 scenarios ran. 49 held. 3 failed. ' +
+        (f.length
+          ? f.length + ' channel' + (f.length > 1 ? 's are' : ' is') + ' below the gate.'
+          : 'every channel is at or above the gate.'),
+        f.length ? 'fail' : 'pass');
+      return;
+    }
+
+    if (/^(run )?red ?team$/.test(c)) {
+      state.signals.redteam = true;
+      applyGate();
+      say('', '84 probes fired. 0 critical. 2 low: verbose refusal, tone drift.', 'pass');
+      return;
+    }
+
+    if (/^deploy$/.test(c)) {
+      if (!gateIsOpen()) {
+        var fs = failingSignals().map(function (k) { return SIGNAL_LABEL[k]; }).join(', ');
+        say('', 'deploy refused. the gate is shut. ' + fs + ' did not hold.', 'fail');
+        return;
+      }
+      state.deployed = true;
+      renderOverlay();
+      say('', 'deployed to the web widget and whatsapp. version 12. the agent is answering.', 'pass');
+      return;
+    }
+
+    if (/^reset$/.test(c)) {
+      state.docs[4].failed = true;
+      state.docs[4].chunks = 0;
+      state.channels[2].value = 0.89;
+      state.channels[3].value = 0.84;
+      state.signals.redteam = true;
+      state.signals.handoff = true;
+      state.deployed = false;
+      recompute();
+      applyGate();
+      say('', 'the bench is reset. 2 signals failed. the gate is shut.', 'fail');
+      return;
+    }
+
+    say('', 'unknown command. try: ingest gift-vouchers, run evals, red team, deploy, reset', 'fail');
+  }
+
+  document.getElementById('cmdForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    run(cmd.value);
+    cmd.value = '';
+  });
+
+  addEventListener('keydown', function (e) {
+    var t = e.target;
+    var typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA');
+    if (e.key === '/' && !typing) {
+      e.preventDefault();
+      cmd.focus();
+    }
+    if (e.key === 'Escape') {
+      if (activeTool) selectTool(activeTool);
+      else if (typing) t.blur();
+    }
+  });
+
+  /* ───────────────────────────────────────────────────────────────────────
+     RAISE THE CURTAIN. The agent starts blocked, because it is.
+     ─────────────────────────────────────────────────────────────────────── */
+  buildSpine();
+  buildChans();
+  recompute();
+  applyGate();
+  requestAnimationFrame(traceLoop);
+
+  if (window.mountGotham) {
+    window.gotham.setSoul({ warmth: 0.45, rigor: 0.62, candor: 0.5 });
+    window.gotham.setGate('blocked');
+    window.mountGotham(document.getElementById('specimen'), { scenarios: 52, fails: 3 });
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,285 @@
+/* =====================================================================
+   W CHATS — HILLBROW AT DUSK
+   The single source of truth for the W Chats design system.
+   Palette derived from the Johannesburg skyline at sunset:
+   deep indigo foundation · coral sunset accent · jacaranda lilac
+   secondary · tower cyan for rare highlights · building amber for warmth.
+
+   Load Google Fonts first:
+
+   <link rel="preconnect" href="https://fonts.googleapis.com">
+   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..800,0..100&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+   ===================================================================== */
+
+:root {
+  /* ---------------------------------------------------------------------
+     SURFACES — the sky gradient as a color scale
+     --------------------------------------------------------------------- */
+  --bg-deep:        #0B0717;       /* deepest indigo, near-black */
+  --bg:             #110C24;       /* page background */
+  --bg-elev:        #181232;       /* elevated solid (nav, sticky) */
+  --surface-1:      #1E1638;       /* card surface */
+  --surface-2:      #2A1E4A;       /* elevated card */
+  --surface-3:      #382860;       /* highest solid surface */
+
+  /* Glass — used SURGICALLY (hero card, stat tiles, modals, transparent nav).
+     NEVER on dense data UI. */
+  --glass-bg:        rgba(30, 22, 56, 0.55);
+  --glass-bg-strong: rgba(40, 28, 72, 0.70);
+  --glass-border:    rgba(244, 232, 220, 0.10);
+  --glass-blur:      blur(24px) saturate(140%);
+
+  /* ---------------------------------------------------------------------
+     BORDERS — lavender soft + coral hard
+     --------------------------------------------------------------------- */
+  --border:         rgba(196, 154, 232, 0.18);    /* lavender, default */
+  --border-soft:    rgba(196, 154, 232, 0.10);    /* whisper */
+  --border-hard:    rgba(244, 116, 140, 0.32);    /* coral edge (hover, focus rims) */
+  --border-warm:    rgba(232, 168, 124, 0.22);    /* amber edge */
+
+  /* ---------------------------------------------------------------------
+     PRIMARY ACCENT — sunset coral
+     The pink band in the sky. Used for CTAs, italic emphasis, focus rings,
+     active states, status "live", chips.
+     --------------------------------------------------------------------- */
+  --accent:         #F4748C;
+  --accent-hover:   #FF8AA0;
+  --accent-deep:    #C8485E;
+  --accent-dark:    #8E2A40;
+  --accent-dim:     rgba(244, 116, 140, 0.10);
+  --accent-glow:    rgba(244, 116, 140, 0.32);
+
+  /* ---------------------------------------------------------------------
+     SECONDARY — jacaranda lilac (the purple trees in the photo)
+     --------------------------------------------------------------------- */
+  --lilac:          #B79AE0;
+  --lilac-deep:     #8E72B8;
+  --lilac-dim:      rgba(183, 154, 224, 0.12);
+
+  /* ---------------------------------------------------------------------
+     TERTIARY — tower cyan
+     The Sentech & Hillbrow tower observation-deck lights.
+     RARE. Use for one or two highlights per screen, max.
+     --------------------------------------------------------------------- */
+  --cyan:           #5EDFD3;
+  --cyan-deep:      #3AB8AC;
+  --cyan-dim:       rgba(94, 223, 211, 0.12);
+
+  /* ---------------------------------------------------------------------
+     WARM — building amber (lit windows at dusk)
+     --------------------------------------------------------------------- */
+  --amber:          #E8A87C;
+  --amber-deep:     #B87850;
+  --amber-dim:      rgba(232, 168, 124, 0.10);
+
+  /* ---------------------------------------------------------------------
+     STATUS — recalibrated for dark
+     --------------------------------------------------------------------- */
+  --green:          #6FE8AA;
+  --green-bg:       rgba(111, 232, 170, 0.10);
+  --green-border:   rgba(111, 232, 170, 0.25);
+  --red:            #FF8585;
+  --red-bg:         rgba(255, 133, 133, 0.10);
+  --red-border:     rgba(255, 133, 133, 0.25);
+  --gold:           #F0C674;
+  --gold-bg:        rgba(240, 198, 116, 0.10);
+  --gold-border:    rgba(240, 198, 116, 0.25);
+
+  /* ---------------------------------------------------------------------
+     TEXT — warm whites on cool dark (echoes lit windows)
+     --------------------------------------------------------------------- */
+  --text-1:         #F4EDE5;       /* primary, warm off-white */
+  --text-2:         #C4BCD0;       /* secondary, cool lavender-white */
+  --text-3:         #8A82A0;       /* muted */
+  --text-4:         #5A5470;       /* very muted, labels on labels */
+  --text-on-accent: #0B0717;       /* text on coral fills */
+
+  /* ---------------------------------------------------------------------
+     TYPOGRAPHY
+     Fraunces — display only (hero, section titles, agent names).
+       Use full variable axes: opsz 9..144, wght 300..800, SOFT 0..100.
+       Large display: font-variation-settings: "opsz" 144, "SOFT" 50.
+       Italic accent words: 300 italic + SOFT 100 (softer terminals).
+     Inter — body, UI labels.
+     JetBrains Mono — numbers, agent IDs, timestamps, code, event-log lines.
+     --------------------------------------------------------------------- */
+  --font-display:   "Fraunces", Georgia, "Times New Roman", serif;
+  --font-sans:      "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono:      "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Type scale — landing/marketing */
+  --t-hero:         clamp(48px, 6.4vw, 86px);    /* Fraunces 400, SOFT 30, -0.035em */
+  --t-h1:           42px;                         /* section titles */
+  --t-h2:           32px;                         /* sub-section */
+  --t-h3:           22px;                         /* card titles, agent names */
+  --t-h4:           17px;
+  --t-body-lg:      19px;                         /* hero sub */
+  --t-body:         15px;
+  --t-body-sm:      13.5px;
+  --t-caption:      12px;
+  --t-micro:        10.5px;                       /* uppercase labels */
+
+  /* ---------------------------------------------------------------------
+     RADII
+     --------------------------------------------------------------------- */
+  --radius-xs:      8px;        /* buttons, inputs, small chips */
+  --radius-sm:      14px;       /* small cards, panels */
+  --radius-md:      20px;       /* large cards, hero card, modals */
+  --radius-lg:      28px;       /* feature blocks */
+  --radius-pill:    100px;      /* status chips, eyebrow pills */
+
+  /* ---------------------------------------------------------------------
+     SHADOWS — violet-tinted (never neutral black)
+     --------------------------------------------------------------------- */
+  --shadow-card:    0 1px 2px rgba(0,0,0,0.3), 0 4px 16px rgba(11,7,23,0.5);
+  --shadow-lift:    0 4px 12px rgba(0,0,0,0.35), 0 24px 48px rgba(11,7,23,0.6);
+  --shadow-glow:    0 0 32px rgba(244, 116, 140, 0.18);
+  --shadow-focus:   0 0 0 3px rgba(244, 116, 140, 0.28);
+
+  /* ---------------------------------------------------------------------
+     SPACING — 4px base grid
+     --------------------------------------------------------------------- */
+  --s-1:   4px;
+  --s-2:   8px;
+  --s-3:   12px;
+  --s-4:   16px;
+  --s-5:   20px;
+  --s-6:   24px;
+  --s-8:   32px;
+  --s-10:  40px;
+  --s-12:  48px;
+  --s-16:  64px;
+  --s-20:  80px;
+  --s-24:  96px;
+
+  /* ---------------------------------------------------------------------
+     MOTION
+     --------------------------------------------------------------------- */
+  --ease:           cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out:       cubic-bezier(0.16, 1, 0.3, 1);    /* deceleration, panel reveals */
+  --dur-fast:       0.15s;
+  --dur-base:       0.2s;
+  --dur-slow:       0.4s;
+  --dur-cross-fade: 0.6s;
+
+  /* ---------------------------------------------------------------------
+     SKY GRADIENT — fallback hero backdrop when the skyline photo
+     hasn't loaded. Also used as a tonal layer on dashboards.
+     --------------------------------------------------------------------- */
+  --sky:
+    radial-gradient(ellipse 80% 60% at 15% 75%, rgba(244, 116, 140, 0.55) 0%, transparent 55%),
+    radial-gradient(ellipse 60% 40% at 5% 85%, rgba(232, 168, 124, 0.45) 0%, transparent 50%),
+    radial-gradient(ellipse 100% 70% at 50% 100%, rgba(40, 22, 60, 0.6) 0%, transparent 65%),
+    linear-gradient(180deg, #110C24 0%, #1A1240 30%, #2A1B58 60%, #3D2272 85%, #4A2868 100%);
+}
+
+/* =====================================================================
+   SEMANTIC ELEMENT DEFAULTS
+   Use these on bare HTML to get an instantly-on-brand surface.
+   ===================================================================== */
+html {
+  background: var(--bg-deep);
+  font-family: var(--font-sans);
+  color: var(--text-1);
+  font-feature-settings: "ss01", "cv11", "cv02";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(ellipse 60% 40% at 80% 0%, rgba(244, 116, 140, 0.08) 0%, transparent 50%),
+    radial-gradient(ellipse 40% 30% at 0% 50%, rgba(183, 154, 224, 0.06) 0%, transparent 50%),
+    var(--bg-deep);
+  color: var(--text-1);
+  line-height: 1.5;
+}
+
+/* Film grain — prevents OLED-flat-black. Drop into <body>. */
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  pointer-events: none;
+  z-index: 1000;
+  opacity: 0.025;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Display — Fraunces */
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-variation-settings: "opsz" 144, "SOFT" 50;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  color: var(--text-1);
+}
+h1 { font-size: var(--t-hero); line-height: 0.98; letter-spacing: -0.035em; }
+h2 { font-size: var(--t-h1); }
+h3 { font-size: var(--t-h2); }
+
+/* Italic accent — softer terminals via SOFT 100 */
+h1 em, h2 em, h3 em,
+em.accent {
+  font-style: italic;
+  font-weight: 300;
+  color: var(--accent);
+  font-variation-settings: "opsz" 144, "SOFT" 100;
+}
+
+/* Body */
+h4, h5 {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+}
+h4 { font-size: var(--t-h3); }
+h5 { font-size: var(--t-h4); }
+
+p { color: var(--text-2); font-size: var(--t-body); line-height: 1.6; }
+
+/* Mono */
+code, kbd, .mono {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  letter-spacing: 0.01em;
+}
+
+/* Uppercase tracked label */
+.micro-label {
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.micro-label.accent { color: var(--accent); }
+
+/* Strikethrough — used in hero headline */
+.hl-strike {
+  text-decoration: line-through;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 3px;
+  color: var(--text-3);
+}
+
+/* Links */
+a { color: var(--accent); text-decoration: none; transition: color var(--dur-fast); }
+a:hover { color: var(--accent-hover); }
+
+/* Selection */
+::selection { background: var(--accent-glow); color: var(--text-1); }
+
+/* Scrollbar (dark) */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb {
+  background: var(--surface-2);
+  border-radius: 100px;
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--surface-3); }

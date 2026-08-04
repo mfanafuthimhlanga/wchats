@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Logo · usage</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..800,0..100&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../colors_and_type.css">
+<link rel="stylesheet" href="_base.css">
+<style>
+html, body { width: 700px; height: 200px; }
+
+</style>
+</head>
+<body>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; height: 100%;">
+  <div style="background: var(--bg-deep); border: 1px solid var(--border-soft); border-radius: 16px; padding: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <div style="width: 26px; height: 26px; background: linear-gradient(135deg, #F4748C 0%, #C8485E 100%); border-radius: 7px; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 16px rgba(244,116,140,0.25);">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      </div>
+      <span style="font-family: var(--font-display); font-size: 16px; font-weight: 500; color: var(--text-1);">w<span style="color: var(--accent);">.</span>chats</span>
+    </div>
+    <span class="mono" style="font-size: 9px; color: var(--text-4);">on bg-deep · default</span>
+  </div>
+  <div style="background: var(--surface-2); border: 1px solid var(--border); border-radius: 16px; padding: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <div style="width: 26px; height: 26px; background: linear-gradient(135deg, #F4748C 0%, #C8485E 100%); border-radius: 7px; display: flex; align-items: center; justify-content: center;">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      </div>
+      <span style="font-family: var(--font-display); font-size: 16px; font-weight: 500; color: var(--text-1);">w<span style="color: var(--accent);">.</span>chats</span>
+    </div>
+    <span class="mono" style="font-size: 9px; color: var(--text-4);">on surface-2 · elevated</span>
+  </div>
+  <div style="background: var(--accent); border-radius: 16px; padding: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <div style="width: 26px; height: 26px; background: var(--text-on-accent); border-radius: 7px; display: flex; align-items: center; justify-content: center;">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      </div>
+      <span style="font-family: var(--font-display); font-size: 16px; font-weight: 500; color: var(--text-on-accent);">w<span style="color: var(--text-on-accent); opacity: 0.6;">.</span>chats</span>
+    </div>
+    <span class="mono" style="font-size: 9px; color: rgba(11,7,23,0.6);">on coral · inverted</span>
+  </div>
+</div>
+
+</body>
+</html>

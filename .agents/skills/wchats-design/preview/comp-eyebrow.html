@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Eyebrow pills</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..800,0..100&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../colors_and_type.css">
+<link rel="stylesheet" href="_base.css">
+<style>
+html, body { width: 700px; height: 160px; }
+.btn { font-family: var(--font-sans); font-size: 14px; font-weight: 600; letter-spacing: -0.005em; padding: 10px 18px; border-radius: 8px; cursor: pointer; border: none; display: inline-flex; align-items: center; gap: 8px; transition: all 0.15s ease; white-space: nowrap; }
+.btn-primary { background: var(--accent); color: var(--text-on-accent); box-shadow: 0 0 0 1px var(--accent-deep) inset, var(--shadow-glow); }
+.btn-ghost { background: transparent; color: var(--text-1); border: 1px solid var(--border); }
+.btn-secondary { background: var(--surface-2); color: var(--text-1); border: 1px solid var(--border); }
+.btn-sm { font-size: 12.5px; padding: 7px 14px; }
+.btn-lg { font-size: 15px; padding: 13px 24px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 10px; border-radius: 100px; }
+.chip .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.chip-live   { background: var(--green-bg);  color: var(--green);  border: 1px solid var(--green-border); }
+.chip-test   { background: var(--gold-bg);   color: var(--gold);   border: 1px solid var(--gold-border); }
+.chip-draft  { background: var(--surface-2); color: var(--text-3); border: 1px solid var(--border-soft); }
+.chip-red    { background: var(--red-bg);    color: var(--red);    border: 1px solid var(--red-border); }
+.chip-coral  { background: var(--accent-dim);color: var(--accent); border: 1px solid rgba(244,116,140,0.25); }
+.chip-cyan   { background: var(--cyan-dim);  color: var(--cyan);   border: 1px solid rgba(94,223,211,0.25); }
+.chip-lilac  { background: var(--lilac-dim); color: var(--lilac);  border: 1px solid rgba(183,154,224,0.25); }
+
+</style>
+</head>
+<body>
+
+<div style="display: flex; flex-direction: column; gap: 16px; height: 100%; justify-content: center;">
+  <div class="label">Eyebrow pills · glass + line variants</div>
+  <div style="display: flex; gap: 14px; align-items: center; flex-wrap: wrap;">
+    <div style="display: inline-flex; align-items: center; gap: 10px; padding: 6px 12px 6px 10px; background: var(--glass-bg); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); border: 1px solid var(--glass-border); border-radius: 100px; font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-2);">
+      <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green);"></span>
+      <span><strong style="color: var(--text-1); font-weight: 700;">Open source</strong>&nbsp;·&nbsp;v0.4.2&nbsp;·&nbsp;M8</span>
+    </div>
+  </div>
+  <div style="display: flex; align-items: center; gap: 14px;">
+    <span style="width: 24px; height: 1px; background: var(--accent);"></span>
+    <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent);">How it works</span>
+  </div>
+  <div style="display: flex; align-items: center; gap: 14px;">
+    <span style="width: 24px; height: 1px; background: var(--accent);"></span>
+    <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-2);">Landing</span>
+    <span class="mono" style="font-size: 11px; color: var(--text-4); letter-spacing: 0.06em;">01 / 04</span>
+    <span style="flex: 1; height: 1px; background: var(--border-soft);"></span>
+  </div>
+</div>
+
+</body>
+</html>

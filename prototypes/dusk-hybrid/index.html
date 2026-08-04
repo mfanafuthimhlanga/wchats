@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>W Chats</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link
+  href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..800,0..100,0..1&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+  rel="stylesheet">
+<style>
+  /* ─────────────────────────────────────────────────────────────────────────
+     Tokens — copied from production apps/admin/app/globals.css :root
+     (the body skyline-photo rules are intentionally NOT copied; the
+     three.js waveform replaces the photo behind the hero).
+     ───────────────────────────────────────────────────────────────────────── */
+  :root {
+    /* Surfaces */
+    --bg-deep:    #0B0717;
+    --bg:         #110C24;
+    --bg-elev:    #181232;
+    --surface-1:  #1E1638;
+    --surface-2:  #2A1E4A;
+    --surface-3:  #382860;
+
+    /* Glass — three tiers */
+    --glass-bg:         rgba(17, 12, 31, 0.55);
+    --glass-bg-strong:  rgba(24, 17, 45, 0.70);
+    --glass-bg-dense:   rgba(13, 9, 24, 0.74);
+    --glass-border:     rgba(244, 232, 220, 0.10);
+    --glass-blur:       blur(24px) saturate(115%);
+    --glass-blur-dense: blur(28px) saturate(105%);
+    --glass-highlight:  inset 0 1px 0 rgba(244, 232, 220, 0.07);
+    --well: rgba(11, 7, 23, 0.42);
+    --chip: rgba(40, 30, 66, 0.42);
+
+    /* Borders */
+    --border:      rgba(196, 154, 232, 0.18);
+    --border-soft: rgba(196, 154, 232, 0.10);
+    --border-hard: rgba(244, 116, 140, 0.32);
+
+    /* Accent — sunset coral */
+    --accent:       #F4748C;
+    --accent-hover: #F5899E;
+    --accent-deep:  #C4435C;
+    --accent-dim:   rgba(244, 116, 140, 0.10);
+
+    /* Secondary — jacaranda lilac */
+    --lilac:     #B79AE0;
+    --lilac-dim: rgba(183, 154, 224, 0.12);
+
+    /* Tertiary — tower cyan */
+    --cyan: #5EDFD3;
+
+    /* Warm — building amber */
+    --amber:    #E8A87C;
+    --amber-bg: rgba(232, 168, 124, 0.12);
+
+    /* Text */
+    --text-1: #F4EDE5;
+    --text-2: #C4BCD0;
+    --text-3: #8A82A0;
+    --text-4: #5A5470;
+    --text-on-accent: #0B0717;
+
+    /* Status */
+    --green:    #34D399;
+    --green-bg: rgba(52, 211, 153, 0.12);
+    --red:      #F87171;
+    --red-bg:   rgba(248, 113, 113, 0.12);
+    --gold:     #FBBF24;
+    --gold-bg:  rgba(251, 191, 36, 0.12);
+
+    /* Radii */
+    --radius-xs:   8px;
+    --radius-sm:   14px;
+    --radius-md:   20px;
+    --radius-lg:   28px;
+    --radius-pill: 100px;
+
+    /* Shadows — violet-tinted */
+    --shadow-card:  0 1px 2px rgba(0,0,0,0.3), 0 4px 16px rgba(11,7,23,0.5);
+    --shadow-lift:  0 4px 12px rgba(0,0,0,0.35), 0 24px 48px rgba(11,7,23,0.6);
+    --shadow-focus: 0 0 0 3px rgba(244, 116, 140, 0.28);
+    --shadow-glow:  0 0 32px rgba(244, 116, 140, 0.18);
+
+    /* Typography */
+    --font-display: 'Fraunces', Georgia, serif;
+    --font-sans:    'Inter', system-ui, sans-serif;
+    --font-mono:    'JetBrains Mono', ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  /* Skyline surface at 25% over the dark ground; the waveform lives in the
+     hero and renders above the photo. */
+  html, body { margin: 0; padding: 0; }
+  html { background: var(--bg); }
+  body {
+    background: transparent;
+    font-family: var(--font-sans);
+    color: var(--text-1);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    min-height: 100vh;
+  }
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background: url('skyline-w-chats.png') center / cover no-repeat;
+    opacity: 0.25;
+    pointer-events: none;
+  }
+
+  /* ── Glass tiers — copied from production globals.css ──────────────────── */
+  .glass {
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-highlight), var(--shadow-card);
+  }
+  .glass-strong {
+    background: var(--glass-bg-dense);
+    backdrop-filter: var(--glass-blur-dense);
+    -webkit-backdrop-filter: var(--glass-blur-dense);
+    border: 1px solid var(--border-soft);
+    box-shadow: var(--glass-highlight), var(--shadow-card);
+  }
+  .glass-nav {
+    position: relative;
+    background: transparent;
+    border: none;
+  }
+  /* nav scrim removed — nav sits directly on the 25% skyline */
+
+  /* Display text sitting directly over the waveform (outside any glass) */
+  .on-photo { text-shadow: 0 2px 24px rgba(11, 7, 23, 0.55); }
+
+  /* Legibility floor when backdrop-filter is unavailable */
+  @supports not (backdrop-filter: blur(1px)) {
+    .glass        { background: rgba(17, 12, 31, 0.92); }
+    .glass-strong { background: rgba(13, 9, 24, 0.93); }
+  }
+
+  /* Keyframes used by the static pipeline card (copied from globals.css) */
+  @keyframes pulse-ring {
+    0%   { box-shadow: 0 0 0 0   rgba(244, 116, 140, 0.50); }
+    60%  { box-shadow: 0 0 0 8px rgba(244, 116, 140, 0);    }
+    100% { box-shadow: 0 0 0 0   rgba(244, 116, 140, 0);    }
+  }
+  @keyframes blink-dot {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.2; }
+  }
+
+  /* Focus rings — production behaviour */
+  a:focus-visible,
+  button:focus-visible,
+  [role="button"]:focus-visible {
+    outline: none;
+    box-shadow: var(--shadow-focus);
+  }
+
+  /* ── Wordmark (text, no SVG asset over file://) ────────────────────────── */
+  .wordmark {
+    font-family: var(--font-sans);
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--text-1);
+    text-decoration: none;
+  }
+  .wordmark b { color: var(--accent); font-weight: 800; }
+
+  /* ── Waveform host (dusk-console pattern) ──────────────────────────────── */
+  .hero-wrap { position: relative; overflow: hidden; }
+  .scene-host {
+    position: absolute; inset: 0; z-index: 0;
+    /* transparent so the skyline reads through; faint coral wash only */
+    background: radial-gradient(ellipse 70% 55% at 50% 100%, rgba(244, 116, 140, 0.06), transparent 70%);
+  }
+  /* fade the waveform itself (mask the canvas), not the page behind it */
+  .scene-host canvas {
+    -webkit-mask-image: linear-gradient(180deg, black 55%, transparent 98%);
+    mask-image: linear-gradient(180deg, black 55%, transparent 98%);
+  }
+
+  /* ── Nav row ───────────────────────────────────────────────────────────── */
+  .nav-link {
+    padding: 7px 14px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-2);
+    border-radius: var(--radius-xs);
+    text-decoration: none;
+  }
+  .nav-link:hover { color: var(--text-1); }
+
+  .btn-signin {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-2);
+    text-decoration: none;
+  }
+  .btn-signin:hover { color: var(--text-1); }
+
+  .btn-accent {
+    background: var(--accent);
+    color: var(--text-on-accent);
+    padding: 8px 18px;
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    font-size: 14px;
+    text-decoration: none;
+    display: inline-block;
+    transition: background 0.15s ease;
+  }
+  .btn-accent:hover { background: var(--accent-hover); }
+
+  /* ── Responsive: collapse the hero split on narrow screens ─────────────── */
+  @media (max-width: 980px) {
+    .hero-grid {
+      grid-template-columns: 1fr !important;
+      gap: 40px !important;
+      padding: 40px 28px 220px !important;
+    }
+    .nav-center { display: none !important; }
+  }
+  @media (max-width: 560px) {
+    .hero-grid { padding: 32px 20px 180px !important; }
+  }
+
+  /* Respect reduced motion for the card's decorative dots/rings.
+     (The waveform scene guards itself in scene.js.) */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+</style>
+</head>
+<body>
+
+<main style="background:transparent;font-family:var(--font-sans);min-height:100vh;">
+
+  <!-- ── Landing nav — progressive-blur glass scrim (glass-nav) ──────────── -->
+  <header class="glass-nav" style="height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 32px;position:sticky;top:0;z-index:100;">
+    <div style="display:flex;align-items:center;gap:10px;margin-right:0;">
+      <a class="wordmark" href="index.html"><b>w.</b>chats</a>
+    </div>
+
+    <div class="nav-center" style="display:flex;align-items:center;gap:2px;flex:1;justify-content:center;">
+      <a class="nav-link" href="#product">Product</a>
+      <a class="nav-link" href="#how-it-works">How it works</a>
+      <a class="nav-link" href="#pricing">Pricing</a>
+      <a class="nav-link" href="#docs">Docs</a>
+      <a class="nav-link" href="#changelog">Changelog</a>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:12px;">
+      <a class="btn-signin" href="agents.html">Sign in</a>
+      <a class="btn-accent" href="agents.html">Start free</a>
+    </div>
+  </header>
+
+  <!-- ── Hero — waveform shows through (replaces the skyline photo) ───────── -->
+  <div class="hero-wrap">
+    <div class="scene-host" id="scene"></div>
+
+    <section id="product" style="position:relative;z-index:1;min-height:100vh;display:flex;align-items:center;">
+      <div class="hero-grid" style="position:relative;z-index:2;display:grid;grid-template-columns:1fr 0.72fr;gap:56px;align-items:center;max-width:1280px;margin:0 auto;width:100%;padding:48px 56px 360px;">
+
+        <!-- Left column — copy -->
+        <div style="position:relative;">
+          <!-- hero vignette removed with the rest of the overlays -->
+
+          <div style="position:relative;z-index:1;">
+            <!-- Fraunces headline with italic coral em word -->
+            <h1 class="on-photo" style="font-family:var(--font-display);font-weight:400;font-variation-settings:'opsz' 144, 'SOFT' 30;font-size:clamp(32px, 3.4vw, 52px);letter-spacing:-0.022em;line-height:1.1;color:var(--text-1);margin-bottom:16px;margin-top:0;">
+              Ship a customer support agent that is
+              <em style="font-style:italic;font-weight:300;color:var(--accent);font-variation-settings:'opsz' 144, 'SOFT' 100;">defensible</em>, grounded, evaluated, and red-teamed before it goes live.
+            </h1>
+
+            <p class="on-photo" style="font-size:15px;line-height:1.6;color:var(--text-2);margin-bottom:22px;max-width:480px;">
+              W Chats wires a <strong style="color:var(--text-1);font-weight:600;">Claude Agent SDK</strong> reasoning engine to your business documents, evaluates every answer, and ships a <strong style="color:var(--text-1);font-weight:600;">20kb widget</strong> for any page.
+            </p>
+
+            <!-- CTA row -->
+            <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:40px;">
+              <a href="agents.html" style="background:var(--accent);color:var(--text-on-accent);padding:14px 28px;border-radius:var(--radius-sm);font-weight:600;font-size:15px;text-decoration:none;display:inline-block;">
+                Build your agent
+              </a>
+              <button type="button" style="background:transparent;border:1px solid var(--border);color:var(--text-2);padding:14px 28px;border-radius:var(--radius-sm);font-weight:600;font-size:15px;cursor:pointer;display:inline-flex;align-items:center;gap:10px;font-family:var(--font-sans);">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true">
+                  <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                </svg>
+                Watch the build
+                <span style="font-family:var(--font-mono);color:var(--text-3);">2:18</span>
+              </button>
+            </div>
+
+            <!-- Trust strip — quiet inline stats, no card chrome -->
+            <div class="on-photo" style="display:flex;flex-wrap:wrap;column-gap:40px;row-gap:18px;padding-top:28px;">
+              <div style="display:flex;flex-direction:column;gap:3px;">
+                <span style="font-family:var(--font-mono);font-size:16px;font-weight:600;color:var(--text-1);letter-spacing:-0.01em;">248+</span>
+                <span style="font-size:10.5px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-2);">Agents deployed</span>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:3px;">
+                <span style="font-family:var(--font-mono);font-size:16px;font-weight:600;color:var(--text-1);letter-spacing:-0.01em;">&gt;0.91</span>
+                <span style="font-size:10.5px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-2);">Faithfulness median</span>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:3px;">
+                <span style="font-family:var(--font-mono);font-size:16px;font-weight:600;color:var(--text-1);letter-spacing:-0.01em;">&lt;$0.17</span>
+                <span style="font-size:10.5px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-2);">Avg cost / session</span>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:3px;">
+                <span style="font-family:var(--font-mono);font-size:16px;font-weight:600;color:var(--text-1);letter-spacing:-0.01em;">0</span>
+                <span style="font-size:10.5px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-2);">Critical red team findings</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Right column — static BUILD PIPELINE card (mid-build: Test running) ── -->
+        <div class="glass" style="border-radius:var(--radius-md);overflow:hidden;">
+          <!-- Card header -->
+          <div style="padding:18px 22px 14px;border-bottom:1px solid var(--glass-border);display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-family:var(--font-mono);font-size:10.5px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-3);">
+              Build pipeline &middot; agent.alpha
+            </span>
+            <span style="display:inline-flex;align-items:center;gap:5px;background:var(--accent-dim);color:var(--accent);font-size:9.5px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;padding:3px 8px;border-radius:var(--radius-pill);">
+              <span style="width:5px;height:5px;border-radius:50%;background:var(--accent);animation:blink-dot 1.1s ease-in-out infinite;display:inline-block;"></span>
+              Running
+            </span>
+          </div>
+
+          <!-- Pipeline body — frame 3: Provision done, Configure done, Test active, Deploy pending -->
+          <div style="padding:18px 22px 22px;display:flex;flex-direction:column;gap:4px;">
+
+            <!-- Provision — done -->
+            <div>
+              <div style="display:flex;align-items:center;gap:14px;padding:13px 16px;border-radius:var(--radius-xs);background:transparent;border:1px solid transparent;opacity:1;">
+                <div style="width:24px;height:24px;border-radius:50%;background:var(--green);color:var(--text-on-accent);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                </div>
+                <div style="flex:1;">
+                  <div style="font-size:13px;font-weight:500;color:var(--green);">Provision</div>
+                  <div style="font-size:11px;font-family:var(--font-mono);color:var(--green);margin-top:2px;">Tenant database ready</div>
+                </div>
+                <span style="font-size:10px;font-weight:600;color:var(--green);font-family:var(--font-mono);">done</span>
+              </div>
+              <div style="width:2px;height:8px;margin-left:27px;background:var(--green);border-radius:1px;"></div>
+            </div>
+
+            <!-- Configure — done -->
+            <div>
+              <div style="display:flex;align-items:center;gap:14px;padding:13px 16px;border-radius:var(--radius-xs);background:transparent;border:1px solid transparent;opacity:1;">
+                <div style="width:24px;height:24px;border-radius:50%;background:var(--green);color:var(--text-on-accent);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                </div>
+                <div style="flex:1;">
+                  <div style="font-size:13px;font-weight:500;color:var(--green);">Configure</div>
+                  <div style="font-size:11px;font-family:var(--font-mono);color:var(--green);margin-top:2px;">Docs ingested</div>
+                </div>
+                <span style="font-size:10px;font-weight:600;color:var(--green);font-family:var(--font-mono);">done</span>
+              </div>
+              <div style="width:2px;height:8px;margin-left:27px;background:var(--green);border-radius:1px;"></div>
+            </div>
+
+            <!-- Test — active -->
+            <div>
+              <div style="display:flex;align-items:center;gap:14px;padding:13px 16px;border-radius:var(--radius-xs);background:rgba(244,116,140,0.06);border:1px solid rgba(244,116,140,0.18);opacity:1;">
+                <div style="width:24px;height:24px;border-radius:50%;background:var(--accent);color:var(--text-on-accent);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;box-shadow:0 0 0 4px rgba(244,116,140,0.20);animation:pulse-ring 1.6s ease-out infinite;">
+                  <span style="font-family:var(--font-mono);font-size:11px;">&#9673;</span>
+                </div>
+                <div style="flex:1;">
+                  <div style="font-size:13px;font-weight:600;color:var(--text-1);">Test</div>
+                  <div style="font-size:11px;font-family:var(--font-mono);color:var(--accent);margin-top:2px;">Running evals &mdash; pass rate 0.91...</div>
+                </div>
+                <span style="width:6px;height:6px;border-radius:50%;background:var(--accent);animation:blink-dot 1.1s ease-in-out infinite;display:inline-block;flex-shrink:0;"></span>
+              </div>
+              <div style="width:2px;height:8px;margin-left:27px;background:var(--border);border-radius:1px;"></div>
+            </div>
+
+            <!-- Deploy — pending -->
+            <div>
+              <div style="display:flex;align-items:center;gap:14px;padding:13px 16px;border-radius:var(--radius-xs);background:transparent;border:1px solid transparent;opacity:0.4;">
+                <div style="width:24px;height:24px;border-radius:50%;background:var(--chip);color:var(--text-4);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;">
+                  <span style="font-family:var(--font-mono);font-size:11px;">4</span>
+                </div>
+                <div style="flex:1;">
+                  <div style="font-size:13px;font-weight:500;color:var(--text-3);">Deploy</div>
+                  <div style="font-size:11px;font-family:var(--font-mono);color:var(--text-4);margin-top:2px;">Embed widget live</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Progress bar — frame 3 of 4 → 75% -->
+            <div style="margin-top:16px;height:3px;background:var(--well);border-radius:2px;overflow:hidden;">
+              <div style="height:100%;width:75%;background:linear-gradient(90deg, var(--green) 0%, var(--accent) 100%);border-radius:2px;"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-top:6px;">
+              <span style="font-size:10px;color:var(--text-4);font-family:var(--font-mono);">Step 3 of 4</span>
+              <span style="font-size:10px;color:var(--text-4);font-family:var(--font-mono);">75%</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </div>
+
+</main>
+
+<script src="scene.js"></script>
+<script>mountScene(document.getElementById('scene'));</script>
+</body>
+</html>

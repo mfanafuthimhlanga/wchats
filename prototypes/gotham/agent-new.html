@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="en" data-gate="open">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>New agent · W Chats</title>
+<meta name="description" content="Name a new agent and set its temper. Provisioning takes about a minute, and nothing is public until it clears its gate.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&family=Newsreader:ital,opsz,wght@1,6..72,400&family=Space+Grotesk:wght@500;600&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="app.css">
+
+<style>
+  /* =====================================================================
+     NEW AGENT — the cold bench.
+
+     A new agent has no documents, no evals and no red team. There is
+     nothing to gate, so there is no gate on this page, and there is no
+     verdict, so there is no colour on this page. Not one pixel of it.
+     The instruments are drawn, and they are dead flat, reading --.
+     This is a form. It is not the console.
+     ===================================================================== */
+
+  .vh {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+  [hidden] { display: none !important; }
+
+  /* the left crosses clear the 56px rail (same plate furniture as agents) */
+  .cross-tl { left: 78px; top: 22px; }
+  .cross-tr { right: 22px; top: 22px; }
+  .cross-bl { left: 78px; bottom: 22px; }
+  .cross-br { right: 22px; bottom: 22px; }
+
+  /* the page is quiet and centred. It never fills the bench. */
+  .page.prov { max-width: 1060px; margin-inline: auto; }
+  .page-head .sub { max-width: 62ch; }
+
+  /* ── the stepper: four stations on ONE hairline rule ───────────────────
+     Not cards, not a sidebar. A rule across the plate, and the markers
+     are cut into it. Step 1 is the only station with light on it. */
+  .stepper {
+    list-style: none; margin: 0 0 4px; padding: 0;
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    border-top: 1px solid var(--hairline);
+  }
+  .station { position: relative; padding: 21px 22px 0 0; }
+  .station-mark {
+    position: absolute; top: 0; left: 0;
+    transform: translateY(-50%);
+    display: flex; align-items: center; height: 14px;
+    padding-right: 9px;
+    background: var(--bg);            /* the marker interrupts the rule */
+    color: var(--ink-3);
+  }
+  .station[aria-current="step"] .station-mark { color: var(--live); }
+  .sq { width: 8px; height: 8px; background: currentColor; }
+
+  .station h2 {
+    font-family: var(--display); font-size: 14px; font-weight: 500;
+    color: var(--ink-3);
+  }
+  .station[aria-current="step"] h2 { color: var(--ink); }
+  .station p {
+    margin-top: 5px;
+    font-family: var(--mono); font-size: 11px; line-height: 1.6;
+    color: var(--ink-3);
+  }
+  .station[data-locked="true"] { opacity: 0.62; }
+
+  /* ── the bench: form on the left, cold instruments on the right ───────── */
+  .build {
+    display: grid;
+    grid-template-columns: minmax(0, 560px) minmax(240px, 300px);
+    gap: 60px; justify-content: center;
+    margin-top: 46px;
+  }
+
+  /* ── the form. Chromeless: hairlines, not boxes. ───────────────────────── */
+  .fields { margin: 0; padding: 0; border: 0; min-width: 0; }
+  .fields[disabled] { opacity: 0.5; }
+
+  .f {
+    display: grid; grid-template-columns: 132px minmax(0, 1fr);
+    align-items: center; gap: 20px;
+    padding: 16px 0;
+    border-top: 1px solid var(--hairline);
+  }
+  .f:last-child { border-bottom: 1px solid var(--hairline); }
+  .f > .label { margin: 0; }
+
+  .ctl { position: relative; min-width: 0; }
+  .f input[type="text"],
+  .f select {
+    background: transparent; border: 0; border-radius: 0;
+    padding: 4px 0; font-size: 14px; color: var(--ink);
+    appearance: none; -webkit-appearance: none;
+  }
+  .f select { padding-right: 22px; cursor: pointer; }
+  .f select option { background: var(--surface); color: var(--ink); }
+  .f input[type="text"]:focus-visible,
+  .f select:focus-visible { outline: 2px solid var(--live); outline-offset: 3px; }
+  .chev {
+    position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+    color: var(--ink-3); pointer-events: none;
+  }
+
+  /* the tone segments: light marks the chosen one, never a hue */
+  .f-set { margin: 0; padding: 0; border: 0; min-width: 0; }
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--hairline); border-radius: var(--r-control);
+    overflow: hidden;
+  }
+  .seg input { position: absolute; width: 1px; height: 1px; opacity: 0; clip-path: inset(50%); }
+  .seg label {
+    margin: 0; padding: 7px 15px; cursor: pointer;
+    font-family: var(--sans); font-size: 12.5px; font-weight: 600;
+    letter-spacing: 0; text-transform: none; color: var(--ink-2);
+    border-left: 1px solid var(--hairline);
+    transition: background 140ms ease, color 140ms ease;
+  }
+  .seg label:first-of-type { border-left: 0; }
+  .seg label:hover { background: var(--surface); color: var(--ink); }
+  .seg input:checked + label { background: var(--live); color: var(--live-ink); }
+  .seg input:focus-visible + label { outline: 2px solid var(--live); outline-offset: -3px; }
+
+  .voice-line { margin: 26px 0 0; font-size: 16px; max-width: 56ch; }
+
+  .actions { display: flex; align-items: center; gap: 12px; margin-top: 26px; }
+  .elapsed { margin-left: 2px; font-size: 12px; color: var(--ink-3); }
+
+  .done { margin-top: 22px; }
+  .done-line { font-size: 12.5px; color: var(--ink-2); margin-bottom: 14px; }
+
+  /* ── the instruments. Present, drawn, and completely unlit. ────────────── */
+  .bench-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .instruments { margin-top: 14px; }
+  .chan {
+    display: grid; grid-template-columns: minmax(0, 1fr) 72px 26px;
+    align-items: center; gap: 12px;
+    padding: 11px 0;
+    border-top: 1px solid var(--hairline-soft);
+    font-size: 12.5px; color: var(--ink-3);
+  }
+  .chan:last-child { border-bottom: 1px solid var(--hairline-soft); }
+  /* a dead flat baseline: no signal has ever crossed this channel */
+  .flatline { position: relative; height: 9px; }
+  .flatline::before {
+    content: ''; position: absolute; left: 0; right: 0; top: 4px;
+    height: 1px; background: var(--hairline);
+  }
+  .flatline::after {
+    content: ''; position: absolute; left: 0; top: 0;
+    width: 1px; height: 9px; background: var(--hairline);
+  }
+  .chan .reading { font-size: 12.5px; text-align: right; color: var(--ink-3); }
+
+  /* ── what provisioning will do. An empty outline until it is not. ─────── */
+  .oc { margin-top: 34px; }
+  .oc-list { list-style: none; margin: 14px 0 0; padding: 0; }
+  .oc-row {
+    display: grid; grid-template-columns: 14px minmax(0, 1fr);
+    align-items: start; gap: 11px;
+    padding: 11px 0;
+    border-top: 1px solid var(--hairline-soft);
+    font-size: 12.5px; line-height: 1.5; color: var(--ink-3);
+    transition: color 240ms ease;
+  }
+  .oc-row:last-child { border-bottom: 1px solid var(--hairline-soft); }
+  .oc-row .glyph { color: var(--ink-3); margin-top: 2px; transition: color 240ms ease; }
+  .oc-row .tick { opacity: 0; transition: opacity 200ms ease; }
+  .oc-row[data-done="true"] { color: var(--ink); }
+  .oc-row[data-done="true"] .glyph { color: var(--live); }
+  .oc-row[data-done="true"] .tick { opacity: 1; }
+
+  @media (max-width: 960px) {
+    .build { grid-template-columns: minmax(0, 560px); gap: 44px; }
+    .stepper { grid-template-columns: repeat(2, 1fr); }
+    .station { padding-bottom: 20px; }
+  }
+  @media (max-width: 900px) {
+    .cross-tl, .cross-bl { left: 22px; }
+    .cross-bl, .cross-br { bottom: 78px; }
+  }
+  @media (max-width: 560px) {
+    .stepper { grid-template-columns: 1fr; }
+    .f { grid-template-columns: minmax(0, 1fr); gap: 8px; align-items: start; }
+  }
+</style>
+</head>
+
+<body class="tint">
+  <div class="graticule" aria-hidden="true"></div>
+  <div class="bloom" aria-hidden="true"></div>
+  <div class="cross cross-tl" aria-hidden="true"></div>
+  <div class="cross cross-tr" aria-hidden="true"></div>
+  <div class="cross cross-bl" aria-hidden="true"></div>
+  <div class="cross cross-br" aria-hidden="true"></div>
+
+  <a class="skip" href="#main">Skip to content</a>
+
+  <!-- ── the command deck ───────────────────────────────────────────────── -->
+  <nav class="rail" aria-label="Console">
+    <a class="rail-mark" href="index.html" aria-label="W Chats home">w</a>
+
+    <a class="rail-btn" href="agents.html" aria-current="page" aria-label="Agents">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 1.8 15.4 5.4v7.2L9 16.2 2.6 12.6V5.4z"/>
+        <circle cx="9" cy="9" r="2.6"/>
+      </svg>
+    </a>
+
+    <a class="rail-btn" href="ingest.html" aria-label="Ingest">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 2.2v7.6"/>
+        <path d="M6 6.8 9 9.8l3-3"/>
+        <path d="M3 12.2v2.6h12v-2.6"/>
+      </svg>
+    </a>
+
+    <a class="rail-btn" href="eval.html" aria-label="Eval">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 15h12"/>
+        <path d="M5.6 15V9.2"/>
+        <path d="M9 15V4.4"/>
+        <path d="M12.4 15v-3.4"/>
+      </svg>
+    </a>
+
+    <a class="rail-btn" href="deploy.html" aria-label="Deploy">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="9" cy="9" r="6.4"/>
+        <path d="M2.6 9h12.8"/>
+        <path d="M9 2.6c3.2 3.4 3.2 9.4 0 12.8-3.2-3.4-3.2-9.4 0-12.8z"/>
+      </svg>
+    </a>
+
+    <span class="spacer"></span>
+  </nav>
+
+  <main class="deck" id="main">
+    <div class="page prov">
+
+      <header class="page-head">
+        <h1>New agent</h1>
+        <p class="sub">
+          Name it and set its temper. Provisioning takes about a minute, and
+          nothing is public until it clears its gate.
+        </p>
+      </header>
+
+      <!-- ── the four stations. Only the first one is open. ───────────────── -->
+      <ol class="stepper" aria-label="Provisioning">
+        <li class="station" aria-current="step">
+          <span class="station-mark" aria-hidden="true"><span class="sq"></span></span>
+          <h2>Provision</h2>
+          <p>Name, business type and tone</p>
+        </li>
+
+        <li class="station" data-locked="true">
+          <span class="station-mark" aria-hidden="true">
+            <svg viewBox="0 0 14 14" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <rect x="2.2" y="6" width="9.6" height="6.6" rx="1.2"/>
+              <path d="M4.6 6V4.4a2.4 2.4 0 0 1 4.8 0V6"/>
+            </svg>
+          </span>
+          <h2>Configure <span class="vh">(locked)</span></h2>
+          <p>Draft the soul, load the documents</p>
+        </li>
+
+        <li class="station" data-locked="true">
+          <span class="station-mark" aria-hidden="true">
+            <svg viewBox="0 0 14 14" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <rect x="2.2" y="6" width="9.6" height="6.6" rx="1.2"/>
+              <path d="M4.6 6V4.4a2.4 2.4 0 0 1 4.8 0V6"/>
+            </svg>
+          </span>
+          <h2>Test <span class="vh">(locked)</span></h2>
+          <p>Run the evals, then the red team</p>
+        </li>
+
+        <li class="station" data-locked="true">
+          <span class="station-mark" aria-hidden="true">
+            <svg viewBox="0 0 14 14" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <rect x="2.2" y="6" width="9.6" height="6.6" rx="1.2"/>
+              <path d="M4.6 6V4.4a2.4 2.4 0 0 1 4.8 0V6"/>
+            </svg>
+          </span>
+          <h2>Deploy <span class="vh">(locked)</span></h2>
+          <p>Clear the gate, then take customers</p>
+        </li>
+      </ol>
+
+      <div class="build">
+
+        <!-- ── the form ─────────────────────────────────────────────────── -->
+        <form id="new-agent">
+          <fieldset class="fields" id="fields">
+            <legend class="vh">Agent details</legend>
+
+            <div class="f">
+              <label class="label" for="agent-name">Agent name</label>
+              <div class="ctl">
+                <input type="text" id="agent-name" name="name" value="Melville Stationers"
+                       autocomplete="off" spellcheck="false" required>
+              </div>
+            </div>
+
+            <div class="f">
+              <label class="label" for="agent-type">Business type</label>
+              <div class="ctl">
+                <select id="agent-type" name="type">
+                  <option value="salon">Salon and beauty</option>
+                  <option value="hardware">Hardware and trade</option>
+                  <option value="stationery" selected>Stationery and print</option>
+                  <option value="other">Other</option>
+                </select>
+                <svg class="chev" viewBox="0 0 14 14" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                  <path d="M3.5 5.5 7 9l3.5-3.5"/>
+                </svg>
+              </div>
+            </div>
+
+            <fieldset class="f-set">
+              <legend class="vh">Tone</legend>
+              <div class="f">
+                <span class="label" aria-hidden="true">Tone</span>
+                <div class="ctl">
+                  <div class="seg">
+                    <input type="radio" id="tone-professional" name="tone" value="professional" checked>
+                    <label for="tone-professional">Professional</label>
+
+                    <input type="radio" id="tone-friendly" name="tone" value="friendly">
+                    <label for="tone-friendly">Friendly</label>
+
+                    <input type="radio" id="tone-direct" name="tone" value="direct">
+                    <label for="tone-direct">Direct</label>
+                  </div>
+                </div>
+              </div>
+            </fieldset>
+          </fieldset>
+
+          <p class="voice voice-line">
+            There is nothing to measure yet. The bench stays cold until this
+            agent has documents to be wrong about.
+          </p>
+
+          <div class="actions" id="actions">
+            <button type="submit" class="btn btn-primary" id="create">Create agent</button>
+            <a class="btn btn-ghost" href="agents.html">Cancel</a>
+            <span class="mono elapsed" id="elapsed" aria-hidden="true" hidden>0.0s</span>
+          </div>
+
+          <p class="vh" id="status" role="status" aria-live="polite"></p>
+
+          <div class="done" id="done" hidden>
+            <p class="mono done-line" id="done-line">agent.melville-books provisioned</p>
+            <a class="btn btn-primary" href="agent.html" id="open-agent">Open the agent</a>
+          </div>
+        </form>
+
+        <!-- ── the cold bench ───────────────────────────────────────────── -->
+        <aside aria-labelledby="instruments-h">
+          <p class="label" id="instruments-h">Instruments · no signal yet</p>
+
+          <div class="instruments">
+            <div class="chan">
+              <span>Faithfulness</span>
+              <span class="flatline" aria-hidden="true"></span>
+              <span class="mono reading">--</span>
+            </div>
+            <div class="chan">
+              <span>Answer relevancy</span>
+              <span class="flatline" aria-hidden="true"></span>
+              <span class="mono reading">--</span>
+            </div>
+            <div class="chan">
+              <span>Context recall</span>
+              <span class="flatline" aria-hidden="true"></span>
+              <span class="mono reading">--</span>
+            </div>
+            <div class="chan">
+              <span>Context precision</span>
+              <span class="flatline" aria-hidden="true"></span>
+              <span class="mono reading">--</span>
+            </div>
+          </div>
+
+          <div class="oc">
+            <div class="bench-head">
+              <p class="label">On create</p>
+            </div>
+
+            <ul class="oc-list" id="oc-list">
+              <li class="oc-row">
+                <span class="glyph" aria-hidden="true">
+                  <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" focusable="false">
+                    <rect x="0.7" y="0.7" width="12.6" height="12.6" rx="2"/>
+                    <path class="tick" d="M3.7 7.1 5.9 9.4l4.5-5" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </span>
+                <span>Provision an isolated tenant database</span>
+              </li>
+              <li class="oc-row">
+                <span class="glyph" aria-hidden="true">
+                  <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" focusable="false">
+                    <rect x="0.7" y="0.7" width="12.6" height="12.6" rx="2"/>
+                    <path class="tick" d="M3.7 7.1 5.9 9.4l4.5-5" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </span>
+                <span>Create an empty knowledge base</span>
+              </li>
+              <li class="oc-row">
+                <span class="glyph" aria-hidden="true">
+                  <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" focusable="false">
+                    <rect x="0.7" y="0.7" width="12.6" height="12.6" rx="2"/>
+                    <path class="tick" d="M3.7 7.1 5.9 9.4l4.5-5" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </span>
+                <span>Generate a first draft of the soul</span>
+              </li>
+              <li class="oc-row">
+                <span class="glyph" aria-hidden="true">
+                  <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" focusable="false">
+                    <rect x="0.7" y="0.7" width="12.6" height="12.6" rx="2"/>
+                    <path class="tick" d="M3.7 7.1 5.9 9.4l4.5-5" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </span>
+                <span>Seed evaluation scenarios for this business type</span>
+              </li>
+            </ul>
+          </div>
+        </aside>
+
+      </div>
+    </div>
+  </main>
+
+<script>
+  /* Provisioning runs in place. Nothing navigates until the owner says so. */
+  (function () {
+    'use strict';
+
+    var form    = document.getElementById('new-agent');
+    var fields  = document.getElementById('fields');
+    var create  = document.getElementById('create');
+    var elapsed = document.getElementById('elapsed');
+    var status  = document.getElementById('status');
+    var done    = document.getElementById('done');
+    var open    = document.getElementById('open-agent');
+    var rows    = Array.prototype.slice.call(document.querySelectorAll('.oc-row'));
+
+    var STEP = 550;
+    var running = false;
+    var timer = null;
+    var t0 = 0;
+
+    var still = window.matchMedia
+      ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      : false;
+
+    function tick() {
+      var s = (performance.now() - t0) / 1000;
+      elapsed.textContent = s.toFixed(1) + 's';
+    }
+
+    function finish() {
+      if (timer) { clearInterval(timer); timer = null; tick(); }
+      done.hidden = false;
+      status.textContent = 'agent.melville-books provisioned. Open the agent.';
+      open.focus();
+    }
+
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      if (running) return;
+      running = true;
+
+      create.disabled = true;
+      create.setAttribute('aria-busy', 'true');
+      create.textContent = 'Provisioning';
+      fields.disabled = true;
+      status.textContent = 'Provisioning. This takes about a minute.';
+
+      if (still) {
+        rows.forEach(function (r) { r.setAttribute('data-done', 'true'); });
+        finish();
+        return;
+      }
+
+      elapsed.hidden = false;
+      t0 = performance.now();
+      timer = setInterval(tick, 100);
+
+      rows.forEach(function (r, i) {
+        setTimeout(function () {
+          r.setAttribute('data-done', 'true');
+          if (i < rows.length - 1) {
+            status.textContent = 'Step ' + (i + 1) + ' of ' + rows.length + ' complete.';
+          }
+        }, (i + 1) * STEP);
+      });
+
+      setTimeout(finish, rows.length * STEP + 200);
+    });
+  })();
+</script>
+</body>
+</html>

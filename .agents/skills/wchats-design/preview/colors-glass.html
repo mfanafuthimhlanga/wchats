@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Glass surfaces</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..800,0..100&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../colors_and_type.css">
+<link rel="stylesheet" href="_base.css">
+<style>
+html, body { width: 700px; height: 220px; }
+
+</style>
+</head>
+<body>
+
+<div style="position: absolute; inset: 0; background: url('../assets/skyline-w-chats.png') center bottom / cover; opacity: 0.55; z-index: 0;"></div>
+<div style="position: absolute; inset: 0; background: linear-gradient(180deg, rgba(11,7,23,0.4), rgba(11,7,23,0.7)); z-index: 1;"></div>
+<div style="position: relative; z-index: 2; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; height: 100%;">
+  <div style="background: rgba(30,22,56,0.55); backdrop-filter: blur(24px) saturate(140%); -webkit-backdrop-filter: blur(24px) saturate(140%); border: 1px solid rgba(244,232,220,0.10); border-radius: 20px; padding: 18px; display: flex; flex-direction: column; gap: 8px;">
+    <span style="font-size: 11px; font-weight: 600; color: var(--text-1);">--glass-bg</span>
+    <span class="mono" style="font-size: 10px; color: var(--text-2);">rgba(30, 22, 56, 0.55)</span>
+    <span class="mono" style="font-size: 10px; color: var(--text-3);">backdrop-filter: blur(24px) saturate(140%)</span>
+    <span style="font-size: 10.5px; color: var(--text-3); margin-top: auto;">Default glass for stat tiles, hero pills</span>
+  </div>
+  <div style="background: rgba(40,28,72,0.70); backdrop-filter: blur(24px) saturate(140%); -webkit-backdrop-filter: blur(24px) saturate(140%); border: 1px solid rgba(244,232,220,0.10); border-radius: 20px; padding: 18px; display: flex; flex-direction: column; gap: 8px;">
+    <span style="font-size: 11px; font-weight: 600; color: var(--text-1);">--glass-bg-strong</span>
+    <span class="mono" style="font-size: 10px; color: var(--text-2);">rgba(40, 28, 72, 0.70)</span>
+    <span class="mono" style="font-size: 10px; color: var(--text-3);">+ shadow-lift + coral atmospheric glow</span>
+    <span style="font-size: 10.5px; color: var(--text-3); margin-top: auto;">Hero workflow card · modals</span>
+  </div>
+</div>
+
+</body>
+</html>

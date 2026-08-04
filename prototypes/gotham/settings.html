@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en" data-gate="open">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings · W Chats</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Newsreader:ital,opsz,wght@0,6..72,400;1,6..72,400;1,6..72,500&family=Space+Grotesk:wght@500;600;700&display=swap">
+
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="app.css">
+
+<style>
+  .sr-only {
+    position: absolute; width: 1px; height: 1px;
+    padding: 0; margin: -1px; overflow: hidden;
+    clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+
+  /* a class that sets display outranks the UA's [hidden]. Settle it here. */
+  [hidden] { display: none !important; }
+
+  .cross-tl { left: 70px;  top: 16px; }
+  .cross-tr { right: 16px; top: 16px; }
+  .cross-bl { left: 70px;  bottom: 16px; }
+  .cross-br { right: 16px; bottom: 16px; }
+
+  .page { max-width: 760px; }
+
+  /* ── the record: rows on one plate ────────────────────────────────────── */
+  .zone .field:last-child { margin-bottom: 0; }
+
+  .facts { margin: 0; padding: 0; }
+  .fact {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 13px 0;
+    border-top: 1px solid var(--hairline-soft);
+  }
+  .fact dt { margin: 0; }
+  .fact dd {
+    margin: 0; display: flex; align-items: center; gap: 12px;
+    min-width: 0;
+  }
+  .fact-value { font-size: 13px; color: var(--ink); }
+  .fact-note { margin-top: 12px; }
+
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+
+  /* ── the danger zone: one hairline, no box ────────────────────────────── */
+  .danger-voice { margin-top: 14px; font-size: 16px; max-width: 60ch; }
+  .danger-act { margin-top: 20px; }
+
+  .confirm { margin-top: 20px; display: grid; gap: 14px; max-width: 460px; }
+  .confirm-row { display: flex; align-items: center; gap: 10px; }
+  .confirm-row input { font-family: var(--mono); font-size: 13px; }
+  .confirm-actions { display: flex; gap: 10px; }
+  .danger-status { margin-top: 14px; font-size: 12px; color: var(--ink-3); min-height: 1.4em; }
+  .danger-status[data-armed="true"] { color: var(--seal-hot); }
+
+  @media (max-width: 900px) {
+    .cross-tl { left: 16px; }
+    .cross-bl { left: 16px; bottom: 70px; }
+    .cross-br { bottom: 70px; }
+  }
+  @media (max-width: 620px) {
+    .fact { flex-direction: column; align-items: flex-start; gap: 8px; }
+    .confirm-row { flex-wrap: wrap; }
+  }
+</style>
+</head>
+
+<body class="tint">
+<div class="graticule" aria-hidden="true"></div>
+<div class="bloom" aria-hidden="true"></div>
+<div class="cross cross-tl" aria-hidden="true"></div>
+<div class="cross cross-tr" aria-hidden="true"></div>
+<div class="cross cross-bl" aria-hidden="true"></div>
+<div class="cross cross-br" aria-hidden="true"></div>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<nav class="rail tint" aria-label="Console">
+  <span class="rail-mark" aria-hidden="true">w</span>
+
+  <a class="rail-btn" href="agents.html">
+    <span class="sr-only">Agents</span>
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+      <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/>
+      <rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>
+    </svg>
+  </a>
+
+  <a class="rail-btn" href="ingest.html">
+    <span class="sr-only">Ingest</span>
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+      <path d="M12 3v10"/><path d="M8 9l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+    </svg>
+  </a>
+
+  <a class="rail-btn" href="eval.html">
+    <span class="sr-only">Evals</span>
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+      <path d="M3 12h4l2.4-6.5L13.6 18l2.6-6H21"/>
+    </svg>
+  </a>
+
+  <a class="rail-btn" href="deploy.html">
+    <span class="sr-only">Deploy</span>
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+      <path d="M12 20V8"/><path d="M8 12l4-4 4 4"/><path d="M4 5V4.5A1.5 1.5 0 0 1 5.5 3h13A1.5 1.5 0 0 1 20 4.5V5"/>
+    </svg>
+  </a>
+
+  <span class="spacer"></span>
+
+  <a class="rail-btn" href="settings.html" aria-current="page">
+    <span class="sr-only">Settings</span>
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+      <path d="M4 7h9"/><path d="M18 7h2"/><circle cx="15.5" cy="7" r="2.2"/>
+      <path d="M4 17h4"/><path d="M13 17h7"/><circle cx="10.5" cy="17" r="2.2"/>
+    </svg>
+  </a>
+</nav>
+
+<main id="main" class="deck" tabindex="-1">
+<div class="page">
+
+  <header class="page-head">
+    <h1>Settings</h1>
+    <p class="sub">The agent’s record and its lifecycle. Its behaviour lives in soul, its knowledge lives in ingest.</p>
+  </header>
+
+  <section aria-labelledby="record-h">
+    <div class="section-head">
+      <h2 class="label" id="record-h">Record</h2>
+    </div>
+
+    <div class="zone tint">
+      <div class="field">
+        <label for="f-agent-name">Agent name</label>
+        <input type="text" id="f-agent-name" value="Lindiwe’s Beauty Bar" disabled>
+        <p class="help">Renaming arrives with multi-agent workspaces. The name is baked into the soul and the widget until then.</p>
+      </div>
+
+      <dl class="facts">
+        <div class="fact">
+          <dt class="label">Agent id</dt>
+          <dd>
+            <span class="mono fact-value">agent.lindiwe-beauty</span>
+            <button type="button" class="btn btn-ghost btn-sm" data-copy="agent.lindiwe-beauty">Copy</button>
+          </dd>
+        </div>
+
+        <div class="fact">
+          <dt class="label">Neon project id</dt>
+          <dd>
+            <span class="mono fact-value">royal-frost-84213907</span>
+            <button type="button" class="btn btn-ghost btn-sm" data-copy="royal-frost-84213907">Copy</button>
+          </dd>
+        </div>
+      </dl>
+
+      <p class="help fact-note">This agent owns its own Neon project. Every eval run branches from it and throws the branch away.</p>
+    </div>
+  </section>
+
+  <!-- ── the danger zone: one hairline above it, and nothing else ────────── -->
+  <section class="section" aria-labelledby="danger-h">
+    <h2 class="label" id="danger-h">Danger zone</h2>
+
+    <p class="voice danger-voice">Deleting this agent destroys its <span class="num">34</span> documents, its eval suite, its red team history and the record of every session it ever held, and none of it comes back.</p>
+
+    <div class="danger-act">
+      <button type="button" class="btn btn-seal" id="arm" aria-expanded="false" aria-controls="confirm">Delete agent</button>
+    </div>
+
+    <div class="confirm" id="confirm" hidden>
+      <div>
+        <label for="f-confirm">Type the agent id to confirm</label>
+        <div class="confirm-row">
+          <input type="text" id="f-confirm" placeholder="agent.lindiwe-beauty" autocomplete="off" spellcheck="false" aria-describedby="danger-status">
+        </div>
+      </div>
+
+      <div class="confirm-actions">
+        <button type="button" class="btn btn-seal" id="destroy" disabled>Delete permanently</button>
+        <button type="button" class="btn btn-ghost" id="cancel">Cancel</button>
+      </div>
+    </div>
+
+    <p class="mono danger-status" id="danger-status" role="status"></p>
+  </section>
+
+</div>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var AGENT_ID = 'agent.lindiwe-beauty';
+
+  var root    = document.documentElement;
+  var arm     = document.getElementById('arm');
+  var panel   = document.getElementById('confirm');
+  var input   = document.getElementById('f-confirm');
+  var destroy = document.getElementById('destroy');
+  var cancel  = document.getElementById('cancel');
+  var status  = document.getElementById('danger-status');
+
+  /* WARDEN's law: a destructive act is not a badge in a corner, it is the
+     temperature of the room. Arming the delete shuts the gate on the whole
+     console, and DARKROOM eases it over 600ms. Cancelling brings the light back. */
+  function setGate(g) {
+    root.setAttribute('data-gate', g);
+    if (window.gotham && window.gotham.setGate) window.gotham.setGate(g);
+  }
+
+  function disarm() {
+    panel.hidden = true;
+    arm.setAttribute('aria-expanded', 'false');
+    input.value = '';
+    destroy.disabled = true;
+    status.textContent = '';
+    status.removeAttribute('data-armed');
+    setGate('open');
+  }
+
+  arm.addEventListener('click', function () {
+    if (arm.getAttribute('aria-expanded') === 'true') { disarm(); arm.focus(); return; }
+    panel.hidden = false;
+    arm.setAttribute('aria-expanded', 'true');
+    status.setAttribute('data-armed', 'true');
+    status.textContent = 'Armed. Type ' + AGENT_ID + ' to confirm.';
+    setGate('blocked');
+    input.focus();
+  });
+
+  input.addEventListener('input', function () {
+    destroy.disabled = input.value.trim() !== AGENT_ID;
+  });
+
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { e.preventDefault(); disarm(); arm.focus(); }
+  });
+
+  cancel.addEventListener('click', function () { disarm(); arm.focus(); });
+
+  destroy.addEventListener('click', function () {
+    disarm();
+    arm.focus();
+    status.textContent = 'Prototype build. No agent was deleted.';
+  });
+
+  /* the copy buttons */
+  Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function (btn) {
+    var original = btn.textContent;
+    btn.addEventListener('click', function () {
+      var value = btn.getAttribute('data-copy');
+      var done = function () {
+        btn.textContent = 'Copied';
+        setTimeout(function () { btn.textContent = original; }, 1400);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(value).then(done, function () { done(); });
+      } else {
+        done();
+      }
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Shadows</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..800,0..100&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../colors_and_type.css">
+<link rel="stylesheet" href="_base.css">
+<style>
+html, body { width: 700px; height: 220px; }
+
+</style>
+</head>
+<body>
+
+<div style="height: 100%; display: flex; flex-direction: column; gap: 18px; justify-content: center;">
+  <div class="label">Shadows · violet-tinted, never neutral black</div>
+  <div style="display: flex; gap: 18px; align-items: flex-end; padding: 10px 4px 18px;">
+    
+      <div style="flex: 1; display: flex; flex-direction: column; gap: 10px; align-items: center;">
+        <div style="width: 100%; height: 70px; background: var(--surface-1); border: 1px solid var(--border-soft); border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,0.3), 0 4px 16px rgba(11,7,23,0.5);"></div>
+        <div style="text-align: center; display: flex; flex-direction: column; gap: 2px;">
+          <span style="font-size: 11px; font-weight: 600; color: var(--text-1);">--shadow-card</span>
+          <span style="font-size: 9.5px; color: var(--text-4);">default lift</span>
+        </div>
+      </div>
+    
+      <div style="flex: 1; display: flex; flex-direction: column; gap: 10px; align-items: center;">
+        <div style="width: 100%; height: 70px; background: var(--surface-1); border: 1px solid var(--border-soft); border-radius: 14px; box-shadow: 0 4px 12px rgba(0,0,0,0.35), 0 24px 48px rgba(11,7,23,0.6);"></div>
+        <div style="text-align: center; display: flex; flex-direction: column; gap: 2px;">
+          <span style="font-size: 11px; font-weight: 600; color: var(--text-1);">--shadow-lift</span>
+          <span style="font-size: 9.5px; color: var(--text-4);">hero · modal</span>
+        </div>
+      </div>
+    
+      <div style="flex: 1; display: flex; flex-direction: column; gap: 10px; align-items: center;">
+        <div style="width: 100%; height: 70px; background: var(--surface-1); border: 1px solid var(--border-soft); border-radius: 14px; box-shadow: 0 0 32px rgba(244,116,140,0.18);"></div>
+        <div style="text-align: center; display: flex; flex-direction: column; gap: 2px;">
+          <span style="font-size: 11px; font-weight: 600; color: var(--text-1);">--shadow-glow</span>
+          <span style="font-size: 9.5px; color: var(--text-4);">active CTA · hero card</span>
+        </div>
+      </div>
+    
+      <div style="flex: 1; display: flex; flex-direction: column; gap: 10px; align-items: center;">
+        <div style="width: 100%; height: 70px; background: var(--surface-1); border: 1px solid var(--border-soft); border-radius: 14px; box-shadow: 0 0 0 3px rgba(244,116,140,0.28);"></div>
+        <div style="text-align: center; display: flex; flex-direction: column; gap: 2px;">
+          <span style="font-size: 11px; font-weight: 600; color: var(--text-1);">--shadow-focus</span>
+          <span style="font-size: 9.5px; color: var(--text-4);">keyboard focus</span>
+        </div>
+      </div>
+    
+  </div>
+</div>
+
+</body>
+</html>

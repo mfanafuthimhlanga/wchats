@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="en" data-gate="open">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Ingest · W Chats</title>
+<meta name="description" content="Feed the agent its documents and watch each one break into the chunks it will cite.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&family=Newsreader:ital,opsz,wght@1,6..72,400&family=Space+Grotesk:wght@500;600&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="app.css">
+
+<style>
+  /* ── layout unique to the ingest bench ───────────────────────────────── */
+  .vh {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+
+  /* the left crosses clear the 56px rail */
+  .cross-tl { left: 78px; top: 22px; }
+  .cross-tr { right: 22px; top: 22px; }
+  .cross-bl { left: 78px; bottom: 22px; }
+  .cross-br { right: 22px; bottom: 22px; }
+
+  /* ── tabs: an underline, not a pill. The rule under the deck is the tab ── */
+  .tabs {
+    display: flex; gap: 26px;
+    border-bottom: 1px solid var(--hairline);
+    margin-bottom: 22px;
+  }
+  .tab {
+    appearance: none; background: none; border: 0;
+    padding: 0 0 11px; margin-bottom: -1px; cursor: pointer;
+    font-family: var(--mono); font-size: 11px; font-weight: 700;
+    letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--ink-3);
+    border-bottom: 2px solid transparent;
+    transition: color 140ms ease, border-color 140ms ease;
+  }
+  .tab:hover { color: var(--ink-2); }
+  .tab[aria-selected="true"] { color: var(--live); border-bottom-color: var(--live); }
+
+  /* ── the dropzone: a dashed hairline over a sunken well ───────────────── */
+  .drop {
+    position: relative;
+    display: block; width: 100%; padding: 40px 24px;
+    background: var(--well);
+    border: 1px dashed var(--hairline-strong);
+    border-radius: var(--r-panel);
+    text-align: center; cursor: pointer;
+    transition: border-color 140ms ease, background 140ms ease;
+  }
+  .drop:hover, .drop[data-over="true"] { border-color: var(--live); background: var(--surface); }
+  .drop h3 { font-size: 15px; }
+  .drop .help { margin: 6px 0 16px; }
+  .drop label { margin: 0; }
+  .drop input[type="file"] {
+    position: absolute; width: 1px; height: 1px; opacity: 0;
+    overflow: hidden; clip-path: inset(50%);
+  }
+  /* a label styled as the control it opens: the input stays real and reachable */
+  .file-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--sans); font-size: 13px; font-weight: 600;
+    letter-spacing: 0; text-transform: none;
+    padding: 9px 16px; border-radius: var(--r-control);
+    color: var(--live-ink); background: color-mix(in srgb, var(--live) 70%, transparent);
+    cursor: pointer;
+  }
+  .drop input[type="file"]:focus-visible + .file-btn { outline: 2px solid var(--live); outline-offset: 2px; }
+
+  .url-form { max-width: 520px; }
+  .url-form .btn { margin-top: 2px; }
+
+  /* ── the ledger ───────────────────────────────────────────────────────── */
+  .count { margin-left: 10px; }
+  .doc { display: flex; align-items: center; gap: 10px; }
+  .doc svg { flex: none; color: var(--ink-3); }
+  .ledger th.st, .ledger td.st { min-width: 196px; }
+  .ledger td.st { padding-top: 9px; padding-bottom: 9px; }
+  .st-line { display: flex; align-items: center; gap: 10px; }
+  .elapsed { font-size: 12px; color: var(--ink-3); }
+  /* an action inside a ledger row sits on the row, it does not lift it */
+  .st-line .btn { padding: 4px 11px; font-size: 12px; }
+  .pending { color: var(--ink-3); }
+
+  /* ── the chunk swarm (HIVE): dispatch births a centroid, the chunks
+       stream to it at a capped speed. You watch the document become
+       citable evidence. ────────────────────────────────────────────────── */
+  .parsing { display: flex; flex-direction: column; gap: 4px; }
+  .parsing .label { color: var(--live); }
+  .swarm { display: block; border-radius: 3px; background: var(--well); }
+
+  @media (max-width: 900px) {
+    .cross-tl, .cross-bl { left: 22px; }
+    .cross-bl, .cross-br { bottom: 78px; }
+  }
+  @media (max-width: 760px) {
+    .ledger .col-added, .ledger .col-type { display: none; }
+  }
+</style>
+</head>
+
+<body class="tint">
+  <div class="graticule"></div>
+  <div class="bloom"></div>
+  <div class="cross cross-tl"></div>
+  <div class="cross cross-tr"></div>
+  <div class="cross cross-bl"></div>
+  <div class="cross cross-br"></div>
+
+  <a class="skip" href="#main">Skip to content</a>
+
+  <!-- ── the command deck ───────────────────────────────────────────────── -->
+  <nav class="rail" aria-label="Console">
+    <a class="rail-mark" href="index.html" aria-label="W Chats home">w</a>
+
+    <a class="rail-btn" href="agents.html" aria-label="Agents">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 1.8 15.4 5.4v7.2L9 16.2 2.6 12.6V5.4z"/>
+        <circle cx="9" cy="9" r="2.6"/>
+      </svg>
+    </a>
+
+    <a class="rail-btn" href="ingest.html" aria-current="page" aria-label="Ingest">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 2.2v7.6"/>
+        <path d="M6 6.8 9 9.8l3-3"/>
+        <path d="M3 12.2v2.6h12v-2.6"/>
+      </svg>
+    </a>
+
+    <a class="rail-btn" href="eval.html" aria-label="Eval">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 15h12"/>
+        <path d="M5.6 15V9.2"/>
+        <path d="M9 15V4.4"/>
+        <path d="M12.4 15v-3.4"/>
+      </svg>
+    </a>
+
+    <a class="rail-btn" href="deploy.html" aria-label="Deploy">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="9" cy="9" r="6.4"/>
+        <path d="M2.6 9h12.8"/>
+        <path d="M9 2.6c3.2 3.4 3.2 9.4 0 12.8-3.2-3.4-3.2-9.4 0-12.8z"/>
+      </svg>
+    </a>
+
+    <span class="spacer"></span>
+
+    <a class="rail-btn" href="settings.html" aria-label="Settings">
+      <svg viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M2.6 5.4h7.7"/>
+        <path d="M13.7 5.4h1.7"/>
+        <circle cx="12" cy="5.4" r="1.7"/>
+        <path d="M2.6 12.6h1.7"/>
+        <path d="M7.7 12.6h7.7"/>
+        <circle cx="6" cy="12.6" r="1.7"/>
+      </svg>
+    </a>
+  </nav>
+
+  <main class="deck" id="main">
+    <div class="page">
+
+      <div class="page-head">
+        <div class="row">
+          <div>
+            <h1>Ingest documents</h1>
+            <p class="sub">
+              Everything the agent is allowed to say comes from here. A document
+              is parsed, cut into chunks and embedded, and only then can it be cited.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── the two ways in ──────────────────────────────────────────────── -->
+      <h2 class="vh">Add a document</h2>
+
+      <div class="tabs" role="tablist" aria-label="How to add a document">
+        <button class="tab" id="tab-file" role="tab" type="button"
+                aria-selected="true" aria-controls="panel-file">Upload file</button>
+        <button class="tab" id="tab-url" role="tab" type="button"
+                aria-selected="false" tabindex="-1" aria-controls="panel-url">Add URL</button>
+      </div>
+
+      <div id="panel-file" role="tabpanel" aria-labelledby="tab-file" tabindex="0">
+        <div class="drop" id="drop">
+          <h3>Drop PDF, DOCX or MD</h3>
+          <p class="help">Layout is preserved. Tables, headings and lists survive the cut.</p>
+          <input type="file" id="file" name="file" accept=".pdf,.docx,.md">
+          <label class="file-btn" for="file">Choose file</label>
+          <p class="help">Up to 20 MB a file. Anything you drop here is retrievable by the agent within seconds.</p>
+        </div>
+      </div>
+
+      <div id="panel-url" role="tabpanel" aria-labelledby="tab-url" tabindex="0" hidden>
+        <form class="url-form" id="url-form">
+          <div class="field">
+            <label for="url">Page address</label>
+            <input type="url" id="url" name="url" placeholder="https://lindiwebeauty.co.za/services"
+                   autocomplete="off" spellcheck="false" aria-describedby="url-help">
+            <p class="help" id="url-help">The page is fetched once, stripped of navigation and chrome, then chunked like any other document.</p>
+          </div>
+          <button class="btn btn-primary" type="submit">Fetch page</button>
+        </form>
+      </div>
+
+      <p class="vh" id="ingest-status" role="status" aria-live="polite"></p>
+
+      <!-- ── the knowledge base ───────────────────────────────────────────── -->
+      <section class="section">
+        <div class="section-head">
+          <h2 class="label" id="kb-label">
+            Knowledge base
+            <span class="chip chip-mute count num" id="doc-count">34</span>
+          </h2>
+          <span class="mono elapsed">agent.lindiwe-beauty</span>
+        </div>
+
+        <table class="ledger" aria-labelledby="kb-label">
+          <thead>
+            <tr>
+              <th scope="col">Document</th>
+              <th scope="col" class="col-type">Type</th>
+              <th scope="col" class="num">Chunks</th>
+              <th scope="col" class="st">Status</th>
+              <th scope="col" class="col-added">Added</th>
+            </tr>
+          </thead>
+          <tbody id="kb">
+
+            <tr>
+              <td>
+                <span class="doc">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 1.2H3.4v11.6h7.2V3.8z"/><path d="M8 1.2v2.6h2.6"/>
+                  </svg>
+                  price-list-2026.pdf
+                </span>
+              </td>
+              <td class="col-type"><span class="chip chip-mute">PDF</span></td>
+              <td class="num">48</td>
+              <td class="st"><span class="chip chip-pass">Parsed</span></td>
+              <td class="col-added mono">2026-07-02</td>
+            </tr>
+
+            <tr>
+              <td>
+                <span class="doc">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 1.2H3.4v11.6h7.2V3.8z"/><path d="M8 1.2v2.6h2.6"/>
+                  </svg>
+                  returns-policy.docx
+                </span>
+              </td>
+              <td class="col-type"><span class="chip chip-mute">DOCX</span></td>
+              <td class="num">12</td>
+              <td class="st"><span class="chip chip-pass">Parsed</span></td>
+              <td class="col-added mono">2026-07-02</td>
+            </tr>
+
+            <tr>
+              <td>
+                <span class="doc">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 1.2H3.4v11.6h7.2V3.8z"/><path d="M8 1.2v2.6h2.6"/>
+                  </svg>
+                  booking-terms.md
+                </span>
+              </td>
+              <td class="col-type"><span class="chip chip-mute">MD</span></td>
+              <td class="num">9</td>
+              <td class="st"><span class="chip chip-pass">Parsed</span></td>
+              <td class="col-added mono">2026-07-03</td>
+            </tr>
+
+            <tr>
+              <td>
+                <span class="doc">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 1.2H3.4v11.6h7.2V3.8z"/><path d="M8 1.2v2.6h2.6"/>
+                  </svg>
+                  services-menu.pdf
+                </span>
+              </td>
+              <td class="col-type"><span class="chip chip-mute">PDF</span></td>
+              <td class="num">31</td>
+              <td class="st"><span class="chip chip-pass">Parsed</span></td>
+              <td class="col-added mono">2026-07-05</td>
+            </tr>
+
+            <!-- the one that did not make it. Oxblood, and only here. -->
+            <tr id="row-vouchers">
+              <td>
+                <span class="doc">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 1.2H3.4v11.6h7.2V3.8z"/><path d="M8 1.2v2.6h2.6"/>
+                  </svg>
+                  gift-vouchers.md
+                </span>
+              </td>
+              <td class="col-type"><span class="chip chip-mute">MD</span></td>
+              <td class="num" id="vouchers-chunks">0</td>
+              <td class="st" id="vouchers-st">
+                <span class="st-line">
+                  <span class="chip chip-seal">Failed</span>
+                  <button class="btn btn-ghost" type="button" id="retry"
+                          aria-describedby="vouchers-why">Retry</button>
+                </span>
+                <span class="vh" id="vouchers-why">Parser found no headings in gift-vouchers.md.</span>
+              </td>
+              <td class="col-added mono">2026-07-08</td>
+            </tr>
+
+            <tr>
+              <td>
+                <span class="doc">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 1.2H3.4v11.6h7.2V3.8z"/><path d="M8 1.2v2.6h2.6"/>
+                  </svg>
+                  holiday-hours.md
+                </span>
+              </td>
+              <td class="col-type"><span class="chip chip-mute">MD</span></td>
+              <td class="num">6</td>
+              <td class="st"><span class="chip chip-pass">Parsed</span></td>
+              <td class="col-added mono">2026-07-09</td>
+            </tr>
+
+            <!-- still on the bench. Brass, because brass means live. -->
+            <tr>
+              <td>
+                <span class="doc">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 1.2H3.4v11.6h7.2V3.8z"/><path d="M8 1.2v2.6h2.6"/>
+                  </svg>
+                  staff-bios.pdf
+                </span>
+              </td>
+              <td class="col-type"><span class="chip chip-mute">PDF</span></td>
+              <td class="num mono pending">pending</td>
+              <td class="st">
+                <span class="st-line">
+                  <span class="chip chip-live"><i class="dot dot-live"></i>Processing</span>
+                  <span class="mono elapsed" id="tick" data-start="47">0:47</span>
+                </span>
+              </td>
+              <td class="col-added mono">2026-07-13</td>
+            </tr>
+
+          </tbody>
+        </table>
+      </section>
+
+    </div>
+  </main>
+
+<script>
+  (function () {
+    'use strict';
+
+    var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    /* ── tabs ────────────────────────────────────────────────────────────── */
+    var tabs = [document.getElementById('tab-file'), document.getElementById('tab-url')];
+    var panels = [document.getElementById('panel-file'), document.getElementById('panel-url')];
+
+    function select(i, focus) {
+      tabs.forEach(function (t, n) {
+        var on = n === i;
+        t.setAttribute('aria-selected', String(on));
+        t.tabIndex = on ? 0 : -1;
+        panels[n].hidden = !on;
+      });
+      if (focus) tabs[i].focus();
+    }
+    tabs.forEach(function (t, i) {
+      t.addEventListener('click', function () { select(i, false); });
+      t.addEventListener('keydown', function (e) {
+        if (e.key === 'ArrowRight') { e.preventDefault(); select((i + 1) % tabs.length, true); }
+        if (e.key === 'ArrowLeft')  { e.preventDefault(); select((i + tabs.length - 1) % tabs.length, true); }
+        if (e.key === 'Home')       { e.preventDefault(); select(0, true); }
+        if (e.key === 'End')        { e.preventDefault(); select(tabs.length - 1, true); }
+      });
+    });
+
+    /* ── the elapsed counter on the processing row ───────────────────────── */
+    var tick = document.getElementById('tick');
+    if (tick) {
+      var secs = parseInt(tick.dataset.start, 10);
+      setInterval(function () {
+        secs += 1;
+        var m = Math.floor(secs / 60);
+        var s = String(secs % 60);
+        tick.textContent = m + ':' + (s.length < 2 ? '0' + s : s);
+      }, 1000);
+    }
+
+    /* =====================================================================
+       THE CHUNK SWARM (from HIVE)
+       Dispatch births a centroid. Forty chunks stream in from the left edge
+       and steer to their slot at a CAPPED speed, so they arrive one after
+       another and never teleport. When the last one lands, the document is
+       citable.
+       ===================================================================== */
+    var NS = 'http://www.w3.org/2000/svg';
+    var N = 40;
+    var W = 170, H = 56;
+    var CX = 118, CY = 28;          /* the centroid the swarm is dispatched to */
+    var MAX_SPEED = 2.6;            /* px per 60Hz frame. The cap is the point. */
+    var MAX_FORCE = 0.24;
+    var SLOW_R = 15;
+    var RUN_MS = 1800;
+
+    /* a golden-angle spiral packs the cluster tight and evenly */
+    function slot(i) {
+      var a = i * 2.399963;
+      var r = 2.4 + 1.5 * Math.sqrt(i);
+      return { x: CX + r * Math.cos(a), y: CY + r * Math.sin(a) };
+    }
+
+    function buildSwarm() {
+      var svg = document.createElementNS(NS, 'svg');
+      svg.setAttribute('class', 'swarm');
+      svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+      svg.setAttribute('width', String(W));
+      svg.setAttribute('height', String(H));
+      svg.setAttribute('aria-hidden', 'true');
+
+      var dots = [];
+      for (var i = 0; i < N; i++) {
+        var s = slot(i);
+        var c = document.createElementNS(NS, 'circle');
+        c.setAttribute('r', '1.7');
+        c.setAttribute('fill', '#C79A3C');       /* literal: var() will not resolve here */
+        c.setAttribute('fill-opacity', '0.9');
+        svg.appendChild(c);
+
+        var d = {
+          el: c,
+          x: -8 - Math.random() * 142,           /* staggered off the left edge */
+          y: 8 + Math.random() * 40,
+          vx: 1.4 + Math.random() * 0.8,
+          vy: (Math.random() - 0.5) * 0.9,
+          tx: s.x, ty: s.y
+        };
+        if (reduced) { d.x = d.tx; d.y = d.ty; }
+        c.setAttribute('cx', d.x.toFixed(2));
+        c.setAttribute('cy', d.y.toFixed(2));
+        dots.push(d);
+      }
+      return { svg: svg, dots: dots };
+    }
+
+    function stream(dots, done) {
+      if (reduced) { done(); return; }          /* final state already painted */
+
+      var t0 = performance.now();
+      var last = t0;
+
+      function frame(now) {
+        var dt = Math.min((now - last) / 16.667, 2.2);  /* frame-rate independent */
+        last = now;
+
+        for (var i = 0; i < dots.length; i++) {
+          var d = dots[i];
+          var dx = d.tx - d.x, dy = d.ty - d.y;
+          var dist = Math.sqrt(dx * dx + dy * dy) || 0.0001;
+
+          /* arrival: full speed until the slowing radius, then ease into the slot */
+          var speed = dist < SLOW_R ? MAX_SPEED * (dist / SLOW_R) : MAX_SPEED;
+          var desx = (dx / dist) * speed;
+          var desy = (dy / dist) * speed;
+
+          var sx = desx - d.vx, sy = desy - d.vy;
+          var smag = Math.sqrt(sx * sx + sy * sy);
+          if (smag > MAX_FORCE) { sx = (sx / smag) * MAX_FORCE; sy = (sy / smag) * MAX_FORCE; }
+
+          d.vx += sx * dt;
+          d.vy += sy * dt;
+
+          /* the cap: nothing on this bench moves faster than this */
+          var vmag = Math.sqrt(d.vx * d.vx + d.vy * d.vy);
+          if (vmag > MAX_SPEED) { d.vx = (d.vx / vmag) * MAX_SPEED; d.vy = (d.vy / vmag) * MAX_SPEED; }
+
+          d.x += d.vx * dt;
+          d.y += d.vy * dt;
+
+          d.el.setAttribute('cx', d.x.toFixed(2));
+          d.el.setAttribute('cy', d.y.toFixed(2));
+        }
+
+        if (now - t0 < RUN_MS) {
+          requestAnimationFrame(frame);
+        } else {
+          for (var j = 0; j < dots.length; j++) {   /* settle exactly on the slots */
+            dots[j].el.setAttribute('cx', dots[j].tx.toFixed(2));
+            dots[j].el.setAttribute('cy', dots[j].ty.toFixed(2));
+          }
+          done();
+        }
+      }
+      requestAnimationFrame(frame);
+    }
+
+    /* ── adding a document ───────────────────────────────────────────────── */
+    var kb = document.getElementById('kb');
+    var countChip = document.getElementById('doc-count');
+    var status = document.getElementById('ingest-status');
+
+    var pool = [
+      'cancellation-policy.pdf', 'loyalty-programme.docx', 'nail-care-guide.md',
+      'walk-in-hours.md', 'product-stock-list.pdf', 'colour-correction-faq.docx'
+    ];
+    var poolAt = 0;
+
+    /* a stable count per name, so the same document always cuts the same way */
+    function chunksFor(name) {
+      var h = 0;
+      for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+      return 8 + (h % 41);
+    }
+    function typeOf(name) {
+      var bits = name.split('.');
+      return (bits.length > 1 ? bits.pop() : 'txt').toUpperCase().slice(0, 4);
+    }
+    function today() {
+      var d = new Date();
+      var m = String(d.getMonth() + 1), day = String(d.getDate());
+      return d.getFullYear() + '-' + (m.length < 2 ? '0' + m : m) + '-' + (day.length < 2 ? '0' + day : day);
+    }
+    function docIcon() {
+      var s = document.createElementNS(NS, 'svg');
+      s.setAttribute('width', '14'); s.setAttribute('height', '14');
+      s.setAttribute('viewBox', '0 0 14 14'); s.setAttribute('fill', 'none');
+      s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '1.3');
+      s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round');
+      s.setAttribute('aria-hidden', 'true');
+      var p1 = document.createElementNS(NS, 'path');
+      p1.setAttribute('d', 'M8 1.2H3.4v11.6h7.2V3.8z');
+      var p2 = document.createElementNS(NS, 'path');
+      p2.setAttribute('d', 'M8 1.2v2.6h2.6');
+      s.appendChild(p1); s.appendChild(p2);
+      return s;
+    }
+    function chip(cls, text) {
+      var c = document.createElement('span');
+      c.className = 'chip ' + cls;
+      c.textContent = text;
+      return c;
+    }
+
+    /* count the chunks up as the swarm lands: the number is the outcome */
+    function countUp(cell, n) {
+      if (reduced) { cell.textContent = String(n); return; }
+      var t0 = performance.now(), ms = 420;
+      (function step(now) {
+        var p = Math.min((now - t0) / ms, 1);
+        cell.textContent = String(Math.round(n * (p * (2 - p))));   /* ease out */
+        if (p < 1) requestAnimationFrame(step);
+      })(t0);
+    }
+
+    /* turn a status cell into the swarm, then into the verdict */
+    function parseInto(chunksCell, stCell, name) {
+      var n = chunksFor(name);
+      var built = buildSwarm();
+
+      stCell.textContent = '';
+      var wrap = document.createElement('div');
+      wrap.className = 'parsing';
+      var lab = document.createElement('span');
+      lab.className = 'label';
+      lab.textContent = 'Parsing';
+      wrap.appendChild(lab);
+      wrap.appendChild(built.svg);
+      stCell.appendChild(wrap);
+
+      chunksCell.className = 'num';
+      chunksCell.textContent = '0';
+      status.textContent = 'Parsing ' + name;
+
+      stream(built.dots, function () {
+        stCell.textContent = '';
+        stCell.appendChild(chip('chip-pass', 'Parsed'));
+        countUp(chunksCell, n);
+        status.textContent = 'Parsed ' + name + ' · ' + n + ' chunks';
+        countChip.textContent = String(parseInt(countChip.textContent, 10) + 1);
+      });
+    }
+
+    function addDocument(name) {
+      var tr = document.createElement('tr');
+
+      var tdName = document.createElement('td');
+      var span = document.createElement('span');
+      span.className = 'doc';
+      span.appendChild(docIcon());
+      span.appendChild(document.createTextNode(' ' + name));   /* textContent: never innerHTML */
+      tdName.appendChild(span);
+
+      var tdType = document.createElement('td');
+      tdType.className = 'col-type';
+      tdType.appendChild(chip('chip-mute', typeOf(name)));
+
+      var tdChunks = document.createElement('td');
+      tdChunks.className = 'num';
+
+      var tdSt = document.createElement('td');
+      tdSt.className = 'st';
+
+      var tdAdded = document.createElement('td');
+      tdAdded.className = 'col-added mono';
+      tdAdded.textContent = today();
+
+      tr.appendChild(tdName); tr.appendChild(tdType);
+      tr.appendChild(tdChunks); tr.appendChild(tdSt); tr.appendChild(tdAdded);
+      kb.appendChild(tr);
+
+      parseInto(tdChunks, tdSt, name);
+    }
+
+    /* ── the ways in: a real file input, a real drop, and the zone itself ── */
+    var drop = document.getElementById('drop');
+    var file = document.getElementById('file');
+
+    file.addEventListener('change', function () {
+      if (!file.files || !file.files.length) return;
+      addDocument(file.files[0].name);
+      file.value = '';                       /* the same file can be re-added */
+    });
+
+    drop.addEventListener('click', function (e) {
+      /* the label owns the real dialog. Anywhere else on the zone, simulate. */
+      if (e.target.closest('label') || e.target.closest('input')) return;
+      addDocument(pool[poolAt++ % pool.length]);
+    });
+
+    ['dragenter', 'dragover'].forEach(function (ev) {
+      drop.addEventListener(ev, function (e) { e.preventDefault(); drop.dataset.over = 'true'; });
+    });
+    ['dragleave', 'drop'].forEach(function (ev) {
+      drop.addEventListener(ev, function () { drop.dataset.over = 'false'; });
+    });
+    drop.addEventListener('drop', function (e) {
+      e.preventDefault();
+      var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      addDocument(f ? f.name : pool[poolAt++ % pool.length]);
+    });
+
+    /* ── the failed row: a retry is a real second attempt ─────────────────── */
+    var retry = document.getElementById('retry');
+    retry.addEventListener('click', function () {
+      parseInto(document.getElementById('vouchers-chunks'),
+                document.getElementById('vouchers-st'),
+                'gift-vouchers.md');
+    });
+
+    /* ── the URL panel ───────────────────────────────────────────────────── */
+    document.getElementById('url-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var url = document.getElementById('url');
+      if (!url.value.trim()) return;
+      var name = url.value.trim().replace(/^https?:\/\//, '').replace(/\/+$/, '');
+      addDocument(name.slice(0, 44));
+      url.value = '';
+    });
+  })();
+</script>
+</body>
+</html>

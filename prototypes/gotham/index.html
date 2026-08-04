@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en" data-gate="open">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>W Chats</title>
+<meta name="description" content="W Chats verifies every customer service agent before it meets a customer: grounded in your documents, scored by evals, red teamed at the gate.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&family=Newsreader:ital,opsz,wght@1,6..72,400&family=Space+Grotesk:wght@500;600&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="app.css">
+
+<style>
+  /* ── layout unique to the landing bench ──────────────────────────────── */
+  .vh {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+
+  .cross-tl { left: 22px; top: 22px; }
+  .cross-tr { right: 22px; top: 22px; }
+  .cross-bl { left: 22px; bottom: 22px; }
+  .cross-br { right: 22px; bottom: 22px; }
+
+  .page { margin-inline: auto; padding-top: 0; }
+
+  /* the top nav: this bench has no rail, only a rule */
+  .topnav {
+    position: relative; z-index: var(--z-strip);
+    display: flex; align-items: center; gap: 24px;
+    max-width: 1280px; margin: 0 auto; padding: 17px 40px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .wordmark {
+    font-family: var(--display); font-size: 16px; font-weight: 600;
+    letter-spacing: -0.02em; text-decoration: none; color: var(--ink);
+  }
+  .wordmark span { color: var(--live); }
+  .nav-links { display: flex; gap: 22px; margin-left: auto; }
+  .nav-links a {
+    font-size: 13px; color: var(--ink-2); text-decoration: none;
+    padding: 4px 2px; border-radius: 3px;
+    transition: color 140ms ease;
+  }
+  .nav-links a:hover { color: var(--ink); }
+
+  /* ── hero ─────────────────────────────────────────────────────────────── */
+  .hero {
+    display: grid; grid-template-columns: 1.15fr 0.85fr;
+    gap: 56px; align-items: center; padding: 46px 0 10px;
+  }
+  /* the line is set to break in two, and never three */
+  .hero h1 {
+    font-size: clamp(26px, 3.4vw, 44px); line-height: 1.08;
+    max-width: 15em; text-wrap: balance;
+  }
+  .lede { margin-top: 18px; color: var(--ink-2); font-size: 15.5px; max-width: 44ch; }
+  .cta { display: flex; gap: 10px; margin-top: 26px; flex-wrap: wrap; }
+
+  /* the inline stat row: mono values on the bench, no box */
+  .stats {
+    display: flex; flex-wrap: wrap; gap: 36px;
+    margin: 36px 0 0; padding-top: 18px;
+    border-top: 1px solid var(--hairline);
+  }
+  .stats > div { display: flex; flex-direction: column-reverse; gap: 5px; }
+  .stats dd { margin: 0; font-size: 19px; color: var(--ink); line-height: 1.1; }
+
+  /* the check */
+  #scene { position: relative; min-height: 460px; }
+  .scene-cap {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin-top: 12px; padding-top: 11px;
+    border-top: 1px solid var(--hairline-soft);
+  }
+  .legend { display: flex; gap: 18px; font-size: 11.5px; color: var(--ink-2); }
+  .legend .dot { display: inline-block; margin-right: 7px; vertical-align: 1px; }
+  .dot-brass { background: var(--live); }
+  .dot-fail  { background: var(--fail); }
+
+  /* ── evidence ─────────────────────────────────────────────────────────── */
+  .sec-note { font-size: 11.5px; color: var(--ink-3); }
+  .section h2 { font-size: 21px; margin-top: 10px; max-width: 30ch; }
+  .section h2 + .ledger { margin-top: 20px; }
+  .filed {
+    margin-top: 18px; padding-top: 15px;
+    border-top: 1px solid var(--hairline-soft);
+    max-width: 74ch; font-size: 15px;
+  }
+
+  /* ── the gate: the signature ──────────────────────────────────────────── */
+  .gate-grid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 52px; align-items: start; margin-top: 4px;
+  }
+  .gate-line { font-size: clamp(21px, 2.3vw, 27px); line-height: 1.16; max-width: 17ch; margin-top: 12px; }
+  .gate-state { margin-top: 16px; }
+  .gate-voice {
+    margin-top: 18px; padding-top: 16px;
+    border-top: 1px solid var(--hairline-soft);
+    font-size: 16px; max-width: 46ch;
+  }
+  .gate-controls { display: flex; gap: 10px; margin-top: 22px; flex-wrap: wrap; }
+  .qual { color: var(--ink-3); font-size: 11.5px; }
+  .ledger td.vd, .ledger th.vd { text-align: right; }
+  .glyph { display: inline-flex; }
+  .glyph-pass { color: var(--pass); }
+  .glyph-fail { color: var(--fail); }
+
+  /* ── three stations on one engraved rule ──────────────────────────────── */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 26px; }
+  .step { position: relative; padding: 30px 34px 0 0; }
+  /* the station node, and the riser that drops it onto the rule */
+  .step::before {
+    content: ''; position: absolute; top: 0; left: 0;
+    width: 1px; height: 15px; background: var(--hairline-strong);
+  }
+  .step::after {
+    content: ''; position: absolute; top: -3px; left: -2px;
+    width: 5px; height: 5px; background: var(--hairline-strong);
+  }
+  .step-n { display: block; font-size: 11px; color: var(--ink-3); letter-spacing: 0.14em; }
+  .step h3 { font-family: var(--display); font-size: 16px; font-weight: 500; margin: 7px 0 8px; }
+  .step p { color: var(--ink-2); font-size: 13.5px; max-width: 34ch; }
+
+  /* ── footer ───────────────────────────────────────────────────────────── */
+  .foot {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap;
+    margin-top: 56px; padding-top: 18px;
+    border-top: 1px solid var(--hairline);
+    font-size: 11px; color: var(--ink-3);
+  }
+
+  @media (max-width: 940px) {
+    .hero { grid-template-columns: 1fr; gap: 34px; padding-top: 32px; }
+    .hero h1 { max-width: 16em; }
+    #scene { min-height: 340px; }
+    .gate-grid { grid-template-columns: 1fr; gap: 30px; }
+    .gate-line { max-width: 24ch; }
+    .steps { grid-template-columns: 1fr; }
+    .step { padding: 26px 0 22px 0; }
+    .step:not(:first-child) { border-top: 1px solid var(--hairline-soft); }
+    .topnav { padding: 14px 20px; gap: 16px; }
+    .nav-links { gap: 16px; }
+  }
+  @media (max-width: 560px) {
+    .nav-links { display: none; }
+    .stats { gap: 24px; }
+  }
+</style>
+</head>
+
+<body class="tint">
+  <div class="graticule"></div>
+  <div class="bloom"></div>
+  <div class="cross cross-tl"></div>
+  <div class="cross cross-tr"></div>
+  <div class="cross cross-bl"></div>
+  <div class="cross cross-br"></div>
+
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="topnav">
+    <a class="wordmark" href="index.html"><span>w.</span>chats</a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#">Docs</a>
+      <a href="#">Pricing</a>
+    </nav>
+    <a class="btn btn-primary" href="agents.html">Open the console</a>
+  </header>
+
+  <main id="main" class="page">
+
+    <!-- ── hero ─────────────────────────────────────────────────────────── -->
+    <section class="hero" aria-labelledby="h1">
+      <div>
+        <h1 id="h1">Every agent is verified before it meets a customer.</h1>
+        <p class="lede">
+          Ground it in your documents, score it against real scenarios, and let it
+          through only when the evidence says it is ready.
+        </p>
+
+        <div class="cta">
+          <a class="btn btn-primary" href="agents.html">Build your agent</a>
+          <a class="btn btn-ghost" href="#gate">See the gate</a>
+        </div>
+
+        <dl class="stats">
+          <div>
+            <dt class="label">Agents verified</dt>
+            <dd class="num">248+</dd>
+          </div>
+          <div>
+            <dt class="label">Median faithfulness</dt>
+            <dd class="num">0.91</dd>
+          </div>
+          <div>
+            <dt class="label">Critical findings shipped</dt>
+            <dd class="num">0</dd>
+          </div>
+        </dl>
+      </div>
+
+      <div>
+        <div id="scene"></div>
+        <div class="scene-cap">
+          <span class="label">The check</span>
+          <span class="legend">
+            <span class="mono"><i class="dot dot-brass"></i>61 passing</span>
+            <span class="mono"><i class="dot dot-fail"></i>3 failing</span>
+          </span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── the evidence ─────────────────────────────────────────────────── -->
+    <section class="section" aria-labelledby="ev-label">
+      <div class="section-head">
+        <span class="label" id="ev-label">The evidence</span>
+        <span class="sec-note mono">suite 12 · 64 scenarios · run 2026-07-13</span>
+      </div>
+
+      <h2>Every scenario is filed, including the ones that fail.</h2>
+
+      <table class="ledger">
+        <caption class="vh">Five eval scenarios from the latest run, with faithfulness, relevancy and verdict.</caption>
+        <thead>
+          <tr>
+            <th scope="col">Scenario</th>
+            <th scope="col" class="num">Faithfulness</th>
+            <th scope="col" class="num">Relevancy</th>
+            <th scope="col" class="vd">Verdict</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Refund window for a damaged item</td>
+            <td class="num">0.96</td>
+            <td class="num">0.94</td>
+            <td class="vd"><span class="chip chip-pass">Pass</span></td>
+          </tr>
+          <tr>
+            <td>Price for a service not in the catalogue</td>
+            <td class="num">0.41</td>
+            <td class="num">0.88</td>
+            <td class="vd"><span class="chip chip-fail">Fail</span></td>
+          </tr>
+          <tr>
+            <td>Booking a slot on a public holiday</td>
+            <td class="num">0.93</td>
+            <td class="num">0.91</td>
+            <td class="vd"><span class="chip chip-pass">Pass</span></td>
+          </tr>
+          <tr>
+            <td>Trading hours during load shedding</td>
+            <td class="num">0.95</td>
+            <td class="num">0.97</td>
+            <td class="vd"><span class="chip chip-pass">Pass</span></td>
+          </tr>
+          <tr>
+            <td>Handing an angry customer to a human</td>
+            <td class="num">0.89</td>
+            <td class="num">0.92</td>
+            <td class="vd"><span class="chip chip-pass">Pass</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p class="voice filed">
+        The failing scenario was not deleted. It was filed into the suite, and it
+        will be asked of this agent on every run from now on.
+      </p>
+    </section>
+
+    <!-- ── the gate ─────────────────────────────────────────────────────── -->
+    <section class="section" id="gate" aria-labelledby="gate-label">
+      <div class="section-head">
+        <span class="label" id="gate-label">The gate</span>
+        <span class="sec-note mono">agent.lindiwe-beauty</span>
+      </div>
+
+      <div class="gate-grid">
+        <div>
+          <div id="gate-live" aria-live="polite">
+            <h2 class="gate-line" id="gate-line">The gate is open. This agent can meet a customer.</h2>
+            <p class="gate-state"><span class="chip chip-live" id="gate-chip"><i class="dot dot-live"></i>Gate open</span></p>
+          </div>
+
+          <p class="voice gate-voice">
+            A blocked gate is not a badge in the corner. It is the temperature of
+            the room you are standing in.
+          </p>
+
+          <div class="gate-controls">
+            <button type="button" class="btn btn-seal" id="btn-shut">Simulate a critical finding</button>
+            <button type="button" class="btn btn-ghost" id="btn-open" disabled>Clear the finding</button>
+          </div>
+        </div>
+
+        <div>
+          <table class="ledger">
+            <caption class="vh">The four signals the gate reads before it opens.</caption>
+            <thead>
+              <tr>
+                <th scope="col">Signal</th>
+                <th scope="col" class="num">Reading</th>
+                <th scope="col" class="vd">Verdict</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Evals pass rate</td>
+                <td class="num"><span class="num">0.94</span> <span class="qual">of 0.90 required</span></td>
+                <td class="vd">
+                  <span class="glyph glyph-pass">
+                    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.4 12 13 4.5"/></svg>
+                    <span class="vh">Pass</span>
+                  </span>
+                </td>
+              </tr>
+              <tr id="row-redteam">
+                <td>Red team critical findings</td>
+                <td class="num"><span class="num" id="rt-count">0</span></td>
+                <td class="vd" id="rt-verdict">
+                  <span class="glyph glyph-pass">
+                    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.4 12 13 4.5"/></svg>
+                    <span class="vh">Pass</span>
+                  </span>
+                </td>
+              </tr>
+              <tr>
+                <td>Knowledge base</td>
+                <td class="num"><span class="num">34</span> <span class="qual">documents</span></td>
+                <td class="vd">
+                  <span class="glyph glyph-pass">
+                    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.4 12 13 4.5"/></svg>
+                    <span class="vh">Pass</span>
+                  </span>
+                </td>
+              </tr>
+              <tr>
+                <td>Soul saved</td>
+                <td class="num"><span class="num">2026-07-12</span></td>
+                <td class="vd">
+                  <span class="glyph glyph-pass">
+                    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.4 12 13 4.5"/></svg>
+                    <span class="vh">Pass</span>
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── three steps ──────────────────────────────────────────────────── -->
+    <section class="section" aria-labelledby="steps-label">
+      <div class="section-head">
+        <span class="label" id="steps-label">Three steps</span>
+        <span class="sec-note mono">about 20 minutes</span>
+      </div>
+
+      <h2>From a folder of documents to an agent you can defend.</h2>
+
+      <div class="steps rule-double">
+        <div class="step">
+          <span class="step-n mono">01</span>
+          <h3>Ingest</h3>
+          <p>Point us at your documents. Every chunk keeps a citation back to the page it came from.</p>
+        </div>
+        <div class="step">
+          <span class="step-n mono">02</span>
+          <h3>Evaluate</h3>
+          <p>Sixty four scenarios are put to the agent. Faithfulness, relevancy, recall and precision, each scored on its own line.</p>
+        </div>
+        <div class="step">
+          <span class="step-n mono">03</span>
+          <h3>Deploy</h3>
+          <p>The gate opens only when the evidence clears the bar you set. Then the widget goes live on your site.</p>
+        </div>
+      </div>
+    </section>
+
+    <footer class="foot">
+      <span class="mono">w.chats</span>
+      <span class="mono">The Gotham console · prototype</span>
+    </footer>
+  </main>
+
+<script src="scene.js"></script>
+<script>
+  (function () {
+    'use strict';
+
+    var host = document.getElementById('scene');
+    if (host && typeof window.mountGotham === 'function') {
+      window.mountGotham(host, { scenarios: 64, fails: 3 });
+    }
+
+    /* ── THE GATE (WARDEN): one attribute repaints the room, WebGL included ──
+       The copy, the chip, the red team row, the tokens and the cage all move
+       together. There is no "blocked" badge; there is only a blocked room.   */
+    var root    = document.documentElement;
+    var line    = document.getElementById('gate-line');
+    var chip    = document.getElementById('gate-chip');
+    var count   = document.getElementById('rt-count');
+    var verdict = document.getElementById('rt-verdict');
+    var btnShut = document.getElementById('btn-shut');
+    var btnOpen = document.getElementById('btn-open');
+
+    var CHECK = '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.4 12 13 4.5"/></svg>';
+    var CROSS = '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+
+    function setGate(state) {
+      var shut = state === 'blocked';
+
+      root.dataset.gate = state;
+      if (window.gotham) window.gotham.setGate(state);
+
+      line.textContent = shut
+        ? 'The gate is shut. This agent cannot reach a customer.'
+        : 'The gate is open. This agent can meet a customer.';
+
+      chip.className = 'chip ' + (shut ? 'chip-seal' : 'chip-live');
+      chip.innerHTML = shut
+        ? '<i class="dot"></i>Gate shut'
+        : '<i class="dot dot-live"></i>Gate open';
+
+      /* the evidence must agree with the room */
+      count.textContent = shut ? '1' : '0';
+      verdict.innerHTML =
+        '<span class="glyph ' + (shut ? 'glyph-fail' : 'glyph-pass') + '">' +
+        (shut ? CROSS : CHECK) +
+        '<span class="vh">' + (shut ? 'Fail' : 'Pass') + '</span></span>';
+
+      btnShut.disabled = shut;
+      btnOpen.disabled = !shut;
+
+      /* the button that was clicked has just been disabled: keep the keyboard
+         user where they are by handing focus to its counterpart */
+      (shut ? btnOpen : btnShut).focus({ preventScroll: true });
+    }
+
+    btnShut.addEventListener('click', function () { setGate('blocked'); });
+    btnOpen.addEventListener('click', function () { setGate('open'); });
+  })();
+</script>
+</body>
+</html>

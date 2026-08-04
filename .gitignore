@@ -109,3 +109,6 @@ apps/admin/verify_screenshots/
 /verify_*.py
 apps/admin/take_screenshot.py
 apps/admin/verify_*.py
+
+# generated knowledge-graph cache
+.understand-anything/

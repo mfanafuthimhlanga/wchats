@@ -1,0 +1,615 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agents · W Chats</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..800,0..100,0..1&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<!--
+  HYBRID PROTOTYPE — this page reproduces the PRODUCTION React dashboard
+  (apps/admin/app/agents/page.tsx + components/AgentCard.tsx + TopNav.tsx).
+  It sits on solid --bg (#110C24), NOT the skyline photo. Production glass
+  fills read as tinted panels over the solid ground, which is intended.
+  Tokens/utilities below are copied verbatim from apps/admin/app/globals.css.
+-->
+<style>
+  /* ── Production tokens — copied from apps/admin/app/globals.css ─────────── */
+  :root {
+    --bg-deep:    #0B0717;
+    --bg:         #110C24;
+    --bg-elev:    #181232;
+    --surface-1:  #1E1638;
+
+    /* Glass tiers */
+    --glass-bg:        rgba(17, 12, 31, 0.55);
+    --glass-bg-strong: rgba(24, 17, 45, 0.70);
+    --glass-bg-dense:  rgba(13, 9, 24, 0.74);
+    --glass-border:    rgba(244, 232, 220, 0.10);
+    --glass-blur:      blur(24px) saturate(115%);
+    --glass-blur-dense: blur(28px) saturate(105%);
+    --glass-highlight: inset 0 1px 0 rgba(244, 232, 220, 0.07);
+    /* Blend-with-parent surfaces (never nest blur) */
+    --well: rgba(11, 7, 23, 0.42);
+    --chip: rgba(40, 30, 66, 0.42);
+
+    /* Borders */
+    --border:      rgba(196, 154, 232, 0.18);
+    --border-soft: rgba(196, 154, 232, 0.10);
+    --border-hard: rgba(244, 116, 140, 0.32);
+
+    /* Accent — sunset coral */
+    --accent:       #F4748C;
+    --accent-hover: #F5899E;
+    --accent-deep:  #C4435C;
+    --accent-dim:   rgba(244, 116, 140, 0.10);
+
+    /* Secondary — jacaranda lilac */
+    --lilac:     #B79AE0;
+    --lilac-dim: rgba(183, 154, 224, 0.12);
+
+    /* Text */
+    --text-1: #F4EDE5;
+    --text-2: #C4BCD0;
+    --text-3: #8A82A0;
+    --text-4: #5A5470;
+    --text-on-accent: #0B0717;
+
+    /* Status */
+    --green:    #34D399;
+    --green-bg: rgba(52, 211, 153, 0.12);
+    --red:      #F87171;
+    --red-bg:   rgba(248, 113, 113, 0.12);
+    --gold:     #FBBF24;
+    --gold-bg:  rgba(251, 191, 36, 0.12);
+
+    /* Radii */
+    --radius-xs:   8px;
+    --radius-sm:   14px;
+    --radius-md:   20px;
+    --radius-lg:   28px;
+    --radius-pill: 100px;
+
+    /* Shadows — violet-tinted */
+    --shadow-card:  0 1px 2px rgba(0,0,0,0.3), 0 4px 16px rgba(11,7,23,0.5);
+    --shadow-lift:  0 4px 12px rgba(0,0,0,0.35), 0 24px 48px rgba(11,7,23,0.6);
+    --shadow-focus: 0 0 0 3px rgba(244, 116, 140, 0.28);
+    --shadow-glow:  0 0 32px rgba(244, 116, 140, 0.18);
+
+    /* Typography */
+    --font-display: 'Fraunces', Georgia, serif;
+    --font-sans:    'Inter', system-ui, sans-serif;
+    --font-mono:    'JetBrains Mono', ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { margin: 0; }
+
+  /* Skyline surface at 25% over the dark ground */
+  html { background: var(--bg); }
+  body {
+    background: transparent;
+    font-family: var(--font-sans);
+    color: var(--text-1);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    min-height: 100vh;
+  }
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background: url('skyline-w-chats.png') center / cover no-repeat;
+    opacity: 0.25;
+    pointer-events: none;
+  }
+
+  /* ── Glass tiers — copied from globals.css ─────────────────────────────── */
+  .glass {
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-highlight), var(--shadow-card);
+  }
+  .glass-strong {
+    background: var(--glass-bg-dense);
+    backdrop-filter: var(--glass-blur-dense);
+    -webkit-backdrop-filter: var(--glass-blur-dense);
+    border: 1px solid var(--border-soft);
+    box-shadow: var(--glass-highlight), var(--shadow-card);
+  }
+
+  /* Nav scrim — production .glass-nav, adapted to the solid ground */
+  .glass-nav {
+    position: relative;
+    background: transparent;
+    border: none;
+  }
+  /* nav scrim removed */
+
+  @supports not (backdrop-filter: blur(1px)) {
+    .glass        { background: rgba(17, 12, 31, 0.92); }
+    .glass-strong { background: rgba(13, 9, 24, 0.93); }
+  }
+
+  /* ── Focus rules — copied from globals.css ─────────────────────────────── */
+  button:focus-visible,
+  a:focus-visible,
+  [role="button"]:focus-visible {
+    outline: none;
+    box-shadow: var(--shadow-focus);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* Skip link */
+  .skip {
+    position: absolute;
+    left: -9999px;
+    top: 8px;
+    z-index: 200;
+    background: var(--accent);
+    color: var(--text-on-accent);
+    padding: 8px 14px;
+    border-radius: var(--radius-xs);
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .skip:focus { left: 12px; }
+
+  /* ── TopNav shell — reproduces components/TopNav.tsx ───────────────────── */
+  .topnav {
+    height: 60px;
+    display: flex;
+    align-items: center;
+    padding: 0 28px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .wordmark {
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-variation-settings: "opsz" 40, "SOFT" 30;
+    font-size: 20px;
+    letter-spacing: -0.02em;
+    color: var(--text-1);
+    text-decoration: none;
+    margin-right: 32px;
+  }
+  .wordmark .dot { color: var(--accent); }
+  .nav-links {
+    display: flex;
+    gap: 4px;
+    margin-left: auto;
+    margin-right: 12px;
+  }
+  .nav-links a {
+    padding: 6px 14px;
+    border-radius: var(--radius-xs);
+    color: var(--text-2);
+    font-weight: 400;
+    font-size: 14px;
+    text-decoration: none;
+    transition: color 0.15s, background 0.15s;
+  }
+  .nav-links a:hover { color: var(--text-1); }
+  .nav-links a[aria-current="page"] {
+    background: var(--accent-dim);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  /* Account square — production uses a bordered avatar with a User glyph */
+  .account {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--bg-deep);
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+
+  /* ── Page frame ────────────────────────────────────────────────────────── */
+  .header-bar { padding: 40px 48px 16px; position: relative; }
+  .header-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 32px;
+    max-width: 1400px;
+  }
+  .greeting {
+    font-family: var(--font-display);
+    font-weight: 400;
+    font-variation-settings: "opsz" 144, "SOFT" 50;
+    font-size: 34px;
+    letter-spacing: -0.022em;
+    line-height: 1.1;
+    color: var(--text-1);
+    margin: 0 0 6px 0;
+  }
+  .greeting em {
+    font-style: italic;
+    font-weight: 300;
+    color: var(--accent);
+    font-variation-settings: "opsz" 144, "SOFT" 100;
+  }
+  .subline {
+    font-size: 14px;
+    color: var(--text-2);
+    margin: 0;
+  }
+  .cta-primary {
+    background: var(--accent);
+    color: var(--text-on-accent);
+    padding: 10px 18px;
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    font-size: 14px;
+    text-decoration: none;
+    display: inline-block;
+    transition: background 0.15s;
+  }
+  .cta-primary:hover { background: var(--accent-hover); }
+
+  /* ── Filter strip ──────────────────────────────────────────────────────── */
+  .filter-wrap { padding: 0 48px 12px; max-width: 1400px; }
+  .filter-strip { display: flex; gap: 4px; }
+  .filter-pill {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-2);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 500;
+    padding: 5px 12px;
+    border-radius: var(--radius-xs);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+  }
+  .filter-pill:hover { color: var(--text-1); }
+  .filter-pill .count {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-2);
+    opacity: 0.8;
+  }
+  .filter-pill[aria-pressed="true"] {
+    background: var(--chip);
+    border: 1px solid var(--border);
+    color: var(--text-1);
+    font-weight: 600;
+  }
+  .filter-pill[aria-pressed="true"] .count { color: var(--text-1); opacity: 1; }
+
+  /* ── Grid ──────────────────────────────────────────────────────────────── */
+  .grid-wrap { padding: 0 48px 56px; max-width: 1400px; }
+  .agent-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+  @media (max-width: 1000px) { .agent-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 680px) {
+    .agent-grid { grid-template-columns: 1fr; }
+    .header-bar { padding: 28px 20px 12px; }
+    .filter-wrap { padding: 0 20px 12px; }
+    .grid-wrap { padding: 0 20px 40px; }
+  }
+
+  /* ── AgentCard — reproduces components/AgentCard.tsx ───────────────────── */
+  .agent-card {
+    display: flex;
+    flex-direction: column;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-soft);
+    border-top: 1px solid var(--border-soft);
+    box-shadow: var(--glass-highlight), var(--shadow-card);
+    color: var(--text-1);
+    overflow: hidden;
+    text-decoration: none;
+    transform: translateY(0);
+    transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+  }
+  .agent-card:hover,
+  .agent-card:focus-visible {
+    border-color: var(--border);
+    border-top: 3px solid var(--accent);
+    box-shadow: var(--glass-highlight), var(--shadow-lift);
+    transform: translateY(-2px);
+  }
+  .agent-card-inner { display: block; padding: 22px 22px 16px 22px; }
+
+  .ac-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .ac-ident { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+  .ac-icon {
+    width: 40px; height: 40px;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .ac-icon.support { background: var(--accent-dim); }
+  .ac-icon.helpdesk { background: var(--lilac-dim); }
+  .ac-meta { min-width: 0; }
+  .ac-name {
+    font-family: var(--font-display);
+    font-size: 15px;
+    font-weight: 700;
+    font-variation-settings: "opsz" 144, "SOFT" 30;
+    color: var(--text-1);
+    margin: 0 0 2px 0;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ac-id {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-3);
+    margin: 0;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ac-chip {
+    padding: 3px 10px;
+    border-radius: var(--radius-pill);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .ac-chip.live     { background: var(--green-bg); color: var(--green); }
+  .ac-chip.testing  { background: var(--gold-bg);  color: var(--gold); }
+  .ac-chip.building { background: var(--lilac-dim); color: var(--lilac); }
+
+  .ac-metrics {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+    padding-top: 14px;
+    padding-bottom: 14px;
+    border-top: 1px solid var(--border-soft);
+    border-bottom: 1px solid var(--border-soft);
+    margin-bottom: 14px;
+  }
+  .ac-metric-label {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 4px;
+  }
+  .ac-metric-val {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-1);
+  }
+  .ac-metric-val.pending { color: var(--text-3); font-weight: 500; }
+
+  .ac-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .ac-date {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-3);
+  }
+  .ac-view {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<!-- TopNav shell: wordmark → index, Agents link (current), account square -->
+<nav class="topnav glass-nav" aria-label="Main">
+  <a class="wordmark" href="index.html"><b>w.</b><span class="dot">chats</span></a>
+  <div class="nav-links">
+    <a href="agents.html" aria-current="page">Agents</a>
+    <a href="eval.html">Evals</a>
+    <a href="settings.html">Settings</a>
+  </div>
+  <span class="account" aria-label="Account" title="Account">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+    </svg>
+  </span>
+</nav>
+
+<main id="main">
+  <!-- Greeting header — Fraunces display, italic coral "there" + live/test/draft subline -->
+  <div class="header-bar">
+    <div class="header-inner">
+      <div>
+        <h1 class="greeting">Good afternoon, <em>there</em></h1>
+        <p class="subline">1 live · 1 in test · 1 draft</p>
+      </div>
+      <a class="cta-primary" href="agent-new.html">New agent</a>
+    </div>
+  </div>
+
+  <!-- Filter pill strip — active pill uses --chip fill (All is active here) -->
+  <div class="filter-wrap">
+    <div class="filter-strip" role="group" aria-label="Filter agents by status">
+      <button type="button" class="filter-pill" aria-pressed="true">All <span class="count">3</span></button>
+      <button type="button" class="filter-pill" aria-pressed="false">Live <span class="count">1</span></button>
+      <button type="button" class="filter-pill" aria-pressed="false">Testing <span class="count">1</span></button>
+      <button type="button" class="filter-pill" aria-pressed="false">Draft <span class="count">1</span></button>
+    </div>
+  </div>
+
+  <!-- 3-column AgentCard grid — mock data spine -->
+  <div class="grid-wrap">
+    <div class="agent-grid">
+
+      <!-- Lindiwe's Beauty Bar · live -->
+      <a class="agent-card" href="agent.html">
+        <span class="agent-card-inner">
+          <span class="ac-top">
+            <span class="ac-ident">
+              <span class="ac-icon support" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F4748C" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+                </svg>
+              </span>
+              <span class="ac-meta">
+                <span class="ac-name">Lindiwe's Beauty Bar</span>
+                <span class="ac-id">agent.lindiwe-beauty</span>
+              </span>
+            </span>
+            <span class="ac-chip live">Live</span>
+          </span>
+
+          <span class="ac-metrics">
+            <span>
+              <span class="ac-metric-label">Docs</span>
+              <span class="ac-metric-val">34</span>
+            </span>
+            <span>
+              <span class="ac-metric-label">Pass rate</span>
+              <span class="ac-metric-val">0.94</span>
+            </span>
+            <span>
+              <span class="ac-metric-label">Sessions</span>
+              <span class="ac-metric-val">1,208</span>
+            </span>
+          </span>
+
+          <span class="ac-footer">
+            <span class="ac-date">2026-07-02</span>
+            <span class="ac-view">View details →</span>
+          </span>
+        </span>
+      </a>
+
+      <!-- Yeoville Hardware · testing -->
+      <a class="agent-card" href="agent.html">
+        <span class="agent-card-inner">
+          <span class="ac-top">
+            <span class="ac-ident">
+              <span class="ac-icon helpdesk" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#B79AE0" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                </svg>
+              </span>
+              <span class="ac-meta">
+                <span class="ac-name">Yeoville Hardware</span>
+                <span class="ac-id">agent.yeoville-hardware</span>
+              </span>
+            </span>
+            <span class="ac-chip testing">Testing</span>
+          </span>
+
+          <span class="ac-metrics">
+            <span>
+              <span class="ac-metric-label">Docs</span>
+              <span class="ac-metric-val">12</span>
+            </span>
+            <span>
+              <span class="ac-metric-label">Pass rate</span>
+              <span class="ac-metric-val">0.87</span>
+            </span>
+            <span>
+              <span class="ac-metric-label">Sessions</span>
+              <span class="ac-metric-val">0</span>
+            </span>
+          </span>
+
+          <span class="ac-footer">
+            <span class="ac-date">2026-07-06</span>
+            <span class="ac-view">View details →</span>
+          </span>
+        </span>
+      </a>
+
+      <!-- Melville Stationers · building -->
+      <a class="agent-card" href="agent.html">
+        <span class="agent-card-inner">
+          <span class="ac-top">
+            <span class="ac-ident">
+              <span class="ac-icon support" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F4748C" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+                </svg>
+              </span>
+              <span class="ac-meta">
+                <span class="ac-name">Melville Stationers</span>
+                <span class="ac-id">agent.melville-books</span>
+              </span>
+            </span>
+            <span class="ac-chip building">Building</span>
+          </span>
+
+          <span class="ac-metrics">
+            <span>
+              <span class="ac-metric-label">Docs</span>
+              <span class="ac-metric-val">3</span>
+            </span>
+            <span>
+              <span class="ac-metric-label">Pass rate</span>
+              <span class="ac-metric-val pending">pending</span>
+            </span>
+            <span>
+              <span class="ac-metric-label">Sessions</span>
+              <span class="ac-metric-val">0</span>
+            </span>
+          </span>
+
+          <span class="ac-footer">
+            <span class="ac-date">2026-07-09</span>
+            <span class="ac-view">View details →</span>
+          </span>
+        </span>
+      </a>
+
+    </div>
+  </div>
+</main>
+
+</body>
+</html>

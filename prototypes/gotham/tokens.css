@@ -1,0 +1,102 @@
+/* =========================================================================
+   GOTHAM — "Bone on Graphite"
+
+   THE LAW OF THIS SYSTEM: colour is a verdict, never a decoration.
+
+   The chrome has no hue at all. Ground is graphite, lettering is bone, and a
+   live thing goes BRIGHT, not coloured. The only two colours that exist in
+   the entire product are judgments: green means it held, red means the gate
+   is shut. If you find yourself reaching for a hue to make something look
+   nice, you have broken the system, because a colour on this bench is a claim
+   about whether an agent can be trusted with a customer.
+   ========================================================================= */
+
+:root {
+  /* ---- the bench: graphite, chroma zero. Nothing here has an opinion. --- */
+  --bg:        #0E1012;
+  --surface:   #15181B;   /* whisper-zone                                    */
+  --surface-2: #1E2327;   /* raised: inputs, hover rows                      */
+  --well:      #08090B;   /* sunken: code, logs, the deep                    */
+
+  /* ---- neutral hairlines. Engraved, not drawn. ------------------------- */
+  --hairline:        rgba(231, 229, 225, 0.13);
+  --hairline-soft:   rgba(231, 229, 225, 0.06);
+  --hairline-strong: rgba(231, 229, 225, 0.30);
+
+  /* ---- bone lettering -------------------------------------------------- */
+  --ink:   #E7E5E1;
+  --ink-2: #9BA1A3;
+  --ink-3: #6B7275;
+
+  /* ---- LIVE is not a colour. It is brightness. -------------------------
+     Where every other console would put an accent hue, this one puts light.
+     A live agent, a focused field, the primary action: all go bone-white. */
+  --live:      #E7E5E1;
+  --live-hot:  #FFFFFF;
+  --live-dim:  rgba(231, 229, 225, 0.10);
+  --live-ink:  #0E1012;   /* graphite text ON a bone fill                    */
+
+  /* ---- THE TWO COLOURS. Both are verdicts. ---------------------------- */
+  --pass:     #4CC38A;
+  --pass-dim: rgba(76, 195, 138, 0.13);
+  --fail:     #E5484D;
+  --fail-dim: rgba(229, 72, 77, 0.13);
+
+  /* the seal: the gate is shut. The same red, because it is the same claim. */
+  --seal:     #E5484D;
+  --seal-hot: #FF6369;
+  --seal-dim: rgba(229, 72, 77, 0.13);
+
+  /* ---- the four eval channels.
+     Even here, restraint: the channels are four VALUES of bone, separated by
+     luminance, not four hues. Only the one that is failing is allowed to be
+     red. A chart on this bench is read by weight, the way an engineer reads a
+     drawing, and colour is saved for the verdict. --------------------------- */
+  --ch-1: #E7E5E1;  /* faithfulness — the brightest, because it matters most */
+  --ch-2: #A9AFB1;
+  --ch-3: #7C8386;
+  --ch-4: #565C5F;
+
+  /* ---- type ------------------------------------------------------------ */
+  --display: 'Space Grotesk', system-ui, sans-serif;   /* technical grotesque */
+  --sans:    'Inter', system-ui, sans-serif;
+  --voice:   'Newsreader', Georgia, serif;             /* the judge, italic   */
+  --mono:    'JetBrains Mono', ui-monospace, monospace;/* every number        */
+
+  /* ---- shape: an instrument has tolerances, not curves ----------------- */
+  --r-control: 4px;
+  --r-panel:   6px;
+  --r-pill:    100px;
+
+  --z-grid: 0; --z-bench: 1; --z-rail: 10; --z-strip: 20; --z-gate: 25;
+  --z-sheet: 30; --z-toast: 40;
+}
+
+/* =========================================================================
+   THE GATE. One attribute on the root, and the room goes with it.
+   Qualified with :root so it outranks the :root block above on specificity;
+   the bare attribute selector ties at (0,1,0) and loses to the later rule.
+   ========================================================================= */
+:root[data-gate="blocked"] {
+  --live:            var(--seal);
+  --live-hot:        var(--seal-hot);
+  --live-dim:        var(--seal-dim);
+  --live-ink:        #0E1012;
+  --hairline:        rgba(229, 72, 77, 0.24);
+  --hairline-soft:   rgba(229, 72, 77, 0.10);
+  --hairline-strong: rgba(229, 72, 77, 0.48);
+}
+
+/* the room changes temperature, it never cuts */
+.tint,
+.tint *:not(svg):not(path):not(circle):not(line):not(polyline) {
+  transition:
+    background-color 600ms ease,
+    border-color 600ms ease,
+    color 600ms ease,
+    box-shadow 600ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tint, .tint * { transition-duration: 1ms; }
+}

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Workflow steps</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..800,0..100&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../colors_and_type.css">
+<link rel="stylesheet" href="_base.css">
+<style>
+html, body { width: 700px; height: 260px; }
+.btn { font-family: var(--font-sans); font-size: 14px; font-weight: 600; letter-spacing: -0.005em; padding: 10px 18px; border-radius: 8px; cursor: pointer; border: none; display: inline-flex; align-items: center; gap: 8px; transition: all 0.15s ease; white-space: nowrap; }
+.btn-primary { background: var(--accent); color: var(--text-on-accent); box-shadow: 0 0 0 1px var(--accent-deep) inset, var(--shadow-glow); }
+.btn-ghost { background: transparent; color: var(--text-1); border: 1px solid var(--border); }
+.btn-secondary { background: var(--surface-2); color: var(--text-1); border: 1px solid var(--border); }
+.btn-sm { font-size: 12.5px; padding: 7px 14px; }
+.btn-lg { font-size: 15px; padding: 13px 24px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 10px; border-radius: 100px; }
+.chip .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.chip-live   { background: var(--green-bg);  color: var(--green);  border: 1px solid var(--green-border); }
+.chip-test   { background: var(--gold-bg);   color: var(--gold);   border: 1px solid var(--gold-border); }
+.chip-draft  { background: var(--surface-2); color: var(--text-3); border: 1px solid var(--border-soft); }
+.chip-red    { background: var(--red-bg);    color: var(--red);    border: 1px solid var(--red-border); }
+.chip-coral  { background: var(--accent-dim);color: var(--accent); border: 1px solid rgba(244,116,140,0.25); }
+.chip-cyan   { background: var(--cyan-dim);  color: var(--cyan);   border: 1px solid rgba(94,223,211,0.25); }
+.chip-lilac  { background: var(--lilac-dim); color: var(--lilac);  border: 1px solid rgba(183,154,224,0.25); }
+
+</style>
+</head>
+<body>
+
+<div style="height: 100%; display: flex; flex-direction: column; gap: 12px; justify-content: center;">
+  <div class="label">Build pipeline steps · done / active / pending</div>
+  
+    <div style="display: flex; align-items: center; gap: 14px; padding: 12px 16px; background: rgba(111, 232, 170, 0.05); border: 1px solid var(--green-border); border-radius: 14px; box-shadow: none; opacity: 1;">
+      <div style="width: 28px; height: 28px; border-radius: 50%; background: var(--green); color: var(--text-on-accent); display: flex; align-items: center; justify-content: center; flex-shrink: 0;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
+      <div style="flex: 1; min-width: 0;">
+        <div style="font-size: 13px; font-weight: 600; color: var(--text-1); margin-bottom: 2px; letter-spacing: -0.005em;">Provision Neon · parse 47 documents</div>
+        <div style="font-size: 10.5px; font-family: var(--font-mono); color: var(--green); letter-spacing: 0.02em;">14.2s · 312 chunks</div>
+      </div>
+      
+    </div>
+  
+    <div style="display: flex; align-items: center; gap: 14px; padding: 12px 16px; background: var(--accent-dim); border: 1.5px solid var(--accent); border-radius: 14px; box-shadow: var(--shadow-glow); opacity: 1;">
+      <div style="width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: var(--text-on-accent); display: flex; align-items: center; justify-content: center; flex-shrink: 0;"><span class="mono" style="font-size:10px;">02</span></div>
+      <div style="flex: 1; min-width: 0;">
+        <div style="font-size: 13px; font-weight: 600; color: var(--text-1); margin-bottom: 2px; letter-spacing: -0.005em;">Generate metadata · entities · embed</div>
+        <div style="font-size: 10.5px; font-family: var(--font-mono); color: var(--accent); letter-spacing: 0.02em;">running… hybrid · BM25 · 0.7 alpha</div>
+      </div>
+      <div style="width: 14px; height: 14px; border: 2px solid var(--accent-dim); border-top-color: var(--accent); border-radius: 50%;"></div>
+    </div>
+  
+    <div style="display: flex; align-items: center; gap: 14px; padding: 12px 16px; background: rgba(11, 7, 23, 0.35); border: 1px solid var(--glass-border); border-radius: 14px; box-shadow: none; opacity: 0.5;">
+      <div style="width: 28px; height: 28px; border-radius: 50%; background: var(--surface-2); color: var(--text-4); display: flex; align-items: center; justify-content: center; flex-shrink: 0;"><span class="mono" style="font-size:10px;">03</span></div>
+      <div style="flex: 1; min-width: 0;">
+        <div style="font-size: 13px; font-weight: 600; color: var(--text-1); margin-bottom: 2px; letter-spacing: -0.005em;">Synthesise retrieval strategy</div>
+        <div style="font-size: 10.5px; font-family: var(--font-mono); color: var(--text-3); letter-spacing: 0.02em;">queued</div>
+      </div>
+      
+    </div>
+  
+</div>
+
+</body>
+</html>

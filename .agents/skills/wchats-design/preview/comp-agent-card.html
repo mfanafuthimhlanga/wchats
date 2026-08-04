@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Agent card · live</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..800,0..100&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../colors_and_type.css">
+<link rel="stylesheet" href="_base.css">
+<style>
+html, body { width: 700px; height: 260px; }
+.btn { font-family: var(--font-sans); font-size: 14px; font-weight: 600; letter-spacing: -0.005em; padding: 10px 18px; border-radius: 8px; cursor: pointer; border: none; display: inline-flex; align-items: center; gap: 8px; transition: all 0.15s ease; white-space: nowrap; }
+.btn-primary { background: var(--accent); color: var(--text-on-accent); box-shadow: 0 0 0 1px var(--accent-deep) inset, var(--shadow-glow); }
+.btn-ghost { background: transparent; color: var(--text-1); border: 1px solid var(--border); }
+.btn-secondary { background: var(--surface-2); color: var(--text-1); border: 1px solid var(--border); }
+.btn-sm { font-size: 12.5px; padding: 7px 14px; }
+.btn-lg { font-size: 15px; padding: 13px 24px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 10px; border-radius: 100px; }
+.chip .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.chip-live   { background: var(--green-bg);  color: var(--green);  border: 1px solid var(--green-border); }
+.chip-test   { background: var(--gold-bg);   color: var(--gold);   border: 1px solid var(--gold-border); }
+.chip-draft  { background: var(--surface-2); color: var(--text-3); border: 1px solid var(--border-soft); }
+.chip-red    { background: var(--red-bg);    color: var(--red);    border: 1px solid var(--red-border); }
+.chip-coral  { background: var(--accent-dim);color: var(--accent); border: 1px solid rgba(244,116,140,0.25); }
+.chip-cyan   { background: var(--cyan-dim);  color: var(--cyan);   border: 1px solid rgba(94,223,211,0.25); }
+.chip-lilac  { background: var(--lilac-dim); color: var(--lilac);  border: 1px solid rgba(183,154,224,0.25); }
+
+</style>
+</head>
+<body>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; height: 100%; align-items: stretch;">
+  <div style="background: var(--surface-1); border: 1px solid var(--border-soft); border-radius: 20px; padding: 20px; display: flex; flex-direction: column;">
+    <div style="display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px;">
+      <div style="width: 40px; height: 40px; background: linear-gradient(135deg, var(--surface-2), var(--surface-3)); border: 1px solid var(--border-soft); border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--accent);">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+      </div>
+      <span class="chip chip-live"><span class="dot"></span>Live</span>
+    </div>
+    <div style="font-family: var(--font-display); font-size: 18px; font-weight: 500; color: var(--text-1); margin-bottom: 2px;">Kgalema</div>
+    <div style="font-size: 11.5px; color: var(--text-3); margin-bottom: 14px; line-height: 1.4;">Customer support · Bantu Threads</div>
+    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; padding: 12px 0; border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft); margin-top: auto;">
+      <div><div style="font-size: 9px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-4); margin-bottom: 4px;">7D Conv.</div><div style="font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; color: var(--text-1);">1,284</div></div>
+      <div><div style="font-size: 9px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-4); margin-bottom: 4px;">Faith.</div><div style="font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; color: var(--green);">0.93</div></div>
+      <div><div style="font-size: 9px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-4); margin-bottom: 4px;">W/L</div><div style="font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; color: var(--text-1);">847/52</div></div>
+    </div>
+    <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 10px; font-size: 11px; color: var(--text-3);">
+      <span class="mono">deployed 14d ago</span>
+      <span style="color: var(--accent); font-weight: 600; display: flex; align-items: center; gap: 4px;">Open →</span>
+    </div>
+  </div>
+
+  <div style="background: var(--surface-1); border: 1px solid var(--border-soft); border-radius: 20px; padding: 20px; display: flex; flex-direction: column;">
+    <div style="display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px;">
+      <div style="width: 40px; height: 40px; background: linear-gradient(135deg, var(--surface-2), var(--surface-3)); border: 1px solid var(--border-soft); border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--text-3);">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg>
+      </div>
+      <span class="chip chip-coral"><span class="dot"></span>Building</span>
+    </div>
+    <div style="font-family: var(--font-display); font-size: 18px; font-weight: 500; color: var(--text-1); margin-bottom: 2px;">Bongi</div>
+    <div style="font-size: 11.5px; color: var(--text-3); margin-bottom: 16px; line-height: 1.4;">Bookings · One For All edu</div>
+    <div style="height: 4px; background: var(--surface-2); border-radius: 2px; overflow: hidden; margin-bottom: 10px;">
+      <div style="height: 100%; width: 62%; background: linear-gradient(90deg, var(--accent), var(--lilac)); border-radius: 2px; box-shadow: 0 0 12px rgba(244,116,140,0.32);"></div>
+    </div>
+    <div style="font-family: var(--font-mono); font-size: 11px; color: var(--text-3); margin-bottom: auto;">Step <span style="color: var(--accent);">2 of 4</span> · Soul + KB</div>
+    <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--border-soft); font-size: 11px; color: var(--text-3);">
+      <span class="mono">18 min ago</span>
+      <span style="color: var(--accent); font-weight: 600;">Continue →</span>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

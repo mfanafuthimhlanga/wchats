@@ -1,0 +1,45 @@
+/* Dusk Console — tokens. Same layout system as amber-console,
+   colored with the original production "Hillbrow at Dusk" palette
+   (apps/admin/app/globals.css). Variable NAMES are unchanged so
+   app.css and all pages work without edits: --amber here carries
+   the production coral accent. */
+
+:root {
+  /* surfaces (production indigo family) */
+  --bg:            #110C24;                 /* production --bg */
+  --surface:       #1E1638;                 /* production --surface-1 */
+  --surface-2:     #2A1E4A;                 /* production --surface-2 */
+  --well:          #0B0717;                 /* production --bg-deep */
+  --hairline:      rgba(196, 154, 232, 0.18);  /* production --border (lavender) */
+  --hairline-soft: rgba(196, 154, 232, 0.10);  /* production --border-soft */
+
+  /* ink (production text ramp) */
+  --ink:   #F4EDE5;
+  --ink-2: #C4BCD0;
+  --ink-3: #8A82A0;
+
+  /* the accent: sunset coral (production --accent) */
+  --amber:      #F4748C;
+  --amber-ink:  #0B0717;                    /* production --text-on-accent */
+  --amber-dim:  rgba(244, 116, 140, 0.10);
+  --amber-line: rgba(244, 116, 140, 0.35);
+
+  /* status (production green/red recalibrated for dark) */
+  --green:     #34D399;
+  --green-dim: rgba(52, 211, 153, 0.12);
+  --red:       #F87171;
+  --red-dim:   rgba(248, 113, 113, 0.12);
+
+  /* type */
+  --mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', monospace;
+  --sans: 'Inter', system-ui, sans-serif;
+
+  /* shape: buttons/inputs 6 · panels 10 · chips pill · tables 0 */
+  --r-control: 6px;
+  --r-panel:   10px;
+
+  /* z scale */
+  --z-nav: 10;
+  --z-sheet: 20;
+  --z-toast: 30;
+}

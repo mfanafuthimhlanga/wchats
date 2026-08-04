@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agents · W Chats</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="app.css">
+<style>
+  /* agents dashboard - no rail, solid ground */
+  .summary { display: flex; gap: 24px; margin-top: -18px; margin-bottom: 28px; }
+  .summary .stat { font-family: var(--mono); font-size: 13px; color: var(--ink-2); }
+  .summary .stat b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+
+  .ledger-frame {
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-panel);
+    overflow: hidden;
+    background: var(--surface);
+  }
+  /* name column is the row's click target */
+  .ledger a.row-name {
+    color: var(--ink); text-decoration: none;
+    font-weight: 500;
+    transition: color 150ms ease-out;
+  }
+  .ledger tbody tr:hover a.row-name { color: var(--amber); }
+  .ledger .id-cell { color: var(--ink-2); }
+
+  /* empty state (toggle by removing hidden) */
+  .empty {
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-panel);
+    background: var(--surface);
+    padding: 56px 40px;
+    text-align: center;
+  }
+  .empty h2 { font-size: 16px; }
+  .empty p { margin: 10px auto 24px; color: var(--ink-2); max-width: 42ch; }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="wordmark" href="index.html"><b>w.</b>chats</a>
+  <nav aria-label="Main">
+    <a href="agents.html" aria-current="page">Agents</a>
+  </nav>
+  <span class="spacer"></span>
+  <div class="account" title="Lindiwe Nkosi" aria-label="Account, Lindiwe Nkosi">LN</div>
+</header>
+
+<main class="content" id="main">
+  <div class="page">
+    <div class="page-head">
+      <div class="row">
+        <h1>Agents</h1>
+        <a class="btn btn-primary" href="agent-new.html">New agent</a>
+      </div>
+    </div>
+
+    <!-- mock: tenant Lindiwe's Beauty Bar, 3 agents -->
+    <div class="summary" aria-label="Fleet summary">
+      <span class="stat"><b>1</b> live</span>
+      <span class="stat"><b>1</b> testing</span>
+      <span class="stat"><b>1</b> building</span>
+    </div>
+
+    <div class="ledger-frame">
+      <table class="ledger" aria-label="Agents">
+        <thead>
+          <tr>
+            <th style="padding-left:24px">Name</th>
+            <th>Id</th>
+            <th>Status</th>
+            <th class="num">Docs</th>
+            <th class="num">Pass rate</th>
+            <th class="num">Sessions</th>
+            <th class="num" style="padding-right:24px">Created</th>
+          </tr>
+        </thead>
+        <tbody><!-- mock data -->
+          <tr>
+            <td style="padding-left:24px"><a class="row-name" href="agent.html">Lindiwe's Beauty Bar</a></td>
+            <td class="id-cell">agent.lindiwe-beauty</td>
+            <td><span class="chip chip-live"><span class="dot"></span>live</span></td>
+            <td class="num">34</td>
+            <td class="num">0.94</td>
+            <td class="num">1,208</td>
+            <td class="num" style="padding-right:24px">2026-07-02</td>
+          </tr>
+          <tr>
+            <td style="padding-left:24px"><a class="row-name" href="agent.html">Yeoville Hardware</a></td>
+            <td class="id-cell">agent.yeoville-hardware</td>
+            <td><span class="chip chip-testing">testing</span></td>
+            <td class="num">12</td>
+            <td class="num">0.87</td>
+            <td class="num">0</td>
+            <td class="num" style="padding-right:24px">2026-07-06</td>
+          </tr>
+          <tr>
+            <td style="padding-left:24px"><a class="row-name" href="agent.html">Melville Stationers</a></td>
+            <td class="id-cell">agent.melville-books</td>
+            <td><span class="chip chip-neutral">building</span></td>
+            <td class="num">3</td>
+            <td class="num" style="color:var(--ink-3)">pending</td>
+            <td class="num">0</td>
+            <td class="num" style="padding-right:24px">2026-07-09</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- empty state - remove `hidden` to preview; shown only when the tenant has zero agents -->
+    <div class="empty" hidden><!-- mock -->
+      <h2>No agents yet.</h2>
+      <p>Create your first agent, ingest your documents, and ship a support assistant that clears an evaluation gate before it goes live.</p>
+      <a class="btn btn-primary" href="agent-new.html">New agent</a>
+    </div>
+  </div>
+</main>
+
+</body>
+</html>

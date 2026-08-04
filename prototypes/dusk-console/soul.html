@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Soul · W Chats</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="app.css">
+<style>
+  /* soul-only layout */
+  .soul-grid { display: grid; grid-template-columns: 1fr 380px; gap: 40px; align-items: start; }
+  @media (max-width: 1100px) { .soul-grid { grid-template-columns: 1fr; gap: 32px; } }
+
+  .form-col { min-width: 0; }
+
+  /* editable do-lists: rows of mono text + real remove button */
+  .do-list { display: grid; gap: 8px; margin: 0 0 12px; padding: 0; list-style: none; }
+  .do-list li {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-control);
+    padding: 8px 8px 8px 12px;
+  }
+  .do-list .txt { flex: 1; font-family: var(--mono); font-size: 13px; color: var(--ink); min-width: 0; }
+  .do-list .remove {
+    flex-shrink: 0;
+    width: 26px; height: 26px; display: grid; place-items: center;
+    background: transparent; border: 1px solid transparent; border-radius: var(--r-control);
+    color: var(--ink-3); cursor: pointer;
+    transition: color 150ms ease-out, background 150ms ease-out;
+  }
+  .do-list .remove:hover { color: var(--red); background: var(--red-dim); }
+
+  /* save bar sticks to the bottom of the form column */
+  .save-bar {
+    position: sticky; bottom: 0;
+    display: flex; align-items: center; gap: 16px;
+    margin-top: 32px; padding: 16px 0;
+    background: var(--bg);
+    border-top: 1px solid var(--hairline);
+  }
+  .save-bar .note { font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
+
+  /* preview column */
+  .preview { position: sticky; top: 88px; }
+  .preview .well {
+    max-height: 460px; overflow-y: auto;
+    white-space: pre; line-height: 1.7;
+  }
+  .preview .cap { font-size: 12px; color: var(--ink-3); margin-top: 12px; }
+  .preview .prompt-comment { color: var(--ink-3); }
+  .preview .prompt-key { color: var(--ink); }
+</style>
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="wordmark" href="index.html"><b>w.</b>chats</a>
+  <nav aria-label="Main">
+    <a href="agents.html">Agents</a>
+  </nav>
+  <span class="spacer"></span>
+  <div class="account" aria-label="Signed in as Lindiwe">LB</div>
+</header>
+
+<div class="frame">
+
+  <!-- shared agent rail - agent.lindiwe-beauty, Configure step done -->
+  <nav class="rail" aria-label="Agent journey">
+    <div class="agent-name">Lindiwe's Beauty Bar</div>
+    <div class="agent-id mono">agent.lindiwe-beauty</div>
+    <ol>
+      <li>
+        <a href="agent.html">
+          <span class="glyph done" aria-hidden="true">
+            <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 7.5 5.5 10.5 11.5 3.5"/></svg>
+          </span>
+          Configure
+          <span class="sr-only"> - done</span>
+        </a>
+      </li>
+      <li>
+        <a href="ingest.html">
+          <span class="glyph done" aria-hidden="true">
+            <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 7.5 5.5 10.5 11.5 3.5"/></svg>
+          </span>
+          Ingest
+          <span class="sr-only"> - done</span>
+        </a>
+      </li>
+      <li>
+        <a href="eval.html">
+          <span class="glyph active" aria-hidden="true">
+            <svg viewBox="0 0 14 14" width="14" height="14" fill="currentColor"><rect x="3" y="3" width="8" height="8" rx="1"/></svg>
+          </span>
+          Evals
+          <span class="sr-only"> - active</span>
+        </a>
+      </li>
+      <li>
+        <a href="deploy.html">
+          <span class="glyph locked" aria-hidden="true">
+            <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6.5" width="8" height="5" rx="1"/><path d="M4.75 6.5V5a2.25 2.25 0 0 1 4.5 0v1.5"/></svg>
+          </span>
+          Deploy
+          <span class="sr-only"> - locked</span>
+        </a>
+      </li>
+    </ol>
+    <div class="foot">
+      <ol>
+        <li><a href="settings.html">Settings</a></li>
+      </ol>
+    </div>
+  </nav>
+
+  <main class="content" id="main">
+    <div class="page">
+
+      <div class="page-head">
+        <h1>Soul</h1>
+        <p>Define who the agent is and the rules it must follow. This becomes the system prompt every answer is grounded in.</p>
+      </div>
+
+      <div class="soul-grid">
+
+        <!-- form column -->
+        <form class="form-col" onsubmit="return false" aria-label="Soul editor">
+
+          <div class="field">
+            <label for="soul-name">Name</label>
+            <input id="soul-name" type="text" value="Lindiwe's Beauty Bar assistant"><!-- mock -->
+            <p class="help">The name the agent uses when it introduces itself.</p>
+          </div>
+
+          <div class="field">
+            <label for="soul-role">Role</label>
+            <select id="soul-role"><!-- mock -->
+              <option>Customer service assistant</option>
+              <option>Bookings assistant</option>
+              <option>Product specialist</option>
+            </select>
+            <p class="help">Sets the agent's default posture and the tasks it will help customers with.</p>
+          </div>
+
+          <div class="field">
+            <label for="soul-greeting">Greeting</label>
+            <textarea id="soul-greeting" rows="3">Hi, you have reached Lindiwe's Beauty Bar in Melville. How can I help with bookings, services or prices today?</textarea><!-- mock -->
+            <p class="help">The first message a customer sees when they open the widget.</p>
+          </div>
+
+          <!-- do list -->
+          <div class="field">
+            <label id="do-label">Do</label>
+            <ul class="do-list" aria-labelledby="do-label"><!-- mock -->
+              <li>
+                <span class="txt">Quote prices only from the price list documents</span>
+                <button type="button" class="remove" aria-label="Remove: Quote prices only from the price list documents">
+                  <svg viewBox="0 0 14 14" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 3.5 10.5 10.5M10.5 3.5 3.5 10.5"/></svg>
+                </button>
+              </li>
+              <li>
+                <span class="txt">Offer to book an appointment when a customer names a service</span>
+                <button type="button" class="remove" aria-label="Remove: Offer to book an appointment when a customer names a service">
+                  <svg viewBox="0 0 14 14" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 3.5 10.5 10.5M10.5 3.5 3.5 10.5"/></svg>
+                </button>
+              </li>
+              <li>
+                <span class="txt">Cite the document a policy comes from when asked</span>
+                <button type="button" class="remove" aria-label="Remove: Cite the document a policy comes from when asked">
+                  <svg viewBox="0 0 14 14" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 3.5 10.5 10.5M10.5 3.5 3.5 10.5"/></svg>
+                </button>
+              </li>
+            </ul>
+            <button type="button" class="btn btn-ghost">Add item</button>
+          </div>
+
+          <!-- do-not list -->
+          <div class="field">
+            <label id="dont-label">Do not</label>
+            <ul class="do-list" aria-labelledby="dont-label"><!-- mock -->
+              <li>
+                <span class="txt">Invent prices or services that are not in the documents</span>
+                <button type="button" class="remove" aria-label="Remove: Invent prices or services that are not in the documents">
+                  <svg viewBox="0 0 14 14" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 3.5 10.5 10.5M10.5 3.5 3.5 10.5"/></svg>
+                </button>
+              </li>
+              <li>
+                <span class="txt">Promise a refund outside the returns policy window</span>
+                <button type="button" class="remove" aria-label="Remove: Promise a refund outside the returns policy window">
+                  <svg viewBox="0 0 14 14" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 3.5 10.5 10.5M10.5 3.5 3.5 10.5"/></svg>
+                </button>
+              </li>
+              <li>
+                <span class="txt">Share staff personal contact details or home addresses</span>
+                <button type="button" class="remove" aria-label="Remove: Share staff personal contact details or home addresses">
+                  <svg viewBox="0 0 14 14" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 3.5 10.5 10.5M10.5 3.5 3.5 10.5"/></svg>
+                </button>
+              </li>
+            </ul>
+            <button type="button" class="btn btn-ghost">Add item</button>
+          </div>
+
+          <div class="save-bar">
+            <button type="submit" class="btn btn-primary">Save soul</button>
+            <span class="note">Last saved 2026-07-08 09:12</span>
+          </div>
+
+        </form>
+
+        <!-- preview column -->
+        <aside class="preview" aria-label="Live prompt preview">
+          <div class="section-label" style="margin-bottom:12px">Live prompt</div>
+          <div class="well" role="img" aria-label="Generated system prompt preview"><!-- mock --><span class="prompt-comment"># system prompt (generated)</span>
+<span class="prompt-key">name:</span> Lindiwe's Beauty Bar assistant
+<span class="prompt-key">role:</span> Customer service assistant
+
+You are the assistant for Lindiwe's
+Beauty Bar, a salon in Melville.
+Answer only from the knowledge base.
+
+<span class="prompt-key">do:</span>
+- quote prices only from the price list
+- offer to book when a service is named
+- cite the source document on request
+
+<span class="prompt-key">do_not:</span>
+- invent prices or services
+- promise refunds outside policy
+- share staff personal details</div>
+          <p class="cap">Regenerated from the fields on the left. 34 documents in scope.</p>
+        </aside>
+
+      </div>
+    </div>
+  </main>
+</div>
+
+<style>
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+</style>
+</body>
+</html>

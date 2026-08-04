@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Stat card · glass</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..800,0..100&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../colors_and_type.css">
+<link rel="stylesheet" href="_base.css">
+<style>
+html, body { width: 700px; height: 200px; }
+.btn { font-family: var(--font-sans); font-size: 14px; font-weight: 600; letter-spacing: -0.005em; padding: 10px 18px; border-radius: 8px; cursor: pointer; border: none; display: inline-flex; align-items: center; gap: 8px; transition: all 0.15s ease; white-space: nowrap; }
+.btn-primary { background: var(--accent); color: var(--text-on-accent); box-shadow: 0 0 0 1px var(--accent-deep) inset, var(--shadow-glow); }
+.btn-ghost { background: transparent; color: var(--text-1); border: 1px solid var(--border); }
+.btn-secondary { background: var(--surface-2); color: var(--text-1); border: 1px solid var(--border); }
+.btn-sm { font-size: 12.5px; padding: 7px 14px; }
+.btn-lg { font-size: 15px; padding: 13px 24px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 10px; border-radius: 100px; }
+.chip .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.chip-live   { background: var(--green-bg);  color: var(--green);  border: 1px solid var(--green-border); }
+.chip-test   { background: var(--gold-bg);   color: var(--gold);   border: 1px solid var(--gold-border); }
+.chip-draft  { background: var(--surface-2); color: var(--text-3); border: 1px solid var(--border-soft); }
+.chip-red    { background: var(--red-bg);    color: var(--red);    border: 1px solid var(--red-border); }
+.chip-coral  { background: var(--accent-dim);color: var(--accent); border: 1px solid rgba(244,116,140,0.25); }
+.chip-cyan   { background: var(--cyan-dim);  color: var(--cyan);   border: 1px solid rgba(94,223,211,0.25); }
+.chip-lilac  { background: var(--lilac-dim); color: var(--lilac);  border: 1px solid rgba(183,154,224,0.25); }
+
+</style>
+</head>
+<body>
+
+<div style="position: relative; height: 100%; padding: 8px;">
+  <div style="position: absolute; inset: 0; background: radial-gradient(ellipse 60% 80% at 100% 50%, rgba(244,116,140,0.10) 0%, transparent 60%), radial-gradient(ellipse 40% 60% at 0% 0%, rgba(183,154,224,0.06) 0%, transparent 60%);"></div>
+  <div style="position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; height: 100%;">
+    
+      <div style="background: var(--glass-bg); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); border: 1px solid var(--glass-border); border-radius: 20px; padding: 18px 20px; position: relative; overflow: hidden;">
+        <div style="position: absolute; top: 0; right: 0; width: 80px; height: 80px; background: radial-gradient(circle at 100% 0%, var(--accent-dim) 0%, transparent 70%);"></div>
+        <div style="position: relative;">
+          <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); margin-bottom: 12px;">Conversations · 7d</div>
+          <div style="font-family: var(--font-mono); font-size: 30px; font-weight: 600; color: var(--text-1); letter-spacing: -0.025em; line-height: 1;">2,847</div>
+          <div style="margin-top: 10px; font-size: 11.5px; font-family: var(--font-mono); color: var(--green); letter-spacing: 0.02em;">↗ +18.4% vs prior week</div>
+        </div>
+      </div>
+    
+      <div style="background: var(--glass-bg); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); border: 1px solid var(--glass-border); border-radius: 20px; padding: 18px 20px; position: relative; overflow: hidden;">
+        <div style="position: absolute; top: 0; right: 0; width: 80px; height: 80px; background: radial-gradient(circle at 100% 0%, var(--lilac-dim) 0%, transparent 70%);"></div>
+        <div style="position: relative;">
+          <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); margin-bottom: 12px;">Faithfulness · median</div>
+          <div style="font-family: var(--font-mono); font-size: 30px; font-weight: 600; color: var(--text-1); letter-spacing: -0.025em; line-height: 1;">0.91</div>
+          <div style="margin-top: 10px; font-size: 11.5px; font-family: var(--font-mono); color: var(--green); letter-spacing: 0.02em;">↗ +0.03 vs prior week</div>
+        </div>
+      </div>
+    
+  </div>
+</div>
+
+</body>
+</html>
