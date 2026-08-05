@@ -24,7 +24,9 @@ Flow (run_red_team):
        (Phase 18 SEC-03 / OD-7: the shipped PromptInjection agent is split into
        the conversation-injection and content-injection variants)
     6. Compute max_severity and deployment_blocked
-    7. Update red_team_run row to 'complete' with findings JSONB
+    7. Update red_team_run row to 'complete' with findings JSONB and the run's
+       own coverage (migration 0015) — an empty findings list is unreadable
+       without the denominator that says how many vectors could probe at all
        7b. Persist first-class red_team_strategies/red_team_probes rows (OPS-13)
        7c. Persist one first-class red_team_findings row per finding, status='open'
            (OPS-14) — the deploy gate reads this table, not the findings JSONB
@@ -217,7 +219,9 @@ def run_red_team(self, agent_id: str) -> dict:
            Hallucination → ConfusedDeputy → ValueBoundEvasion → IdentityBypass
            agents sequentially.
         6. Compute max_severity and deployment_blocked flag.
-        7. Update red_team_run row to 'complete' with findings JSONB.
+        7. Update red_team_run row to 'complete' with findings JSONB and the run's
+       own coverage (migration 0015) — an empty findings list is unreadable
+       without the denominator that says how many vectors could probe at all.
         8. Return result dict.
 
     Args:
@@ -446,27 +450,73 @@ def run_red_team(self, agent_id: str) -> dict:
 
         # ------------------------------------------------------------------
         # Step 7 — Update red_team_run row to 'complete'
+        #
+        # THE COVERAGE IS STORED ON THE RUN (P2 review). It used to reach a
+        # structlog line and this task's return dict and stop there, so the
+        # stored row — the only thing the ops room and the deploy gate can read
+        # afterwards — still said `findings: [], max_severity: null,
+        # deployment_blocked: false` for a run in which four of seven attackers
+        # never probed. That is byte-identical to a clean seven-vector run.
+        #
+        # It must be the RUN's coverage rather than the reader's: the moment P4
+        # flips SDK_ATTACKERS_CAN_PROBE, anything deriving coverage at read time
+        # would re-describe every stored three-of-seven run as seven-of-seven.
+        #
+        # `coverage` arrived with migration 0015 and a tenant provisioned before
+        # it does not have the column (tenants are migrated at provision time
+        # only), so UndefinedColumn falls back to the pre-0015 statement — the
+        # run still completes, it simply cannot record what it covered, and its
+        # readers report that as unrecorded rather than as full.
         # ------------------------------------------------------------------
+        _complete_params = (
+            json.dumps([f.model_dump() for f in all_findings]),
+            max_severity,
+            deployment_blocked,
+        )
         try:
-            with _agents_conn.cursor() as _cur:
-                _cur.execute(
-                    """
-                    UPDATE red_team_runs
-                    SET status = 'complete',
-                        finished_at = NOW(),
-                        findings = %s,
-                        max_severity = %s,
-                        deployment_blocked = %s
-                    WHERE id = %s
-                    """,
-                    (
-                        json.dumps([f.model_dump() for f in all_findings]),
-                        max_severity,
-                        deployment_blocked,
-                        run_id,
+            try:
+                with _agents_conn.cursor() as _cur:
+                    _cur.execute(
+                        """
+                        UPDATE red_team_runs
+                        SET status = 'complete',
+                            finished_at = NOW(),
+                            findings = %s,
+                            max_severity = %s,
+                            deployment_blocked = %s,
+                            coverage = %s
+                        WHERE id = %s
+                        """,
+                        (*_complete_params, json.dumps(coverage), run_id),
+                    )
+                _agents_conn.commit()
+            except psycopg2.errors.UndefinedColumn:
+                # The aborted transaction must be rolled back before the
+                # connection will accept another statement.
+                _agents_conn.rollback()
+                log.warning(
+                    "run_red_team.coverage_column_absent",
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    detail=(
+                        "tenant DB predates alembic_tenant 0015 — this run "
+                        "cannot record how much of the attack surface it covered"
                     ),
                 )
-            _agents_conn.commit()
+                with _agents_conn.cursor() as _cur:
+                    _cur.execute(
+                        """
+                        UPDATE red_team_runs
+                        SET status = 'complete',
+                            finished_at = NOW(),
+                            findings = %s,
+                            max_severity = %s,
+                            deployment_blocked = %s
+                        WHERE id = %s
+                        """,
+                        (*_complete_params, run_id),
+                    )
+                _agents_conn.commit()
         except Exception as update_exc:
             log.warning(
                 "run_red_team.update_complete_failed",

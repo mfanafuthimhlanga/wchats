@@ -51,6 +51,11 @@ So every metric now travels with the fact of its own measurement:
         so they are aggregated separately and never summed here.
         `datasets.available` is false when the tenant DB predates migration
         0014, which is a different claim from "no golden rows were covered".
+        `datasets.unattributed` counts result rows whose scenario no longer
+        exists; they carry no metrics and belong to neither dataset, which is
+        the same rule eval_service.summarise_run_validity applies to the same
+        rows. The two used to disagree about them, giving one run two
+        denominators.
 """
 
 from __future__ import annotations
@@ -162,19 +167,31 @@ GATED_METRIC_KEYS = ("faithfulness", "answer_relevancy")
 # 'golden' is golden, and NULL (every row predating migration 0014), '' and any
 # unrecognised value are exploratory, because membership of a curated set has to
 # be asserted rather than inherited. A COALESCE would leave an unexpected value
-# to open a third bucket the reader is not expecting. Rows whose scenario no
-# longer exists (a deleted scenario, or the id run_ragas_eval synthesises when a
-# scenario carries none) land in the exploratory bucket rather than being
-# dropped: a scored observation that vanishes from the denominator is how a rate
-# comes to overstate.
+# to open a third bucket the reader is not expecting.
+#
+# ONE RULE FOR AN UNATTRIBUTABLE ROW (P2 review). A result row whose scenario no
+# longer exists — a deleted scenario, or the synthetic id older builds of
+# run_ragas_eval minted when a scenario carried none — used to land in the
+# EXPLORATORY bucket here while eval_service.summarise_run_validity dropped it
+# from both. Both comments argued their case as the honest one and they
+# disagreed, so the same run had two denominators differing by exactly those
+# rows: the Celery return excluded them, this response counted them and let
+# their scores into the exploratory means. The rule is now the same in both
+# places and stated in both: an unattributable row is attributed to NEITHER
+# dataset and is counted separately, because "we scored something and cannot say
+# what it was about" is a third fact, not an exploratory measurement. The
+# `es.id IS NULL` arm is what the LEFT JOIN produces for exactly those rows.
 #
 # Bounded to the same 50 runs the list query returns — this is one extra round
 # trip on a route that already makes two, not a full-table aggregate.
 _LIST_EVAL_RUN_DATASETS_SQL = """
     SELECT
         res.eval_run_id,
-        CASE WHEN es.dataset = %(golden)s THEN %(golden)s ELSE %(exploratory)s END
-            AS dataset,
+        CASE
+            WHEN es.id IS NULL THEN %(unattributed)s
+            WHEN es.dataset = %(golden)s THEN %(golden)s
+            ELSE %(exploratory)s
+        END AS dataset,
         COUNT(DISTINCT res.scenario_id) AS scenario_count,
         COUNT(DISTINCT res.scenario_id) FILTER (
             WHERE res.score IS NOT NULL
@@ -189,7 +206,11 @@ _LIST_EVAL_RUN_DATASETS_SQL = """
         SELECT id FROM eval_runs ORDER BY started_at DESC LIMIT 50
     )
     GROUP BY res.eval_run_id,
-             CASE WHEN es.dataset = %(golden)s THEN %(golden)s ELSE %(exploratory)s END
+             CASE
+                 WHEN es.id IS NULL THEN %(unattributed)s
+                 WHEN es.dataset = %(golden)s THEN %(golden)s
+                 ELSE %(exploratory)s
+             END
 """
 
 # OPS-12: ORRERY ledger — eval provenance (born-in-production vs authored counts).
@@ -207,6 +228,14 @@ _LEDGER_SQL = """
 """
 
 
+# The third bucket. It is NOT an eval_service dataset and deliberately not in
+# EVAL_DATASETS: it is the count of result rows this run cannot attribute to any
+# scenario, reported so they do not vanish and kept out of both datasets so they
+# cannot be averaged into a measurement. Same rule, same name, as
+# summarise_run_validity's `unattributed`.
+DATASET_UNATTRIBUTED = "unattributed"
+
+
 def _dataset_block(per_dataset: dict[str, dict], available: bool) -> dict:
     """Per-dataset aggregates for one run, with every dataset key always present.
 
@@ -215,7 +244,14 @@ def _dataset_block(per_dataset: dict[str, dict], available: bool) -> dict:
     interpreted, and the two available interpretations — "this run covered no
     golden rows" and "this response does not carry that information" — are
     exactly the pair `available` exists to separate.
+
+    `unattributed` carries counts only, with no metrics block: a mean over rows
+    whose scenario is unknown is a mean over an unknown denominator, and the
+    point of separating them is that they must not be readable as a score.
     """
+    unattributed = per_dataset.get(
+        DATASET_UNATTRIBUTED, {"scenario_count": 0, "scored_scenario_count": 0}
+    )
     return {
         "available": available,
         **{
@@ -231,6 +267,10 @@ def _dataset_block(per_dataset: dict[str, dict], available: bool) -> dict:
                 },
             )
             for name in EVAL_DATASETS
+        },
+        DATASET_UNATTRIBUTED: {
+            "scenario_count": unattributed["scenario_count"],
+            "scored_scenario_count": unattributed["scored_scenario_count"],
         },
     }
 
@@ -291,7 +331,11 @@ async def list_eval_runs(
             _query_tenant_db_sync,
             conn_str,
             _LIST_EVAL_RUN_DATASETS_SQL,
-            {"golden": DATASET_GOLDEN, "exploratory": DATASET_EXPLORATORY},
+            {
+                "golden": DATASET_GOLDEN,
+                "exploratory": DATASET_EXPLORATORY,
+                "unattributed": DATASET_UNATTRIBUTED,
+            },
         )
     except psycopg2.errors.UndefinedColumn:
         dataset_breakdown_available = False

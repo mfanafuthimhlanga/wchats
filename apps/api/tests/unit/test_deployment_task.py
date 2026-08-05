@@ -683,10 +683,17 @@ class TestEvidenceGateWiring:
     test in the other module and change nothing.
     """
 
-    def _drive(self, eval_summary, red_team_summary, orchestrator_recommendation="ship"):
+    def _drive(
+        self,
+        eval_summary,
+        red_team_summary,
+        orchestrator_recommendation="ship",
+        dispatch=None,
+    ):
         from app.worker.tasks.runtime.deployment import run_deployment_checklist
 
         agent_id = str(uuid.uuid4())
+        self.agent_id = agent_id
         mock_run_id = str(uuid.uuid4())
         mock_db, mock_run = _build_full_happy_path_mock_db(mock_run_id)
 
@@ -732,10 +739,14 @@ class TestEvidenceGateWiring:
             "app.worker.tasks.runtime.deployment._compute_envelope_hash_sync",
             return_value="test-envelope-hash",
         ), patch(
+            "app.worker.tasks.runtime.deployment._dispatch_first_eval_run",
+            side_effect=(dispatch if dispatch is not None else (lambda _a: True)),
+        ) as dispatch_mock, patch(
             "app.worker.tasks.runtime.deployment._call_orchestrator_async",
             side_effect=_fake_call_orchestrator_async,
         ):
             result = run_deployment_checklist.run(agent_id=agent_id)
+            self.dispatch_mock = dispatch_mock
 
         return result, mock_run
 
@@ -851,3 +862,147 @@ class TestEvidenceGateWiring:
             result = run_deployment_checklist.run(agent_id=agent_id)
 
         assert result["recommendation"] == "block"
+
+
+# ---------------------------------------------------------------------------
+# TestDayOneEvalPath (P2 review) — the block has to be one the owner can clear
+# ---------------------------------------------------------------------------
+
+
+class TestDayOneEvalPath(TestEvidenceGateWiring):
+    """EVAL_SIGNAL_NO_RUNS hard-blocks, and nothing in signup -> ingest ->
+    deploy produced an eval run.
+
+    `run_eval_suite` is dispatched by the nightly beat and by the "Run Now"
+    button on the eval dashboard. Agent creation dispatches neither, and the
+    ingestion chain ends at synthesize_retrieval_strategy. So a new tenant
+    ingested documents, reached status='ready', ran the readiness check, got
+    'block', and POST /approve-deployment answered 422 — with the only remedy on
+    a page the onboarding flow never routes to. CLAUDE.md's stated core value
+    ends in "deploy".
+
+    The fix is not to soften the gate. An agent with no measurement still must
+    not ship. The checklist starts the measurement it is demanding, and says so.
+    """
+
+    def _never_evaluated(self):
+        return {
+            "eval_signal": "no_runs",
+            "signal_detail": "no eval run has ever been recorded for this agent",
+            "last_run_at": None,
+            "last_run_status": None,
+            "scenario_count": 0,
+            "valid_scenario_count": None,
+            "scored_scenario_count": 0,
+            "denominator_source": None,
+            "pass_rates": None,
+            "failing_scenarios": None,
+        }
+
+    def test_a_never_evaluated_agent_still_cannot_ship(self):
+        """The gate is unchanged: an eval that is RUNNING is not evidence."""
+        result, mock_run = self._drive(
+            self._never_evaluated(), _measured_red_team_signal()
+        )
+
+        assert result["recommendation"] == "block"
+        assert mock_run.recommendation == "block"
+
+    def test_the_first_eval_is_started_by_the_checklist_itself(self):
+        self._drive(self._never_evaluated(), _measured_red_team_signal())
+
+        self.dispatch_mock.assert_called_once_with(self.agent_id)
+
+    def test_the_warning_tells_the_owner_to_wait_not_to_find_a_page(self):
+        """A non-technical owner cannot act on "run an eval from the Evaluation
+        page" if nothing routed them there. Once the checklist has started the
+        run, the honest instruction is to come back."""
+        _, mock_run = self._drive(
+            self._never_evaluated(), _measured_red_team_signal()
+        )
+
+        matching = [
+            w for w in mock_run.warnings if w["warning_id"] == "eval_never_run"
+        ]
+        assert len(matching) == 1, (
+            f"expected one eval_never_run warning, got {mock_run.warnings}"
+        )
+        assert "started" in matching[0]["message"].lower()
+
+    def test_a_failed_dispatch_still_produces_a_report(self):
+        """Broker down. The checklist has already collected every other signal
+        and still owes the owner a verdict; the warning falls back to naming the
+        page rather than promising a run that was never queued."""
+        _, mock_run = self._drive(
+            self._never_evaluated(),
+            _measured_red_team_signal(),
+            dispatch=lambda _a: False,
+        )
+
+        matching = [
+            w for w in mock_run.warnings if w["warning_id"] == "eval_never_run"
+        ]
+        assert len(matching) == 1
+        assert "started" not in matching[0]["message"].lower()
+        assert "Evaluation page" in matching[0]["message"]
+
+    def test_nothing_is_dispatched_when_a_run_already_exists(self):
+        """A measured agent, or one whose run scored nothing, has a run on the
+        record. Re-dispatching on every readiness check would run the judge
+        against the whole scenario set each time an owner clicks the button."""
+        self._drive(_measured_eval_signal(), _measured_red_team_signal())
+        self.dispatch_mock.assert_not_called()
+
+        self._drive(
+            dict(_measured_eval_signal(), eval_signal="no_valid_scores",
+                 pass_rates=None),
+            _measured_red_team_signal(),
+        )
+        self.dispatch_mock.assert_not_called()
+
+    def test_the_dispatch_helper_passes_only_the_agent_id(self):
+        """CLAUDE.md rule 4: no connection string in a Celery task argument.
+
+        Asserted against the real helper rather than the patched one — this is
+        the only test that exercises it.
+        """
+        from app.worker.tasks.runtime import deployment as deployment_task
+
+        agent_id = str(uuid.uuid4())
+        captured = {}
+
+        class _FakeChain:
+            def __init__(self, *signatures):
+                captured["signatures"] = signatures
+
+            def apply_async(self, **kwargs):
+                captured["options"] = kwargs
+
+        with patch("celery.chain", _FakeChain):
+            assert deployment_task._dispatch_first_eval_run(agent_id) is True
+
+        assert captured["options"] == {"queue": "runtime"}
+        assert len(captured["signatures"]) == 2, (
+            "scenario generation must precede the run — a tenant whose "
+            "generation has never run has nothing to evaluate against"
+        )
+        for signature in captured["signatures"]:
+            assert signature.args == (agent_id,), (
+                f"a task argument other than agent_id crossed the boundary: "
+                f"{signature.args}"
+            )
+            assert signature.immutable, (
+                "a mutable signature would hand run_eval_suite the previous "
+                "task result as its first positional argument"
+            )
+
+    def test_a_broker_failure_is_reported_rather_than_raised(self):
+        """The checklist must survive a dispatch failure — it is a remedy, not
+        a precondition."""
+        from app.worker.tasks.runtime import deployment as deployment_task
+
+        def _boom(*a, **kw):
+            raise RuntimeError("broker unreachable")
+
+        with patch("celery.chain", _boom):
+            assert deployment_task._dispatch_first_eval_run("agent-1") is False

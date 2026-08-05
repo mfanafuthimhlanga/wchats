@@ -1459,7 +1459,13 @@ class TestSummariseRunValidity:
         summary = eval_service.summarise_run_validity(scenarios, scores)
 
         assert "metrics" not in summary
-        assert set(summary) == {"attempted", "valid", "scored", "datasets"}
+        assert set(summary) == {
+            "attempted",
+            "valid",
+            "scored",
+            "unattributed",
+            "datasets",
+        }
 
     def test_a_score_for_an_unknown_scenario_joins_neither_dataset(self):
         """An observation that cannot be attributed is not evidence about
@@ -1478,6 +1484,26 @@ class TestSummariseRunValidity:
             "measured"
         ] is False
 
+    def test_an_unattributable_score_is_counted_rather_than_vanishing(self):
+        """Dropped and reported, not dropped and silent (P2 review).
+
+        The eval-runs route used to bucket exactly this row as exploratory while
+        this function dropped it, so one run had two denominators differing by
+        the row: the Celery return excluded it, the API response counted it and
+        let its score into the exploratory mean. Both readers now refuse to
+        attribute it AND both report it, which is what makes the disagreement
+        impossible rather than merely resolved in one place.
+        """
+        scenarios = [_scenario("g1", "golden")]
+        scores = [_score("ghost", faithfulness=0.99), _score("g1", faithfulness=0.5)]
+
+        summary = eval_service.summarise_run_validity(scenarios, scores)
+
+        assert summary["unattributed"] == 1
+        assert summary["scored"] == 1, (
+            "an unattributable row must not be counted as scored for this run"
+        )
+
     def test_an_empty_run_reports_zeros_rather_than_raising(self):
         summary = eval_service.summarise_run_validity([], [])
 
@@ -1485,6 +1511,7 @@ class TestSummariseRunValidity:
             "attempted": 0,
             "valid": 0,
             "scored": 0,
+            "unattributed": 0,
             "datasets": {
                 "golden": {
                     "attempted": 0,
@@ -1548,3 +1575,249 @@ class TestConfigCarriesTheDataset:
         result = eval_service.build_eval_run_config("agent-1", "postgresql://production")
 
         assert result["config"]["dataset"] is None
+
+
+# ---------------------------------------------------------------------------
+# P2 review — which scenario a returned score is actually about
+# ---------------------------------------------------------------------------
+
+
+class TestAttributeReturnedRows:
+    """attribute_returned_rows — pure, and the whole defect in one function.
+
+    run_ragas_eval walked the returned dataframe with `enumerate` and handed row
+    i to valid_scenarios[i]. That is correct only when the judge returns exactly
+    as many rows as it was given, in order — a condition nothing checked. P2
+    made it load-bearing by ordering the golden rows first, so a partial return
+    assigned the surviving scores to the golden set by position.
+    """
+
+    def _scenarios(self, n):
+        return [
+            {"id": f"s{i}", "question": f"q{i}", "reference_answer": f"a{i}"}
+            for i in range(n)
+        ]
+
+    def test_a_complete_return_is_attributed_positionally(self):
+        """One row per sample IS the condition under which position is sound —
+        so it is checked, not assumed, and still used when it holds."""
+        scenarios = self._scenarios(3)
+        keys = [eval_service.scenario_identity_key(s) for s in scenarios]
+
+        assert eval_service.attribute_returned_rows(keys, scenarios) == [0, 1, 2]
+
+    def test_a_partial_return_is_attributed_by_identity_not_position(self):
+        """The filed failure: 1 golden + 30 exploratory sent, 5 rows back for
+        the scenarios at positions 2, 7, 11, 19, 26."""
+        scenarios = self._scenarios(31)
+        returned = [2, 7, 11, 19, 26]
+        keys = [eval_service.scenario_identity_key(scenarios[i]) for i in returned]
+
+        assert eval_service.attribute_returned_rows(keys, scenarios) == returned
+
+    def test_a_row_that_matches_nothing_is_unattributed(self):
+        scenarios = self._scenarios(3)
+
+        assert eval_service.attribute_returned_rows([("who?", "what?")], scenarios) == [
+            None
+        ]
+
+    def test_a_row_with_no_key_at_all_is_unattributed(self):
+        """A judge payload with no sample columns cannot be placed. Position
+        would 'work' and be wrong, which is the failure mode, not the fix."""
+        scenarios = self._scenarios(3)
+
+        assert eval_service.attribute_returned_rows([None, None], scenarios) == [
+            None,
+            None,
+        ]
+
+    def test_two_identical_scenarios_are_ambiguous_rather_than_first_wins(self):
+        """Same question AND same reference answer sent twice.
+
+        They are interchangeable as inputs and NOT as identities: writing the
+        wrong scenario_id into eval_results is what makes tomorrow's paired
+        golden comparison a comparison against a different row.
+        """
+        scenarios = [
+            {"id": "a", "question": "q", "reference_answer": "r"},
+            {"id": "b", "question": "q", "reference_answer": "r"},
+            {"id": "c", "question": "other", "reference_answer": "r"},
+        ]
+
+        assert eval_service.attribute_returned_rows([("q", "r")], scenarios) == [None]
+
+
+class TestRunRagasEvalAttribution:
+    """The producer, exercised in the state the existing tests mocked away.
+
+    test_scored_is_below_valid_when_ragas_returns_fewer_rows monkeypatches
+    run_ragas_eval out entirely, so the real function was never run against a
+    partial judge return — the one state in which its attribution was wrong.
+    """
+
+    _RAGAS_PATCHES = (
+        "EvaluationDataset",
+        "instructor",
+        "anthropic",
+        "InstructorLLM",
+        "Faithfulness",
+        "AnswerRelevancy",
+        "ContextPrecision",
+        "ContextRecall",
+    )
+
+    def _scenarios(self, n):
+        return [
+            {
+                "id": f"s{i}",
+                "question": f"q{i}",
+                "reference_answer": f"a{i}",
+                "retrieved_contexts": [],
+                "agent_response": f"a{i}",
+                "dataset": "golden" if i == 0 else "exploratory",
+            }
+            for i in range(n)
+        ]
+
+    def _judged(self, scenarios, indices, with_keys=True, faithfulness=None):
+        """A to_pandas() frame for the rows the judge actually returned."""
+        rows = []
+        for i in indices:
+            row = {
+                "faithfulness": 0.1 * i if faithfulness is None else faithfulness,
+                "answer_relevancy": 0.5,
+                "context_precision": 0.5,
+                "context_recall": 0.5,
+            }
+            if with_keys:
+                row["user_input"] = scenarios[i]["question"]
+                row["reference"] = scenarios[i]["reference_answer"]
+            rows.append(row)
+        return pd.DataFrame(rows)
+
+    def _run(self, monkeypatch, scenarios, frame):
+        class _Result:
+            def to_pandas(self):
+                return frame
+
+        for name in self._RAGAS_PATCHES:
+            monkeypatch.setattr(eval_service, name, MagicMock())
+        monkeypatch.setattr(eval_service, "evaluate", lambda **kw: _Result())
+        return eval_service.run_ragas_eval(scenarios)
+
+    def test_a_partial_return_does_not_hand_the_golden_row_a_foreign_score(
+        self, monkeypatch
+    ):
+        """The filed failure, end to end through the real producer.
+
+        31 scenarios sent (1 golden + 30 exploratory), 5 rows back for positions
+        2, 7, 11, 19, 26. Positionally, s0 — the golden row — was given s2's
+        score, and summarise_run_validity then reported
+        datasets.golden.metrics.faithfulness as a measurement of s0, which the
+        next night's run would compare against as if it were paired.
+        """
+        scenarios = self._scenarios(31)
+        returned = [2, 7, 11, 19, 26]
+
+        result = self._run(
+            monkeypatch, scenarios, self._judged(scenarios, returned)
+        )
+
+        assert [s["scenario_id"] for s in result["scores"]] == [
+            f"s{i}" for i in returned
+        ]
+        for row, i in zip(result["scores"], returned):
+            assert row["faithfulness"] == pytest.approx(0.1 * i), (
+                "a score landed on a scenario it is not about"
+            )
+        assert all(s["scenario_id"] != "s0" for s in result["scores"]), (
+            "the golden row was never scored and must not be credited with one"
+        )
+
+        validity = eval_service.summarise_run_validity(scenarios, result["scores"])
+        assert validity["datasets"]["golden"]["metrics"]["faithfulness"] == {
+            "value": None,
+            "measured": False,
+            "observations": 0,
+        }
+        assert validity["scored"] == 5
+        assert validity["valid"] == 31
+
+    def test_the_run_reports_what_the_judge_did_not_return(self, monkeypatch):
+        """(sent, returned) is the judge's own denominator, and `scores` alone
+        cannot express it."""
+        scenarios = self._scenarios(10)
+
+        result = self._run(monkeypatch, scenarios, self._judged(scenarios, [1, 4]))
+
+        assert result["sent"] == 10
+        assert result["returned"] == 2
+        assert result["unattributed"] == 0
+
+    def test_rows_that_cannot_be_placed_are_dropped_and_counted(self, monkeypatch):
+        """A partial return with no sample columns to match on.
+
+        Every returned row is unplaceable, so the run scored nothing — the
+        honest reading, and the opposite of the old behaviour, which placed all
+        five on the first five scenarios with full confidence.
+        """
+        scenarios = self._scenarios(31)
+        frame = self._judged(
+            scenarios, [2, 7, 11, 19, 26], with_keys=False, faithfulness=0.95
+        )
+
+        result = self._run(monkeypatch, scenarios, frame)
+
+        assert result["scores"] == []
+        assert result["unattributed"] == 5
+        assert result["means"]["faithfulness"] is None, (
+            "a mean over rows the run cannot place is a mean over an unknown "
+            "denominator"
+        )
+
+    def test_no_synthetic_scenario_id_is_ever_minted(self, monkeypatch):
+        """The root of the two-denominators disagreement.
+
+        A scenario carrying no id used to produce `str(uuid.uuid4())` as its
+        scenario_id, so write_eval_results wrote four rows joining no
+        eval_scenarios row — dropped by summarise_run_validity, counted as
+        exploratory by the eval-runs route. The row cannot be produced now.
+        """
+        scenarios = [
+            {
+                "question": "q",
+                "reference_answer": "a",
+                "retrieved_contexts": [],
+                "agent_response": "a",
+            }
+        ]
+        frame = pd.DataFrame(
+            [
+                {
+                    "user_input": "q",
+                    "reference": "a",
+                    "faithfulness": 0.99,
+                    "answer_relevancy": 0.99,
+                    "context_precision": 0.99,
+                    "context_recall": 0.99,
+                }
+            ]
+        )
+
+        result = self._run(monkeypatch, scenarios, frame)
+
+        assert result["scores"] == []
+        assert result["unattributed"] == 1
+
+    def test_the_producer_no_longer_mints_an_identity_for_a_score(self):
+        """Absence pin. A synthetic id is the only way an eval_results row can
+        reach production with no scenario behind it."""
+        body = inspect.getsource(eval_service.run_ragas_eval).split('"""', 2)[-1]
+        body = "\n".join(
+            line for line in body.splitlines() if not line.strip().startswith("#")
+        )
+        assert "uuid" not in body, (
+            "run_ragas_eval mints a scenario_id again — an unattributable score "
+            "must be reported as unattributed, never given an invented identity"
+        )

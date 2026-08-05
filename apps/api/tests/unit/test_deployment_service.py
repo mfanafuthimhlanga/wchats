@@ -58,7 +58,12 @@ from app.services.deployment_service import (
     EVAL_SIGNAL_NO_VALID_SCORES,
     EVAL_SIGNAL_UNAVAILABLE,
     EVAL_SUMMARY_UNAVAILABLE_SIGNAL,
+    COVERAGE_SOURCE_CURRENT_BUILD,
+    COVERAGE_SOURCE_RUN,
+    DENOMINATOR_SOURCE_EVAL_RESULTS,
+    DENOMINATOR_SOURCE_RUN_CONFIG,
     RED_TEAM_SIGNAL_MEASURED,
+    RED_TEAM_SIGNAL_NO_RUNS,
     RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL,
     _DEPLOYMENT_SYSTEM_PROMPT,
     _compute_envelope_hash_sync,
@@ -441,10 +446,18 @@ def _make_eval_conn(run_row, metric_rows=None, count_row=(0, 0), raise_on=None):
     aggregate, then the denominator counts — and fetchone is called twice, so a
     single-value double cannot drive it.
 
+    `run_row` is the four-column shape the collector selects since the P2
+    review: (id, finished_at, status, config). A three-tuple is accepted and
+    padded with a NULL config, which is the pre-0013 row the narrow fallback
+    reads — the tests that pass one are asserting behaviour that does not
+    depend on the run's own denominator.
+
     raise_on: substring of the SQL that should raise UndefinedColumn, which is
     how audit D3 presented itself in production (`metric_name` / `run_id`
     against a table whose columns are `metric` / `eval_run_id`).
     """
+    if run_row is not None and len(run_row) == 3:
+        run_row = (*run_row, None)
     conn = MagicMock()
     cursor = MagicMock()
     cursor.__enter__ = MagicMock(return_value=cursor)
@@ -661,6 +674,105 @@ class TestEvalSummaryD3:
         assert result["eval_signal"] == EVAL_SIGNAL_NO_VALID_SCORES
 
 
+class TestEvalAttemptedCount:
+    """The attempted count is the RUN's, not its results' (P2 review).
+
+    `scenario_count` was COUNT(DISTINCT scenario_id) over eval_results — the
+    scenarios the judge came BACK about. write_eval_results only ever writes a
+    row per score the judge produced, so a scenario the judge dropped entirely
+    leaves no trace there: attempted could not exceed scored except in the
+    all-NULL case, and the orchestrator's instruction — "a pass rate over a
+    handful of scored scenarios out of many attempted is a weak signal and you
+    must say so" — compared two numbers derived from the same five rows.
+    """
+
+    def test_a_partial_judge_outage_is_visible_in_the_denominators(self):
+        """The failing input, exactly as filed.
+
+        A run fetches 40 valid scenarios; a Ragas/judge partial outage returns
+        5, all scored 0.95. Under the old collector the gate saw
+        scenario_count=5, scored=5, faithfulness=0.95 — a clean measurement of
+        an agent whose other 35 scenarios were never scored at all.
+        """
+        run_config = {"dataset": {"attempted": 40, "valid": 40}}
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", run_config),
+            metric_rows=[("faithfulness", Decimal("0.95"), 5)],
+            count_row=(5, 5),
+        )
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        assert result["eval_signal"] == EVAL_SIGNAL_MEASURED
+        assert result["scenario_count"] == 40, (
+            "attempted must come from the run's own record of what it covered"
+        )
+        assert result["valid_scenario_count"] == 40
+        assert result["scored_scenario_count"] == 5
+        assert result["denominator_source"] == DENOMINATOR_SOURCE_RUN_CONFIG
+        assert result["scored_scenario_count"] < result["scenario_count"], (
+            "the pair the orchestrator is told to compare must be able to differ"
+        )
+
+    def test_a_run_without_a_recorded_composition_labels_its_floor(self):
+        """A pre-0013 run, or one inserted before the composition was stamped.
+
+        The eval_results-derived count is still reported — it is better than
+        nothing — but it is LABELLED, because its equality with the scored count
+        is an artefact of where it came from rather than evidence of full
+        coverage, and `valid` is None rather than a number nobody measured.
+        """
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", None),
+            metric_rows=[("faithfulness", Decimal("0.95"), 5)],
+            count_row=(5, 5),
+        )
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        assert result["denominator_source"] == DENOMINATOR_SOURCE_EVAL_RESULTS
+        assert result["scenario_count"] == 5
+        assert result["valid_scenario_count"] is None, (
+            "how many fetched rows carried a label is unrecorded here — not zero, "
+            "and not the scored count wearing another name"
+        )
+
+    def test_a_run_that_scored_nothing_still_reports_what_it_attempted(self):
+        """40 attempted, every score NULL. 'No valid scores' and 'nothing was
+        attempted' are different events and used to report identical zeros."""
+        run_config = {"dataset": {"attempted": 40, "valid": 40}}
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", run_config),
+            metric_rows=[("faithfulness", None, 0)],
+            count_row=(40, 0),
+        )
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        assert result["eval_signal"] == EVAL_SIGNAL_NO_VALID_SCORES
+        assert result["scenario_count"] == 40
+        assert result["scored_scenario_count"] == 0
+        assert result["pass_rates"] is None
+
+    def test_the_prompt_tells_the_orchestrator_where_the_denominator_came_from(self):
+        """A labelled floor the reader cannot see the label of is just a number."""
+        assert "denominator_source" in _DEPLOYMENT_SYSTEM_PROMPT
+        assert "valid_scenario_count" in _DEPLOYMENT_SYSTEM_PROMPT
+        assert "coverage_source" in _DEPLOYMENT_SYSTEM_PROMPT
+
+
 # ---------------------------------------------------------------------------
 # TestEvidenceGate — 'ship' is not available over an absent signal
 # ---------------------------------------------------------------------------
@@ -673,7 +785,9 @@ def _measured_eval(pass_rates=None) -> dict:
         "last_run_at": "2026-05-23T02:00:00",
         "last_run_status": "complete",
         "scenario_count": 30,
+        "valid_scenario_count": 30,
         "scored_scenario_count": 30,
+        "denominator_source": DENOMINATOR_SOURCE_RUN_CONFIG,
         "pass_rates": pass_rates or {"faithfulness": 0.92},
         "failing_scenarios": 0,
     }
@@ -682,6 +796,7 @@ def _measured_eval(pass_rates=None) -> dict:
 def _measured_red_team(coverage_complete=True) -> dict:
     return {
         "signal": RED_TEAM_SIGNAL_MEASURED,
+        "signal_detail": None,
         "last_run_at": "2026-05-23T03:00:00",
         "deployment_blocked": False,
         "critical_count": 0,
@@ -692,6 +807,7 @@ def _measured_red_team(coverage_complete=True) -> dict:
         "vectors_valid": 7 if coverage_complete else 3,
         "invalid_vectors": [] if coverage_complete else ["hallucination"],
         "coverage_complete": coverage_complete,
+        "coverage_source": COVERAGE_SOURCE_RUN,
     }
 
 
@@ -706,10 +822,18 @@ class TestEvidenceGate:
     """
 
     @pytest.mark.parametrize(
-        "signal",
-        [EVAL_SIGNAL_NO_RUNS, EVAL_SIGNAL_NO_VALID_SCORES, EVAL_SIGNAL_UNAVAILABLE],
+        ("signal", "warning_id"),
+        [
+            # 'never evaluated' and 'could not be read' block identically and
+            # are reported differently: the remedies are different, and telling
+            # a day-1 owner their results "could not be read" describes a
+            # transient outage where the truth is a permanent absence.
+            (EVAL_SIGNAL_NO_RUNS, "eval_never_run"),
+            (EVAL_SIGNAL_NO_VALID_SCORES, "eval_signal_unavailable"),
+            (EVAL_SIGNAL_UNAVAILABLE, "eval_signal_unavailable"),
+        ],
     )
-    def test_ship_is_refused_over_any_absent_eval_signal(self, signal):
+    def test_ship_is_refused_over_any_absent_eval_signal(self, signal, warning_id):
         summary = _measured_eval()
         summary["eval_signal"] = signal
         summary["pass_rates"] = None
@@ -719,7 +843,7 @@ class TestEvidenceGate:
         )
 
         assert recommendation == "block"
-        assert [w.warning_id for w in warnings] == ["eval_signal_unavailable"]
+        assert [w.warning_id for w in warnings] == [warning_id]
 
     def test_ship_with_warnings_is_also_refused(self):
         """ship_with_warnings is a SHIPPABLE state — the approve route lets it
@@ -1041,12 +1165,30 @@ class TestBlastRadiusWarnings:
 class TestRedTeamSummarySignal:
     """The collector's payload must say it was READ, and how much it covers."""
 
-    def _fetch(self):
+    def _fetch(self, run_row=(datetime(2026, 5, 23, 3, 0, 0), None), raise_on=None):
+        """psycopg2 double for _fetch_red_team_summary_sync.
+
+        `run_row` is (started_at, coverage) since migration 0015 — the run's own
+        record of how much of the attack surface it covered. None for coverage
+        is a run written before 0015.
+        """
         conn = MagicMock()
         cursor = MagicMock()
         cursor.__enter__ = MagicMock(return_value=cursor)
         cursor.__exit__ = MagicMock(return_value=False)
-        cursor.fetchone.return_value = (datetime(2026, 5, 23, 3, 0, 0),)
+
+        def _execute(sql, params=None):
+            if raise_on is not None and raise_on in sql:
+                raise psycopg2.errors.UndefinedColumn(f"no column: {raise_on}")
+
+        cursor.execute.side_effect = _execute
+        # The pre-0015 fallback selects started_at alone, so the double answers
+        # with the narrower row once the wide SELECT has raised.
+        cursor.fetchone.side_effect = lambda: (
+            None
+            if run_row is None
+            else (run_row[:1] if raise_on == "coverage" else run_row)
+        )
         cursor.fetchall.return_value = [("medium", 2)]
         conn.cursor.return_value = cursor
 
@@ -1077,6 +1219,82 @@ class TestRedTeamSummarySignal:
         assert result["vectors_valid"] == coverage["vectors_valid"]
         assert result["coverage_complete"] is coverage["complete"]
         assert result["invalid_vectors"] == coverage["invalid_vectors"]
+        assert result["coverage_source"] == COVERAGE_SOURCE_CURRENT_BUILD, (
+            "a run that recorded no coverage must say the figures describe "
+            "today's build, not the run"
+        )
+
+    def test_an_agent_that_was_never_attacked_is_not_measured(self):
+        """THE DAY-1 LIE (P2 review).
+
+        The failing input: a brand-new agent. red_team_runs is empty and
+        red_team_findings is empty, so every count is zero — which is also what
+        a genuinely clean run produces. The collector logged
+        `red_team_summary.no_runs` and then returned signal='measured' anyway,
+        so apply_signal_evidence_gate (which refuses only a signal that is not
+        'measured') let `ship` through, and the platform asserted the security
+        surface had been measured on the one day it certainly had not.
+        """
+        result = self._fetch(run_row=None)
+
+        assert result["signal"] == RED_TEAM_SIGNAL_NO_RUNS
+        assert result["last_run_at"] is None
+        for key in ("critical_count", "high_count", "medium_count", "low_count"):
+            assert result[key] is None, (
+                f"{key} is a count of findings from zero runs — a zero nobody "
+                "measured is not a zero"
+            )
+        assert result["vectors_attempted"] is None
+        assert result["coverage_source"] is None
+
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", _measured_eval(), result
+        )
+        assert recommendation == "block"
+        assert [w.warning_id for w in warnings] == ["red_team_never_run"]
+
+    def test_a_run_reports_the_coverage_it_had_not_the_readers(self):
+        """Stored coverage wins, and says so.
+
+        The failing input is time-shifted: P4 flips SDK_ATTACKERS_CAN_PROBE and
+        every stored three-of-seven run is suddenly described to the deploy gate
+        as seven-of-seven, because red_team_coverage() only ever describes the
+        code that is running now. A run that recorded its own numbers must be
+        read back with those numbers.
+        """
+        stored = {
+            "vectors_attempted": 7,
+            "vectors_valid": 3,
+            "invalid_vectors": ["hallucination"],
+            "complete": False,
+        }
+        result = self._fetch(run_row=(datetime(2026, 5, 23, 3, 0, 0), stored))
+
+        assert result["vectors_valid"] == 3
+        assert result["invalid_vectors"] == ["hallucination"]
+        assert result["coverage_complete"] is False
+        assert result["coverage_source"] == COVERAGE_SOURCE_RUN
+
+    def test_a_pre_0015_tenant_degrades_to_the_current_build_and_labels_it(self):
+        """UndefinedColumn on `coverage` costs the run's own figures, nothing
+        else — and the substitution is named rather than silent."""
+        result = self._fetch(raise_on="coverage")
+
+        assert result["signal"] == RED_TEAM_SIGNAL_MEASURED
+        assert result["coverage_source"] == COVERAGE_SOURCE_CURRENT_BUILD
+        assert result["vectors_attempted"] is not None
+
+    def test_a_malformed_stored_coverage_is_absent_not_partial(self):
+        """A payload missing a key is not a coverage claim.
+
+        Half a denominator would be worse than none: `vectors_valid` without
+        `vectors_attempted` is a numerator wearing a denominator's name.
+        """
+        result = self._fetch(
+            run_row=(datetime(2026, 5, 23, 3, 0, 0), {"vectors_valid": 3})
+        )
+
+        assert result["coverage_source"] == COVERAGE_SOURCE_CURRENT_BUILD
 
     def test_the_unavailable_substitute_is_not_a_clean_run(self):
         """deployment_blocked=False in the fallback is 'we could not ask', and

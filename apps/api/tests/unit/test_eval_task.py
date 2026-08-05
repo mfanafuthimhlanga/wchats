@@ -614,6 +614,59 @@ class TestTaskContract:
         assert result["scored"] == 0
         assert wired["deleted"] == [], "no branch should have been created"
 
+    def test_an_empty_run_is_still_recorded_terminally(self, wired, monkeypatch):
+        """A run that covered nothing still happened (P2 review).
+
+        This path used to write nothing at all, so production held no eval_runs
+        row and the deploy gate reported EVAL_SIGNAL_NO_RUNS — the same signal
+        as an agent nobody has ever tried to evaluate. Two consequences: the
+        owner is told "quality has never been measured" when the truth is "this
+        tenant has no scenarios", and run_deployment_checklist's day-1 remedy
+        re-fires on every readiness check because the state it keys off never
+        changes. A completed run that scored nothing still blocks — honestly —
+        and converges.
+        """
+        conn = MagicMock()
+        conn.cursor.return_value = _Cursor()
+        monkeypatch.setattr(mod.psycopg2, "connect", lambda *a, **kw: conn)
+
+        result = _run()
+
+        assert result["run_recorded"] is True
+        assert result["run_id"]
+        assert len(wired["inserted"]) == 1, (
+            "the empty run left no eval_runs row, so nothing on production "
+            "explains why this agent's deploy is blocked"
+        )
+        kind, _pv, config, conn_str = wired["inserted"][0]
+        assert kind == "m6:agent-1"
+        assert conn_str == PRODUCTION
+        assert config["dataset"]["attempted"] == 0, (
+            "the run must record that it covered nothing, not omit the claim"
+        )
+        assert ("complete", PRODUCTION) in wired["status"], (
+            "an empty run left at 'running' is indistinguishable from a hung one"
+        )
+
+    def test_a_failure_to_record_the_empty_run_does_not_raise(
+        self, wired, monkeypatch
+    ):
+        """Best-effort. Nothing to evaluate must not become a retry storm."""
+        conn = MagicMock()
+        conn.cursor.return_value = _Cursor()
+        monkeypatch.setattr(mod.psycopg2, "connect", lambda *a, **kw: conn)
+        monkeypatch.setattr(
+            mod,
+            "insert_eval_run",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("production down")),
+        )
+
+        result = _run()
+
+        assert result["status"] == "no_scenarios"
+        assert result["run_recorded"] is False
+        assert result["run_id"] is None
+
 
 # ---------------------------------------------------------------------------
 # P2 — the golden set is held FIXED, and the rest rotates

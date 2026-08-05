@@ -27,6 +27,11 @@ Flow (run_deployment_checklist):
        signals via psycopg2 against the tenant DB, the 5th signal —
        blast_radius — and the envelope hash both via get_sync_db() against
        the control DB)
+    4b. If the agent has never been evaluated, start its first eval suite
+       (_dispatch_first_eval_run) and record that on the eval signal. The
+       verdict is unaffected — an eval that is running is not evidence — but the
+       block becomes one the owner can wait out rather than a dead end no route
+       in the primary journey can clear.
     5. Call run_orchestrator(signals_json, result_container) via asyncio.run bridge
     6. Parse result, apply the deterministic evidence gate (P2 — an eval or
        red-team signal that is not 'measured' forces recommendation='block'
@@ -53,6 +58,7 @@ from app.models.agent import Agent
 from app.models.checklist_run import ChecklistRun
 from app.services.deployment_service import (
     BLAST_RADIUS_DEFAULT_SIGNAL,
+    EVAL_SIGNAL_NO_RUNS,
     EVAL_SUMMARY_UNAVAILABLE_SIGNAL,
     RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL,
     DeploymentReport,
@@ -69,6 +75,60 @@ from app.services.deployment_service import (
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
+
+
+def _dispatch_first_eval_run(agent_id: str) -> bool:
+    """Start this agent's first eval suite. Returns True iff it was dispatched.
+
+    THE DAY-1 PATH HAD NO WAY TO PRODUCE AN EVAL RUN (P2 review). Making
+    EVAL_SIGNAL_NO_RUNS hard-block is right — an agent with no measurement has
+    no evidence of quality — but nothing in signup → ingest → deploy dispatched
+    `run_eval_suite`. It runs from the nightly beat or from the "Run Now" button
+    on the eval dashboard, and the onboarding flow routes to neither, so a new
+    tenant's readiness check blocked and POST /approve-deployment answered 422
+    with the only remedy on a page they had not been shown. CLAUDE.md's stated
+    core value ends in "deploy"; a gate that cannot be satisfied by the primary
+    journey is not a gate, it is a wall.
+
+    So the checklist starts the measurement it is asking for, and the warning
+    apply_signal_evidence_gate emits says so. The recommendation is still
+    `block` — this run has no evidence and must not ship on the promise of some
+    — but the block now converges instead of being terminal.
+
+    `generate_eval_suite` runs first because a tenant whose scenario generation
+    has never run has nothing to evaluate against; both tasks carry their own
+    idempotency guards (>= 10 scenarios, and a 'running' run inside 10 minutes),
+    and run_eval_suite records even an empty run terminally, so this fires at
+    most once per agent rather than on every readiness check.
+
+    Only agent_id crosses the task boundary — never a connection string
+    (CLAUDE.md rule 4). Imported inside the function: the eval task module pulls
+    in scenario_service and the Neon client, and this task has no other reason
+    to load them.
+
+    Best-effort. A broker failure here must not fail the checklist, which has
+    already collected every other signal and still owes the owner a report.
+    """
+    try:
+        from celery import chain  # noqa: PLC0415
+        from app.worker.tasks.runtime.eval import (  # noqa: PLC0415
+            generate_eval_suite,
+            run_eval_suite,
+        )
+
+        chain(
+            generate_eval_suite.si(agent_id),
+            run_eval_suite.si(agent_id),
+        ).apply_async(queue="runtime")
+        log.info("run_deployment_checklist.first_eval_dispatched", agent_id=agent_id)
+        return True
+    except Exception as exc:
+        log.warning(
+            "run_deployment_checklist.first_eval_dispatch_failed",
+            agent_id=agent_id,
+            error=str(exc),
+        )
+        return False
 
 
 @celery_app.task(
@@ -174,6 +234,16 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
         # replacement says 'unavailable' and apply_signal_evidence_gate below
         # refuses to ship on it.
         eval_summary = dict(EVAL_SUMMARY_UNAVAILABLE_SIGNAL)
+
+    # Step 4b — the day-1 remedy. An agent that has never been evaluated cannot
+    # ship, and until now nothing in the product's primary journey would ever
+    # produce the eval that unblocks it. The dispatch is recorded ON the signal
+    # so the owner-facing warning can say "we started it" instead of naming a
+    # page the onboarding flow does not route to. It does not soften the
+    # verdict: apply_signal_evidence_gate still blocks on the signal, because a
+    # measurement that has been STARTED is not a measurement.
+    if eval_summary.get("eval_signal") == EVAL_SIGNAL_NO_RUNS:
+        eval_summary["first_eval_dispatched"] = _dispatch_first_eval_run(agent_id)
 
     try:
         red_team_summary = _fetch_red_team_summary_sync(agent_id, conn_str)

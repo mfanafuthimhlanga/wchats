@@ -285,7 +285,7 @@ class TestRunRedTeamReportsValidity:
     case, and every red-team run has been reporting it as the first.
     """
 
-    def _drive(self, findings_by_vector=None):
+    def _drive(self, findings_by_vector=None, agents_conn=None):
         from app.worker.tasks.runtime.red_team import run_red_team
 
         findings_by_vector = findings_by_vector or {}
@@ -306,11 +306,16 @@ class TestRunRedTeamReportsValidity:
         mock_db = MagicMock()
         mock_db.get.return_value = mock_agent
 
+        # The third connection is `_agents_conn`, the one Step 7's completion
+        # UPDATE runs on. Tests that assert what was persisted pass their own.
         connect_side_effects = [
             _make_psycopg2_conn(fetchone_value=None),
             _make_psycopg2_conn(fetchone_value=None),
-            _make_psycopg2_conn(fetchone_value=None),
+            agents_conn if agents_conn is not None else _make_psycopg2_conn(
+                fetchone_value=None
+            ),
         ]
+        self.conns = connect_side_effects
 
         runners = [
             "run_conversation_injection_agent",
@@ -400,3 +405,90 @@ class TestRunRedTeamReportsValidity:
         assert dirty["findings_count"] == 1 and clean["findings_count"] == 0
         assert dirty["vectors_valid"] == clean["vectors_valid"]
         assert dirty["vectors_attempted"] == clean["vectors_attempted"]
+
+
+class TestRunRedTeamPersistsItsCoverage:
+    """The denominator has to survive the request (P2 review).
+
+    P2 computed red_team_coverage() and put it in a structlog line and this
+    task's Celery return dict. Neither is readable afterwards: the completion
+    UPDATE wrote findings, max_severity and deployment_blocked and nothing else,
+    so `GET /agents/{id}/red-team-runs` described a run in which four of seven
+    attackers never probed exactly as it describes a clean seven-vector run —
+    the on-screen collapse of "unknown" and "pass" that .dev/retro.md Family B
+    names. Migration 0015 adds the column; this pins that the task fills it.
+    """
+
+    def _completion_sql(self, conn):
+        cursor = conn.cursor.return_value
+        return [
+            call.args[0]
+            for call in cursor.execute.call_args_list
+            if "UPDATE red_team_runs" in call.args[0] and "complete" in call.args[0]
+        ]
+
+    def _completion_params(self, conn):
+        cursor = conn.cursor.return_value
+        return [
+            call.args[1]
+            for call in cursor.execute.call_args_list
+            if "UPDATE red_team_runs" in call.args[0] and "complete" in call.args[0]
+        ]
+
+    def test_the_completion_update_stores_the_run_own_coverage(self):
+        import json
+
+        from app.services.red_team_service import red_team_coverage
+
+        driver = TestRunRedTeamReportsValidity()
+        agents_conn = _make_psycopg2_conn(fetchone_value=None)
+        driver._drive(agents_conn=agents_conn)
+
+        statements = self._completion_sql(agents_conn)
+        assert statements, "no completion UPDATE was issued at all"
+        assert "coverage" in statements[0], (
+            "the run completed without recording how much of the attack surface "
+            "it could test — an empty findings list is then unreadable"
+        )
+
+        stored = json.loads(self._completion_params(agents_conn)[0][3])
+        expected = red_team_coverage()
+        assert stored["vectors_attempted"] == expected["vectors_attempted"]
+        assert stored["vectors_valid"] == expected["vectors_valid"]
+        assert stored["complete"] is expected["complete"]
+        assert stored["invalid_vectors"] == expected["invalid_vectors"]
+
+    def test_a_pre_0015_tenant_still_completes_its_run(self):
+        """UndefinedColumn on `coverage` costs the run its denominator, never
+        its terminal status — a run stuck at 'running' forever is worse."""
+        import psycopg2 as _psycopg2
+
+        agents_conn = MagicMock()
+        cursor = MagicMock()
+        cursor.__enter__ = MagicMock(return_value=cursor)
+        cursor.__exit__ = MagicMock(return_value=False)
+        cursor.fetchone.return_value = None
+
+        def _execute(sql, params=None):
+            if "coverage" in sql:
+                raise _psycopg2.errors.UndefinedColumn("column coverage does not exist")
+
+        cursor.execute.side_effect = _execute
+        agents_conn.cursor.return_value = cursor
+
+        driver = TestRunRedTeamReportsValidity()
+        result = driver._drive(agents_conn=agents_conn)
+
+        statements = self._completion_sql(agents_conn)
+        assert len(statements) == 2, (
+            "expected the wide UPDATE to raise and the pre-0015 UPDATE to follow"
+        )
+        assert "coverage" not in statements[1]
+        assert agents_conn.rollback.called, (
+            "the aborted transaction must be rolled back before the fallback "
+            "statement, or psycopg2 refuses it"
+        )
+        assert result["vectors_valid"] == 3, (
+            "the return value still reports coverage even when the row cannot "
+            "store it"
+        )

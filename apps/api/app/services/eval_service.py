@@ -318,6 +318,94 @@ def dataset_of(value: str | None) -> str:
     return DATASET_GOLDEN if value == DATASET_GOLDEN else DATASET_EXPLORATORY
 
 
+# ---------------------------------------------------------------------------
+# Attributing a returned score to the scenario it is about
+# ---------------------------------------------------------------------------
+# A SCORE THAT CANNOT BE ATTRIBUTED IS NOT AN OBSERVATION. run_ragas_eval used
+# to walk the returned dataframe with `enumerate` and hand row i to
+# valid_scenarios[i], which is correct only when the judge returns exactly as
+# many rows as it was given, in order. Ragas can return fewer (a judge outage, a
+# parse failure), and P2 made that failure load-bearing by ordering the golden
+# rows first: five surviving scores from scenarios at positions 2, 7, 11, 19 and
+# 26 were assigned to positions 0-4, i.e. to the golden row and the first four
+# exploratory rows. The golden set's paired per-item delta — the entire reason
+# for the split and for migration 0014 — was then computed against a number
+# belonging to a different scenario, and it looked exactly like a real
+# measurement.
+#
+# So attribution is by IDENTITY whenever the count does not prove order:
+#   * len(returned) == len(sent) — one row per sample, in order. This is the
+#     condition under which positional attribution is sound, and it is checked
+#     rather than assumed.
+#   * otherwise — recover each returned row's scenario from the sample fields
+#     the judge echoes back (user_input / reference). A row whose key matches no
+#     sent scenario, or matches more than one, is UNATTRIBUTED: it is counted
+#     and dropped, never assigned to a neighbour and never given a synthetic id.
+#
+# Dropping is not the same as hiding. The count travels out on the run
+# (`unattributed`), because a run that scored five rows and could place none of
+# them measured nothing, and that has to be visible.
+
+# The sample columns EvaluationDataset was built from. to_pandas() carries them
+# back beside the metric columns, and they are the only thing in a returned row
+# that says which sample it is.
+SAMPLE_KEY_COLUMNS: tuple[str, ...] = ("user_input", "reference")
+
+
+def scenario_identity_key(scenario: dict) -> tuple[str, str]:
+    """The (question, reference_answer) pair a returned judge row echoes back.
+
+    Built from the same two fields run_ragas_eval puts into `user_input` and
+    `reference`, so a returned row and the scenario it came from produce the
+    same key by construction.
+    """
+    return (
+        str(scenario.get("question", "")),
+        str(scenario.get("reference_answer", "")),
+    )
+
+
+def attribute_returned_rows(
+    returned_keys: list[tuple[str, str] | None],
+    valid_scenarios: list[dict],
+) -> list[int | None]:
+    """Map each returned judge row to the index of the scenario it scored.
+
+    Pure — no I/O, no pandas. Returns one entry per returned row: the index into
+    `valid_scenarios`, or None when the row cannot be attributed.
+
+    Args:
+        returned_keys: one scenario_identity_key per returned row, in the order
+            the judge returned them. None for a row whose sample columns are
+            absent, which is itself unattributable.
+        valid_scenarios: the scenarios that were sent, in the order they were
+            sent.
+
+    Positional attribution is used ONLY when the lengths match, which is the
+    exact condition under which the judge returned one row per sample in order.
+    An ambiguous key (two sent scenarios sharing the same question AND the same
+    reference answer) resolves to None rather than to the first match: the two
+    are interchangeable as inputs but not as identities, and writing the wrong
+    scenario_id into eval_results is what makes a paired comparison lie.
+    """
+    if len(returned_keys) == len(valid_scenarios):
+        return list(range(len(valid_scenarios)))
+
+    keys = [scenario_identity_key(s) for s in valid_scenarios]
+    seen: dict[tuple[str, str], int] = {}
+    ambiguous: set[tuple[str, str]] = set()
+    for index, key in enumerate(keys):
+        if key in seen:
+            ambiguous.add(key)
+        else:
+            seen[key] = index
+
+    return [
+        None if key is None or key in ambiguous else seen.get(key)
+        for key in returned_keys
+    ]
+
+
 def _is_valid_scenario(scenario: dict) -> bool:
     """True iff this row can be scored at all — i.e. it carries a label.
 
@@ -412,11 +500,22 @@ def summarise_run_validity(
             which is 'unknown', not zero and not a pass.
 
     Returns:
-        {"attempted", "valid", "scored",
+        {"attempted", "valid", "scored", "unattributed",
          "datasets": {"golden": {attempted, valid, scored, metrics},
                       "exploratory": {...}}}
         where each metric is {"value": float|None, "measured": bool,
         "observations": int} and value is None exactly when measured is False.
+
+    ONE RULE FOR AN UNATTRIBUTABLE SCORE, STATED IN BOTH READERS. A score whose
+    scenario is not in the fetched set joins NEITHER dataset — it cannot, and
+    inventing a bucket for it puts an unplaceable observation inside a
+    comparable measurement. It is counted in `unattributed` so nothing vanishes
+    silently. api/v1/evals.py's _LIST_EVAL_RUN_DATASETS_SQL applies the same
+    rule to the same rows (its own third bucket, also counted and never
+    averaged); the two used to disagree, each calling itself the honest one,
+    which meant one run had two denominators differing by exactly these rows.
+    run_ragas_eval no longer produces such a row at all — this stays as the
+    fail-closed floor under rows written by older builds.
     """
     dataset_by_scenario_id = {
         str(s.get("id", "")): dataset_of(s.get("dataset")) for s in scenarios
@@ -439,12 +538,16 @@ def summarise_run_validity(
         if _is_valid_scenario(scenario):
             bucket["valid"] += 1
 
+    unattributed = 0
     for score in scenario_scores:
         # A score whose scenario is not in the fetched set is attributed to
         # neither dataset: it cannot be, and inventing a bucket for it would put
-        # an unattributable observation into a comparable measurement.
+        # an unattributable observation into a comparable measurement. It is
+        # COUNTED, though — see the docstring: a dropped observation nobody
+        # reports is how the two readers of these rows came to disagree.
         name = dataset_by_scenario_id.get(str(score.get("scenario_id")))
         if name is None:
+            unattributed += 1
             continue
         bucket = buckets[name]
         observed_any = False
@@ -475,6 +578,10 @@ def summarise_run_validity(
         "attempted": sum(d["attempted"] for d in datasets.values()),
         "valid": sum(d["valid"] for d in datasets.values()),
         "scored": sum(d["scored"] for d in datasets.values()),
+        # Scored rows that belong to no fetched scenario. Not part of `scored`:
+        # they were not scored FOR THIS RUN's datasets, and adding them to a
+        # dataset would be the invention this function refuses to make.
+        "unattributed": unattributed,
         "datasets": datasets,
     }
 
@@ -511,11 +618,17 @@ def run_ragas_eval(scenarios: list[dict]) -> dict:
             - retrieved_contexts (list[str], optional): Retrieved chunk contents.
 
     Returns:
-        Dict with two keys:
-            "scores": list[dict] — per-scenario scores, one dict per input row.
+        Dict with five keys:
+            "scores": list[dict] — one dict per ATTRIBUTED returned row (not per
+                input row: the judge may return fewer, and a row that cannot be
+                matched to the scenario it scored is dropped rather than
+                assigned by position — see attribute_returned_rows).
                 Each dict: {scenario_id, faithfulness, answer_relevancy,
                             context_precision, context_recall}
-            "means": dict — per-metric mean across all scored scenarios.
+            "means": dict — per-metric mean over the attributed rows.
+            "sent" / "returned" / "unattributed": the judge's own denominators.
+                `returned < sent` is a partial judge outage; `unattributed > 0`
+                means rows came back that cannot be placed at all.
     """
     # Filter to only scenarios that have a reference_answer (required by Ragas)
     # D-02 LOCKED: field name is 'reference' (renamed in Ragas 0.4.x)
@@ -537,12 +650,10 @@ def run_ragas_eval(scenarios: list[dict]) -> dict:
         log.warning("run_ragas_eval.no_valid_scenarios")
         return {
             "scores": [],
-            "means": {
-                "faithfulness": None,
-                "answer_relevancy": None,
-                "context_precision": None,
-                "context_recall": None,
-            },
+            "means": {metric: None for metric in METRIC_KEYS},
+            "sent": 0,
+            "returned": 0,
+            "unattributed": 0,
         }
 
     log.info("run_ragas_eval.start", scenario_count=len(samples))
@@ -571,34 +682,83 @@ def run_ragas_eval(scenarios: list[dict]) -> dict:
     # hands them to the console.
     metric_columns = list(METRIC_KEYS)
 
+    # Which scenario each returned row is about. See attribute_returned_rows:
+    # positional attribution holds only when the judge returned one row per
+    # sample, and this is where that used to be assumed.
+    returned_rows = [row for _, row in df.iterrows()]
+    have_key_columns = all(col in df.columns for col in SAMPLE_KEY_COLUMNS)
+    returned_keys: list[tuple[str, str] | None] = [
+        (str(row.get("user_input", "")), str(row.get("reference", "")))
+        if have_key_columns
+        else None
+        for row in returned_rows
+    ]
+    attribution = attribute_returned_rows(returned_keys, valid_scenarios)
+
     score_rows = []
-    for i, (idx, row) in enumerate(df.iterrows()):
-        scenario = valid_scenarios[i] if i < len(valid_scenarios) else {}
-        score_row = {
-            "scenario_id": str(scenario.get("id", str(uuid.uuid4()))),
-        }
+    unattributed = 0
+    for row, scenario_index in zip(returned_rows, attribution):
+        scenario = (
+            valid_scenarios[scenario_index] if scenario_index is not None else None
+        )
+        scenario_id = str(scenario.get("id", "")) if scenario is not None else ""
+        if not scenario_id:
+            # No synthetic uuid4 here any more. A fabricated scenario_id
+            # produced an eval_results row that joins no eval_scenarios row,
+            # which summarise_run_validity drops from both datasets and the
+            # eval-runs route counted as exploratory — two denominators for the
+            # same run, differing by exactly this row. A score nobody can place
+            # is reported as unplaced and written nowhere.
+            unattributed += 1
+            continue
+        score_row = {"scenario_id": scenario_id}
         for col in metric_columns:
             raw = row.get(col)
             score_row[col] = float(raw) if raw is not None and raw == raw else None  # NaN check
         score_rows.append(score_row)
 
-    # Per-metric means
+    # Per-metric means over the ATTRIBUTED rows only, for the same reason: a
+    # mean that includes an observation the run cannot place is a mean over a
+    # denominator the run does not have.
     means = {}
     for col in metric_columns:
-        if col in df.columns:
-            series = df[col].dropna()
-            means[col] = float(series.mean()) if len(series) > 0 else None
-        else:
-            means[col] = None
+        values = [
+            score[col] for score in score_rows if score.get(col) is not None
+        ]
+        means[col] = (sum(values) / len(values)) if values else None
+
+    if unattributed:
+        log.warning(
+            "run_ragas_eval.unattributed_rows",
+            sent=len(samples),
+            returned=len(returned_rows),
+            unattributed=unattributed,
+            have_key_columns=have_key_columns,
+            detail=(
+                "the judge returned rows that cannot be matched to a scenario; "
+                "they are counted and dropped rather than assigned by position"
+            ),
+        )
 
     log.info(
         "run_ragas_eval.complete",
         scenario_count=len(samples),
+        returned=len(returned_rows),
+        attributed=len(score_rows),
         faithfulness_mean=means.get("faithfulness"),
         answer_relevancy_mean=means.get("answer_relevancy"),
     )
 
-    return {"scores": score_rows, "means": means}
+    return {
+        "scores": score_rows,
+        "means": means,
+        # (sent, returned, unattributed) — the judge's own denominators. A run
+        # that sent forty and got five back has measured five, and nothing
+        # downstream can see that from `scores` alone.
+        "sent": len(samples),
+        "returned": len(returned_rows),
+        "unattributed": unattributed,
+    }
 
 
 # ---------------------------------------------------------------------------

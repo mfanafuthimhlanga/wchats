@@ -210,8 +210,12 @@ def run_eval_suite(self, agent_id: str) -> dict:
          "config_recorded", "promotion_disabled_reason",
          "branch_isolation"}                                     on success.
         {"status": "already_running"}                            on idempotent skip.
-        {"status": "no_scenarios", "attempted", "valid", "scored",
-         "dataset_column_available"}                             when nothing was selected.
+        {"status": "no_scenarios", "run_id", "run_recorded", "attempted",
+         "valid", "scored", "dataset_column_available"}          when nothing was
+            selected. The empty run is still recorded terminally on production —
+            "this tenant has no scenarios" and "nobody has ever evaluated this
+            agent" are different claims and the deploy gate can only tell them
+            apart if the empty run left a row.
         {}                                                        on retry exhaustion.
 
     (attempted, valid, scored) are three different claims and all three are
@@ -404,11 +408,60 @@ def run_eval_suite(self, agent_id: str) -> dict:
             agent_id=agent_id,
             dataset_column_available=dataset_column_available,
         )
+        # A RUN THAT COVERED NOTHING STILL HAPPENED (P2 review). This path used
+        # to return without writing anything, so production held no eval_runs
+        # row and the deploy gate reported EVAL_SIGNAL_NO_RUNS — the same signal
+        # as an agent nobody has ever tried to evaluate, and one that blocks the
+        # deploy with nothing on the record to explain why. Two consequences,
+        # both bad: the owner is told "quality has never been measured" when the
+        # truth is "this tenant has no scenarios to measure against", and
+        # run_deployment_checklist's day-1 remedy (dispatching the first eval,
+        # step 4b there) would re-fire on every readiness check forever because
+        # the state it keys off never changes.
+        #
+        # So the empty run is recorded terminally, with its composition
+        # (attempted=0, valid=0) stamped on it. The gate then reads a completed
+        # run that produced no valid score — EVAL_SIGNAL_NO_VALID_SCORES, which
+        # still blocks, honestly, and converges.
+        empty_run_id = str(uuid.uuid4())
+        run_recorded = False
+        try:
+            empty_attribution = build_eval_run_config(
+                agent_id, conn_str, dataset=composition
+            )
+            insert_eval_run(
+                empty_run_id,
+                f"m6:{agent_id}",
+                empty_attribution["prompt_version_id"],
+                empty_attribution["config"],
+                conn_str,
+            )
+            update_eval_run_status(
+                empty_run_id, "complete", finished_at=True, conn_str=conn_str
+            )
+            run_recorded = True
+        except Exception as record_exc:
+            # Best-effort: failing to record an empty run must not turn a
+            # nothing-to-do into a retry storm. It is logged at error level
+            # because the consequence — an unexplained permanent block — is the
+            # thing this write exists to prevent.
+            log.error(
+                "run_eval_suite.empty_run_record_failed",
+                agent_id=agent_id,
+                run_id=empty_run_id,
+                error=str(record_exc),
+                detail=(
+                    "no eval_runs row explains why this agent's deploy is "
+                    "blocked"
+                ),
+            )
         # The denominators travel even on the empty path. A run that scored
         # nothing must be readable as such rather than as an absent key a caller
         # might treat as "not applicable".
         return {
             "status": "no_scenarios",
+            "run_id": empty_run_id if run_recorded else None,
+            "run_recorded": run_recorded,
             "attempted": 0,
             "valid": 0,
             "scored": 0,

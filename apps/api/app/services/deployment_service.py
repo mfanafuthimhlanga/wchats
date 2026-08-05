@@ -57,6 +57,15 @@ EVAL_SIGNAL_NO_VALID_SCORES = "no_valid_scores"
 EVAL_SIGNAL_UNAVAILABLE = "unavailable"
 
 RED_TEAM_SIGNAL_MEASURED = "measured"
+# An agent that has never been security-tested. This state is the whole reason
+# the signal field exists on the security half, and the P2 review found it
+# missing: the collector logged `red_team_summary.no_runs`, then returned
+# 'measured' anyway, so a brand-new agent with zero open findings — because zero
+# attacks had ever been run against it — carried a signal asserting the security
+# surface HAD been measured. Day 1 is exactly when that lie is told, and exactly
+# when it matters. Zero findings from zero runs is not a clean result; it is the
+# absence of a result, and 'measured' must never describe it.
+RED_TEAM_SIGNAL_NO_RUNS = "no_runs"
 RED_TEAM_SIGNAL_UNAVAILABLE = "unavailable"
 
 # The only state either signal may be in for `ship` to survive the gate.
@@ -110,7 +119,11 @@ Blocking conditions (always use recommendation='block'):
   not be read). Only 'measured' is evidence. An absent measurement is UNKNOWN
   quality, never acceptable quality, and eval_summary.pass_rates is null — not
   an empty object — in every one of the other three states.
-- red_team_summary.signal is anything other than 'measured'.
+- red_team_summary.signal is anything other than 'measured'. The three states
+  are 'measured', 'no_runs' (this agent has NEVER been security-tested) and
+  'unavailable' (the signal could not be read). Zero open findings from zero
+  runs is the absence of a result, never a clean one, and the counts are null
+  in both non-measured states.
 
 Warning conditions (recommendation='ship_with_warnings'):
 - verified_qa_stats.row_count < 50 (agent answers more from scratch on day 1)
@@ -126,10 +139,23 @@ Ship condition (recommendation='ship'):
 - deployment_blocked=False and high_count=0
 - verified_qa_stats.row_count >= 50
 
-Denominators: eval_summary carries scenario_count (attempted) beside
-scored_scenario_count (how many actually produced a score). A pass rate over a
+Denominators: eval_summary carries three different counts and you must not
+collapse them. scenario_count is how many scenarios the run ATTEMPTED (read
+from the run's own record of which rows it covered), valid_scenario_count is
+how many of those carried a label and could be scored at all, and
+scored_scenario_count is how many actually produced a score. A pass rate over a
 handful of scored scenarios out of many attempted is a weak signal and you must
-say so rather than reporting the rate alone.
+say so rather than reporting the rate alone. eval_summary.denominator_source
+says where the attempted count came from: 'run_config' is the run's own
+figure, 'eval_results' means the run recorded no dataset composition and the
+attempted count is a floor derived from the rows that produced results — in
+that case it CANNOT exceed the scored count and its equality with it is an
+artefact, not evidence of full coverage.
+
+red_team_summary.coverage_source says the same thing for the security half:
+'run' means the stored coverage of the run that produced these counts, while
+'current_build' means no run recorded its coverage and the figures describe
+what today's code can test, which may not be what that run tested.
 
 Financial blast-radius awareness (BLR-01, narrative only — not a blocking condition):
 You have also been given a blast_radius signal with configured_max_single_action_cents,
@@ -230,13 +256,28 @@ def _make_iframe_snippet(agent_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Where `scenario_count` (attempted) came from. The distinction is the P2 review
+# fix: attempted used to be COUNT(DISTINCT scenario_id) over eval_results, i.e.
+# derived from the rows the judge RETURNED. write_eval_results only ever writes a
+# row per score the judge produced, so a scenario the judge dropped entirely
+# leaves no trace there and `attempted` could not exceed `scored` except in the
+# all-NULL-metric case. The prompt's instruction — "a pass rate over a handful of
+# scored scenarios out of many attempted is a weak signal" — was therefore
+# comparing two numbers computed from the same rows and could never fire. A rate
+# over a denominator that is not the run's is not the run's rate.
+DENOMINATOR_SOURCE_RUN_CONFIG = "run_config"
+DENOMINATOR_SOURCE_EVAL_RESULTS = "eval_results"
+
+
 def _eval_summary(
     signal: str,
     *,
     last_run_at: str | None = None,
     last_run_status: str | None = None,
     scenario_count: int = 0,
+    valid_scenario_count: int | None = None,
     scored_scenario_count: int = 0,
+    denominator_source: str | None = None,
     pass_rates: dict | None = None,
     detail: str | None = None,
 ) -> dict:
@@ -252,6 +293,13 @@ def _eval_summary(
 
     `failing_scenarios` is likewise None when nothing was measured: zero
     failures is a measurement, and we did not make it.
+
+    THREE COUNTS, THREE CLAIMS. `scenario_count` is what the run attempted,
+    `valid_scenario_count` how many of those could be scored at all, and
+    `scored_scenario_count` how many produced a score. `denominator_source`
+    says which of the two possible origins the attempted count has, because an
+    attempted count derived from eval_results is bounded below by the scored
+    count and its equality with it means nothing.
     """
     measured = signal == EVAL_SIGNAL_MEASURED
     rates = pass_rates if measured else None
@@ -263,14 +311,47 @@ def _eval_summary(
         # persistence split, still lands a terminal status on production. Its
         # timestamp must not be read as "an eval finished at T".
         "last_run_status": last_run_status,
-        # attempted, and the VALID denominator beside it.
+        # attempted, the VALID denominator, and what actually scored.
         "scenario_count": scenario_count,
+        # None means the run recorded no dataset composition, so how many of the
+        # attempted rows carried a label is genuinely unknown — not zero.
+        "valid_scenario_count": valid_scenario_count,
         "scored_scenario_count": scored_scenario_count,
+        "denominator_source": denominator_source,
         "pass_rates": rates,
         "failing_scenarios": (
             sum(1 for v in rates.values() if v < 0.70) if rates else None
         ),
     }
+
+
+def _attempted_from_run_config(config: object) -> tuple[int | None, int | None]:
+    """Read (attempted, valid) out of an eval_runs.config JSONB payload.
+
+    eval_service.dataset_composition() stamps the run's own account of which
+    rows it covered into `config["dataset"]` at run start — before the judge is
+    called, so it is unaffected by anything the judge fails to return. That is
+    the only figure in the system that knows a run fetched forty scenarios and
+    got five back.
+
+    Returns (None, None) for any shape that is not that payload — a pre-0013
+    tenant with no config column, a run inserted before the composition was
+    recorded, a config whose `dataset` is null because the caller had none to
+    give. None is not zero here: "this run did not record what it covered" and
+    "this run covered nothing" are different claims and the caller keeps them
+    apart via denominator_source.
+    """
+    if not isinstance(config, dict):
+        return (None, None)
+    dataset = config.get("dataset")
+    if not isinstance(dataset, dict):
+        return (None, None)
+    attempted = dataset.get("attempted")
+    valid = dataset.get("valid")
+    return (
+        int(attempted) if isinstance(attempted, int) else None,
+        int(valid) if isinstance(valid, int) else None,
+    )
 
 
 def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
@@ -302,9 +383,20 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                            nothing.
         unavailable      — the query could not be executed. We did not look.
 
+    THE ATTEMPTED COUNT COMES FROM THE RUN, NOT FROM ITS RESULTS (P2 review).
+    `scenario_count` used to be COUNT(DISTINCT scenario_id) over eval_results,
+    which counts the scenarios the judge came back about — so a run that fetched
+    forty scenarios and got five back reported attempted=5, scored=5, and the
+    thirty-five unmeasured scenarios were invisible to the gate and to the
+    orchestrator's "weak signal" instruction alike. The run's own account of
+    what it covered is stamped into eval_runs.config["dataset"] by
+    dataset_composition() BEFORE the judge is called, so it is read from there
+    when present and the eval_results-derived count is used only as a labelled
+    floor. `denominator_source` says which of the two happened.
+
     Returns dict with keys: eval_signal, signal_detail, last_run_at,
-    last_run_status, scenario_count, scored_scenario_count, pass_rates,
-    failing_scenarios.
+    last_run_status, scenario_count, valid_scenario_count,
+    scored_scenario_count, denominator_source, pass_rates, failing_scenarios.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:
@@ -312,12 +404,44 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
             try:
                 # kind is 'm6:{agent_id}' — filtered so a second agent sharing a
                 # tenant DB cannot have its run read as this agent's.
-                cur.execute(
-                    "SELECT id, finished_at, status FROM eval_runs "
-                    "WHERE kind = %s ORDER BY started_at DESC LIMIT 1",
-                    (f"m6:{agent_id}",),
-                )
-                run_row = cur.fetchone()
+                #
+                # `config` arrived with migration 0013 and a tenant provisioned
+                # before it does not have the column (tenant DBs are migrated at
+                # PROVISION time only). UndefinedColumn on the wide SELECT is
+                # therefore a degradation, not an outage: the narrow pre-0013
+                # SELECT still answers the question the gate is asking, minus the
+                # run's own denominator. Same tolerance shape as
+                # eval_service.insert_eval_run's pre-0013 fallback. The narrow
+                # except matters — a broad one would hide a real read failure
+                # behind a payload that looks like a successful degraded read.
+                run_config: object = None
+                try:
+                    cur.execute(
+                        "SELECT id, finished_at, status, config FROM eval_runs "
+                        "WHERE kind = %s ORDER BY started_at DESC LIMIT 1",
+                        (f"m6:{agent_id}",),
+                    )
+                    wide_row = cur.fetchone()
+                    run_row = wide_row[:3] if wide_row is not None else None
+                    run_config = wide_row[3] if wide_row is not None else None
+                except psycopg2.errors.UndefinedColumn:
+                    # The aborted transaction must be rolled back before the
+                    # connection will accept another statement.
+                    conn.rollback()
+                    log.warning(
+                        "deployment_service.eval_summary.config_column_absent",
+                        agent_id=agent_id,
+                        detail=(
+                            "tenant DB predates alembic_tenant 0013 — the run's "
+                            "own attempted count cannot be read"
+                        ),
+                    )
+                    cur.execute(
+                        "SELECT id, finished_at, status FROM eval_runs "
+                        "WHERE kind = %s ORDER BY started_at DESC LIMIT 1",
+                        (f"m6:{agent_id}",),
+                    )
+                    run_row = cur.fetchone()
                 if run_row is None:
                     log.info(
                         "deployment_service.eval_summary.no_runs", agent_id=agent_id
@@ -355,21 +479,52 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                     (str(run_row[0]),),
                 )
                 count_row = cur.fetchone() or (0, 0)
-                attempted = int(count_row[0] or 0)
+                results_attempted = int(count_row[0] or 0)
                 scored = int(count_row[1] or 0)
+
+                # THE ATTEMPTED COUNT IS THE RUN'S, NOT ITS RESULTS'. The
+                # eval_results-derived figure above counts the scenarios the
+                # judge came BACK about, so it is bounded below by `scored` and
+                # can never expose the thirty-five rows a partial judge outage
+                # dropped. The run stamped what it covered into
+                # config["dataset"] before the judge was ever called; that is
+                # the only figure in the system that knows the difference.
+                config_attempted, config_valid = _attempted_from_run_config(run_config)
+                if config_attempted is not None:
+                    attempted = config_attempted
+                    valid = config_valid
+                    denominator_source = DENOMINATOR_SOURCE_RUN_CONFIG
+                else:
+                    attempted = results_attempted
+                    # None, not results_attempted: how many of the attempted
+                    # rows carried a label is genuinely unrecorded here, and
+                    # substituting a number would invent the denominator this
+                    # whole payload exists to carry.
+                    valid = None
+                    denominator_source = DENOMINATOR_SOURCE_EVAL_RESULTS
 
                 if not pass_rates:
                     # The run exists and scored nothing — every score NULL, or
                     # no eval_results rows at all. Unknown, not clean.
+                    #
+                    # The counts travel here too. A run that attempted forty and
+                    # scored none is a different event from a run that attempted
+                    # none, and reporting both as zeros made them identical.
                     log.warning(
                         "deployment_service.eval_summary.no_valid_scores",
                         agent_id=agent_id,
                         run_status=last_run_status,
+                        attempted=attempted,
+                        denominator_source=denominator_source,
                     )
                     return _eval_summary(
                         EVAL_SIGNAL_NO_VALID_SCORES,
                         last_run_at=last_run_at,
                         last_run_status=last_run_status,
+                        scenario_count=attempted,
+                        valid_scenario_count=valid,
+                        scored_scenario_count=scored,
+                        denominator_source=denominator_source,
                         detail=(
                             "the most recent eval run produced no valid score "
                             "for any metric"
@@ -381,7 +536,9 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                     last_run_at=last_run_at,
                     last_run_status=last_run_status,
                     scenario_count=attempted,
+                    valid_scenario_count=valid,
                     scored_scenario_count=scored,
+                    denominator_source=denominator_source,
                     pass_rates=pass_rates,
                 )
             except Exception as exc:
@@ -402,6 +559,86 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
         conn.close()
 
 
+# Where the coverage figures beside the red-team counts came from (P2 review).
+# 'run' is the coverage the run that produced these counts recorded for ITSELF;
+# 'current_build' is what today's code can test. They are different claims, and
+# the second one silently rewrites history: the day P4 wires the four SDK
+# attackers and flips SDK_ATTACKERS_CAN_PROBE, every stored run — including the
+# three-of-seven runs from before the fix — would be described to the gate as
+# seven-of-seven, because red_team_coverage() only ever describes the code that
+# is running now.
+COVERAGE_SOURCE_RUN = "run"
+COVERAGE_SOURCE_CURRENT_BUILD = "current_build"
+
+
+def _red_team_summary(
+    signal: str,
+    *,
+    last_run_at: str | None = None,
+    counts: dict[str, int] | None = None,
+    coverage: dict | None = None,
+    coverage_source: str | None = None,
+    detail: str | None = None,
+) -> dict:
+    """Build a red-team signal payload in which absence is distinguishable.
+
+    The security half of the deploy gate had two states where the eval half had
+    four, and the missing one was the one that matters on day 1: an agent that
+    has never been attacked has zero open findings, and zero open findings read
+    as a clean bill of health. Every count is therefore None outside
+    RED_TEAM_SIGNAL_MEASURED, for the same reason `pass_rates` is None outside
+    EVAL_SIGNAL_MEASURED — a zero that nobody measured is not a zero.
+
+    `deployment_blocked` stays False in the non-measured states and does NOT
+    carry the refusal: it means "no open critical finding is known", which is
+    true and useless when nothing was ever asked. apply_signal_evidence_gate
+    refuses on the SIGNAL, never on this flag.
+    """
+    measured = signal == RED_TEAM_SIGNAL_MEASURED
+    counts = counts if measured else None
+    coverage = coverage if measured else None
+    return {
+        "signal": signal,
+        "signal_detail": detail,
+        "last_run_at": last_run_at,
+        "deployment_blocked": bool(counts["critical"] > 0) if counts else False,
+        "critical_count": counts["critical"] if counts else None,
+        "high_count": counts["high"] if counts else None,
+        "medium_count": counts["medium"] if counts else None,
+        "low_count": counts["low"] if counts else None,
+        "vectors_attempted": coverage["vectors_attempted"] if coverage else None,
+        "vectors_valid": coverage["vectors_valid"] if coverage else None,
+        "invalid_vectors": coverage["invalid_vectors"] if coverage else None,
+        "coverage_complete": coverage["complete"] if coverage else None,
+        # Which of the two claims the coverage figures are making. None when
+        # there are no coverage figures at all.
+        "coverage_source": coverage_source if coverage else None,
+    }
+
+
+def _coverage_from_run(stored: object) -> dict | None:
+    """Read a red_team_runs.coverage JSONB payload, or None for any other shape.
+
+    red_team.py stamps red_team_coverage() onto the run row at completion, so a
+    run carries the coverage IT had rather than the coverage the reader's build
+    has. A pre-0015 tenant (no column), a run that predates the write, or a
+    payload missing any of the four keys all return None and the caller falls
+    back to the current build with COVERAGE_SOURCE_CURRENT_BUILD attached —
+    labelled, never silently substituted.
+    """
+    if not isinstance(stored, dict):
+        return None
+    required = ("vectors_attempted", "vectors_valid", "invalid_vectors", "complete")
+    if any(key not in stored for key in required):
+        return None
+    return {
+        "vectors_attempted": int(stored["vectors_attempted"]),
+        "vectors_valid": int(stored["vectors_valid"]),
+        "invalid_vectors": list(stored["invalid_vectors"] or []),
+        "complete": bool(stored["complete"]),
+    }
+
+
 def _fetch_red_team_summary_sync(agent_id: str, conn_str: str) -> dict:
     """Fetch the live open-finding severity summary from the tenant DB.
 
@@ -416,31 +653,84 @@ def _fetch_red_team_summary_sync(agent_id: str, conn_str: str) -> dict:
     last_run_at still comes from the most recent red_team_runs row —
     red_team_findings has no run timestamp of its own.
 
+    NO RUNS IS NOT A CLEAN RESULT (P2 review). This function used to log
+    `red_team_summary.no_runs` when red_team_runs was empty and then return
+    RED_TEAM_SIGNAL_MEASURED anyway, so a brand-new agent — zero open findings
+    because zero attacks had ever been run against it — carried a signal
+    asserting the security surface HAD been measured, and
+    apply_signal_evidence_gate, which only refuses a signal that is not
+    'measured', let it ship. The eval half already had four states; the security
+    half had two, and the missing one was the state every agent is in on day 1.
+
     Coverage (P2) travels with the counts. Zero open findings means one of two
     very different things — "seven attack vectors ran and none succeeded" or
     "three ran and four could not probe at all" (audit D4) — and a gate reading
-    only the counts cannot tell them apart. red_team_service.red_team_coverage()
-    reports (vectors_attempted, vectors_valid) for the shipped build, and it is
-    imported inside the function because red_team_service constructs an
-    anthropic client at module scope.
+    only the counts cannot tell them apart. The figures come from the RUN when
+    it recorded them (migration 0015's red_team_runs.coverage), and only from
+    red_team_service.red_team_coverage() — the shipped build's own capability —
+    when it did not, with `coverage_source` saying which. Deriving them from the
+    current build unconditionally would re-describe every historical run with
+    today's numbers the moment P4 flips SDK_ATTACKERS_CAN_PROBE. red_team_service
+    is imported inside the function because it constructs an anthropic client at
+    module scope.
 
-    Returns dict with keys: signal, last_run_at, deployment_blocked,
-    critical_count, high_count, medium_count, low_count, vectors_attempted,
-    vectors_valid, invalid_vectors, coverage_complete.
+    Returns dict with keys: signal, signal_detail, last_run_at,
+    deployment_blocked, critical_count, high_count, medium_count, low_count,
+    vectors_attempted, vectors_valid, invalid_vectors, coverage_complete,
+    coverage_source. Every count is None outside the 'measured' state.
     """
     from app.services.red_team_service import red_team_coverage  # noqa: PLC0415
 
-    coverage = red_team_coverage()
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT started_at FROM red_team_runs ORDER BY started_at DESC LIMIT 1"
-            )
-            run_row = cur.fetchone()
+            # `coverage` arrived with migration 0015 and a tenant provisioned
+            # before it does not have the column (tenant DBs are migrated at
+            # PROVISION time only). Same narrow-except degradation shape as the
+            # eval collector's pre-0013 fallback: UndefinedColumn drops the
+            # run's own coverage, nothing else.
+            stored_coverage: object = None
+            try:
+                cur.execute(
+                    "SELECT started_at, coverage FROM red_team_runs "
+                    "ORDER BY started_at DESC LIMIT 1"
+                )
+                run_row = cur.fetchone()
+                stored_coverage = run_row[1] if run_row is not None else None
+            except psycopg2.errors.UndefinedColumn:
+                # The aborted transaction must be rolled back before the
+                # connection will accept another statement.
+                conn.rollback()
+                log.warning(
+                    "deployment_service.red_team_summary.coverage_column_absent",
+                    agent_id=agent_id,
+                    detail=(
+                        "tenant DB predates alembic_tenant 0015 — the run's own "
+                        "coverage cannot be read"
+                    ),
+                )
+                cur.execute(
+                    "SELECT started_at FROM red_team_runs "
+                    "ORDER BY started_at DESC LIMIT 1"
+                )
+                run_row = cur.fetchone()
+
             last_run_at = run_row[0].isoformat() if run_row and run_row[0] else None
+
             if run_row is None:
-                log.info("deployment_service.red_team_summary.no_runs", agent_id=agent_id)
+                # Never security-tested. The findings query below would return
+                # zeros, and those zeros describe an empty table rather than a
+                # surviving agent.
+                log.info(
+                    "deployment_service.red_team_summary.no_runs", agent_id=agent_id
+                )
+                return _red_team_summary(
+                    RED_TEAM_SIGNAL_NO_RUNS,
+                    detail=(
+                        "no red-team run has ever been recorded for this agent, "
+                        "so its security surface is unmeasured"
+                    ),
+                )
 
             cur.execute(
                 "SELECT severity, COUNT(*) FROM red_team_findings "
@@ -451,23 +741,24 @@ def _fetch_red_team_summary_sync(agent_id: str, conn_str: str) -> dict:
                 if sev in counts:
                     counts[sev] = int(cnt)
 
-            deployment_blocked = counts["critical"] > 0
-            return {
-                # The counts below were read. A collector failure substitutes
-                # RED_TEAM_SIGNAL_UNAVAILABLE and the gate refuses to ship on
-                # it, because zeros we could not read are not zeros.
-                "signal": RED_TEAM_SIGNAL_MEASURED,
-                "last_run_at": last_run_at,
-                "deployment_blocked": deployment_blocked,
-                "critical_count": counts["critical"],
-                "high_count": counts["high"],
-                "medium_count": counts["medium"],
-                "low_count": counts["low"],
-                "vectors_attempted": coverage["vectors_attempted"],
-                "vectors_valid": coverage["vectors_valid"],
-                "invalid_vectors": coverage["invalid_vectors"],
-                "coverage_complete": coverage["complete"],
-            }
+            run_coverage = _coverage_from_run(stored_coverage)
+            coverage_source = (
+                COVERAGE_SOURCE_RUN
+                if run_coverage is not None
+                else COVERAGE_SOURCE_CURRENT_BUILD
+            )
+            coverage = run_coverage if run_coverage is not None else red_team_coverage()
+
+            # The counts below were read. A collector failure substitutes
+            # RED_TEAM_SIGNAL_UNAVAILABLE and the gate refuses to ship on it,
+            # because zeros we could not read are not zeros.
+            return _red_team_summary(
+                RED_TEAM_SIGNAL_MEASURED,
+                last_run_at=last_run_at,
+                counts=counts,
+                coverage=coverage,
+                coverage_source=coverage_source,
+            )
     finally:
         conn.close()
 
@@ -815,26 +1106,21 @@ EVAL_SUMMARY_UNAVAILABLE_SIGNAL: dict = {
     "last_run_at": None,
     "last_run_status": None,
     "scenario_count": 0,
+    # None, never 0: the collector raised, so how many rows carried a label is
+    # not something this payload knows.
+    "valid_scenario_count": None,
     "scored_scenario_count": 0,
+    "denominator_source": None,
     "pass_rates": None,
     "failing_scenarios": None,
 }
 
-RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL: dict = {
-    "signal": RED_TEAM_SIGNAL_UNAVAILABLE,
-    "last_run_at": None,
-    # False is not "no critical findings" here — it is "we could not ask".
-    # The gate below refuses to ship on the signal, not on this flag.
-    "deployment_blocked": False,
-    "critical_count": None,
-    "high_count": None,
-    "medium_count": None,
-    "low_count": None,
-    "vectors_attempted": None,
-    "vectors_valid": None,
-    "invalid_vectors": None,
-    "coverage_complete": None,
-}
+# Built through the same constructor the collector uses, so the substitute and
+# a real absent signal cannot drift apart key-for-key.
+RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL: dict = _red_team_summary(
+    RED_TEAM_SIGNAL_UNAVAILABLE,
+    detail="the red-team signal collector raised",
+)
 
 
 def apply_signal_evidence_gate(
@@ -862,7 +1148,15 @@ def apply_signal_evidence_gate(
     has never been evaluated has no evidence of quality, and the previous
     behaviour — vacuous satisfaction of "all eval metrics >= 0.85" over an empty
     dict — is exactly the fail-open this branch exists to close. The remedy is
-    one eval run, which POST /agents/{id}/eval-runs/trigger performs on demand.
+    one eval run, which POST /agents/{id}/eval-runs/trigger performs on demand
+    and which run_deployment_checklist now starts by itself on the day-1 path.
+
+    BOTH HALVES HAVE A no_runs STATE, and they carry different warning_ids from
+    'unavailable' on purpose. "Your security results could not be read" and
+    "this agent has never been security-tested" have different remedies, and the
+    second was being reported as 'measured' until the P2 review — an agent with
+    zero red-team runs has zero open findings, which is what a clean run also
+    has.
 
     A MISSING key is treated as an absent signal, not as a measured one. A
     caller constructing a summary dict by hand and forgetting the state field
@@ -886,34 +1180,79 @@ def apply_signal_evidence_gate(
     if eval_signal != SHIPPABLE_SIGNAL:
         blocked = True
         detail = eval_summary.get("signal_detail") or "no eval signal was produced"
-        warnings.append(
-            DeploymentWarning(
-                warning_id="eval_signal_unavailable",
-                category="eval_quality",
-                message=(
-                    "This agent's answer quality has not been measured, so it "
-                    f"cannot be approved for launch yet ({detail}). Run an eval "
-                    "from the Evaluation page and try again."
-                ),
-                severity_level="warning",
+        if eval_signal == EVAL_SIGNAL_NO_RUNS:
+            # The day-1 state, and the one the owner can actually act on. The
+            # checklist task starts the first eval itself when it finds this
+            # (run_deployment_checklist step 4b) and records that on the signal,
+            # so the message says "wait" rather than sending a non-technical
+            # owner to a page the onboarding flow never routes to.
+            started = bool(eval_summary.get("first_eval_dispatched"))
+            warnings.append(
+                DeploymentWarning(
+                    warning_id="eval_never_run",
+                    category="eval_quality",
+                    message=(
+                        "This agent's answer quality has never been measured, "
+                        "so it cannot be approved for launch yet. "
+                        + (
+                            "We have started its first evaluation — it takes a "
+                            "few minutes. Run this readiness check again once "
+                            "it finishes."
+                            if started
+                            else "Run an eval from the Evaluation page and try "
+                            "again."
+                        )
+                    ),
+                    severity_level="warning",
+                )
             )
-        )
+        else:
+            warnings.append(
+                DeploymentWarning(
+                    warning_id="eval_signal_unavailable",
+                    category="eval_quality",
+                    message=(
+                        "This agent's answer quality has not been measured, so "
+                        f"it cannot be approved for launch yet ({detail}). Run "
+                        "an eval from the Evaluation page and try again."
+                    ),
+                    severity_level="warning",
+                )
+            )
 
     red_team_signal = red_team_summary.get("signal")
     if red_team_signal != SHIPPABLE_SIGNAL:
         blocked = True
-        warnings.append(
-            DeploymentWarning(
-                warning_id="red_team_signal_unavailable",
-                category="security",
-                message=(
-                    "The security-test results for this agent could not be "
-                    "read, so its safety cannot be confirmed. Try the readiness "
-                    "check again in a few minutes."
-                ),
-                severity_level="warning",
+        if red_team_signal == RED_TEAM_SIGNAL_NO_RUNS:
+            # Distinct from 'unavailable' because the remedy is distinct, and
+            # because telling an owner their security results "could not be
+            # read" when no attack has ever been run describes a transient
+            # outage where the truth is a permanent absence.
+            warnings.append(
+                DeploymentWarning(
+                    warning_id="red_team_never_run",
+                    category="security",
+                    message=(
+                        "This agent has never been security-tested, so it "
+                        "cannot be approved for launch yet. Run a red-team "
+                        "check from the Security page and try again."
+                    ),
+                    severity_level="warning",
+                )
             )
-        )
+        else:
+            warnings.append(
+                DeploymentWarning(
+                    warning_id="red_team_signal_unavailable",
+                    category="security",
+                    message=(
+                        "The security-test results for this agent could not be "
+                        "read, so its safety cannot be confirmed. Try the "
+                        "readiness check again in a few minutes."
+                    ),
+                    severity_level="warning",
+                )
+            )
 
     # Incomplete coverage is reported, not blocked. Every vector that CAN probe
     # did, so the signal is real — it just does not cover the whole surface, and

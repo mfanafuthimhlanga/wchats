@@ -1,28 +1,30 @@
 """
-Tests for TENANT migration 0014 — eval_scenarios.dataset (measurement layer P2).
+Tests for TENANT migration 0015 — red_team_runs.coverage (P2 review).
 
-Named test_migration_tenant_0014 rather than test_migration_0014 because the
-CONTROL-DB tree has its own 0014 (alembic/versions/0014_transactional_substrate.py)
-with its own test module. The two trees are independent and share revision
-numbers; a reader who assumes otherwise will look in the wrong directory.
+Named test_migration_tenant_0015 rather than test_migration_0015 for the same
+reason as its 0014 sibling: the CONTROL-DB tree numbers its revisions
+independently and a reader who assumes one tree will look in the wrong
+directory.
 
-Like 0013 this cannot be verified against a live database on this machine (no
-local PostgreSQL — every `-m integration` harness skips, and a skip is
-unobserved, never a pass). The source assertions below are therefore the only
-observed evidence that exists for it, and they are written as constraints on
-what the migration is ALLOWED to contain rather than as checks that it contains
-one ADD COLUMN:
+Why the column exists, stated where the constraints are checked: P2 computed
+`red_team_coverage()` in the red-team task and put it in a log line and the
+Celery return value. Neither survives the request, so `GET
+/agents/{id}/red-team-runs` still described a run in which four of seven
+attackers could not probe (audit D4) exactly as it describes a clean
+seven-vector run. Storing the coverage on the run is also what stops the deploy
+gate re-labelling history: derive it at read time and every stored run silently
+becomes seven-of-seven the day P4 flips SDK_ATTACKERS_CAN_PROBE.
+
+Like 0013 and 0014 this cannot be verified against a live database on this
+machine (no local PostgreSQL — every `-m integration` harness skips, and a skip
+is unobserved, never a pass). The source assertions below are the only observed
+evidence that exists for it, and they constrain what the migration is ALLOWED to
+contain:
 
   - strictly additive     — no DROP/ALTER/RENAME of anything pre-existing
   - strictly nullable     — no NOT NULL, no DEFAULT, no CHECK, no backfill
   - rollback is a no-op   — downgrade drops only the column it added
-  - the tree is not forked — 0014 is the sole child of 0013 and the sole head
-
-The no-CHECK constraint is not pedantry. 0011 exists largely because 0005 put an
-inline CHECK on eval_scenarios.source, and that constraint became the thing
-standing between a shipped feature and a working INSERT. The dataset domain
-lives in eval_service instead, where dataset_of() resolves anything unrecognised
-to 'exploratory' rather than raising.
+  - the tree is not forked — 0015 is the sole child of 0014 and the sole head
 
 Note on encoding:
   All open() calls use encoding="utf-8" to avoid Windows cp1252
@@ -46,12 +48,14 @@ _TESTS_DIR = os.path.dirname(__file__)
 VERSIONS_DIR = os.path.normpath(
     os.path.join(_TESTS_DIR, "../../alembic_tenant/versions")
 )
-MIGRATION_FILE = os.path.join(VERSIONS_DIR, "0014_eval_scenario_dataset.py")
+MIGRATION_FILE = os.path.join(VERSIONS_DIR, "0015_red_team_run_coverage.py")
 INTEGRATION_TESTS = os.environ.get("INTEGRATION_TESTS_ENABLED", "") == "1"
 
 
 def _load_migration():
-    spec = importlib.util.spec_from_file_location("tenant_migration_0014", MIGRATION_FILE)
+    spec = importlib.util.spec_from_file_location(
+        "tenant_migration_0015", MIGRATION_FILE
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)  # type: ignore[union-attr]
     return mod
@@ -64,19 +68,19 @@ def _load_migration():
 
 def test_migration_file_exists():
     assert os.path.isfile(MIGRATION_FILE), (
-        f"Tenant migration 0014 not found at expected path: {MIGRATION_FILE}"
+        f"Tenant migration 0015 not found at expected path: {MIGRATION_FILE}"
     )
 
 
 def test_migration_revision():
     mod = _load_migration()
-    assert mod.revision == "0014", f"Expected revision '0014', got {mod.revision!r}"
+    assert mod.revision == "0015", f"Expected revision '0015', got {mod.revision!r}"
 
 
 def test_migration_down_revision():
     mod = _load_migration()
-    assert mod.down_revision == "0013", (
-        f"Expected down_revision '0013', got {mod.down_revision!r}"
+    assert mod.down_revision == "0014", (
+        f"Expected down_revision '0014', got {mod.down_revision!r}"
     )
 
 
@@ -95,31 +99,26 @@ def _all_tenant_revisions() -> dict[str, str | None]:
     return revisions
 
 
-def test_0014_is_the_sole_child_of_0013_and_the_tree_is_not_forked():
-    """0014 is the sole child of 0013, and the tenant tree has ONE head.
+def test_0015_is_the_single_tenant_head():
+    """0015 is the sole child of 0014 and the sole head of the tenant tree.
 
     A fork is invisible on this machine and fatal on a live tenant: `alembic
     upgrade head` refuses to run with two heads, so every subsequent tenant
     provision breaks. Read out of the versions directory rather than restated,
-    so a second child of 0013 landing later fails here.
-
-    The head itself is asserted as "exactly one", not as "0014": 0015
-    (red_team_runs.coverage) is the head now, and pinning the head's NAME here
-    would make every later revision edit this test rather than the tree's shape.
-    test_migration_tenant_0015 pins the current head by name.
+    so a second child of 0014 landing later fails here.
     """
     revisions = _all_tenant_revisions()
-    assert "0014" in revisions, "0014 was not discovered in alembic_tenant/versions"
+    assert "0015" in revisions, "0015 was not discovered in alembic_tenant/versions"
 
-    children_of_0013 = [rev for rev, down in revisions.items() if down == "0013"]
-    assert children_of_0013 == ["0014"], (
-        f"0013 must have exactly one child, found {sorted(children_of_0013)}"
+    children_of_0014 = [rev for rev, down in revisions.items() if down == "0014"]
+    assert children_of_0014 == ["0015"], (
+        f"0014 must have exactly one child, found {sorted(children_of_0014)}"
     )
 
     parents = [down for down in revisions.values() if down is not None]
     heads = set(revisions) - set(parents)
-    assert len(heads) == 1, (
-        f"the tenant tree is forked — expected a single head, got {sorted(heads)}"
+    assert heads == {"0015"}, (
+        f"Expected 0015 to be the single tenant head, got heads={sorted(heads)}"
     )
 
 
@@ -128,20 +127,21 @@ def test_0014_is_the_sole_child_of_0013_and_the_tree_is_not_forked():
 # ---------------------------------------------------------------------------
 
 
-def test_upgrade_adds_the_nullable_dataset_column():
+def test_upgrade_adds_the_nullable_coverage_column():
     mod = _load_migration()
     normalised = " ".join(inspect.getsource(mod.upgrade).split())
     assert (
-        "ALTER TABLE eval_scenarios ADD COLUMN IF NOT EXISTS dataset TEXT" in normalised
-    ), "Migration 0014 upgrade must add eval_scenarios.dataset as nullable TEXT"
+        "ALTER TABLE red_team_runs ADD COLUMN IF NOT EXISTS coverage JSONB"
+        in normalised
+    ), "Migration 0015 upgrade must add red_team_runs.coverage as nullable JSONB"
 
 
-def test_upgrade_touches_only_eval_scenarios():
+def test_upgrade_touches_only_red_team_runs():
     mod = _load_migration()
     upgrade_src = inspect.getsource(mod.upgrade)
     tables = set(re.findall(r"ALTER TABLE (\w+)", upgrade_src))
-    assert tables == {"eval_scenarios"}, (
-        f"Migration 0014 upgrade must touch eval_scenarios only, found {sorted(tables)}"
+    assert tables == {"red_team_runs"}, (
+        f"Migration 0015 upgrade must touch red_team_runs only, found {sorted(tables)}"
     )
 
 
@@ -178,14 +178,10 @@ def test_upgrade_adds_exactly_one_column():
 def test_upgrade_is_strictly_additive_and_nullable(forbidden):
     """No constraint, no default, no backfill, no destructive statement.
 
-    CHECK is on this list deliberately: eval_scenarios already carries the scar
-    of an inline CHECK (0005's source constraint, rewritten by 0011 under a
-    generated name it had to discover at runtime). The dataset domain is
-    enforced in eval_service.dataset_of(), which resolves an unrecognised value
-    to 'exploratory' instead of failing an INSERT on a live tenant.
-
-    DEFAULT is on it for a different reason: a DEFAULT would make every future
-    row assert a membership nobody chose.
+    DEFAULT is on this list for the reason that matters most here: a default
+    coverage payload would make every run that never recorded one assert a
+    coverage it never had, which is precisely the substitution the column exists
+    to prevent. NULL means "this run did not say", and the readers report that.
     """
     mod = _load_migration()
     upgrade_src = inspect.getsource(mod.upgrade)
@@ -193,32 +189,30 @@ def test_upgrade_is_strictly_additive_and_nullable(forbidden):
         line for line in upgrade_src.splitlines() if not line.strip().startswith("#")
     )
     assert forbidden not in sql_only.upper(), (
-        f"Migration 0014 upgrade must not contain {forbidden!r} — it is required "
+        f"Migration 0015 upgrade must not contain {forbidden!r} — it is required "
         "to be strictly additive and strictly nullable (cannot be verified "
         "against a live DB on this machine)"
     )
 
 
-def test_no_backfill_promotes_existing_rows_into_the_golden_set():
+def test_no_backfill_invents_coverage_for_historical_runs():
     """The absence pin that matters most for this column.
 
-    A backfill setting dataset='golden' on existing rows would turn a
-    randomly-accumulated pile of Haiku-written scenarios into the fixed
-    instrument every future comparison rests on, and it would do it silently:
-    nothing downstream can tell a curated golden set from a backfilled one.
+    Every red_team_runs row written before this revision belongs to a run whose
+    coverage nobody recorded. A backfill would write today's numbers onto
+    yesterday's runs — the exact re-labelling the column exists to prevent,
+    performed once, permanently, and invisibly.
     """
     mod = _load_migration()
     source = inspect.getsource(mod.upgrade) + inspect.getsource(mod.downgrade)
-    # Comment lines explain WHY there is no backfill and necessarily name the
-    # value; only the executable half is scanned.
     sql_only = "\n".join(
         line for line in source.splitlines() if not line.strip().startswith("#")
     ).lower()
-    assert "golden" not in sql_only, (
-        "the migration must never write a dataset value — membership of the "
-        "golden set is asserted by a human, never backfilled"
-    )
     assert "update" not in sql_only
+    assert "vectors_attempted" not in sql_only, (
+        "the migration must never write a coverage value — a run's coverage is "
+        "recorded by the run, never invented for it"
+    )
 
 
 def test_downgrade_only_drops_what_upgrade_added():
@@ -226,16 +220,19 @@ def test_downgrade_only_drops_what_upgrade_added():
     downgrade_src = inspect.getsource(mod.downgrade)
     normalised = " ".join(downgrade_src.split())
 
-    assert "ALTER TABLE eval_scenarios DROP COLUMN IF EXISTS dataset" in normalised
+    assert (
+        "ALTER TABLE red_team_runs DROP COLUMN IF EXISTS coverage" in normalised
+    )
     tables = set(re.findall(r"ALTER TABLE (\w+)", downgrade_src))
-    assert tables == {"eval_scenarios"}, (
-        f"Migration 0014 downgrade must touch eval_scenarios only, found {sorted(tables)}"
+    assert tables == {"red_team_runs"}, (
+        f"Migration 0015 downgrade must touch red_team_runs only, found "
+        f"{sorted(tables)}"
     )
     assert "DROP TABLE" not in downgrade_src.upper()
 
 
 def test_downgrade_is_idempotent_via_if_exists():
-    """A downgrade against a DB that never received 0014 must be a no-op."""
+    """A downgrade against a DB that never received 0015 must be a no-op."""
     mod = _load_migration()
     drops = re.findall(r"DROP COLUMN(?: IF EXISTS)?", inspect.getsource(mod.downgrade))
     assert drops, "downgrade contains no DROP COLUMN at all"
@@ -263,9 +260,9 @@ def test_migration_no_pg_search_ddl():
     not INTEGRATION_TESTS,
     reason="INTEGRATION_TESTS_ENABLED=1 required for migration DB roundtrip",
 )
-def test_migration_tenant_0014_db_roundtrip():
-    """Integration: upgrade to 0014 -> dataset exists and accepts NULL ->
-    downgrade to 0013 removes it -> re-upgrade to 0014 (idempotent).
+def test_migration_tenant_0015_db_roundtrip():
+    """Integration: upgrade to 0015 -> coverage exists and accepts NULL ->
+    downgrade to 0014 removes it -> re-upgrade to 0015 (idempotent).
     """
     from alembic import command
     from alembic.config import Config
@@ -278,7 +275,7 @@ def test_migration_tenant_0014_db_roundtrip():
         "TEST_LOCAL_BASE", "postgresql://wchats:wchats@localhost:5432"
     )
 
-    db_name = f"wchats_test_t0014_{uuid.uuid4().hex[:12]}"
+    db_name = f"wchats_test_t0015_{uuid.uuid4().hex[:12]}"
     admin_engine = create_engine(
         admin_url, isolation_level="AUTOCOMMIT", poolclass=pool.NullPool
     )
@@ -289,10 +286,10 @@ def test_migration_tenant_0014_db_roundtrip():
     conn_url = f"{local_base}/{db_name}"
     script_location = os.path.normpath(os.path.join(_TESTS_DIR, "../../alembic_tenant"))
 
-    def _scenario_columns() -> set[str]:
+    def _run_columns() -> set[str]:
         engine = create_engine(conn_url, poolclass=pool.NullPool)
         try:
-            return {c["name"] for c in sa_inspect(engine).get_columns("eval_scenarios")}
+            return {c["name"] for c in sa_inspect(engine).get_columns("red_team_runs")}
         finally:
             engine.dispose()
 
@@ -301,36 +298,36 @@ def test_migration_tenant_0014_db_roundtrip():
         cfg.set_main_option("script_location", script_location)
         cfg.set_main_option("sqlalchemy.url", conn_url)
 
-        command.upgrade(cfg, "0014")
-        assert "dataset" in _scenario_columns(), "dataset missing after 0014"
+        command.upgrade(cfg, "0015")
+        assert "coverage" in _run_columns(), "coverage missing after 0015"
 
         engine = create_engine(conn_url, poolclass=pool.NullPool)
         with engine.begin() as conn:
             conn.execute(
                 sa_text(
-                    "INSERT INTO eval_scenarios (id, source, question, reference_answer) "
-                    "VALUES (gen_random_uuid(), 'generated', 'q', 'a')"
+                    "INSERT INTO red_team_runs (id, kind, status) "
+                    "VALUES (gen_random_uuid(), 'm7:test', 'running')"
                 )
             )
             row = conn.execute(
-                sa_text("SELECT dataset FROM eval_scenarios WHERE question = 'q'")
+                sa_text("SELECT coverage FROM red_team_runs WHERE kind = 'm7:test'")
             ).fetchone()
-            assert row[0] is None, "0014's column must be nullable with no DEFAULT"
+            assert row[0] is None, "0015's column must be nullable with no DEFAULT"
         engine.dispose()
 
-        command.downgrade(cfg, "0013")
-        assert "dataset" not in _scenario_columns()
+        command.downgrade(cfg, "0014")
+        assert "coverage" not in _run_columns()
 
         engine = create_engine(conn_url, poolclass=pool.NullPool)
         with engine.begin() as conn:
             surviving = conn.execute(
-                sa_text("SELECT COUNT(*) FROM eval_scenarios WHERE question = 'q'")
+                sa_text("SELECT COUNT(*) FROM red_team_runs WHERE kind = 'm7:test'")
             ).scalar()
-            assert surviving == 1, "rollback must not destroy eval_scenarios rows"
+            assert surviving == 1, "rollback must not destroy red_team_runs rows"
         engine.dispose()
 
-        command.upgrade(cfg, "0014")
-        assert "dataset" in _scenario_columns()
+        command.upgrade(cfg, "0015")
+        assert "coverage" in _run_columns()
 
     finally:
         admin_engine = create_engine(

@@ -410,6 +410,89 @@ class TestListEvalRuns:
             for metric in datasets["golden"]["metrics"].values()
         ), "an uncovered golden set must be unmeasured, never zero-scored"
 
+    async def test_an_unattributable_row_joins_neither_dataset(self):
+        """One run, one denominator (P2 review).
+
+        A result row whose scenario no longer exists — a deleted scenario, or
+        the synthetic id older builds minted when a scenario carried none — used
+        to land in the EXPLORATORY bucket here while
+        eval_service.summarise_run_validity dropped it from both. The same run
+        then had two different denominators depending on who was reading, and
+        the exploratory MEAN silently included a score nobody could attribute.
+        Both readers now refuse to attribute it and both report it.
+        """
+        rows = _fake_eval_runs_rows()
+        run_id = rows[0][0]
+
+        body = await self._get_runs(
+            rows,
+            [
+                (run_id, "golden", 10, 10, 0.93, 0.90, 0.88, 0.86),
+                (run_id, "exploratory", 20, 18, 0.71, 0.70, 0.69, 0.68),
+                (run_id, "unattributed", 1, 1, 0.99, 0.99, 0.99, 0.99),
+            ],
+        )
+        datasets = body["eval_runs"][0]["datasets"]
+
+        assert datasets["unattributed"] == {
+            "scenario_count": 1,
+            "scored_scenario_count": 1,
+        }
+        assert "metrics" not in datasets["unattributed"], (
+            "a mean over rows whose scenario is unknown is a mean over an "
+            "unknown denominator and must not be constructible from this "
+            "response"
+        )
+        assert datasets["exploratory"]["scenario_count"] == 20, (
+            "the unattributable row was absorbed into the exploratory count"
+        )
+        assert datasets["exploratory"]["metrics"]["faithfulness"]["value"] == 0.71, (
+            "the unattributable row's 0.99 reached the exploratory mean"
+        )
+
+    async def test_the_query_itself_routes_an_orphan_row_to_its_own_bucket(self):
+        """A source-level pin, and the honest maximum available here.
+
+        Every test in this module mocks psycopg2 out, so none of them executes
+        the CASE that decides the bucket — the rows arrive pre-bucketed. There
+        is no local PostgreSQL on this machine, so the query cannot be run
+        against a database at all (the `-m integration` harnesses skip, and a
+        skip is unobserved, never a pass). Asserting on the SQL text is
+        therefore the only evidence that exists that the orphan arm is present,
+        and it is stated as such rather than dressed up as behavioural coverage.
+
+        The GROUP BY half matters as much as the SELECT half: Postgres rejects a
+        SELECT expression that is absent from GROUP BY, so the two drifting
+        apart is a 500 on the ops room's first request rather than a wrong
+        number.
+        """
+        from app.api.v1.evals import _LIST_EVAL_RUN_DATASETS_SQL
+
+        assert _LIST_EVAL_RUN_DATASETS_SQL.count("es.id IS NULL") == 2, (
+            "the orphan arm must appear in both the SELECT and the GROUP BY — "
+            "without it a row whose scenario no longer exists is bucketed as "
+            "exploratory and its score enters the exploratory mean"
+        )
+        select_half, _, group_half = _LIST_EVAL_RUN_DATASETS_SQL.partition("GROUP BY")
+        for half in (select_half, group_half):
+            orphan_arm = half.index("es.id IS NULL")
+            golden_arm = half.index("es.dataset = %(golden)s")
+            assert orphan_arm < golden_arm, (
+                "the orphan arm must be tested FIRST — es.dataset is NULL for an "
+                "orphan row too, so a later arm never sees it"
+            )
+
+    async def test_the_unattributed_bucket_is_present_and_zeroed_by_default(self):
+        """Present-and-zero, never absent: an absent key has to be interpreted,
+        and 'this run had none' is a claim worth making explicitly."""
+        rows = _fake_eval_runs_rows()
+        body = await self._get_runs(rows, _fake_dataset_rows(rows[0][0]))
+
+        assert body["eval_runs"][0]["datasets"]["unattributed"] == {
+            "scenario_count": 0,
+            "scored_scenario_count": 0,
+        }
+
     async def test_pre_0014_tenant_says_it_cannot_tell_rather_than_reporting_none(self):
         """UndefinedColumn on the dataset query degrades, and says it degraded.
 
