@@ -13,6 +13,16 @@ the same SQL, to the same table names, and both "succeed". A test that mocked
 eval_service wholesale and asserted "write_eval_results was called" would have
 passed against the defect.
 
+The other half is the Neon branch. An earlier version of this module asserted
+that "scoring runs against the branch" by checking that the branch connection
+string was HANDED to run_ragas_eval — which never referenced it. Passing an
+argument is not using it, and a test that pins an unused argument pins nothing.
+The tests below pin the opposite property: no statement is issued against the
+branch anywhere in this task, and therefore a branch Neon cannot give us does
+not abandon a run whose every write targets a reachable production endpoint.
+Both directions of that switch are exercised, because a tolerance that is never
+observed to become strict again is indistinguishable from an absent guard.
+
 No live PostgreSQL exists on this machine, so every DB boundary is a double:
 psycopg2.connect, the control-DB session, the Neon branch API and eval_service's
 writers. Nothing here proves a live database accepts the SQL — that is
@@ -103,6 +113,7 @@ def wired(monkeypatch):
         "config_built": [],
         "inserted": [],
         "ragas": [],
+        "readiness": [],
         "results": [],
         "status": [],
         "deleted": [],
@@ -128,15 +139,20 @@ def wired(monkeypatch):
         "create_branch",
         lambda project_id, name: ("branch-1", BRANCH),
     )
-    monkeypatch.setattr(mod, "wait_for_neon_ready", lambda conn_str: None)
     monkeypatch.setattr(
         mod,
-        "run_ragas_eval",
-        lambda scenarios, branch_conn_str: (
-            rec["ragas"].append(branch_conn_str)
-            or {"scores": [{"scenario_id": "s1"}], "means": {"faithfulness": 0.9}}
-        ),
+        "wait_for_neon_ready",
+        lambda conn_str: rec["readiness"].append(conn_str),
     )
+
+    def _fake_ragas(*args, **kwargs):
+        # Recorded as (args, kwargs) rather than as a named connection string:
+        # the property under test is that scoring is handed NO connection at
+        # all, and that cannot be expressed by a signature that names one.
+        rec["ragas"].append((args, kwargs))
+        return {"scores": [{"scenario_id": "s1"}], "means": {"faithfulness": 0.9}}
+
+    monkeypatch.setattr(mod, "run_ragas_eval", _fake_ragas)
     monkeypatch.setattr(
         mod,
         "write_eval_results",
@@ -185,13 +201,24 @@ EXHAUSTED = mod.run_eval_suite.max_retries
 
 class TestPersistenceSplit:
 
-    def test_results_go_to_production_and_scoring_goes_to_the_branch(self, wired):
+    def test_results_go_to_production_and_scoring_opens_nothing(self, wired):
         result = _run()
 
-        assert wired["ragas"] == [BRANCH], "scoring must run against the branch (D-10)"
         assert wired["results"] == [PRODUCTION], (
             "eval_results were written to the Neon branch this task deletes in "
             "`finally` — that is audit defect D2"
+        )
+        assert len(wired["ragas"]) == 1
+        args, kwargs = wired["ragas"][0]
+        assert len(args) == 1 and kwargs == {}, (
+            "scoring was handed something besides the scenarios — the only "
+            "thing it ever needed, and the argument it used to be given and "
+            "never read was a connection string"
+        )
+        assert BRANCH not in str(args), (
+            "the branch connection string reached run_ragas_eval, which issues "
+            "no statement against it — an argument that is passed and never "
+            "used is a false isolation claim, not isolation"
         )
         assert result["run_id"]
 
@@ -308,21 +335,43 @@ class TestBranchDeletion:
             "block — it would skip the retry/exhaustion branch entirely"
         )
 
-    def test_branch_creation_failure_marks_failed_on_production(
+    def test_nothing_is_deleted_when_the_branch_was_never_created(
         self, wired, monkeypatch
     ):
-        """The one failure mode that fires before the branch exists — it was
-        already writing to production, and must keep doing so."""
+        """delete_branch(project, None) would be a call against a branch id
+        that does not exist; the `finally` skips only this case."""
         monkeypatch.setattr(
             mod,
             "create_branch",
             lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("neon down")),
         )
-        result = _run(retries=EXHAUSTED)
+        _run()
 
-        assert ("failed", PRODUCTION) in wired["status"]
         assert wired["deleted"] == [], "no branch was created, so none is deleted"
-        assert result == {}
+
+    def test_branch_is_deleted_when_the_readiness_probe_fails(
+        self, wired, monkeypatch
+    ):
+        """create_branch succeeded, then the probe raised.
+
+        This path used to leak the branch outright: acquisition had its own
+        try/except that returned, so the `finally` holding delete_branch
+        belonged to a block that was never entered. A leaked eval branch is a
+        full live copy of tenant data left running on Neon.
+        """
+        monkeypatch.setattr(mod, "EVAL_SCORING_REQUIRES_BRANCH", True)
+        monkeypatch.setattr(
+            mod,
+            "wait_for_neon_ready",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("endpoint suspended")),
+        )
+
+        assert _run(retries=EXHAUSTED) == {}
+        assert wired["deleted"] == [("neon-project-1", "branch-1")], (
+            "the branch was created and then leaked when its readiness probe "
+            "failed — D-10 requires deletion on every path"
+        )
+        assert ("failed", PRODUCTION) in wired["status"]
 
 
 # ---------------------------------------------------------------------------
@@ -353,17 +402,107 @@ class TestPromotionIsUnreachableFromTheTask:
             "durable, that path can reach the customer-serving verified_qa cache"
         )
 
-    def test_no_write_targets_the_branch_except_scoring(self, wired):
+    def test_nothing_at_all_targets_the_branch(self, wired):
         """Every recorded connection string, in one assertion."""
         _run()
 
         branch_writes = [c for c in wired["results"] if c == BRANCH]
         branch_status = [s for s in wired["status"] if s[1] == BRANCH]
         branch_inserts = [i for i in wired["inserted"] if i[3] == BRANCH]
+        branch_scoring = [c for c in wired["ragas"] if BRANCH in str(c)]
 
         assert branch_writes == []
         assert branch_status == []
         assert branch_inserts == []
+        assert branch_scoring == []
+
+
+# ---------------------------------------------------------------------------
+# The Neon branch — isolation held in reserve, not isolation in use
+# ---------------------------------------------------------------------------
+
+
+class TestBranchIsIsolationHeldInReserve:
+    """No statement is issued against the branch, so its absence is survivable.
+
+    The failing input these tests were written from: Neon degraded (endpoint
+    suspended, control-plane 5xx). Every one of this task's writes targets
+    production, which is reachable; the scenarios were read from production
+    too. Abandoning the run there threw away a night's measurement over a
+    resource nothing reads, and did it twice more on retry.
+
+    The tolerance is not unconditional — it is exactly as wide as
+    eval_service.EVAL_SCORING_REQUIRES_BRANCH, and the tests below drive both
+    of its positions.
+    """
+
+    def test_scoring_declares_that_it_needs_no_branch(self):
+        from app.services import eval_service
+
+        assert eval_service.EVAL_SCORING_REQUIRES_BRANCH is False
+
+    def test_branch_failure_does_not_abandon_a_run_that_reads_no_branch(
+        self, wired, monkeypatch
+    ):
+        monkeypatch.setattr(
+            mod,
+            "create_branch",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("neon 503")),
+        )
+
+        result = _run()
+
+        assert result["run_id"], "the run was abandoned over an unused resource"
+        assert result["branch_isolation"] == "unavailable", (
+            "a run that scored without branch isolation must say so — a reader "
+            "must never have to guess whether isolation was in force"
+        )
+        assert wired["results"] == [PRODUCTION]
+        assert ("complete", PRODUCTION) in wired["status"]
+        assert ("failed", PRODUCTION) not in wired["status"]
+
+    def test_branch_failure_is_fatal_once_scoring_needs_the_branch(
+        self, wired, monkeypatch
+    ):
+        """The other position of the switch.
+
+        When scoring does issue statements, the branch is the only thing
+        standing between an eval and production tenant data, and losing it must
+        stop the run rather than silently score against production.
+        """
+        monkeypatch.setattr(mod, "EVAL_SCORING_REQUIRES_BRANCH", True)
+        monkeypatch.setattr(
+            mod,
+            "create_branch",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("neon 503")),
+        )
+
+        assert _run(retries=EXHAUSTED) == {}
+        assert ("failed", PRODUCTION) in wired["status"]
+        assert wired["results"] == [], "a run with no isolation still scored"
+
+    def test_readiness_is_not_probed_while_nothing_connects_to_the_branch(
+        self, wired
+    ):
+        """A readiness wait for an endpoint nobody opens is cost and failure
+        surface with no signal in it — it is the expensive half of the branch."""
+        _run()
+        assert wired["readiness"] == []
+
+    def test_readiness_is_probed_once_scoring_needs_the_branch(
+        self, wired, monkeypatch
+    ):
+        monkeypatch.setattr(mod, "EVAL_SCORING_REQUIRES_BRANCH", True)
+        _run()
+        assert wired["readiness"] == [BRANCH]
+
+    def test_the_branch_is_still_created_and_deleted(self, wired):
+        """Held in reserve means held, not dropped: D-10 has to be in place the
+        day scoring starts issuing statements, and a branch that is created
+        without being deleted is worse than no branch."""
+        result = _run()
+        assert result["branch_isolation"] == "provisioned_unused"
+        assert wired["deleted"] == [("neon-project-1", "branch-1")]
 
 
 # ---------------------------------------------------------------------------

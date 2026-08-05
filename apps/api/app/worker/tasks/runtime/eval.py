@@ -15,9 +15,22 @@ any run finished — a successful run left status='running' forever, and
 
 An eval result is an OBSERVATION ABOUT a run, not tenant data. So:
 
-    scoring (run_ragas_eval)             -> branch_conn_str  (isolation, D-10)
-    eval_runs insert / status / results  -> conn_str         (PRODUCTION)
+    scenario read / eval_runs / results  -> conn_str         (PRODUCTION)
+    scoring (run_ragas_eval)             -> no database at all
     branch deletion in finally           -> unchanged, every path
+
+The middle line is the correction to an earlier version of this docstring,
+which said scoring ran against `branch_conn_str`. It does not, and never did:
+run_ragas_eval scores rows that are already in memory against the judge API and
+never referenced the connection string it was handed. The scenario rows
+themselves are read from PRODUCTION below. So no statement in this task is ever
+issued against the eval branch.
+
+The branch is still created and still deleted in `finally`, because D-10 has to
+be in place the day this eval starts invoking retrieval or the agent against
+tenant data. What changed is that its ABSENCE is no longer fatal while
+eval_service.EVAL_SCORING_REQUIRES_BRANCH is False: a degraded Neon endpoint
+used to abandon a whole night's measurement over a resource nothing reads.
 
 verified_qa promotion is not performed by this task at all. It is disabled
 behind eval_service's label trust hierarchy, and the decision — with its reason
@@ -37,6 +50,7 @@ from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.services.eval_service import (
+    EVAL_SCORING_REQUIRES_BRANCH,
     VERIFIED_QA_PROMOTION_DECISION,
     build_eval_run_config,
     insert_eval_run,
@@ -140,22 +154,26 @@ def run_eval_suite_beat(self) -> dict:
     name="app.worker.tasks.runtime.eval.run_eval_suite",
 )
 def run_eval_suite(self, agent_id: str) -> dict:
-    """Per-agent eval run. Scores on a Neon branch, records the run on production,
-    deletes the branch in finally (D-10). Receives agent_id str — no conn_str in args
-    (CTL-08 / D-18).
+    """Per-agent eval run. Records the run on production, creates and deletes a
+    Neon branch (D-10), and scores without touching either. Receives agent_id
+    str — no conn_str in args (CTL-08 / D-18).
 
     Sequence:
         1. Idempotency guard — skip if a 'running' eval_run for this agent
            was created within the last 10 minutes.
         2. Fetch agent from control DB; decrypt conn_str at runtime.
-        3. Fetch up to 30 eval scenarios from tenant DB; mine new production scenarios.
+        3. Fetch up to 30 eval scenarios from PRODUCTION; mine new production
+           scenarios.
         4. Collect the configuration tuple, then insert the eval_run row on
            PRODUCTION with it (status='running').
-        5. Create Neon branch; wait for readiness.
-        6. try: run Ragas eval on the BRANCH → write results to PRODUCTION →
+        5. Create the Neon branch. Readiness is probed only if scoring is going
+           to connect to it, and a branch that cannot be created is fatal only
+           then — see EVAL_SCORING_REQUIRES_BRANCH and the block comment below.
+        6. try: run Ragas eval (no database) → write results to PRODUCTION →
                 mark complete on PRODUCTION.
            except: mark failed on PRODUCTION.
-           finally: delete Neon branch (D-10 — always runs, even on exception).
+           finally: delete the Neon branch if one was created (D-10 — always
+                runs, even on exception).
 
     No verified_qa promotion happens here. See the module docstring and
     eval_service.VERIFIED_QA_PROMOTION_DECISION: promotion is gated on the label
@@ -167,7 +185,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
 
     Returns:
         {"run_id", "scenario_count", "promoted", "config_recorded",
-         "promotion_disabled_reason"}                            on success.
+         "promotion_disabled_reason", "branch_isolation"}        on success.
         {"status": "already_running"}                            on idempotent skip.
         {"status": "no_scenarios"}                               when eval_scenarios is empty.
         {}                                                        on retry exhaustion.
@@ -308,35 +326,65 @@ def run_eval_suite(self, agent_id: str) -> dict:
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
 
     # ------------------------------------------------------------------
-    # Step 6 — Create Neon branch; run eval in try/finally (D-10 LOCKED)
+    # Step 6 — Neon branch (D-10 LOCKED), then scoring in try/finally.
+    #
+    # The branch exists so an eval can never mutate tenant data. Nothing in
+    # this build connects to it: run_ragas_eval scores rows already in memory
+    # against the judge API, and the scenario rows were read from production
+    # above. So the branch is isolation held IN RESERVE, and this block says
+    # which of the two it is instead of asserting the one that is false.
+    #
+    #   * It is still created and still deleted in `finally`, so the guarantee
+    #     is already in place the day scoring starts issuing statements.
+    #   * A branch that cannot be created or readied no longer abandons the
+    #     run. Abandoning it threw away a night's measurement — on production,
+    #     which is reachable — over a resource nothing reads.
+    #   * The readiness probe only runs when something is going to connect.
+    #     Waiting for an endpoint nobody opens is cost and failure surface
+    #     with no signal in it.
+    #
+    # eval_service.EVAL_SCORING_REQUIRES_BRANCH is the single switch: flip it
+    # in the same edit that gives scoring a database, and both the probe and
+    # the fatal failure come back, because then the branch really is what
+    # stands between the eval and production tenant data.
+    #
+    # Acquisition sits INSIDE the try/finally rather than before it. Previously
+    # it had its own try/except that returned, so a branch that was created and
+    # then failed its readiness probe leaked: the `finally` belonged to the
+    # block that was never entered. Every path after create_branch returns an
+    # id now reaches the deletion below.
     # ------------------------------------------------------------------
+    branch_id_for_finally: str | None = None
+    branch_isolation = "provisioned_unused"
     try:
-        branch_id, branch_conn_str = create_branch(
-            neon_project_id, f"eval-{run_id}"
-        )
-        wait_for_neon_ready(branch_conn_str)
-    except Exception as exc:
-        log.error(
-            "run_eval_suite.branch_create_failed",
-            agent_id=agent_id,
-            run_id=run_id,
-            error=str(exc),
-        )
-        _mark_failed_on_production(run_id, conn_str, agent_id)
-        if self.request.retries >= self.max_retries:
-            return {}
-        raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+        try:
+            branch_id_for_finally, branch_conn_str = create_branch(
+                neon_project_id, f"eval-{run_id}"
+            )
+            if EVAL_SCORING_REQUIRES_BRANCH:
+                wait_for_neon_ready(branch_conn_str)
+        except Exception as branch_exc:
+            log.error(
+                "run_eval_suite.branch_create_failed",
+                agent_id=agent_id,
+                run_id=run_id,
+                error=str(branch_exc),
+                scoring_requires_branch=EVAL_SCORING_REQUIRES_BRANCH,
+            )
+            if EVAL_SCORING_REQUIRES_BRANCH:
+                raise
+            # Scoring needs no branch, so the run continues and says on the way
+            # out that it ran without one — a reader must never have to guess
+            # whether isolation was in force.
+            branch_isolation = "unavailable"
 
-    # Capture branch_id before entering try so finally always has it
-    branch_id_for_finally = branch_id
-
-    try:
         # Filter scenarios — reference_answer already required by the SQL query above,
         # but double-check here for safety
         valid_scenarios = [s for s in scenarios if s.get("reference_answer")]
 
-        # Scoring is the ONLY half that runs against the branch (D-10).
-        results = run_ragas_eval(valid_scenarios, branch_conn_str)
+        # No connection string is passed: scoring opens nothing (audit D1 —
+        # each sample's "response" is its own reference answer).
+        results = run_ragas_eval(valid_scenarios)
 
         # Observations about the run land on PRODUCTION, which is the whole
         # point of the split: the branch below is about to be destroyed.
@@ -351,6 +399,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
             config_recorded=config_recorded,
             promoted=0,
             promotion_enabled=VERIFIED_QA_PROMOTION_DECISION["enabled"],
+            branch_isolation=branch_isolation,
         )
         return {
             "run_id": run_id,
@@ -361,6 +410,10 @@ def run_eval_suite(self, agent_id: str) -> dict:
             "promoted": 0,
             "config_recorded": config_recorded,
             "promotion_disabled_reason": VERIFIED_QA_PROMOTION_DECISION["reason"],
+            # 'provisioned_unused' — a branch exists and no statement ran
+            # against it; 'unavailable' — Neon could not give us one and the
+            # run scored anyway. Never absent, so the state is always readable.
+            "branch_isolation": branch_isolation,
         }
 
     except Exception as exc:
@@ -376,16 +429,19 @@ def run_eval_suite(self, agent_id: str) -> dict:
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
 
     finally:
-        # D-10 LOCKED: always delete the Neon branch, even on exception
-        try:
-            delete_branch(neon_project_id, branch_id_for_finally)
-        except Exception as del_exc:
-            log.warning(
-                "run_eval_suite.branch_delete_failed",
-                agent_id=agent_id,
-                run_id=run_id,
-                error=str(del_exc),
-            )
+        # D-10 LOCKED: always delete the Neon branch, even on exception.
+        # None means create_branch itself failed, so there is nothing to
+        # delete — not a path that may skip deletion for any other reason.
+        if branch_id_for_finally is not None:
+            try:
+                delete_branch(neon_project_id, branch_id_for_finally)
+            except Exception as del_exc:
+                log.warning(
+                    "run_eval_suite.branch_delete_failed",
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    error=str(del_exc),
+                )
 
 
 # ---------------------------------------------------------------------------

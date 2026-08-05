@@ -15,6 +15,35 @@ Architecture:
     - Tenant DB queries go through psycopg2 with asyncio.to_thread() to avoid blocking the
       FastAPI event loop (D-30 pattern — same as validators.py).
     - POST /trigger dispatches Celery task and returns 202 immediately — eval is async.
+
+Unmeasured is not zero
+----------------------
+`run_ragas_eval` emits None for a metric whose judge call produced no valid
+observation (a NaN — a judge outage, a parse failure), `write_eval_results`
+writes that faithfully as NULL, and the AVG below is NULL when a run has no
+valid observation for a metric at all. Both routes used to render that NULL as
+0.0, which put a fabricated total-quality-collapse directly beside yesterday's
+0.94 and made an unmeasured run indistinguishable from a measured catastrophe.
+The owner's rational response to a 0.00 is to roll back a healthy agent.
+
+So every metric now travels with the fact of its own measurement:
+
+    aggregate_scores / scores  — NUMERIC COMPATIBILITY PROJECTION. Unmeasured
+        still reads 0.0 here, and it is a lie, retained for exactly one reason:
+        apps/admin types these fields `number` and calls `.toFixed(2)` on them
+        (agents/[id]/eval/page.tsx:291) and plots them (`:184`), so a null would
+        throw on the eval page for every tenant — every run that predates this
+        phase has no eval_results rows at all. Making that surface render an
+        absent measurement is a frontend change and this branch is apps/api
+        only. DO NOT read these for quality; read `metrics`.
+    metrics                    — the honest one: per metric, {value, measured}.
+        value is null exactly when measured is false.
+    scenario_count / scored_scenario_count — attempted, and the VALID
+        denominator. A pass rate without its denominator must not be
+        constructible from this response.
+    passed                     — tri-state. None when a gated metric was not
+        measured: unknown is neither a pass nor a fail. A client that cannot
+        read null degrades to "not passed", which fails closed.
 """
 
 from __future__ import annotations
@@ -72,6 +101,11 @@ def _query_tenant_db_sync(conn_str: str, sql: str, params: dict) -> list[tuple]:
 # Route 1: GET /agents/{agent_id}/eval-runs — list runs with aggregate scores
 # ---------------------------------------------------------------------------
 
+# AVG ignores NULLs and is itself NULL when every input was NULL, which is
+# precisely the "no valid observation" signal — it is not fabricated here and
+# must not be fabricated in the response either. scored_scenario_count is the
+# VALID denominator beside the attempted count: a scenario is scored when it
+# produced at least one non-NULL score.
 _LIST_EVAL_RUNS_SQL = """
     SELECT
         er.id,
@@ -79,6 +113,9 @@ _LIST_EVAL_RUNS_SQL = """
         er.finished_at,
         er.status,
         COUNT(DISTINCT res.scenario_id) AS scenario_count,
+        COUNT(DISTINCT res.scenario_id) FILTER (
+            WHERE res.score IS NOT NULL
+        ) AS scored_scenario_count,
         AVG(CASE WHEN res.metric = 'faithfulness'      THEN res.score END) AS faithfulness,
         AVG(CASE WHEN res.metric = 'answer_relevancy'  THEN res.score END) AS answer_relevancy,
         AVG(CASE WHEN res.metric = 'context_precision' THEN res.score END) AS context_precision,
@@ -89,6 +126,18 @@ _LIST_EVAL_RUNS_SQL = """
     ORDER BY er.started_at DESC
     LIMIT 50
 """
+
+# The four M6 metrics, in the order the UI channels read them (D-04).
+METRIC_KEYS = (
+    "faithfulness",
+    "answer_relevancy",
+    "context_precision",
+    "context_recall",
+)
+
+# The two metrics the promotion gate is defined over (D-21 LOCKED). Kept
+# separate from METRIC_KEYS because `passed` is a claim about these two only.
+GATED_METRIC_KEYS = ("faithfulness", "answer_relevancy")
 
 # OPS-12: ORRERY ledger — eval provenance (born-in-production vs authored counts).
 # provenance IS NULL rows predate provenance tracking (migration 0011) and are
@@ -118,7 +167,12 @@ async def list_eval_runs(
         Returns 404 for unknown agents or agents belonging to a different tenant.
 
     Response shape:
-        {"eval_runs": [{id, started_at, finished_at, status, scenario_count, aggregate_scores}]}
+        {"eval_runs": [{id, started_at, finished_at, status, scenario_count,
+                        scored_scenario_count, aggregate_scores, metrics}]}
+
+    See the module docstring: `metrics` carries {value, measured} per metric and
+    is the one to read; `aggregate_scores` is the numeric projection the shipped
+    console still needs, in which an unmeasured metric reads 0.0.
     """
     # 1. Fetch agent from control DB (only metadata — not tenant DB)
     agent = await db.get(Agent, agent_id)
@@ -151,22 +205,44 @@ async def list_eval_runs(
         ledger_rows[0] if ledger_rows else (0, 0, 0)
     )
 
-    # 6. Build response matching the exact shape from RESEARCH.md §9
+    # 6. Build response matching the exact shape from RESEARCH.md §9, plus the
+    #    measurement record each metric now travels with.
     eval_runs = []
     for row in rows:
-        run_id, started_at, finished_at, status, scenario_count, faithfulness, answer_relevancy, context_precision, context_recall = row
+        (
+            run_id,
+            started_at,
+            finished_at,
+            status,
+            scenario_count,
+            scored_scenario_count,
+            *metric_averages,
+        ) = row
+        means = dict(zip(METRIC_KEYS, metric_averages))
         eval_runs.append(
             {
                 "id": str(run_id),
                 "started_at": started_at.isoformat() if started_at else None,
                 "finished_at": finished_at.isoformat() if finished_at else None,
                 "status": status,
+                # attempted, and the valid denominator beside it
                 "scenario_count": int(scenario_count) if scenario_count else 0,
+                "scored_scenario_count": (
+                    int(scored_scenario_count) if scored_scenario_count else 0
+                ),
+                # The honest reading. value is null exactly when measured is false.
+                "metrics": {
+                    metric: {
+                        "value": float(mean) if mean is not None else None,
+                        "measured": mean is not None,
+                    }
+                    for metric, mean in means.items()
+                },
+                # Numeric compatibility projection — see the module docstring.
+                # An unmeasured metric reads 0.0 here and that is not a score.
                 "aggregate_scores": {
-                    "faithfulness": float(faithfulness) if faithfulness is not None else 0.0,
-                    "answer_relevancy": float(answer_relevancy) if answer_relevancy is not None else 0.0,
-                    "context_precision": float(context_precision) if context_precision is not None else 0.0,
-                    "context_recall": float(context_recall) if context_recall is not None else 0.0,
+                    metric: float(mean) if mean is not None else 0.0
+                    for metric, mean in means.items()
                 },
             }
         )
@@ -220,10 +296,15 @@ async def get_eval_run_results(
         Same IDOR prevention as list_eval_runs — agent ownership verified.
 
     Response shape:
-        {"results": [{scenario_id, question, source, scores, passed}]}
+        {"results": [{scenario_id, question, source, scores, metrics, passed}]}
 
-    passed = True when faithfulness >= EVAL_FAITHFULNESS_THRESHOLD AND answer_relevancy >= EVAL_RELEVANCY_THRESHOLD.
-    Mirrors the 2-metric promotion gate used by promote_to_verified_qa (D-21).
+    passed = True when faithfulness >= EVAL_FAITHFULNESS_THRESHOLD AND
+    answer_relevancy >= EVAL_RELEVANCY_THRESHOLD — the 2-metric promotion gate
+    used by promote_to_verified_qa (D-21) — False when a measured score misses
+    it, and None when either gated metric was never measured. That third state
+    is the point: a judge outage NULLs every score, and rendering those rows as
+    passed=false reports a total quality collapse for a run that measured
+    nothing. eval_service._meets_score_thresholds refuses a None the same way.
     """
     # 1. Fetch agent and verify ownership (same as list_eval_runs)
     agent = await db.get(Agent, agent_id)
@@ -247,8 +328,10 @@ async def get_eval_run_results(
         {"run_id": str(run_id)},
     )
 
-    # 4. Group rows by scenario_id to build per-scenario score dicts
-    #    Each row is: (scenario_id, question, source, metric, score)
+    # 4. Group rows by scenario_id. Each row is:
+    #    (scenario_id, question, source, metric, score) — score may be NULL,
+    #    which means the judge produced no valid observation for that metric.
+    #    A metric with no row at all is equally unmeasured, so both start None.
     scenarios: dict[str, dict] = {}
     for scenario_id, question, source, metric, score in rows:
         sid = str(scenario_id)
@@ -257,26 +340,45 @@ async def get_eval_run_results(
                 "scenario_id": sid,
                 "question": question or "",
                 "source": source or "generated",
-                "scores": {
-                    "faithfulness": 0.0,
-                    "answer_relevancy": 0.0,
-                    "context_precision": 0.0,
-                    "context_recall": 0.0,
-                },
+                "measured": {key: None for key in METRIC_KEYS},
             }
-        if metric in scenarios[sid]["scores"] and score is not None:
-            scenarios[sid]["scores"][metric] = float(score)
+        if metric in scenarios[sid]["measured"] and score is not None:
+            scenarios[sid]["measured"][metric] = float(score)
 
-    # 5. Compute passed flag — mirrors the 2-metric promotion gate in promote_to_verified_qa (D-21)
-    #    faithfulness >= EVAL_FAITHFULNESS_THRESHOLD AND answer_relevancy >= EVAL_RELEVANCY_THRESHOLD
+    # 5. Compute the passed flag over the two GATED metrics (D-21). Unknown is
+    #    neither a pass nor a fail: if either gated metric was not measured the
+    #    verdict is None, because "we did not measure it" must never be
+    #    rendered as "it failed" — that is what turns a judge outage into an
+    #    apparent quality collapse and an owner-initiated rollback.
     results = []
     for scen in scenarios.values():
-        s = scen["scores"]
-        passed = (
-            s["faithfulness"] >= settings.EVAL_FAITHFULNESS_THRESHOLD
-            and s["answer_relevancy"] >= settings.EVAL_RELEVANCY_THRESHOLD
+        measured = scen.pop("measured")
+        thresholds = {
+            "faithfulness": settings.EVAL_FAITHFULNESS_THRESHOLD,
+            "answer_relevancy": settings.EVAL_RELEVANCY_THRESHOLD,
+        }
+        if any(measured[key] is None for key in GATED_METRIC_KEYS):
+            passed = None
+        else:
+            passed = all(
+                measured[key] >= thresholds[key] for key in GATED_METRIC_KEYS
+            )
+        results.append(
+            {
+                **scen,
+                # The honest reading — see the module docstring.
+                "metrics": {
+                    key: {"score": measured[key], "measured": measured[key] is not None}
+                    for key in METRIC_KEYS
+                },
+                # Numeric compatibility projection: unmeasured reads 0.0.
+                "scores": {
+                    key: measured[key] if measured[key] is not None else 0.0
+                    for key in METRIC_KEYS
+                },
+                "passed": passed,
+            }
         )
-        results.append({**scen, "passed": passed})
 
     log.info(
         "get_eval_run_results.ok",
@@ -284,6 +386,10 @@ async def get_eval_run_results(
         run_id=str(run_id),
         tenant_id=str(tenant.id),
         scenario_count=len(results),
+        # The denominator, in the log too: a run whose scenarios are all
+        # unmeasured is a run that measured nothing, and it should be visible
+        # here without anyone opening the response body.
+        unmeasured_scenario_count=sum(1 for r in results if r["passed"] is None),
     )
     return {"results": results}
 

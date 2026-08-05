@@ -156,7 +156,6 @@ class TestRunEvalForAgentE2E:
             eval_run_id=eval_run_id,
             scenarios=scenarios,
             conn_str="postgresql://production-conn",
-            branch_conn_str="postgresql://branch-conn",
         )
 
         # Result structure
@@ -171,13 +170,13 @@ class TestRunEvalForAgentE2E:
         # Ragas evaluate() was called
         assert mock_evaluate.called
 
-        # Status (running + complete) and results — all on production. The
-        # branch connection string is never opened by eval_service at all.
+        # Status (running + complete) and results — all on production, which is
+        # now the only connection string this function is given at all.
         assert mock_psycopg2.connect.call_count >= 3
         opened = [c.args[0] for c in mock_psycopg2.connect.call_args_list if c.args]
-        assert "postgresql://branch-conn" not in opened, (
-            "audit D2: a run's own observations were written to the Neon branch "
-            "the caller deletes in `finally`"
+        assert set(opened) == {"postgresql://production-conn"}, (
+            "audit D2: a run's own observations were written somewhere other "
+            "than production — the branch is deleted in the caller's `finally`"
         )
 
     @patch("app.services.eval_service._get_vo")
@@ -247,7 +246,6 @@ class TestRunEvalForAgentE2E:
             eval_run_id=eval_run_id,
             scenarios=scenarios,
             conn_str="postgresql://production-conn",
-            branch_conn_str="postgresql://branch-conn",
         )
 
         assert result["promoted_count"] == 0

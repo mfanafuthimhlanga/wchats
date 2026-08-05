@@ -8,6 +8,7 @@ Tests:
 
 Coverage:
     - Happy-path response shapes (RESEARCH.md §9)
+    - Unmeasured vs measured-zero: a NULL AVG is 'unknown', never 0.0
     - IDOR prevention: 404 on agent not found, 404 on cross-tenant access
     - POST trigger: 202 on ready agent, 400 on non-ready agent, 404 on unknown agent
     - POST trigger: only agent_id dispatched to Celery (CTL-08)
@@ -68,7 +69,12 @@ def _make_mock_db_returning_none() -> AsyncMock:
 
 
 def _fake_eval_runs_rows() -> list[tuple]:
-    """Two fake eval_run rows: one complete, one failed."""
+    """Two fake eval_run rows: one measured, one that measured nothing.
+
+    Column order matches _LIST_EVAL_RUNS_SQL: id, started_at, finished_at,
+    status, scenario_count (attempted), scored_scenario_count (valid), then the
+    four metric averages. AVG is NULL when every input was NULL.
+    """
     return [
         (
             str(uuid4()),                               # id
@@ -76,6 +82,7 @@ def _fake_eval_runs_rows() -> list[tuple]:
             datetime(2026, 5, 23, 2, 4, 0, tzinfo=timezone.utc),   # finished_at
             "complete",                                  # status
             20,                                         # scenario_count
+            20,                                         # scored_scenario_count
             0.87,                                       # faithfulness
             0.91,                                       # answer_relevancy
             0.83,                                       # context_precision
@@ -87,7 +94,33 @@ def _fake_eval_runs_rows() -> list[tuple]:
             datetime(2026, 5, 22, 2, 1, 0, tzinfo=timezone.utc),
             "failed",
             0,
+            0,
             None,  # NULL scores on failed run
+            None,
+            None,
+            None,
+        ),
+    ]
+
+
+def _judge_outage_run_rows() -> list[tuple]:
+    """A run that COMPLETED and measured nothing.
+
+    The failing input behind the tri-state work: the judge LLM is down for the
+    duration, Ragas returns NaN for all four metrics on all 30 scenarios,
+    run_ragas_eval emits None, write_eval_results writes 120 rows with score
+    NULL, and the run is marked 'complete' on production. Rendered as 0.00 it
+    sits directly under yesterday's 0.94 and reads as a total quality collapse.
+    """
+    return [
+        (
+            str(uuid4()),
+            datetime(2026, 5, 24, 2, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 5, 24, 2, 6, 0, tzinfo=timezone.utc),
+            "complete",
+            30,    # attempted
+            0,     # valid — nothing scored
+            None,
             None,
             None,
             None,
@@ -183,8 +216,8 @@ class TestListEvalRuns:
             "authored_count": 15,
         }
 
-    async def test_null_scores_map_to_zero(self):
-        """NULL metric scores (failed run) map to 0.0 in aggregate_scores."""
+    async def _get_runs(self, rows: list[tuple]) -> dict:
+        """Drive GET /eval-runs over *rows* and return the parsed body."""
         fake_tenant = _make_fake_tenant()
         ready_agent = _make_ready_agent(fake_tenant)
         mock_db = _make_mock_db_returning_agent(ready_agent)
@@ -192,14 +225,12 @@ class TestListEvalRuns:
         app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
         app.dependency_overrides[get_async_db] = lambda: mock_db
 
-        fake_rows = _fake_eval_runs_rows()  # second row has NULL scores
-
         try:
             with (
                 patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
                 patch(
                     "app.api.v1.evals.asyncio.to_thread",
-                    new=AsyncMock(side_effect=[fake_rows, _fake_ledger_rows()]),
+                    new=AsyncMock(side_effect=[rows, _fake_ledger_rows()]),
                 ),
             ):
                 async with AsyncClient(
@@ -212,10 +243,64 @@ class TestListEvalRuns:
         finally:
             app.dependency_overrides.clear()
 
-        body = response.json()
-        failed_run = body["eval_runs"][1]
-        assert failed_run["status"] == "failed"
-        assert failed_run["aggregate_scores"]["faithfulness"] == 0.0
+        assert response.status_code == 200
+        return response.json()
+
+    async def test_unmeasured_metric_is_not_reported_as_a_score(self):
+        """A NULL average is 'we have no observation', never 'zero'.
+
+        This is the whole owner-facing consequence: an unmeasured run rendered
+        as 0.00 beside yesterday's 0.94 reads as a total quality collapse, and
+        the rational response to a collapse is to roll back a healthy agent.
+        """
+        body = await self._get_runs(_judge_outage_run_rows())
+        run = body["eval_runs"][0]
+
+        assert run["status"] == "complete"
+        for metric in ("faithfulness", "answer_relevancy", "context_precision",
+                       "context_recall"):
+            assert run["metrics"][metric] == {"value": None, "measured": False}, (
+                f"{metric} was never measured and the response claims a value"
+            )
+
+    async def test_a_measured_zero_is_distinguishable_from_an_unmeasured_one(self):
+        """The two states that used to be identical on the wire."""
+        measured_zero = list(_judge_outage_run_rows()[0])
+        measured_zero[5] = 30            # scored_scenario_count — all valid
+        measured_zero[6] = 0.0           # faithfulness genuinely averaged 0.0
+
+        body = await self._get_runs([measured_zero])
+        run = body["eval_runs"][0]
+
+        assert run["metrics"]["faithfulness"] == {"value": 0.0, "measured": True}
+        assert run["metrics"]["answer_relevancy"]["measured"] is False
+        assert (
+            run["metrics"]["faithfulness"] != run["metrics"]["answer_relevancy"]
+        ), "a measured 0.0 and an unmeasured metric are the same on the wire"
+
+    async def test_every_run_carries_its_validity_denominator(self):
+        """A rate without its denominator must not be constructible."""
+        body = await self._get_runs(_judge_outage_run_rows())
+        run = body["eval_runs"][0]
+
+        assert run["scenario_count"] == 30, "attempted"
+        assert run["scored_scenario_count"] == 0, "valid"
+
+    async def test_numeric_projection_is_retained_for_the_shipped_console(self):
+        """aggregate_scores stays numeric on purpose.
+
+        apps/admin types these `number` and calls .toFixed(2) on them
+        (agents/[id]/eval/page.tsx:291); every run that predates the
+        persistence fix has no eval_results rows at all, so emitting null here
+        would throw on the eval page for every tenant. The honest reading is
+        `metrics`; this key is a compatibility projection and the test says so
+        rather than letting a future reader mistake it for a measurement.
+        """
+        body = await self._get_runs(_judge_outage_run_rows())
+        run = body["eval_runs"][0]
+
+        assert run["aggregate_scores"]["faithfulness"] == 0.0
+        assert run["metrics"]["faithfulness"]["measured"] is False
 
     async def test_returns_404_when_agent_not_found(self):
         """404 when agent doesn't exist in control DB."""
@@ -446,6 +531,91 @@ class TestGetEvalRunResults:
 
         body = response.json()
         assert body["results"][0]["passed"] is True
+
+    async def _get_results(self, rows: list[tuple]) -> dict:
+        """Drive GET /eval-runs/{run_id}/results over *rows*."""
+        fake_tenant = _make_fake_tenant()
+        ready_agent = _make_ready_agent(fake_tenant)
+        mock_db = _make_mock_db_returning_agent(ready_agent)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            with (
+                patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
+                patch("app.api.v1.evals.asyncio.to_thread", new=AsyncMock(return_value=rows)),
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        f"/api/v1/agents/{ready_agent.id}/eval-runs/{uuid4()}/results",
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        return response.json()
+
+    async def test_unmeasured_scenario_is_neither_passed_nor_failed(self):
+        """A judge outage NULLs every score. Those scenarios did not fail.
+
+        write_eval_results writes the NULLs faithfully; rendering them as
+        passed=false reports 30 failing scenarios for a run that measured
+        nothing, which is the reading that gets a healthy agent rolled back.
+        """
+        scenario_id = str(uuid4())
+        rows = [
+            (scenario_id, "Q?", "generated", "faithfulness", None),
+            (scenario_id, "Q?", "generated", "answer_relevancy", None),
+            (scenario_id, "Q?", "generated", "context_precision", None),
+            (scenario_id, "Q?", "generated", "context_recall", None),
+        ]
+
+        body = await self._get_results(rows)
+        result = body["results"][0]
+
+        assert result["passed"] is None, (
+            "an unmeasured scenario was rendered as a failing one"
+        )
+        assert result["metrics"]["faithfulness"] == {"score": None, "measured": False}
+
+    async def test_a_gated_metric_that_is_missing_makes_the_verdict_unknown(self):
+        """Half a measurement is not a verdict.
+
+        faithfulness scored 0.99 and answer_relevancy produced nothing, so the
+        two-metric gate (D-21) cannot be evaluated. Reporting passed=false here
+        would attribute a failure to a metric that was never observed.
+        """
+        scenario_id = str(uuid4())
+        rows = [
+            (scenario_id, "Q?", "generated", "faithfulness", 0.99),
+            (scenario_id, "Q?", "generated", "answer_relevancy", None),
+        ]
+
+        body = await self._get_results(rows)
+        result = body["results"][0]
+
+        assert result["passed"] is None
+        assert result["metrics"]["faithfulness"]["measured"] is True
+        assert result["metrics"]["answer_relevancy"]["measured"] is False
+
+    async def test_a_measured_zero_still_fails(self):
+        """The tri-state must not turn a real zero into 'unknown' — that would
+        fail OPEN on the one reading that should stop a deploy."""
+        scenario_id = str(uuid4())
+        rows = [
+            (scenario_id, "Q?", "generated", "faithfulness", 0.0),
+            (scenario_id, "Q?", "generated", "answer_relevancy", 0.0),
+        ]
+
+        body = await self._get_results(rows)
+        result = body["results"][0]
+
+        assert result["passed"] is False
+        assert result["metrics"]["faithfulness"] == {"score": 0.0, "measured": True}
 
     async def test_returns_empty_results_when_no_rows(self):
         """Empty results list when no eval_results rows exist for the run."""

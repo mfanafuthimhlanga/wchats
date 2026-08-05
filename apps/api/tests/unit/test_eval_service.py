@@ -206,7 +206,7 @@ class TestRunRagasEval:
             }
         ]
 
-        result = run_ragas_eval(scenarios, "postgresql://branch-conn")
+        result = run_ragas_eval(scenarios)
 
         # D-02 LOCKED: from_list must receive 'reference' key (not 'ground_truths')
         assert mock_dataset_cls.from_list.called, "EvaluationDataset.from_list was not called"
@@ -241,7 +241,6 @@ class TestRunRagasEval:
         # Scenarios without reference_answer are filtered out — early exit
         result = run_ragas_eval(
             [{"question": "Q", "agent_response": "A", "retrieved_contexts": []}],
-            "postgresql://branch",
         )
 
         assert result["scores"] == []
@@ -263,6 +262,121 @@ class TestRunRagasEval:
         # D-02 LOCKED: the old 0.3.x field name must not appear
         assert "ground_truths" not in source, (
             "D-02 violation: 'ground_truths' found in eval_service.py — must use 'reference'"
+        )
+
+
+# ---------------------------------------------------------------------------
+# What the scoring half touches — and what it therefore cannot need
+# ---------------------------------------------------------------------------
+
+
+class TestScoringTouchesNoDatabase:
+    """run_ragas_eval scores rows already in memory against the judge API.
+
+    It used to accept a `branch_conn_str` marked `# noqa: ARG001` and never
+    referenced it. Everything downstream read that parameter as evidence of
+    isolation: the module docstring, the task's comments, the commit message
+    and a test that asserted the argument was passed. The Neon branch was
+    created, probed for readiness and deleted per run with no statement ever
+    executing against it, and a Neon outage could abandon an eval whose every
+    write targets production.
+    """
+
+    def test_scoring_takes_no_connection_string_because_it_opens_none(self):
+        from app.services.eval_service import run_ragas_eval
+
+        params = inspect.signature(run_ragas_eval).parameters
+        assert list(params) == ["scenarios"], (
+            f"run_ragas_eval grew a parameter it does not read: {list(params)}"
+        )
+
+    def test_scoring_issues_no_statement_against_any_database(self):
+        """Source-level absence pin, paired with the constant the caller reads.
+
+        The two must move together: the day this function opens a connection,
+        EVAL_SCORING_REQUIRES_BRANCH has to become True in the same edit, or
+        the task will happily score with no isolation at all.
+        """
+        from app.services import eval_service
+
+        # The docstring names the parameter it used to take, so only the
+        # executable half is inspected — a comment cannot open a connection.
+        source = inspect.getsource(eval_service.run_ragas_eval)
+        body = source.split('"""', 2)[-1]
+        body = "\n".join(
+            line for line in body.splitlines() if not line.strip().startswith("#")
+        )
+        for forbidden in ("psycopg2", "conn_str", "connect("):
+            assert forbidden not in body, (
+                f"run_ragas_eval references {forbidden!r} — if scoring now "
+                "touches a database, EVAL_SCORING_REQUIRES_BRANCH must be True"
+            )
+        assert eval_service.EVAL_SCORING_REQUIRES_BRANCH is False
+
+
+class TestConnectTimeouts:
+    """Every psycopg2 connection this module opens is bounded.
+
+    The failing input: a production tenant endpoint that accepts the TCP
+    connection and never completes the startup handshake (a Neon endpoint
+    mid-suspend, a black-holing path). An unbounded connect() blocks forever,
+    and nothing else would interrupt it — celery_app.py configures neither
+    task_time_limit nor soft_time_limit. The worst call site is
+    update_eval_run_status on the failure path: run_eval_suite calls it from
+    inside its `except`, which runs BEFORE the `finally` that deletes the Neon
+    eval branch, so a hang there leaks a live copy of tenant data and holds a
+    runtime worker slot indefinitely. A test can observe a raise; it cannot
+    observe a hang, which is why this is pinned at the call site instead.
+    """
+
+    def test_every_connect_call_site_passes_a_timeout(self):
+        from app.services import eval_service
+
+        source = inspect.getsource(eval_service)
+        call_sites = re.findall(r"psycopg2\.connect\(([^)]*)\)", source)
+        assert call_sites, "no psycopg2.connect call sites found — parse failure"
+        unbounded = [c for c in call_sites if "connect_timeout" not in c]
+        assert unbounded == [], (
+            f"psycopg2.connect without connect_timeout: {unbounded}"
+        )
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda svc: svc.write_eval_results(
+                "run-1",
+                [{"scenario_id": "s1", "faithfulness": 0.9}],
+                "postgresql://production",
+            ),
+            lambda svc: svc.update_eval_run_status(
+                "run-1", "failed", finished_at=True, conn_str="postgresql://production"
+            ),
+            lambda svc: svc.insert_eval_run(
+                "run-1", "m6:a", None, None, "postgresql://production"
+            ),
+        ],
+        ids=["write_eval_results", "update_eval_run_status", "insert_eval_run"],
+    )
+    def test_production_writers_bound_the_connect(self, monkeypatch, call):
+        from app.services import eval_service
+
+        kwargs_seen: list[dict] = []
+        conn = MagicMock()
+        conn.cursor.return_value = _RecordingCursor()
+
+        def _connect(conn_str, *args, **kwargs):
+            kwargs_seen.append(kwargs)
+            return conn
+
+        monkeypatch.setattr(eval_service.psycopg2, "connect", _connect)
+
+        call(eval_service)
+
+        assert kwargs_seen and all(
+            kw.get("connect_timeout") for kw in kwargs_seen
+        ), (
+            "connect() was opened with no timeout — a half-open endpoint blocks "
+            "the worker forever and the Neon branch is never deleted"
         )
 
 
@@ -617,22 +731,25 @@ class TestPersistenceSplit:
         assert conn_strings == ["postgresql://production"]
         assert "UPDATE eval_runs" in cursor.statements
 
-    def test_run_eval_for_agent_scores_on_branch_and_records_on_production(
+    def test_run_eval_for_agent_records_on_production_and_scores_off_database(
         self, monkeypatch
     ):
-        """The whole split, in one call: exactly one function sees the branch."""
+        """The whole split, in one call: one connection string, production's.
+
+        The earlier version of this test passed a second, branch connection
+        string and asserted that run_ragas_eval received it. That pinned the
+        passing of an argument the function never referenced — the isolation it
+        looked like a proof of did not exist.
+        """
         from app.services import eval_service
 
         seen: dict[str, list] = {"ragas": [], "results": [], "status": []}
 
-        monkeypatch.setattr(
-            eval_service,
-            "run_ragas_eval",
-            lambda scenarios, branch: (
-                seen["ragas"].append(branch)
-                or {"scores": [{"scenario_id": "s1"}], "means": {"faithfulness": 0.9}}
-            ),
-        )
+        def _fake_ragas(*args, **kwargs):
+            seen["ragas"].append((args, kwargs))
+            return {"scores": [{"scenario_id": "s1"}], "means": {"faithfulness": 0.9}}
+
+        monkeypatch.setattr(eval_service, "run_ragas_eval", _fake_ragas)
         monkeypatch.setattr(
             eval_service,
             "write_eval_results",
@@ -650,10 +767,16 @@ class TestPersistenceSplit:
             "run-1",
             [{"id": "s1", "question": "q", "reference_answer": "a"}],
             "postgresql://production",
-            "postgresql://branch",
         )
 
-        assert seen["ragas"] == ["postgresql://branch"]
+        assert len(seen["ragas"]) == 1
+        args, kwargs = seen["ragas"][0]
+        assert len(args) == 1 and kwargs == {}, (
+            "scoring was handed more than the scenarios it reads"
+        )
+        assert "postgresql://" not in str(args), (
+            "a connection string reached run_ragas_eval, which opens nothing"
+        )
         assert seen["results"] == ["postgresql://production"], (
             "eval_results were written to the branch, which the caller deletes"
         )
@@ -681,11 +804,24 @@ class TestPersistenceSplit:
         )
 
         with pytest.raises(RuntimeError, match="ragas exploded"):
-            eval_service.run_eval_for_agent(
-                "run-1", [], "postgresql://production", "postgresql://branch"
-            )
+            eval_service.run_eval_for_agent("run-1", [], "postgresql://production")
 
         assert ("failed", "postgresql://production") in status
+
+    def test_run_eval_for_agent_takes_no_branch_connection_string(self):
+        """Absence pin on the signature.
+
+        The parameter is what made the branch look load-bearing to every reader
+        of the call site, and a caller acted on that: it abandoned whole runs
+        when Neon could not produce a branch nothing reads.
+        """
+        from app.services import eval_service
+
+        params = set(
+            inspect.signature(eval_service.run_eval_for_agent).parameters
+        )
+        assert "branch_conn_str" not in params
+        assert "conn_str" in params
 
     def test_run_eval_for_agent_does_not_promote(self):
         """Promotion is not in the sequence at all — restoring it is a decision
@@ -959,6 +1095,95 @@ class TestBuildEvalRunConfig:
             )
 
         assert hashes[0] == hashes[1]
+
+    def test_config_says_the_agent_was_not_invoked(self, config_env):
+        """The tuple certifies a configuration; this key says whether the run
+        exercised it. Without it the tuple makes an uncomparable measurement
+        look comparable."""
+        from app.services import eval_service
+
+        config = eval_service.build_eval_run_config("a", "postgresql://p")["config"]
+
+        assert config["agent_invoked"] is False
+        assert config["scored_response_source"] == "reference_answer"
+
+    def test_config_names_every_dimension_the_score_cannot_see(self, config_env):
+        """The failing input: change AGENT_TURN_MODEL and run two nightly evals.
+
+        Two eval_runs rows then differ on exactly one recorded dimension
+        (config.model_id) and carry statistically identical scores, because the
+        metric is invariant to the model while the agent is never invoked. The
+        reader this tuple was built for concludes the model swap is
+        quality-neutral and ships it. Naming the dimensions is what makes that
+        conclusion unavailable.
+        """
+        from app.services import eval_service
+
+        config = eval_service.build_eval_run_config("a", "postgresql://p")["config"]
+        excluded = set(config["dimensions_not_exercised"])
+
+        for dimension in (
+            "prompt_version_id",
+            "model_id",
+            "retrieval_config_hash",
+            "envelope_hash",
+            "corpus_chunk_count",
+        ):
+            assert dimension in excluded, (
+                f"config records {dimension} without recording that the score "
+                "is invariant to it"
+            )
+
+    def test_the_judge_model_is_not_excluded_because_the_judge_does_run(
+        self, config_env
+    ):
+        """The exclusion list is a claim about this harness, not a blanket
+        disclaimer. A judge change really does move every score."""
+        from app.services import eval_service
+
+        config = eval_service.build_eval_run_config("a", "postgresql://p")["config"]
+        assert "judge_model_id" not in config["dimensions_not_exercised"]
+
+    def test_nothing_is_excluded_once_the_agent_is_invoked(
+        self, monkeypatch, config_env
+    ):
+        """The key is derived from EVAL_INVOKES_AGENT, not hardcoded — so
+        fixing D1 clears the exclusion instead of leaving a stale disclaimer
+        that a reader would learn to ignore."""
+        from app.services import eval_service
+
+        monkeypatch.setattr(eval_service, "EVAL_INVOKES_AGENT", True)
+        config = eval_service.build_eval_run_config("a", "postgresql://p")["config"]
+
+        assert config["agent_invoked"] is True
+        assert config["dimensions_not_exercised"] == []
+
+    def test_the_task_still_scores_the_reference_answer_against_itself(self):
+        """Pins EVAL_INVOKES_AGENT to what the task actually builds (D1).
+
+        A constant that says "the agent was not invoked" is only worth having
+        if it cannot drift from the code it describes. eval.py builds each
+        sample's agent_response from the same row column as its
+        reference_answer; while that holds, EVAL_INVOKES_AGENT must be False,
+        and the day it stops holding this test forces the constant to move.
+        """
+        from app.services import eval_service
+        from app.worker.tasks.runtime import eval as eval_task
+
+        source = inspect.getsource(eval_task)
+        reference_column = re.search(r'"reference_answer": (row\[\d+\])', source)
+        response_column = re.search(r'"agent_response": (row\[\d+\])', source)
+        assert reference_column and response_column, (
+            "could not find the scenario dict in eval.py — this test reads the "
+            "task rather than restating it, so a parse failure is a real failure"
+        )
+
+        scores_itself = reference_column.group(1) == response_column.group(1)
+        assert scores_itself is not eval_service.EVAL_INVOKES_AGENT, (
+            "eval.py and EVAL_INVOKES_AGENT disagree about whether the agent "
+            "produces the scored response — every eval_runs.config row is "
+            "certifying dimensions on the strength of that constant"
+        )
 
     def test_promotion_decision_is_copied_not_shared(self, config_env):
         """A caller mutating the returned config must not poison the constant."""

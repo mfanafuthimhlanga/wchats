@@ -15,12 +15,18 @@ JOIN always yielded NULL metrics.
 
 Results are OBSERVATIONS ABOUT a run, not tenant data. The split is now:
 
-    scoring (run_ragas_eval)                 -> the branch, unchanged
     eval_runs insert / status / eval_results -> PRODUCTION (`conn_str`)
+    scoring (run_ragas_eval)                 -> no database at all
 
-A run must end in a terminal state on production or it never happened. The
-branch is still created, still isolates the scoring side, and is still deleted
-on every path.
+The second line is a correction to an earlier version of this docstring, which
+claimed scoring ran "against the branch". It never did: run_ragas_eval builds
+an EvaluationDataset out of rows that are already in memory and calls the judge
+API, and the connection string it used to accept was never referenced anywhere
+in its body. Saying "scoring runs against the branch" made a resource nothing
+reads look load-bearing, which is how a Neon outage came to be able to abandon
+an eval that needs no Neon branch. See EVAL_SCORING_REQUIRES_BRANCH below.
+
+A run must end in a terminal state on production or it never happened.
 
 Trust tiers and verified_qa promotion (D5 / the label hierarchy)
 ---------------------------------------------------------------
@@ -87,6 +93,74 @@ HAIKU_MODEL = "claude-haiku-4-5"
 # Note: Ragas 0.4.x collections metrics require an InstructorLLM at construction time.
 # Metrics are therefore instantiated inside run_ragas_eval(), not at module level.
 # The four metrics used are: Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall (D-04)
+
+
+# ---------------------------------------------------------------------------
+# What this harness measures — and what it does not (audit D1)
+# ---------------------------------------------------------------------------
+# Two properties of the shipped scoring half that every consumer of a score has
+# to know. They are constants rather than prose so they can be stamped on the
+# run record and pinned by a test, instead of being rediscovered by reading
+# three files.
+#
+# 1. THE AGENT IS NEVER INVOKED. eval.py builds every sample with
+#    agent_response = reference_answer, so Ragas scores the reference answer
+#    against the contexts that reference answer was written from. Faithfulness
+#    and AnswerRelevancy approach 1.0 by construction, and — the part that
+#    matters for the configuration tuple — the score is INVARIANT to the
+#    agent's model, prompt, retrieval configuration, capability envelope and
+#    corpus. Recording those dimensions on a run without recording this makes
+#    an uncomparable measurement look comparable: two runs differing only on
+#    config.model_id would carry statistically identical scores and read as
+#    "the model swap was quality-neutral". Fixing D1 is not this phase's scope;
+#    hiding it would be worse than leaving it.
+#
+# 2. SCORING TOUCHES NO DATABASE. run_ragas_eval executes no statement against
+#    anything — it takes rows already in memory and calls the judge API. The
+#    Neon branch the caller creates per run (D-10) is therefore isolation held
+#    IN RESERVE for the day this harness starts invoking retrieval or the agent
+#    against tenant data, not isolation in use. The caller reads
+#    EVAL_SCORING_REQUIRES_BRANCH to decide whether a branch it cannot create
+#    is fatal; while it is False, abandoning a run over that branch would throw
+#    away a night's measurement for a resource nothing reads.
+
+EVAL_INVOKES_AGENT = False
+
+# Where the text scored as the "response" comes from while D1 stands.
+EVAL_SCORED_RESPONSE_SOURCE = "reference_answer"
+
+# Dimensions of the run record — config keys plus the prompt_version_id column —
+# that cannot influence a score while EVAL_INVOKES_AGENT is False. judge_model_id
+# is deliberately NOT here: the judge does run, so a judge change does move the
+# numbers.
+AGENT_DEPENDENT_DIMENSIONS: list[str] = [
+    "prompt_version_id",
+    "model_id",
+    "retrieval_config_hash",
+    "envelope_hash",
+    "corpus_chunk_count",
+    "embedding_provider",
+    "embedding_model_id",
+]
+
+# Does the scoring half execute any statement against a database? Flip this the
+# day it does, and the caller's branch handling becomes strict again in the same
+# edit — the branch is what stands between an agent-invoking eval and production
+# tenant data.
+EVAL_SCORING_REQUIRES_BRANCH = False
+
+
+# libpq connect_timeout, in seconds, for every psycopg2 connection this module
+# opens. It is not decoration: a Neon endpoint mid-suspend, or a black-holing
+# network path, accepts the TCP connection and never completes the startup
+# handshake, and an unbounded connect() then blocks forever. Nothing else in
+# this system would interrupt it — celery_app.py sets neither task_time_limit
+# nor soft_time_limit. The write that matters most is the one on the FAILURE
+# path: run_eval_suite calls update_eval_run_status from inside its `except`,
+# which runs BEFORE the `finally` that deletes the Neon eval branch, so a
+# blocked connect there leaks a live copy of tenant data indefinitely and holds
+# a runtime worker slot with it. Same value as the task's own reads.
+CONNECT_TIMEOUT_S = 5
 
 
 # ---------------------------------------------------------------------------
@@ -189,24 +263,32 @@ def is_promotable_to_verified_qa(source: str | None) -> bool:
 # Task 1: Ragas evaluation harness
 # ---------------------------------------------------------------------------
 
-def run_ragas_eval(scenarios: list[dict], branch_conn_str: str) -> dict:  # noqa: ARG001
+def run_ragas_eval(scenarios: list[dict]) -> dict:
     """Run Ragas 0.4.x evaluation over a list of eval scenarios.
 
     Builds an EvaluationDataset from the scenarios, calls evaluate() with
     the four M6 metrics, and returns per-scenario scores plus per-metric means.
 
     D-02 LOCKED: Dataset field name is 'reference' (field was renamed in Ragas 0.4.x).
-    The branch_conn_str parameter is accepted but not used by the Ragas harness
-    itself — it is used by write_eval_results() and promote_to_verified_qa().
+
+    NO DATABASE IS TOUCHED HERE. Every field the dataset needs is already in the
+    scenario dicts, and the only remote call is to the judge API. This function
+    used to accept a `branch_conn_str` it never referenced (`# noqa: ARG001`),
+    which is how the Neon branch came to look load-bearing to every reader of
+    the call site — including a caller that abandoned an entire run when the
+    branch could not be created. The parameter is gone rather than renamed: an
+    unused connection string is exactly the thing that invites a false isolation
+    claim, and its ABSENCE is what
+    test_scoring_takes_no_connection_string_because_it_opens_none pins.
 
     Args:
         scenarios: List of scenario dicts. Each must contain:
             - question (str): The user question.
             - reference_answer (str): Ground-truth answer (D-02).
             - agent_response (str, optional): The agent's generated answer.
+              While EVAL_INVOKES_AGENT is False this is the reference answer
+              itself (audit D1), so the metrics below are self-scoring.
             - retrieved_contexts (list[str], optional): Retrieved chunk contents.
-        branch_conn_str: Neon branch connection string for this eval run
-            (passed through for reference; eval writes happen via branch).
 
     Returns:
         Dict with two keys:
@@ -346,7 +428,7 @@ def write_eval_results(
         "context_recall",
     ]
 
-    conn = psycopg2.connect(conn_str)
+    conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
     try:
         with conn.cursor() as cur:
             for score in scenario_scores:
@@ -408,7 +490,7 @@ def update_eval_run_status(
             WHERE id = %(id)s::uuid
         """
 
-    conn = psycopg2.connect(conn_str)
+    conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
     try:
         with conn.cursor() as cur:
             cur.execute(sql, {"status": status, "id": eval_run_id})
@@ -455,6 +537,15 @@ def build_eval_run_config(agent_id: str, conn_str: str) -> dict:
     compared and "what changed?" is unanswerable — which is the whole mechanism
     of continuous improvement. Every dimension below was already captured
     somewhere in the system; none of them was ever stamped on the run.
+
+    WHAT THE TUPLE CERTIFIES IS NOT WHAT THE RUN EXERCISED. The dimensions
+    describe the configuration the agent is deployed with; while
+    EVAL_INVOKES_AGENT is False the scores are invariant to all of them
+    (audit D1), and `config["agent_invoked"]` / `config["scored_response_source"]`
+    / `config["dimensions_not_exercised"]` say so on every run. That pairing is
+    load-bearing: a tuple that records a dimension the measurement cannot see
+    turns "two runs, one difference, identical scores" into a false finding of
+    quality-neutrality.
 
     Read from the same sources the deploy gate already reads, so a checklist and
     an eval run can never disagree about what the live configuration was:
@@ -568,8 +659,10 @@ def build_eval_run_config(agent_id: str, conn_str: str) -> dict:
         )
 
     config = {
-        # The model that serves a customer turn — what the scores are an
-        # assertion about. Read from the one constant run_agent_turn uses.
+        # The model that serves a customer turn, read from the one constant
+        # run_agent_turn uses. It describes the DEPLOYED configuration; while
+        # agent_invoked below is False it is not a dimension these scores
+        # measure — see dimensions_not_exercised.
         "model_id": AGENT_TURN_MODEL,
         # The model grading the run. A different dimension entirely: a judge
         # change moves every score without the agent changing at all.
@@ -585,6 +678,25 @@ def build_eval_run_config(agent_id: str, conn_str: str) -> dict:
         ),
         # The promotion policy in force for this run, stated rather than implied.
         "verified_qa_promotion": dict(VERIFIED_QA_PROMOTION_DECISION),
+        # --- What the run actually exercised (audit D1) -----------------
+        # The keys above certify the configuration the agent is DEPLOYED with.
+        # These three say which of them the score is a function of, and the
+        # honest answer today is: none. eval.py scores each scenario's
+        # reference answer against the contexts it was written from, so no
+        # agent turn, no retrieval and no capability envelope participates.
+        # Without this, the tuple actively misleads: two nightly runs
+        # differing on exactly one recorded dimension (config.model_id, say)
+        # would carry statistically identical scores, and the reader the tuple
+        # was built for would conclude the model swap is quality-neutral and
+        # ship it. A configuration tuple that makes an uncomparable
+        # measurement look comparable is worse than no tuple at all, so the
+        # exclusion travels with every run rather than living in an audit
+        # nobody queries.
+        "agent_invoked": EVAL_INVOKES_AGENT,
+        "scored_response_source": EVAL_SCORED_RESPONSE_SOURCE,
+        "dimensions_not_exercised": (
+            [] if EVAL_INVOKES_AGENT else list(AGENT_DEPENDENT_DIMENSIONS)
+        ),
         # Names the dimensions that could not be READ. Empty list = every
         # dimension was collected; a None value with nothing here means the
         # dimension was read and is genuinely absent.
@@ -639,7 +751,7 @@ def insert_eval_run(
         "config": json.dumps(config) if config is not None else None,
     }
 
-    conn = psycopg2.connect(conn_str, connect_timeout=5)
+    conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
     try:
         try:
             with conn.cursor() as cur:
@@ -824,7 +936,7 @@ def promote_to_verified_qa(
     exists_sql = "SELECT id FROM verified_qa WHERE question = %(question)s LIMIT 1"
 
     promoted_count = 0
-    conn = psycopg2.connect(conn_str)
+    conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
     try:
         with conn.cursor() as cur:
             for scenario, score in candidates:
@@ -896,18 +1008,18 @@ def run_eval_for_agent(
     eval_run_id: str,
     scenarios: list[dict],
     conn_str: str,
-    branch_conn_str: str,
 ) -> dict:
-    """Run a full eval cycle for one agent: score on the branch, record on production.
+    """Run a full eval cycle for one agent: score in memory, record on production.
 
-    Takes BOTH connection strings because the two halves have different
-    destinations and conflating them is the defect this signature exists to make
-    impossible. Neither is ever stored in the DB or passed as a Celery argument
-    (CLAUDE.md CTL-08) — both are locals inside the caller's task.
+    Takes ONE connection string, and it is production's. The signature used to
+    take a second, `branch_conn_str`, handed straight to run_ragas_eval, which
+    never referenced it — so the parameter documented an isolation boundary that
+    did not exist. A parameter no statement is ever issued against is not a
+    safety property, it is a claim, and this one was false.
 
     Sequence:
         1. update_eval_run_status → 'running'   (production)
-        2. run_ragas_eval — four metrics         (branch)
+        2. run_ragas_eval — four metrics         (no database; judge API only)
         3. write_eval_results                    (production)
         4. update_eval_run_status → 'complete'   (production)
 
@@ -921,7 +1033,6 @@ def run_eval_for_agent(
         eval_run_id: UUID string — the eval_runs row already created by caller.
         scenarios: List of scenario dicts from the eval_scenarios table.
         conn_str: PRODUCTION tenant connection string — status + results land here.
-        branch_conn_str: Neon branch connection string — scoring runs here.
 
     Returns:
         Dict: {
@@ -935,7 +1046,7 @@ def run_eval_for_agent(
     update_eval_run_status(eval_run_id, "running", finished_at=False, conn_str=conn_str)
 
     try:
-        result = run_ragas_eval(scenarios, branch_conn_str)
+        result = run_ragas_eval(scenarios)
         scenario_scores = result["scores"]
         means = result["means"]
 
