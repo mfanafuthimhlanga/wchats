@@ -1,20 +1,55 @@
 """Ragas 0.4.x eval harness for W Chats M6.
 
 Measures Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall per scenario.
-Runs against a Neon branch connection string (never production — D-10).
-Promotes passing scenarios to verified_qa (D-21/D-22/D-23).
+
+Where each write lands (the persistence split — measurement-layer audit D2)
+---------------------------------------------------------------------------
+D-10 says an eval must never mutate tenant data, and that is why a Neon branch
+is created per run. The original execution read that as "everything the eval
+touches goes to the branch", so `eval_results`, the terminal `eval_runs` status
+and the verified_qa promotion were all written to a branch that the task then
+deletes in `finally`. Production therefore never learned that a run finished:
+every successful run left its `eval_runs` row at status='running' forever, and
+`eval_results` never existed on production at all, which is why evals.py's LEFT
+JOIN always yielded NULL metrics.
+
+Results are OBSERVATIONS ABOUT a run, not tenant data. The split is now:
+
+    scoring (run_ragas_eval)                 -> the branch, unchanged
+    eval_runs insert / status / eval_results -> PRODUCTION (`conn_str`)
+
+A run must end in a terminal state on production or it never happened. The
+branch is still created, still isolates the scoring side, and is still deleted
+on every path.
+
+Trust tiers and verified_qa promotion (D5 / the label hierarchy)
+---------------------------------------------------------------
+`verified_qa` rows are served to real customers by retrieval_service's
+verified_qa_lookup BEFORE hybrid search, at 0.93 cosine similarity. Promotion
+used to write any scenario clearing 0.90/0.90 — including a `source='generated'`
+row whose "reference answer" was written by Haiku, and a `source='production'`
+row whose answer is the one a human FLAGGED AS FAILING. Only the branch write
+(above) stopped those rows reaching customers, by accident.
+
+Promotion is therefore gated on the label trust hierarchy below and is
+UNREACHABLE for every scenario source the shipped schema allows. That is a
+deliberate disablement recorded on each run in `eval_runs.config`, not an
+oversight: re-enabling it is a decision that needs human-verified labels behind
+it, not a side effect of repairing persistence.
 
 Design notes:
 - All Ragas imports use the 0.4.x path (ragas.metrics.collections) — CLAUDE.md constraint.
 - Dataset field is 'reference' (renamed from the old 0.3.x name in 0.4.x).
 - LLM wrapper uses InstructorLLM(instructor.from_anthropic(Anthropic())) — 0.4.x collections requirement.
 - All DB writes use psycopg2 try/finally/close pattern matching retrieval_service.py.
-- verified_qa promotion writes source='sandbox_test', promoted_by='system' (D-22).
+- verified_qa promotion writes source='sandbox_test', promoted_by='system' (D-22) —
+  retained for the day a promotable trust tier exists; unreachable today.
 - question_vector populated via Voyage embed at promotion time (D-23).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 
@@ -22,6 +57,7 @@ import anthropic
 import instructor
 import psycopg2
 import structlog
+from sqlalchemy import text as sa_text
 
 # ---------------------------------------------------------------------------
 # Ragas 0.4.x imports — D-01 LOCKED: exact import path
@@ -36,7 +72,8 @@ from ragas.metrics.collections import (
 from ragas import EvaluationDataset, evaluate
 from ragas.llms import InstructorLLM
 
-from app.core.config import settings
+from app.core.config import AGENT_TURN_MODEL, settings
+from app.core.database import get_sync_db
 from app.services.embedding_service import _get_vo
 
 log = structlog.get_logger(__name__)
@@ -50,6 +87,102 @@ HAIKU_MODEL = "claude-haiku-4-5"
 # Note: Ragas 0.4.x collections metrics require an InstructorLLM at construction time.
 # Metrics are therefore instantiated inside run_ragas_eval(), not at module level.
 # The four metrics used are: Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall (D-04)
+
+
+# ---------------------------------------------------------------------------
+# Label trust hierarchy
+# ---------------------------------------------------------------------------
+# A label's authority is a property of WHO WROTE IT, not of how well it scores.
+# Ranked, lowest authority first:
+#
+#   unknown          (-1) — an unrecognised provenance. Ranked BELOW model
+#                           output on purpose: an unmapped source is a source
+#                           nobody has reasoned about, so it fails closed.
+#   model_generated   (0) — a model wrote the answer. Exploratory metrics only.
+#                           Never gates a deploy, never served to a customer.
+#   customer_negative (1) — a customer thumbs-down, a mined production failure,
+#                           an owner-filed failing trace, a red-team finding.
+#                           These label a NEGATIVE. They identify a question the
+#                           agent got wrong; they never assert what the right
+#                           answer is, so they can never become a served answer.
+#   human_verified    (2) — a human read a candidate answer and confirmed it.
+#   human_authored    (3) — a human wrote the answer.
+#
+# Nothing in the shipped system produces tier >= human_verified yet: there is no
+# correction UI. That is precisely why VERIFIED_QA_MIN_TRUST_TIER is set there —
+# promotion is unreachable BY CONSTRUCTION rather than by an `if False`, and it
+# becomes reachable the moment a genuinely human-verified source exists, without
+# anyone having to remember to remove a flag.
+LABEL_TRUST_TIERS: dict[str, int] = {
+    "unknown": -1,
+    "model_generated": 0,
+    "customer_negative": 1,
+    "human_verified": 2,
+    "human_authored": 3,
+}
+
+# eval_scenarios.source -> trust tier. The key set must stay in step with the
+# widened CHECK constraint in alembic_tenant 0011
+# (source IN ('generated', 'mined', 'production', 'red_team')); a new source
+# value that lands without a tier here resolves to 'unknown' and is refused.
+SCENARIO_SOURCE_TRUST_TIER: dict[str, str] = {
+    # scenario_service.generate_eval_suite_for_agent — Haiku wrote the answer.
+    "generated": "model_generated",
+    # scenario_service.mine_production_scenarios — a production failure, stored
+    # with reference_answer='' because no ground truth exists for it.
+    "mined": "customer_negative",
+    # bench.promote_trace_to_scenario — an owner FILED this trace as failing.
+    # The agent turn attached to it is a known-BAD answer, not a label.
+    "production": "customer_negative",
+    # red_team.py finding containment — an attack that succeeded.
+    "red_team": "customer_negative",
+}
+
+# The minimum tier a scenario must carry before its answer may be written into
+# verified_qa, which retrieval_service serves to customers ahead of retrieval.
+VERIFIED_QA_MIN_TRUST_TIER = "human_verified"
+
+# Recorded verbatim on every run in eval_runs.config so the disablement is a
+# statement in the run record with a reason attached, rather than an absence a
+# future reader has to infer. Copied (never handed out by reference) at every
+# use site so a caller mutating the returned dict cannot poison the constant.
+VERIFIED_QA_PROMOTION_DECISION: dict = {
+    "enabled": False,
+    "min_trust_tier": VERIFIED_QA_MIN_TRUST_TIER,
+    "reason": (
+        "verified_qa is served to customers ahead of retrieval, so only a "
+        "human-verified or human-authored answer may enter it. Every scenario "
+        "source the schema currently allows is model-generated or labels a "
+        "negative, so no row is promotable until a correction UI produces "
+        "human-verified answers."
+    ),
+}
+
+
+def scenario_trust_tier(source: str | None) -> str:
+    """Return the label trust tier for an eval_scenarios.source value.
+
+    An unrecognised (or missing) source resolves to 'unknown', which ranks
+    BELOW 'model_generated' — a provenance nobody has classified is treated as
+    less trustworthy than one that has been classified as untrustworthy.
+    """
+    return SCENARIO_SOURCE_TRUST_TIER.get(source or "", "unknown")
+
+
+def trust_tier_rank(tier: str) -> int:
+    """Return the numeric rank of a trust tier; an unknown name ranks lowest."""
+    return LABEL_TRUST_TIERS.get(tier, LABEL_TRUST_TIERS["unknown"])
+
+
+def is_promotable_to_verified_qa(source: str | None) -> bool:
+    """True iff a scenario from *source* may have its answer served to customers.
+
+    Returns False for every source value the shipped schema allows. This is the
+    single gate; callers must not reimplement the comparison.
+    """
+    return trust_tier_rank(scenario_trust_tier(source)) >= trust_tier_rank(
+        VERIFIED_QA_MIN_TRUST_TIER
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -174,9 +307,9 @@ def run_ragas_eval(scenarios: list[dict], branch_conn_str: str) -> dict:  # noqa
 def write_eval_results(
     eval_run_id: str,
     scenario_scores: list[dict],
-    branch_conn_str: str,
+    conn_str: str,
 ) -> None:
-    """Insert per-scenario, per-metric rows into eval_results on the tenant DB branch.
+    """Insert per-scenario, per-metric rows into eval_results on PRODUCTION.
 
     The eval_results table exists from migration 0001:
       id UUID, eval_run_id UUID, scenario_id TEXT, metric TEXT, score NUMERIC, detail JSONB
@@ -184,12 +317,18 @@ def write_eval_results(
     One row is inserted per (scenario, metric) pair — four rows per scenario for
     Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall.
 
+    The third argument used to be named `branch_conn_str` and was given the Neon
+    branch, which the caller then deleted — so these rows never survived the run
+    that produced them (audit D2). It is named `conn_str` now because the name
+    is load-bearing: results are observations about a run, they belong on
+    production, and a parameter named after the branch invites the old bug back.
+
     Uses psycopg2 try/finally/close pattern matching retrieval_service.py (D-11).
 
     Args:
         eval_run_id: UUID string of the eval_runs row.
         scenario_scores: List of per-scenario score dicts from run_ragas_eval().
-        branch_conn_str: Neon branch connection string (never production — D-10).
+        conn_str: PRODUCTION tenant connection string — never the eval branch.
     """
     if not scenario_scores:
         log.info("write_eval_results.no_scores")
@@ -207,7 +346,7 @@ def write_eval_results(
         "context_recall",
     ]
 
-    conn = psycopg2.connect(branch_conn_str)
+    conn = psycopg2.connect(conn_str)
     try:
         with conn.cursor() as cur:
             for score in scenario_scores:
@@ -235,18 +374,26 @@ def update_eval_run_status(
     eval_run_id: str,
     status: str,
     finished_at: bool,
-    branch_conn_str: str,
+    conn_str: str,
 ) -> None:
-    """Update the status (and optionally finished_at) on an eval_runs row.
+    """Update the status (and optionally finished_at) on an eval_runs row on PRODUCTION.
 
-    The eval_runs table exists from migration 0001:
+    The eval_runs table exists from migration 0001 (+ 0013's two nullable
+    attribution columns, which this function does not touch):
       id UUID, kind TEXT, started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ, status TEXT
+
+    A run must reach a terminal state on production or it never happened. The
+    previous execution sent every terminal status to the branch, so a production
+    row could only ever say 'running' (successful run) or 'failed' (and only for
+    the one failure mode that fires before the branch exists) — a successful run
+    was indistinguishable from a hung one. Hence `conn_str`, not
+    `branch_conn_str`.
 
     Args:
         eval_run_id: UUID string of the eval_runs row.
         status: New status value (e.g. 'running', 'complete', 'failed').
         finished_at: When True, sets finished_at = NOW().
-        branch_conn_str: Neon branch connection string.
+        conn_str: PRODUCTION tenant connection string — never the eval branch.
     """
     if finished_at:
         sql = """
@@ -261,7 +408,7 @@ def update_eval_run_status(
             WHERE id = %(id)s::uuid
         """
 
-    conn = psycopg2.connect(branch_conn_str)
+    conn = psycopg2.connect(conn_str)
     try:
         with conn.cursor() as cur:
             cur.execute(sql, {"status": status, "id": eval_run_id})
@@ -273,41 +420,386 @@ def update_eval_run_status(
 
 
 # ---------------------------------------------------------------------------
+# The configuration tuple (migration 0013)
+# ---------------------------------------------------------------------------
+
+_INSERT_EVAL_RUN_WITH_CONFIG_SQL = """
+    INSERT INTO eval_runs (id, kind, started_at, status, prompt_version_id, config)
+    VALUES (%(id)s::uuid, %(kind)s, NOW(), 'running',
+            %(prompt_version_id)s::uuid, %(config)s::jsonb)
+"""
+
+# The pre-0013 shape. Used only when the wide INSERT raises UndefinedColumn.
+_INSERT_EVAL_RUN_BASE_SQL = """
+    INSERT INTO eval_runs (id, kind, started_at, status)
+    VALUES (%(id)s::uuid, %(kind)s, NOW(), 'running')
+"""
+
+
+def _canonical_hash(payload: dict) -> str:
+    """sha256 of a dict serialised with sorted keys and no insignificant space.
+
+    Same canonicalisation discipline as capability_service.canonical_envelope_hash:
+    key order and whitespace must never vary the digest, or two identical
+    configurations would compare as different and every run would look like a
+    change.
+    """
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def build_eval_run_config(agent_id: str, conn_str: str) -> dict:
+    """Collect the configuration tuple an eval run is an assertion about.
+
+    Without this, two runs that differ on exactly one dimension cannot be
+    compared and "what changed?" is unanswerable — which is the whole mechanism
+    of continuous improvement. Every dimension below was already captured
+    somewhere in the system; none of them was ever stamped on the run.
+
+    Read from the same sources the deploy gate already reads, so a checklist and
+    an eval run can never disagree about what the live configuration was:
+    `deployment_service._compute_envelope_hash_sync` for the envelope hash (NOT
+    a second projection of capability_envelopes — a divergent projection would
+    silently produce a different hash for identical configuration) and
+    `_fetch_corpus_stats_sync` for the corpus figure. Both are imported inside
+    the function: deployment_service pulls in the Claude Agent SDK at module
+    scope, and eval_service sits on the FastAPI route import chain via
+    api/v1/evals.py, so the cost is paid only by the Celery task that needs it.
+
+    MISSING DATA IS NEVER PASSING DATA. Each dimension is collected
+    independently and a dimension that could not be READ is recorded as None
+    AND named in `config["unavailable"]`. That is deliberately distinguishable
+    from a dimension that was read and is genuinely absent — an agent with no
+    production prompt version has prompt_version_id None with nothing in
+    `unavailable`, and those are different claims. Nothing here raises: an
+    unattributable run is worth less than an attributed one but far more than
+    no run at all, so a collector failure degrades attribution, never the run.
+
+    Args:
+        agent_id: UUID string of the agent being evaluated.
+        conn_str: PRODUCTION tenant connection string (the corpus figure
+            describes the live corpus, not the branch's copy of it).
+
+    Returns:
+        {"prompt_version_id": str | None, "config": dict} — ready to hand
+        straight to insert_eval_run().
+    """
+    unavailable: list[str] = []
+
+    # --- prompt_version_id (control DB) --------------------------------
+    # The PRODUCTION label specifically, never resolve_prompt_version's
+    # weighted canary pick: an eval must be reproducible, and a run whose
+    # attribution was decided by random.random() cannot be compared to the
+    # next one. None here means "no production prompt version exists" — a
+    # real state (the agent still runs off its live soul_* columns).
+    prompt_version_id: str | None = None
+    try:
+        with get_sync_db() as db:
+            row = db.execute(
+                sa_text(
+                    "SELECT id FROM prompt_versions "
+                    "WHERE agent_id = :agent_id AND label = 'production' "
+                    "ORDER BY version_number DESC LIMIT 1"
+                ),
+                {"agent_id": agent_id},
+            ).first()
+        prompt_version_id = str(row[0]) if row else None
+    except Exception as exc:
+        unavailable.append("prompt_version_id")
+        log.warning(
+            "build_eval_run_config.prompt_version_unavailable",
+            agent_id=agent_id,
+            error=str(exc),
+        )
+
+    # --- retrieval_config_hash (control DB: agents.retrieval_strategy) --
+    # Hashed through RetrievalStrategy.model_validate so that an absent key
+    # and an explicitly-default key produce the SAME hash — otherwise two
+    # identically-behaving agents would appear to differ.
+    retrieval_config_hash: str | None = None
+    try:
+        from app.services.retrieval_service import RetrievalStrategy  # noqa: PLC0415
+
+        with get_sync_db() as db:
+            row = db.execute(
+                sa_text("SELECT retrieval_strategy FROM agents WHERE id = :agent_id"),
+                {"agent_id": agent_id},
+            ).first()
+        strategy = RetrievalStrategy.model_validate((row[0] if row else None) or {})
+        retrieval_config_hash = _canonical_hash(strategy.model_dump(mode="json"))
+    except Exception as exc:
+        unavailable.append("retrieval_config_hash")
+        log.warning(
+            "build_eval_run_config.retrieval_config_unavailable",
+            agent_id=agent_id,
+            error=str(exc),
+        )
+
+    # --- envelope_hash (control DB: capability_envelopes) ---------------
+    envelope_hash: str | None = None
+    try:
+        from app.services.deployment_service import (  # noqa: PLC0415
+            _compute_envelope_hash_sync,
+        )
+
+        envelope_hash = _compute_envelope_hash_sync(agent_id)
+    except Exception as exc:
+        unavailable.append("envelope_hash")
+        log.warning(
+            "build_eval_run_config.envelope_hash_unavailable",
+            agent_id=agent_id,
+            error=str(exc),
+        )
+
+    # --- corpus_chunk_count (tenant DB, production) ---------------------
+    corpus_chunk_count: int | None = None
+    try:
+        from app.services.deployment_service import (  # noqa: PLC0415
+            _fetch_corpus_stats_sync,
+        )
+
+        corpus_chunk_count = _fetch_corpus_stats_sync(agent_id, conn_str)["chunk_count"]
+    except Exception as exc:
+        unavailable.append("corpus_chunk_count")
+        log.warning(
+            "build_eval_run_config.corpus_stats_unavailable",
+            agent_id=agent_id,
+            error=str(exc),
+        )
+
+    config = {
+        # The model that serves a customer turn — what the scores are an
+        # assertion about. Read from the one constant run_agent_turn uses.
+        "model_id": AGENT_TURN_MODEL,
+        # The model grading the run. A different dimension entirely: a judge
+        # change moves every score without the agent changing at all.
+        "judge_model_id": HAIKU_MODEL,
+        "retrieval_config_hash": retrieval_config_hash,
+        "envelope_hash": envelope_hash,
+        "corpus_chunk_count": corpus_chunk_count,
+        "embedding_provider": settings.EMBEDDING_PROVIDER,
+        "embedding_model_id": (
+            settings.BEDROCK_EMBED_MODEL_ID
+            if settings.EMBEDDING_PROVIDER == "bedrock"
+            else "voyage-3"
+        ),
+        # The promotion policy in force for this run, stated rather than implied.
+        "verified_qa_promotion": dict(VERIFIED_QA_PROMOTION_DECISION),
+        # Names the dimensions that could not be READ. Empty list = every
+        # dimension was collected; a None value with nothing here means the
+        # dimension was read and is genuinely absent.
+        "unavailable": unavailable,
+    }
+
+    log.info(
+        "build_eval_run_config.complete",
+        agent_id=agent_id,
+        prompt_version_id=prompt_version_id,
+        unavailable=unavailable,
+    )
+    return {"prompt_version_id": prompt_version_id, "config": config}
+
+
+def insert_eval_run(
+    run_id: str,
+    kind: str,
+    prompt_version_id: str | None,
+    config: dict | None,
+    conn_str: str,
+) -> bool:
+    """Insert the eval_runs row on PRODUCTION with its configuration tuple.
+
+    Migration 0013 added `prompt_version_id` and `config` as nullable columns.
+    Tenant DBs are migrated with `alembic upgrade head` at PROVISION time only,
+    so a tenant provisioned before 0013 does not have them until it is
+    re-migrated — and a downgrade removes them again. Writing the wide INSERT
+    unconditionally would turn "this tenant is a migration behind" into "no eval
+    can start at all", which is a far worse failure than losing attribution.
+
+    So: attempt the wide INSERT, and on psycopg2.errors.UndefinedColumn ONLY,
+    fall back to the pre-0013 shape and report it. The narrow except matters —
+    catching Exception here would swallow a genuine write failure and report the
+    run as started when nothing was inserted.
+
+    Args:
+        run_id: UUID string for the new row.
+        kind: The eval_runs.kind value (also the per-agent idempotency key).
+        prompt_version_id: UUID string or None.
+        config: The configuration-tuple dict, or None.
+        conn_str: PRODUCTION tenant connection string.
+
+    Returns:
+        True when the configuration tuple was recorded; False when the columns
+        were absent and the run was inserted without attribution.
+    """
+    params = {
+        "id": run_id,
+        "kind": kind,
+        "prompt_version_id": prompt_version_id,
+        "config": json.dumps(config) if config is not None else None,
+    }
+
+    conn = psycopg2.connect(conn_str, connect_timeout=5)
+    try:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_INSERT_EVAL_RUN_WITH_CONFIG_SQL, params)
+            conn.commit()
+            return True
+        except psycopg2.errors.UndefinedColumn:
+            # The aborted transaction must be rolled back before the connection
+            # will accept another statement.
+            conn.rollback()
+            log.warning(
+                "insert_eval_run.config_columns_absent",
+                run_id=run_id,
+                kind=kind,
+                detail="tenant DB predates alembic_tenant 0013 — run recorded without attribution",
+            )
+            with conn.cursor() as cur:
+                cur.execute(_INSERT_EVAL_RUN_BASE_SQL, {"id": run_id, "kind": kind})
+            conn.commit()
+            return False
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Task 2: verified_qa promotion helper
 # ---------------------------------------------------------------------------
+
+def _meets_score_thresholds(score: dict) -> bool:
+    """True iff a score row clears both promotion thresholds (D-21 LOCKED).
+
+    A missing metric is never a pass — a None faithfulness means the metric
+    produced no valid observation for that scenario, which is 'unknown', not
+    'good enough'.
+    """
+    faithfulness = score.get("faithfulness")
+    answer_relevancy = score.get("answer_relevancy")
+    return (
+        faithfulness is not None
+        and answer_relevancy is not None
+        and faithfulness >= settings.EVAL_FAITHFULNESS_THRESHOLD
+        and answer_relevancy >= settings.EVAL_RELEVANCY_THRESHOLD
+    )
+
+
+def select_promotion_candidates(
+    scenarios: list[dict],
+    scenario_scores: list[dict],
+) -> tuple[list[tuple[dict, dict]], dict[str, int]]:
+    """Decide which scored scenarios may enter verified_qa. Pure — no I/O.
+
+    Two independent gates, applied in this order:
+
+    1. TRUST TIER — is this scenario's answer allowed to be served to a
+       customer at all? Checked FIRST and it is not a tiebreak: a high score on
+       a model-written answer is evidence about the model's self-consistency,
+       not about the answer's truth, so no score may buy a source out of its
+       tier. Checking it first also means an unpromotable row never reaches the
+       embedding call below.
+    2. SCORE THRESHOLD — D-21's 0.90/0.90 quality bar, applied only to answers
+       that cleared the tier gate.
+
+    A score whose scenario cannot be found is refused ('scenario_not_found'),
+    not skipped silently: promoting an answer we cannot attribute to a question
+    is exactly the failure this gate exists to prevent.
+
+    Returns:
+        (candidates, refusals) where candidates is a list of (scenario, score)
+        pairs cleared for promotion, and refusals maps a reason string to the
+        number of scored rows it refused. `sum(refusals.values()) +
+        len(candidates) == len(scenario_scores)` always — every scored row is
+        accounted for exactly once, so a promotion rate can never be computed
+        without its denominator.
+    """
+    scenario_by_id = {str(s.get("id", "")): s for s in scenarios}
+
+    candidates: list[tuple[dict, dict]] = []
+    refusals: dict[str, int] = {}
+
+    def _refuse(reason: str) -> None:
+        refusals[reason] = refusals.get(reason, 0) + 1
+
+    for score in scenario_scores:
+        scenario = scenario_by_id.get(str(score.get("scenario_id")))
+        if scenario is None:
+            _refuse("scenario_not_found")
+            continue
+
+        source = scenario.get("source")
+        if not is_promotable_to_verified_qa(source):
+            _refuse(f"trust_tier:{scenario_trust_tier(source)}")
+            continue
+
+        if not _meets_score_thresholds(score):
+            _refuse("below_score_threshold")
+            continue
+
+        candidates.append((scenario, score))
+
+    return candidates, refusals
+
 
 def promote_to_verified_qa(
     scenarios: list[dict],
     scenario_scores: list[dict],
-    branch_conn_str: str,
-) -> int:
-    """Promote passing scenarios to the verified_qa table on the tenant DB branch.
+    conn_str: str,
+) -> dict:
+    """Promote eligible scenarios into verified_qa. Unreachable in this build.
 
-    Promotion criteria (D-21 LOCKED):
-        faithfulness >= EVAL_FAITHFULNESS_THRESHOLD
-        AND answer_relevancy >= EVAL_RELEVANCY_THRESHOLD
-        (both default 0.90 from settings)
+    verified_qa rows are served to real customers by
+    retrieval_service.verified_qa_lookup BEFORE hybrid search, at 0.93 cosine
+    similarity — so this function's output goes straight to end users. Its gate
+    is therefore the label trust hierarchy first (select_promotion_candidates),
+    the D-21 score thresholds second. No scenario source the shipped schema
+    allows clears the trust gate today, so this function performs zero writes
+    and does not open a connection at all.
 
-    Promoted rows written with (D-22 LOCKED):
-        source = 'sandbox_test'
-        promoted_by = 'system'
+    It is retained rather than deleted for two reasons: the promotion machinery
+    (D-22 provenance, D-23 question_vector, the SELECT-first idempotency check)
+    is correct and will be needed once human-verified labels exist, and a
+    surviving second lock on the door means a future caller that reintroduces
+    the call still cannot serve a model-written answer to a customer.
 
-    question_vector populated via Voyage embed at promotion time (D-23 LOCKED).
-
-    Uses psycopg2 try/finally/close pattern. Idempotency on Celery retry
-    (acks_late rule) is ensured by a SELECT-first existence check on question
-    before INSERT — gen_random_uuid() PK means ON CONFLICT cannot fire.
+    Promoted rows are written with source='sandbox_test', promoted_by='system'
+    (D-22 LOCKED) and a Voyage question_vector (D-23 LOCKED). Idempotency on
+    Celery retry (acks_late rule) is ensured by a SELECT-first existence check
+    on question before INSERT — gen_random_uuid() PK means ON CONFLICT cannot
+    fire.
 
     Args:
         scenarios: Original scenario dicts (same list passed to run_ragas_eval).
+            Each must carry `source` — a scenario with no source is refused.
         scenario_scores: Per-scenario score dicts from run_ragas_eval() "scores" list.
-        branch_conn_str: Neon branch connection string (never stored — D-18).
+        conn_str: Tenant connection string (never stored — D-18). Only used if a
+            candidate exists, which cannot happen in this build.
 
     Returns:
-        Count of rows successfully promoted.
+        {"scored": int, "promoted": int, "refused": int, "refusals": dict} —
+        `scored` is the denominator; promoted + refused == scored always.
     """
-    # Build a lookup from scenario_id → scenario dict for O(1) access
-    scenario_by_id = {str(s.get("id", "")): s for s in scenarios}
+    candidates, refusals = select_promotion_candidates(scenarios, scenario_scores)
+    refused = sum(refusals.values())
+
+    if not candidates:
+        # No connection is opened. With promotion disabled by trust tier this
+        # is the only path, and it makes "did an eval run write to verified_qa?"
+        # answerable by observing that it never even connected.
+        log.info(
+            "promote_to_verified_qa.no_candidates",
+            scored=len(scenario_scores),
+            refused=refused,
+            refusals=refusals,
+            min_trust_tier=VERIFIED_QA_MIN_TRUST_TIER,
+        )
+        return {
+            "scored": len(scenario_scores),
+            "promoted": 0,
+            "refused": refused,
+            "refusals": refusals,
+        }
 
     insert_sql = """
         INSERT INTO verified_qa (
@@ -332,30 +824,10 @@ def promote_to_verified_qa(
     exists_sql = "SELECT id FROM verified_qa WHERE question = %(question)s LIMIT 1"
 
     promoted_count = 0
-    conn = psycopg2.connect(branch_conn_str)
+    conn = psycopg2.connect(conn_str)
     try:
         with conn.cursor() as cur:
-            for score in scenario_scores:
-                faithfulness = score.get("faithfulness")
-                answer_relevancy = score.get("answer_relevancy")
-
-                # D-21 LOCKED: both thresholds must be met
-                if (
-                    faithfulness is None
-                    or answer_relevancy is None
-                    or faithfulness < settings.EVAL_FAITHFULNESS_THRESHOLD
-                    or answer_relevancy < settings.EVAL_RELEVANCY_THRESHOLD
-                ):
-                    continue
-
-                scenario = scenario_by_id.get(str(score["scenario_id"]))
-                if scenario is None:
-                    log.warning(
-                        "promote_to_verified_qa.scenario_not_found",
-                        scenario_id=score["scenario_id"],
-                    )
-                    continue
-
+            for scenario, score in candidates:
                 question = scenario["question"]
 
                 # Idempotency: skip if a verified_qa row with this question already exists
@@ -366,6 +838,8 @@ def promote_to_verified_qa(
                         "verified_qa.already_exists",
                         scenario_id=score["scenario_id"],
                     )
+                    refusals["already_promoted"] = refusals.get("already_promoted", 0) + 1
+                    refused += 1
                     continue
 
                 # D-23 LOCKED: Voyage embedding for question_vector
@@ -382,16 +856,18 @@ def promote_to_verified_qa(
                     "question_vector": str(question_vector),
                     "answer": answer,
                     "citations": json.dumps(citations),
-                    "faithfulness": faithfulness,
-                    "relevance": answer_relevancy,
+                    "faithfulness": score.get("faithfulness"),
+                    "relevance": score.get("answer_relevancy"),
                 })
 
                 promoted_count += 1
                 log.info(
                     "verified_qa.promoted",
                     scenario_id=score["scenario_id"],
-                    faithfulness=faithfulness,
-                    relevance=answer_relevancy,
+                    source=scenario.get("source"),
+                    trust_tier=scenario_trust_tier(scenario.get("source")),
+                    faithfulness=score.get("faithfulness"),
+                    relevance=score.get("answer_relevancy"),
                 )
 
         conn.commit()
@@ -401,9 +877,15 @@ def promote_to_verified_qa(
     log.info(
         "promote_to_verified_qa.complete",
         promoted=promoted_count,
-        total_scored=len(scenario_scores),
+        refused=refused,
+        scored=len(scenario_scores),
     )
-    return promoted_count
+    return {
+        "scored": len(scenario_scores),
+        "promoted": promoted_count,
+        "refused": refused,
+        "refusals": refusals,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -413,61 +895,65 @@ def promote_to_verified_qa(
 def run_eval_for_agent(
     eval_run_id: str,
     scenarios: list[dict],
+    conn_str: str,
     branch_conn_str: str,
 ) -> dict:
-    """Run a full eval cycle for one agent: Ragas eval + DB writes + promotion.
+    """Run a full eval cycle for one agent: score on the branch, record on production.
 
-    This is the function called by the run_eval_suite Celery task (06-05).
-    The branch_conn_str is passed as a local variable within the task — it is
-    NEVER stored in the DB or passed as a Celery argument (CLAUDE.md CTL-08).
+    Takes BOTH connection strings because the two halves have different
+    destinations and conflating them is the defect this signature exists to make
+    impossible. Neither is ever stored in the DB or passed as a Celery argument
+    (CLAUDE.md CTL-08) — both are locals inside the caller's task.
 
     Sequence:
-        1. update_eval_run_status → 'running'
-        2. run_ragas_eval (four metrics against branch)
-        3. write_eval_results (eval_results rows on branch)
-        4. promote_to_verified_qa (verified_qa rows on branch)
-        5. update_eval_run_status → 'complete'
+        1. update_eval_run_status → 'running'   (production)
+        2. run_ragas_eval — four metrics         (branch)
+        3. write_eval_results                    (production)
+        4. update_eval_run_status → 'complete'   (production)
 
-    On exception: update_eval_run_status → 'failed', then re-raise.
+    verified_qa promotion is deliberately NOT part of this sequence — see
+    VERIFIED_QA_PROMOTION_DECISION. Restoring it means clearing the trust gate
+    in promote_to_verified_qa, not re-adding the call here.
+
+    On exception: update_eval_run_status → 'failed' on production, then re-raise.
 
     Args:
         eval_run_id: UUID string — the eval_runs row already created by caller.
         scenarios: List of scenario dicts from the eval_scenarios table.
-        branch_conn_str: Neon branch connection string (never production).
+        conn_str: PRODUCTION tenant connection string — status + results land here.
+        branch_conn_str: Neon branch connection string — scoring runs here.
 
     Returns:
         Dict: {
             "eval_run_id": str,
             "scenario_count": int,
             "means": dict,
-            "promoted_count": int,
+            "promoted_count": int,   # always 0 while promotion is disabled
         }
     """
     log.info("run_eval_for_agent.start", eval_run_id=eval_run_id)
-    update_eval_run_status(eval_run_id, "running", finished_at=False, branch_conn_str=branch_conn_str)
+    update_eval_run_status(eval_run_id, "running", finished_at=False, conn_str=conn_str)
 
     try:
         result = run_ragas_eval(scenarios, branch_conn_str)
         scenario_scores = result["scores"]
         means = result["means"]
 
-        write_eval_results(eval_run_id, scenario_scores, branch_conn_str)
-        promoted_count = promote_to_verified_qa(scenarios, scenario_scores, branch_conn_str)
+        write_eval_results(eval_run_id, scenario_scores, conn_str)
 
-        update_eval_run_status(eval_run_id, "complete", finished_at=True, branch_conn_str=branch_conn_str)
+        update_eval_run_status(eval_run_id, "complete", finished_at=True, conn_str=conn_str)
 
         log.info(
             "run_eval_for_agent.complete",
             eval_run_id=eval_run_id,
             scenario_count=len(scenarios),
-            promoted_count=promoted_count,
         )
 
         return {
             "eval_run_id": eval_run_id,
             "scenario_count": len(scenarios),
             "means": means,
-            "promoted_count": promoted_count,
+            "promoted_count": 0,
         }
 
     except Exception as exc:
@@ -477,5 +963,5 @@ def run_eval_for_agent(
             error=str(exc),
             error_type=type(exc).__name__,
         )
-        update_eval_run_status(eval_run_id, "failed", finished_at=True, branch_conn_str=branch_conn_str)
+        update_eval_run_status(eval_run_id, "failed", finished_at=True, conn_str=conn_str)
         raise

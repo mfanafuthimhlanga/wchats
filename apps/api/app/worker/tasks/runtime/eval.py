@@ -3,6 +3,26 @@
 All tasks: acks_late=True, runtime queue, no conn_str in args (CTL-08).
 Neon branch created per eval run, deleted in finally block (D-10).
 Ragas 0.4.x only — D-01 through D-04.
+
+Where each write lands
+----------------------
+D-10 ("never evaluate against production") is correct for tenant data and was
+over-applied to the run's own results: `eval_results`, the terminal `eval_runs`
+status and the verified_qa promotion were all written to the Neon branch that
+this task then deletes in `finally`. Production consequently never learned that
+any run finished — a successful run left status='running' forever, and
+`eval_results` never existed on production at all.
+
+An eval result is an OBSERVATION ABOUT a run, not tenant data. So:
+
+    scoring (run_ragas_eval)             -> branch_conn_str  (isolation, D-10)
+    eval_runs insert / status / results  -> conn_str         (PRODUCTION)
+    branch deletion in finally           -> unchanged, every path
+
+verified_qa promotion is not performed by this task at all. It is disabled
+behind eval_service's label trust hierarchy, and the decision — with its reason
+— is recorded on the run in `eval_runs.config` so the disablement is a statement
+in the record rather than an absence a later reader has to infer.
 """
 
 from __future__ import annotations
@@ -17,10 +37,12 @@ from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.services.eval_service import (
+    VERIFIED_QA_PROMOTION_DECISION,
+    build_eval_run_config,
+    insert_eval_run,
     run_ragas_eval,
     write_eval_results,
     update_eval_run_status,
-    promote_to_verified_qa,
 )
 from app.services.neon import create_branch, delete_branch, wait_for_neon_ready
 from app.services.scenario_service import (
@@ -31,6 +53,33 @@ from app.services.scenario_service import (
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
+
+
+def _mark_failed_on_production(run_id: str, conn_str: str, agent_id: str) -> None:
+    """Best-effort terminal 'failed' status write on PRODUCTION.
+
+    A run must end in a terminal state on production or it never happened —
+    but the write itself must never derail the two things that matter more on
+    an already-failing path: deleting the Neon branch (the `finally` below)
+    and the caller's `self.retry`. An unguarded raise here would skip
+    `raise self.retry(...)` entirely, so the task would die instead of
+    retrying, and the failure would be attributed to the status write rather
+    than to whatever actually broke.
+
+    A failure here is logged at error level rather than swallowed quietly: it
+    means production still reads 'running' for a run that is over, which is
+    exactly the indistinguishable-from-hung state this phase exists to remove.
+    """
+    try:
+        update_eval_run_status(run_id, "failed", finished_at=True, conn_str=conn_str)
+    except Exception as status_exc:
+        log.error(
+            "run_eval_suite.mark_failed_failed",
+            agent_id=agent_id,
+            run_id=run_id,
+            error=str(status_exc),
+            detail="production eval_runs row still reads 'running' for a finished run",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -91,25 +140,34 @@ def run_eval_suite_beat(self) -> dict:
     name="app.worker.tasks.runtime.eval.run_eval_suite",
 )
 def run_eval_suite(self, agent_id: str) -> dict:
-    """Per-agent eval run. Creates Neon branch, runs Ragas 0.4.x eval, promotes verified_qa,
-    deletes branch in finally (D-10). Receives agent_id str — no conn_str in args (CTL-08 / D-18).
+    """Per-agent eval run. Scores on a Neon branch, records the run on production,
+    deletes the branch in finally (D-10). Receives agent_id str — no conn_str in args
+    (CTL-08 / D-18).
 
     Sequence:
         1. Idempotency guard — skip if a 'running' eval_run for this agent
            was created within the last 10 minutes.
         2. Fetch agent from control DB; decrypt conn_str at runtime.
         3. Fetch up to 30 eval scenarios from tenant DB; mine new production scenarios.
-        4. Insert eval_run row on production branch (status='running').
+        4. Collect the configuration tuple, then insert the eval_run row on
+           PRODUCTION with it (status='running').
         5. Create Neon branch; wait for readiness.
-        6. try: run Ragas eval → write results → promote verified_qa → mark complete.
-           except: mark failed.
+        6. try: run Ragas eval on the BRANCH → write results to PRODUCTION →
+                mark complete on PRODUCTION.
+           except: mark failed on PRODUCTION.
            finally: delete Neon branch (D-10 — always runs, even on exception).
+
+    No verified_qa promotion happens here. See the module docstring and
+    eval_service.VERIFIED_QA_PROMOTION_DECISION: promotion is gated on the label
+    trust hierarchy and unreachable for every scenario source the schema allows,
+    and the decision is recorded on the run in eval_runs.config.
 
     Args:
         agent_id: UUID string of the agent to evaluate.
 
     Returns:
-        {"run_id": str, "scenario_count": int, "promoted": int}  on success.
+        {"run_id", "scenario_count", "promoted", "config_recorded",
+         "promotion_disabled_reason"}                            on success.
         {"status": "already_running"}                            on idempotent skip.
         {"status": "no_scenarios"}                               when eval_scenarios is empty.
         {}                                                        on retry exhaustion.
@@ -222,23 +280,23 @@ def run_eval_suite(self, agent_id: str) -> dict:
         return {"status": "no_scenarios"}
 
     # ------------------------------------------------------------------
-    # Step 5 — Insert eval_run row on production branch
+    # Step 5 — Insert the eval_run row on PRODUCTION, stamped with the
+    # configuration tuple this run is an assertion about (migration 0013).
+    #
+    # build_eval_run_config never raises: an unattributable run is worth less
+    # than an attributed one but far more than no run at all, so a collector
+    # failure degrades attribution and names itself in config["unavailable"].
     # ------------------------------------------------------------------
     run_id = str(uuid.uuid4())
+    attribution = build_eval_run_config(agent_id, conn_str)
     try:
-        _run_conn = psycopg2.connect(conn_str, connect_timeout=5)
-        try:
-            with _run_conn.cursor() as _cur:
-                _cur.execute(
-                    """
-                    INSERT INTO eval_runs (id, kind, started_at, status)
-                    VALUES (%s, %s, NOW(), 'running')
-                    """,
-                    (run_id, f"m6:{agent_id}"),
-                )
-            _run_conn.commit()
-        finally:
-            _run_conn.close()
+        config_recorded = insert_eval_run(
+            run_id,
+            f"m6:{agent_id}",
+            attribution["prompt_version_id"],
+            attribution["config"],
+            conn_str,
+        )
     except Exception as exc:
         log.error(
             "run_eval_suite.insert_eval_run_failed",
@@ -264,7 +322,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
             run_id=run_id,
             error=str(exc),
         )
-        update_eval_run_status(run_id, "failed", finished_at=True, branch_conn_str=conn_str)
+        _mark_failed_on_production(run_id, conn_str, agent_id)
         if self.request.retries >= self.max_retries:
             return {}
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
@@ -277,22 +335,32 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # but double-check here for safety
         valid_scenarios = [s for s in scenarios if s.get("reference_answer")]
 
+        # Scoring is the ONLY half that runs against the branch (D-10).
         results = run_ragas_eval(valid_scenarios, branch_conn_str)
-        write_eval_results(run_id, results["scores"], branch_conn_str)
-        promoted = promote_to_verified_qa(valid_scenarios, results["scores"], branch_conn_str)
-        update_eval_run_status(run_id, "complete", finished_at=True, branch_conn_str=branch_conn_str)
+
+        # Observations about the run land on PRODUCTION, which is the whole
+        # point of the split: the branch below is about to be destroyed.
+        write_eval_results(run_id, results["scores"], conn_str)
+        update_eval_run_status(run_id, "complete", finished_at=True, conn_str=conn_str)
 
         log.info(
             "run_eval_suite.complete",
             agent_id=agent_id,
             run_id=run_id,
-            promoted=promoted,
             scenario_count=len(valid_scenarios),
+            config_recorded=config_recorded,
+            promoted=0,
+            promotion_enabled=VERIFIED_QA_PROMOTION_DECISION["enabled"],
         )
         return {
             "run_id": run_id,
             "scenario_count": len(valid_scenarios),
-            "promoted": promoted,
+            # Always 0 — promotion is disabled behind the trust gate, and the
+            # key is kept so a caller reading it sees the zero rather than a
+            # missing key it might treat as "not measured".
+            "promoted": 0,
+            "config_recorded": config_recorded,
+            "promotion_disabled_reason": VERIFIED_QA_PROMOTION_DECISION["reason"],
         }
 
     except Exception as exc:
@@ -302,7 +370,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
             run_id=run_id,
             error=str(exc),
         )
-        update_eval_run_status(run_id, "failed", finished_at=True, branch_conn_str=branch_conn_str)
+        _mark_failed_on_production(run_id, conn_str, agent_id)
         if self.request.retries >= self.max_retries:
             return {}
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)

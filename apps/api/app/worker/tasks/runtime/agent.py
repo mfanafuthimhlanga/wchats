@@ -45,7 +45,7 @@ from celery import chain as celery_chain
 from langfuse import Langfuse
 from sqlalchemy import text as sa_text
 
-from app.core.config import settings
+from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
@@ -845,7 +845,10 @@ def run_agent_turn(
             # The capability envelope check inside each transactional tool handler
             # is the real access gate (fail-closed) — T-14-04-03.
             options = ClaudeAgentOptions(
-                model="claude-haiku-4-5-20251001",
+                # AGENT_TURN_MODEL, not a literal — eval_runs.config.model_id
+                # reads the same constant, so a score can never be attributed
+                # to a model that did not serve the turn (migration 0013).
+                model=AGENT_TURN_MODEL,
                 system_prompt=system_prompt,
                 mcp_servers={"customer-tools": tool_server},
                 allowed_tools=[
@@ -1032,7 +1035,7 @@ def run_agent_turn(
             _emit_langfuse_turn_trace(
                 job_id=job_id,
                 agent_id=agent_id,
-                model="claude-haiku-4-5-20251001",
+                model=AGENT_TURN_MODEL,
                 num_turns=num_turns,
                 total_cost_usd=total_cost_usd,
                 latency_ms=latency_ms,

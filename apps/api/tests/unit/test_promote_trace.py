@@ -30,6 +30,8 @@ from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import pytest
+
 from app.worker.tasks.runtime import bench as mod
 
 # ---------------------------------------------------------------------------
@@ -189,14 +191,21 @@ def test_promote_trace_happy_path_inserts_production_scenario(monkeypatch):
 
     result = mod.promote_trace_to_scenario.run("agent-1", "trace-1")
 
-    assert result == {"status": "promoted", "trace_id": "trace-1"}
+    assert result == {
+        "status": "promoted",
+        "trace_id": "trace-1",
+        "scenario_id": "new-scenario-id",
+        "reference_answer_stored": False,
+    }
     assert len(insert_calls) == 1
     call = insert_calls[0]
     assert call["source"] == "production"
     assert call["origin_trace_id"] == "trace-1"
     assert call["provenance"] == "trace-1"
     assert call["question"] == "the question"
-    assert call["reference_answer"] == "the answer"
+    # D5: the agent's FAILING answer is not the ground truth for its own
+    # question. See TestFiledTraceCarriesNoGroundTruth below.
+    assert call["reference_answer"] == mod.NO_GROUND_TRUTH
     assert conn.commit.called
 
 
@@ -227,6 +236,167 @@ def test_promote_trace_no_response_event_skips_insert(monkeypatch):
 
     assert result == {"status": "no_response_event", "trace_id": "trace-1"}
     assert insert_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Audit D5: the human label is stored as its own opposite
+#
+# traces.py lists FAILING traces. Grading one 'filed' used to write the agent's
+# own failing answer into reference_answer — the column that means "the correct
+# answer", and the column the verified_qa promotion path reads before serving an
+# answer to a real customer via retrieval_service.verified_qa_lookup (0.93
+# cosine, ahead of hybrid search).
+#
+# This was inert only because eval results were being written to a Neon branch
+# that the eval task deleted. This branch makes those writes durable, so the
+# label fix and the persistence fix have to land together — these tests are the
+# half that keeps a repaired write-back from becoming a delivery mechanism.
+# ---------------------------------------------------------------------------
+
+
+def _wire_promotion(monkeypatch, agent_turn: str, question: str = "the question"):
+    """Wire promote_trace_to_scenario with every boundary doubled.
+
+    Returns (mock_db, insert_calls) — mock_db is both the agent/response lookup
+    session and the session the trace note is appended through.
+    """
+    agent = MagicMock()
+    agent.neon_connection_string = b"encrypted"
+
+    mock_db = MagicMock()
+    mock_db.get.return_value = agent
+
+    response_row = MagicMock()
+    response_row.payload = {"conversation_id": "conv-1", "text": agent_turn}
+    mock_db.execute.return_value.fetchone.return_value = response_row
+
+    monkeypatch.setattr(mod, "get_sync_db", _make_sync_db_context(mock_db))
+    monkeypatch.setattr(mod, "fernet_decrypt", lambda _e: "postgresql://fake/tenant")
+    monkeypatch.setattr(mod, "_fetch_customer_turn", lambda *a, **kw: question)
+
+    cursor = _Cursor(fetchone_result=None)
+    conn = _make_conn(cursor)
+    monkeypatch.setattr(mod.psycopg2, "connect", lambda *a, **kw: conn)
+
+    insert_calls = []
+
+    def _fake_insert(conn_arg, **kwargs):
+        insert_calls.append(kwargs)
+        return "new-scenario-id"
+
+    monkeypatch.setattr(mod, "insert_provenance_scenario", _fake_insert)
+    return mock_db, insert_calls
+
+
+class TestFiledTraceCarriesNoGroundTruth:
+
+    @pytest.mark.parametrize(
+        "agent_turn",
+        [
+            "I'm sorry, your refund of R4,500 was processed yesterday.",
+            "Yes, we ship to Antarctica for free.",
+            "   ",
+            "0",
+            "the answer",
+            "a" * 5000,
+        ],
+    )
+    def test_the_flagged_answer_is_never_written_as_the_reference_answer(
+        self, monkeypatch, agent_turn
+    ):
+        """The core D5 assertion, over answers a hallucinating agent plausibly
+        emits — including whitespace and '0', which a truthiness-based guard
+        would let through.
+
+        An empty agent_turn is deliberately not in this list: NO_GROUND_TRUTH is
+        itself the empty string, so equality there is vacuous rather than a leak,
+        and the positive assertion below is the one that carries the meaning.
+        """
+        _mock_db, insert_calls = _wire_promotion(monkeypatch, agent_turn)
+
+        mod.promote_trace_to_scenario.run("agent-1", "trace-1")
+
+        assert len(insert_calls) == 1
+        stored = insert_calls[0]["reference_answer"]
+        assert stored == mod.NO_GROUND_TRUTH
+        assert stored != agent_turn, (
+            "the agent's flagged answer was stored as the ground truth for its "
+            "own question — this row can reach verified_qa and be served to a "
+            "customer as a verified answer"
+        )
+
+    def test_source_contains_no_call_passing_the_agent_turn_as_a_label(self):
+        """Absence pin on the defect's exact shape, so a revert is caught even
+        if someone adds a new call site the behaviour tests do not reach."""
+        source = inspect.getsource(mod)
+        code = "\n".join(
+            line for line in source.splitlines() if not line.strip().startswith("#")
+        )
+        assert "reference_answer=agent_turn" not in code
+        assert "reference_answer=NO_GROUND_TRUTH" in code
+
+    def test_the_scenario_is_inert_to_the_eval_selector_by_construction(
+        self, monkeypatch
+    ):
+        """reference_answer='' matches the `mined` convention, and run_eval_suite
+        selects WHERE reference_answer != '' — so an unlabelled row cannot be
+        scored even if some future caller forgets it has no ground truth.
+
+        Read out of the task's own SQL rather than restated, because the two
+        halves of this guarantee live in different modules.
+        """
+        from app.worker.tasks.runtime import eval as eval_task
+
+        selector = inspect.getsource(eval_task.run_eval_suite)
+        assert "reference_answer != ''" in selector, (
+            "run_eval_suite no longer filters out unlabelled scenarios — a "
+            "filed trace with no ground truth would now be scored against "
+            "whatever happens to be in reference_answer"
+        )
+        assert mod.NO_GROUND_TRUTH == "", (
+            "NO_GROUND_TRUTH must be the empty string for the selector above to "
+            "exclude it"
+        )
+
+    def test_the_missing_label_is_recorded_on_the_trace(self, monkeypatch):
+        """The operator filed this expecting it to be evaluated. They are owed a
+        straight answer about why it will not be, on the trace they filed."""
+        mock_db, _ = _wire_promotion(monkeypatch, "the failing answer")
+
+        result = mod.promote_trace_to_scenario.run("agent-1", "trace-1")
+
+        assert result["reference_answer_stored"] is False
+
+        added = [c.args[0] for c in mock_db.add.call_args_list]
+        notes = [e for e in added if e.event_type == "trace.promoted_to_scenario"]
+        assert len(notes) == 1, (
+            "no 'trace.promoted_to_scenario' event was appended — the run stored "
+            "an unscorable scenario and said nothing about it"
+        )
+        note = notes[0]
+        assert note.job_id == "trace-1"
+        assert note.payload["reference_answer_stored"] is False
+        assert note.payload["reason"]
+        # The flagged answer is preserved, in a field that claims nothing about
+        # correctness. It is not a second copy of the label; the durable copy
+        # lives in this trace's own 'agent.response' event.
+        assert note.payload["flagged_agent_answer"] == "the failing answer"
+        assert "reference_answer" not in note.payload
+
+    def test_a_failed_trace_note_does_not_undo_a_committed_promotion(
+        self, monkeypatch
+    ):
+        """The scenario insert is already committed and idempotency-guarded.
+        Retrying it for the sake of a note would be worse than losing the note,
+        and the flagged answer is not lost either way — it lives in the trace's
+        'agent.response' event, which is where this task read it from."""
+        mock_db, insert_calls = _wire_promotion(monkeypatch, "the failing answer")
+        mock_db.commit.side_effect = [None, RuntimeError("control DB unreachable")]
+
+        result = mod.promote_trace_to_scenario.run("agent-1", "trace-1")
+
+        assert result["status"] == "promoted"
+        assert len(insert_calls) == 1
 
 
 # ---------------------------------------------------------------------------

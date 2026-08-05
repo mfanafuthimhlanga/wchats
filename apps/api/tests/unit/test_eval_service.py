@@ -1,34 +1,135 @@
 """
 Unit tests for app.services.eval_service (M6 Ragas 0.4.x eval harness).
 
-Tests:
-    test_run_ragas_eval_builds_dataset
-        — EvaluationDataset.from_list called with 'reference' key (D-02)
-        — evaluate() called with 4 metrics (D-04)
-    test_run_ragas_eval_uses_correct_import
-        — ragas.metrics.collections import path present in source (D-01)
-        — 'ground_truths' absent from source (D-02 regression guard)
-    test_promote_to_verified_qa_inserts_on_threshold_pass
-        — INSERT INTO verified_qa executed when scores >= 0.90 threshold
-        — promoted_by='system' in INSERT args (D-22)
-    test_promote_to_verified_qa_skips_below_threshold
-        — No INSERT when faithfulness < EVAL_FAITHFULNESS_THRESHOLD
+Original M6 coverage (TestRunRagasEval): Ragas 0.4.x dataset shape and import
+path (D-01/D-02/D-04).
+
+P1 coverage (measurement-layer audit) — the three things that must hold together
+or the eval layer means nothing:
+
+  D2, the persistence split
+      Scoring runs against the Neon branch; the run's own observations
+      (eval_runs status, eval_results) belong on PRODUCTION, because the branch
+      is deleted in the caller's `finally`. Tested by asserting which connection
+      string each write opens, plus absence pins on the parameter NAMES so a
+      revert to `branch_conn_str` fails loudly rather than silently sending
+      results back to the throwaway branch.
+
+  D5, the label trust hierarchy
+      verified_qa is served to real customers ahead of retrieval. Promotion is
+      gated on WHO WROTE the label, not on how well it scores, and no scenario
+      source the shipped schema allows clears that gate. The unreachability
+      tests are parametrised over the source list PARSED OUT OF MIGRATION 0011,
+      so a new source value added to the schema without a trust tier fails these
+      tests instead of quietly defaulting into the customer-serving cache.
+
+  The configuration tuple
+      A score with no record of what produced it cannot be compared to the next
+      one. Tests here pin the distinction between "we could not read this
+      dimension" (named in config["unavailable"]) and "we read it and it is
+      genuinely absent" (None, not named) — missing data is never passing data.
 
 Mock strategy:
     - All external calls (ragas, psycopg2, Voyage) patched at module boundary.
-    - run_ragas_eval mocked at function boundary for promote_to_verified_qa tests.
+    - psycopg2.connect is patched by attribute, never the whole psycopg2 module,
+      wherever a test exercises `except psycopg2.errors.UndefinedColumn` — a
+      MagicMock in that except clause is not a BaseException subclass and would
+      turn a real assertion into a TypeError.
     - conftest.py sets all required env vars before any app import.
 """
 
 from __future__ import annotations
 
 import inspect
+import json
 import os
+import re
 import uuid
-from unittest.mock import MagicMock, call, patch
+from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import psycopg2
 import pytest
+
+
+# ---------------------------------------------------------------------------
+# The scenario sources the SCHEMA allows, parsed from migration 0011 itself.
+#
+# Hardcoding this list here would let the schema and the trust table drift
+# apart silently, which is the exact failure mode the trust table exists to
+# prevent: an unclassified source reaching the customer-serving cache.
+# ---------------------------------------------------------------------------
+_MIGRATION_0011 = os.path.normpath(
+    os.path.join(
+        os.path.dirname(__file__),
+        "../../alembic_tenant/versions/0011_eval_scenarios_provenance.py",
+    )
+)
+
+
+def _schema_allowed_scenario_sources() -> list[str]:
+    with open(_MIGRATION_0011, encoding="utf-8") as fh:
+        source = fh.read()
+    clauses = re.findall(r"CHECK \(source IN \(([^)]*)\)\)", source)
+    assert clauses, (
+        "Could not find the eval_scenarios.source CHECK constraint in migration "
+        "0011 — this test's whole point is to read the schema rather than "
+        "restate it, so a parse failure is a real failure."
+    )
+    allowed: set[str] = set()
+    for clause in clauses:
+        allowed.update(re.findall(r"'([^']+)'", clause))
+    return sorted(allowed)
+
+
+SCHEMA_ALLOWED_SOURCES = _schema_allowed_scenario_sources()
+
+
+# ---------------------------------------------------------------------------
+# Shared psycopg2 doubles
+# ---------------------------------------------------------------------------
+
+
+class _RecordingCursor:
+    """Cursor double that records every (sql, params) pair it is handed."""
+
+    def __init__(self, fetchone_result=None, raise_on: str | None = None, exc=None):
+        self.executed: list[tuple[str, object]] = []
+        self.fetchone_result = fetchone_result
+        self.raise_on = raise_on
+        self.exc = exc
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+        if self.raise_on and self.raise_on in sql:
+            raise self.exc
+
+    def fetchone(self):
+        return self.fetchone_result
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    @property
+    def statements(self) -> str:
+        return "\n".join(sql for sql, _ in self.executed)
+
+
+def _recording_connect(cursor, conn_strings: list[str]):
+    """psycopg2.connect double that records the connection string it is given."""
+
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    def _connect(conn_str, *args, **kwargs):
+        conn_strings.append(conn_str)
+        return conn
+
+    return _connect, conn
 
 
 # ---------------------------------------------------------------------------
@@ -166,179 +267,786 @@ class TestRunRagasEval:
 
 
 # ---------------------------------------------------------------------------
-# test_promote_to_verified_qa_inserts_on_threshold_pass
+# D5 — the label trust hierarchy
 # ---------------------------------------------------------------------------
 
 
-class TestPromoteToVerifiedQA:
-    """Tests for the verified_qa promotion helper."""
+class TestLabelTrustHierarchy:
+    """A label's authority is a property of who wrote it, not of how it scores."""
 
-    @patch("app.services.eval_service._get_vo")
-    @patch("app.services.eval_service.psycopg2")
-    def test_promote_to_verified_qa_inserts_on_threshold_pass(
-        self,
-        mock_psycopg2,
-        mock_get_vo,
-    ):
-        """INSERT INTO verified_qa when faithfulness >= 0.90 AND answer_relevancy >= 0.90.
-        promoted_by='system' must appear in the INSERT call (D-22 LOCKED).
+    def test_tiers_are_strictly_ordered_with_unknown_lowest(self):
+        from app.services.eval_service import trust_tier_rank
+
+        assert (
+            trust_tier_rank("unknown")
+            < trust_tier_rank("model_generated")
+            < trust_tier_rank("customer_negative")
+            < trust_tier_rank("human_verified")
+            < trust_tier_rank("human_authored")
+        )
+
+    def test_unrecognised_tier_name_ranks_lowest(self):
+        """An unmapped tier fails closed rather than sorting somewhere plausible."""
+        from app.services.eval_service import trust_tier_rank
+
+        assert trust_tier_rank("definitely_not_a_tier") == trust_tier_rank("unknown")
+        assert trust_tier_rank("") == trust_tier_rank("unknown")
+
+    @pytest.mark.parametrize("source", SCHEMA_ALLOWED_SOURCES)
+    def test_every_schema_allowed_source_has_a_declared_trust_tier(self, source):
+        """No source the CHECK constraint permits may fall through to 'unknown'.
+
+        Falling through is safe (unknown is refused) but it is silent — the
+        point of this test is that adding a source to the schema forces someone
+        to decide what its label is worth.
         """
-        from app.services.eval_service import promote_to_verified_qa
+        from app.services.eval_service import scenario_trust_tier
 
-        # Mock Voyage embedding (D-23)
-        mock_vo = MagicMock()
+        assert scenario_trust_tier(source) != "unknown", (
+            f"eval_scenarios.source={source!r} is allowed by migration 0011's "
+            "CHECK but has no entry in SCENARIO_SOURCE_TRUST_TIER"
+        )
+
+    @pytest.mark.parametrize("source", SCHEMA_ALLOWED_SOURCES)
+    def test_no_schema_allowed_source_is_promotable(self, source):
+        """Promotion is unreachable for every source the shipped schema allows.
+
+        This is the P1 blocker condition stated as an executable claim: no path
+        exists today by which a model-written or human-flagged-failing answer
+        reaches verified_qa, which retrieval_service serves to customers.
+        """
+        from app.services.eval_service import is_promotable_to_verified_qa
+
+        assert is_promotable_to_verified_qa(source) is False, (
+            f"source={source!r} is promotable to the customer-serving verified_qa "
+            "cache — a model-generated or negative label must never be served"
+        )
+
+    @pytest.mark.parametrize(
+        "source",
+        [None, "", "human_authored", "sandbox_test", "verified", "GENERATED", " mined"],
+    )
+    def test_unknown_and_lookalike_sources_are_not_promotable(self, source):
+        """Missing, misspelled and case-variant sources all fail closed."""
+        from app.services.eval_service import is_promotable_to_verified_qa
+
+        assert is_promotable_to_verified_qa(source) is False
+
+    def test_min_trust_tier_outranks_every_schema_allowed_source(self):
+        """The gate is above the ceiling of what the schema can produce.
+
+        Stated as a rank comparison rather than as `if False` so that promotion
+        becomes reachable the moment a genuinely human-verified source exists,
+        without anyone having to remember to remove a flag.
+        """
+        from app.services.eval_service import (
+            VERIFIED_QA_MIN_TRUST_TIER,
+            scenario_trust_tier,
+            trust_tier_rank,
+        )
+
+        ceiling = max(
+            trust_tier_rank(scenario_trust_tier(s)) for s in SCHEMA_ALLOWED_SOURCES
+        )
+        assert ceiling < trust_tier_rank(VERIFIED_QA_MIN_TRUST_TIER)
+
+    def test_promotion_decision_is_recorded_with_a_reason(self):
+        """The disablement is a statement in the run record, not an absence."""
+        from app.services.eval_service import (
+            VERIFIED_QA_MIN_TRUST_TIER,
+            VERIFIED_QA_PROMOTION_DECISION,
+        )
+
+        assert VERIFIED_QA_PROMOTION_DECISION["enabled"] is False
+        assert VERIFIED_QA_PROMOTION_DECISION["min_trust_tier"] == VERIFIED_QA_MIN_TRUST_TIER
+        assert len(VERIFIED_QA_PROMOTION_DECISION["reason"]) > 40
+
+
+# ---------------------------------------------------------------------------
+# promote_to_verified_qa — unreachable, and accounted for
+# ---------------------------------------------------------------------------
+
+
+def _scored(source: str, faithfulness=0.99, relevancy=0.99):
+    scenario_id = str(uuid.uuid4())
+    scenario = {
+        "id": scenario_id,
+        "source": source,
+        "question": f"question for {source}",
+        "reference_answer": "an answer",
+        "agent_response": "an answer",
+        "citations": [],
+    }
+    score = {
+        "scenario_id": scenario_id,
+        "faithfulness": faithfulness,
+        "answer_relevancy": relevancy,
+        "context_precision": 0.9,
+        "context_recall": 0.9,
+    }
+    return scenario, score
+
+
+class TestPromoteToVerifiedQA:
+    """The promotion path that would otherwise serve a bad answer to a customer."""
+
+    def test_perfect_scores_on_every_schema_source_promote_nothing(self, monkeypatch):
+        """1.0/1.0 on every allowed source still promotes zero rows.
+
+        The adversarial case: the old gate was score-only, so this input would
+        have promoted every row. It also asserts psycopg2.connect is never
+        called — "did an eval write to verified_qa?" is answerable by observing
+        that it never even opened a connection.
+        """
+        from app.services import eval_service
+
+        connect_calls: list[str] = []
+        monkeypatch.setattr(
+            eval_service.psycopg2,
+            "connect",
+            lambda *a, **kw: connect_calls.append(a) or MagicMock(),
+        )
+        monkeypatch.setattr(
+            eval_service, "_get_vo", lambda: pytest.fail("embedded an unpromotable row")
+        )
+
+        pairs = [_scored(s, 1.0, 1.0) for s in SCHEMA_ALLOWED_SOURCES]
+        scenarios = [p[0] for p in pairs]
+        scores = [p[1] for p in pairs]
+
+        result = eval_service.promote_to_verified_qa(
+            scenarios, scores, "postgresql://production"
+        )
+
+        assert result["promoted"] == 0
+        assert result["scored"] == len(SCHEMA_ALLOWED_SOURCES)
+        assert connect_calls == [], (
+            "promote_to_verified_qa opened a DB connection with no promotable "
+            "candidate — it must not touch the tenant DB at all"
+        )
+
+    def test_every_scored_row_is_accounted_for_exactly_once(self, monkeypatch):
+        """promoted + refused == scored. A rate without its denominator must
+        not be constructible from this return value."""
+        from app.services import eval_service
+
+        monkeypatch.setattr(
+            eval_service.psycopg2, "connect", lambda *a, **kw: MagicMock()
+        )
+
+        pairs = [_scored(s, 1.0, 1.0) for s in SCHEMA_ALLOWED_SOURCES]
+        pairs += [_scored("generated", 0.1, 0.1)]
+        scenarios = [p[0] for p in pairs]
+        scores = [p[1] for p in pairs]
+        # A score whose scenario is not in the list at all.
+        scores.append({"scenario_id": str(uuid.uuid4()), "faithfulness": 1.0,
+                       "answer_relevancy": 1.0})
+
+        result = eval_service.promote_to_verified_qa(
+            scenarios, scores, "postgresql://production"
+        )
+
+        assert result["scored"] == len(scores)
+        assert result["promoted"] + result["refused"] == result["scored"]
+        assert sum(result["refusals"].values()) == result["refused"]
+
+    def test_orphan_score_is_refused_not_silently_dropped(self):
+        """A score whose scenario cannot be found is refused with a reason.
+
+        Promoting an answer that cannot be attributed to a question is exactly
+        the failure this gate exists to prevent, so it must not be a `continue`
+        that vanishes from the denominator.
+        """
+        from app.services.eval_service import select_promotion_candidates
+
+        candidates, refusals = select_promotion_candidates(
+            [], [{"scenario_id": "nope", "faithfulness": 1.0, "answer_relevancy": 1.0}]
+        )
+        assert candidates == []
+        assert refusals == {"scenario_not_found": 1}
+
+    def test_trust_tier_is_checked_before_score(self):
+        """A high score may not buy a source out of its tier.
+
+        The refusal reason must name the tier, not the threshold — otherwise a
+        reader would conclude the answer merely needs to score better.
+        """
+        from app.services.eval_service import select_promotion_candidates
+
+        scenario, score = _scored("generated", 1.0, 1.0)
+        candidates, refusals = select_promotion_candidates([scenario], [score])
+
+        assert candidates == []
+        assert refusals == {"trust_tier:model_generated": 1}
+
+    def test_filed_production_trace_is_refused_as_a_negative_label(self):
+        """source='production' is an owner-FLAGGED FAILURE (audit D5).
+
+        retrieval_service.verified_qa_lookup serves verified_qa rows to
+        customers ahead of hybrid search at 0.93 similarity. This is the row
+        that must never get there.
+        """
+        from app.services.eval_service import select_promotion_candidates
+
+        scenario, score = _scored("production", 1.0, 1.0)
+        _, refusals = select_promotion_candidates([scenario], [score])
+
+        assert refusals == {"trust_tier:customer_negative": 1}
+
+    def test_missing_metric_is_never_a_pass(self):
+        """A None score is 'unknown', not 'good enough'."""
+        from app.services.eval_service import _meets_score_thresholds
+
+        assert _meets_score_thresholds({"faithfulness": None, "answer_relevancy": 1.0}) is False
+        assert _meets_score_thresholds({"faithfulness": 1.0, "answer_relevancy": None}) is False
+        assert _meets_score_thresholds({}) is False
+        assert _meets_score_thresholds({"faithfulness": 1.0, "answer_relevancy": 1.0}) is True
+
+    def test_machinery_still_works_once_a_promotable_tier_exists(self, monkeypatch):
+        """The gate is what blocks promotion — not broken code behind it.
+
+        Without this, "nothing is ever promoted" would be indistinguishable
+        from "the promotion path is dead", and re-enabling it later would be a
+        rewrite rather than a policy change. Registers a hypothetical
+        human-authored source and asserts the D-22/D-23 machinery runs.
+        """
+        from app.services import eval_service
+
+        monkeypatch.setitem(
+            eval_service.SCENARIO_SOURCE_TRUST_TIER, "owner_written", "human_authored"
+        )
+
+        cursor = _RecordingCursor(fetchone_result=None)
+        conn_strings: list[str] = []
+        connect, _conn = _recording_connect(cursor, conn_strings)
+        monkeypatch.setattr(eval_service.psycopg2, "connect", connect)
+
+        vo = MagicMock()
         embed_result = MagicMock()
         embed_result.embeddings = [[0.1] * 1024]
-        mock_vo.embed.return_value = embed_result
-        mock_get_vo.return_value = mock_vo
+        vo.embed.return_value = embed_result
+        monkeypatch.setattr(eval_service, "_get_vo", lambda: vo)
 
-        # Mock psycopg2 connection
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
-        mock_cursor.__exit__ = MagicMock(return_value=False)
-        # Return None for the existence-check SELECT (no existing row → proceed with INSERT)
-        mock_cursor.fetchone.return_value = None
-        mock_conn.cursor.return_value = mock_cursor
-        mock_psycopg2.connect.return_value = mock_conn
+        scenario, score = _scored("owner_written", 0.95, 0.92)
+        result = eval_service.promote_to_verified_qa(
+            [scenario], [score], "postgresql://production"
+        )
 
-        scenario_id = str(uuid.uuid4())
-        scenarios = [
-            {
-                "id": scenario_id,
-                "question": "What is your return policy?",
-                "reference_answer": "Items can be returned within 30 days.",
-                "agent_response": "You can return items within 30 days.",
-                "citations": [{"chunk_id": "c1", "text": "30-day returns"}],
-            }
-        ]
-        scores = [
-            {
-                "scenario_id": scenario_id,
-                "faithfulness": 0.95,
-                "answer_relevancy": 0.92,
-                "context_precision": 0.88,
-                "context_recall": 0.85,
-            }
-        ]
+        assert result["promoted"] == 1
+        assert result["refused"] == 0
+        assert "INSERT INTO verified_qa" in cursor.statements
+        # D-22 LOCKED: promoted_by='system' is a literal in the INSERT.
+        assert "'system'" in cursor.statements
+        assert conn_strings == ["postgresql://production"]
 
-        count = promote_to_verified_qa(scenarios, scores, "postgresql://branch-conn-str")
+    def test_below_threshold_is_refused_even_at_a_promotable_tier(self, monkeypatch):
+        """D-21's 0.90/0.90 bar still applies once the tier gate is cleared."""
+        from app.services import eval_service
 
-        # Should have promoted 1 row
-        assert count == 1, f"Expected 1 promoted row, got {count}"
+        monkeypatch.setitem(
+            eval_service.SCENARIO_SOURCE_TRUST_TIER, "owner_written", "human_authored"
+        )
 
-        # Verify INSERT INTO verified_qa was called
-        assert mock_cursor.execute.called, "cursor.execute was not called — no INSERT"
-        insert_sql_found = False
-        promoted_by_system = False
+        scenario, score = _scored("owner_written", 0.85, 0.95)
+        candidates, refusals = eval_service.select_promotion_candidates(
+            [scenario], [score]
+        )
+        assert candidates == []
+        assert refusals == {"below_score_threshold": 1}
 
-        for call_obj in mock_cursor.execute.call_args_list:
-            args = call_obj[0]
-            sql = args[0] if args else ""
-            if "INSERT INTO verified_qa" in sql:
-                insert_sql_found = True
-                # Check params dict contains promoted_by='system' (D-22)
-                params = args[1] if len(args) > 1 else {}
-                # promoted_by is hardcoded 'system' in the SQL literal
-                # check either in params or in the SQL string itself
-                if "'system'" in sql or (isinstance(params, dict) and params.get("promoted_by") == "system"):
-                    promoted_by_system = True
-                # The SQL hardcodes 'system' as a literal string
-                elif "'system'" in sql:
-                    promoted_by_system = True
-                else:
-                    # It's in the SQL literal not in params — check the raw SQL
-                    promoted_by_system = True  # 'system' is hardcoded in the SQL template
 
-        assert insert_sql_found, "No INSERT INTO verified_qa found in cursor.execute calls"
-        # D-22 LOCKED: promoted_by = 'system' is hardcoded in the SQL string
-        assert promoted_by_system, "D-22 violation: promoted_by='system' not found in INSERT"
+# ---------------------------------------------------------------------------
+# D2 — the persistence split
+# ---------------------------------------------------------------------------
 
-    @patch("app.services.eval_service._get_vo")
-    @patch("app.services.eval_service.psycopg2")
-    def test_promote_to_verified_qa_skips_below_threshold(
-        self,
-        mock_psycopg2,
-        mock_get_vo,
+
+class TestPersistenceSplit:
+    """Results are observations about a run; the branch is about to be deleted."""
+
+    @pytest.mark.parametrize(
+        "func_name", ["write_eval_results", "update_eval_run_status", "insert_eval_run"]
+    )
+    def test_production_writers_take_no_branch_named_parameter(self, func_name):
+        """Absence pin on the parameter NAME.
+
+        The name is load-bearing: a parameter called `branch_conn_str` is what
+        invited every caller to hand these functions the branch, which is the
+        entire mechanism of D2. Reverting the name fails here before any
+        behaviour test has to catch it.
+        """
+        from app.services import eval_service
+
+        params = inspect.signature(getattr(eval_service, func_name)).parameters
+        assert "branch_conn_str" not in params, (
+            f"{func_name} must not accept a parameter named 'branch_conn_str' — "
+            "it writes to production"
+        )
+        assert "conn_str" in params
+
+    def test_write_eval_results_opens_the_connection_it_was_given(self, monkeypatch):
+        from app.services import eval_service
+
+        cursor = _RecordingCursor()
+        conn_strings: list[str] = []
+        connect, _conn = _recording_connect(cursor, conn_strings)
+        monkeypatch.setattr(eval_service.psycopg2, "connect", connect)
+
+        eval_service.write_eval_results(
+            str(uuid.uuid4()),
+            [{"scenario_id": "s1", "faithfulness": 0.9, "answer_relevancy": 0.9,
+              "context_precision": 0.9, "context_recall": 0.9}],
+            "postgresql://production",
+        )
+
+        assert conn_strings == ["postgresql://production"]
+        assert "INSERT INTO eval_results" in cursor.statements
+
+    def test_update_eval_run_status_opens_the_connection_it_was_given(self, monkeypatch):
+        from app.services import eval_service
+
+        cursor = _RecordingCursor()
+        conn_strings: list[str] = []
+        connect, _conn = _recording_connect(cursor, conn_strings)
+        monkeypatch.setattr(eval_service.psycopg2, "connect", connect)
+
+        eval_service.update_eval_run_status(
+            str(uuid.uuid4()), "complete", finished_at=True,
+            conn_str="postgresql://production",
+        )
+
+        assert conn_strings == ["postgresql://production"]
+        assert "UPDATE eval_runs" in cursor.statements
+
+    def test_run_eval_for_agent_scores_on_branch_and_records_on_production(
+        self, monkeypatch
     ):
-        """No INSERT when faithfulness < EVAL_FAITHFULNESS_THRESHOLD (default 0.90)."""
-        from app.services.eval_service import promote_to_verified_qa
+        """The whole split, in one call: exactly one function sees the branch."""
+        from app.services import eval_service
 
-        mock_vo = MagicMock()
-        mock_get_vo.return_value = mock_vo
+        seen: dict[str, list] = {"ragas": [], "results": [], "status": []}
 
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
-        mock_cursor.__exit__ = MagicMock(return_value=False)
-        mock_conn.cursor.return_value = mock_cursor
-        mock_psycopg2.connect.return_value = mock_conn
+        monkeypatch.setattr(
+            eval_service,
+            "run_ragas_eval",
+            lambda scenarios, branch: (
+                seen["ragas"].append(branch)
+                or {"scores": [{"scenario_id": "s1"}], "means": {"faithfulness": 0.9}}
+            ),
+        )
+        monkeypatch.setattr(
+            eval_service,
+            "write_eval_results",
+            lambda run_id, scores, conn_str: seen["results"].append(conn_str),
+        )
+        monkeypatch.setattr(
+            eval_service,
+            "update_eval_run_status",
+            lambda run_id, status, finished_at, conn_str: seen["status"].append(
+                (status, conn_str)
+            ),
+        )
 
-        scenario_id = str(uuid.uuid4())
-        scenarios = [
-            {
-                "id": scenario_id,
-                "question": "What is your return policy?",
-                "reference_answer": "Items can be returned within 30 days.",
-                "agent_response": "You can return items within 30 days.",
-                "citations": [],
-            }
+        result = eval_service.run_eval_for_agent(
+            "run-1",
+            [{"id": "s1", "question": "q", "reference_answer": "a"}],
+            "postgresql://production",
+            "postgresql://branch",
+        )
+
+        assert seen["ragas"] == ["postgresql://branch"]
+        assert seen["results"] == ["postgresql://production"], (
+            "eval_results were written to the branch, which the caller deletes"
+        )
+        assert seen["status"] == [
+            ("running", "postgresql://production"),
+            ("complete", "postgresql://production"),
         ]
-        # faithfulness below threshold (0.85 < 0.90)
-        scores = [
-            {
-                "scenario_id": scenario_id,
-                "faithfulness": 0.85,
-                "answer_relevancy": 0.92,
-                "context_precision": 0.88,
-                "context_recall": 0.85,
-            }
-        ]
+        assert result["promoted_count"] == 0
 
-        count = promote_to_verified_qa(scenarios, scores, "postgresql://branch-conn-str")
+    def test_run_eval_for_agent_marks_failed_on_production_and_reraises(
+        self, monkeypatch
+    ):
+        from app.services import eval_service
 
-        # Should not have promoted anything
-        assert count == 0, f"Expected 0 promoted rows (below threshold), got {count}"
+        status: list[tuple] = []
+        monkeypatch.setattr(
+            eval_service,
+            "update_eval_run_status",
+            lambda run_id, s, finished_at, conn_str: status.append((s, conn_str)),
+        )
+        monkeypatch.setattr(
+            eval_service,
+            "run_ragas_eval",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("ragas exploded")),
+        )
 
-        # No INSERT should have been executed
-        for call_obj in mock_cursor.execute.call_args_list:
-            args = call_obj[0]
-            sql = args[0] if args else ""
-            assert "INSERT INTO verified_qa" not in sql, (
-                "INSERT INTO verified_qa was called despite score below threshold"
+        with pytest.raises(RuntimeError, match="ragas exploded"):
+            eval_service.run_eval_for_agent(
+                "run-1", [], "postgresql://production", "postgresql://branch"
             )
 
-    @patch("app.services.eval_service._get_vo")
-    @patch("app.services.eval_service.psycopg2")
-    def test_promote_to_verified_qa_skips_below_relevancy_threshold(
-        self,
-        mock_psycopg2,
-        mock_get_vo,
-    ):
-        """No INSERT when answer_relevancy < EVAL_RELEVANCY_THRESHOLD (default 0.90).
-        Both thresholds must pass (D-21 LOCKED).
-        """
-        from app.services.eval_service import promote_to_verified_qa
+        assert ("failed", "postgresql://production") in status
 
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
-        mock_cursor.__exit__ = MagicMock(return_value=False)
-        mock_conn.cursor.return_value = mock_cursor
-        mock_psycopg2.connect.return_value = mock_conn
+    def test_run_eval_for_agent_does_not_promote(self):
+        """Promotion is not in the sequence at all — restoring it is a decision
+        in promote_to_verified_qa's gate, not a re-added call here."""
+        from app.services import eval_service
 
-        scenario_id = str(uuid.uuid4())
-        scenarios = [{"id": scenario_id, "question": "Q", "reference_answer": "A",
-                      "agent_response": "ans", "citations": []}]
-        scores = [
-            {
-                "scenario_id": scenario_id,
-                "faithfulness": 0.95,       # passes
-                "answer_relevancy": 0.80,   # fails (< 0.90)
-                "context_precision": 0.88,
-                "context_recall": 0.85,
-            }
+        body = inspect.getsource(eval_service.run_eval_for_agent)
+        code_lines = [
+            ln for ln in body.splitlines()
+            if "promote_to_verified_qa(" in ln and not ln.strip().startswith("#")
         ]
+        assert code_lines == [], (
+            f"run_eval_for_agent calls promote_to_verified_qa: {code_lines}"
+        )
 
-        count = promote_to_verified_qa(scenarios, scores, "postgresql://branch")
-        assert count == 0, "Expected 0 promotions when answer_relevancy below threshold"
+
+# ---------------------------------------------------------------------------
+# The configuration tuple
+# ---------------------------------------------------------------------------
+
+
+class _FakeResult:
+    def __init__(self, row):
+        self._row = row
+
+    def first(self):
+        return self._row
+
+
+class _FakeDB:
+    """Control-DB session double routed by the SQL text it is handed."""
+
+    def __init__(self, prompt_row=None, agent_row=None, raise_on: str | None = None):
+        self.prompt_row = prompt_row
+        self.agent_row = agent_row
+        self.raise_on = raise_on
+
+    def execute(self, stmt, params=None):
+        sql = str(stmt)
+        if self.raise_on and self.raise_on in sql:
+            raise RuntimeError(f"control DB unavailable for {self.raise_on}")
+        if "prompt_versions" in sql:
+            return _FakeResult(self.prompt_row)
+        if "agents" in sql:
+            return _FakeResult(self.agent_row)
+        return _FakeResult(None)
+
+
+def _fake_sync_db(db):
+    @contextmanager
+    def _ctx():
+        yield db
+
+    return _ctx
+
+
+@pytest.fixture
+def config_env(monkeypatch):
+    """Every collector wired to a working double; tests break one at a time."""
+    from app.services import deployment_service, eval_service
+
+    db = _FakeDB(prompt_row=("11111111-1111-1111-1111-111111111111",), agent_row=({},))
+    monkeypatch.setattr(eval_service, "get_sync_db", _fake_sync_db(db))
+    monkeypatch.setattr(
+        deployment_service, "_compute_envelope_hash_sync", lambda agent_id: "env-hash"
+    )
+    monkeypatch.setattr(
+        deployment_service,
+        "_fetch_corpus_stats_sync",
+        lambda agent_id, conn_str: {"chunk_count": 42},
+    )
+    return db
+
+
+class TestBuildEvalRunConfig:
+    """(prompt_version_id, model_id, retrieval_config_hash, envelope_hash,
+    corpus state, embedding provider) — without it, "what changed?" has no answer."""
+
+    def test_carries_every_named_dimension(self, config_env):
+        from app.services.eval_service import build_eval_run_config
+
+        out = build_eval_run_config("agent-1", "postgresql://production")
+        config = out["config"]
+
+        assert out["prompt_version_id"] == "11111111-1111-1111-1111-111111111111"
+        for key in (
+            "model_id",
+            "retrieval_config_hash",
+            "envelope_hash",
+            "corpus_chunk_count",
+            "embedding_provider",
+        ):
+            assert config.get(key) is not None, f"config dimension {key} is missing"
+        assert config["envelope_hash"] == "env-hash"
+        assert config["corpus_chunk_count"] == 42
+        assert config["unavailable"] == []
+
+    def test_config_is_json_serialisable(self, config_env):
+        """It is written into a JSONB column; a non-serialisable value would
+        fail at INSERT time, i.e. at 02:00 on the nightly beat."""
+        from app.services.eval_service import build_eval_run_config
+
+        out = build_eval_run_config("agent-1", "postgresql://production")
+        json.dumps(out["config"])
+
+    def test_model_id_is_the_model_that_serves_a_turn(self, config_env):
+        from app.core.config import AGENT_TURN_MODEL
+        from app.services.eval_service import build_eval_run_config
+
+        out = build_eval_run_config("agent-1", "postgresql://production")
+        assert out["config"]["model_id"] == AGENT_TURN_MODEL
+
+    def test_agent_turn_model_is_not_duplicated_as_a_literal(self):
+        """A second literal would attribute a score to a model that did not
+        produce the turn the moment one of the two moves."""
+        from app.core.config import AGENT_TURN_MODEL
+        from app.worker.tasks.runtime import agent as agent_module
+
+        source = inspect.getsource(agent_module)
+        assert f'"{AGENT_TURN_MODEL}"' not in source, (
+            "run_agent_turn hardcodes the model id instead of using "
+            "AGENT_TURN_MODEL — eval_runs.config.model_id would drift from it"
+        )
+
+    def test_judge_model_is_recorded_separately_from_the_agent_model(self, config_env):
+        """A judge change moves every score without the agent changing at all,
+        so the two model ids are separate keys — collapsing them into one would
+        make a judge upgrade indistinguishable from an agent regression."""
+        from app.services.eval_service import HAIKU_MODEL, build_eval_run_config
+
+        config = build_eval_run_config("agent-1", "postgresql://production")["config"]
+        assert config["judge_model_id"] == HAIKU_MODEL
+        assert "model_id" in config and "judge_model_id" in config
+
+    def test_absent_prompt_version_is_not_reported_as_unavailable(
+        self, monkeypatch, config_env
+    ):
+        """"We looked and there is nothing" is a different claim from "we could
+        not look" — the reader must be able to tell them apart."""
+        from app.services import eval_service
+
+        monkeypatch.setattr(
+            eval_service,
+            "get_sync_db",
+            _fake_sync_db(_FakeDB(prompt_row=None, agent_row=({},))),
+        )
+
+        out = eval_service.build_eval_run_config("a", "postgresql://production")
+        assert out["prompt_version_id"] is None
+        assert "prompt_version_id" not in out["config"]["unavailable"]
+
+    def test_unreadable_prompt_version_is_named_unavailable(
+        self, monkeypatch, config_env
+    ):
+        from app.services import eval_service
+
+        monkeypatch.setattr(
+            eval_service,
+            "get_sync_db",
+            _fake_sync_db(_FakeDB(raise_on="prompt_versions", agent_row=({},))),
+        )
+
+        out = eval_service.build_eval_run_config("a", "postgresql://production")
+        assert out["prompt_version_id"] is None
+        assert "prompt_version_id" in out["config"]["unavailable"]
+
+    @pytest.mark.parametrize(
+        "attr,dimension",
+        [
+            ("_compute_envelope_hash_sync", "envelope_hash"),
+            ("_fetch_corpus_stats_sync", "corpus_chunk_count"),
+        ],
+    )
+    def test_each_collector_failure_names_itself(
+        self, monkeypatch, config_env, attr, dimension
+    ):
+        from app.services import deployment_service, eval_service
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("collector down")
+
+        monkeypatch.setattr(deployment_service, attr, _boom)
+
+        out = eval_service.build_eval_run_config("a", "postgresql://production")
+        assert out["config"][dimension] is None
+        assert dimension in out["config"]["unavailable"]
+
+    def test_never_raises_even_when_everything_is_down(self, monkeypatch):
+        """An unattributable run is worth far more than no run at all."""
+        from app.services import deployment_service, eval_service
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("everything is down")
+
+        monkeypatch.setattr(eval_service, "get_sync_db", _boom)
+        monkeypatch.setattr(deployment_service, "_compute_envelope_hash_sync", _boom)
+        monkeypatch.setattr(deployment_service, "_fetch_corpus_stats_sync", _boom)
+
+        out = eval_service.build_eval_run_config("a", "postgresql://production")
+
+        assert out["prompt_version_id"] is None
+        assert set(out["config"]["unavailable"]) == {
+            "prompt_version_id",
+            "retrieval_config_hash",
+            "envelope_hash",
+            "corpus_chunk_count",
+        }
+
+    def test_retrieval_config_hash_ignores_key_order(self, monkeypatch, config_env):
+        """Key order and whitespace must never vary the digest, or every run
+        would look like a configuration change."""
+        from app.services import eval_service
+
+        strategy_a = {"vector_k": 10, "final_k": 3}
+        strategy_b = {"final_k": 3, "vector_k": 10}
+
+        hashes = []
+        for strategy in (strategy_a, strategy_b):
+            monkeypatch.setattr(
+                eval_service,
+                "get_sync_db",
+                _fake_sync_db(_FakeDB(prompt_row=None, agent_row=(strategy,))),
+            )
+            hashes.append(
+                eval_service.build_eval_run_config("a", "postgresql://p")["config"][
+                    "retrieval_config_hash"
+                ]
+            )
+
+        assert hashes[0] == hashes[1]
+
+    def test_retrieval_config_hash_changes_when_the_strategy_changes(
+        self, monkeypatch, config_env
+    ):
+        from app.services import eval_service
+
+        hashes = []
+        for strategy in ({"vector_k": 10}, {"vector_k": 11}):
+            monkeypatch.setattr(
+                eval_service,
+                "get_sync_db",
+                _fake_sync_db(_FakeDB(prompt_row=None, agent_row=(strategy,))),
+            )
+            hashes.append(
+                eval_service.build_eval_run_config("a", "postgresql://p")["config"][
+                    "retrieval_config_hash"
+                ]
+            )
+
+        assert hashes[0] != hashes[1], (
+            "two different retrieval strategies produced the same hash — runs "
+            "differing on retrieval would compare as identical"
+        )
+
+    def test_default_and_absent_strategy_hash_identically(self, monkeypatch, config_env):
+        """An agent with no stored strategy behaves exactly like one storing the
+        defaults, so they must not appear to differ."""
+        from app.services import eval_service
+
+        hashes = []
+        for strategy in (None, {}):
+            monkeypatch.setattr(
+                eval_service,
+                "get_sync_db",
+                _fake_sync_db(_FakeDB(prompt_row=None, agent_row=(strategy,))),
+            )
+            hashes.append(
+                eval_service.build_eval_run_config("a", "postgresql://p")["config"][
+                    "retrieval_config_hash"
+                ]
+            )
+
+        assert hashes[0] == hashes[1]
+
+    def test_promotion_decision_is_copied_not_shared(self, config_env):
+        """A caller mutating the returned config must not poison the constant."""
+        from app.services import eval_service
+
+        out = eval_service.build_eval_run_config("a", "postgresql://p")
+        out["config"]["verified_qa_promotion"]["enabled"] = True
+
+        assert eval_service.VERIFIED_QA_PROMOTION_DECISION["enabled"] is False
+
+
+class TestInsertEvalRun:
+    """Tenant DBs are migrated at provision time only — 0013 may not be there."""
+
+    def _connect(self, monkeypatch, cursor):
+        from app.services import eval_service
+
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        monkeypatch.setattr(eval_service.psycopg2, "connect", lambda *a, **kw: conn)
+        return conn
+
+    def test_wide_insert_records_the_configuration_tuple(self, monkeypatch):
+        from app.services.eval_service import insert_eval_run
+
+        cursor = _RecordingCursor()
+        self._connect(monkeypatch, cursor)
+
+        recorded = insert_eval_run(
+            "run-1", "m6:agent-1", "pv-1", {"model_id": "m"}, "postgresql://production"
+        )
+
+        assert recorded is True
+        assert "prompt_version_id" in cursor.statements
+        assert "config" in cursor.statements
+        params = cursor.executed[0][1]
+        assert params["prompt_version_id"] == "pv-1"
+        assert json.loads(params["config"]) == {"model_id": "m"}
+
+    def test_falls_back_to_the_pre_0013_shape_and_says_so(self, monkeypatch):
+        """A tenant a migration behind must still be able to run an eval —
+        losing attribution is far better than "no eval can start at all"."""
+        from app.services.eval_service import insert_eval_run
+
+        cursor = _RecordingCursor(
+            raise_on="prompt_version_id",
+            exc=psycopg2.errors.UndefinedColumn("column does not exist"),
+        )
+        conn = self._connect(monkeypatch, cursor)
+
+        recorded = insert_eval_run(
+            "run-1", "m6:agent-1", "pv-1", {"model_id": "m"}, "postgresql://production"
+        )
+
+        assert recorded is False, (
+            "a run inserted without its configuration tuple must report that, "
+            "or an unattributed run is indistinguishable from an attributed one"
+        )
+        assert conn.rollback.called, (
+            "the aborted transaction must be rolled back before the connection "
+            "will accept the fallback statement"
+        )
+        assert len(cursor.executed) == 2
+        assert "prompt_version_id" not in cursor.executed[1][0]
+        assert conn.commit.called
+
+    def test_a_real_write_failure_is_not_swallowed(self, monkeypatch):
+        """The except must be narrow — UndefinedColumn only.
+
+        The failure is injected on the WIDE insert alone, so that a widened
+        `except Exception` would quietly succeed via the pre-0013 fallback and
+        report the run as started with attribution merely "absent". A permission
+        error, a dead connection or a constraint violation are not "this tenant
+        is a migration behind", and must reach the caller's retry.
+        """
+        from app.services.eval_service import insert_eval_run
+
+        cursor = _RecordingCursor(
+            raise_on="prompt_version_id",
+            exc=psycopg2.errors.InsufficientPrivilege("permission denied"),
+        )
+        conn = self._connect(monkeypatch, cursor)
+
+        with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+            insert_eval_run("run-1", "m6:a", None, None, "postgresql://production")
+
+        assert len(cursor.executed) == 1, (
+            "the pre-0013 fallback ran for a non-UndefinedColumn error — a real "
+            "write failure would be reported as a successfully started run"
+        )
+        assert conn.close.called, "the connection must be closed on every path"
