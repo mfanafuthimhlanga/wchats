@@ -369,18 +369,44 @@ class TestRunRedTeamReportsValidity:
             return run_red_team.run(agent_id=agent_id)
 
     def test_a_clean_run_still_reports_how_much_it_could_test(self):
+        """The triple travels whatever the current coverage happens to be.
+
+        Read out of red_team_coverage() rather than restated as 7/7: P4 wired
+        the four SDK attackers and flipped the denominator from 3 to 7, and a
+        test that hard-codes either number is pinning the build's mood rather
+        than the property — that the run reports (attempted, valid, findings)
+        and that `valid` never silently becomes `attempted`.
+        """
+        from app.services.red_team_service import RED_TEAM_VECTORS, red_team_coverage
+
+        expected = red_team_coverage()
         result = self._drive()
 
         assert result["findings_count"] == 0
-        assert result["vectors_attempted"] == 7
-        assert result["vectors_valid"] == 3, (
-            "four conversational attackers cannot probe in this build (D4)"
-        )
-        assert result["coverage_complete"] is False
-        assert result["invalid_vectors"], (
+        assert result["vectors_attempted"] == len(RED_TEAM_VECTORS) == 7
+        assert result["vectors_valid"] == expected["vectors_valid"]
+        assert result["coverage_complete"] is expected["complete"]
+        assert result["invalid_vectors"] == expected["invalid_vectors"], (
             "a run with silent attackers must name them — 'clean' over an "
             "unnamed subset is not a result anyone can act on"
         )
+
+    def test_a_silent_attacker_subset_is_named_on_the_run(self):
+        """Drive the reporting path that D4 existed for, independently of the flag.
+
+        With SDK_ATTACKERS_CAN_PROBE False the run must report valid < attempted
+        AND name which vectors are silent. Pinned here so P4's fix does not
+        delete the only coverage of the degraded case.
+        """
+        from app.services import red_team_service as rts
+
+        with patch.object(rts, "SDK_ATTACKERS_CAN_PROBE", False):
+            result = self._drive()
+
+        assert result["vectors_attempted"] == 7
+        assert result["vectors_valid"] == 3
+        assert result["coverage_complete"] is False
+        assert set(result["invalid_vectors"]) == set(rts.SDK_ATTACKER_VECTORS)
 
     def test_the_denominator_is_not_derivable_from_the_findings_count(self):
         """The point of the triple: findings alone cannot express coverage.
@@ -488,7 +514,9 @@ class TestRunRedTeamPersistsItsCoverage:
             "the aborted transaction must be rolled back before the fallback "
             "statement, or psycopg2 refuses it"
         )
-        assert result["vectors_valid"] == 3, (
+        from app.services.red_team_service import red_team_coverage
+
+        assert result["vectors_valid"] == red_team_coverage()["vectors_valid"], (
             "the return value still reports coverage even when the row cannot "
             "store it"
         )

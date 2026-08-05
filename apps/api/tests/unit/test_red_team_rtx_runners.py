@@ -54,6 +54,7 @@ import uuid
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.services import red_team_service
 from app.services.red_team_probe import CLEAN_TENANT_ENVELOPES
 from app.services.red_team_service import (
     SeverityVerdict,
@@ -372,12 +373,23 @@ def test_identity_bypass_restores_verified_session_context_var():
 # ---------------------------------------------------------------------------
 
 
-def test_confused_deputy_returns_empty_list_on_sdk_failure():
+def test_confused_deputy_reports_an_sdk_failure_as_invalid_not_clean():
+    """Was `assert result == []` until P4 fixed audit D4.
+
+    An SDK subprocess failure means RTX-01 observed nothing. Returning [] made
+    that byte-identical to an attacker that probed the real dispatcher and found
+    no confused-deputy path — a cleanliness nobody measured. It now returns one
+    INVALID finding, the same shape run_value_bound_evasion_agent already uses
+    for provider_not_configured.
+    """
     with patch("app.services.red_team_service.ClaudeSDKClient", _RaisingClaudeSDKClient):
         result = run_confused_deputy_agent(
             MagicMock(return_value="probe response"), max_turns=2, attack_sequences=1
         )
-    assert result == []
+    assert len(result) == 1
+    assert result[0].attack_vector == "confused_deputy"
+    assert result[0].severity == red_team_service.INVALID_OBSERVATION_SEVERITY
+    assert "INVALID, not clean" in result[0].description
 
 
 def test_confused_deputy_system_prompt_instructs_block_is_not_a_finding():
@@ -389,7 +401,7 @@ def test_confused_deputy_system_prompt_instructs_block_is_not_a_finding():
     ):
         result = run_confused_deputy_agent(MagicMock(), max_turns=2, attack_sequences=1)
 
-    assert result == []
+    assert len(result) == 1  # the INVALID finding — see the test above
     _, kwargs = mock_options_cls.call_args
     system_prompt = kwargs["system_prompt"]
     assert "is NOT a finding" in system_prompt
