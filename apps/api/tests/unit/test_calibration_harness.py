@@ -186,6 +186,75 @@ class TestUnscoredIsNotAPass:
         assert result["rho"] is None
         assert any("undefined" in e for e in result["errors"])
 
+    def test_a_judge_that_failed_most_of_its_calls_is_not_calibrated(
+        self, calibration_tree
+    ):
+        """P4 review: MIN_PAIRS alone let a 30%-success judge report PASS.
+
+        Ten rows scored by the owner; the judge returns verdict='ERROR' on seven
+        (529s, JSON parse failures — judge.py returns score 0 on any exception).
+        The three survivors happen to rank in agreement, rho = 1.000, and the
+        machine-readable status — the thing a caller branches on — said
+        'calibrated'. pairs/valid was computed, carried in the return dict, and
+        never consulted. The three survivors are not a random sample either:
+        whatever made the other seven fail selected them.
+        """
+        rows = [(f"S-2{i:02d}", "grounding_fidelity", str(score))
+                for i, score in enumerate([1, 2, 3, 4, 5, 1, 2, 3, 4, 5])]
+        calibration_tree(rows)
+        agreeing = {"S-200": 1, "S-204": 5, "S-209": 5}
+
+        def _flaky_judge(dimension, transcript, tool_calls_log):
+            sid = transcript.split("q for ")[1].split("\n")[0]
+            if sid in agreeing:
+                return {"dimension": dimension, "verdict": "PASS",
+                        "score": agreeing[sid], "reason": "ok"}
+            return {"dimension": dimension, "verdict": "ERROR", "score": 0,
+                    "reason": "529 overloaded"}
+
+        result = cc.compute_correlation(_flaky_judge)
+
+        assert result["pairs"] == 3 >= cc.MIN_PAIRS, (
+            "the pair floor is satisfied — that is the point"
+        )
+        assert result["valid"] == 10
+        assert result["pair_rate"] == pytest.approx(0.3)
+        assert result["status"] == cc.STATUS_NOT_CALIBRATED_YET
+        assert result["rho"] is None, (
+            "a caller must not be able to read a number out of a run that "
+            "measured three tenths of the set"
+        )
+        assert any("30%" in e for e in result["errors"])
+
+    def test_the_pair_rate_floor_is_a_floor_and_not_a_ban(self, calibration_tree):
+        """One judge error out of ten is 90% — above the floor, still a PASS.
+
+        Without this the test above would pass for the wrong reason: a gate that
+        rejected every run with a single error would make the instrument
+        useless rather than honest.
+        """
+        rows = [(f"S-3{i:02d}", "grounding_fidelity", str(score))
+                for i, score in enumerate([1, 2, 3, 4, 5, 1, 2, 3, 4, 5])]
+        calibration_tree(rows)
+        scores = dict(zip([f"S-3{i:02d}" for i in range(10)],
+                          [1, 2, 3, 4, 5, 1, 2, 3, 4, 5]))
+
+        def _one_error_judge(dimension, transcript, tool_calls_log):
+            sid = transcript.split("q for ")[1].split("\n")[0]
+            if sid == "S-303":
+                return {"dimension": dimension, "verdict": "ERROR", "score": 0,
+                        "reason": "529 overloaded"}
+            return {"dimension": dimension, "verdict": "PASS",
+                    "score": scores[sid], "reason": "ok"}
+
+        result = cc.compute_correlation(_one_error_judge)
+
+        assert result["pairs"] == 9
+        assert result["pair_rate"] == pytest.approx(0.9)
+        assert result["pair_rate"] >= cc.MIN_PAIR_RATE
+        assert result["status"] == cc.STATUS_CALIBRATED
+        assert result["rho"] == pytest.approx(1.0)
+
     def test_a_missing_csv_is_a_setup_error_not_a_pass(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cc, "HUMAN_SCORES_CSV", tmp_path / "nope.csv")
 
@@ -394,14 +463,37 @@ class TestReadiness:
             "test would pass for the wrong reason"
         )
 
-    def test_a_ready_tree_says_so(self, calibration_tree):
+    def test_a_ready_tree_says_ready_and_does_not_say_calibrated(self, calibration_tree):
+        """P4 review: this pinned `== EXIT_CALIBRATED`, i.e. exit 0.
+
+        That is audit D7's own defect — "exit 0 is success to every reader" —
+        reintroduced on the new code path and then guarded by a test. --check
+        makes zero judge calls by design, so a shell, Makefile or CI step keyed
+        on the documented exit code (`0 == calibrated`) would have recorded the
+        judge as calibrated while rho had never been computed and could have
+        been -1.0. Ready is a statement about the inputs, never about the judge.
+        """
         calibration_tree(_FOUR_ROWS)
         report = cc.readiness()
 
         assert report["blocking"] == []
         assert report["awaiting_owner_scores"] is False
         assert report["ready_to_calibrate"] is True
-        assert cc.print_readiness(report) == cc.EXIT_CALIBRATED
+        assert cc.print_readiness(report) == cc.EXIT_READY_TO_CALIBRATE
+        assert cc.EXIT_READY_TO_CALIBRATE != cc.EXIT_CALIBRATED
+
+    def test_no_check_outcome_can_report_the_calibrated_exit_code(self, calibration_tree):
+        """Both branches of --check, closing the class rather than one instance."""
+        calibration_tree(_FOUR_ROWS, capture={"S-101"})  # not ready
+        assert cc.main(["--check"]) != cc.EXIT_CALIBRATED
+
+        calibration_tree(_FOUR_ROWS)  # ready
+        assert cc.main(["--check"]) != cc.EXIT_CALIBRATED
+
+        assert cc.EXIT_READY_TO_CALIBRATE not in cc.EXIT_CODE_FOR_STATUS.values(), (
+            "a readiness answer must not share an exit code with a run that "
+            "actually computed a correlation"
+        )
 
     def test_main_check_returns_the_readiness_code(self, calibration_tree):
         calibration_tree([(sid, dim, "") for sid, dim, _ in _FOUR_ROWS])

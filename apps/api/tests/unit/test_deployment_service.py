@@ -905,16 +905,115 @@ class TestEvidenceGate:
         assert recommendation == "block"
         assert any(w.warning_id == "red_team_signal_unavailable" for w in warnings)
 
-    def test_incomplete_red_team_coverage_warns_without_blocking(self):
-        """A partial-coverage run measured something real, so it is not an
-        absent signal — but a clean result over 3 of 7 vectors is a qualified
-        claim and the owner is owed the qualification (audit D4)."""
+    def test_a_run_that_recorded_incomplete_coverage_refuses_to_ship(self):
+        """P4 review. This used to warn and ship, and the warning could not fire.
+
+        `red_team_coverage_incomplete` was the only deterministic Python-side
+        coverage control in the system, and it was fed by red_team_coverage(),
+        which has returned complete=True for every run in every environment
+        since SDK_ATTACKERS_CAN_PROBE was flipped. Now the run records its own
+        coverage — and a clean result over 3 of 7 vectors is not a clean result.
+        The remedy is in the owner's hands (run the check again), which is what
+        makes refusing actionable rather than a dead end.
+        """
         recommendation, warnings = apply_signal_evidence_gate(
             "ship", _measured_eval(), _measured_red_team(coverage_complete=False)
         )
-        assert recommendation == "ship"
+        assert recommendation == "block"
         assert [w.warning_id for w in warnings] == ["red_team_coverage_incomplete"]
         assert "3 of 7" in warnings[0].message
+
+    def test_unrecorded_coverage_warns_rather_than_blocking(self):
+        """'current_build' means no run-level figure exists at all — a tenant DB
+        provisioned before migration 0015, or a run written before the task
+        stored it. Nothing the owner does produces one, so blocking would be a
+        permanent unfixable refusal. It is still not evidence, and it says so."""
+        summary = _measured_red_team()
+        summary["coverage_source"] = COVERAGE_SOURCE_CURRENT_BUILD
+
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", _measured_eval(), summary
+        )
+
+        assert recommendation == "ship"
+        assert [w.warning_id for w in warnings] == ["red_team_coverage_unrecorded"]
+
+    def test_a_null_coverage_flag_fails_the_same_way_as_false(self):
+        """`is not True`, not `is False`: a summary that carries no coverage
+        claim has not made one."""
+        summary = _measured_red_team()
+        summary["coverage_complete"] = None
+
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", _measured_eval(), summary
+        )
+
+        assert recommendation == "block"
+        assert [w.warning_id for w in warnings] == ["red_team_coverage_incomplete"]
+
+    def test_an_open_critical_finding_refuses_to_ship(self):
+        """`red_team_summary.deployment_blocked == True` was the first blocking
+        condition in the orchestrator prompt and was enforced in no Python at
+        all — the gate returned 'ship' over an open critical finding."""
+        summary = _measured_red_team()
+        summary["critical_count"] = 1
+        summary["deployment_blocked"] = True
+
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", _measured_eval(), summary
+        )
+
+        assert recommendation == "block"
+        assert [w.warning_id for w in warnings] == ["red_team_critical_finding"]
+
+    def test_open_high_findings_refuse_to_ship_while_the_flag_is_set(self):
+        """DEP_BLOCK_ON_HIGH_RED_TEAM occurred exactly twice in the codebase:
+        its definition in config.py and one sentence of a system prompt. The
+        four `high` INVALID findings a transport-less run produces went straight
+        past it."""
+        summary = _measured_red_team()
+        summary["high_count"] = 4
+
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", _measured_eval(), summary
+        )
+
+        assert recommendation == "block"
+        assert [w.warning_id for w in warnings] == ["red_team_high_finding"]
+        assert "4 serious" in warnings[0].message
+
+    def test_the_high_block_honours_its_flag(self):
+        """The flag is a real switch, not decoration — otherwise this gate would
+        be enforcing something the config says is optional."""
+        summary = _measured_red_team()
+        summary["high_count"] = 4
+
+        with patch.object(settings, "DEP_BLOCK_ON_HIGH_RED_TEAM", False):
+            recommendation, warnings = apply_signal_evidence_gate(
+                "ship", _measured_eval(), summary
+            )
+
+        assert recommendation == "ship"
+        assert warnings == []
+
+    def test_containing_the_findings_does_not_clear_the_coverage_refusal(self):
+        """The scenario the P4 review reconstructed end to end.
+
+        Four `high` findings whose console fields name no vulnerability lead the
+        owner to contain them (PATCH /red-team/findings/{id}, open -> contained).
+        The counts then read 0/0 — but containment does not make the four
+        vectors run, and the run's own coverage row still says they did not.
+        """
+        summary = _measured_red_team(coverage_complete=False)
+        summary["critical_count"] = 0
+        summary["high_count"] = 0
+
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", _measured_eval(), summary
+        )
+
+        assert recommendation == "block"
+        assert [w.warning_id for w in warnings] == ["red_team_coverage_incomplete"]
 
     def test_the_unavailable_substitute_cannot_be_mistaken_for_a_clean_run(self):
         """The module constant itself, not a hand-built dict: this is the value

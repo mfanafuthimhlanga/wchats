@@ -162,16 +162,27 @@ def _make_psycopg2_conn(fetchone_value=None):
 
 
 def test_rtx_runner_signatures_match_shipped_contract():
+    """The three positional parameters run_red_team's uniform runner list needs.
+
+    `observations` (P4 review) is appended after them and MUST default to None:
+    it is the per-run validity ledger, and every shipped call site — including
+    the ones in this file — has to keep resolving without it. A vector that
+    reports no observation is counted invalid by run_coverage(), so an omitted
+    ledger can only ever cost coverage.
+    """
     for fn in (
         run_confused_deputy_agent,
         run_value_bound_evasion_agent,
         run_identity_bypass_agent,
     ):
-        assert list(inspect.signature(fn).parameters) == [
+        params = inspect.signature(fn).parameters
+        assert list(params) == [
             "probe_fn",
             "max_turns",
             "attack_sequences",
+            "observations",
         ]
+        assert params["observations"].default is None
 
 
 # ---------------------------------------------------------------------------

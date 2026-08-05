@@ -44,9 +44,21 @@ Exit codes:
     0 (EXIT_CALIBRATED)         — correlation >= 0.75 over >= MIN_PAIRS pairs
     1 (EXIT_NOT_CALIBRATED)     — correlation < 0.75; judge not calibrated
     2 (EXIT_SETUP_ERROR)        — missing files, unusable rows, other setup error
-    3 (EXIT_NOT_CALIBRATED_YET) — no human scores, or fewer than MIN_PAIRS
-                                  usable pairs. NOT a pass and NOT a failure of
-                                  the judge: the measurement has not been made.
+    3 (EXIT_NOT_CALIBRATED_YET) — no human scores, fewer than MIN_PAIRS usable
+                                  pairs, or the judge failed too many of its own
+                                  calls to have measured the set. NOT a pass and
+                                  NOT a failure of the judge: the measurement has
+                                  not been made.
+    4 (EXIT_READY_TO_CALIBRATE) — `--check` only: every input is present and the
+                                  correlation has NOT been computed.
+
+    --check NEVER RETURNS 0. It makes no judge call by design, so it cannot
+    establish the one thing exit 0 means. The first version of this fix returned
+    EXIT_CALIBRATED from --check on a merely-ready tree, which is audit D7's own
+    defect ("exit 0 is success to every reader") reintroduced on the new code
+    path: a checklist step keyed on the documented exit code would have recorded
+    the judge as calibrated while rho had never been computed and could have
+    been -1.0.
 """
 
 from __future__ import annotations
@@ -73,6 +85,18 @@ THRESHOLD = 0.75  # AI-SPEC.md §5.2
 # so the status machinery can say "not calibrated yet" rather than "nan".
 MIN_PAIRS = 3
 
+# The second floor, and the P4 review is why it exists (MIN_PAIRS alone is not
+# enough). A judge that returns verdict='ERROR' on seven of ten labelled rows —
+# Anthropic 529s, a JSON parse failure, judge.py:170-177's score=0 on any
+# exception — still leaves three pairs, and if those three happen to rank in
+# agreement the harness reported rho=1.000 and "PASS - judge is calibrated. Safe
+# to trust automated results." over a judge that failed 70% of its calls. The
+# three survivors are not a random sample of the set either: whatever made the
+# other seven fail (long transcripts, one dimension's prompt) selected them.
+# A correlation over a fifth of the labelled rows is not a measurement of the
+# set the human scored, so it reports NOT CALIBRATED YET rather than a verdict.
+MIN_PAIR_RATE = 0.8
+
 # ---------------------------------------------------------------------------
 # Exit codes and the statuses they encode
 # ---------------------------------------------------------------------------
@@ -84,6 +108,11 @@ EXIT_CALIBRATED = 0
 EXIT_NOT_CALIBRATED = 1
 EXIT_SETUP_ERROR = 2
 EXIT_NOT_CALIBRATED_YET = 3
+
+# Not a status — a readiness answer. `--check` computes no correlation, so no
+# --check outcome may ever share an exit code with one that did. See the
+# module docstring.
+EXIT_READY_TO_CALIBRATE = 4
 
 STATUS_CALIBRATED = "calibrated"
 STATUS_NOT_CALIBRATED = "not_calibrated"
@@ -337,7 +366,12 @@ def readiness() -> dict:
 
 
 def print_readiness(report: dict) -> int:
-    """Render a readiness report and return the exit code it implies."""
+    """Render a readiness report and return the exit code it implies.
+
+    Never returns EXIT_CALIBRATED. Readiness is a statement about the INPUTS;
+    calibration is a statement about the judge, and this function makes no judge
+    call. See the module docstring's note on --check.
+    """
     print("Calibration readiness (no judge calls, no network)\n")
     print(f"  scenarios on disk          : {report['scenarios_present']}")
     print(
@@ -368,7 +402,8 @@ def print_readiness(report: dict) -> int:
 
     if report["ready_to_calibrate"]:
         print("READY - every input is present; run without --check to compute the correlation.")
-        return EXIT_CALIBRATED
+        print("Ready is not calibrated: no judge has been called and rho is unknown.")
+        return EXIT_READY_TO_CALIBRATE
 
     print("NOT READY - the correlation cannot be computed yet, so the judge is UNCALIBRATED.")
     print("Uncalibrated is not 'passing'. No automated verdict in this system has been")
@@ -388,10 +423,13 @@ def compute_correlation(judge_fn) -> dict:
     same reason — the shipped code reached into tests.evals.judge inside main().
 
     Returns:
-        {"status", "rho", "pairs", "attempted", "valid", "errors", "table"}.
-        `rho` is None whenever status is anything but calibrated/not_calibrated,
-        so a caller can never read a number out of a run that did not make the
-        measurement.
+        {"status", "rho", "pairs", "pair_rate", "attempted", "valid", "errors",
+        "table"}. `rho` is None whenever status is anything but
+        calibrated/not_calibrated, so a caller can never read a number out of a
+        run that did not make the measurement. `pair_rate` is pairs/valid — the
+        fraction of the human-labelled set that actually produced a comparable
+        pair, which is the judge's own success rate on this run — and it is
+        GATED, not merely reported: see MIN_PAIR_RATE.
     """
     parsed = read_human_score_rows()
 
@@ -400,6 +438,7 @@ def compute_correlation(judge_fn) -> dict:
             "status": STATUS_SETUP_ERROR,
             "rho": None,
             "pairs": 0,
+            "pair_rate": None,
             "attempted": 0,
             "valid": 0,
             "errors": [f"{HUMAN_SCORES_CSV} not found."],
@@ -411,6 +450,7 @@ def compute_correlation(judge_fn) -> dict:
             "status": STATUS_NOT_CALIBRATED_YET,
             "rho": None,
             "pairs": 0,
+            "pair_rate": None,
             "attempted": parsed["attempted"],
             "valid": 0,
             "errors": [],
@@ -455,14 +495,36 @@ def compute_correlation(judge_fn) -> dict:
                       "judge": j_score, "reason": verdict["reason"]})
 
     pairs = len(human_scores)
+    pair_rate = pairs / parsed["valid"]
+
     if pairs < MIN_PAIRS:
         return {
             "status": STATUS_NOT_CALIBRATED_YET,
             "rho": None,
             "pairs": pairs,
+            "pair_rate": pair_rate,
             "attempted": parsed["attempted"],
             "valid": parsed["valid"],
             "errors": errors,
+            "table": table,
+        }
+
+    # The denominator gate. `pairs` alone answers "is there enough to correlate";
+    # this answers "did the judge actually score the set the human labelled".
+    if pair_rate < MIN_PAIR_RATE:
+        return {
+            "status": STATUS_NOT_CALIBRATED_YET,
+            "rho": None,
+            "pairs": pairs,
+            "pair_rate": pair_rate,
+            "attempted": parsed["attempted"],
+            "valid": parsed["valid"],
+            "errors": errors + [
+                f"Only {pairs} of {parsed['valid']} human-labelled row(s) produced a "
+                f"judge score ({pair_rate:.0%}, floor {MIN_PAIR_RATE:.0%}) - a "
+                "correlation over the rows that happened to succeed is not a "
+                "measurement of the set that was scored."
+            ],
             "table": table,
         }
 
@@ -472,6 +534,7 @@ def compute_correlation(judge_fn) -> dict:
             "status": STATUS_NOT_CALIBRATED_YET,
             "rho": None,
             "pairs": pairs,
+            "pair_rate": pair_rate,
             "attempted": parsed["attempted"],
             "valid": parsed["valid"],
             "errors": errors + [
@@ -485,6 +548,7 @@ def compute_correlation(judge_fn) -> dict:
         "status": STATUS_CALIBRATED if rho >= THRESHOLD else STATUS_NOT_CALIBRATED,
         "rho": rho,
         "pairs": pairs,
+        "pair_rate": pair_rate,
         "attempted": parsed["attempted"],
         "valid": parsed["valid"],
         "errors": errors,
@@ -534,16 +598,24 @@ def main(argv: list[str] | None = None) -> int:
     if status == STATUS_SETUP_ERROR:
         print("SETUP ERROR - the harness could not read its own inputs.")
     elif status == STATUS_NOT_CALIBRATED_YET:
+        rate = result.get("pair_rate")
         print(
-            f"NOT CALIBRATED YET - {result['pairs']} usable pair(s), {MIN_PAIRS} needed.\n"
+            f"NOT CALIBRATED YET - {result['pairs']} usable pair(s) out of "
+            f"{result['valid']} labelled row(s)"
+            + (f" ({rate:.0%})" if rate is not None else "")
+            + f"; {MIN_PAIRS} pairs and {MIN_PAIR_RATE:.0%} of the set are needed.\n"
             "This is neither a pass nor a judge failure: the measurement has not been made.\n"
             "Run with --check to see exactly which input is missing. If it is the\n"
             "human_score column, that one is the owner's and must be filled by a human."
         )
     elif status == STATUS_CALIBRATED:
-        print(f"Spearman rho = {result['rho']:.3f}  (n={result['pairs']}, threshold={THRESHOLD})")
         print(
-            f"PASS - judge is calibrated (rho {result['rho']:.3f} >= {THRESHOLD}). "
+            f"Spearman rho = {result['rho']:.3f}  (n={result['pairs']} of "
+            f"{result['valid']} labelled, threshold={THRESHOLD})"
+        )
+        print(
+            f"PASS - judge is calibrated (rho {result['rho']:.3f} >= {THRESHOLD}) "
+            f"over {result['pair_rate']:.0%} of the scored set. "
             "Safe to trust automated results."
         )
     else:

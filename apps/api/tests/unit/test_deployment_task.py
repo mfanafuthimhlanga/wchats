@@ -397,6 +397,17 @@ def _measured_eval_signal():
 
 
 def _measured_red_team_signal():
+    """A security signal that was actually MEASURED, coverage included.
+
+    `coverage_source` is what the collector attaches in the measured state, and
+    it has to be here for the same reason `eval_signal` does (see above): these
+    tests are about wiring, and from P4 the gate treats a summary carrying no
+    run-level coverage figure as a claim nobody made — 'we cannot confirm all
+    seven attack types were tested' — and warns. Omitting it here would have
+    these tests asserting against a qualification rather than the wiring.
+    """
+    from app.services.deployment_service import COVERAGE_SOURCE_RUN
+
     return {
         "signal": "measured",
         "last_run_at": "2026-05-23T03:00:00",
@@ -409,6 +420,7 @@ def _measured_red_team_signal():
         "vectors_valid": 7,
         "invalid_vectors": [],
         "coverage_complete": True,
+        "coverage_source": COVERAGE_SOURCE_RUN,
     }
 
 
