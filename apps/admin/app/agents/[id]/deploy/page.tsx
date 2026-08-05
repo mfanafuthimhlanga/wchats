@@ -8,6 +8,13 @@ import Ledger, { LedgerColHead, LedgerRowHead } from '../../../components/gotham
 import Zone from '../../../components/gotham/Zone'
 import EmptyState from '../../../components/gotham/EmptyState'
 import { useGate } from '../../../components/gotham/GateProvider'
+import {
+  type OpenFinding,
+  isGateBlocked,
+  firstCriticalFinding,
+  computeSeverityCounts,
+  gateMessage,
+} from '../components/opsFormat'
 
 /**
  * Deploy — `/agents/[id]/deploy` (UI-SPEC S6.8, UI2-06, ported from
@@ -2006,6 +2013,40 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     setEnvelopeAcknowledged(false)
   }, [latestRun?.id, latestRun?.envelope_hash])
 
+  // ---- Live open findings (v1.2 milestone audit, 2026-08-04) -------------
+  // This page derived its entire gate from `latestRun` — a checklist-run row
+  // whose `report.red_team_summary` is computed once at run time
+  // (deployment_service.py:253) and never updated by a contain action. The
+  // operations room was fixed in 23-06 to derive from the live
+  // `open_findings` list; this page was byte-unchanged, so the two surfaces
+  // could report opposite answers about one gate. That is the same
+  // false-status defect class the milestone already failed an audit over,
+  // and the audit found it recurring here.
+  //
+  // Same endpoint, same query shape and same pure functions the Adversary
+  // region uses, so the two surfaces cannot drift again by construction.
+  const redTeamProgrammeQuery = useQuery({
+    queryKey: ['red-team-programme', id],
+    queryFn: async () => {
+      const token = await getToken()
+      if (!token) throw new Error('Not authenticated')
+      const r = await fetch(`${apiBase}/api/v1/agents/${id}/red-team/programme`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const data = await r.json()
+      return (data.open_findings ?? []) as OpenFinding[]
+    },
+    enabled: isLoaded && !!isSignedIn,
+    staleTime: 15_000,
+  })
+  const openFindings = redTeamProgrammeQuery.data ?? []
+  // Only meaningful once the read actually succeeded. A failed programme GET
+  // must never read as "no critical findings" — that is the unsafe direction,
+  // so the live signal simply abstains and the snapshot behaviour stands.
+  const liveSignalKnown = redTeamProgrammeQuery.isSuccess
+  const liveBlocked = liveSignalKnown && isGateBlocked(openFindings)
+
   // ---- Capability envelopes (CAP-03) — GET added here (plan 18-10 Task 1),
   // consumed by both the acknowledgement summary table and (plan 18-10 Task
   // 2) the six capability Zones. PATCH mutation added in Task 2. -----------
@@ -2392,7 +2433,39 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
   const soulConfigured = !!(agent?.soul_role && agent?.soul_voice)
 
   const checklistBlocked = latestRun?.status === 'complete' && latestRun.recommendation === 'block'
-  const gateBlocked = checklistBlocked || redTeamBlockedSignal
+  const snapshotBlocked = checklistBlocked || redTeamBlockedSignal
+  // Live criticals shut the gate too. This makes the console STRICTER than the
+  // server, deliberately: `approve-deployment` (deployment.py) refuses only on
+  // the frozen `run.recommendation`, so a critical raised after a clean
+  // checklist run is currently permitted to deploy. Erring toward shut is the
+  // fail-safe direction; erring toward open would let the UI wave through the
+  // exact thing the red team just found.
+  const gateBlocked = snapshotBlocked || liveBlocked
+
+  // The two ways the frozen snapshot and the live list can disagree. Both are
+  // rendered, because an operator who has just watched the operations room
+  // change its answer needs to know why this page did not.
+  //
+  // staleBlock is scoped to `redTeamBlockedSignal`, NOT to `snapshotBlocked`,
+  // and the distinction is the whole correctness of the claim. The backend
+  // sets `deployment_blocked` iff at least one open CRITICAL finding existed
+  // when the checklist ran (deployment_service.py:221-225), which is exactly
+  // what `isGateBlocked` tests — so comparing the two is like for like.
+  // `recommendation === 'block'` is broader: it also fires on high_count > 0
+  // (DEP_BLOCK_ON_HIGH_RED_TEAM, default true) and on any eval pass_rate below
+  // 0.70. Scoping this to `snapshotBlocked` would tell an operator whose block
+  // came from a still-open HIGH finding, or from a failing eval, that "the
+  // findings have been contained" — false, and the exact false-status class
+  // this whole change exists to remove.
+  const staleBlock = redTeamBlockedSignal && liveSignalKnown && !liveBlocked
+  // staleClear — a critical finding exists NOW that the checklist never saw.
+  // Without this the page would report Open and enable Approve over it.
+  const staleClear = liveBlocked && !snapshotBlocked
+  const liveCritical = firstCriticalFinding(openFindings)
+  // Live severity counts for the Red team ledger row. Without this the row
+  // would keep reporting the frozen snapshot while the gate above reports the
+  // live list, putting two answers to one question on a single screen.
+  const liveSeverity = computeSeverityCounts(openFindings)
 
   useEffect(() => {
     setGate(gateBlocked ? 'blocked' : 'open')
@@ -2415,7 +2488,10 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     baseApprovable &&
     latestRun?.envelope_drift === false &&
     envelopeAcknowledged === true &&
-    capabilityEnvelopesQuery.isSuccess
+    capabilityEnvelopesQuery.isSuccess &&
+    // A critical finding open right now disables Approve even when the
+    // checklist run predates it and the server would still accept the call.
+    !liveBlocked
 
   // Why Approve is unavailable once the checklist itself is clear. Scoped to
   // the envelope preconditions on purpose: the block / unacknowledged-warnings
@@ -2424,7 +2500,14 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
   const envelopeBlockReason =
     !baseApprovable || isApprovable
       ? null
-      : latestRun?.envelope_drift === true
+      : // A live critical is already explained by its own paragraph. Without
+        // this branch the chain falls through to "Tick the acknowledgement
+        // above", which is wrong whenever the box is already ticked and the
+        // only thing holding Approve is the finding — putting a true reason
+        // and a false one on screen together.
+        liveBlocked
+        ? null
+        : latestRun?.envelope_drift === true
         ? 'Re-run the checklist to acknowledge the new configuration.'
         : !capabilityEnvelopesQuery.isSuccess
           ? 'The capability limits are not on screen yet. Approve stays disabled until they load.'
@@ -2442,6 +2525,11 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
       // ACT-07: the queue's GET failure folds into this existing banner — no
       // new error surface, matching every other query on this page.
       pendingConfirmationsQuery.error,
+      // A failed live-findings read makes the gate abstain and silently revert
+      // to snapshot-only behaviour. That is the fail-safe direction, but a
+      // silent one: the safety net this query exists to provide would be off
+      // with nothing on screen saying so. Same banner as every sibling query.
+      redTeamProgrammeQuery.error,
     ]
     const first = errs.find((e): e is Error => e instanceof Error)
     return first?.message ?? null
@@ -2451,6 +2539,7 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     widgetConfigQuery.error,
     capabilityEnvelopesQuery.error,
     pendingConfirmationsQuery.error,
+    redTeamProgrammeQuery.error,
   ])
 
   const actionError = useMemo(() => {
@@ -2490,7 +2579,19 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     resolveConfirmation.error,
   ])
 
-  const consequence = buildConsequence(latestRun)
+  // `buildConsequence` is a pure function of `latestRun` alone, so on a 'ship'
+  // run it returns "Every signal holds. Approving puts this agent in front of
+  // every customer." That sentence sits directly under the divergence
+  // paragraph and is always in the Approve button's aria-describedby — so in
+  // a divergent state the page would assert, in two adjacent sentences, both
+  // that every signal holds and that a critical finding is open. The
+  // divergence paragraph already carries the true reason; this defers to it
+  // rather than restating a consequence drawn from a run that no longer
+  // describes the agent.
+  const consequence =
+    staleClear || staleBlock
+      ? 'This checklist run no longer describes the agent. Re-run it for a current read.'
+      : buildConsequence(latestRun)
   const gateStamp = latestRun && latestRun.status === 'complete' ? latestRun.created_at : null
 
   return (
@@ -2561,6 +2662,19 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
               </div>
             )}
 
+            {/* `liveBlocked` shuts the gate on its own, and `setGate` repaints
+                the whole console via `data-gate`. Outside the 'complete'
+                branch the old code could never reach that state, so none of
+                the three branches above explains it — an operator with no
+                checklist run, or one mid-flight, would see a page-wide blocked
+                repaint with nothing on screen saying why. This says why, in
+                every branch that can now render it. */}
+            {liveBlocked && latestRun?.status !== 'complete' && (
+              <p className="help" role="status">
+                A critical finding is open against this agent. {gateMessage(liveCritical)}
+              </p>
+            )}
+
             {latestRun?.status === 'complete' && (
               <>
                 <Ledger caption="The readiness signals a deployment gate checks before an agent can reach a customer.">
@@ -2593,14 +2707,42 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                         Red team
                         <span className="why">Adversarial probes for jailbreaks &amp; data leakage</span>
                       </LedgerRowHead>
+                      {/* Reads the LIVE open-findings list whenever it is
+                          known, falling back to the run's frozen counts only
+                          when it is not. Leaving this on the snapshot while
+                          the gate above reads live would put two answers to
+                          one question on a single screen — the defect this
+                          change exists to remove, one row down. */}
                       <td className="val mono">
-                        {report?.red_team_summary
-                          ? `${criticalFindings} critical · ${highFindings} high`
-                          : 'not yet run'}
+                        {liveSignalKnown
+                          ? `${liveSeverity.critical} critical · ${liveSeverity.high} high`
+                          : report?.red_team_summary
+                            ? `${criticalFindings} critical · ${highFindings} high`
+                            : 'not yet run'}
                       </td>
                       <td>
-                        <Chip verdict={!report?.red_team_summary ? 'mute' : redTeamBlockedSignal ? 'fail' : 'pass'}>
-                          {!report?.red_team_summary ? 'No data' : redTeamBlockedSignal ? 'Fail' : 'Pass'}
+                        <Chip
+                          verdict={
+                            liveSignalKnown
+                              ? liveBlocked
+                                ? 'fail'
+                                : 'pass'
+                              : !report?.red_team_summary
+                                ? 'mute'
+                                : redTeamBlockedSignal
+                                  ? 'fail'
+                                  : 'pass'
+                          }
+                        >
+                          {liveSignalKnown
+                            ? liveBlocked
+                              ? 'Fail'
+                              : 'Pass'
+                            : !report?.red_team_summary
+                              ? 'No data'
+                              : redTeamBlockedSignal
+                                ? 'Fail'
+                                : 'Pass'}
                         </Chip>
                       </td>
                     </tr>
@@ -2677,8 +2819,19 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                   <Btn
                     className={approveUnavailable ? 'is-disabled' : undefined}
                     aria-disabled={approveUnavailable || undefined}
+                    // Every on-screen reason Approve is unavailable, in the
+                    // order it is read. A reason rendered but not referenced
+                    // here is invisible to a screen-reader user, who is
+                    // exactly the reader who cannot see the greyed button.
                     aria-describedby={
-                      envelopeBlockReason ? 'approve-reason consequence' : 'consequence'
+                      [
+                        staleClear ? 'live-critical-reason' : null,
+                        staleBlock ? 'stale-block-reason' : null,
+                        envelopeBlockReason ? 'approve-reason' : null,
+                        'consequence',
+                      ]
+                        .filter(Boolean)
+                        .join(' ')
                     }
                     onClick={() => {
                       if (!approveUnavailable) approveDeployment.mutate()
@@ -2698,15 +2851,40 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
                     {envelopeBlockReason}
                   </p>
                 )}
+                {/* The two divergence cases. Rendered here, next to the
+                    approve reasoning, because that is where an operator looks
+                    when the gate will not move. Neither is a warning about
+                    this page being wrong; each states which of the two true
+                    facts the reader is currently missing. */}
+                {/* No `role="status"` on either. The visually-hidden live
+                    region below already announces both states and is the
+                    single carrier for this fact; marking these live too would
+                    fire two overlapping announcements for one change. */}
+                {staleClear && (
+                  <p className="help" id="live-critical-reason">
+                    A critical finding has been raised since this checklist ran.{' '}
+                    {gateMessage(liveCritical)} Re-run the checklist before approving.
+                  </p>
+                )}
+                {staleBlock && (
+                  <p className="help" id="stale-block-reason">
+                    The critical findings this checklist recorded have since been contained.
+                    Re-run the checklist for a current read.
+                  </p>
+                )}
                 <p className="voice consequence" id="consequence">{consequence}</p>
                 <p className="vh" role="status" aria-live="polite">
-                  {gateBlocked
-                    ? 'The gate is shut. A blocking finding is open and no new build reaches a customer.'
-                    : isApprovable
-                      ? 'The gate is open. Approving puts this agent in front of every customer.'
-                      : `The gate is open. This deploy is not approvable yet. ${
-                          envelopeBlockReason ?? 'Every signal above must hold first.'
-                        }`}
+                  {staleClear
+                    ? 'The gate is shut. A critical finding was raised after this checklist ran. Re-run the checklist before approving.'
+                    : staleBlock
+                      ? 'The critical findings this checklist recorded have since been contained. Re-run the checklist for a current read.'
+                      : gateBlocked
+                        ? 'The gate is shut. A blocking finding is open and no new build reaches a customer.'
+                        : isApprovable
+                          ? 'The gate is open. Approving puts this agent in front of every customer.'
+                          : `The gate is open. This deploy is not approvable yet. ${
+                              envelopeBlockReason ?? 'Every signal above must hold first.'
+                            }`}
                 </p>
 
                 <div className="rig">
