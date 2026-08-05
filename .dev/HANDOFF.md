@@ -1,9 +1,22 @@
-# HANDOFF — 2026-08-05
+# HANDOFF — 2026-08-06
 
-**In flight:** `.dev/` convention adopted; `.planning/` frozen. First workflow-driven work is the
-eval foundation (`.dev/plans/260805-eval-foundation.md`).
+**In flight:** `feat/eval-foundation` is **complete and awaiting merge** — 8 phase commits, tier-2
+judged, trace written (`.dev/traces/260805-eval-foundation.md`). Suite 1199 → **1657 passed / 11
+skipped / 0 failed**.
 
-**Branch:** work happens on `feat/eval-foundation` off `main`. `main` was clean at `d72c519`.
+**Merge order:** `chore/dev-workflow-convention` (`fd8fa20`) first, then `feat/eval-foundation`
+(`60a4a5d`). The feature branch was cut off the chore branch so the workflow could read its own plan.
+
+**Read the trace before merging.** The tier-2 verdict is that this is *"an honest and well-guarded
+instrument-building milestone, mergeable as such — but do not read it as 'the platform is now
+evaluated': nothing on this branch has yet measured a real agent, and the one live signal the gate
+consumes is still vacuous."*
+
+**The next phase is already named: D1.** The eval still sets `agent_response = reference_answer`, so
+the deploy gate now fail-closes on an *absent* signal while shipping on a *present* one that measures
+nothing. The config tuple stamps provenance on that tautology, which makes it look credible. This was
+a gap in the plan, not the execution — the audit named target leakage as defect #1 and the four
+phases assigned it to nobody.
 
 ---
 
