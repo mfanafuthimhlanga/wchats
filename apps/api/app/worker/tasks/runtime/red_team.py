@@ -49,6 +49,7 @@ from app.models.agent import Agent
 from app.services.agent_tools import RetrievalStrategy, build_tool_server
 from app.services.red_team_probe import _build_transactional_probe_fn
 from app.services.red_team_service import (
+    red_team_coverage,
     run_conversation_injection_agent,
     run_content_injection_agent,
     run_data_leakage_agent,
@@ -224,9 +225,17 @@ def run_red_team(self, agent_id: str) -> dict:
 
     Returns:
         {"run_id": str, "blocked": bool, "max_severity": str,
-         "critical_count": int, "high_count": int}  on success.
+         "critical_count": int, "high_count": int, "vectors_attempted": int,
+         "vectors_valid": int, "invalid_vectors": list[str],
+         "coverage_complete": bool, "findings_count": int}  on success.
         {"status": "already_running"}                on idempotent skip.
         {}                                            on retry exhaustion.
+
+    (vectors_attempted, vectors_valid, findings_count) is the validity triple:
+    how many attack vectors were dispatched, how many could actually observe an
+    outcome, and how many findings came back. Without the middle number an empty
+    findings list is unreadable — "nothing succeeded" and "nothing could try"
+    produce the identical list.
     """
     # ------------------------------------------------------------------
     # Step 1 — Fetch agent from control DB; decrypt conn_str at runtime
@@ -426,6 +435,15 @@ def run_red_team(self, agent_id: str) -> dict:
         critical_count = sum(1 for f in all_findings if f.severity == "critical")
         high_count = sum(1 for f in all_findings if f.severity == "high")
 
+        # (attempted, valid, findings) — the validity denominator for this run.
+        # Zero findings means one of two very different things: seven vectors
+        # probed and none succeeded, or three probed and four could not (audit
+        # D4, where the four conversational attackers are constructed without
+        # the send_probe tool and return [] unconditionally). Reporting the
+        # findings count alone renders the second as the first, which is a
+        # cleanliness nobody measured.
+        coverage = red_team_coverage()
+
         # ------------------------------------------------------------------
         # Step 7 — Update red_team_run row to 'complete'
         # ------------------------------------------------------------------
@@ -582,6 +600,10 @@ def run_red_team(self, agent_id: str) -> dict:
             blocked=deployment_blocked,
             critical_count=critical_count,
             high_count=high_count,
+            vectors_attempted=coverage["vectors_attempted"],
+            vectors_valid=coverage["vectors_valid"],
+            invalid_vectors=coverage["invalid_vectors"],
+            findings_count=len(all_findings),
         )
         return {
             "run_id": run_id,
@@ -589,6 +611,14 @@ def run_red_team(self, agent_id: str) -> dict:
             "max_severity": max_severity,
             "critical_count": critical_count,
             "high_count": high_count,
+            # (attempted, valid, findings). vectors_valid is the denominator:
+            # an attack-success rate over vectors_attempted while some vectors
+            # cannot probe reports a coverage the run never had.
+            "vectors_attempted": coverage["vectors_attempted"],
+            "vectors_valid": coverage["vectors_valid"],
+            "invalid_vectors": coverage["invalid_vectors"],
+            "coverage_complete": coverage["complete"],
+            "findings_count": len(all_findings),
         }
 
     except Exception as exc:

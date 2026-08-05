@@ -44,6 +44,13 @@ So every metric now travels with the fact of its own measurement:
     passed                     — tri-state. None when a gated metric was not
         measured: unknown is neither a pass nor a fail. A client that cannot
         read null degrades to "not passed", which fails closed.
+    datasets                   — the same run split into its golden half (fixed,
+        run in full every night, comparable across runs) and its exploratory
+        half (rotating). They are different measurements: averaging them
+        destroys the paired per-item comparison the golden set exists to make,
+        so they are aggregated separately and never summed here.
+        `datasets.available` is false when the tenant DB predates migration
+        0014, which is a different claim from "no golden rows were covered".
 """
 
 from __future__ import annotations
@@ -63,6 +70,12 @@ from app.core.database import get_async_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.models.tenant import Tenant
+from app.services.eval_service import (
+    DATASET_EXPLORATORY,
+    DATASET_GOLDEN,
+    EVAL_DATASETS,
+)
+from app.services.eval_service import METRIC_KEYS as EVAL_METRIC_KEYS
 from app.worker.tasks.runtime.eval import run_eval_suite
 
 router = APIRouter(tags=["evals"])
@@ -127,17 +140,57 @@ _LIST_EVAL_RUNS_SQL = """
     LIMIT 50
 """
 
-# The four M6 metrics, in the order the UI channels read them (D-04).
-METRIC_KEYS = (
-    "faithfulness",
-    "answer_relevancy",
-    "context_precision",
-    "context_recall",
-)
+# The four M6 metrics, in the order the UI channels read them (D-04). Imported
+# from eval_service rather than restated: audit D3 was one call site's copy of a
+# column name drifting from the schema's, and four metric names duplicated
+# across the writer, the scorer and this reader is the same shape of defect
+# waiting to happen.
+METRIC_KEYS = EVAL_METRIC_KEYS
 
 # The two metrics the promotion gate is defined over (D-21 LOCKED). Kept
 # separate from METRIC_KEYS because `passed` is a claim about these two only.
 GATED_METRIC_KEYS = ("faithfulness", "answer_relevancy")
+
+# P2 — the golden/exploratory split, per run. A golden score and an exploratory
+# score are DIFFERENT MEASUREMENTS: the golden rows are fixed and run in full
+# every night, so consecutive runs are a paired per-item comparison, while the
+# exploratory sample rotates and its mean moves whenever the draw moves.
+# Averaging them destroys the paired comparison the golden set exists for, so
+# they are aggregated separately here and never combined into one number.
+#
+# The CASE mirrors eval_service.dataset_of() exactly — only the literal
+# 'golden' is golden, and NULL (every row predating migration 0014), '' and any
+# unrecognised value are exploratory, because membership of a curated set has to
+# be asserted rather than inherited. A COALESCE would leave an unexpected value
+# to open a third bucket the reader is not expecting. Rows whose scenario no
+# longer exists (a deleted scenario, or the id run_ragas_eval synthesises when a
+# scenario carries none) land in the exploratory bucket rather than being
+# dropped: a scored observation that vanishes from the denominator is how a rate
+# comes to overstate.
+#
+# Bounded to the same 50 runs the list query returns — this is one extra round
+# trip on a route that already makes two, not a full-table aggregate.
+_LIST_EVAL_RUN_DATASETS_SQL = """
+    SELECT
+        res.eval_run_id,
+        CASE WHEN es.dataset = %(golden)s THEN %(golden)s ELSE %(exploratory)s END
+            AS dataset,
+        COUNT(DISTINCT res.scenario_id) AS scenario_count,
+        COUNT(DISTINCT res.scenario_id) FILTER (
+            WHERE res.score IS NOT NULL
+        ) AS scored_scenario_count,
+        AVG(CASE WHEN res.metric = 'faithfulness'      THEN res.score END) AS faithfulness,
+        AVG(CASE WHEN res.metric = 'answer_relevancy'  THEN res.score END) AS answer_relevancy,
+        AVG(CASE WHEN res.metric = 'context_precision' THEN res.score END) AS context_precision,
+        AVG(CASE WHEN res.metric = 'context_recall'    THEN res.score END) AS context_recall
+    FROM eval_results res
+    LEFT JOIN eval_scenarios es ON es.id::text = res.scenario_id
+    WHERE res.eval_run_id IN (
+        SELECT id FROM eval_runs ORDER BY started_at DESC LIMIT 50
+    )
+    GROUP BY res.eval_run_id,
+             CASE WHEN es.dataset = %(golden)s THEN %(golden)s ELSE %(exploratory)s END
+"""
 
 # OPS-12: ORRERY ledger — eval provenance (born-in-production vs authored counts).
 # provenance IS NULL rows predate provenance tracking (migration 0011) and are
@@ -154,6 +207,34 @@ _LEDGER_SQL = """
 """
 
 
+def _dataset_block(per_dataset: dict[str, dict], available: bool) -> dict:
+    """Per-dataset aggregates for one run, with every dataset key always present.
+
+    A dataset with no rows in this run reports zero counts and four unmeasured
+    metrics rather than being omitted. An absent key would have to be
+    interpreted, and the two available interpretations — "this run covered no
+    golden rows" and "this response does not carry that information" — are
+    exactly the pair `available` exists to separate.
+    """
+    return {
+        "available": available,
+        **{
+            name: per_dataset.get(
+                name,
+                {
+                    "scenario_count": 0,
+                    "scored_scenario_count": 0,
+                    "metrics": {
+                        metric: {"value": None, "measured": False}
+                        for metric in METRIC_KEYS
+                    },
+                },
+            )
+            for name in EVAL_DATASETS
+        },
+    }
+
+
 @router.get("/agents/{agent_id}/eval-runs")
 async def list_eval_runs(
     agent_id: UUID,
@@ -168,11 +249,14 @@ async def list_eval_runs(
 
     Response shape:
         {"eval_runs": [{id, started_at, finished_at, status, scenario_count,
-                        scored_scenario_count, aggregate_scores, metrics}]}
+                        scored_scenario_count, aggregate_scores, metrics,
+                        datasets}]}
 
     See the module docstring: `metrics` carries {value, measured} per metric and
     is the one to read; `aggregate_scores` is the numeric projection the shipped
-    console still needs, in which an unmeasured metric reads 0.0.
+    console still needs, in which an unmeasured metric reads 0.0. `datasets`
+    splits the same run into its golden and exploratory halves, which are
+    different measurements and must not be averaged together.
     """
     # 1. Fetch agent from control DB (only metadata — not tenant DB)
     agent = await db.get(Agent, agent_id)
@@ -194,6 +278,44 @@ async def list_eval_runs(
     rows = await asyncio.to_thread(
         _query_tenant_db_sync, conn_str, _LIST_EVAL_RUNS_SQL, {}
     )
+
+    # 5a. P2: the golden/exploratory breakdown, one extra round trip in the same
+    # pattern. A tenant DB that predates migration 0014 has no `dataset` column,
+    # and that is a DIFFERENT claim from "this tenant designated no golden rows"
+    # — `dataset_breakdown_available: false` says which one happened rather than
+    # letting an empty golden bucket assert the second.
+    dataset_rows: list[tuple] = []
+    dataset_breakdown_available = True
+    try:
+        dataset_rows = await asyncio.to_thread(
+            _query_tenant_db_sync,
+            conn_str,
+            _LIST_EVAL_RUN_DATASETS_SQL,
+            {"golden": DATASET_GOLDEN, "exploratory": DATASET_EXPLORATORY},
+        )
+    except psycopg2.errors.UndefinedColumn:
+        dataset_breakdown_available = False
+        log.info(
+            "list_eval_runs.dataset_column_absent",
+            agent_id=str(agent_id),
+            tenant_id=str(tenant.id),
+        )
+
+    # run_id -> dataset -> aggregates
+    by_run: dict[str, dict[str, dict]] = {}
+    for row in dataset_rows:
+        run_key, dataset_name, scenario_count, scored_count, *metric_averages = row
+        by_run.setdefault(str(run_key), {})[dataset_name] = {
+            "scenario_count": int(scenario_count or 0),
+            "scored_scenario_count": int(scored_count or 0),
+            "metrics": {
+                metric: {
+                    "value": float(mean) if mean is not None else None,
+                    "measured": mean is not None,
+                }
+                for metric, mean in zip(METRIC_KEYS, metric_averages)
+            },
+        }
 
     # 5b. OPS-12: ORRERY ledger — same tenant-DB round-trip pattern (asyncio.to_thread
     # + _query_tenant_db_sync), computed in this same route so the eval-runs response
@@ -244,6 +366,13 @@ async def list_eval_runs(
                     metric: float(mean) if mean is not None else 0.0
                     for metric, mean in means.items()
                 },
+                # The two measurements, kept apart. Never add them together:
+                # the golden set is fixed and paired across runs, the
+                # exploratory sample rotates, and one mean over both moves
+                # whenever the draw moves while looking like a quality change.
+                "datasets": _dataset_block(
+                    by_run.get(str(run_id), {}), dataset_breakdown_available
+                ),
             }
         )
 

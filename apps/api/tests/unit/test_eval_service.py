@@ -1275,3 +1275,276 @@ class TestInsertEvalRun:
             "write failure would be reported as a successfully started run"
         )
         assert conn.close.called, "the connection must be closed on every path"
+from app.services import eval_service  # noqa: E402  (P2 — module-level access)
+
+
+# ---------------------------------------------------------------------------
+# P2 — datasets and denominators (pure functions, no I/O)
+# ---------------------------------------------------------------------------
+
+
+def _scenario(sid, dataset=None, reference_answer="A"):
+    return {
+        "id": sid,
+        "dataset": eval_service.dataset_of(dataset),
+        "reference_answer": reference_answer,
+    }
+
+
+def _score(sid, **metrics):
+    row = {"scenario_id": sid}
+    for key in eval_service.METRIC_KEYS:
+        row[key] = metrics.get(key)
+    return row
+
+
+class TestDatasetOf:
+    """Membership of the golden set is asserted, never inherited."""
+
+    def test_only_the_exact_literal_is_golden(self):
+        assert eval_service.dataset_of("golden") == eval_service.DATASET_GOLDEN
+
+    @pytest.mark.parametrize("value", [None, "", "GOLDEN", "gold", "exploratory", "x"])
+    def test_everything_else_is_exploratory(self, value):
+        """Including NULL, which is the state of every row that predates
+        migration 0014, and including near-misses.
+
+        The direction matters: resolving an unrecognised value UP into the
+        golden set would let a typo silently join the fixed instrument every
+        future comparison rests on, and nothing downstream could tell.
+        """
+        assert eval_service.dataset_of(value) == eval_service.DATASET_EXPLORATORY
+
+
+class TestDatasetComposition:
+    """What a run is about to score, recorded before it scores it."""
+
+    def test_counts_attempted_and_valid_per_dataset(self):
+        scenarios = [
+            _scenario("g1", "golden"),
+            _scenario("g2", "golden", reference_answer=""),
+            _scenario("e1", None),
+        ]
+        composition = eval_service.dataset_composition(
+            scenarios, dataset_column_available=True
+        )
+
+        assert composition["attempted"] == 3
+        assert composition["valid"] == 2
+        assert composition["golden"] == {"attempted": 2, "valid": 1}
+        assert composition["exploratory"] == {"attempted": 1, "valid": 1}
+        assert composition["golden_set_present"] is True
+
+    def test_an_unlabelled_row_is_attempted_but_not_valid(self):
+        """The two counts are different claims and the gap is the whole point.
+
+        A row with no reference answer was fetched and cannot be scored.
+        Reporting only `attempted` overstates what was measured; reporting only
+        `valid` hides that rows were selected and thrown away.
+        """
+        composition = eval_service.dataset_composition(
+            [_scenario("e1", None, reference_answer="")],
+            dataset_column_available=True,
+        )
+        assert composition["attempted"] == 1
+        assert composition["valid"] == 0
+
+    def test_no_golden_rows_and_no_dataset_column_are_different_claims(self):
+        no_golden = eval_service.dataset_composition(
+            [_scenario("e1", None)], dataset_column_available=True
+        )
+        no_column = eval_service.dataset_composition(
+            [_scenario("e1", None)], dataset_column_available=False
+        )
+
+        assert no_golden["golden_set_present"] is False
+        assert no_column["golden_set_present"] is False
+        assert no_golden["dataset_column_available"] is True
+        assert no_column["dataset_column_available"] is False
+        assert no_golden != no_column, (
+            "'this tenant curated nothing' and 'this tenant cannot be asked' "
+            "must not serialise identically"
+        )
+
+    def test_an_oversized_golden_set_is_flagged_not_truncated(self):
+        """The golden set is the run's cost and it is deliberately unsampled.
+
+        Truncating would silently break the paired comparison it exists for, so
+        the ceiling is a tripwire that reports rather than a cap that cuts.
+        """
+        scenarios = [
+            _scenario(f"g{i}", "golden")
+            for i in range(eval_service.GOLDEN_SET_SOFT_CEILING + 1)
+        ]
+        composition = eval_service.dataset_composition(
+            scenarios, dataset_column_available=True
+        )
+
+        assert composition["golden_over_soft_ceiling"] is True
+        assert composition["golden"]["attempted"] == len(scenarios), (
+            "every golden row must still be counted in — a ceiling that drops "
+            "rows is a sampled golden set"
+        )
+
+
+class TestSummariseRunValidity:
+    """(attempted, valid, scored) and per-dataset metrics."""
+
+    def test_the_three_counts_are_independent(self):
+        scenarios = [
+            _scenario("g1", "golden"),
+            _scenario("g2", "golden"),
+            _scenario("e1", None, reference_answer=""),
+        ]
+        scores = [_score("g1", faithfulness=0.9)]
+
+        summary = eval_service.summarise_run_validity(scenarios, scores)
+
+        assert summary["attempted"] == 3
+        assert summary["valid"] == 2
+        assert summary["scored"] == 1
+
+    def test_zero_valid_observations_is_unknown_not_zero(self):
+        """The rule this whole branch exists for.
+
+        Every judge call returned NaN, so run_ragas_eval emitted None for all
+        four metrics. Rendering that as 0.0 reports a total quality collapse;
+        omitting it reports nothing wrong. `measured: False` with
+        `observations: 0` is the only reading that is true.
+        """
+        scenarios = [_scenario("g1", "golden")]
+        scores = [_score("g1")]
+
+        summary = eval_service.summarise_run_validity(scenarios, scores)
+
+        assert summary["scored"] == 0
+        for metric in summary["datasets"]["golden"]["metrics"].values():
+            assert metric == {"value": None, "measured": False, "observations": 0}
+
+    def test_a_measured_zero_is_distinguishable_from_an_unmeasured_metric(self):
+        scenarios = [_scenario("g1", "golden")]
+        scores = [_score("g1", faithfulness=0.0)]
+
+        metrics = eval_service.summarise_run_validity(scenarios, scores)["datasets"][
+            "golden"
+        ]["metrics"]
+
+        assert metrics["faithfulness"] == {
+            "value": 0.0,
+            "measured": True,
+            "observations": 1,
+        }
+        assert metrics["answer_relevancy"]["measured"] is False
+
+    def test_the_two_datasets_are_summarised_separately(self):
+        scenarios = [_scenario("g1", "golden"), _scenario("e1", None)]
+        scores = [_score("g1", faithfulness=1.0), _score("e1", faithfulness=0.0)]
+
+        datasets = eval_service.summarise_run_validity(scenarios, scores)["datasets"]
+
+        assert datasets["golden"]["metrics"]["faithfulness"]["value"] == 1.0
+        assert datasets["exploratory"]["metrics"]["faithfulness"]["value"] == 0.0
+
+    def test_there_is_no_run_level_metric_to_misread(self):
+        """A structural refusal, not a convention.
+
+        A single mean over both datasets moves whenever the exploratory DRAW
+        moves, so a redraw would be indistinguishable from a regression — which
+        is exactly the property the fixed golden set exists to provide. The way
+        to make that impossible is to never compute the number.
+        """
+        scenarios = [_scenario("g1", "golden"), _scenario("e1", None)]
+        scores = [_score("g1", faithfulness=1.0), _score("e1", faithfulness=0.0)]
+
+        summary = eval_service.summarise_run_validity(scenarios, scores)
+
+        assert "metrics" not in summary
+        assert set(summary) == {"attempted", "valid", "scored", "datasets"}
+
+    def test_a_score_for_an_unknown_scenario_joins_neither_dataset(self):
+        """An observation that cannot be attributed is not evidence about
+        either measurement, and inventing a bucket for it would put an
+        unattributable number inside a comparable one."""
+        scenarios = [_scenario("g1", "golden")]
+        scores = [_score("ghost", faithfulness=0.99)]
+
+        summary = eval_service.summarise_run_validity(scenarios, scores)
+
+        assert summary["scored"] == 0
+        assert summary["datasets"]["golden"]["metrics"]["faithfulness"]["measured"] is (
+            False
+        )
+        assert summary["datasets"]["exploratory"]["metrics"]["faithfulness"][
+            "measured"
+        ] is False
+
+    def test_an_empty_run_reports_zeros_rather_than_raising(self):
+        summary = eval_service.summarise_run_validity([], [])
+
+        assert summary == {
+            "attempted": 0,
+            "valid": 0,
+            "scored": 0,
+            "datasets": {
+                "golden": {
+                    "attempted": 0,
+                    "valid": 0,
+                    "scored": 0,
+                    "metrics": {
+                        metric: {"value": None, "measured": False, "observations": 0}
+                        for metric in eval_service.METRIC_KEYS
+                    },
+                },
+                "exploratory": {
+                    "attempted": 0,
+                    "valid": 0,
+                    "scored": 0,
+                    "metrics": {
+                        metric: {"value": None, "measured": False, "observations": 0}
+                        for metric in eval_service.METRIC_KEYS
+                    },
+                },
+            },
+        }
+
+    def test_the_mean_is_over_observed_values_only(self):
+        """A dataset of three rows where one metric was observed twice reports
+        the mean of the two, with observations=2 beside it — never a mean over
+        three that silently treated the missing one as zero."""
+        scenarios = [
+            _scenario("g1", "golden"),
+            _scenario("g2", "golden"),
+            _scenario("g3", "golden"),
+        ]
+        scores = [
+            _score("g1", faithfulness=1.0),
+            _score("g2", faithfulness=0.0),
+            _score("g3"),
+        ]
+
+        metric = eval_service.summarise_run_validity(scenarios, scores)["datasets"][
+            "golden"
+        ]["metrics"]["faithfulness"]
+
+        assert metric == {"value": 0.5, "measured": True, "observations": 2}
+
+
+class TestConfigCarriesTheDataset:
+    """config["dataset"] is what makes two golden scores comparable."""
+
+    def test_the_composition_lands_on_the_run(self, config_env):
+        composition = eval_service.dataset_composition(
+            [_scenario("g1", "golden")], dataset_column_available=True
+        )
+        result = eval_service.build_eval_run_config(
+            "agent-1", "postgresql://production", dataset=composition
+        )
+
+        assert result["config"]["dataset"] == composition
+
+    def test_no_composition_is_null_not_an_empty_one(self, config_env):
+        """'This run did not record its dataset' is not 'this run scored no
+        rows'. P1's unavailable/absent distinction, applied to the new key."""
+        result = eval_service.build_eval_run_config("agent-1", "postgresql://production")
+
+        assert result["config"]["dataset"] is None

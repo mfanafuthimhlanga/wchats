@@ -44,6 +44,7 @@ from datetime import datetime
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
+import psycopg2
 import pytest
 from pydantic import ValidationError
 
@@ -52,12 +53,21 @@ from app.services.deployment_service import (
     DeploymentReport,
     DeploymentWarning,
     BLAST_RADIUS_DEFAULT_SIGNAL,
+    EVAL_SIGNAL_MEASURED,
+    EVAL_SIGNAL_NO_RUNS,
+    EVAL_SIGNAL_NO_VALID_SCORES,
+    EVAL_SIGNAL_UNAVAILABLE,
+    EVAL_SUMMARY_UNAVAILABLE_SIGNAL,
+    RED_TEAM_SIGNAL_MEASURED,
+    RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL,
     _DEPLOYMENT_SYSTEM_PROMPT,
     _compute_envelope_hash_sync,
     _fetch_blast_radius_sync,
     _fetch_eval_summary_sync,
+    _fetch_red_team_summary_sync,
     _make_iframe_snippet,
     _resolve_blast_radius_thresholds,
+    apply_signal_evidence_gate,
     derive_blast_radius_warnings,
     run_orchestrator,
 )
@@ -424,6 +434,41 @@ class TestBlockingConditions:
 # ---------------------------------------------------------------------------
 
 
+def _make_eval_conn(run_row, metric_rows=None, count_row=(0, 0), raise_on=None):
+    """psycopg2 connection double for _fetch_eval_summary_sync.
+
+    The function issues three statements — the latest run, the per-metric
+    aggregate, then the denominator counts — and fetchone is called twice, so a
+    single-value double cannot drive it.
+
+    raise_on: substring of the SQL that should raise UndefinedColumn, which is
+    how audit D3 presented itself in production (`metric_name` / `run_id`
+    against a table whose columns are `metric` / `eval_run_id`).
+    """
+    conn = MagicMock()
+    cursor = MagicMock()
+    cursor.__enter__ = MagicMock(return_value=cursor)
+    cursor.__exit__ = MagicMock(return_value=False)
+
+    state = {"fetchone": [run_row, count_row], "fetchall": metric_rows or []}
+    executed: list[str] = []
+
+    def _execute(sql, params=None):
+        executed.append(sql)
+        if raise_on is not None and raise_on in sql:
+            raise psycopg2.errors.UndefinedColumn(f"column does not exist: {raise_on}")
+
+    def _fetchone():
+        return state["fetchone"].pop(0) if state["fetchone"] else None
+
+    cursor.execute.side_effect = _execute
+    cursor.fetchone.side_effect = _fetchone
+    cursor.fetchall.side_effect = lambda: state["fetchall"]
+    conn.cursor.return_value = cursor
+    conn.executed = executed
+    return conn
+
+
 class TestSignalCollectionFunctions:
     """Tests for _fetch_eval_summary_sync signal collection helper."""
 
@@ -432,12 +477,13 @@ class TestSignalCollectionFunctions:
         run_id = uuid.uuid4()
         run_ts = datetime(2026, 5, 23, 2, 0, 0)
 
-        mock_conn = _make_psycopg2_conn(
-            fetchone_value=(run_id, run_ts),
-            fetchall_value=[
-                ("faithfulness", Decimal("0.92")),
-                ("answer_relevance", Decimal("0.88")),
+        mock_conn = _make_eval_conn(
+            (run_id, run_ts, "complete"),
+            metric_rows=[
+                ("faithfulness", Decimal("0.92"), 30),
+                ("answer_relevance", Decimal("0.88"), 30),
             ],
+            count_row=(30, 30),
         )
 
         with patch(
@@ -446,14 +492,17 @@ class TestSignalCollectionFunctions:
         ):
             result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
 
+        assert result["eval_signal"] == EVAL_SIGNAL_MEASURED
         assert result["pass_rates"]["faithfulness"] == pytest.approx(0.92)
         assert result["pass_rates"]["answer_relevance"] == pytest.approx(0.88)
-        assert result["scenario_count"] == 2
+        assert result["scenario_count"] == 30, "attempted"
+        assert result["scored_scenario_count"] == 30, "valid"
         assert result["last_run_at"] == run_ts.isoformat()
+        assert result["last_run_status"] == "complete"
 
     def test_fetch_eval_summary_sync_no_runs(self):
-        """When fetchone returns None (no eval runs), result is the empty-state dict."""
-        mock_conn = _make_psycopg2_conn(fetchone_value=None)
+        """No eval run at all is 'no_runs' with a NULL pass_rates, not an empty dict."""
+        mock_conn = _make_eval_conn(None)
 
         with patch(
             "app.services.deployment_service.psycopg2.connect",
@@ -461,12 +510,306 @@ class TestSignalCollectionFunctions:
         ):
             result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
 
-        assert result == {
-            "last_run_at": None,
-            "scenario_count": 0,
-            "pass_rates": {},
-            "failing_scenarios": 0,
+        assert result["eval_signal"] == EVAL_SIGNAL_NO_RUNS
+        assert result["pass_rates"] is None, (
+            "an empty dict reads as 'no metric is failing' to anything that "
+            "iterates it — audit D3's fail-open"
+        )
+        assert result["failing_scenarios"] is None
+        assert result["scenario_count"] == 0
+        assert result["scored_scenario_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# TestEvalSummaryD3 — the repaired query and its distinguishable absence
+# ---------------------------------------------------------------------------
+
+
+class TestEvalSummaryD3:
+    """Audit D3: the deploy gate's eval query could not execute.
+
+    `SELECT metric_name, AVG(score) ... WHERE run_id = %s` against a table whose
+    columns are `metric` and `eval_run_id` raised UndefinedColumn on every
+    invocation. The Celery task caught it, substituted `pass_rates: {}`, and the
+    blocking condition "any eval metric pass_rate < 0.70" then evaluated over an
+    empty dict — which cannot fire. Both halves are tested here: the names, and
+    the behaviour when the query fails anyway.
+    """
+
+    def test_the_query_uses_the_schema_column_names(self):
+        """Read out of the SQL that actually ran, not out of the source text.
+
+        A source-level assertion would pass against a second, unreached copy of
+        the query; this one is about the statement the function issued.
+        """
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete"),
+            metric_rows=[("faithfulness", Decimal("0.92"), 30)],
+            count_row=(30, 30),
+        )
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        results_sql = [s for s in mock_conn.executed if "eval_results" in s]
+        assert results_sql, "no statement was issued against eval_results"
+        joined = " ".join(results_sql)
+        assert "eval_run_id" in joined
+        assert "GROUP BY metric" in joined
+        assert "metric_name" not in joined, (
+            "metric_name is audit D3's column — the schema (0001:165-174) says "
+            "`metric`"
+        )
+        assert "run_id = " not in joined.replace("eval_run_id = ", ""), (
+            "run_id is audit D3's column — the schema says `eval_run_id`"
+        )
+
+    def test_a_failing_query_is_unavailable_not_clean(self):
+        """The exact D3 failure, reproduced: the query raises.
+
+        The old behaviour returned `pass_rates: {}` from the caller and the gate
+        read it as 'nothing is failing'. The repaired behaviour has to be
+        DISTINGUISHABLE from a measured-and-clean run, or repairing the column
+        names simply moves the fail-open one layer up.
+        """
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete"),
+            raise_on="eval_results",
+        )
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        assert result["eval_signal"] == EVAL_SIGNAL_UNAVAILABLE
+        assert result["pass_rates"] is None
+        assert result["failing_scenarios"] is None
+
+        # And the gate refuses to ship on it — the half that makes the
+        # distinguishable value worth having.
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", result, _measured_red_team()
+        )
+        assert recommendation == "block"
+        assert any(w.warning_id == "eval_signal_unavailable" for w in warnings)
+
+    def test_a_run_that_scored_nothing_is_unknown_not_passing(self):
+        """Every score NULL — a judge outage — is 'no_valid_scores'.
+
+        Zero valid observations is unknown quality. Reporting it as an empty
+        pass_rates dict would make a run that measured nothing satisfy "all
+        eval metrics >= 0.85" vacuously.
+        """
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete"),
+            metric_rows=[("faithfulness", None, 0), ("answer_relevancy", None, 0)],
+            count_row=(30, 0),
+        )
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        assert result["eval_signal"] == EVAL_SIGNAL_NO_VALID_SCORES
+        assert result["pass_rates"] is None
+        assert apply_signal_evidence_gate("ship", result, _measured_red_team())[0] == (
+            "block"
+        )
+
+    def test_the_run_is_selected_by_kind_so_a_sibling_agent_is_not_read(self):
+        """`kind` is 'm6:{agent_id}'; without the filter a second agent in the
+        same tenant DB has its run reported as this agent's."""
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete"),
+            metric_rows=[("faithfulness", Decimal("0.92"), 30)],
+            count_row=(30, 30),
+        )
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            _fetch_eval_summary_sync("agent-42", "postgresql://test/tenant")
+
+        runs_sql = [s for s in mock_conn.executed if "FROM eval_runs" in s]
+        assert runs_sql and "kind = %s" in runs_sql[0]
+
+    def test_a_failed_run_is_reported_as_failed(self):
+        """Since the P1 persistence split a FAILED run lands a terminal status
+        on production, so `last_run_at` alone can describe a run that produced
+        nothing. The status travels with it."""
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "failed"),
+            metric_rows=[],
+            count_row=(0, 0),
+        )
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        assert result["last_run_status"] == "failed"
+        assert result["eval_signal"] == EVAL_SIGNAL_NO_VALID_SCORES
+
+
+# ---------------------------------------------------------------------------
+# TestEvidenceGate — 'ship' is not available over an absent signal
+# ---------------------------------------------------------------------------
+
+
+def _measured_eval(pass_rates=None) -> dict:
+    return {
+        "eval_signal": EVAL_SIGNAL_MEASURED,
+        "signal_detail": None,
+        "last_run_at": "2026-05-23T02:00:00",
+        "last_run_status": "complete",
+        "scenario_count": 30,
+        "scored_scenario_count": 30,
+        "pass_rates": pass_rates or {"faithfulness": 0.92},
+        "failing_scenarios": 0,
+    }
+
+
+def _measured_red_team(coverage_complete=True) -> dict:
+    return {
+        "signal": RED_TEAM_SIGNAL_MEASURED,
+        "last_run_at": "2026-05-23T03:00:00",
+        "deployment_blocked": False,
+        "critical_count": 0,
+        "high_count": 0,
+        "medium_count": 0,
+        "low_count": 0,
+        "vectors_attempted": 7,
+        "vectors_valid": 7 if coverage_complete else 3,
+        "invalid_vectors": [] if coverage_complete else ["hallucination"],
+        "coverage_complete": coverage_complete,
+    }
+
+
+class TestEvidenceGate:
+    """apply_signal_evidence_gate — deterministic, one-way, fail-closed.
+
+    The gate exists because the blocking conditions live in an LLM prompt and a
+    gate that depends on a model correctly reading a state field is a gate that
+    fails open the first time the model is confident and wrong. Same division of
+    labour as derive_blast_radius_warnings: the orchestrator narrates, the
+    platform decides.
+    """
+
+    @pytest.mark.parametrize(
+        "signal",
+        [EVAL_SIGNAL_NO_RUNS, EVAL_SIGNAL_NO_VALID_SCORES, EVAL_SIGNAL_UNAVAILABLE],
+    )
+    def test_ship_is_refused_over_any_absent_eval_signal(self, signal):
+        summary = _measured_eval()
+        summary["eval_signal"] = signal
+        summary["pass_rates"] = None
+
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", summary, _measured_red_team()
+        )
+
+        assert recommendation == "block"
+        assert [w.warning_id for w in warnings] == ["eval_signal_unavailable"]
+
+    def test_ship_with_warnings_is_also_refused(self):
+        """ship_with_warnings is a SHIPPABLE state — the approve route lets it
+        through once the owner acknowledges — so routing an unmeasured agent
+        there would still permit the deploy."""
+        summary = _measured_eval()
+        summary["eval_signal"] = EVAL_SIGNAL_UNAVAILABLE
+
+        recommendation, _ = apply_signal_evidence_gate(
+            "ship_with_warnings", summary, _measured_red_team()
+        )
+        assert recommendation == "block"
+
+    def test_a_missing_state_field_fails_closed(self):
+        """A summary dict built by hand without the state key must not ship.
+
+        The absence of a claim is not the claim. This is the shape of every
+        future caller that constructs a signal payload and forgets a field.
+        """
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", {"pass_rates": {"faithfulness": 0.99}}, {"critical_count": 0}
+        )
+        assert recommendation == "block"
+        assert {w.warning_id for w in warnings} == {
+            "eval_signal_unavailable",
+            "red_team_signal_unavailable",
         }
+
+    def test_a_measured_signal_leaves_the_recommendation_alone(self):
+        """The gate is a floor, not a second opinion. With both signals
+        measured, the orchestrator's verdict is untouched — including a verdict
+        the gate would never itself produce."""
+        for verdict in ("ship", "ship_with_warnings", "block"):
+            recommendation, warnings = apply_signal_evidence_gate(
+                verdict, _measured_eval(), _measured_red_team()
+            )
+            assert recommendation == verdict
+            assert warnings == []
+
+    def test_the_gate_never_upgrades_a_block(self):
+        """One-way. A block over a missing signal stays a block, and so does a
+        block the orchestrator reached on evidence."""
+        summary = _measured_eval()
+        summary["eval_signal"] = EVAL_SIGNAL_UNAVAILABLE
+        assert apply_signal_evidence_gate("block", summary, _measured_red_team())[0] == (
+            "block"
+        )
+        assert apply_signal_evidence_gate(
+            "block", _measured_eval(), _measured_red_team()
+        )[0] == "block"
+
+    def test_an_unreadable_red_team_signal_also_refuses_to_ship(self):
+        """Zeros nobody read are not zeros. The substituted red-team fallback
+        carries deployment_blocked=False, which on its own reads as 'no critical
+        findings' — the identical fail-open shape D3 had on the eval side."""
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", _measured_eval(), dict(RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL)
+        )
+        assert recommendation == "block"
+        assert any(w.warning_id == "red_team_signal_unavailable" for w in warnings)
+
+    def test_incomplete_red_team_coverage_warns_without_blocking(self):
+        """A partial-coverage run measured something real, so it is not an
+        absent signal — but a clean result over 3 of 7 vectors is a qualified
+        claim and the owner is owed the qualification (audit D4)."""
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", _measured_eval(), _measured_red_team(coverage_complete=False)
+        )
+        assert recommendation == "ship"
+        assert [w.warning_id for w in warnings] == ["red_team_coverage_incomplete"]
+        assert "3 of 7" in warnings[0].message
+
+    def test_the_unavailable_substitute_cannot_be_mistaken_for_a_clean_run(self):
+        """The module constant itself, not a hand-built dict: this is the value
+        the Celery task substitutes when the collector raises."""
+        assert EVAL_SUMMARY_UNAVAILABLE_SIGNAL["pass_rates"] is None
+        assert EVAL_SUMMARY_UNAVAILABLE_SIGNAL["failing_scenarios"] is None
+        assert (
+            apply_signal_evidence_gate(
+                "ship", dict(EVAL_SUMMARY_UNAVAILABLE_SIGNAL), _measured_red_team()
+            )[0]
+            == "block"
+        )
+
+    def test_the_prompt_states_the_evidence_rule_it_no_longer_enforces(self):
+        """The prompt still has to SAY it, or the model's summary contradicts
+        the recommendation the platform imposed."""
+        assert "eval_signal" in _DEPLOYMENT_SYSTEM_PROMPT
+        assert "'measured'" in _DEPLOYMENT_SYSTEM_PROMPT
+        assert "scored_scenario_count" in _DEPLOYMENT_SYSTEM_PROMPT
 
 
 # ---------------------------------------------------------------------------
@@ -688,3 +1031,61 @@ class TestBlastRadiusWarnings:
         observed_max_ key — no warning is derived from history."""
         source = inspect.getsource(derive_blast_radius_warnings)
         assert "observed_max_" not in source
+
+
+# ---------------------------------------------------------------------------
+# TestRedTeamSummarySignal (P2) — the security half carries its own state
+# ---------------------------------------------------------------------------
+
+
+class TestRedTeamSummarySignal:
+    """The collector's payload must say it was READ, and how much it covers."""
+
+    def _fetch(self):
+        conn = MagicMock()
+        cursor = MagicMock()
+        cursor.__enter__ = MagicMock(return_value=cursor)
+        cursor.__exit__ = MagicMock(return_value=False)
+        cursor.fetchone.return_value = (datetime(2026, 5, 23, 3, 0, 0),)
+        cursor.fetchall.return_value = [("medium", 2)]
+        conn.cursor.return_value = cursor
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect", return_value=conn
+        ):
+            return _fetch_red_team_summary_sync("test-agent", "postgresql://test/t")
+
+    def test_a_read_signal_is_marked_measured(self):
+        result = self._fetch()
+        assert result["signal"] == RED_TEAM_SIGNAL_MEASURED
+        assert result["medium_count"] == 2
+        assert result["deployment_blocked"] is False
+
+    def test_the_coverage_denominator_travels_with_the_counts(self):
+        """Zero open findings is not a result on its own.
+
+        The same row set means "seven vectors probed and none succeeded" or
+        "three probed and four could not" (audit D4), and only the denominator
+        separates them.
+        """
+        from app.services.red_team_service import red_team_coverage
+
+        result = self._fetch()
+        coverage = red_team_coverage()
+
+        assert result["vectors_attempted"] == coverage["vectors_attempted"]
+        assert result["vectors_valid"] == coverage["vectors_valid"]
+        assert result["coverage_complete"] is coverage["complete"]
+        assert result["invalid_vectors"] == coverage["invalid_vectors"]
+
+    def test_the_unavailable_substitute_is_not_a_clean_run(self):
+        """deployment_blocked=False in the fallback is 'we could not ask', and
+        the signal field is what stops it reading as 'no critical findings'."""
+        assert RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL["deployment_blocked"] is False
+        assert RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL["critical_count"] is None
+        assert (
+            apply_signal_evidence_gate(
+                "ship", _measured_eval(), dict(RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL)
+            )[0]
+            == "block"
+        )

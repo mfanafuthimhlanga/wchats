@@ -28,10 +28,13 @@ Flow (run_deployment_checklist):
        blast_radius — and the envelope hash both via get_sync_db() against
        the control DB)
     5. Call run_orchestrator(signals_json, result_container) via asyncio.run bridge
-    6. Parse result and UPDATE checklist_runs row to status='complete'; persist the
-       envelope hash alongside status, recommendation, report and warnings; merge
-       the deterministic blast-radius warnings into the persisted warnings list,
-       de-duplicated by warning_id
+    6. Parse result, apply the deterministic evidence gate (P2 — an eval or
+       red-team signal that is not 'measured' forces recommendation='block'
+       with a stated warning; the gate never softens a verdict), then UPDATE
+       checklist_runs row to status='complete'; persist the envelope hash
+       alongside status, recommendation, report and warnings; merge the
+       deterministic evidence and blast-radius warnings into the persisted
+       warnings list, de-duplicated by warning_id
     7. On exception: UPDATE checklist_runs row to status='failed'; retry if retries < max_retries
 """
 
@@ -50,6 +53,8 @@ from app.models.agent import Agent
 from app.models.checklist_run import ChecklistRun
 from app.services.deployment_service import (
     BLAST_RADIUS_DEFAULT_SIGNAL,
+    EVAL_SUMMARY_UNAVAILABLE_SIGNAL,
+    RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL,
     DeploymentReport,
     _compute_envelope_hash_sync,
     _fetch_blast_radius_sync,
@@ -57,6 +62,7 @@ from app.services.deployment_service import (
     _fetch_eval_summary_sync,
     _fetch_red_team_summary_sync,
     _fetch_verified_qa_stats_sync,
+    apply_signal_evidence_gate,
     derive_blast_radius_warnings,
     run_orchestrator,
 )
@@ -160,12 +166,14 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
             agent_id=agent_id,
             error=str(exc),
         )
-        eval_summary = {
-            "last_run_at": None,
-            "scenario_count": 0,
-            "pass_rates": {},
-            "failing_scenarios": 0,
-        }
+        # Copy so a later mutation cannot poison the module constant. The
+        # substitution used to be `{"pass_rates": {}, "failing_scenarios": 0}`,
+        # which asserted "no eval metric is failing" about a query that never
+        # ran — audit D3's fail-open, and the reason a column-name typo could
+        # disable half the deploy gate for the whole of M8's life. The
+        # replacement says 'unavailable' and apply_signal_evidence_gate below
+        # refuses to ship on it.
+        eval_summary = dict(EVAL_SUMMARY_UNAVAILABLE_SIGNAL)
 
     try:
         red_team_summary = _fetch_red_team_summary_sync(agent_id, conn_str)
@@ -175,14 +183,8 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
             agent_id=agent_id,
             error=str(exc),
         )
-        red_team_summary = {
-            "last_run_at": None,
-            "deployment_blocked": False,
-            "critical_count": 0,
-            "high_count": 0,
-            "medium_count": 0,
-            "low_count": 0,
-        }
+        # Same correction on the security half: zeros nobody read are not zeros.
+        red_team_summary = dict(RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL)
 
     try:
         verified_qa_stats = _fetch_verified_qa_stats_sync(agent_id, conn_str)
@@ -275,9 +277,34 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
     try:
         report_data = result_container.get("report")
         if report_data:
+            # P2 — the evidence gate runs BEFORE the report is constructed, so
+            # the recommendation the owner sees, the one persisted on the
+            # checklist run and the one the approve route reads are all the
+            # gated value. It can only make the verdict more conservative:
+            # `ship` over an eval or red-team signal that is not 'measured'
+            # becomes `block` with a stated reason. Deterministic Python, never
+            # the orchestrator's reading of a state field (CLAUDE.md:
+            # programmatic core, agentic edges) — the same division of labour as
+            # derive_blast_radius_warnings below.
+            gated_recommendation, evidence_warnings = apply_signal_evidence_gate(
+                report_data.get("recommendation", "block"),
+                eval_summary,
+                red_team_summary,
+            )
+            if gated_recommendation != report_data.get("recommendation", "block"):
+                log.warning(
+                    "run_deployment_checklist.evidence_gate_downgraded",
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    orchestrator_recommendation=report_data.get("recommendation"),
+                    gated_recommendation=gated_recommendation,
+                    eval_signal=eval_summary.get("eval_signal"),
+                    red_team_signal=red_team_summary.get("signal"),
+                )
+
             # Validate via Pydantic — ensures recommendation is a known value
             report = DeploymentReport(
-                recommendation=report_data.get("recommendation", "block"),
+                recommendation=gated_recommendation,
                 summary=report_data.get("summary", ""),
                 warnings=report_data.get("warnings", []),
                 eval_summary=eval_summary,
@@ -305,11 +332,19 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
                     # acknowledge flow (POST /checklist-runs/{run_id}/acknowledge,
                     # which validates submitted ids against run.warnings) working
                     # unchanged for the new ids.
-                    derived = derive_blast_radius_warnings(blast_radius)
+                    # The evidence-gate warnings merge on the same terms and
+                    # through the same de-duplication: whatever forced a
+                    # downgrade must be visible to the owner as a warning with a
+                    # stated reason, or 'block' arrives with no explanation.
+                    derived = evidence_warnings + derive_blast_radius_warnings(
+                        blast_radius
+                    )
                     existing_ids = {w.warning_id for w in report.warnings}
-                    merged_warnings = list(report.warnings) + [
-                        w for w in derived if w.warning_id not in existing_ids
-                    ]
+                    merged_warnings = list(report.warnings)
+                    for w in derived:
+                        if w.warning_id not in existing_ids:
+                            merged_warnings.append(w)
+                            existing_ids.add(w.warning_id)
                     run_obj.warnings = [w.model_dump() for w in merged_warnings]
                     # BLR-02: the hash lands in the same transaction as
                     # status/report/warnings. Acknowledgement (the sibling

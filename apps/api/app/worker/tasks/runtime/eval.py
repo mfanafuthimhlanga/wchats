@@ -36,6 +36,21 @@ verified_qa promotion is not performed by this task at all. It is disabled
 behind eval_service's label trust hierarchy, and the decision — with its reason
 — is recorded on the run in `eval_runs.config` so the disablement is a statement
 in the record rather than an absence a later reader has to infer.
+
+Which rows a run covers
+-----------------------
+The selector was `ORDER BY RANDOM() LIMIT 30` — a different sample every night,
+so run-to-run variance was dominated by the draw and a regression could not be
+distinguished from a redraw. It is now two queries: every `dataset='golden'` row
+UNSAMPLED, plus a rotating exploratory sample. The same golden items scored on
+consecutive runs give a paired per-item delta; the rotating half is what stops
+the fixed half being overfit. The two are reported separately all the way out
+(`datasets` in the return, `config["dataset"]` on the run) because a golden
+score and an exploratory score are different measurements.
+
+Every report carries (attempted, valid, scored): rows fetched, rows carrying a
+label, rows Ragas returned a real number for. A rate without its denominator
+must not be constructible from what this task returns.
 """
 
 from __future__ import annotations
@@ -50,11 +65,16 @@ from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.services.eval_service import (
+    DATASET_GOLDEN,
     EVAL_SCORING_REQUIRES_BRANCH,
+    EXPLORATORY_SAMPLE_SIZE,
     VERIFIED_QA_PROMOTION_DECISION,
     build_eval_run_config,
+    dataset_composition,
+    dataset_of,
     insert_eval_run,
     run_ragas_eval,
+    summarise_run_validity,
     write_eval_results,
     update_eval_run_status,
 )
@@ -162,8 +182,9 @@ def run_eval_suite(self, agent_id: str) -> dict:
         1. Idempotency guard — skip if a 'running' eval_run for this agent
            was created within the last 10 minutes.
         2. Fetch agent from control DB; decrypt conn_str at runtime.
-        3. Fetch up to 30 eval scenarios from PRODUCTION; mine new production
-           scenarios.
+        3. Fetch scenarios from PRODUCTION: EVERY golden row, unsampled, plus a
+           rotating exploratory sample of EXPLORATORY_SAMPLE_SIZE. Mine new
+           production scenarios.
         4. Collect the configuration tuple, then insert the eval_run row on
            PRODUCTION with it (status='running').
         5. Create the Neon branch. Readiness is probed only if scoring is going
@@ -184,11 +205,19 @@ def run_eval_suite(self, agent_id: str) -> dict:
         agent_id: UUID string of the agent to evaluate.
 
     Returns:
-        {"run_id", "scenario_count", "promoted", "config_recorded",
-         "promotion_disabled_reason", "branch_isolation"}        on success.
+        {"run_id", "scenario_count", "attempted", "valid", "scored", "datasets",
+         "dataset_column_available", "golden_set_present", "promoted",
+         "config_recorded", "promotion_disabled_reason",
+         "branch_isolation"}                                     on success.
         {"status": "already_running"}                            on idempotent skip.
-        {"status": "no_scenarios"}                               when eval_scenarios is empty.
+        {"status": "no_scenarios", "attempted", "valid", "scored",
+         "dataset_column_available"}                             when nothing was selected.
         {}                                                        on retry exhaustion.
+
+    (attempted, valid, scored) are three different claims and all three are
+    reported: rows fetched, rows carrying a label (the DENOMINATOR), and rows
+    Ragas returned a real number for. `scored < valid` means the run measured
+    less than it attempted, and that is invisible from any one of them alone.
     """
     # ------------------------------------------------------------------
     # Step 1 — Idempotency guard: check for a recent 'running' eval run
@@ -238,22 +267,84 @@ def run_eval_suite(self, agent_id: str) -> dict:
         )
 
     # ------------------------------------------------------------------
-    # Step 3 — Fetch eval scenarios from tenant DB
+    # Step 3 — Fetch eval scenarios from tenant DB (PRODUCTION).
+    #
+    # TWO QUERIES, NOT ONE SAMPLE. This used to be a single
+    # `ORDER BY RANDOM() LIMIT 30`, which drew a different 30 rows every night:
+    # run-to-run variance was dominated by the draw rather than by anything the
+    # agent did, so a regression could not be seen. The golden rows now run in
+    # FULL on every eval — the same items scored twice give a paired per-item
+    # delta — and the exploratory rows keep rotating, which is what stops the
+    # fixed set from being overfit. The two are kept apart all the way to the
+    # report; averaging them would throw away exactly the property the split
+    # exists to create.
+    #
+    # `reference_answer != ''` survives in BOTH queries. It is the empty-label
+    # exclusion that makes an unlabelled row (a mined production failure, an
+    # owner-filed failing trace — see bench.NO_GROUND_TRUTH) inert to this
+    # selector by construction, and it is pinned across module boundaries by
+    # test_the_scenario_is_inert_to_the_eval_selector_by_construction.
+    #
+    # A tenant DB that predates migration 0014 has no `dataset` column at all.
+    # That is a degradation, not an outage: the fallback below is the pre-0014
+    # single query, every row is then exploratory because the column that could
+    # say otherwise does not exist, and `dataset_column_available` records which
+    # of the two happened so "no golden rows" and "no way to tell" stay
+    # different claims. Same tolerance shape as insert_eval_run's pre-0013
+    # fallback, for the same reason: tenants are migrated at provision time.
     # ------------------------------------------------------------------
+    _GOLDEN_SQL = """
+        SELECT id, source, question, reference_answer, retrieved_contexts, dataset
+        FROM eval_scenarios
+        WHERE reference_answer != ''
+          AND dataset = %(golden)s
+        ORDER BY created_at
+    """
+    _EXPLORATORY_SQL = """
+        SELECT id, source, question, reference_answer, retrieved_contexts, dataset
+        FROM eval_scenarios
+        WHERE reference_answer != ''
+          AND (dataset IS NULL OR dataset <> %(golden)s)
+        ORDER BY RANDOM()
+        LIMIT %(limit)s
+    """
+    _PRE_0014_SQL = """
+        SELECT id, source, question, reference_answer, retrieved_contexts, NULL
+        FROM eval_scenarios
+        WHERE reference_answer != ''
+        ORDER BY RANDOM()
+        LIMIT %(limit)s
+    """
+
+    dataset_column_available = True
     try:
         _scen_conn = psycopg2.connect(conn_str, connect_timeout=5)
         try:
-            with _scen_conn.cursor() as _cur:
-                _cur.execute(
-                    """
-                    SELECT id, source, question, reference_answer, retrieved_contexts
-                    FROM eval_scenarios
-                    WHERE reference_answer != ''
-                    ORDER BY RANDOM()
-                    LIMIT 30
-                    """,
+            try:
+                with _scen_conn.cursor() as _cur:
+                    _cur.execute(_GOLDEN_SQL, {"golden": DATASET_GOLDEN})
+                    rows = list(_cur.fetchall())
+                    _cur.execute(
+                        _EXPLORATORY_SQL,
+                        {"golden": DATASET_GOLDEN, "limit": EXPLORATORY_SAMPLE_SIZE},
+                    )
+                    rows.extend(_cur.fetchall())
+            except psycopg2.errors.UndefinedColumn:
+                # The aborted transaction must be rolled back before the
+                # connection will accept another statement.
+                _scen_conn.rollback()
+                dataset_column_available = False
+                log.warning(
+                    "run_eval_suite.dataset_column_absent",
+                    agent_id=agent_id,
+                    detail=(
+                        "tenant DB predates alembic_tenant 0014 — no golden set "
+                        "is held fixed for this run"
+                    ),
                 )
-                rows = _cur.fetchall()
+                with _scen_conn.cursor() as _cur:
+                    _cur.execute(_PRE_0014_SQL, {"limit": EXPLORATORY_SAMPLE_SIZE})
+                    rows = list(_cur.fetchall())
         finally:
             _scen_conn.close()
     except Exception as exc:
@@ -273,11 +364,25 @@ def run_eval_suite(self, agent_id: str) -> dict:
             "question": row[2],
             "reference_answer": row[3],
             "retrieved_contexts": row[4] if isinstance(row[4], list) else [],
+            # NULL (never designated) resolves to exploratory — membership of
+            # the golden set is asserted, never inherited.
+            "dataset": dataset_of(row[5] if len(row) > 5 else None),
             # For M6: use reference_answer as proxy agent_response to test the eval harness
             "agent_response": row[3],
         }
         for row in rows
     ]
+    composition = dataset_composition(
+        scenarios, dataset_column_available=dataset_column_available
+    )
+    if composition["golden_over_soft_ceiling"]:
+        # Reported, never silently truncated: cutting the golden set down would
+        # break the paired comparison it exists for.
+        log.warning(
+            "run_eval_suite.golden_set_over_soft_ceiling",
+            agent_id=agent_id,
+            golden_attempted=composition[DATASET_GOLDEN]["attempted"],
+        )
 
     # Mine new production scenarios and store them
     try:
@@ -294,8 +399,21 @@ def run_eval_suite(self, agent_id: str) -> dict:
         )
 
     if not scenarios:
-        log.warning("run_eval_suite.no_scenarios", agent_id=agent_id)
-        return {"status": "no_scenarios"}
+        log.warning(
+            "run_eval_suite.no_scenarios",
+            agent_id=agent_id,
+            dataset_column_available=dataset_column_available,
+        )
+        # The denominators travel even on the empty path. A run that scored
+        # nothing must be readable as such rather than as an absent key a caller
+        # might treat as "not applicable".
+        return {
+            "status": "no_scenarios",
+            "attempted": 0,
+            "valid": 0,
+            "scored": 0,
+            "dataset_column_available": dataset_column_available,
+        }
 
     # ------------------------------------------------------------------
     # Step 5 — Insert the eval_run row on PRODUCTION, stamped with the
@@ -306,7 +424,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
     # failure degrades attribution and names itself in config["unavailable"].
     # ------------------------------------------------------------------
     run_id = str(uuid.uuid4())
-    attribution = build_eval_run_config(agent_id, conn_str)
+    attribution = build_eval_run_config(agent_id, conn_str, dataset=composition)
     try:
         config_recorded = insert_eval_run(
             run_id,
@@ -379,7 +497,10 @@ def run_eval_suite(self, agent_id: str) -> dict:
             branch_isolation = "unavailable"
 
         # Filter scenarios — reference_answer already required by the SQL query above,
-        # but double-check here for safety
+        # but double-check here for safety. This is the VALID set: rows that
+        # were fetched and carry a label, i.e. the rows that can be scored at
+        # all. It is the denominator, and it is not the same number as the rows
+        # fetched (attempted) or the rows Ragas came back with (scored).
         valid_scenarios = [s for s in scenarios if s.get("reference_answer")]
 
         # No connection string is passed: scoring opens nothing (audit D1 —
@@ -391,11 +512,24 @@ def run_eval_suite(self, agent_id: str) -> dict:
         write_eval_results(run_id, results["scores"], conn_str)
         update_eval_run_status(run_id, "complete", finished_at=True, conn_str=conn_str)
 
+        # (attempted, valid, scored) for the run and for each dataset. Computed
+        # over the FETCHED set, not the valid one, so the two counts stay
+        # distinguishable — a run that fetched 40 rows and could score 12 has
+        # measured far less than a run that fetched 12, and a report that shows
+        # only one of the two numbers cannot say which happened.
+        validity = summarise_run_validity(scenarios, results["scores"])
+
         log.info(
             "run_eval_suite.complete",
             agent_id=agent_id,
             run_id=run_id,
             scenario_count=len(valid_scenarios),
+            attempted=validity["attempted"],
+            valid=validity["valid"],
+            scored=validity["scored"],
+            golden_valid=validity["datasets"][DATASET_GOLDEN]["valid"],
+            golden_set_present=composition["golden_set_present"],
+            dataset_column_available=dataset_column_available,
             config_recorded=config_recorded,
             promoted=0,
             promotion_enabled=VERIFIED_QA_PROMOTION_DECISION["enabled"],
@@ -403,7 +537,25 @@ def run_eval_suite(self, agent_id: str) -> dict:
         )
         return {
             "run_id": run_id,
+            # Legacy alias for `valid`, kept so an existing reader does not
+            # silently change meaning. New readers take the triple below.
             "scenario_count": len(valid_scenarios),
+            # The triple. `valid` is the denominator; a rate computed against
+            # `attempted` understates and one computed without a denominator at
+            # all is not a measurement.
+            "attempted": validity["attempted"],
+            "valid": validity["valid"],
+            "scored": validity["scored"],
+            # Per dataset, never averaged together — a golden score and an
+            # exploratory score answer different questions. Each metric carries
+            # {value, measured, observations}; value is null exactly when
+            # measured is false, which is 'unknown', not zero.
+            "datasets": validity["datasets"],
+            # WHICH rows this run covered, and whether the tenant DB could even
+            # tell us. False for dataset_column_available means the tenant
+            # predates migration 0014 — not that it has no golden rows.
+            "dataset_column_available": dataset_column_available,
+            "golden_set_present": composition["golden_set_present"],
             # Always 0 — promotion is disabled behind the trust gate, and the
             # key is kept so a caller reading it sees the zero rather than a
             # missing key it might treat as "not measured".

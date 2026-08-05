@@ -166,11 +166,8 @@ class TestRunDeploymentChecklistHappyPath:
         mock_db.refresh.side_effect = lambda obj: setattr(obj, "id", mock_run_id)
 
         # Signal fetch return values (minimal valid dicts)
-        empty_eval = {"last_run_at": None, "scenario_count": 0, "pass_rates": {}, "failing_scenarios": 0}
-        empty_red_team = {
-            "last_run_at": None, "deployment_blocked": False,
-            "critical_count": 0, "high_count": 0, "medium_count": 0, "low_count": 0,
-        }
+        empty_eval = _measured_eval_signal()
+        empty_red_team = _measured_red_team_signal()
         empty_verified_qa = {"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9}
         empty_corpus = {"document_count": 5, "chunk_count": 100, "last_ingested_at": None}
         empty_blast_radius = {
@@ -279,11 +276,8 @@ class TestRunDeploymentChecklistFailurePath:
         mock_db.execute.return_value.scalar_one_or_none.return_value = None
         mock_db.refresh.side_effect = lambda obj: setattr(obj, "id", mock_run_id)
 
-        empty_eval = {"last_run_at": None, "scenario_count": 0, "pass_rates": {}, "failing_scenarios": 0}
-        empty_red_team = {
-            "last_run_at": None, "deployment_blocked": False,
-            "critical_count": 0, "high_count": 0, "medium_count": 0, "low_count": 0,
-        }
+        empty_eval = _measured_eval_signal()
+        empty_red_team = _measured_red_team_signal()
         empty_verified_qa = {"row_count": 0, "avg_faithfulness": 0.0, "avg_relevance": 0.0}
         empty_corpus = {"document_count": 0, "chunk_count": 0, "last_ingested_at": None}
         empty_blast_radius = {
@@ -380,14 +374,49 @@ def _build_full_happy_path_mock_db(mock_run_id):
     return mock_db, mock_run
 
 
+def _measured_eval_signal():
+    """An eval signal that was actually MEASURED (P2).
+
+    These tests are about wiring, not about evidence, so they must supply a
+    measured signal or apply_signal_evidence_gate downgrades every one of them
+    to 'block' and they stop testing what their names say. The old fixture —
+    `pass_rates: {}` with no state field — was exactly the payload audit D3
+    produced in production, and every one of these tests was silently asserting
+    that an agent whose quality had never been measured could ship.
+    """
+    return {
+        "eval_signal": "measured",
+        "signal_detail": None,
+        "last_run_at": "2026-05-23T02:00:00",
+        "last_run_status": "complete",
+        "scenario_count": 30,
+        "scored_scenario_count": 30,
+        "pass_rates": {"faithfulness": 0.92, "answer_relevancy": 0.9},
+        "failing_scenarios": 0,
+    }
+
+
+def _measured_red_team_signal():
+    return {
+        "signal": "measured",
+        "last_run_at": "2026-05-23T03:00:00",
+        "deployment_blocked": False,
+        "critical_count": 0,
+        "high_count": 0,
+        "medium_count": 0,
+        "low_count": 0,
+        "vectors_attempted": 7,
+        "vectors_valid": 7,
+        "invalid_vectors": [],
+        "coverage_complete": True,
+    }
+
+
 def _empty_first_four_signals():
     """The four pre-existing safe-default signal dicts, reused across BLR-01 wiring tests."""
     return (
-        {"last_run_at": None, "scenario_count": 0, "pass_rates": {}, "failing_scenarios": 0},
-        {
-            "last_run_at": None, "deployment_blocked": False,
-            "critical_count": 0, "high_count": 0, "medium_count": 0, "low_count": 0,
-        },
+        _measured_eval_signal(),
+        _measured_red_team_signal(),
         {"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
         {"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
     )
@@ -636,3 +665,189 @@ class TestBlastRadiusWiring:
             f"Expected exactly one blast_radius_single_action_above_threshold row, got: {matching}"
         )
         assert matching[0]["message"] == "Orchestrator-authored duplicate."
+
+
+# ---------------------------------------------------------------------------
+# TestEvidenceGateWiring (P2) — an absent signal reaches the persisted verdict
+# ---------------------------------------------------------------------------
+
+
+class TestEvidenceGateWiring:
+    """The gate has to change what is WRITTEN, not just what a helper returns.
+
+    apply_signal_evidence_gate is unit-tested in test_deployment_service.py.
+    What matters here is the wiring: the recommendation the owner sees, the one
+    persisted on checklist_runs and the one the approve route reads must all be
+    the gated value, and the reason must arrive with it as a warning. A gate
+    applied after the report is built, or applied to a copy, would pass every
+    test in the other module and change nothing.
+    """
+
+    def _drive(self, eval_summary, red_team_summary, orchestrator_recommendation="ship"):
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        agent_id = str(uuid.uuid4())
+        mock_run_id = str(uuid.uuid4())
+        mock_db, mock_run = _build_full_happy_path_mock_db(mock_run_id)
+
+        async def _fake_call_orchestrator_async(signals_json, result_container):
+            result_container["report"] = {
+                "recommendation": orchestrator_recommendation,
+                "summary": "All good.",
+                "warnings": [],
+            }
+
+        blast_radius = {
+            "configured_max_single_action_cents": None,
+            "configured_max_hourly_aggregate_cents": None,
+            "observed_max_single_action_cents": None,
+            "observed_max_hourly_aggregate_cents": None,
+            "observed_window_days": 7,
+            "warn_threshold_single_cents": 50000,
+            "warn_threshold_hourly_cents": 200000,
+            "enabled_skill_count": 0,
+        }
+
+        with patch(
+            "app.worker.tasks.runtime.deployment.get_sync_db", _make_sync_db_ctx(mock_db),
+        ), patch(
+            "app.worker.tasks.runtime.deployment.fernet_decrypt",
+            return_value="postgresql://test/tenant",
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_eval_summary_sync",
+            return_value=eval_summary,
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_red_team_summary_sync",
+            return_value=red_team_summary,
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_verified_qa_stats_sync",
+            return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_corpus_stats_sync",
+            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
+            return_value=blast_radius,
+        ), patch(
+            "app.worker.tasks.runtime.deployment._compute_envelope_hash_sync",
+            return_value="test-envelope-hash",
+        ), patch(
+            "app.worker.tasks.runtime.deployment._call_orchestrator_async",
+            side_effect=_fake_call_orchestrator_async,
+        ):
+            result = run_deployment_checklist.run(agent_id=agent_id)
+
+        return result, mock_run
+
+    def test_an_unmeasured_eval_signal_blocks_the_persisted_recommendation(self):
+        """The orchestrator says ship; the platform writes block.
+
+        This is audit D3's whole consequence in one assertion. Before P2 the
+        eval query raised, the task substituted an empty pass_rates dict and
+        this exact run shipped.
+        """
+        from app.services.deployment_service import EVAL_SUMMARY_UNAVAILABLE_SIGNAL
+
+        result, mock_run = self._drive(
+            dict(EVAL_SUMMARY_UNAVAILABLE_SIGNAL), _measured_red_team_signal()
+        )
+
+        assert result["recommendation"] == "block"
+        assert mock_run.recommendation == "block", (
+            "the gated verdict must be the one PERSISTED — the approve route "
+            "reads checklist_runs.recommendation, not the task's return value"
+        )
+        assert mock_run.report["recommendation"] == "block"
+
+    def test_the_reason_is_persisted_as_a_warning(self):
+        """A 'block' with no stated reason is an unexplained refusal."""
+        from app.services.deployment_service import EVAL_SUMMARY_UNAVAILABLE_SIGNAL
+
+        _, mock_run = self._drive(
+            dict(EVAL_SUMMARY_UNAVAILABLE_SIGNAL), _measured_red_team_signal()
+        )
+
+        warning_ids = [w["warning_id"] for w in mock_run.warnings]
+        assert "eval_signal_unavailable" in warning_ids
+
+    def test_an_unreadable_red_team_signal_blocks_too(self):
+        from app.services.deployment_service import RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL
+
+        result, mock_run = self._drive(
+            _measured_eval_signal(), dict(RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL)
+        )
+
+        assert result["recommendation"] == "block"
+        assert "red_team_signal_unavailable" in [
+            w["warning_id"] for w in mock_run.warnings
+        ]
+
+    def test_measured_signals_leave_the_orchestrator_verdict_intact(self):
+        """The gate is a floor, not a second opinion."""
+        result, mock_run = self._drive(
+            _measured_eval_signal(), _measured_red_team_signal()
+        )
+
+        assert result["recommendation"] == "ship"
+        assert mock_run.recommendation == "ship"
+        assert mock_run.warnings == []
+
+    def test_a_collector_failure_substitutes_an_unavailable_signal_not_zeros(self):
+        """Step 4's except clause is the substitution audit D3 exploited.
+
+        `_fetch_eval_summary_sync` raising used to yield `pass_rates: {}` —
+        a measurement-shaped value for a query that never ran. Driven here
+        through the real except path rather than by handing the task a
+        pre-built dict, because the substitution IS the thing under test.
+        """
+        from app.services.deployment_service import (
+            BLAST_RADIUS_DEFAULT_SIGNAL as _BLAST_RADIUS_DEFAULT_SIGNAL,
+        )
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        agent_id = str(uuid.uuid4())
+        mock_run_id = str(uuid.uuid4())
+        mock_db, mock_run = _build_full_happy_path_mock_db(mock_run_id)
+
+        async def _fake_call_orchestrator_async(signals_json, result_container):
+            # The orchestrator is handed the substituted signal, so assert on
+            # what it was told as well as on what the platform decided.
+            import json as _json
+
+            signals = _json.loads(signals_json)
+            assert signals["eval_summary"]["eval_signal"] == "unavailable"
+            assert signals["eval_summary"]["pass_rates"] is None
+            result_container["report"] = {
+                "recommendation": "ship", "summary": "All good.", "warnings": [],
+            }
+
+        with patch(
+            "app.worker.tasks.runtime.deployment.get_sync_db", _make_sync_db_ctx(mock_db),
+        ), patch(
+            "app.worker.tasks.runtime.deployment.fernet_decrypt",
+            return_value="postgresql://test/tenant",
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_eval_summary_sync",
+            side_effect=RuntimeError("tenant DB unreachable"),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_red_team_summary_sync",
+            return_value=_measured_red_team_signal(),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_verified_qa_stats_sync",
+            return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_corpus_stats_sync",
+            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
+            return_value=dict(_BLAST_RADIUS_DEFAULT_SIGNAL),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._compute_envelope_hash_sync",
+            return_value="test-envelope-hash",
+        ), patch(
+            "app.worker.tasks.runtime.deployment._call_orchestrator_async",
+            side_effect=_fake_call_orchestrator_async,
+        ):
+            result = run_deployment_checklist.run(agent_id=agent_id)
+
+        assert result["recommendation"] == "block"

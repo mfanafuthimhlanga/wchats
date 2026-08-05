@@ -260,6 +260,226 @@ def is_promotable_to_verified_qa(source: str | None) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# The golden set, and the denominators every measurement travels with
+# ---------------------------------------------------------------------------
+# TWO DATASETS, NEVER ONE NUMBER. A golden-set score and an exploratory score
+# are different measurements. The golden set is FIXED and run in full on every
+# eval, so the same items are scored twice and a regression shows up as a
+# paired per-item delta — detectable at n=30 where an unpaired mean comparison
+# would bury it in sampling noise. The exploratory sample rotates, which is what
+# stops the golden set from being quietly overfit, and its mean moves whenever
+# the draw moves. Averaging the two destroys the only property that makes the
+# golden set worth having, so summarise_run_validity() reports metrics PER
+# DATASET and the run-level entry carries denominators only. That is a
+# structural refusal, not a convention: there is no run-level mean to misread.
+#
+# MISSING DATA IS NEVER PASSING DATA. Every figure below travels with the count
+# of observations it was computed from. A metric over zero valid observations is
+# `{"value": None, "measured": False, "observations": 0}` — unknown, never a
+# pass — and a rate cannot be constructed from this shape without its
+# denominator being in the reader's hand at the same moment.
+
+DATASET_GOLDEN = "golden"
+DATASET_EXPLORATORY = "exploratory"
+
+# The order every report iterates in, so two runs' payloads compare key-for-key.
+EVAL_DATASETS: tuple[str, ...] = (DATASET_GOLDEN, DATASET_EXPLORATORY)
+
+# How many exploratory rows a run draws. The golden rows are NOT sampled — all
+# of them run, every time, which is the whole point of designating them.
+EXPLORATORY_SAMPLE_SIZE = 30
+
+# Not a cap — a tripwire. The golden set is deliberately unsampled, so its size
+# is the run's cost, and a tenant that designates a thousand rows would quietly
+# multiply the nightly judge bill by thirty. Exceeding this is reported on the
+# run (`golden_over_soft_ceiling`) rather than silently truncated: truncating
+# would break the paired comparison the golden set exists for, and doing it
+# silently would hide the breakage.
+GOLDEN_SET_SOFT_CEILING = 200
+
+# The four metrics a run reports, in the order the console reads them (D-04).
+METRIC_KEYS: tuple[str, ...] = (
+    "faithfulness",
+    "answer_relevancy",
+    "context_precision",
+    "context_recall",
+)
+
+
+def dataset_of(value: str | None) -> str:
+    """Resolve an eval_scenarios.dataset value to one of EVAL_DATASETS.
+
+    Anything that is not exactly DATASET_GOLDEN — NULL (every row that predates
+    migration 0014), an empty string, an unrecognised value — resolves to
+    'exploratory'. Membership of the golden set is an assertion somebody has to
+    make; it is never inherited by default, because a golden set that fills
+    itself is just the old random sample wearing a stable name.
+    """
+    return DATASET_GOLDEN if value == DATASET_GOLDEN else DATASET_EXPLORATORY
+
+
+def _is_valid_scenario(scenario: dict) -> bool:
+    """True iff this row can be scored at all — i.e. it carries a label.
+
+    The same condition the selector's `reference_answer != ''` expresses in SQL.
+    It is the VALID denominator: rows that were fetched but cannot be scored are
+    attempted, not valid, and dividing by the attempted count would understate
+    every rate.
+    """
+    return bool(scenario.get("reference_answer"))
+
+
+def dataset_composition(
+    scenarios: list[dict],
+    *,
+    dataset_column_available: bool,
+) -> dict:
+    """Describe WHICH rows a run is about to score, before it scores them.
+
+    Stamped on the run in `eval_runs.config["dataset"]` so that two runs can be
+    compared over the same items. Without it, a golden-set score that moved is
+    indistinguishable from a golden set whose membership changed, and the paired
+    comparison the golden set exists for cannot be made after the fact.
+
+    Args:
+        scenarios: the rows fetched for this run, each carrying `dataset`.
+        dataset_column_available: False when the tenant DB predates migration
+            0014 and the selector fell back to the pre-0014 single query. Then
+            every row is exploratory because the column that could say otherwise
+            does not exist — which is a different claim from "this tenant has no
+            golden rows", and the flag is what keeps them apart.
+
+    Returns:
+        {"dataset_column_available", "attempted", "valid", "golden": {...},
+         "exploratory": {...}, "golden_set_present", "golden_over_soft_ceiling",
+         "exploratory_sample_size"}
+    """
+    per_dataset: dict[str, dict] = {
+        name: {"attempted": 0, "valid": 0} for name in EVAL_DATASETS
+    }
+    for scenario in scenarios:
+        bucket = per_dataset[dataset_of(scenario.get("dataset"))]
+        bucket["attempted"] += 1
+        if _is_valid_scenario(scenario):
+            bucket["valid"] += 1
+
+    golden_attempted = per_dataset[DATASET_GOLDEN]["attempted"]
+    return {
+        "dataset_column_available": dataset_column_available,
+        "attempted": sum(b["attempted"] for b in per_dataset.values()),
+        "valid": sum(b["valid"] for b in per_dataset.values()),
+        DATASET_GOLDEN: per_dataset[DATASET_GOLDEN],
+        DATASET_EXPLORATORY: per_dataset[DATASET_EXPLORATORY],
+        # False is a real and expected state — no tenant has designated a golden
+        # row until someone does — and it says the run made no comparable
+        # measurement at all, only a rotating exploratory one.
+        "golden_set_present": golden_attempted > 0,
+        "golden_over_soft_ceiling": golden_attempted > GOLDEN_SET_SOFT_CEILING,
+        "exploratory_sample_size": EXPLORATORY_SAMPLE_SIZE,
+    }
+
+
+def summarise_run_validity(
+    scenarios: list[dict],
+    scenario_scores: list[dict],
+) -> dict:
+    """Report (attempted, valid, scored) for a run and per dataset. Pure — no I/O.
+
+    The three counts are different claims and collapsing any two of them is how
+    a run comes to report a rate it never measured:
+
+        attempted — rows the selector returned.
+        valid     — rows carrying a label, i.e. the rows that could be scored.
+                    THIS IS THE DENOMINATOR.
+        scored    — rows for which at least one metric came back as a real
+                    number. Ragas can return fewer rows than it was given (a
+                    judge outage, a parse failure), and every one of those is a
+                    row that was valid and produced nothing.
+
+    `scored < valid` is the signal that a run measured less than it attempted,
+    and it is unreadable unless all three travel together.
+
+    Metrics are reported per dataset only. There is deliberately no run-level
+    mean: a golden mean and an exploratory mean answer different questions, and
+    a single number over both would move whenever the exploratory draw moved
+    while looking like a quality change. See the section comment above.
+
+    Args:
+        scenarios: every row fetched for the run, each carrying `dataset`,
+            `reference_answer` and `id`.
+        scenario_scores: run_ragas_eval()'s "scores" list. May be empty — a run
+            that scored nothing reports scored=0 and every metric unmeasured,
+            which is 'unknown', not zero and not a pass.
+
+    Returns:
+        {"attempted", "valid", "scored",
+         "datasets": {"golden": {attempted, valid, scored, metrics},
+                      "exploratory": {...}}}
+        where each metric is {"value": float|None, "measured": bool,
+        "observations": int} and value is None exactly when measured is False.
+    """
+    dataset_by_scenario_id = {
+        str(s.get("id", "")): dataset_of(s.get("dataset")) for s in scenarios
+    }
+
+    buckets: dict[str, dict] = {
+        name: {
+            "attempted": 0,
+            "valid": 0,
+            "scored": 0,
+            # metric -> list of real observations, means computed at the end.
+            "_observations": {metric: [] for metric in METRIC_KEYS},
+        }
+        for name in EVAL_DATASETS
+    }
+
+    for scenario in scenarios:
+        bucket = buckets[dataset_of(scenario.get("dataset"))]
+        bucket["attempted"] += 1
+        if _is_valid_scenario(scenario):
+            bucket["valid"] += 1
+
+    for score in scenario_scores:
+        # A score whose scenario is not in the fetched set is attributed to
+        # neither dataset: it cannot be, and inventing a bucket for it would put
+        # an unattributable observation into a comparable measurement.
+        name = dataset_by_scenario_id.get(str(score.get("scenario_id")))
+        if name is None:
+            continue
+        bucket = buckets[name]
+        observed_any = False
+        for metric in METRIC_KEYS:
+            value = score.get(metric)
+            if value is None:
+                continue
+            bucket["_observations"][metric].append(float(value))
+            observed_any = True
+        if observed_any:
+            bucket["scored"] += 1
+
+    datasets: dict[str, dict] = {}
+    for name in EVAL_DATASETS:
+        bucket = buckets[name]
+        observations = bucket.pop("_observations")
+        metrics = {}
+        for metric in METRIC_KEYS:
+            values = observations[metric]
+            metrics[metric] = {
+                "value": (sum(values) / len(values)) if values else None,
+                "measured": bool(values),
+                "observations": len(values),
+            }
+        datasets[name] = {**bucket, "metrics": metrics}
+
+    return {
+        "attempted": sum(d["attempted"] for d in datasets.values()),
+        "valid": sum(d["valid"] for d in datasets.values()),
+        "scored": sum(d["scored"] for d in datasets.values()),
+        "datasets": datasets,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Task 1: Ragas evaluation harness
 # ---------------------------------------------------------------------------
 
@@ -344,13 +564,12 @@ def run_ragas_eval(scenarios: list[dict]) -> dict:
 
     df = results.to_pandas()
 
-    # Build per-scenario score dicts
-    metric_columns = [
-        "faithfulness",
-        "answer_relevancy",
-        "context_precision",
-        "context_recall",
-    ]
+    # Build per-scenario score dicts. The metric names come from the one
+    # METRIC_KEYS tuple rather than a local literal list: audit D3 is a second
+    # copy of a column name drifting from the first, and this module writes
+    # these same four names into eval_results, reports them per dataset and
+    # hands them to the console.
+    metric_columns = list(METRIC_KEYS)
 
     score_rows = []
     for i, (idx, row) in enumerate(df.iterrows()):
@@ -421,12 +640,7 @@ def write_eval_results(
         VALUES (%(id)s::uuid, %(eval_run_id)s::uuid, %(scenario_id)s, %(metric)s, %(score)s, %(detail)s::jsonb)
     """
 
-    metric_columns = [
-        "faithfulness",
-        "answer_relevancy",
-        "context_precision",
-        "context_recall",
-    ]
+    metric_columns = list(METRIC_KEYS)
 
     conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
     try:
@@ -530,7 +744,11 @@ def _canonical_hash(payload: dict) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def build_eval_run_config(agent_id: str, conn_str: str) -> dict:
+def build_eval_run_config(
+    agent_id: str,
+    conn_str: str,
+    dataset: dict | None = None,
+) -> dict:
     """Collect the configuration tuple an eval run is an assertion about.
 
     Without this, two runs that differ on exactly one dimension cannot be
@@ -570,6 +788,14 @@ def build_eval_run_config(agent_id: str, conn_str: str) -> dict:
         agent_id: UUID string of the agent being evaluated.
         conn_str: PRODUCTION tenant connection string (the corpus figure
             describes the live corpus, not the branch's copy of it).
+        dataset: dataset_composition() for the rows this run is about to score,
+            or None when the caller has none to give. It lands verbatim on the
+            run as `config["dataset"]`, which is what makes a golden-set score
+            comparable to the next one: a score that moved and a MEMBERSHIP that
+            moved are indistinguishable after the fact unless the run recorded
+            which rows it covered. None is stored as null rather than as an
+            empty composition — "this run did not record its dataset" is not
+            "this run scored no rows".
 
     Returns:
         {"prompt_version_id": str | None, "config": dict} — ready to hand
@@ -678,6 +904,10 @@ def build_eval_run_config(agent_id: str, conn_str: str) -> dict:
         ),
         # The promotion policy in force for this run, stated rather than implied.
         "verified_qa_promotion": dict(VERIFIED_QA_PROMOTION_DECISION),
+        # WHICH ROWS this run covered — golden (fixed, unsampled) versus
+        # exploratory (rotating), with the attempted and valid counts for each.
+        # None when the caller recorded no composition.
+        "dataset": dict(dataset) if dataset is not None else None,
         # --- What the run actually exercised (audit D1) -----------------
         # The keys above certify the configuration the agent is DEPLOYED with.
         # These three say which of them the score is a function of, and the
@@ -708,6 +938,9 @@ def build_eval_run_config(agent_id: str, conn_str: str) -> dict:
         agent_id=agent_id,
         prompt_version_id=prompt_version_id,
         unavailable=unavailable,
+        golden_set_present=(
+            dataset.get("golden_set_present") if dataset is not None else None
+        ),
     )
     return {"prompt_version_id": prompt_version_id, "config": config}
 

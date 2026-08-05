@@ -218,6 +218,99 @@ _TOOL_REPORT_FINDING = {
 
 
 # ---------------------------------------------------------------------------
+# Which vectors can actually observe an outcome (audit D4) — the validity
+# denominator for a red-team run
+# ---------------------------------------------------------------------------
+# `_TOOL_SEND_PROBE` and `_TOOL_REPORT_FINDING` above are defined and referenced
+# NOWHERE. Every ClaudeAgentOptions construction in this module passes only
+# model, system_prompt and max_turns — no tools, no mcp_servers, no
+# allowed_tools — and the loops then test `block.name == "send_probe"` against a
+# tool the attacker was never given. `raw_findings` stays empty, the runner
+# returns [], and the run reports CLEAN. Four vectors are in that state.
+#
+# A run in which four of seven attackers could not probe is INVALID, not clean,
+# and the shape of that claim is not new: run_value_bound_evasion_agent already
+# treats `provider_not_configured` as a finding because the probe could not
+# observe what it exists to observe. What was missing is the same reasoning
+# applied to the run as a whole — a denominator saying how many vectors were
+# capable of producing an observation at all.
+#
+# So the capability is DECLARED here rather than inferred, and the declaration
+# is what the deploy gate and the task report against. Registering the tools
+# with the four loops (and feeding probe_fn's return value back as the tool
+# result) is the fix; when it lands, flip SDK_ATTACKERS_CAN_PROBE in the same
+# edit and every count below follows. A test fails if it is flipped without the
+# tools actually being wired, so the declaration cannot drift into a lie.
+
+# Every attack vector a full red-team run dispatches, in dispatch order.
+RED_TEAM_VECTORS: tuple[str, ...] = (
+    "conversation_injection",
+    "content_injection",
+    "data_leakage",
+    "hallucination",
+    "confused_deputy",
+    "value_bound_evasion",
+    "identity_bypass",
+)
+
+# The four conversational SDK attackers share one defect and will share one fix.
+SDK_ATTACKER_VECTORS: tuple[str, ...] = (
+    "conversation_injection",
+    "data_leakage",
+    "hallucination",
+    "confused_deputy",
+)
+
+# False while the two tool schemas above are unreferenced (audit D4).
+SDK_ATTACKERS_CAN_PROBE = False
+
+# Why the four are incapable, recorded on the run rather than left to be
+# rediscovered by reading three files.
+SDK_ATTACKER_INVALID_REASON = (
+    "the conversational attacker loops are constructed without the send_probe / "
+    "report_finding tools, so they cannot probe the agent and cannot report a "
+    "finding — their empty result means 'not observed', never 'no vulnerability'"
+)
+
+
+def vector_can_probe(vector: str) -> bool:
+    """True iff this vector can produce a valid observation in this build.
+
+    The three deterministic vectors (content_injection's canary probe,
+    value_bound_evasion and identity_bypass, which read real dispatcher
+    verdict tags) are real oracles and always capable. The four SDK attackers
+    are capable only once SDK_ATTACKERS_CAN_PROBE is True.
+    """
+    if vector in SDK_ATTACKER_VECTORS:
+        return SDK_ATTACKERS_CAN_PROBE
+    return vector in RED_TEAM_VECTORS
+
+
+def red_team_coverage() -> dict:
+    """Report (attempted, valid) over the attack vectors a run dispatches.
+
+    A property of the shipped build, not of any stored row: it says how much of
+    the attack surface the CURRENT code is able to observe, which is the
+    question a deploy gate is asking. `valid` is the denominator — an
+    attack-success rate computed over `attempted` while four vectors are silent
+    reports a cleanliness nobody measured.
+
+    Returns:
+        {"vectors_attempted", "vectors_valid", "invalid_vectors",
+         "invalid_reason", "complete"} — complete is True iff every dispatched
+        vector can observe an outcome.
+    """
+    invalid = [v for v in RED_TEAM_VECTORS if not vector_can_probe(v)]
+    return {
+        "vectors_attempted": len(RED_TEAM_VECTORS),
+        "vectors_valid": len(RED_TEAM_VECTORS) - len(invalid),
+        "invalid_vectors": invalid,
+        "invalid_reason": SDK_ATTACKER_INVALID_REASON if invalid else None,
+        "complete": not invalid,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Red-team agent runner functions
 # ---------------------------------------------------------------------------
 

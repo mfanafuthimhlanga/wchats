@@ -664,3 +664,103 @@ class TestInjectionSplit:
         values = vector_param.strip("[]").split(",")
         assert len(values) == POISONED_CHUNK_VECTOR_DIM
         assert all(v == "0" for v in values)
+from app.services import red_team_service  # noqa: E402  (P2 — module-level access)
+
+
+# ---------------------------------------------------------------------------
+# P2 — the validity denominator for a red-team run (audit D4)
+# ---------------------------------------------------------------------------
+
+
+class TestRedTeamCoverage:
+    """A run reports (vectors_attempted, vectors_valid, findings), not findings alone.
+
+    Audit D4: `_TOOL_SEND_PROBE` and `_TOOL_REPORT_FINDING` are defined at module
+    scope and referenced nowhere, every ClaudeAgentOptions passes only model /
+    system_prompt / max_turns, and the four conversational loops then test
+    `block.name == "send_probe"` against a tool the attacker never had. They
+    return [] unconditionally and the run reports CLEAN.
+
+    P2 does not fix that (P4 does). It makes the run say so, which is the same
+    reasoning run_value_bound_evasion_agent already applies to a single probe
+    when it treats provider_not_configured as a finding because the run was
+    "INVALID, not clean" — generalised to the run as a whole.
+    """
+
+    def test_every_dispatched_vector_is_declared(self):
+        """RED_TEAM_VECTORS must match what the task actually dispatches.
+
+        Read out of the task's source rather than restated here: a declaration
+        that drifts from the dispatch list would report a denominator over
+        vectors that no longer run, which is worse than no denominator.
+        """
+        import inspect as _inspect
+
+        from app.worker.tasks.runtime import red_team as task_mod
+
+        source = _inspect.getsource(task_mod.run_red_team)
+        for vector in red_team_service.RED_TEAM_VECTORS:
+            runner = f"run_{vector}_agent("
+            assert runner in source, (
+                f"{vector} is declared in RED_TEAM_VECTORS but {runner} is not "
+                "called by run_red_team"
+            )
+
+    def test_the_four_silent_attackers_are_counted_as_invalid(self):
+        coverage = red_team_service.red_team_coverage()
+
+        assert coverage["vectors_attempted"] == 7
+        assert coverage["vectors_valid"] == 3, (
+            "content_injection, value_bound_evasion and identity_bypass are the "
+            "three real oracles in this build"
+        )
+        assert set(coverage["invalid_vectors"]) == set(
+            red_team_service.SDK_ATTACKER_VECTORS
+        )
+        assert coverage["complete"] is False
+        assert coverage["invalid_reason"]
+
+    def test_the_deterministic_probes_are_valid(self):
+        for vector in ("content_injection", "value_bound_evasion", "identity_bypass"):
+            assert red_team_service.vector_can_probe(vector) is True
+
+    def test_an_unknown_vector_cannot_probe(self):
+        """Fails closed: a vector nobody has classified is not an oracle."""
+        assert red_team_service.vector_can_probe("not_a_vector") is False
+
+    def test_the_capability_flag_cannot_be_flipped_without_wiring_the_tools(self):
+        """The declaration must not be able to become a lie.
+
+        SDK_ATTACKERS_CAN_PROBE is False because the two tool schemas are
+        unreferenced. If a later phase flips it to True, the tools have to be
+        genuinely handed to the SDK — otherwise the coverage denominator would
+        report seven valid vectors while four of them still cannot probe, which
+        is exactly the false cleanliness this whole mechanism exists to prevent.
+        """
+        import inspect as _inspect
+
+        source = _inspect.getsource(red_team_service)
+        # Executable lines only — the prose above these constants necessarily
+        # names them, and a comment is not a wiring.
+        code_lines = [
+            line
+            for line in source.splitlines()
+            if not line.strip().startswith("#")
+            and not line.startswith("_TOOL_SEND_PROBE")
+            and not line.startswith("_TOOL_REPORT_FINDING")
+        ]
+        code = "\n".join(code_lines)
+        send_probe_uses = code.count("_TOOL_SEND_PROBE")
+        report_finding_uses = code.count("_TOOL_REPORT_FINDING")
+
+        if red_team_service.SDK_ATTACKERS_CAN_PROBE:
+            assert send_probe_uses > 0 and report_finding_uses > 0, (
+                "SDK_ATTACKERS_CAN_PROBE is True but the probe/report tool "
+                "schemas are still referenced nowhere — the attackers cannot "
+                "probe and the coverage denominator is lying"
+            )
+        else:
+            assert send_probe_uses == 0, (
+                "the tool schemas are now wired in, so SDK_ATTACKERS_CAN_PROBE "
+                "must be flipped in the same edit"
+            )

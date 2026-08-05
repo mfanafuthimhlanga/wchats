@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
+import psycopg2
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -128,6 +129,22 @@ def _judge_outage_run_rows() -> list[tuple]:
     ]
 
 
+def _fake_dataset_rows(run_id: str | None = None) -> list[tuple]:
+    """Per-run, per-dataset aggregate rows (P2 golden/exploratory split).
+
+    Column order matches _LIST_EVAL_RUN_DATASETS_SQL: eval_run_id, dataset,
+    scenario_count, scored_scenario_count, then the four metric averages.
+    Empty by default — most list-route tests are about the run-level shape and
+    a tenant with no designated golden rows is the ordinary case.
+    """
+    if run_id is None:
+        return []
+    return [
+        (run_id, "golden", 10, 10, 0.93, 0.90, 0.88, 0.86),
+        (run_id, "exploratory", 20, 18, 0.71, 0.70, 0.69, 0.68),
+    ]
+
+
 def _fake_ledger_rows() -> list[tuple]:
     """ORRERY ledger row (OPS-12): (born_in_production, red_team, authored).
 
@@ -175,7 +192,11 @@ class TestListEvalRuns:
                 ),
                 patch(
                     "app.api.v1.evals.asyncio.to_thread",
-                    new=AsyncMock(side_effect=[fake_rows, _fake_ledger_rows()]),
+                    # Three round trips now: the run list, the per-dataset
+                    # breakdown, then the ORRERY ledger.
+                    new=AsyncMock(
+                        side_effect=[fake_rows, _fake_dataset_rows(), _fake_ledger_rows()]
+                    ),
                 ),
             ):
                 async with AsyncClient(
@@ -216,8 +237,19 @@ class TestListEvalRuns:
             "authored_count": 15,
         }
 
-    async def _get_runs(self, rows: list[tuple]) -> dict:
-        """Drive GET /eval-runs over *rows* and return the parsed body."""
+    async def _get_runs(
+        self,
+        rows: list[tuple],
+        dataset_rows: list[tuple] | None = None,
+        dataset_error: Exception | None = None,
+    ) -> dict:
+        """Drive GET /eval-runs over *rows* and return the parsed body.
+
+        dataset_error stands in for a tenant DB that predates migration 0014:
+        the per-dataset query raises UndefinedColumn and the route has to say
+        so rather than report an empty golden bucket, which would assert
+        "this run covered no golden rows" about a question it could not ask.
+        """
         fake_tenant = _make_fake_tenant()
         ready_agent = _make_ready_agent(fake_tenant)
         mock_db = _make_mock_db_returning_agent(ready_agent)
@@ -225,12 +257,13 @@ class TestListEvalRuns:
         app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
         app.dependency_overrides[get_async_db] = lambda: mock_db
 
+        second = dataset_error if dataset_error is not None else (dataset_rows or [])
         try:
             with (
                 patch("app.api.v1.evals.fernet_decrypt", return_value="postgresql://fake/db"),
                 patch(
                     "app.api.v1.evals.asyncio.to_thread",
-                    new=AsyncMock(side_effect=[rows, _fake_ledger_rows()]),
+                    new=AsyncMock(side_effect=[rows, second, _fake_ledger_rows()]),
                 ),
             ):
                 async with AsyncClient(
@@ -301,6 +334,120 @@ class TestListEvalRuns:
 
         assert run["aggregate_scores"]["faithfulness"] == 0.0
         assert run["metrics"]["faithfulness"]["measured"] is False
+
+    # -----------------------------------------------------------------
+    # P2 — the golden/exploratory split. Two measurements, never one number.
+    # -----------------------------------------------------------------
+
+    async def test_golden_and_exploratory_are_reported_separately(self):
+        """The two datasets travel as two blocks with their own denominators."""
+        rows = _fake_eval_runs_rows()
+        run_id = rows[0][0]
+
+        body = await self._get_runs(rows, _fake_dataset_rows(run_id))
+        run = body["eval_runs"][0]
+
+        assert run["datasets"]["available"] is True
+        assert run["datasets"]["golden"]["scenario_count"] == 10
+        assert run["datasets"]["golden"]["scored_scenario_count"] == 10
+        assert run["datasets"]["exploratory"]["scenario_count"] == 20
+        assert run["datasets"]["exploratory"]["scored_scenario_count"] == 18
+        assert run["datasets"]["golden"]["metrics"]["faithfulness"] == {
+            "value": 0.93,
+            "measured": True,
+        }
+        assert run["datasets"]["exploratory"]["metrics"]["faithfulness"] == {
+            "value": 0.71,
+            "measured": True,
+        }
+
+    async def test_the_two_dataset_scores_are_never_merged_into_one(self):
+        """A golden mean and an exploratory mean are different measurements.
+
+        The failure this forbids is silent: with golden 0.93 and exploratory
+        0.71, any single number over both moves whenever the exploratory DRAW
+        moves, so a redraw is indistinguishable from a regression — precisely
+        the property the fixed golden set exists to provide.
+        """
+        rows = _fake_eval_runs_rows()
+        run_id = rows[0][0]
+
+        body = await self._get_runs(rows, _fake_dataset_rows(run_id))
+        datasets = body["eval_runs"][0]["datasets"]
+
+        golden = datasets["golden"]["metrics"]["faithfulness"]["value"]
+        exploratory = datasets["exploratory"]["metrics"]["faithfulness"]["value"]
+        assert golden != exploratory
+
+        combined = (golden + exploratory) / 2
+        for name in ("golden", "exploratory"):
+            for metric in datasets[name]["metrics"].values():
+                assert metric["value"] != combined, (
+                    "a merged golden+exploratory mean has appeared in the "
+                    "per-dataset block"
+                )
+
+    async def test_a_run_with_no_golden_rows_reports_zero_not_absence(self):
+        """An empty golden bucket is present and zeroed, never a missing key.
+
+        A missing key has to be interpreted, and the two available readings —
+        'this run covered no golden rows' and 'this response cannot say' — are
+        exactly the pair the `available` flag exists to keep apart.
+        """
+        rows = _fake_eval_runs_rows()
+        run_id = rows[0][0]
+
+        body = await self._get_runs(
+            rows, [(run_id, "exploratory", 20, 18, 0.71, 0.70, 0.69, 0.68)]
+        )
+        datasets = body["eval_runs"][0]["datasets"]
+
+        assert datasets["available"] is True
+        assert datasets["golden"]["scenario_count"] == 0
+        assert datasets["golden"]["scored_scenario_count"] == 0
+        assert all(
+            metric == {"value": None, "measured": False}
+            for metric in datasets["golden"]["metrics"].values()
+        ), "an uncovered golden set must be unmeasured, never zero-scored"
+
+    async def test_pre_0014_tenant_says_it_cannot_tell_rather_than_reporting_none(self):
+        """UndefinedColumn on the dataset query degrades, and says it degraded.
+
+        'This tenant designated no golden rows' and 'this tenant has no dataset
+        column' produce the same empty bucket, and only `available` separates
+        them. Without it, a tenant one migration behind would look like a tenant
+        that had deliberately curated nothing.
+        """
+        rows = _fake_eval_runs_rows()
+        body = await self._get_runs(
+            rows,
+            dataset_error=psycopg2.errors.UndefinedColumn(
+                "column es.dataset does not exist"
+            ),
+        )
+        run = body["eval_runs"][0]
+
+        assert run["datasets"]["available"] is False
+        assert run["datasets"]["golden"]["scenario_count"] == 0
+        # The run-level counts come from the first query, which never touches
+        # eval_scenarios — a degraded breakdown must not cost the run its
+        # denominators.
+        assert run["scenario_count"] == 20
+        assert run["scored_scenario_count"] == 20
+
+    async def test_a_genuine_query_failure_is_not_swallowed_as_a_missing_column(self):
+        """Only UndefinedColumn degrades. Anything else must surface.
+
+        The narrow except is the point: catching Exception here would turn a
+        connection failure into a confident "this tenant predates 0014", which
+        is a fabricated explanation for an outage.
+        """
+        rows = _fake_eval_runs_rows()
+        with pytest.raises(psycopg2.OperationalError):
+            await self._get_runs(
+                rows,
+                dataset_error=psycopg2.OperationalError("connection refused"),
+            )
 
     async def test_returns_404_when_agent_not_found(self):
         """404 when agent doesn't exist in control DB."""

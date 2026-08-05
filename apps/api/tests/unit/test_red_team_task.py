@@ -269,3 +269,134 @@ class TestRunRedTeamComplete:
         assert result["high_count"] == 1, (
             f"Expected high_count=1, got {result.get('high_count')}"
         )
+from contextlib import ExitStack  # noqa: E402  (P2)
+
+
+# ---------------------------------------------------------------------------
+# P2 — the run reports its validity denominator, not just its findings
+# ---------------------------------------------------------------------------
+
+
+class TestRunRedTeamReportsValidity:
+    """An empty findings list is unreadable without a denominator.
+
+    "Seven vectors probed and none succeeded" and "three probed, four could not"
+    produce the identical empty list. Audit D4 says this build is the second
+    case, and every red-team run has been reporting it as the first.
+    """
+
+    def _drive(self, findings_by_vector=None):
+        from app.worker.tasks.runtime.red_team import run_red_team
+
+        findings_by_vector = findings_by_vector or {}
+        agent_id = str(uuid.uuid4())
+
+        mock_agent = MagicMock()
+        mock_agent.neon_connection_string = b"encrypted_conn"
+        mock_agent.neon_project_id = "proj_456"
+        mock_agent.name = "Validity Test Agent"
+        mock_agent.soul_voice = None
+        mock_agent.soul_role = None
+        mock_agent.soul_do_list = None
+        mock_agent.soul_donot_list = None
+        mock_agent.id = agent_id
+        mock_agent.tenant_id = str(uuid.uuid4())
+        mock_agent.retrieval_strategy = {}
+
+        mock_db = MagicMock()
+        mock_db.get.return_value = mock_agent
+
+        connect_side_effects = [
+            _make_psycopg2_conn(fetchone_value=None),
+            _make_psycopg2_conn(fetchone_value=None),
+            _make_psycopg2_conn(fetchone_value=None),
+        ]
+
+        runners = [
+            "run_conversation_injection_agent",
+            "run_content_injection_agent",
+            "run_data_leakage_agent",
+            "run_hallucination_agent",
+            "run_confused_deputy_agent",
+            "run_value_bound_evasion_agent",
+            "run_identity_bypass_agent",
+        ]
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "app.worker.tasks.runtime.red_team.get_sync_db",
+                    _make_sync_db_ctx(mock_db),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "app.worker.tasks.runtime.red_team.fernet_decrypt",
+                    return_value="postgresql://test:test@localhost/tenant",
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "app.worker.tasks.runtime.red_team.psycopg2.connect",
+                    side_effect=connect_side_effects,
+                )
+            )
+            for runner in runners:
+                vector = runner[len("run_") : -len("_agent")]
+                stack.enter_context(
+                    patch(
+                        f"app.worker.tasks.runtime.red_team.{runner}",
+                        return_value=findings_by_vector.get(vector, []),
+                    )
+                )
+            stack.enter_context(
+                patch(
+                    "app.worker.tasks.runtime.red_team.build_tool_server",
+                    return_value=MagicMock(),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "app.worker.tasks.runtime.red_team._build_transactional_probe_fn",
+                    return_value=MagicMock(),
+                )
+            )
+            return run_red_team.run(agent_id=agent_id)
+
+    def test_a_clean_run_still_reports_how_much_it_could_test(self):
+        result = self._drive()
+
+        assert result["findings_count"] == 0
+        assert result["vectors_attempted"] == 7
+        assert result["vectors_valid"] == 3, (
+            "four conversational attackers cannot probe in this build (D4)"
+        )
+        assert result["coverage_complete"] is False
+        assert result["invalid_vectors"], (
+            "a run with silent attackers must name them — 'clean' over an "
+            "unnamed subset is not a result anyone can act on"
+        )
+
+    def test_the_denominator_is_not_derivable_from_the_findings_count(self):
+        """The point of the triple: findings alone cannot express coverage.
+
+        A run with one finding and a run with none report the same coverage,
+        because coverage is a property of what could be tested rather than of
+        what was found.
+        """
+        from app.services.red_team_service import RedTeamFinding
+
+        finding = RedTeamFinding(
+            severity="medium",
+            description="canary echoed",
+            attack_vector="content_injection",
+            probe_message="p",
+            agent_response="r",
+            turn_count=1,
+        )
+        clean = self._drive()
+        dirty = self._drive({"content_injection": [finding]})
+
+        assert dirty["findings_count"] == 1 and clean["findings_count"] == 0
+        assert dirty["vectors_valid"] == clean["vectors_valid"]
+        assert dirty["vectors_attempted"] == clean["vectors_attempted"]
