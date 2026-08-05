@@ -63,8 +63,9 @@ inversion in the same change activates a path that serves a human-flagged failur
   `cd apps/api && uv sync --extra dev`. (A restore was in progress at handoff; two concurrent `uv`
   runs deadlock on the wheel cache lock — run one at a time.)
 - `apps/admin/node_modules` and `apps/widget/node_modules` are present.
-- Backend suite baseline **not re-observed this session** — last recorded 1199 passed / 8 skipped
-  (`23-09`, taken from the executor's output). Re-establish before trusting a delta.
+- Backend suite baseline **OBSERVED 2026-08-05 at `fd8fa20`: 1199 passed, 8 skipped, 0 failed,
+  33 warnings, 202s.** Matches the figure `23-09` recorded from its executor's output. Any phase
+  claiming a delta measures against this.
 
 ## Next move
 
