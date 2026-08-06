@@ -130,3 +130,56 @@ fix is a type-checker appeasement with no behavioural evidence.
   reported plainly rather than tuned away.
 - **The integration job may fail for further reasons** once the hardcoded path is fixed — it has never
   reached the actual tests. Expect a second layer.
+
+---
+
+## Execution log — findings that outlive the phase that found them
+
+Appended by each phase after its work lands. The scope sections above are the contract and are not
+edited; this is the record of what executing them actually turned up. A commit message is the weakest
+durable location for a finding, so anything a later phase or a reviewer needs goes here too.
+
+### P1 (recorded, not fixed)
+
+- `apps/api/pyproject.toml` used ruff's deprecated top-level `select`/`ignore`. **Closed by P2.**
+- `apps/api/pyproject.toml:42` declares `PyJWT[cryptography]==2.12.1`; pyjwt 2.12.1 ships no extra
+  named `cryptography`, so uv warns on every resolve and the extra is silently ignored. Nothing breaks
+  today, but the dependency does not express what it thinks it does. **Still open.**
+- No job anywhere executes the 10 docling-gated tests; they have never run in repo history.
+  `tests/unit/test_pipeline_patch_targets.py` keeps their patch targets falsifiable but asserts nothing
+  about their behaviour. **Still open.**
+
+### P2 (ruff 456 → 0)
+
+Closed: the ruff config deprecation. Everything below is open.
+
+- **`tests/unit/test_services.py::TestWaitForNeonReady::test_wait_for_neon_ready_retries_then_succeeds`
+  is intermittently red.** Observed 1 failure in 6 identical full-suite runs of the same tree; passes
+  in isolation. It patches `app.services.neon.time.sleep`, which is the shared `time` module's
+  attribute, so the mock is process-global for the duration, and `mock_sleep.assert_called_once_with(1)`
+  is falsified by any other caller. Five daemon threads are alive throughout the unit run —
+  `OtelBatchSpanRecordProcessor`, `MediaUploadConsumer`, `ScoreIngestionConsumer`,
+  `PromptCacheRefreshConsumer`, `_flush_loop` — started at import time by
+  `app/services/validation_service.py:29` constructing `Langfuse()`. Pre-existing: the decorators and
+  the assertion are byte-identical to the pre-P2 tree. **This matters for the branch's own goal**: the
+  CI unit job runs with `-x`, so one occurrence aborts the run and *additionally* prints a coverage
+  failure, which reads as a code regression. Not fixed here because the mechanism was inferred, never
+  captured — no traceback was obtained in 6 runs — and weakening an assertion on an unproven diagnosis
+  is the papering-over this branch exists to stop.
+- **Six `patch("app...")` targets in the suite name something that does not exist.** All pre-existing,
+  all pinned with reasons in `tests/unit/test_patch_targets_resolve.py::_KNOWN_BROKEN`. The notable one:
+  `tests/integration/test_ingestion_chain.py` patches `app.services.chunking_service.HybridChunker` at
+  4 sites — the identical defect P1 corrected in `tests/unit/test_chunking_service.py`, still live in
+  the integration copy, which has never reached a test.
+- **`tests/integration/test_integration_e2e.py` has zero T-16-01 credential-leak coverage.** The block
+  that claimed it built two strings and looped over six forbidden patterns with `pass` as the body.
+  The dead code is gone and a comment marks the gap; the real assertion still needs writing, by a phase
+  that can execute the module.
+- **`tests/unit/test_parse_task.py`'s `mock_parse.assert_not_called()` is vacuously true.**
+  `pipeline/parse.py` only ever calls `parse_document_from_bytes`, so the patched `parse_document` could
+  not have been called. The import is kept (`# noqa: F401`) because deleting it turns four tests into
+  AttributeErrors — observed — but the assertion proves nothing.
+- **Coverage margin narrowed to 0.86 points.** CI's own command gives 1668 passed, 13 skipped, 80.86%
+  against `--cov-fail-under=80`, down from the 81.17% P1 measured — clearing F401 deletes covered
+  module-level import statements. Measured on Windows with `apps/api/.env` present; CI is Linux with no
+  `.env` and a fresh pip resolve. The threshold was not touched.
