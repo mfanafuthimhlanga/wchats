@@ -1,13 +1,35 @@
 # HANDOFF — 2026-08-06
 
-**In flight:** `feat/eval-foundation` is **complete and awaiting merge** — 8 phase commits, tier-2
-judged, trace written (`.dev/traces/260805-eval-foundation.md`). Suite 1199 → **1657 passed / 11
-skipped / 0 failed**.
+**All three PRs are merged. `main` is at `fd47133`** — the `.dev` convention (#1), the eval foundation
+(#2) and the CI repair (#3). Suite 1199 → **1675 passed / 11 skipped / 0 failed**; ruff 461 → 0;
+mypy 75 → 0. Trace: `.dev/traces/260805-eval-foundation.md`.
 
-**Merge order:** `chore/dev-workflow-convention` (`fd8fa20`) first, then `feat/eval-foundation`
-(`60a4a5d`). The feature branch was cut off the chore branch so the workflow could read its own plan.
+**Merge gotcha worth remembering:** the three stacked PRs were merged in one chained `&&` command.
+All three reported MERGED, but only #1 reached `main` — #2 and #3 merged into their *original base
+branches*, because GitHub had not retargeted them yet. `&&` waits for the CLI call to return, not for
+the retarget. Closed by merging `origin/feat/eval-foundation` (which by then held all three) into
+`main`. **Next time: merge only the top of the stack, once everything below it has landed there.**
 
-**Read the trace before merging.** The tier-2 verdict is that this is *"an honest and well-guarded
+## CI is red for an environmental reason, not a code one
+
+Two consecutive runs died with every job `cancelled` at **15m03s** and **15m02s** — including Lint,
+which takes 11 seconds. That is a hard wall-clock cap at the account/runner level, not a workflow or
+code fault. Check Actions minutes and the spending limit at `github.com/settings/billing`; until it
+lifts, CI cannot report anything and the gate is unreadable again.
+
+**Settled by the remote gate** (run on `a4a03fb`, before the cap bit): Lint (ruff) **pass**,
+Type-check (mypy) **pass**. Those two carried the 536 violations.
+
+**Never yet executed on a runner:** Unit and Integration. Both had real, now-fixed causes — the unit
+job had no Redis service (`test_agent_task.py` drives the Celery result backend against a real
+client), and `conftest.py` inserted into `tenants(api_key)`, a column migration `0006` renamed to
+`api_key_hash`. `-x` was also dropped: it halted the unit run at the first failure and reported
+"1 failed / 76 passed" while hiding ~1600 tests.
+
+**`--cov-fail-under=80` has still never executed in this project's history.** Real coverage is
+unknown. If it lands below 80 the check fails for a true reason — report it, do not lower it.
+
+**The tier-2 verdict stands as the honest read of what merged:** *"an honest and well-guarded
 instrument-building milestone, mergeable as such — but do not read it as 'the platform is now
 evaluated': nothing on this branch has yet measured a real agent, and the one live signal the gate
 consumes is still vacuous."*
