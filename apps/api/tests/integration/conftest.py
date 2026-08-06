@@ -107,11 +107,11 @@ def test_tenant(db_session: Session):
     db_session.execute(
         text(
             """
-            INSERT INTO tenants (id, name, api_key, created_at)
-            VALUES (:id, :name, :api_key, now())
+            INSERT INTO tenants (id, name, api_key_hash, created_at)
+            VALUES (:id, :name, :api_key_hash, now())
             """
         ),
-        {"id": str(tenant_id), "name": f"test-tenant-{tenant_id}", "api_key": api_key_hash},
+        {"id": str(tenant_id), "name": f"test-tenant-{tenant_id}", "api_key_hash": api_key_hash},
     )
     db_session.commit()
 
