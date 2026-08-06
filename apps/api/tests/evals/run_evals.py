@@ -89,7 +89,7 @@ def _check_d5(scenario: dict, response: dict) -> tuple[bool, str]:
     response_text = response.get("response_text", "")
     if CITATION_REGEX.search(response_text):
         return True, "Citation block found matching required format"
-    return False, f"No citation block matching CITATIONS regex in response text"
+    return False, "No citation block matching CITATIONS regex in response text"
 
 
 def _check_d6(scenario: dict, response: dict) -> tuple[bool, str]:
@@ -555,7 +555,7 @@ def main() -> None:
     if d7_passed is not None:
         print(f"| D7 (bundle size) | 1 | {1 if d7_passed else 0} | {0 if d7_passed else 1} |")
     else:
-        print(f"| D7 (bundle size) | SKIP | — | — |")
+        print("| D7 (bundle size) | SKIP | — | — |")
 
     print()
     if not gate_passed or d3_fail > 0 or d5_fail > 0 or d6_fail > 0 or d7_passed is False:

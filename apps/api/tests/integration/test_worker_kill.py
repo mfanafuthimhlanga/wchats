@@ -235,7 +235,7 @@ def _register_neon_mock_routes(project_id: str, local_db_url: str):
             json={
                 "project": {
                     "id": project_id,
-                    "name": f"vrd-test-kill9",
+                    "name": "vrd-test-kill9",
                     "region_id": "aws-us-east-1",
                 }
             },

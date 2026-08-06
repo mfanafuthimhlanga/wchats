@@ -55,9 +55,6 @@ def _make_mock_db_for_create():
     _agent_id = uuid4()
     _job_id = uuid4()
 
-    # Track how many times refresh is called to distinguish agent vs job
-    refresh_calls = []
-
     async def _refresh(obj):
         """Inject UUIDs into ORM objects, simulating DB server_default."""
         from app.models.agent import Agent

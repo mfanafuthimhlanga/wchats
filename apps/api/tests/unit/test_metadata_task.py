@@ -347,7 +347,7 @@ def test_generate_metadata_upserts_entities_with_on_conflict_normalized_type(mon
     assert len(entity_upsert_sqls) >= 1, (
         "Expected at least one SQL with 'INSERT INTO entities' AND "
         "'ON CONFLICT (normalized, type)' but found none.\n"
-        f"All recorded SQLs:\n" + "\n".join(all_sqls)
+        "All recorded SQLs:\n" + "\n".join(all_sqls)
     )
 
     # chunk_entities INSERT: must contain INSERT INTO chunk_entities + ON CONFLICT DO NOTHING
@@ -358,7 +358,7 @@ def test_generate_metadata_upserts_entities_with_on_conflict_normalized_type(mon
     assert len(ce_sqls) >= 1, (
         "Expected at least one SQL with 'INSERT INTO chunk_entities' AND "
         "'ON CONFLICT DO NOTHING' but found none.\n"
-        f"All recorded SQLs:\n" + "\n".join(all_sqls)
+        "All recorded SQLs:\n" + "\n".join(all_sqls)
     )
 
 

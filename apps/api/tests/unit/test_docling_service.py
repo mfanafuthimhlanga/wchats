@@ -124,10 +124,6 @@ def test_parse_document_from_bytes_uses_document_stream(monkeypatch):
 
     monkeypatch.setattr("app.services.docling_service._converter", mock_conv)
 
-    captured_streams = []
-
-    original_ds_cls = None
-
     # Patch DocumentStream on its source module: the service does a call-time
     # `from docling.datamodel.base_models import DocumentStream`, so the service
     # module itself has no such attribute to patch.

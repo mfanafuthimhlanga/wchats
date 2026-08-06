@@ -151,8 +151,6 @@ def test_agent_and_job(db_session: Session, test_tenant):
     agent_id = uuid.uuid4()
     job_id = uuid.uuid4()
 
-    soul = {"tone": "professional", "language": "en"}
-
     db_session.execute(
         text(
             """

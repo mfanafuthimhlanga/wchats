@@ -934,7 +934,7 @@ class TestTriggerEvalRun:
             with patch(
                 "app.api.v1.evals.run_eval_suite.apply_async",
                 return_value=mock_async_result,
-            ) as mock_dispatch:
+            ):
                 async with AsyncClient(
                     transport=ASGITransport(app=app), base_url="http://test"
                 ) as client:

@@ -47,9 +47,18 @@ from __future__ import annotations
 
 import json
 import os
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import pytest
+
+if TYPE_CHECKING:
+    # Annotation-only. The runtime imports stay inside the helper bodies below,
+    # because this module is env-gated and must import cleanly on a machine with
+    # no `stripe` package and no Stripe credentials. TYPE_CHECKING is never true
+    # at runtime, so nothing here is imported when the gate is off.
+    from app.services.transactional.adapters.stripe_adapter import StripeAdapter
+    from app.services.transactional.credential_service import CredentialHandle
 
 # ---------------------------------------------------------------------------
 # Gate: entire module skips when STRIPE_TEST_MODE_ENABLED != "1"

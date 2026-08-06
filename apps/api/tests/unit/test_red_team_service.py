@@ -1177,7 +1177,7 @@ class TestInjectionSplit:
         values = vector_param.strip("[]").split(",")
         assert len(values) == POISONED_CHUNK_VECTOR_DIM
         assert all(v == "0" for v in values)
-from app.services import red_team_service  # noqa: E402  (P2 — module-level access)
+
 
 # ---------------------------------------------------------------------------
 # P2 — the validity denominator for a red-team run (audit D4)

@@ -301,7 +301,7 @@ def test_embed_and_migrate_upserts_with_on_conflict_chunk_id(monkeypatch):
     assert len(upsert_sqls) >= 1, (
         "Expected at least one SQL with 'INSERT INTO embeddings' AND "
         "'ON CONFLICT (chunk_id) DO UPDATE' but found none.\n"
-        f"All recorded SQLs:\n" + "\n".join(all_sqls)
+        "All recorded SQLs:\n" + "\n".join(all_sqls)
     )
 
 

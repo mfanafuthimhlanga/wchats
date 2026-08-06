@@ -215,15 +215,15 @@ def test_dispatcher_success_with_mocked_adapter(db_session):
             "Success audit row must have a non-None result (typed output)"
         )
 
-        # 4. T-16-01: credential/handle must NOT appear in audit arguments or result
-        audit_args_str = str(audit_kwargs.get("arguments", {}))
-        audit_result_str = str(audit_kwargs.get("result", {}))
-        for forbidden_pattern in ("api_key", "access_token", "consumer_secret", "personal_access_token", "CredentialHandle", "redacted"):
-            # "redacted" catches if someone accidentally logs the handle repr
-            # NOTE: "redacted" is allowed only in the CredentialHandle repr — the audit row
-            # should NOT contain it if the handle was correctly excluded.
-            # We only check for actual key material patterns in the audit row.
-            pass  # credential patterns are not expected in IssueRefundInput fields
+        # 4. T-16-01: GAP, NOT A CHECK. This block used to build two strings from the
+        # audit kwargs and then loop over six forbidden credential patterns with a
+        # bare `pass` in the body — it asserted nothing, and ruff flagged both strings
+        # as dead (F841). The dead loop and the two strings are removed here rather
+        # than silenced, because keeping them reads as coverage that does not exist.
+        # T-16-01 credential-leak coverage in this file is therefore ZERO and needs a
+        # real assertion. Writing one is a test behaviour change and belongs to a
+        # phase that can actually execute this module — integration never runs on the
+        # dev machine (no Postgres, no Redis) and CI has never reached it.
 
         # Verify raw_args (IssueRefundInput fields) is what was audited
         assert audit_kwargs.get("skill") == _TEST_SKILL, (

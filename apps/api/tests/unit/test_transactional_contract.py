@@ -27,6 +27,18 @@ import asyncio
 import pytest
 from pydantic import ValidationError
 
+from app.services.actor_seam import call_actor_gate
+from app.services.transactional.provider_adapter import (
+    ProviderAdapter,
+    StubProviderAdapter,
+    get_adapter,
+)
+from app.services.transactional.registry import (
+    TOOL_METADATA,
+    TOOL_REGISTRY,
+    to_a2a_skill,
+)
+
 # ---------------------------------------------------------------------------
 # Task 1: Schema tests
 # ---------------------------------------------------------------------------
@@ -253,12 +265,6 @@ def test_fourteen_models_importable():
 # Task 2: Registry tests
 # ---------------------------------------------------------------------------
 
-from app.services.transactional.registry import (
-    TOOL_METADATA,
-    TOOL_REGISTRY,
-    to_a2a_skill,
-)
-
 MUTATING_SKILLS = [
     "place_order",
     "cancel_order",
@@ -341,13 +347,6 @@ def test_requires_identity_verification_defaults():
 # ---------------------------------------------------------------------------
 # Task 3: ProviderAdapter + actor_seam tests
 # ---------------------------------------------------------------------------
-
-from app.services.actor_seam import call_actor_gate
-from app.services.transactional.provider_adapter import (
-    ProviderAdapter,
-    StubProviderAdapter,
-    get_adapter,
-)
 
 
 def test_stub_place_order_returns_stub_labelled_output():

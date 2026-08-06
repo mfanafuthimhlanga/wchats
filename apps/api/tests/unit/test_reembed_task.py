@@ -268,7 +268,7 @@ def test_reembed_corpus_migrates_chunks(monkeypatch):
     ]
     assert len(upsert_sqls) >= 1, (
         "Expected INSERT INTO embeddings ... ON CONFLICT (chunk_id) DO UPDATE SQL "
-        f"but none found. All SQLs:\n" + "\n".join(all_sqls)
+        "but none found. All SQLs:\n" + "\n".join(all_sqls)
     )
 
     # Model bound in the INSERT params equals the target model

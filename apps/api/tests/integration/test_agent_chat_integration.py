@@ -160,7 +160,7 @@ async def test_post_agent_chat_emits_thinking_then_response_via_eager_task(seed_
     job_id_seen = None
 
     with (
-        patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=CANNED_SDK_RESULT) as mock_run,
+        patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=CANNED_SDK_RESULT),
         patch(
             "app.worker.tasks.runtime.agent._create_conversation_row",
             return_value=sentinel_conversation_id,
@@ -274,7 +274,7 @@ def test_post_agent_chat_idempotent_on_retry():
             rows_before = cur.fetchone()[0]
 
         # Trigger eager task — idempotency guard should short-circuit
-        result = run_agent_turn.apply(args=[job_id, agent_id, "test message", None])
+        run_agent_turn.apply(args=[job_id, agent_id, "test message", None])
 
         # Count rows after — should be unchanged
         with conn.cursor() as cur:

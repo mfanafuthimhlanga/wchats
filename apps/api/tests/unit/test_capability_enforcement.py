@@ -36,10 +36,12 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
+from app.services.transactional.audit import write_audit_row
+from app.services.transactional.enforcement import _parse_rate_limit, check_capability_envelope
+
 # ---------------------------------------------------------------------------
 # _parse_rate_limit — pure function, no DB/Redis needed
 # ---------------------------------------------------------------------------
-from app.services.transactional.enforcement import _parse_rate_limit
 
 
 class TestParseRateLimit:
@@ -65,8 +67,6 @@ class TestParseRateLimit:
 # ---------------------------------------------------------------------------
 # check_capability_envelope — mocked DB + Redis
 # ---------------------------------------------------------------------------
-
-from app.services.transactional.enforcement import check_capability_envelope
 
 
 def _make_envelope_mapping(
@@ -127,7 +127,6 @@ class TestCheckCapabilityEnvelope:
         args = _make_args()
 
         mock_cm = _mock_db_session(None)  # no row
-        logs: list[dict] = []
 
         with (
             patch("app.services.transactional.enforcement.get_sync_db", mock_cm),
@@ -364,8 +363,6 @@ class TestSnapshotJsonSerializable:
 # ---------------------------------------------------------------------------
 # Task 3 — write_audit_row tests
 # ---------------------------------------------------------------------------
-
-from app.services.transactional.audit import write_audit_row
 
 
 class TestWriteAuditRow:

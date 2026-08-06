@@ -229,7 +229,7 @@ def test_expansion_calls_rrf_fuse_per_variant():
     ), patch(
         "app.services.retrieval_service._expand_query",
         return_value=["q", "q1", "q2"],
-    ) as mock_expand, patch(
+    ), patch(
         "app.services.retrieval_service.rrf_fuse",
         return_value=fake_fused_result,
     ) as mock_rrf_fuse, patch(
