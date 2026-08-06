@@ -10,8 +10,13 @@ Tests:
   6. test_sanitize_strips_injection_in_table_path  — sanitize_chunk_text applied to table Markdown
   7. test_empty_text_chunks_are_skipped            — whitespace-only context strings are excluded
 
-Patch target: app.services.chunking_service.HybridChunker (the class — patch its
-return value's .chunk and .contextualize methods).
+Patch target: docling.chunking.HybridChunker (the class — patch its return value's
+.chunk and .contextualize methods). NOT app.services.chunking_service.HybridChunker:
+the service imports the class inside chunk_document (chunking_service.py:64) because
+docling ships only in the pipeline worker, so the service module has no such attribute
+and patching it raises AttributeError. Because that import runs at call time, patching
+the name on its *source* module is what the service actually picks up.
+tests/unit/test_pipeline_patch_targets.py enforces that correspondence on every run.
 """
 
 import base64
@@ -45,7 +50,18 @@ import pytest
 # docling ships only in the optional `pipeline` extra. CI installs `[dev]` only, and
 # the documented local gate has no docling either — without this guard the whole
 # module is a collection ERROR that aborts the run before any other test executes.
-# A visible skip line says "these did not run"; an --ignore flag says nothing at all.
+#
+# Read the skip line literally: it means UNEXECUTED, not "would pass". No job in
+# ci.yml installs the `pipeline` extra, so nothing in this repo has ever run these
+# seven tests, and a green CI summary is no evidence about them whatsoever. What IS
+# checked on every run is narrower and stated plainly:
+# tests/unit/test_pipeline_patch_targets.py asserts each patch target below still
+# corresponds to a real import in the service under test — the one failure mode that
+# made all seven error the moment docling was present, and the reason they now patch
+# `docling.chunking` rather than the service module.
+pytest.importorskip(
+    "docling.chunking", reason="docling is in the optional `pipeline` extra"
+)
 pytest.importorskip(
     "docling_core", reason="docling is in the optional `pipeline` extra"
 )
@@ -115,7 +131,7 @@ def test_text_path_skips_chunks_with_table_items():
     mock_chunker = _make_mock_chunker([table_contaminated_chunk, text_chunk])
     mock_doc = _make_mock_doc(tables=[])  # no tables in doc
 
-    with patch("app.services.chunking_service.HybridChunker") as mock_cls:
+    with patch("docling.chunking.HybridChunker") as mock_cls:
         mock_cls.return_value = mock_chunker
 
         from app.services.chunking_service import chunk_document
@@ -146,7 +162,7 @@ def test_table_chunk_produces_markdown():
     mock_doc = _make_mock_doc(tables=[mock_table])
     mock_chunker = _make_mock_chunker(chunks_to_return=[])  # no text chunks
 
-    with patch("app.services.chunking_service.HybridChunker") as mock_cls:
+    with patch("docling.chunking.HybridChunker") as mock_cls:
         mock_cls.return_value = mock_chunker
 
         from app.services.chunking_service import chunk_document
@@ -173,7 +189,7 @@ def test_chunks_have_deterministic_ids():
     mock_doc = _make_mock_doc(tables=[mock_table])
     mock_chunker = _make_mock_chunker(chunks_to_return=[])
 
-    with patch("app.services.chunking_service.HybridChunker") as mock_cls:
+    with patch("docling.chunking.HybridChunker") as mock_cls:
         mock_cls.return_value = mock_chunker
 
         from app.services.chunking_service import chunk_document
@@ -208,7 +224,7 @@ def test_ordinals_are_monotonic_across_text_then_table():
     mock_table.export_to_markdown.return_value = "| Col |\n|---|\n| val |"
     mock_doc = _make_mock_doc(tables=[mock_table])
 
-    with patch("app.services.chunking_service.HybridChunker") as mock_cls:
+    with patch("docling.chunking.HybridChunker") as mock_cls:
         mock_cls.return_value = mock_chunker
 
         from app.services.chunking_service import chunk_document
@@ -239,7 +255,7 @@ def test_text_path_uses_contextualize_not_chunk_text():
     )
     mock_doc = _make_mock_doc(tables=[])
 
-    with patch("app.services.chunking_service.HybridChunker") as mock_cls:
+    with patch("docling.chunking.HybridChunker") as mock_cls:
         mock_cls.return_value = mock_chunker
 
         from app.services.chunking_service import chunk_document
@@ -270,7 +286,7 @@ def test_sanitize_strips_injection_in_table_path():
     mock_doc = _make_mock_doc(tables=[mock_table])
     mock_chunker = _make_mock_chunker(chunks_to_return=[])
 
-    with patch("app.services.chunking_service.HybridChunker") as mock_cls:
+    with patch("docling.chunking.HybridChunker") as mock_cls:
         mock_cls.return_value = mock_chunker
 
         from app.services.chunking_service import chunk_document
@@ -297,7 +313,7 @@ def test_empty_text_chunks_are_skipped():
     )
     mock_doc = _make_mock_doc(tables=[])
 
-    with patch("app.services.chunking_service.HybridChunker") as mock_cls:
+    with patch("docling.chunking.HybridChunker") as mock_cls:
         mock_cls.return_value = mock_chunker
 
         from app.services.chunking_service import chunk_document

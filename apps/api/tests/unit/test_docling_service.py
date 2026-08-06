@@ -6,9 +6,17 @@ Tests:
   2. parse_document returns result.document on SUCCESS
   3. parse_document_from_bytes wraps content in DocumentStream correctly
 
-All tests patch `app.services.docling_service._converter` (the module-level
+Tests 1 and 2 patch `app.services.docling_service._converter` (the module-level
 singleton) rather than the import path of DocumentConverter itself — this ensures
 the patch targets the object that the module functions actually call.
+
+Test 3 patches `docling.datamodel.base_models.DocumentStream`, not
+`app.services.docling_service.DocumentStream`. The service imports DocumentStream
+inside parse_document_from_bytes (docling_service.py:98) because docling ships only
+in the pipeline worker, so the service module has no such attribute and patching it
+raises AttributeError. Because that import runs at call time, patching the name on
+its source module is what the service actually picks up.
+tests/unit/test_pipeline_patch_targets.py enforces that correspondence on every run.
 
 Environment setup must precede any `from app` import.
 """
@@ -45,7 +53,14 @@ import pytest
 # docling ships only in the optional `pipeline` extra. CI installs `[dev]` only, and
 # the documented local gate has no docling either — without this guard the whole
 # module is a collection ERROR that aborts the run before any other test executes.
-# A visible skip line says "these did not run"; an --ignore flag says nothing at all.
+#
+# Read the skip line literally: it means UNEXECUTED, not "would pass". No job in
+# ci.yml installs the `pipeline` extra, so nothing in this repo has ever run these
+# three tests, and a green CI summary is no evidence about them whatsoever. What IS
+# checked on every run is narrower and stated plainly:
+# tests/unit/test_pipeline_patch_targets.py asserts each patch target below still
+# corresponds to a real attribute or import in the service under test — the failure
+# mode that made test 3 error the moment docling was present.
 pytest.importorskip("docling", reason="docling is in the optional `pipeline` extra")
 
 from docling.datamodel.base_models import ConversionStatus  # noqa: E402  (must follow importorskip)
@@ -113,8 +128,10 @@ def test_parse_document_from_bytes_uses_document_stream(monkeypatch):
 
     original_ds_cls = None
 
-    # Patch DocumentStream to capture its construction arguments
-    with patch("app.services.docling_service.DocumentStream") as mock_ds_cls:
+    # Patch DocumentStream on its source module: the service does a call-time
+    # `from docling.datamodel.base_models import DocumentStream`, so the service
+    # module itself has no such attribute to patch.
+    with patch("docling.datamodel.base_models.DocumentStream") as mock_ds_cls:
         mock_stream_instance = MagicMock()
         mock_ds_cls.return_value = mock_stream_instance
 
