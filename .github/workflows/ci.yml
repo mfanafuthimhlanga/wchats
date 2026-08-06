@@ -1,8 +1,9 @@
 name: CI
 
 on:
+  # No `branches:` filter: this repo ships stacked PRs (feature -> feature -> main),
+  # and `branches: [main]` meant every PR whose base was not main got zero checks.
   pull_request:
-    branches: [main]
   push:
     branches: [main]
 

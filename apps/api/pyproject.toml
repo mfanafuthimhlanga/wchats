@@ -67,6 +67,10 @@ pipeline = [
 dev = [
     "pytest",
     "pytest-asyncio==1.3.0",
+    # ci.yml has passed --cov=app --cov-fail-under=80 since the workflow was written;
+    # without pytest-cov pytest exits 4 on `unrecognized arguments` and the unit job
+    # has never once run a test.
+    "pytest-cov>=5.0",
     "respx==0.23.1",
 ]
 

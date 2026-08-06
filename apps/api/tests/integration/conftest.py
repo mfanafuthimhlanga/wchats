@@ -27,6 +27,8 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from tests.integration._paths import api_root
+
 # ---------------------------------------------------------------------------
 # Override env vars for integration tests BEFORE any app import.
 # The root conftest sets CELERY_TASK_ALWAYS_EAGER via setdefault(); we
@@ -218,7 +220,10 @@ def celery_worker():
             "--concurrency=1",
             "--loglevel=warning",
         ],
-        cwd="/c/Users/Bantu/mzansi-agentive/veridian/apps/api",
+        # Derived from this file's location, not hardcoded: the previous literal
+        # was one developer's machine under the project's *former* name, so this
+        # fixture raised FileNotFoundError everywhere else, CI included.
+        cwd=str(api_root()),
         env=env,
     )
     # Wait for worker to become ready (allow time for imports + broker connect)

@@ -14,8 +14,8 @@ Patch target: app.services.chunking_service.HybridChunker (the class — patch i
 return value's .chunk and .contextualize methods).
 """
 
-import os
 import base64
+import os
 
 # ---------------------------------------------------------------------------
 # Environment setup — MUST run before any `from app` import (pydantic-settings)
@@ -38,10 +38,19 @@ os.environ.setdefault("VOYAGE_API_KEY", "test_voyage")
 # Imports (after env setup)
 # ---------------------------------------------------------------------------
 
-import pytest
 from unittest.mock import MagicMock, patch
-from docling_core.types.doc import TableItem
 
+import pytest
+
+# docling ships only in the optional `pipeline` extra. CI installs `[dev]` only, and
+# the documented local gate has no docling either — without this guard the whole
+# module is a collection ERROR that aborts the run before any other test executes.
+# A visible skip line says "these did not run"; an --ignore flag says nothing at all.
+pytest.importorskip(
+    "docling_core", reason="docling is in the optional `pipeline` extra"
+)
+
+from docling_core.types.doc import TableItem  # noqa: E402  (must follow importorskip)
 
 # ---------------------------------------------------------------------------
 # Helpers

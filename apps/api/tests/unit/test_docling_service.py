@@ -13,8 +13,8 @@ the patch targets the object that the module functions actually call.
 Environment setup must precede any `from app` import.
 """
 
-import os
 import base64
+import os
 
 # ---------------------------------------------------------------------------
 # Environment setup — MUST run before any `from app` import (pydantic-settings)
@@ -37,12 +37,18 @@ os.environ.setdefault("VOYAGE_API_KEY", "test_voyage")
 # Imports (after env setup)
 # ---------------------------------------------------------------------------
 
-import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from docling.datamodel.base_models import ConversionStatus
+import pytest
 
+# docling ships only in the optional `pipeline` extra. CI installs `[dev]` only, and
+# the documented local gate has no docling either — without this guard the whole
+# module is a collection ERROR that aborts the run before any other test executes.
+# A visible skip line says "these did not run"; an --ignore flag says nothing at all.
+pytest.importorskip("docling", reason="docling is in the optional `pipeline` extra")
+
+from docling.datamodel.base_models import ConversionStatus  # noqa: E402  (must follow importorskip)
 
 # ---------------------------------------------------------------------------
 # Tests
