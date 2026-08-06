@@ -257,7 +257,10 @@ def send_otp_email(to_email: str, code: str) -> None:
     # Full address is PII under POPIA/GDPR — never stored in log sinks (T-17-08).
     _log_domain = to_email.split("@")[-1] if "@" in to_email else "<redacted>"
 
-    if not all([settings.SMTP_HOST, settings.SMTP_FROM]):
+    # Bound to locals so the narrowing survives for the type checker.
+    smtp_host = settings.SMTP_HOST
+    smtp_from = settings.SMTP_FROM
+    if not smtp_host or not smtp_from:
         log.warning("otp_email.not_configured", to_domain=_log_domain)
         return
 
@@ -270,15 +273,15 @@ def send_otp_email(to_email: str, code: str) -> None:
     )
     msg = MIMEText(body)
     msg["Subject"] = "Your W Chats Verification Code"
-    msg["From"] = settings.SMTP_FROM
+    msg["From"] = smtp_from
     msg["To"] = to_email
 
     try:
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT or 587, timeout=5) as server:  # type: ignore[arg-type]
+        with smtplib.SMTP(smtp_host, settings.SMTP_PORT or 587, timeout=5) as server:  # type: ignore[arg-type]
             server.starttls()
             if settings.SMTP_USER and settings.SMTP_PASSWORD:
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-            server.sendmail(settings.SMTP_FROM, [to_email], msg.as_string())  # type: ignore[arg-type]
+            server.sendmail(smtp_from, [to_email], msg.as_string())  # type: ignore[arg-type]
         log.info("otp_email.sent", to_domain=_log_domain)
     except Exception as exc:
         # Fire-and-forget: log warning but NEVER re-raise

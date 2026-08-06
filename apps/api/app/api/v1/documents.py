@@ -53,7 +53,7 @@ from structlog.contextvars import get_contextvars
 from app.api.deps import get_current_tenant
 from app.core.config import settings
 from app.core.database import get_async_db
-from app.core.security import fernet_decrypt
+from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.models.job import Job
 from app.models.tenant import Tenant
@@ -168,7 +168,7 @@ async def upload_documents(
     #    (ARCHITECTURAL EXCEPTION: needed for synchronous document INSERT)
     #    fernet_decrypt return value must NEVER be logged (T-02-06-08).
     # ------------------------------------------------------------------
-    tenant_conn_str = fernet_decrypt(agent.neon_connection_string)
+    tenant_conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
 
     # ------------------------------------------------------------------
     # 5. Upload files to S3 + INSERT document rows in tenant DB (PROD-12)
@@ -309,7 +309,7 @@ async def list_documents(
         raise HTTPException(status_code=404, detail="Agent not found")
 
     # Decrypt connection string (never logged — T-02-06-08)
-    conn_str = fernet_decrypt(agent.neon_connection_string)
+    conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
 
     # Query tenant DB for documents
     tenant_conn = psycopg2.connect(conn_str, connect_timeout=5)
@@ -380,7 +380,7 @@ async def get_document(
         raise HTTPException(status_code=404, detail="Agent not found")
 
     # Decrypt connection string (never logged — T-02-06-08)
-    conn_str = fernet_decrypt(agent.neon_connection_string)
+    conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
 
     tenant_conn = psycopg2.connect(conn_str, connect_timeout=5)
     try:
@@ -457,7 +457,7 @@ async def get_document_detail(
         raise HTTPException(status_code=404, detail="Agent not found")
 
     # Decrypt connection string (never logged — T-02-06-08)
-    conn_str = fernet_decrypt(agent.neon_connection_string)
+    conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
 
     doc_id = str(document_id)
     tenant_conn = psycopg2.connect(conn_str, connect_timeout=5)
@@ -625,7 +625,7 @@ async def delete_document(
         raise HTTPException(status_code=404, detail="Agent not found")
 
     # Decrypt connection string (never logged — T-02-06-08)
-    conn_str = fernet_decrypt(agent.neon_connection_string)
+    conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
 
     # ------------------------------------------------------------------
     # 2. Delete document + derived rows in a single tenant-DB transaction.

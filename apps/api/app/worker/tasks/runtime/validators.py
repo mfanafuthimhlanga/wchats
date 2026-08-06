@@ -35,7 +35,7 @@ from sqlalchemy import text as sa_text
 
 from app.core.config import settings
 from app.core.database import get_sync_db
-from app.core.security import fernet_decrypt
+from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.services.events import emit
 from app.services.validation_service import (
@@ -366,7 +366,7 @@ def run_auditor(
             )
 
             if verdict.verdict == "grounded" and verdict.confidence >= threshold:
-                conn_str = fernet_decrypt(agent.neon_connection_string)
+                conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
                 _insert_verified_qa_candidate(
                     conn_str=conn_str,
                     conversation_id=conversation_id,
@@ -400,7 +400,7 @@ def run_auditor(
                     {"agent_id": agent_id},
                 ).scalar()
 
-                if recent_ungrounded >= 3:
+                if (recent_ungrounded or 0) >= 3:
                     db.execute(
                         sa_text(
                             "UPDATE agents SET strategy_resynthesis_flagged = TRUE WHERE id = :id"

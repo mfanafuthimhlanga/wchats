@@ -100,6 +100,13 @@ select = ["E", "F", "I"]
 ignore = ["E501"]
 
 [tool.mypy]
+plugins = ["pydantic.mypy"]
 python_version = "3.12"
 strict = false
 ignore_missing_imports = true
+
+[tool.pydantic-mypy]
+# The plugin defaults init_typed=false, which types every synthesised __init__
+# parameter as Any and silently hides real constructor type errors (four of them
+# in this tree). Keep the checking; we only want the BaseSettings behaviour.
+init_typed = true

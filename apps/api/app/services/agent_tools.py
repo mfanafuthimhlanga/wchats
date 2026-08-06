@@ -361,7 +361,7 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
             cached = rc.get(cache_key)
             if cached is not None:
                 log.debug("retrieve_tool.cache_hit", key_prefix="qembed:")
-                return json.loads(cached)
+                return json.loads(cached)  # type: ignore[arg-type]  # sync redis client returns bytes|str
             vector = embed_query(q)
             rc.setex(cache_key, 3600, json.dumps(vector))
             return vector

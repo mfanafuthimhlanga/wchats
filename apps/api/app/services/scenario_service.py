@@ -101,7 +101,7 @@ def generate_scenarios_from_chunks(chunks: list[dict], n: int = 5) -> list[dict]
                 ),
             }
         ],
-        tools=[SCENARIO_TOOL],
+        tools=[SCENARIO_TOOL],  # type: ignore[call-overload] # anthropic/agent-sdk stubs are narrower than the runtime contract
         tool_choice={"type": "tool", "name": "submit_scenarios"},
     )
 

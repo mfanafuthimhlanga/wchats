@@ -290,7 +290,7 @@ def validate_tighten_only(
         platform_defaults = PLATFORM_CAPABILITY_DEFAULTS
 
     skill = current.get("skill") or proposed.get("skill")
-    default_entry = platform_defaults.get(skill, {})
+    default_entry = platform_defaults.get(skill, {}) if skill else {}
 
     def _reject(reason: str, field: str) -> str:
         log.warning(

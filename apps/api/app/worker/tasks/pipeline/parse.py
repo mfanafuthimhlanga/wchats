@@ -45,7 +45,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
-from app.core.security import fernet_decrypt
+from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.services import storage_service
 
@@ -130,7 +130,7 @@ def parse_documents(
         # DDL is done; M2 only does DML reads/writes — pooled URI is correct.
         # fernet_decrypt return value is intentionally not logged (T-02-02-04).
         # ------------------------------------------------------------------
-        tenant_conn_str = fernet_decrypt(agent.neon_connection_string)
+        tenant_conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
 
         # ------------------------------------------------------------------
         # Emit ingestion.started ONCE — only if there are un-parsed documents.

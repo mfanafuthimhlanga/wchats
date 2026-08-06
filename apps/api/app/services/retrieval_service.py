@@ -418,11 +418,11 @@ def _expand_query(query_text: str) -> list[str]:
             }
         ],
     )
-    variants = [
-        line.strip()
-        for line in msg.content[0].text.strip().split("\n")
-        if line.strip()
-    ]
+    # msg.content[0] is a union of block types and only TextBlock carries .text.
+    # getattr keeps a non-text first block to zero variants instead of AttributeError.
+    first_block = msg.content[0]
+    raw_variants = getattr(first_block, "text", "") or ""
+    variants = [line.strip() for line in raw_variants.strip().split("\n") if line.strip()]
     return [query_text] + variants[:2]
 
 

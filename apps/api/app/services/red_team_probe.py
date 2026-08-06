@@ -327,7 +327,7 @@ def _build_transactional_probe_fn(
             options = ClaudeAgentOptions(
                 model=_PROBE_MODEL,
                 system_prompt=system_prompt,
-                mcp_servers={"customer-tools": tool_server},
+                mcp_servers={"customer-tools": tool_server},  # type: ignore[dict-item]  # agent-sdk/anthropic stubs are narrower than the runtime contract
                 allowed_tools=_ALLOWED_TOOLS,
                 max_turns=settings.RED_TEAM_MAX_TURNS,
                 max_budget_usd=settings.AGENT_MAX_BUDGET_USD,

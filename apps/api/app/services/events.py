@@ -34,7 +34,7 @@ from app.models.job_event import JobEvent
 
 
 def emit(
-    job_id: UUID,
+    job_id: UUID | str,
     event_type: str,
     payload: dict | None,
     db: Session,
@@ -43,7 +43,18 @@ def emit(
     """Persist an event to job_events and publish it to the Redis pub/sub channel.
 
     Args:
-        job_id:     UUID of the job this event belongs to.
+        job_id:     Job id, as a UUID or as its canonical string form.
+                    Both are accepted deliberately, not by accident: Celery task
+                    arguments are JSON, so every worker task holds job_id as a
+                    ``str`` (see the ``job_id: str`` parameter on every task in
+                    app/worker/tasks/), while API-side callers hold the ORM
+                    ``Job.id``, which is a ``UUID``.  Neither of the two uses
+                    below is UUID-specific — the Redis channel is an f-string and
+                    the job_events.job_id column is a SQLAlchemy Uuid, which
+                    accepts the canonical string form — so widening the
+                    annotation describes the real contract rather than papering
+                    over a defect.  ``TestEmitAcceptsStringJobId`` pins the two
+                    forms as producing identical output.
         event_type: Event name string (e.g. "job.started", "neon.project.ready").
         payload:    Arbitrary metadata dict.  None is treated as {}.
                     emit() works on a *copy* — the caller's dict is never mutated.

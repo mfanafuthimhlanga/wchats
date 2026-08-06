@@ -49,7 +49,7 @@ from sqlalchemy import text as sa_text
 
 from app.core.config import settings
 from app.core.database import get_sync_db
-from app.core.security import fernet_decrypt
+from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.worker.celery_app import celery_app
 
@@ -242,8 +242,8 @@ def _compute_ragas_faithfulness(
         ])
         _anthropic_client = instructor.from_anthropic(anthropic.Anthropic())
         llm = InstructorLLM(client=_anthropic_client, model=HAIKU_MODEL, provider="anthropic")
-        results = evaluate(dataset=dataset, metrics=[Faithfulness(llm=llm)], llm=llm)
-        df = results.to_pandas()
+        results = evaluate(dataset=dataset, metrics=[Faithfulness(llm=llm)], llm=llm)  # type: ignore[list-item,arg-type]  # ragas 0.4.x accepts these at runtime
+        df = results.to_pandas()  # type: ignore[union-attr]  # ragas 0.4.x accepts these at runtime; installed stubs are narrower
         if "faithfulness" not in df.columns or len(df) == 0:
             return None
         raw = df["faithfulness"].iloc[0]
@@ -289,7 +289,7 @@ def run_retrieval_faithfulness(self, agent_id: str, job_id: str) -> dict:  # noq
                 agent_id=agent_id,
             )
             return {}
-        conn_str = fernet_decrypt(agent.neon_connection_string)
+        conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
 
         # ------------------------------------------------------------------
         # Idempotency guard (T-21-04-01 adjacent): skip recompute if already

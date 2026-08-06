@@ -56,7 +56,7 @@ from sqlalchemy import text as sa_text
 
 from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db
-from app.core.security import fernet_decrypt
+from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.models.job import Job
 from app.models.prompt_version import PromptVersion
@@ -440,7 +440,8 @@ def _emit_langfuse_turn_trace(
     if _langfuse is None:
         return
     try:
-        with _langfuse.start_as_current_generation(
+        with _langfuse.start_as_current_observation(
+            as_type="generation",
             name="agent-turn",
             model=model,
             metadata={"agent_id": agent_id, "job_id": job_id},
@@ -722,7 +723,7 @@ def run_agent_turn(
         # Decrypt connection string at runtime — NEVER in task args (CTL-08).
         # conn_str is intentionally not logged.
         # ------------------------------------------------------------------
-        conn_str = fernet_decrypt(agent.neon_connection_string)
+        conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
 
         # PROD-05: open ONE pooled tenant-DB connection for all per-turn write
         # helpers (_create_conversation_row, _validate_conversation_owner,
@@ -845,7 +846,7 @@ def run_agent_turn(
                 # to a model that did not serve the turn (migration 0013).
                 model=AGENT_TURN_MODEL,
                 system_prompt=system_prompt,
-                mcp_servers={"customer-tools": tool_server},
+                mcp_servers={"customer-tools": tool_server},  # type: ignore[dict-item]  # agent-sdk/anthropic stubs are narrower than the runtime contract
                 allowed_tools=[
                     # Original 4 tools — retained (TXN-04 requirement)
                     "mcp__customer-tools__retrieve",

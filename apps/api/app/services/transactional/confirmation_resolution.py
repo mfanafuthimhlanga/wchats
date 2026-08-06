@@ -272,7 +272,7 @@ async def execute_approved_confirmation(
     # this function and finds replay or in_progress here rather than
     # executing the adapter a second time (T-22-ACT-13).
     args_hash = compute_args_hash(arguments)
-    reservation = await reserve_idempotency(agent_id, skill, validated.idempotency_key, args_hash)
+    reservation = await reserve_idempotency(agent_id, skill, validated.idempotency_key, args_hash)  # type: ignore[attr-defined]  # every SKILL_INPUT_MODELS member declares idempotency_key
 
     if reservation.state == "replay":
         log.info(
@@ -350,7 +350,7 @@ async def execute_approved_confirmation(
     # confirmation was created denies execution here.
     rate_denial = await apply_rate_and_constraint_checks(agent_id, skill, snapshot, arguments)
     if rate_denial is not None:
-        await release_idempotency(agent_id, skill, validated.idempotency_key)
+        await release_idempotency(agent_id, skill, validated.idempotency_key)  # type: ignore[attr-defined]  # every SKILL_INPUT_MODELS member declares idempotency_key
         await write_audit_row(
             agent_id=agent_id,
             conversation_id=conversation_id,

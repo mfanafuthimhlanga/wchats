@@ -379,7 +379,8 @@ def _log_verdict(
     if _langfuse is None:
         return
     try:
-        with _langfuse.start_as_current_generation(
+        with _langfuse.start_as_current_observation(
+            as_type="generation",
             name=f"{judge_name}-judge",
             model=HAIKU_MODEL,
             input=input_payload,

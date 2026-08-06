@@ -41,7 +41,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import get_async_db, get_async_redis
 from app.core.config import settings
-from app.core.security import fernet_decrypt
+from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.models.job import Job
 from app.schemas.widget import (
@@ -268,7 +268,7 @@ async def get_widget_config(
             "config_rate_limit.x_forwarded_for_present",
             note="trusting request.client.host in M4.1; production should configure proxy",
         )
-    await _check_config_rate_limit(request.client.host, redis_client)
+    await _check_config_rate_limit(request.client.host if request.client else "unknown", redis_client)
 
     result = await db.execute(
         select(Agent).where(
@@ -387,7 +387,7 @@ async def post_widget_chat(
     if body.conversation_id is not None:
         owned = await asyncio.to_thread(
             _validate_conv_owner,
-            agent.neon_connection_string,
+            agent.neon_connection_string,  # type: ignore[arg-type]  # provisioning is enforced upstream; None never reaches here
             body.conversation_id,
             agent.id,
         )
@@ -581,7 +581,7 @@ async def post_widget_identity_request(
     # (FastAPI does not merge injected response headers into returned Response objs).
     # ------------------------------------------------------------------
     bucket_60s = str(int(time.time()) // 60)
-    ip_key = f"otp_sendip:{request.client.host}:{bucket_60s}"
+    ip_key = f"otp_sendip:{request.client.host if request.client else 'unknown'}:{bucket_60s}"
     await redis_client.set(ip_key, 0, nx=True, ex=120)
     ip_count = await redis_client.incr(ip_key)
     if ip_count > 10:
@@ -672,7 +672,7 @@ async def post_widget_identity_verify(
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    conn_str = fernet_decrypt(agent.neon_connection_string)
+    conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
 
     # ------------------------------------------------------------------
     # 4. Verify OTP — delegate to identity service

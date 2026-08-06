@@ -373,7 +373,7 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
 
             # Validate via Pydantic — ensures recommendation is a known value
             report = DeploymentReport(
-                recommendation=gated_recommendation,
+                recommendation=gated_recommendation,  # type: ignore[arg-type]  # DeploymentReport validates the literal at construction
                 summary=report_data.get("summary", ""),
                 warnings=report_data.get("warnings", []),
                 eval_summary=eval_summary,

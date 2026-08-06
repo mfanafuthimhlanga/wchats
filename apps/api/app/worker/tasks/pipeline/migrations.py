@@ -53,7 +53,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
-from app.core.security import fernet_decrypt
+from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.models.job import Job
 from app.services.events import emit
@@ -123,7 +123,7 @@ def apply_migrations(self, result: dict) -> None:
         # NEVER from the result dict — CLAUDE.md rule.
         # direct_conn_string is intentionally not logged (T-03-02).
         # ------------------------------------------------------------------
-        direct_conn_string = fernet_decrypt(agent.neon_direct_connection_string)
+        direct_conn_string = fernet_decrypt(require_ciphertext(agent.neon_direct_connection_string, "agents.neon_direct_connection_string"))
 
         # ------------------------------------------------------------------
         # Emit migrations.running — before Alembic runs

@@ -688,7 +688,7 @@ def fixture_drift() -> list[str]:
     """
     reasons: list[str] = []
 
-    shipped_names = [row.get("skill") for row in CLEAN_TENANT_ENVELOPES]
+    shipped_names = [str(row.get("skill") or "") for row in CLEAN_TENANT_ENVELOPES]
     duplicates = sorted({n for n in shipped_names if shipped_names.count(n) > 1})
     for name in duplicates:
         reasons.append(f"clean_tenant_envelopes_duplicate_skill:{name}")
@@ -707,7 +707,7 @@ def fixture_drift() -> list[str]:
         reasons.append(f"input_model_without_mutating_skill:{name}")
 
     for row in CLEAN_TENANT_ENVELOPES:
-        name = row.get("skill")
+        name = str(row.get("skill") or "")
         missing = sorted(set(HASHED_ENVELOPE_FIELDS) - set(row))
         extra = sorted(set(row) - set(HASHED_ENVELOPE_FIELDS))
         for key in missing:
@@ -912,7 +912,7 @@ def build_decision_fixtures() -> list[DecisionFixture]:
                 _fixture(
                     FAMILY_ABOVE_CEILING,
                     overrides={},
-                    request=_with_amount(skill, ceiling + 1),
+                    request=_with_amount(skill, int(ceiling or 0) + 1),
                     verified_session=needs_identity,
                     expected=DISPOSITION_REFUSE,
                     basis=LABEL_BASIS_ENFORCED,

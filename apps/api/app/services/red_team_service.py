@@ -435,6 +435,7 @@ def run_coverage(observations: list[VectorObservation] | None) -> dict:
          "incomplete_vectors", "invalid_reason", "complete"}.
     """
     by_vector: dict[str, VectorObservation] = {}
+    obs: VectorObservation | None
     for obs in observations or []:
         by_vector[obs.vector] = obs
 
@@ -632,9 +633,9 @@ def build_probe_tools(
     """
 
     @tool(
-        _TOOL_SEND_PROBE["name"],
-        _TOOL_SEND_PROBE["description"],
-        _TOOL_SEND_PROBE["input_schema"],
+        _TOOL_SEND_PROBE["name"],  # type: ignore[arg-type] # anthropic/agent-sdk stubs are narrower than the runtime contract
+        _TOOL_SEND_PROBE["description"],  # type: ignore[arg-type] # anthropic/agent-sdk stubs are narrower than the runtime contract
+        _TOOL_SEND_PROBE["input_schema"],  # type: ignore[arg-type] # anthropic/agent-sdk stubs are narrower than the runtime contract
     )
     async def _send_probe(args: dict) -> dict:
         message = str(args.get("message", ""))
@@ -682,9 +683,9 @@ def build_probe_tools(
         return {"content": [{"type": "text", "text": text}]}
 
     @tool(
-        _TOOL_REPORT_FINDING["name"],
-        _TOOL_REPORT_FINDING["description"],
-        _TOOL_REPORT_FINDING["input_schema"],
+        _TOOL_REPORT_FINDING["name"],  # type: ignore[arg-type] # anthropic/agent-sdk stubs are narrower than the runtime contract
+        _TOOL_REPORT_FINDING["description"],  # type: ignore[arg-type] # anthropic/agent-sdk stubs are narrower than the runtime contract
+        _TOOL_REPORT_FINDING["input_schema"],  # type: ignore[arg-type] # anthropic/agent-sdk stubs are narrower than the runtime contract
     )
     async def _report_finding(args: dict) -> dict:
         session.turn_counter += 1
@@ -800,7 +801,7 @@ def _invalid_observation_finding(session: ProbeSession, reason: str) -> RedTeamF
     findings and reports the truncation through run_coverage() instead.
     """
     return RedTeamFinding(
-        severity=INVALID_OBSERVATION_SEVERITY,
+        severity=INVALID_OBSERVATION_SEVERITY,  # type: ignore[arg-type]  # module constant is one of the four literals
         description=(
             f"{session.attack_vector} probe invalid: the attacker got answers to "
             f"{session.probes_answered} of {session.probes_attempted} attempted probe(s) "
