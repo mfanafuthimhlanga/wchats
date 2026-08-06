@@ -92,6 +92,10 @@ where = ["."]
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+
+[tool.ruff.lint]
+# Moved out of [tool.ruff]: the top-level `select`/`ignore` spellings are deprecated
+# and printed a warning on every single invocation, including in CI.
 select = ["E", "F", "I"]
 ignore = ["E501"]
 
