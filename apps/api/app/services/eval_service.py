@@ -63,20 +63,20 @@ import anthropic
 import instructor
 import psycopg2
 import structlog
-from sqlalchemy import text as sa_text
+from ragas import EvaluationDataset, evaluate
+from ragas.llms import InstructorLLM
 
 # ---------------------------------------------------------------------------
 # Ragas 0.4.x imports — D-01 LOCKED: exact import path
 # Do NOT use the 0.3.x ragas.metrics path — it has been removed.
 # ---------------------------------------------------------------------------
 from ragas.metrics.collections import (
-    Faithfulness,
     AnswerRelevancy,
     ContextPrecision,
     ContextRecall,
+    Faithfulness,
 )
-from ragas import EvaluationDataset, evaluate
-from ragas.llms import InstructorLLM
+from sqlalchemy import text as sa_text
 
 from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db

@@ -122,7 +122,7 @@ class TestCreateBranch:
     @patch("app.services.neon.requests.post")
     def test_raises_neon_http_error_on_post_failure(self, mock_post, mock_get):
         """create_branch raises NeonHTTPError when branch POST returns non-2xx."""
-        from app.services.neon import create_branch, NeonHTTPError
+        from app.services.neon import NeonHTTPError, create_branch
 
         mock_post.return_value = _mock_response(
             ok=False, status_code=422, text="unprocessable entity body text here"
@@ -140,7 +140,7 @@ class TestCreateBranch:
     @patch("app.services.neon.requests.post")
     def test_raises_neon_http_error_on_uri_get_failure(self, mock_post, mock_get):
         """create_branch raises NeonHTTPError when connection_uri GET returns non-2xx."""
-        from app.services.neon import create_branch, NeonHTTPError
+        from app.services.neon import NeonHTTPError, create_branch
 
         mock_post.return_value = _mock_response(
             ok=True,
@@ -160,7 +160,7 @@ class TestCreateBranch:
     @patch("app.services.neon.requests.post")
     def test_error_body_truncated_to_200_chars(self, mock_post, mock_get):
         """create_branch truncates error body to 200 chars in NeonHTTPError (T-03-06)."""
-        from app.services.neon import create_branch, NeonHTTPError
+        from app.services.neon import NeonHTTPError, create_branch
 
         long_body = "x" * 500
         mock_post.return_value = _mock_response(ok=False, status_code=400, text=long_body)
@@ -260,7 +260,7 @@ class TestDeleteBranch:
     @patch("app.services.neon.requests.delete")
     def test_raises_neon_http_error_on_failure(self, mock_delete):
         """delete_branch raises NeonHTTPError when DELETE returns non-2xx."""
-        from app.services.neon import delete_branch, NeonHTTPError
+        from app.services.neon import NeonHTTPError, delete_branch
 
         mock_delete.return_value = _mock_response(
             ok=False, status_code=404, text="branch not found detail"
@@ -275,7 +275,7 @@ class TestDeleteBranch:
     @patch("app.services.neon.requests.delete")
     def test_error_body_truncated_to_200_chars(self, mock_delete):
         """delete_branch truncates error body to 200 chars in NeonHTTPError."""
-        from app.services.neon import delete_branch, NeonHTTPError
+        from app.services.neon import NeonHTTPError, delete_branch
 
         long_body = "e" * 500
         mock_delete.return_value = _mock_response(ok=False, status_code=503, text=long_body)
@@ -316,7 +316,7 @@ class TestDeleteBranch:
     @patch("app.services.neon.requests.delete")
     def test_suitable_for_finally_block(self, mock_delete):
         """delete_branch raises on error so finally-block callers can catch and log."""
-        from app.services.neon import delete_branch, NeonHTTPError
+        from app.services.neon import NeonHTTPError, delete_branch
 
         mock_delete.return_value = _mock_response(
             ok=False, status_code=500, text="server error"

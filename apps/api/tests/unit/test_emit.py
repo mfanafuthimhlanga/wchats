@@ -10,16 +10,15 @@ Tests:
     - emit() does not mutate the caller's original dict
 """
 
+# Set minimal env so settings module can load.
+# Generate a valid Fernet key (URL-safe base64-encoded 32 bytes).
+import base64
 import json
 import os
 from datetime import datetime
 from unittest.mock import MagicMock
 from uuid import uuid4
 
-
-# Set minimal env so settings module can load.
-# Generate a valid Fernet key (URL-safe base64-encoded 32 bytes).
-import base64
 _TEST_KEY = base64.urlsafe_b64encode(os.urandom(32)).decode()
 os.environ.setdefault("NEON_ENCRYPTION_KEY", _TEST_KEY)
 os.environ.setdefault("NEON_API_KEY", "test_neon")
@@ -28,7 +27,6 @@ os.environ.setdefault("CONTROL_DB_SYNC_URL", "postgresql://user:pass@localhost/t
 os.environ.setdefault("ADMIN_KEY", "test_admin")
 
 from app.services.events import emit  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Helpers

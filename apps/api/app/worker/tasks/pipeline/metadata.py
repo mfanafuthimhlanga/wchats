@@ -72,17 +72,17 @@ Threat mitigations (T-02-04):
 """
 
 import ssl
-import structlog
 
 import psycopg2
 import redis as redis_lib
+import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.services.events import emit
-from app.services.metadata_service import enrich_chunks_batch, BATCH_SIZE
+from app.services.metadata_service import BATCH_SIZE, enrich_chunks_batch
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)

@@ -25,8 +25,6 @@ import types
 import uuid
 from unittest.mock import MagicMock, patch
 
-
-
 # ---------------------------------------------------------------------------
 # Monkeypatch claude_agent_sdk BEFORE importing the agent task module.
 # agent.py uses `from claude_agent_sdk import ...` at module level.

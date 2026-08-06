@@ -63,6 +63,7 @@ CANNED_SDK_RESULT = {
 def seed_tenant_agent():
     """Insert test Tenant + Agent rows in the real control DB; clean up after session."""
     import hashlib
+
     import psycopg2
     from cryptography.fernet import Fernet
 
@@ -144,7 +145,8 @@ async def test_post_agent_chat_emits_thinking_then_response_via_eager_task(seed_
         → job_events table gains agent.thinking then agent.response rows
     """
     import psycopg2
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import app
 
     tenant_id, agent_id, api_key_plaintext, _ = seed_tenant_agent
@@ -237,6 +239,7 @@ def test_post_agent_chat_idempotent_on_retry():
       Assert no new job_events rows are added — idempotency guard fires.
     """
     import psycopg2
+
     from app.worker.tasks.runtime.agent import run_agent_turn
 
     sync_url = os.environ.get(

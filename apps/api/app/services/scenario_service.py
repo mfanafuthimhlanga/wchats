@@ -14,7 +14,6 @@ import psycopg2
 import structlog
 from sqlalchemy import text
 
-
 log = structlog.get_logger(__name__)
 
 HAIKU_MODEL = "claude-haiku-4-5"

@@ -180,8 +180,8 @@ def test_provision_neon_stores_encrypted_connection_string(
     Uses respx.mock to simulate Neon API returning a local Postgres URL as the
     connection URI (so the bytes stored are an encrypted local Postgres URL).
     """
-    from app.worker.tasks.pipeline.provision import provision_neon
     from app.core.security import fernet_decrypt
+    from app.worker.tasks.pipeline.provision import provision_neon
 
     tenant_id, agent_id, job_id = test_agent_and_job
     fake_project_id = f"test-enc-{uuid.uuid4().hex[:8]}"

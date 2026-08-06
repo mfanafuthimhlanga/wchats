@@ -25,24 +25,22 @@ Queue: runtime (CLAUDE.md: both Celery queues always present).
 
 import asyncio
 import time
-import structlog
-import psycopg2
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+import psycopg2
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import Response as PlainResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
+from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from redis.asyncio import Redis
-
 from app.api.deps import get_async_db, get_async_redis
 from app.core.config import settings
-from app.services.budget import check_and_increment_budget
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.models.job import Job
@@ -55,6 +53,7 @@ from app.schemas.widget import (
     WidgetConfigResponse,
     WidgetFeedbackRequest,
 )
+from app.services.budget import check_and_increment_budget
 from app.services.identity_service import OtpInvalid, OtpRateLimited, OtpStorageError, request_otp, verify_otp
 from app.services.sse import event_generator
 from app.worker.tasks.runtime.agent import run_agent_turn

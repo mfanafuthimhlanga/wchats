@@ -16,7 +16,6 @@ from pydantic import ValidationError
 # the setdefault calls in individual test files use setdefault so conftest wins.
 from app.schemas.agent import AgentCreate, AgentCreateResponse, AgentSoulUpdate, SoulSchema
 
-
 # ---------------------------------------------------------------------------
 # SoulSchema
 # ---------------------------------------------------------------------------

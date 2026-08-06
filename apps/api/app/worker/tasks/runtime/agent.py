@@ -42,6 +42,15 @@ import psycopg2
 import redis as redis_lib
 import structlog
 from celery import chain as celery_chain
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    ResultMessage,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from langfuse import Langfuse
 from sqlalchemy import text as sa_text
 
@@ -52,23 +61,14 @@ from app.models.agent import Agent
 from app.models.job import Job
 from app.models.prompt_version import PromptVersion
 from app.services.agent_prompt import build_system_prompt
-from app.services.agent_tools import build_tool_server, RetrievalStrategy
+from app.services.agent_tools import RetrievalStrategy, build_tool_server
 from app.services.escalation import send_escalation_email
 from app.services.events import emit
 from app.services.prompt_version_service import resolve_prompt_version
 from app.utils.pii_firewall import scan_response
 from app.worker.celery_app import celery_app
-from app.worker.tasks.runtime.validators import run_gatekeeper, run_auditor, run_strategist
 from app.worker.tasks.runtime.retrieval_eval import run_retrieval_faithfulness
-from claude_agent_sdk import (
-    ClaudeAgentOptions,
-    ClaudeSDKClient,
-    AssistantMessage,
-    ResultMessage,
-    TextBlock,
-    ToolUseBlock,
-    ToolResultBlock,
-)
+from app.worker.tasks.runtime.validators import run_auditor, run_gatekeeper, run_strategist
 
 log = structlog.get_logger(__name__)
 

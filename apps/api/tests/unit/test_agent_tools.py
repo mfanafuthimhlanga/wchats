@@ -30,7 +30,6 @@ import sys
 import types
 from unittest.mock import MagicMock, patch
 
-
 # ---------------------------------------------------------------------------
 # Monkeypatch claude_agent_sdk BEFORE importing agent_tools.
 # The module uses ``from claude_agent_sdk import tool, create_sdk_mcp_server``
@@ -84,7 +83,6 @@ from app.services.agent_tools import (  # noqa: E402
     MAX_CHUNKS,
     build_tool_server,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

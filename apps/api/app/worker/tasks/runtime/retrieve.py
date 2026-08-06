@@ -32,10 +32,10 @@ Queue: runtime (CLAUDE.md non-negotiable: both Celery queues always present)
 """
 
 import ssl
-import structlog
 from datetime import datetime, timezone
 
 import redis as redis_lib
+import structlog
 from sqlalchemy import text as sa_text
 
 from app.core.config import settings

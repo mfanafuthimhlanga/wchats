@@ -39,10 +39,10 @@ from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.services.events import emit
 from app.services.validation_service import (
-    call_gatekeeper,
-    call_auditor,
-    call_strategist,
     _log_verdict,
+    call_auditor,
+    call_gatekeeper,
+    call_strategist,
 )
 from app.worker.celery_app import celery_app
 

@@ -57,7 +57,6 @@ from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.models.job import Job
 from app.models.tenant import Tenant
-from app.services import storage_service
 from app.schemas.document import (
     ChunkDetailResponse,
     ChunkEntityResponse,
@@ -67,6 +66,7 @@ from app.schemas.document import (
     DocumentResponse,
     DocumentUploadResponse,
 )
+from app.services import storage_service
 from app.worker.tasks.pipeline.chunk import chunk_documents
 from app.worker.tasks.pipeline.embed import embed_and_migrate
 from app.worker.tasks.pipeline.metadata import generate_metadata

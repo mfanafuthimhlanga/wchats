@@ -32,7 +32,6 @@ import pytest
 
 from tests.evals.calibration import compute_correlation as cc
 
-
 # ---------------------------------------------------------------------------
 # Fixtures — a self-contained calibration tree in tmp_path
 # ---------------------------------------------------------------------------

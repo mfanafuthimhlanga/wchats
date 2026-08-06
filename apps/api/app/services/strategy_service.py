@@ -9,7 +9,6 @@ Architecture notes:
 """
 from __future__ import annotations
 
-
 import anthropic
 import psycopg2
 import structlog

@@ -159,6 +159,7 @@ async def provision_me(
 
     # Check if tenant already exists
     from sqlalchemy import select
+
     from app.models.tenant import Tenant
 
     result = await db.execute(

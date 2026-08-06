@@ -8,19 +8,19 @@ tests run without any live DB or API.
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
+
 import pytest
 
 from app.services.retrieval_service import (
     RetrievalStrategy,
-    embed_query,
-    vector_search,
     bm25_search,
-    rrf_fuse,
-    rerank,
     build_trace,
+    embed_query,
+    rerank,
+    rrf_fuse,
+    vector_search,
     verified_qa_lookup,
 )
-
 
 # ---------------------------------------------------------------------------
 # RetrievalStrategy defaults
@@ -266,6 +266,7 @@ class TestRRFFuse:
     def test_rrf_math_k60_formula(self, mock_psycopg2, mock_vec, mock_bm25):
         """Verify the RRF formula constant k=60 appears in the SQL (via source check)."""
         import inspect
+
         import app.services.retrieval_service as rs_module
         src = inspect.getsource(rs_module)
         # k=60 must appear as 60.0 in the SQL literal (not a parameter)

@@ -12,7 +12,6 @@ Uses MagicMock(spec=Agent) to stub agent attributes — ORM model is not instant
 
 from unittest.mock import MagicMock
 
-
 from app.models.agent import Agent
 from app.services.agent_prompt import build_system_prompt
 

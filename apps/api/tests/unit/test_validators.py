@@ -27,7 +27,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -61,8 +60,9 @@ def _make_db_ctx(db: MagicMock) -> MagicMock:
 
 def test_gatekeeper_verdict():
     """GatekeeperVerdict Pydantic model validates and normalises verdict field."""
-    from app.services.validation_service import GatekeeperVerdict
     from pydantic import ValidationError
+
+    from app.services.validation_service import GatekeeperVerdict
 
     # field_validator lowercases verdict — "Pass" → "pass"
     v = GatekeeperVerdict.model_validate({"verdict": "Pass", "confidence": 0.92, "reason": "ok"})
@@ -89,8 +89,8 @@ def test_gatekeeper_verdict():
 
 def test_run_gatekeeper_task():
     """run_gatekeeper emits 'gatekeeper.complete' with agent_id after calling the judge."""
-    from app.worker.tasks.runtime.validators import run_gatekeeper
     from app.services.validation_service import GatekeeperVerdict
+    from app.worker.tasks.runtime.validators import run_gatekeeper
 
     agent_id = str(uuid.uuid4())
     job_id = str(uuid.uuid4())
@@ -187,8 +187,8 @@ def test_auditor_verdict():
 
 def test_auditor_inserts_candidate():
     """run_auditor inserts into verified_qa_candidates when auditor_confidence >= threshold."""
-    from app.worker.tasks.runtime.validators import run_auditor
     from app.services.validation_service import AuditorVerdict, CitationSpan
+    from app.worker.tasks.runtime.validators import run_auditor
 
     agent_id = str(uuid.uuid4())
     job_id = str(uuid.uuid4())
@@ -252,8 +252,9 @@ def test_auditor_inserts_candidate():
 
 def test_strategist_verdict():
     """StrategistVerdict Pydantic model validates and normalises verdict field."""
-    from app.services.validation_service import StrategistVerdict
     from pydantic import ValidationError
+
+    from app.services.validation_service import StrategistVerdict
 
     # field_validator lowercases verdict — "SHIP" → "ship"
     v = StrategistVerdict.model_validate({
@@ -345,8 +346,8 @@ def test_langfuse_logged(monkeypatch):
 
 def test_resynthesis_flag():
     """run_auditor sets strategy_resynthesis_flagged=TRUE after 3 ungrounded verdicts in 24h."""
-    from app.worker.tasks.runtime.validators import run_auditor
     from app.services.validation_service import AuditorVerdict
+    from app.worker.tasks.runtime.validators import run_auditor
 
     agent_id = str(uuid.uuid4())
     job_id = str(uuid.uuid4())

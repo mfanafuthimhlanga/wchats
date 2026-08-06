@@ -113,7 +113,8 @@ def test_migration_enabled_default_false():
 )
 def test_migration_db_roundtrip():
     """Integration: apply migration to test DB and verify tables + constraints exist."""
-    from sqlalchemy import create_engine, inspect as sa_inspect
+    from sqlalchemy import create_engine
+    from sqlalchemy import inspect as sa_inspect
 
     sync_url = os.environ.get("CONTROL_DB_SYNC_URL", "")
     if not sync_url or "test" not in sync_url.lower():
@@ -164,10 +165,9 @@ def test_orm_imports():
 
 def test_orm_models_in_base_metadata():
     """All four ORM models are registered in Base.metadata.tables."""
-    from app.models import Base  # noqa: F401  # importing models registers them
-
     # Trigger registration by importing the four models
     from app.models import (  # noqa: F401
+        Base,  # noqa: F401  # importing models registers them
         CapabilityEnvelope,
         PendingConfirmation,
         ToolCallsAudit,

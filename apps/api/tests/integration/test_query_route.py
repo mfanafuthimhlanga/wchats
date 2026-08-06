@@ -27,11 +27,10 @@ import uuid
 from unittest.mock import patch
 
 import pytest
+import redis.asyncio as aioredis
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-import redis.asyncio as aioredis
 
 pytestmark = pytest.mark.integration
 
@@ -62,7 +61,7 @@ def _create_ready_agent(tenant_id: uuid.UUID) -> tuple[uuid.UUID, str]:
     agent row passes the DB constraint without a real Neon project.  The
     retrieve_and_rank task is mocked so fernet_decrypt is never called.
     """
-    from app.core.security import generate_api_key, hash_api_key, fernet_encrypt
+    from app.core.security import fernet_encrypt, generate_api_key, hash_api_key
 
     raw_key = generate_api_key()
     api_key_hash = hash_api_key(raw_key)
@@ -146,9 +145,9 @@ def _delete_test_rows(tenant_id: uuid.UUID) -> None:
 
 def _make_app_with_real_deps():
     """Return FastAPI app with DB/Redis overridden to use real local services."""
-    from app.main import app
-    from app.core.database import get_async_db
     from app.api.deps import get_async_redis
+    from app.core.database import get_async_db
+    from app.main import app
 
     test_async_engine = create_async_engine(
         _INTEGRATION_DB_ASYNC_URL,

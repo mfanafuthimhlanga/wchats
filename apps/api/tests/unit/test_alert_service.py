@@ -6,8 +6,8 @@ De-xfailed in Phase 10-05. Tests cover:
     test_no_alert_when_thresholds_met       — metrics above threshold -> no new alert written
 """
 
-import os
 import base64
+import os
 
 # Safety: ensure required env vars are present even if conftest is not loaded
 os.environ.setdefault("NEON_API_KEY", "test_neon_key")
@@ -26,6 +26,7 @@ from unittest.mock import MagicMock
 def test_eval_regression_triggers_alert():
     """Faithfulness below ALERT_FAITHFULNESS_THRESHOLD writes an eval_regression alert row."""
     from uuid import uuid4
+
     from app.services.alert_service import check_and_write_alerts
 
     agent_id = str(uuid4())
@@ -48,6 +49,7 @@ def test_eval_regression_triggers_alert():
 def test_red_team_critical_triggers_alert():
     """Critical red_team findings >= ALERT_RED_TEAM_CRITICAL_COUNT writes a red_team_critical alert."""
     from uuid import uuid4
+
     from app.services.alert_service import check_and_write_alerts
 
     agent_id = str(uuid4())
@@ -69,6 +71,7 @@ def test_red_team_critical_triggers_alert():
 def test_no_alert_when_thresholds_met():
     """Metrics above all thresholds — no alert row written."""
     from uuid import uuid4
+
     from app.services.alert_service import check_and_write_alerts
 
     agent_id = str(uuid4())

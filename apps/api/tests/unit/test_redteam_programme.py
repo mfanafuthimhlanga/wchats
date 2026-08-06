@@ -13,8 +13,8 @@ Tests:
 
 from __future__ import annotations
 
-import os
 import base64
+import os
 
 # Safety: ensure required env vars are present even if conftest is not loaded
 os.environ.setdefault("NEON_API_KEY", "test_neon_key")
@@ -36,7 +36,6 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -72,8 +71,8 @@ class TestRunRedTeamProgrammeWrites:
     def test_writes_one_strategy_per_distinct_attack_vector_and_one_probe_per_finding(self):
         """Two findings share an attack_vector, one has a different vector ->
         2 distinct strategy upserts, 3 probe inserts (one per finding)."""
-        from app.worker.tasks.runtime.red_team import run_red_team
         from app.services.red_team_service import RedTeamFinding
+        from app.worker.tasks.runtime.red_team import run_red_team
 
         agent_id = str(uuid.uuid4())
 

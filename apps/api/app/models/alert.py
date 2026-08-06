@@ -1,11 +1,13 @@
 """Alert ORM model — control DB alerts table (M10)."""
 from __future__ import annotations
+
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Text, Index
-from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy import DateTime
+
+from sqlalchemy import DateTime, Index, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import Mapped, mapped_column
+
 from app.models.base import Base
 
 

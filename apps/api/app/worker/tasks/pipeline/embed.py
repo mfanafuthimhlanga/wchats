@@ -53,20 +53,20 @@ Threat mitigations (T-02-05):
 """
 
 import ssl
-import structlog
 from datetime import datetime, timezone
 
 import psycopg2
 import psycopg2.extensions
 import redis as redis_lib
+import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.models.job import Job
+from app.services.embedding_service import EMBEDDING_MODEL, embed_chunks
 from app.services.events import emit
-from app.services.embedding_service import embed_chunks, EMBEDDING_MODEL
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)

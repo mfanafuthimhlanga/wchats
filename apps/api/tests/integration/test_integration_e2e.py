@@ -84,8 +84,8 @@ def _set_ctx(
     """Set ContextVars synchronously so the next asyncio.run() inherits them."""
     from app.services.agent_tools import (  # noqa: PLC0415
         _agent_id_var,
-        _conversation_id_var,
         _conn_str_var,
+        _conversation_id_var,
         _tenant_id_var,
     )
 

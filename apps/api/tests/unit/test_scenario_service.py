@@ -23,7 +23,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # test_generate_scenarios_from_chunks_calls_haiku
 # ---------------------------------------------------------------------------

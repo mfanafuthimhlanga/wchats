@@ -52,14 +52,14 @@ from app.services.agent_tools import RetrievalStrategy, build_tool_server
 from app.services.red_team_probe import _build_transactional_probe_fn
 from app.services.red_team_service import (
     VectorObservation,
-    run_coverage,
-    run_conversation_injection_agent,
+    run_confused_deputy_agent,
     run_content_injection_agent,
+    run_conversation_injection_agent,
+    run_coverage,
     run_data_leakage_agent,
     run_hallucination_agent,
-    run_confused_deputy_agent,
-    run_value_bound_evasion_agent,
     run_identity_bypass_agent,
+    run_value_bound_evasion_agent,
 )
 from app.worker.celery_app import celery_app
 

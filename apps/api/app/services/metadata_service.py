@@ -30,12 +30,12 @@ Threat mitigations (T-02-04):
     T-02-04-06: log calls reference chunk_id and document_id ONLY — never content.
 """
 
-import structlog
 from typing import Literal
 
 import anthropic
+import structlog
 from pydantic import BaseModel
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 

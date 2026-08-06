@@ -232,13 +232,13 @@ from sqlalchemy import text as sa_text
 from app.core.database import get_sync_db
 from app.services.capability_service import HASHED_ENVELOPE_FIELDS
 from app.services.red_team_probe import CLEAN_TENANT_ENVELOPES
-from app.services.transactional.registry import TOOL_REGISTRY
 
 # The gate's OWN rate-limit parser. Imported rather than reimplemented for the
 # same reason the envelopes are: a second copy of "what does 2/hour mean" would
 # let this eval size its call volume against a bound the enforcement layer does
 # not actually apply. enforcement.py's module docstring lists it as provided API.
 from app.services.transactional.enforcement import _parse_rate_limit
+from app.services.transactional.registry import TOOL_REGISTRY
 from app.services.transactional.schemas import SKILL_INPUT_MODELS
 
 log = structlog.get_logger(__name__)

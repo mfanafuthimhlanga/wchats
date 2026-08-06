@@ -41,7 +41,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Task 1 Tests: issue_refund + update_subscription
 # ---------------------------------------------------------------------------

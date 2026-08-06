@@ -18,14 +18,15 @@ from typing import Literal
 
 import psycopg2
 import structlog
-from pydantic import BaseModel
-from sqlalchemy import text
 from claude_agent_sdk import (
+    AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
-    AssistantMessage,
     ToolUseBlock,
 )
+from pydantic import BaseModel
+from sqlalchemy import text
+
 from app.core.config import settings
 from app.core.database import get_sync_db
 from app.services.capability_service import canonical_envelope_hash

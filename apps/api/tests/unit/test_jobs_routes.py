@@ -14,9 +14,9 @@ from uuid import uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.main import app
 from app.api.deps import get_async_redis, get_current_tenant
 from app.core.database import get_async_db
+from app.main import app
 from app.models.tenant import Tenant
 
 

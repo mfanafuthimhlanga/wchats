@@ -19,7 +19,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Task 1: Crypto core + Redis challenge helpers
 # ---------------------------------------------------------------------------
@@ -331,8 +330,8 @@ async def test_session_expiry():
 
 async def test_request_otp_send_limit():
     """Exceeding OTP_SEND_MAX_PER_WINDOW raises OtpRateLimited."""
-    from app.services.identity_service import OtpRateLimited, request_otp
     from app.core.config import settings
+    from app.services.identity_service import OtpRateLimited, request_otp
 
     redis = AsyncMock()
     # incr returns a count above the limit

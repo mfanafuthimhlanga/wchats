@@ -30,7 +30,6 @@ from app.main import app
 from app.models.agent import Agent
 from app.models.tenant import Tenant
 
-
 # ---------------------------------------------------------------------------
 # Helper factories
 # ---------------------------------------------------------------------------

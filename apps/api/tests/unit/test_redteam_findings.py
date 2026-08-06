@@ -31,8 +31,8 @@ Patch targets (Task 2, mirrors test_promote_trace.py's isolated-router pattern):
 
 from __future__ import annotations
 
-import os
 import base64
+import os
 
 # Safety: ensure required env vars are present even if conftest is not loaded
 os.environ.setdefault("NEON_API_KEY", "test_neon_key")
@@ -50,7 +50,6 @@ from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-
 # ---------------------------------------------------------------------------
 # PRE-EXISTING INFRA NOTE (not a regression introduced by this plan):
 #   app.main transitively imports app.api.v1.evals -> app.worker.tasks.runtime.eval
@@ -61,7 +60,6 @@ from uuid import uuid4
 #   app.api.v1.deployment do NOT sit on that import chain, so both are imported
 #   directly here without app.main and without needing the vertexai stub.
 # ---------------------------------------------------------------------------
-
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -70,7 +68,6 @@ from app.api.v1 import red_team as red_team_module
 from app.core.database import get_async_db
 from app.models.agent import Agent
 from app.models.tenant import Tenant
-
 
 # ---------------------------------------------------------------------------
 # Helpers shared with test_red_team_task.py's mock strategy
@@ -150,8 +147,8 @@ class TestRunRedTeamWritesFindingsRows:
     """run_red_team persists one open red_team_findings row per finding."""
 
     def test_run_red_team_writes_one_finding_row_per_finding(self):
-        from app.worker.tasks.runtime.red_team import run_red_team
         from app.services.red_team_service import RedTeamFinding
+        from app.worker.tasks.runtime.red_team import run_red_team
 
         agent_id = str(uuid.uuid4())
 
@@ -263,8 +260,8 @@ class TestRunRedTeamWritesFindingsRows:
 
     def test_findings_write_uses_recovered_strategy_and_probe_ids(self):
         """Each red_team_findings row links to the strategy_id/probe_id recovered in Step 7b."""
-        from app.worker.tasks.runtime.red_team import run_red_team
         from app.services.red_team_service import RedTeamFinding
+        from app.worker.tasks.runtime.red_team import run_red_team
 
         agent_id = str(uuid.uuid4())
 

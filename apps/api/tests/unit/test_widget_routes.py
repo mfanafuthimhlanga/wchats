@@ -31,7 +31,6 @@ from app.api.v1.widget import create_widget_jwt
 from app.main import app
 from app.models.agent import Agent
 
-
 # ---------------------------------------------------------------------------
 # Helper factories
 # ---------------------------------------------------------------------------
@@ -120,6 +119,7 @@ class TestWidgetConfig200:
 
         # Validate JWT claim
         from jose import jwt as jose_jwt
+
         from app.core.config import settings
         claims = jose_jwt.decode(body["jwt"], settings.JWT_SECRET, algorithms=["HS256"])
         assert claims["agent_id"] == str(agent.id)

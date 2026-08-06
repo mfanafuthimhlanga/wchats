@@ -42,7 +42,6 @@ from app.models.agent import Agent
 from app.models.tenant import Tenant
 from app.services import bench_service
 
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------

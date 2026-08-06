@@ -109,6 +109,7 @@ def _dispatch_first_eval_run(agent_id: str) -> bool:
     """
     try:
         from celery import chain  # noqa: PLC0415
+
         from app.worker.tasks.runtime.eval import (  # noqa: PLC0415
             generate_eval_suite,
             run_eval_suite,

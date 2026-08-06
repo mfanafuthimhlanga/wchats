@@ -36,7 +36,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Task 1 Tests: issue_refund + place_order + shop_url_from_constructor
 # ---------------------------------------------------------------------------

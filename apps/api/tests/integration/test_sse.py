@@ -175,9 +175,9 @@ def _make_app_with_real_deps():
     We use FastAPI dependency_overrides to inject real async sessions pointed at
     the local test DB and a real async Redis pointed at the local Redis.
     """
-    from app.main import app
-    from app.core.database import get_async_db
     from app.api.deps import get_async_redis
+    from app.core.database import get_async_db
+    from app.main import app
 
     # Create async engine + session factory for the test DB
     test_async_engine = create_async_engine(

@@ -35,19 +35,20 @@ Threat mitigations:
 
 import hashlib
 import ssl
-import structlog
 import time
 from pathlib import Path
 
 import httpx
 import psycopg2
 import redis as redis_lib
+import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.services import storage_service
+
 # noqa: F401 on `parse_document` — this module only calls `parse_document_from_bytes`,
 # but the *binding* is load-bearing: four tests patch
 # `app.worker.tasks.pipeline.parse.parse_document`

@@ -10,12 +10,12 @@ Forbidden v2 patterns are not used (D-16 / CLAUDE.md Rule 6).
 """
 
 import os
-import structlog
 from typing import Literal
 
 import anthropic
-from pydantic import BaseModel, field_validator
+import structlog
 from langfuse import Langfuse
+from pydantic import BaseModel, field_validator
 
 log = structlog.get_logger(__name__)
 

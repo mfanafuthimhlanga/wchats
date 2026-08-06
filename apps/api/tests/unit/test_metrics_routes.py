@@ -39,7 +39,6 @@ from app.models.tenant import Tenant
 from app.services import metrics_service
 from app.services.metrics_service import NOT_TRACKED, _build_metrics_dict, compute_agent_metrics
 
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------

@@ -30,22 +30,21 @@ from pydantic import ValidationError
 # ---------------------------------------------------------------------------
 # Task 1: Schema tests
 # ---------------------------------------------------------------------------
-
 from app.services.transactional.schemas import (
-    PlaceOrderInput,
-    PlaceOrderOutput,
-    CancelOrderInput,
-    CancelOrderOutput,
-    IssueRefundInput,
-    IssueRefundOutput,
-    UpdateSubscriptionInput,
-    UpdateSubscriptionOutput,
     BookSlotInput,
     BookSlotOutput,
-    UpdateCustomerRecordInput,
-    UpdateCustomerRecordOutput,
+    CancelOrderInput,
+    CancelOrderOutput,
     ConfirmActionInput,
     ConfirmActionOutput,
+    IssueRefundInput,
+    IssueRefundOutput,
+    PlaceOrderInput,
+    PlaceOrderOutput,
+    UpdateCustomerRecordInput,
+    UpdateCustomerRecordOutput,
+    UpdateSubscriptionInput,
+    UpdateSubscriptionOutput,
 )
 
 # --------------- idempotency_key required on all 6 mutating inputs -----------
@@ -343,12 +342,12 @@ def test_requires_identity_verification_defaults():
 # Task 3: ProviderAdapter + actor_seam tests
 # ---------------------------------------------------------------------------
 
+from app.services.actor_seam import call_actor_gate
 from app.services.transactional.provider_adapter import (
     ProviderAdapter,
     StubProviderAdapter,
     get_adapter,
 )
-from app.services.actor_seam import call_actor_gate
 
 
 def test_stub_place_order_returns_stub_labelled_output():

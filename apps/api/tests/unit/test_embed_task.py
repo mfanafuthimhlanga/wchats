@@ -15,8 +15,8 @@ the original module paths (e.g. patch app.worker.tasks.pipeline.embed.fernet_dec
 not app.core.security.fernet_decrypt).
 """
 
-import os
 import base64
+import os
 
 # ---------------------------------------------------------------------------
 # Environment setup — MUST run before any `from app` import (pydantic-settings)
@@ -44,7 +44,6 @@ import inspect
 from contextlib import contextmanager
 from datetime import datetime
 from unittest.mock import MagicMock
-
 
 # ---------------------------------------------------------------------------
 # Helpers

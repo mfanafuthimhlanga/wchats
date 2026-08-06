@@ -53,9 +53,11 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def tenant_db_url():
-    from alembic import command
     from alembic.config import Config
-    from sqlalchemy import create_engine, pool, text as sa_text
+    from sqlalchemy import create_engine, pool
+    from sqlalchemy import text as sa_text
+
+    from alembic import command
 
     admin_url = os.environ.get(
         "TEST_ADMIN_DB_URL", "postgresql://wchats:wchats@localhost:5432/postgres"
@@ -108,7 +110,8 @@ def tenant_db_url():
 
 
 def _seed_open_critical_finding(conn_url: str) -> str:
-    from sqlalchemy import create_engine, pool, text as sa_text
+    from sqlalchemy import create_engine, pool
+    from sqlalchemy import text as sa_text
 
     engine = create_engine(conn_url, poolclass=pool.NullPool)
     finding_id = str(uuid.uuid4())
@@ -138,7 +141,8 @@ def _seed_open_critical_finding(conn_url: str) -> str:
 
 
 def _contain_finding(conn_url: str, finding_id: str) -> None:
-    from sqlalchemy import create_engine, pool, text as sa_text
+    from sqlalchemy import create_engine, pool
+    from sqlalchemy import text as sa_text
 
     engine = create_engine(conn_url, poolclass=pool.NullPool)
     try:

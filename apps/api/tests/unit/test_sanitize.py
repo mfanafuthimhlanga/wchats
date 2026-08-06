@@ -8,8 +8,8 @@ sanitize.py imports only stdlib, so env setup is optional but included for
 consistency with the test suite pattern.
 """
 
-import os
 import base64
+import os
 
 # Safety: ensure required env vars are present even if conftest is not loaded
 os.environ.setdefault("NEON_API_KEY", "test_neon_key")

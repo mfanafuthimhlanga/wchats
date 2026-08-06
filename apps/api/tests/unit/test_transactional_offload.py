@@ -23,7 +23,6 @@ from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-
 # ---------------------------------------------------------------------------
 # Shared helpers (duplicated here to avoid test-file coupling)
 # ---------------------------------------------------------------------------

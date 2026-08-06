@@ -37,7 +37,6 @@ from app.models.agent import Agent
 from app.models.job import Job
 from app.models.tenant import Tenant
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

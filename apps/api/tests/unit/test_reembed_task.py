@@ -15,8 +15,8 @@ Patch targets are symbols imported into app.worker.tasks.pipeline.reembed:
     - app.worker.tasks.pipeline.reembed.bedrock_embedding_service
 """
 
-import os
 import base64
+import os
 
 # ---------------------------------------------------------------------------
 # Environment setup — MUST run before any `from app` import (pydantic-settings)
@@ -44,7 +44,6 @@ os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_webhook_secret
 
 from contextlib import contextmanager
 from unittest.mock import MagicMock
-
 
 # ---------------------------------------------------------------------------
 # Constants

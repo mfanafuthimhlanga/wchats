@@ -15,10 +15,10 @@ Security:
 Queue: runtime (CLAUDE.md: both Celery queues always present).
 """
 
-import structlog
-import psycopg2
 from uuid import UUID
 
+import psycopg2
+import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession

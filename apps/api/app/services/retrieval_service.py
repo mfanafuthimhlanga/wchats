@@ -29,8 +29,8 @@ import psycopg2
 import structlog
 from pydantic import BaseModel, ConfigDict
 
-from app.services.embedding_service import _get_vo
 from app.core.config import settings
+from app.services.embedding_service import _get_vo
 
 log = structlog.get_logger(__name__)
 

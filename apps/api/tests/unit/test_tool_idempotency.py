@@ -34,9 +34,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-
 from app.services.transactional.idempotency import check_idempotency, store_idempotency
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -415,7 +413,7 @@ class TestReservationEngine:
 
     def test_reserve_stale_reclaim_returns_reserved(self):
         """INSERT conflict + status='pending' + old reserved_at → reclaim UPDATE wins → state 'reserved'."""
-        from app.services.transactional.idempotency import reserve_idempotency, _RESERVATION_LEASE_SECONDS
+        from app.services.transactional.idempotency import _RESERVATION_LEASE_SECONDS, reserve_idempotency
 
         args_hash = "hash-stale"
         # reserved_at well past the lease window
@@ -440,7 +438,7 @@ class TestReservationEngine:
 
     def test_reserve_stale_reclaim_lost_returns_in_progress(self):
         """INSERT conflict + old reserved_at but reclaim UPDATE returns nothing → someone else reclaimed → in_progress."""
-        from app.services.transactional.idempotency import reserve_idempotency, _RESERVATION_LEASE_SECONDS
+        from app.services.transactional.idempotency import _RESERVATION_LEASE_SECONDS, reserve_idempotency
 
         args_hash = "hash-stale2"
         old_ts = datetime.now(timezone.utc) - timedelta(seconds=_RESERVATION_LEASE_SECONDS + 60)
@@ -543,8 +541,8 @@ class TestReservationEngine:
         is ever issued (only 2 execute() calls: the INSERT and the SELECT —
         there must be no third, reclaim-UPDATE call for an in_flight row)."""
         from app.services.transactional.idempotency import (
-            reserve_idempotency,
             _RESERVATION_LEASE_SECONDS,
+            reserve_idempotency,
         )
 
         args_hash = "hash-in-flight-stale"
@@ -573,8 +571,8 @@ class TestReservationEngine:
         """A stale 'pending' row (adapter never touched) must still be safely
         reclaimable after CR-01 — only 'in_flight' rows are protected."""
         from app.services.transactional.idempotency import (
-            reserve_idempotency,
             _RESERVATION_LEASE_SECONDS,
+            reserve_idempotency,
         )
 
         args_hash = "hash-pending-stale-cr01"

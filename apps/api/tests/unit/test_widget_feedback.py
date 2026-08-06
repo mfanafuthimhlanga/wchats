@@ -43,7 +43,6 @@ from app.api.v1 import widget as widget_module
 from app.api.v1.widget import create_widget_jwt
 from app.models.agent import Agent
 
-
 # ---------------------------------------------------------------------------
 # Targeted import — a minimal FastAPI app wrapping ONLY the widget router, so
 # these tests never import app.main (see PRE-EXISTING INFRA NOTE above).

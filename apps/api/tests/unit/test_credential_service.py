@@ -30,10 +30,8 @@ Test infrastructure:
 
 from __future__ import annotations
 
-
 import pytest
 from cryptography.fernet import InvalidToken
-
 
 # ---------------------------------------------------------------------------
 # test_hkdf_per_tenant_isolation — T-16-10

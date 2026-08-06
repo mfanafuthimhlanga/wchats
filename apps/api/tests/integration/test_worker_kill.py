@@ -315,8 +315,9 @@ def test_worker_kill_9_chain_completes():
             )
 
             from celery import chain as celery_chain
-            from app.worker.tasks.pipeline.provision import provision_neon
+
             from app.worker.tasks.pipeline.migrations import apply_migrations
+            from app.worker.tasks.pipeline.provision import provision_neon
 
             celery_chain(
                 provision_neon.s(str(tenant_id), str(agent_id)),

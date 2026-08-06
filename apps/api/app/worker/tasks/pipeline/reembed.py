@@ -42,9 +42,9 @@ Queue: pipeline (declared on the decorator; pipeline.* routing rule in celery_ap
 already routes this module to the pipeline queue).
 """
 
-import structlog
 import psycopg2
 import psycopg2.extensions
+import structlog
 
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt

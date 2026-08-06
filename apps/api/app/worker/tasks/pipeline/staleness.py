@@ -48,15 +48,14 @@ writing the new alert type (Rule 3: auto-fix blocking issue).
 
 from __future__ import annotations
 
-import structlog
 import psycopg2
+import structlog
 from sqlalchemy import select
 
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
-from app.services import alert_service
-from app.services import bedrock_embedding_service
+from app.services import alert_service, bedrock_embedding_service
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)

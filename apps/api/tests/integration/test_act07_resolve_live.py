@@ -135,9 +135,11 @@ _MUTATING_SKILL = "issue_refund"
 
 @pytest.fixture
 def control_db_url():
-    from alembic import command
     from alembic.config import Config
-    from sqlalchemy import create_engine, pool, text as sa_text
+    from sqlalchemy import create_engine, pool
+    from sqlalchemy import text as sa_text
+
+    from alembic import command
 
     admin_url = os.environ.get(
         "TEST_ADMIN_DB_URL", "postgresql://wchats:wchats@localhost:5432/postgres"
@@ -238,7 +240,8 @@ def _seed_agent_and_envelope(control_db_url: str, *, max_amount_cents: int) -> t
     """
     import json
 
-    from sqlalchemy import create_engine, text as sa_text
+    from sqlalchemy import create_engine
+    from sqlalchemy import text as sa_text
 
     from app.core.security import fernet_encrypt
 
@@ -294,7 +297,8 @@ def _seed_pending_confirmation(
     """Insert one unresolved pending_confirmations row for issue_refund."""
     import json
 
-    from sqlalchemy import create_engine, text as sa_text
+    from sqlalchemy import create_engine
+    from sqlalchemy import text as sa_text
 
     confirmation_id = str(uuid4())
     arguments = {
@@ -331,7 +335,8 @@ def _seed_pending_confirmation(
 def _tighten_ceiling(control_db_url: str, agent_id: str, *, max_amount_cents: int) -> None:
     import json
 
-    from sqlalchemy import create_engine, text as sa_text
+    from sqlalchemy import create_engine
+    from sqlalchemy import text as sa_text
 
     engine = create_engine(control_db_url)
     try:
@@ -352,7 +357,8 @@ def _tighten_ceiling(control_db_url: str, agent_id: str, *, max_amount_cents: in
 
 
 def _query_all(control_db_url: str, sql: str, params: dict) -> list[dict]:
-    from sqlalchemy import create_engine, text as sa_text
+    from sqlalchemy import create_engine
+    from sqlalchemy import text as sa_text
 
     engine = create_engine(control_db_url)
     try:

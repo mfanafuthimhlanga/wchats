@@ -43,12 +43,12 @@ Threat mitigations:
 """
 
 import ssl
-import structlog
 from pathlib import Path
 
 import httpx
 import psycopg2
 import redis as redis_lib
+import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db

@@ -78,13 +78,13 @@ def test_validation_chain_grounded_all_judges_called_and_qa_inserted():
     """All three judge functions are called; on grounded+high-confidence verdict
     _insert_verified_qa_candidate is called once with auditor_confidence=0.95.
     """
-    from app.worker.tasks.runtime.validators import run_gatekeeper, run_auditor, run_strategist
     from app.services.validation_service import (
-        GatekeeperVerdict,
         AuditorVerdict,
-        StrategistVerdict,
         CitationSpan,
+        GatekeeperVerdict,
+        StrategistVerdict,
     )
+    from app.worker.tasks.runtime.validators import run_auditor, run_gatekeeper, run_strategist
 
     agent_id = str(uuid.uuid4())
     job_id = str(uuid.uuid4())
@@ -237,8 +237,8 @@ def test_validation_chain_ungrounded_sets_resynthesis_flag():
     """On 3 consecutive ungrounded verdicts (mocked count >= 3),
     run_auditor sets strategy_resynthesis_flagged = TRUE via UPDATE.
     """
-    from app.worker.tasks.runtime.validators import run_auditor
     from app.services.validation_service import AuditorVerdict
+    from app.worker.tasks.runtime.validators import run_auditor
 
     agent_id = str(uuid.uuid4())
     job_id = str(uuid.uuid4())

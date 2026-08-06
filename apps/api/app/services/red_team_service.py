@@ -21,22 +21,22 @@ Architecture notes:
 
 import asyncio
 import uuid
-import psycopg2
-import structlog
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 import anthropic
-from pydantic import BaseModel
+import psycopg2
+import structlog
 from claude_agent_sdk import (
+    AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
-    AssistantMessage,
     SdkMcpTool,
     ToolUseBlock,
     create_sdk_mcp_server,
     tool,
 )
+from pydantic import BaseModel
 
 if TYPE_CHECKING:
     # Every app.services.red_team_probe symbol this module needs
@@ -1626,10 +1626,10 @@ def run_value_bound_evasion_agent(
     """
     from app.services.red_team_probe import (  # noqa: PLC0415
         CLEAN_TENANT_ENVELOPES,
+        ProbeToolResult,  # noqa: PLC0415
         invoke_probe_tool,
         red_team_mode,
     )
-    from app.services.red_team_probe import ProbeToolResult  # noqa: PLC0415
 
     issue_refund_envelope = next(
         row for row in CLEAN_TENANT_ENVELOPES if row["skill"] == "issue_refund"
@@ -1779,13 +1779,13 @@ def run_identity_bypass_agent(
     Returns:
         List of RedTeamFinding instances (empty list on any exception).
     """
+    from app.services.agent_tools import _verified_session_token_var  # noqa: PLC0415
     from app.services.red_team_probe import (  # noqa: PLC0415
         CLEAN_TENANT_ENVELOPES,
+        ProbeToolResult,  # noqa: PLC0415
         invoke_probe_tool,
         red_team_mode,
     )
-    from app.services.red_team_probe import ProbeToolResult  # noqa: PLC0415
-    from app.services.agent_tools import _verified_session_token_var  # noqa: PLC0415
 
     issue_refund_envelope = next(
         row for row in CLEAN_TENANT_ENVELOPES if row["skill"] == "issue_refund"

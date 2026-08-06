@@ -264,9 +264,11 @@ def compute_audit_gap(
 
 @pytest.fixture
 def tenant_db_url():
-    from alembic import command
     from alembic.config import Config
-    from sqlalchemy import create_engine, pool, text as sa_text
+    from sqlalchemy import create_engine, pool
+    from sqlalchemy import text as sa_text
+
+    from alembic import command
 
     admin_url = os.environ.get(
         "TEST_ADMIN_DB_URL", "postgresql://wchats:wchats@localhost:5432/postgres"
@@ -317,9 +319,11 @@ def tenant_db_url():
 
 @pytest.fixture
 def control_db_url():
-    from alembic import command
     from alembic.config import Config
-    from sqlalchemy import create_engine, pool, text as sa_text
+    from sqlalchemy import create_engine, pool
+    from sqlalchemy import text as sa_text
+
+    from alembic import command
 
     admin_url = os.environ.get(
         "TEST_ADMIN_DB_URL", "postgresql://wchats:wchats@localhost:5432/postgres"
@@ -469,9 +473,11 @@ def _aud03_envelope_rows(actor_skip_ceiling_cents: int) -> list[dict[str, Any]]:
 def aud03_tenant(control_db_url, tenant_db_url):
     import json as json_lib
 
+    from sqlalchemy import create_engine
+    from sqlalchemy import text as sa_text
+
     from app.core.config import settings
     from app.services.red_team_probe import CLEAN_TENANT_SPEC
-    from sqlalchemy import create_engine, text as sa_text
 
     assert CLEAN_TENANT_SPEC["integration_credentials_rows"] == 0
 
@@ -593,9 +599,11 @@ def test_zero_audit_gaps_across_synthetic_30_day_window(aud03_tenant, require_re
     """
     import asyncio
 
+    from sqlalchemy import create_engine
+    from sqlalchemy import text as sa_text
+
     from app.core.config import settings
     from app.services.red_team_probe import invoke_probe_tool, red_team_mode
-    from sqlalchemy import create_engine, text as sa_text
 
     actor_skip_ceiling_cents = settings.ACTOR_SKIP_MAX_AMOUNT_CENTS
 

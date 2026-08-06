@@ -7,8 +7,8 @@ De-xfailed in Phase 10-05. Tests cover:
     test_digest_idempotency_within_7d   — run_weekly_digest skips if digest_runs row exists within 7 days
 """
 
-import os
 import base64
+import os
 
 # Safety: ensure required env vars are present even if conftest is not loaded
 os.environ.setdefault("NEON_API_KEY", "test_neon_key")
@@ -23,7 +23,6 @@ os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
-
 
 # ---------------------------------------------------------------------------
 # Helper: build a mock get_sync_db context manager
@@ -105,6 +104,7 @@ def test_digest_beat_skips_when_disabled():
 def test_digest_idempotency_within_7d():
     """run_weekly_digest skips if a digest_runs row exists for this agent within 7 days."""
     from uuid import uuid4
+
     from app.worker.tasks.runtime.digest import run_weekly_digest
 
     agent_id = str(uuid4())

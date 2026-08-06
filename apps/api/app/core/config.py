@@ -10,6 +10,7 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 # Walk up from this file to find .env — works whether CWD is the project root,
 # apps/api/, or anywhere else. Stops at the first .env found.
 def _find_env_file() -> str | None:

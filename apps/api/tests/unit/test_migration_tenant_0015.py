@@ -264,9 +264,12 @@ def test_migration_tenant_0015_db_roundtrip():
     """Integration: upgrade to 0015 -> coverage exists and accepts NULL ->
     downgrade to 0014 removes it -> re-upgrade to 0015 (idempotent).
     """
-    from alembic import command
     from alembic.config import Config
-    from sqlalchemy import create_engine, inspect as sa_inspect, pool, text as sa_text
+    from sqlalchemy import create_engine, pool
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    from alembic import command
 
     admin_url = os.environ.get(
         "TEST_ADMIN_DB_URL", "postgresql://wchats:wchats@localhost:5432/postgres"

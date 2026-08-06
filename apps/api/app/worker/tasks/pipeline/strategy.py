@@ -31,9 +31,9 @@ from __future__ import annotations
 
 import json
 import ssl
-import structlog
 
 import redis as redis_lib
+import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db

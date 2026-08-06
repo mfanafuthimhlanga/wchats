@@ -543,6 +543,7 @@ def test_full_chain_runs_in_eager_mode_with_mocks(
     tenant_id, agent_id, job_id, tenant_db_url = ready_agent_with_tenant_db
 
     from celery import chain
+
     from app.worker.tasks.pipeline.chunk import chunk_documents
     from app.worker.tasks.pipeline.embed import embed_and_migrate
     from app.worker.tasks.pipeline.metadata import generate_metadata
@@ -683,6 +684,7 @@ def test_idempotent_chain(
     tenant_id, agent_id, job_id, tenant_db_url = ready_agent_with_tenant_db
 
     from celery import chain
+
     from app.worker.tasks.pipeline.chunk import chunk_documents
     from app.worker.tasks.pipeline.embed import embed_and_migrate
     from app.worker.tasks.pipeline.metadata import generate_metadata
@@ -827,6 +829,7 @@ def test_chain_emits_all_11_m2_event_types(
     tenant_id, agent_id, job_id, tenant_db_url = ready_agent_with_tenant_db
 
     from celery import chain
+
     from app.worker.tasks.pipeline.chunk import chunk_documents
     from app.worker.tasks.pipeline.embed import embed_and_migrate
     from app.worker.tasks.pipeline.metadata import generate_metadata
@@ -922,6 +925,7 @@ def test_chain_no_conn_strings_logged(
     tenant_id, agent_id, job_id, tenant_db_url = ready_agent_with_tenant_db
 
     from celery import chain
+
     from app.worker.tasks.pipeline.chunk import chunk_documents
     from app.worker.tasks.pipeline.embed import embed_and_migrate
     from app.worker.tasks.pipeline.metadata import generate_metadata

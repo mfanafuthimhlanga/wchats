@@ -17,8 +17,8 @@ Patch targets mirror the importing module pattern:
   - app.worker.tasks.pipeline.parse.parse_document_from_bytes (imported into parse)
 """
 
-import os
 import base64
+import os
 import pathlib
 
 # ---------------------------------------------------------------------------
@@ -42,11 +42,11 @@ os.environ.setdefault("S3_UPLOADS_BUCKET", "test-uploads-bucket")
 # Imports (after env setup)
 # ---------------------------------------------------------------------------
 
-import pytest
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import pytest
 
 # ===========================================================================
 # Task 1 — storage_service unit tests
@@ -86,8 +86,8 @@ def test_put_bytes_calls_put_object():
     so no real boto3 network call is made (mirrors bedrock test pattern).
     """
     with patch("app.services.storage_service._s3") as mock_s3:
-        from app.services.storage_service import put_bytes
         from app.core.config import settings
+        from app.services.storage_service import put_bytes
 
         test_key = "agent-abc/doc-xyz.pdf"
         test_data = b"%PDF-1.4 test content"
@@ -114,8 +114,8 @@ def test_get_bytes_calls_get_object():
     (T-13-06-02: no public/presigned exposure of uploads).
     """
     with patch("app.services.storage_service._s3") as mock_s3:
-        from app.services.storage_service import get_bytes
         from app.core.config import settings
+        from app.services.storage_service import get_bytes
 
         test_key = "agent-abc/doc-xyz.pdf"
         expected_bytes = b"raw file content from s3"
@@ -151,13 +151,14 @@ async def test_upload_documents_writes_to_s3_not_disk():
     - The S3 key has the correct file extension.
     - No local Path.write_bytes call (the upload dir / local_path no longer exists).
     """
+    from httpx import ASGITransport, AsyncClient
+
     from app.api.deps import get_current_tenant
     from app.core.database import get_async_db
     from app.main import app
     from app.models.agent import Agent
     from app.models.job import Job
     from app.models.tenant import Tenant
-    from httpx import ASGITransport, AsyncClient
 
     # ── fixtures ──────────────────────────────────────────────────────────
     fake_tenant = MagicMock(spec=Tenant)

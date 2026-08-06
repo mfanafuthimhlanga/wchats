@@ -222,8 +222,9 @@ def test_migration_0015_db_roundtrip():
     - downgrade removes the columns without error
     - second upgrade re-adds them without error
     """
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     sync_url = os.environ.get("CONTROL_DB_SYNC_URL", "")
     if not sync_url or "test" not in sync_url.lower():
@@ -237,7 +238,8 @@ def test_migration_0015_db_roundtrip():
     # Upgrade to 0015
     command.upgrade(cfg, "0015")
 
-    from sqlalchemy import create_engine, inspect as sa_inspect
+    from sqlalchemy import create_engine
+    from sqlalchemy import inspect as sa_inspect
 
     engine = create_engine(sync_url)
     insp = sa_inspect(engine)

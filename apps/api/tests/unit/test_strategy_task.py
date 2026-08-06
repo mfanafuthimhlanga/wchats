@@ -15,8 +15,8 @@ Mock strategy (follows test_deployment_task.py exactly):
     - Tasks called via .run(...) to bypass Celery broker
 """
 
-import os
 import base64
+import os
 
 # Safety: ensure required env vars are present even if conftest is not loaded
 os.environ.setdefault("NEON_API_KEY", "test_neon_key")
@@ -34,7 +34,6 @@ from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 from app.worker.tasks.pipeline.strategy import synthesize_retrieval_strategy
-
 
 # ---------------------------------------------------------------------------
 # Helper: build a mock get_sync_db context manager

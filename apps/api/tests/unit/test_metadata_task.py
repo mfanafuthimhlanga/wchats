@@ -14,8 +14,8 @@ the original module paths (e.g. patch app.worker.tasks.pipeline.metadata.fernet_
 not app.core.security.fernet_decrypt).
 """
 
-import os
 import base64
+import os
 
 # ---------------------------------------------------------------------------
 # Environment setup — MUST run before any `from app` import (pydantic-settings)
@@ -42,7 +42,6 @@ os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
 import inspect
 from contextlib import contextmanager
 from unittest.mock import MagicMock
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -16,8 +16,6 @@ from __future__ import annotations
 import uuid
 from unittest.mock import MagicMock, patch
 
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -71,6 +69,7 @@ def test_retrieve_and_rank_max_retries():
 def test_retrieve_and_rank_signature():
     """Task .run() must accept (self, job_id, agent_id, query) — no conn_str in args."""
     import inspect
+
     from app.worker.tasks.runtime.retrieve import retrieve_and_rank
     sig = inspect.signature(retrieve_and_rank.run)
     param_names = list(sig.parameters.keys())
@@ -363,8 +362,8 @@ def test_retrieve_and_rank_cache_hit_payload_has_cache_trace():
 
 def test_retrieve_and_rank_verified_qa_lookup_called_with_threshold():
     """D-25: verified_qa_lookup called with threshold=settings.VERIFIED_QA_HIT_THRESHOLD."""
-    from app.worker.tasks.runtime.retrieve import retrieve_and_rank
     from app.core.config import settings
+    from app.worker.tasks.runtime.retrieve import retrieve_and_rank
 
     job_id = str(uuid.uuid4())
     agent_id = str(uuid.uuid4())

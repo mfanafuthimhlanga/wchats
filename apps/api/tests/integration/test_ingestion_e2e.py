@@ -370,10 +370,11 @@ def test_real_pdf_idempotent_rerun():
     #   creating a second document row in the tenant DB.
     # ------------------------------------------------------------------
     from celery import chain as celery_chain
-    from app.worker.tasks.pipeline.parse import parse_documents
+
     from app.worker.tasks.pipeline.chunk import chunk_documents
-    from app.worker.tasks.pipeline.metadata import generate_metadata
     from app.worker.tasks.pipeline.embed import embed_and_migrate
+    from app.worker.tasks.pipeline.metadata import generate_metadata
+    from app.worker.tasks.pipeline.parse import parse_documents
 
     # Get tenant_id for the second job row
     ctrl_conn = psycopg2.connect(control_db_url, connect_timeout=5)
@@ -389,7 +390,8 @@ def test_real_pdf_idempotent_rerun():
     tenant_id = tenant_row[0]
 
     # Insert a second job row for the re-dispatch (tasks emit events keyed by job_id)
-    from sqlalchemy import create_engine, text as sa_text
+    from sqlalchemy import create_engine
+    from sqlalchemy import text as sa_text
     from sqlalchemy.orm import sessionmaker
 
     sync_engine = create_engine(
