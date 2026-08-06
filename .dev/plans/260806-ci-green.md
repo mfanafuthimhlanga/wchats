@@ -154,8 +154,8 @@ durable location for a finding, so anything a later phase or a reviewer needs go
 Closed: the ruff config deprecation. Everything below is open.
 
 - **`tests/unit/test_services.py::TestWaitForNeonReady::test_wait_for_neon_ready_retries_then_succeeds`
-  is intermittently red.** Observed 1 failure in 6 identical full-suite runs of the same tree; passes
-  in isolation. It patches `app.services.neon.time.sleep`, which is the shared `time` module's
+  is intermittently red.** Observed 1 failure in 11 identical full-suite runs of the same tree
+  (~9%); passes in isolation. It patches `app.services.neon.time.sleep`, which is the shared `time` module's
   attribute, so the mock is process-global for the duration, and `mock_sleep.assert_called_once_with(1)`
   is falsified by any other caller. Five daemon threads are alive throughout the unit run —
   `OtelBatchSpanRecordProcessor`, `MediaUploadConsumer`, `ScoreIngestionConsumer`,
@@ -165,7 +165,11 @@ Closed: the ruff config deprecation. Everything below is open.
   CI unit job runs with `-x`, so one occurrence aborts the run and *additionally* prints a coverage
   failure, which reads as a code regression. Not fixed here because the mechanism was inferred, never
   captured — no traceback was obtained in 6 runs — and weakening an assertion on an unproven diagnosis
-  is the papering-over this branch exists to stop.
+  is the papering-over this branch exists to stop. Whoever picks this up: the cheapest next step is a
+  loop of the gate command capturing `--tb=long`, to find out which of the three assertions failed.
+  If it is `mock_sleep.assert_called_once_with(1)`, the thread hypothesis is confirmed and the fix is
+  `assert_any_call(1)` — `mock_create_engine.call_count == 2` already pins the loop to exactly one
+  sleep, so nothing real is lost.
 - **Six `patch("app...")` targets in the suite name something that does not exist.** All pre-existing,
   all pinned with reasons in `tests/unit/test_patch_targets_resolve.py::_KNOWN_BROKEN`. The notable one:
   `tests/integration/test_ingestion_chain.py` patches `app.services.chunking_service.HybridChunker` at
