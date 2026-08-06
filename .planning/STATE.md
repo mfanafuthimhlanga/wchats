@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Gotham console + comprehensive agent management
-status: "Phase 23 executed 9/9 — the v1.2 integration seam is closed and all six ops-room regions are reachable. NOT a complete milestone: /gsd-secure-phase 23 (no 23-SECURITY.md exists), /gsd-verify-work 23, and a re-run of /gsd-audit-milestone v1.2 are all outstanding. Phase 13 (7/11) and the v1.1 live gates (no local PostgreSQL) also remain."
-stopped_at: Completed 23-09-PLAN.md — Phase 23 all 9 plans executed
-last_updated: "2026-08-04T00:55:00.000Z"
+status: "Phase 23 executed 9/9 and all three named gates have now RUN: 23-SECURITY.md (57/57 closed, 0 open), 23-VERIFICATION.md (human_needed — 5/5 criteria code-verified, 4 live round trips unobserved), 23-UAT.md (38 pass / 6 blocked / 1 skipped), and the v1.2 milestone audit re-run returned gaps_found (27/29 requirements satisfied, 4/5 flows wired). The console half of the deploy-gate contradiction was closed 2026-08-05 (3701b05). Still blocking /gsd-complete-milestone v1.2: OPS-15's SERVER-side gap (approve-deployment never reads live open_findings) and the REQUIREMENTS.md traceability gaps (WIRE-01..05 absent, OPS-01..06 collision). Phase 13 (7/11) and the v1.1 live gates (no local PostgreSQL) also remain."
+stopped_at: Closed the console deploy-gate contradiction (3701b05) and recorded it in the v1.2 audit (d72c519)
+last_updated: "2026-08-05T00:00:00.000Z"
 progress:
   total_phases: 3
   completed_phases: 3
@@ -585,10 +585,18 @@ See: .planning/PROJECT.md (updated 2026-05-12)
 
 ## Session
 
-**Last session:** 2026-08-04
-**Stopped at:** Phase 23 complete at 9/9 plans. `23-09` executed the adversarial design review (37 findings, 26 fixed / 3 split / 8 declined with reasons), reconciled `23-VALIDATION.md` against what every plan's SUMMARY actually recorded, and ran one observed sweep. **The central STATE.md reconcile deferred during execution is done — this block and the frontmatter above are now current.** The six pre-found UI findings were fed to the executor as input rather than re-derived; the render recipe that produced them survives in `.planning/phases/23-.../.continue-here.md` if a populated render is ever needed again.
+**Last session:** 2026-08-05
+**Stopped at:** All three gates this file previously named as outstanding have run. `/gsd-secure-phase 23` → `23-SECURITY.md` (57/57 threats closed, 0 open, `draft`). `/gsd-verify-work 23` → `23-VERIFICATION.md` `human_needed`: 5/5 success criteria code-verified, 0 behaviour unverified, 4 items needing a live signed-in session this machine cannot provide. `23-UAT.md` adjudicated from evidence: 38 pass / 6 blocked / 1 skipped — the 6 blocked all share the no-local-PostgreSQL cause and are deliberately not recorded as passed. `/gsd-audit-milestone v1.2` re-run → **`gaps_found`**, 27/29 requirements satisfied, 4/5 integration flows wired. The one BROKEN flow (contain → deploy approval) was then half-closed: `3701b05` moved `deploy/page.tsx` onto the live `/red-team/programme` signal through the same `isGateBlocked`/`firstCriticalFinding`/`gateMessage` functions the ops room uses, so the two surfaces cannot drift again; `d72c519` recorded the closure and, deliberately, what it does **not** close.
 
-**Next:** `/gsd-secure-phase 23` → `/gsd-verify-work 23` → `/gsd-audit-milestone v1.2`. Do not run `/gsd-complete-milestone v1.2` before those three.
+**Blocking `/gsd-complete-milestone v1.2` (two items, both named in the audit's "Recommended closure"):**
+1. **OPS-15 — server-side gap, unchanged.** `POST /approve-deployment` (`deployment.py:348+`) still gates on the frozen `run.recommendation` and never consults live `open_findings`. A critical finding raised after a clean checklist run is still accepted **by the API**; any non-console caller can deploy over it. Fails closed, so not a security hole, but it is a real backend change with its own threat surface and belongs in a planned phase, not a docs pass.
+2. **`REQUIREMENTS.md` traceability.** `WIRE-01..05` has **zero rows** in the file (grep-confirmed), the v1.2 rollup sentence is stale, and the `OPS-01..06` collision is live: lines 274-279 hold them as Phase 10 / M10 `Pending`, while line 415's `OPS-01..16 | Phase 21 | ✓ Complete` falsely ticks the weekly cron, digest email, and alerting requirements that Phase 21 never built.
+
+**Also open, not blocking:** Nyquist `status: draft` on all three of `20/21/23-VALIDATION.md` (`/gsd-validate-phase`), Phase 20's missing `20-SECURITY.md`, and the `eval/page.tsx` unguarded-read twin.
+
+**Prior stop (2026-08-04):** Phase 23 complete at 9/9 plans. `23-09` executed the adversarial design review (37 findings, 26 fixed / 3 split / 8 declined with reasons), reconciled `23-VALIDATION.md` against what every plan's SUMMARY actually recorded, and ran one observed sweep. **The central STATE.md reconcile deferred during execution is done — this block and the frontmatter above are now current.** The six pre-found UI findings were fed to the executor as input rather than re-derived; the render recipe that produced them survives in `.planning/phases/23-.../.continue-here.md` if a populated render is ever needed again.
+
+**Next:** one closure pass owning both audit gaps — the OPS-15 server-side `open_findings` check in `deployment.py`, and the `REQUIREMENTS.md` correction (`WIRE-01..05` rows, stale v1.2 rollup, `OPS-01..06` collision) — then re-run `/gsd-audit-milestone v1.2`. Do not run `/gsd-complete-milestone v1.2` before that audit returns clean.
 
 **Prior session note** (2026-08-03T09:27:20.010Z, stopped at: Completed 23-04-PLAN.md) — earlier that session, repo/suite housekeeping: pushed 273 commits to origin/main (origin had been 8 weeks stale at `c05c076`), repaired the unit suite 947→**970 passing / 0 failing** (4 distinct test-side root causes — see Current Status), ran `/gsd-health` (`degraded`, 0 errors; `W016 workflow.ai_integration_phase` auto-repaired into config.json), and refreshed STATE.md / REQUIREMENTS.md / DESIGN.md.
 
