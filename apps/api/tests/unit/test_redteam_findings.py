@@ -50,7 +50,6 @@ from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # PRE-EXISTING INFRA NOTE (not a regression introduced by this plan):

@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import os
 import random
-from datetime import datetime, timezone
 from unittest.mock import MagicMock
 from uuid import uuid4
 

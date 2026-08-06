@@ -410,8 +410,6 @@ def test_no_module_level_stripe_api_key() -> None:
     Cross-tenant key bleed is prevented by constructing a fresh StripeClient inside
     each asyncio.to_thread closure.
     """
-    import ast
-    import importlib.util
     import pathlib
 
     adapter_path = pathlib.Path(__file__).parent.parent.parent / (

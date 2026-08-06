@@ -113,7 +113,6 @@ def test_migration_enabled_default_false():
 )
 def test_migration_db_roundtrip():
     """Integration: apply migration to test DB and verify tables + constraints exist."""
-    import sqlalchemy
     from sqlalchemy import create_engine, inspect as sa_inspect
 
     sync_url = os.environ.get("CONTROL_DB_SYNC_URL", "")

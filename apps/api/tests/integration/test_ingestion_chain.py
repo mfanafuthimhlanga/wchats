@@ -129,9 +129,6 @@ def ready_agent_with_tenant_db(db_session, test_tenant):
 
     # Create agent with status='ready' and the encrypted connection string.
     # NOTE: Use cast() to avoid SQLAlchemy interpreting ::jsonb as a named param.
-    from sqlalchemy import cast
-    from sqlalchemy.dialects.postgresql import JSONB as PG_JSONB
-    import json as _json
 
     db_session.execute(
         text(
@@ -359,7 +356,7 @@ def _mock_redis_client():
 
 def _build_metadata_mock():
     """Return a mock Anthropic result with valid ChunkMetadataAndEntities."""
-    from app.services.metadata_service import ChunkMetadataAndEntities, EntityExtraction
+    from app.services.metadata_service import ChunkMetadataAndEntities
 
     parsed = ChunkMetadataAndEntities(
         summary="A test summary.",

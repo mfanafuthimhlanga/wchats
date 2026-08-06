@@ -9,12 +9,10 @@ Architecture notes:
 """
 from __future__ import annotations
 
-import json
 
 import anthropic
 import psycopg2
 import structlog
-from app.core.config import settings
 
 SONNET_MODEL = "claude-sonnet-4-6"
 log = structlog.get_logger(__name__)

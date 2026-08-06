@@ -25,7 +25,6 @@ SDK limitation (bug fix — 2026-05-15):
     raises NeonHTTPError which carries .status_code explicitly.
 """
 
-import json
 import time
 
 import requests

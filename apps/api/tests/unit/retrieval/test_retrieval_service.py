@@ -7,7 +7,7 @@ tests run without any live DB or API.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 import pytest
 
 from app.services.retrieval_service import (

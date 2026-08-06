@@ -17,7 +17,6 @@ Acceptance criteria:
 - test_event_sequence_in_order: all 6 events in exact order in job_events table
 """
 
-import json
 import time
 import uuid
 

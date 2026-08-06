@@ -34,7 +34,6 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-import pytest
 
 from app.services.transactional.idempotency import check_idempotency, store_idempotency
 
@@ -215,8 +214,6 @@ class TestStoreIdempotency:
 class TestNoRedisUsage:
     def test_idempotency_module_does_not_import_redis(self):
         """idempotency.py MUST NOT import Redis — control-DB table only."""
-        import importlib
-        import ast
         import os
 
         impl_path = os.path.normpath(

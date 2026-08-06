@@ -2,7 +2,7 @@
 from __future__ import annotations
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Text, Index, UniqueConstraint
+from sqlalchemy import String, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy import DateTime
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID

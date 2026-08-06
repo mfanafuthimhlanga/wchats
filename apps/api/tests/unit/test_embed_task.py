@@ -41,10 +41,9 @@ os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
 # ---------------------------------------------------------------------------
 
 import inspect
-import pytest
 from contextlib import contextmanager
 from datetime import datetime
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +325,6 @@ def test_embed_and_migrate_runs_reindex_concurrently(monkeypatch):
     a transaction block" at runtime (PITFALLS.md §5).
     """
     import psycopg2.extensions
-    from app.worker.tasks.pipeline.embed import embed_and_migrate
 
     mock_db, mock_dml_conn, mock_reindex_conn, _, reindex_cursor, mock_embed, mock_emit, _ = _build_standard_mocks()
 

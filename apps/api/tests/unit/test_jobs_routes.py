@@ -31,7 +31,6 @@ def _make_fake_tenant() -> Tenant:
 def _make_mock_db_with_job(job_found: bool = True):
     """Mock DB that either returns a job or None."""
     from app.models.job import Job
-    from app.models.job_event import JobEvent
 
     mock_session = AsyncMock()
 

@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest

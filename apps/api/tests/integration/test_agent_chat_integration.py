@@ -27,7 +27,7 @@ Canned dict contract — must match run_agent_turn's expected result shape from 
 
 import os
 import uuid
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -62,7 +62,6 @@ CANNED_SDK_RESULT = {
 @pytest.fixture(scope="session")
 def seed_tenant_agent():
     """Insert test Tenant + Agent rows in the real control DB; clean up after session."""
-    import base64
     import hashlib
     import psycopg2
     from cryptography.fernet import Fernet

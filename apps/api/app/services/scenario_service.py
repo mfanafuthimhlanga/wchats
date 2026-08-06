@@ -14,7 +14,6 @@ import psycopg2
 import structlog
 from sqlalchemy import text
 
-from app.core.config import settings
 
 log = structlog.get_logger(__name__)
 

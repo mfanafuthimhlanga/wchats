@@ -40,9 +40,8 @@ os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
 # ---------------------------------------------------------------------------
 
 import inspect
-import pytest
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +370,6 @@ def test_generate_metadata_upserts_entities_with_on_conflict_normalized_type(mon
 
 def test_generate_metadata_emits_event_sequence(monkeypatch):
     """generate_metadata emits metadata.started then metadata.complete (in that order)."""
-    from app.services.metadata_service import ChunkMetadataAndEntities
     from app.worker.tasks.pipeline.metadata import generate_metadata
 
     mock_db = MagicMock()

@@ -20,7 +20,6 @@ os.environ.setdefault("VOYAGE_API_KEY", "test_voyage_key")
 os.environ.setdefault("JWT_SECRET", "test_jwt_secret")
 os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 
-import pytest
 from unittest.mock import MagicMock
 
 

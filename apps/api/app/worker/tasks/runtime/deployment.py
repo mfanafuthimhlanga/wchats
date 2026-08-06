@@ -47,7 +47,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
 
 import structlog
 from sqlalchemy import select, text
@@ -70,7 +69,6 @@ from app.services.deployment_service import (
     _fetch_verified_qa_stats_sync,
     apply_signal_evidence_gate,
     derive_blast_radius_warnings,
-    run_orchestrator,
 )
 from app.worker.celery_app import celery_app
 

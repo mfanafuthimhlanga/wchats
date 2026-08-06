@@ -38,7 +38,6 @@ ARCHITECTURAL EXCEPTION NOTE (CLAUDE.md: FastAPI never does work inline):
     blocking on the route's async event loop thread — T-02-06-09.
 """
 
-import hashlib
 import uuid
 from pathlib import Path
 from uuid import UUID

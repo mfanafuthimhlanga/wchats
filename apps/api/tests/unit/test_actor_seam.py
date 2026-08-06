@@ -23,7 +23,7 @@ Named skip tests (-k skip_threshold selects both):
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 

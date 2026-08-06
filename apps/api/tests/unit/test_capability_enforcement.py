@@ -33,11 +33,9 @@ import asyncio
 import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # _parse_rate_limit — pure function, no DB/Redis needed

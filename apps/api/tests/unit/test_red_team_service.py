@@ -44,7 +44,7 @@ import uuid
 from contextlib import contextmanager
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from app.services import red_team_service
 from app.services.red_team_service import (

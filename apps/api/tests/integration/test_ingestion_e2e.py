@@ -374,7 +374,6 @@ def test_real_pdf_idempotent_rerun():
     from app.worker.tasks.pipeline.chunk import chunk_documents
     from app.worker.tasks.pipeline.metadata import generate_metadata
     from app.worker.tasks.pipeline.embed import embed_and_migrate
-    from app.models.job import Job
 
     # Get tenant_id for the second job row
     ctrl_conn = psycopg2.connect(control_db_url, connect_timeout=5)

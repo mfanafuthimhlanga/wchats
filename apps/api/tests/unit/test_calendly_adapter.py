@@ -101,7 +101,6 @@ async def test_book_slot() -> None:
     """
     from app.services.transactional.adapters.calendly_adapter import (
         CALENDLY_API_BASE,
-        CalendlyAdapter,
     )
     from app.services.transactional.schemas import BookSlotInput
 

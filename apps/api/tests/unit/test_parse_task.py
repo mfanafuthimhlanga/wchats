@@ -38,10 +38,8 @@ os.environ.setdefault("VOYAGE_API_KEY", "test_voyage")
 # ---------------------------------------------------------------------------
 
 import inspect
-import uuid
-import pytest
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock
 
 
 # ---------------------------------------------------------------------------

@@ -27,7 +27,6 @@ import uuid
 
 import pytest
 from sqlalchemy import create_engine, pool, text
-from sqlalchemy.orm import sessionmaker
 
 pytestmark = pytest.mark.integration
 

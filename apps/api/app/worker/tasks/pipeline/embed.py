@@ -55,7 +55,6 @@ Threat mitigations (T-02-05):
 import ssl
 import structlog
 from datetime import datetime, timezone
-from pathlib import Path
 
 import psycopg2
 import psycopg2.extensions

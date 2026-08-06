@@ -30,7 +30,6 @@ Test infrastructure:
 
 from __future__ import annotations
 
-import asyncio
 
 import pytest
 from cryptography.fernet import InvalidToken

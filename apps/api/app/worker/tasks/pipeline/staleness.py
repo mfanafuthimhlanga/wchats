@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import structlog
 import psycopg2
-from celery.schedules import crontab
 from sqlalchemy import select
 
 from app.core.database import get_sync_db

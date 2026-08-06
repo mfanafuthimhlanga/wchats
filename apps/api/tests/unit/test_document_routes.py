@@ -22,11 +22,9 @@ Security coverage:
   - T-02-06-04: no conn string in chain args (test_upload_documents_no_conn_string_in_chain_args)
 """
 
-import io
-import unittest.mock
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient

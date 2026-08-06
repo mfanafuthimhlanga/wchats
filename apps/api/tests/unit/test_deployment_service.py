@@ -52,7 +52,6 @@ from app.core.config import settings
 from app.services.deployment_service import (
     DeploymentReport,
     DeploymentWarning,
-    BLAST_RADIUS_DEFAULT_SIGNAL,
     EVAL_SIGNAL_MEASURED,
     EVAL_SIGNAL_NO_RUNS,
     EVAL_SIGNAL_NO_VALID_SCORES,
@@ -70,7 +69,6 @@ from app.services.deployment_service import (
     _fetch_blast_radius_sync,
     _fetch_eval_summary_sync,
     _fetch_red_team_summary_sync,
-    _make_iframe_snippet,
     _resolve_blast_radius_thresholds,
     apply_signal_evidence_gate,
     derive_blast_radius_warnings,

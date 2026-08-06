@@ -42,7 +42,7 @@ from __future__ import annotations
 import random
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -56,7 +56,6 @@ from app.models.prompt_version import PromptVersion
 from app.models.tenant import Tenant
 from app.services.prompt_version_service import (
     PromptVersionNotFoundError,
-    SOUL_FIELDS,
     create_version_from_agent,
     diff_versions,
     resolve_prompt_version,

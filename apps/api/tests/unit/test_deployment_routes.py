@@ -38,7 +38,6 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
-import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.api.deps import get_async_db, get_current_tenant

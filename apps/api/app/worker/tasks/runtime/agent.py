@@ -68,11 +68,6 @@ from claude_agent_sdk import (
     TextBlock,
     ToolUseBlock,
     ToolResultBlock,
-    ClaudeSDKError,
-    CLINotFoundError,
-    CLIConnectionError,
-    ProcessError,
-    CLIJSONDecodeError,
 )
 
 log = structlog.get_logger(__name__)

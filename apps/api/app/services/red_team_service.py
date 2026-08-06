@@ -32,13 +32,11 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
     AssistantMessage,
-    ResultMessage,
     SdkMcpTool,
     ToolUseBlock,
     create_sdk_mcp_server,
     tool,
 )
-from app.core.config import settings
 
 if TYPE_CHECKING:
     # Every app.services.red_team_probe symbol this module needs

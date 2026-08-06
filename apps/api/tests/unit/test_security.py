@@ -7,7 +7,6 @@ Environment: NEON_ENCRYPTION_KEY must be set before importing security module.
 
 import base64
 import os
-import secrets
 
 import pytest
 

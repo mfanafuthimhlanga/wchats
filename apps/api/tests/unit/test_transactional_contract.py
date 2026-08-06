@@ -257,7 +257,6 @@ def test_fourteen_models_importable():
 from app.services.transactional.registry import (
     TOOL_METADATA,
     TOOL_REGISTRY,
-    TransactionalToolDef,
     to_a2a_skill,
 )
 
@@ -447,7 +446,6 @@ def test_call_actor_gate_returns_approve():
     Updated from Phase-14 stub contract (which always returned ("approve", ""))
     to Phase-15 real implementation: use the skip short-circuit so no API call is made.
     """
-    from unittest.mock import patch  # noqa: PLC0415
 
     # Snapshot with requires_confirmation=False and max_amount_cents below the
     # 500-cent threshold triggers the skip short-circuit without any Anthropic call.

@@ -37,7 +37,6 @@ import hashlib
 import ssl
 import structlog
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -48,9 +47,15 @@ from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
-from app.models.job import Job
 from app.services import storage_service
-from app.services.docling_service import parse_document, parse_document_from_bytes
+# noqa: F401 on `parse_document` — this module only calls `parse_document_from_bytes`,
+# but the *binding* is load-bearing: four tests patch
+# `app.worker.tasks.pipeline.parse.parse_document`
+# (tests/unit/test_parse_task.py:173 via monkeypatch.setattr, plus three sites in
+# tests/integration/test_ingestion_chain.py), and both patch spellings raise
+# AttributeError when the attribute is absent. Deleting the import turns those four
+# green tests red — observed: 1 failed, 4 passed on that file with the name removed.
+from app.services.docling_service import parse_document, parse_document_from_bytes  # noqa: F401
 from app.services.events import emit
 from app.worker.celery_app import celery_app
 

@@ -16,7 +16,7 @@ Coverage:
     delete_branch — DELETE targets correct URL with branch_id in path
 """
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 

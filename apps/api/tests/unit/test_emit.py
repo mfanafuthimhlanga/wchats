@@ -12,11 +12,10 @@ Tests:
 
 import json
 import os
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, call, patch
+from datetime import datetime
+from unittest.mock import MagicMock
 from uuid import uuid4
 
-import pytest
 
 # Set minimal env so settings module can load.
 # Generate a valid Fernet key (URL-safe base64-encoded 32 bytes).
@@ -67,7 +66,6 @@ class TestEmitDbPersistence:
         assert isinstance(added_obj, JobEvent)
 
     def test_job_event_has_correct_job_id(self):
-        from app.models.job_event import JobEvent
 
         job_id, mock_db, mock_redis = make_mocks()
         emit(job_id, "job.started", {"k": "v"}, mock_db, mock_redis)
@@ -75,7 +73,6 @@ class TestEmitDbPersistence:
         assert added_obj.job_id == job_id
 
     def test_job_event_has_correct_event_type(self):
-        from app.models.job_event import JobEvent
 
         job_id, mock_db, mock_redis = make_mocks()
         emit(job_id, "neon.project.ready", {}, mock_db, mock_redis)
@@ -144,7 +141,6 @@ class TestEmitTimestamp:
 
     def test_job_event_payload_contains_at(self):
         """The DB row's payload dict also has 'at'."""
-        from app.models.job_event import JobEvent
 
         job_id, mock_db, mock_redis = make_mocks()
         emit(job_id, "job.started", {"extra": "data"}, mock_db, mock_redis)

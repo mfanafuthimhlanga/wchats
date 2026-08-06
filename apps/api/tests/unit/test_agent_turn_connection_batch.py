@@ -26,7 +26,6 @@ import types
 import uuid
 from unittest.mock import MagicMock, call, patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------

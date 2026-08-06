@@ -23,9 +23,8 @@ from __future__ import annotations
 import sys
 import types
 import uuid
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -659,7 +658,6 @@ def test_max_turns_allows_synthesis_after_retrieve():
 
 def test_wall_clock_guard_is_ninety_seconds():
     """D-11 regression: asyncio.wait_for must be called with timeout=90."""
-    import asyncio as _asyncio
 
     from app.worker.tasks.runtime.agent import run_agent_turn
 

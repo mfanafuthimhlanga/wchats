@@ -27,7 +27,6 @@ import re
 import sys
 import zlib
 from collections import Counter
-from typing import Any
 
 import pytest
 import structlog

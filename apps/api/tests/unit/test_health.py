@@ -11,7 +11,7 @@ Uses FastAPI dependency overrides to inject mock DB and Redis clients,
 avoiding any real database or Redis connections.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient

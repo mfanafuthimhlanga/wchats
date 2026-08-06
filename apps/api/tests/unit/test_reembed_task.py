@@ -42,7 +42,6 @@ os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_webhook_secret
 # Imports (after env setup)
 # ---------------------------------------------------------------------------
 
-import pytest
 from contextlib import contextmanager
 from unittest.mock import MagicMock
 

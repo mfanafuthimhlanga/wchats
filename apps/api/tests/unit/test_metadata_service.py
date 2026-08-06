@@ -40,7 +40,7 @@ os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
 
 import pytest
 import httpx
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +53,6 @@ def test_enrich_chunk_returns_chunk_metadata_and_entities():
     from app.services.metadata_service import (
         enrich_chunk,
         ChunkMetadataAndEntities,
-        HAIKU_MODEL,
     )
 
     mock_result = MagicMock()
