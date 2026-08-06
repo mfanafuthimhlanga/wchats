@@ -75,7 +75,7 @@ def write_retrieval_metrics(conn_str: str, row: dict) -> None:
     caught, logged as a warning, and swallowed — a metrics write failure must
     never fail the retrieve call or the turn it belongs to (T-21-03-02).
     """
-    params = {"id": str(uuid.uuid4())}
+    params: dict[str, object] = {"id": str(uuid.uuid4())}
     for key in _REQUIRED_ROW_KEYS:
         params[key] = row.get(key)
 

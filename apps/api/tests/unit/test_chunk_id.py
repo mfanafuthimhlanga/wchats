@@ -11,8 +11,8 @@ chunk_id.py imports only stdlib, so env setup is not strictly needed here,
 but is included for consistency with the test suite pattern.
 """
 
-import os
 import base64
+import os
 import uuid
 
 # Safety: ensure required env vars are present even if conftest is not loaded

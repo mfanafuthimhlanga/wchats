@@ -8,8 +8,8 @@ De-xfailed in Phase 09-03. Tests cover:
     test_expansion_calls_rrf_fuse_per_variant — rrf_fuse called once per query variant
 """
 
-import os
 import base64
+import os
 
 # Safety: ensure required env vars are present even if conftest is not loaded
 os.environ.setdefault("NEON_API_KEY", "test_neon_key")
@@ -24,16 +24,15 @@ os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 
 from unittest.mock import MagicMock, patch
 
-from app.services.strategy_service import (
-    _fetch_corpus_signals_sync,
-    run_strategist,
-)
 from app.services.retrieval_service import (
     RetrievalStrategy,
     _expand_query,
     rrf_fuse_with_expansion,
 )
-
+from app.services.strategy_service import (
+    _fetch_corpus_signals_sync,
+    run_strategist,
+)
 
 # ---------------------------------------------------------------------------
 # Helper: build a mock psycopg2 connection with controllable multi-cursor responses
@@ -230,7 +229,7 @@ def test_expansion_calls_rrf_fuse_per_variant():
     ), patch(
         "app.services.retrieval_service._expand_query",
         return_value=["q", "q1", "q2"],
-    ) as mock_expand, patch(
+    ), patch(
         "app.services.retrieval_service.rrf_fuse",
         return_value=fake_fused_result,
     ) as mock_rrf_fuse, patch(

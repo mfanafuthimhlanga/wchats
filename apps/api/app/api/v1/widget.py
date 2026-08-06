@@ -25,25 +25,23 @@ Queue: runtime (CLAUDE.md: both Celery queues always present).
 
 import asyncio
 import time
-import structlog
-import psycopg2
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+import psycopg2
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import Response as PlainResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
+from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from redis.asyncio import Redis
-
 from app.api.deps import get_async_db, get_async_redis
 from app.core.config import settings
-from app.services.budget import check_and_increment_budget
-from app.core.security import fernet_decrypt
+from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.models.job import Job
 from app.schemas.widget import (
@@ -55,6 +53,7 @@ from app.schemas.widget import (
     WidgetConfigResponse,
     WidgetFeedbackRequest,
 )
+from app.services.budget import check_and_increment_budget
 from app.services.identity_service import OtpInvalid, OtpRateLimited, OtpStorageError, request_otp, verify_otp
 from app.services.sse import event_generator
 from app.worker.tasks.runtime.agent import run_agent_turn
@@ -269,7 +268,7 @@ async def get_widget_config(
             "config_rate_limit.x_forwarded_for_present",
             note="trusting request.client.host in M4.1; production should configure proxy",
         )
-    await _check_config_rate_limit(request.client.host, redis_client)
+    await _check_config_rate_limit(request.client.host if request.client else "unknown", redis_client)
 
     result = await db.execute(
         select(Agent).where(
@@ -388,7 +387,7 @@ async def post_widget_chat(
     if body.conversation_id is not None:
         owned = await asyncio.to_thread(
             _validate_conv_owner,
-            agent.neon_connection_string,
+            agent.neon_connection_string,  # type: ignore[arg-type]  # provisioning is enforced upstream; None never reaches here
             body.conversation_id,
             agent.id,
         )
@@ -582,7 +581,7 @@ async def post_widget_identity_request(
     # (FastAPI does not merge injected response headers into returned Response objs).
     # ------------------------------------------------------------------
     bucket_60s = str(int(time.time()) // 60)
-    ip_key = f"otp_sendip:{request.client.host}:{bucket_60s}"
+    ip_key = f"otp_sendip:{request.client.host if request.client else 'unknown'}:{bucket_60s}"
     await redis_client.set(ip_key, 0, nx=True, ex=120)
     ip_count = await redis_client.incr(ip_key)
     if ip_count > 10:
@@ -673,7 +672,7 @@ async def post_widget_identity_verify(
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    conn_str = fernet_decrypt(agent.neon_connection_string)
+    conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
 
     # ------------------------------------------------------------------
     # 4. Verify OTP — delegate to identity service

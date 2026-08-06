@@ -71,9 +71,11 @@ _TESTS_DIR = os.path.dirname(__file__)
 
 @pytest.fixture
 def tenant_db_url():
-    from alembic import command
     from alembic.config import Config
-    from sqlalchemy import create_engine, pool, text as sa_text
+    from sqlalchemy import create_engine, pool
+    from sqlalchemy import text as sa_text
+
+    from alembic import command
 
     admin_url = os.environ.get(
         "TEST_ADMIN_DB_URL", "postgresql://wchats:wchats@localhost:5432/postgres"
@@ -124,9 +126,11 @@ def tenant_db_url():
 
 @pytest.fixture
 def control_db_url():
-    from alembic import command
     from alembic.config import Config
-    from sqlalchemy import create_engine, pool, text as sa_text
+    from sqlalchemy import create_engine, pool
+    from sqlalchemy import text as sa_text
+
+    from alembic import command
 
     admin_url = os.environ.get(
         "TEST_ADMIN_DB_URL", "postgresql://wchats:wchats@localhost:5432/postgres"
@@ -223,7 +227,8 @@ class CleanTenant:
 
 @pytest.fixture
 def clean_tenant(control_db_url, tenant_db_url):
-    from sqlalchemy import create_engine, text as sa_text
+    from sqlalchemy import create_engine
+    from sqlalchemy import text as sa_text
 
     from app.services.red_team_probe import CLEAN_TENANT_ENVELOPES, CLEAN_TENANT_SPEC
 
@@ -385,7 +390,8 @@ def test_identity_bypass(clean_tenant):
         assert result1.verdict_tag == "identity_required"
 
         # No successful adapter call was recorded for the blocked attempt.
-        from sqlalchemy import create_engine, text as sa_text
+        from sqlalchemy import create_engine
+        from sqlalchemy import text as sa_text
 
         control_engine = create_engine(clean_tenant.control_db_url)
         try:
@@ -469,9 +475,11 @@ def test_value_bound_evasion(clean_tenant, require_redis):
     # (per CLEAN_TENANT_ENVELOPES) would block at Step 2.5 before Step 4 (the
     # rate/constraint layer) is ever reached — establish a verified session first
     # so this test reaches and asserts on the rate layer specifically, not IDV.
+    from sqlalchemy import create_engine
+    from sqlalchemy import text as sa_text
+
     from app.services.agent_tools import _verified_session_token_var
     from app.services.identity_service import hash_session_token
-    from sqlalchemy import create_engine, text as sa_text
 
     session_token = "rtx02-verified-session-token"
     tenant_engine = create_engine(clean_tenant.tenant_db_url)
@@ -601,7 +609,8 @@ def test_confused_deputy(clean_tenant):
         )
 
     if mutating_lines:
-        from sqlalchemy import create_engine, text as sa_text
+        from sqlalchemy import create_engine
+        from sqlalchemy import text as sa_text
 
         control_engine = create_engine(clean_tenant.control_db_url)
         try:

@@ -9,12 +9,9 @@ Architecture notes:
 """
 from __future__ import annotations
 
-import json
-
 import anthropic
 import psycopg2
 import structlog
-from app.core.config import settings
 
 SONNET_MODEL = "claude-sonnet-4-6"
 log = structlog.get_logger(__name__)
@@ -197,7 +194,7 @@ def run_strategist(signals_json: str, result_container: dict) -> None:
             model=SONNET_MODEL,
             max_tokens=500,
             system=_STRATEGIST_SYSTEM_PROMPT,
-            tools=[_TOOL_GENERATE_STRATEGY],
+            tools=[_TOOL_GENERATE_STRATEGY],  # type: ignore[list-item]  # agent-sdk/anthropic stubs are narrower than the runtime contract
             messages=[{
                 "role": "user",
                 "content": f"Corpus signals:\n\n{signals_json}\n\nCall generate_strategy.",

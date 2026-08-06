@@ -43,7 +43,7 @@ Security (T-13-02-02): boto3 uses the IAM task role — no static AWS key in
 import json
 
 import structlog
-from tenacity import retry, wait_exponential, stop_after_attempt
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 

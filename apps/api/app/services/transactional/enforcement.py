@@ -316,7 +316,8 @@ async def apply_rate_and_constraint_checks(
             pipe = client.pipeline()
             pipe.incr(redis_key)
             pipe.expire(redis_key, window_secs + 1)
-            return pipe.execute()  # returns [count, expire_result]
+            count, expire_result = pipe.execute()  # [count, expire_result]
+            return (int(count), expire_result)
 
         results = await asyncio.to_thread(_do_rate_limit_pipeline)
         count = results[0]

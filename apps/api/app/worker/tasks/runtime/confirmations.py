@@ -30,7 +30,7 @@ import asyncio
 import structlog
 
 from app.core.database import get_sync_db
-from app.core.security import fernet_decrypt
+from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.models.pending_confirmation import PendingConfirmation
 from app.services.transactional.confirmation_resolution import execute_approved_confirmation
@@ -133,7 +133,7 @@ def resolve_approved_confirmation(self, confirmation_id: str) -> dict:
         # 4. Decrypt connection string at runtime — NEVER in task args
         #    (CLAUDE.md rule 4). conn_str is intentionally not logged.
         # ------------------------------------------------------------------
-        conn_str = fernet_decrypt(agent.neon_connection_string)
+        conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
 
     # ----------------------------------------------------------------------
     # 5. Bridge into the async resolver, matching how run_agent_turn bridges

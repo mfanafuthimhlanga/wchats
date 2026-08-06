@@ -39,11 +39,11 @@ Security coverage:
     T-17-20: JWT validated first on both identity routes
 """
 
-import pydantic
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import pydantic
+import pytest
 from httpx import ASGITransport, AsyncClient
 
 # conftest.py sets required env vars before any app import
@@ -51,7 +51,6 @@ from app.api.deps import get_async_db, get_async_redis
 from app.api.v1.widget import create_widget_jwt
 from app.main import app
 from app.models.agent import Agent
-
 
 # ---------------------------------------------------------------------------
 # Helper factories (mirrors test_widget_routes.py conventions)

@@ -26,7 +26,6 @@ from jose import jwt as jose_jwt
 from app.api.v1.widget import create_widget_jwt, validate_widget_jwt
 from app.core.config import settings
 
-
 # ---------------------------------------------------------------------------
 # Test 1: Decoded JWT contains the correct agent_id claim
 # ---------------------------------------------------------------------------

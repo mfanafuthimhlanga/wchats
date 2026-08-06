@@ -27,25 +27,36 @@ import asyncio
 import pytest
 from pydantic import ValidationError
 
+from app.services.actor_seam import call_actor_gate
+from app.services.transactional.provider_adapter import (
+    ProviderAdapter,
+    StubProviderAdapter,
+    get_adapter,
+)
+from app.services.transactional.registry import (
+    TOOL_METADATA,
+    TOOL_REGISTRY,
+    to_a2a_skill,
+)
+
 # ---------------------------------------------------------------------------
 # Task 1: Schema tests
 # ---------------------------------------------------------------------------
-
 from app.services.transactional.schemas import (
-    PlaceOrderInput,
-    PlaceOrderOutput,
-    CancelOrderInput,
-    CancelOrderOutput,
-    IssueRefundInput,
-    IssueRefundOutput,
-    UpdateSubscriptionInput,
-    UpdateSubscriptionOutput,
     BookSlotInput,
     BookSlotOutput,
-    UpdateCustomerRecordInput,
-    UpdateCustomerRecordOutput,
+    CancelOrderInput,
+    CancelOrderOutput,
     ConfirmActionInput,
     ConfirmActionOutput,
+    IssueRefundInput,
+    IssueRefundOutput,
+    PlaceOrderInput,
+    PlaceOrderOutput,
+    UpdateCustomerRecordInput,
+    UpdateCustomerRecordOutput,
+    UpdateSubscriptionInput,
+    UpdateSubscriptionOutput,
 )
 
 # --------------- idempotency_key required on all 6 mutating inputs -----------
@@ -254,13 +265,6 @@ def test_fourteen_models_importable():
 # Task 2: Registry tests
 # ---------------------------------------------------------------------------
 
-from app.services.transactional.registry import (
-    TOOL_METADATA,
-    TOOL_REGISTRY,
-    TransactionalToolDef,
-    to_a2a_skill,
-)
-
 MUTATING_SKILLS = [
     "place_order",
     "cancel_order",
@@ -343,13 +347,6 @@ def test_requires_identity_verification_defaults():
 # ---------------------------------------------------------------------------
 # Task 3: ProviderAdapter + actor_seam tests
 # ---------------------------------------------------------------------------
-
-from app.services.transactional.provider_adapter import (
-    ProviderAdapter,
-    StubProviderAdapter,
-    get_adapter,
-)
-from app.services.actor_seam import call_actor_gate
 
 
 def test_stub_place_order_returns_stub_labelled_output():
@@ -447,7 +444,6 @@ def test_call_actor_gate_returns_approve():
     Updated from Phase-14 stub contract (which always returned ("approve", ""))
     to Phase-15 real implementation: use the skip short-circuit so no API call is made.
     """
-    from unittest.mock import patch  # noqa: PLC0415
 
     # Snapshot with requires_confirmation=False and max_amount_cents below the
     # 500-cent threshold triggers the skip short-circuit without any Anthropic call.

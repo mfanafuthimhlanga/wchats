@@ -24,7 +24,9 @@ Flow (run_red_team):
        (Phase 18 SEC-03 / OD-7: the shipped PromptInjection agent is split into
        the conversation-injection and content-injection variants)
     6. Compute max_severity and deployment_blocked
-    7. Update red_team_run row to 'complete' with findings JSONB
+    7. Update red_team_run row to 'complete' with findings JSONB and the run's
+       own coverage (migration 0015) — an empty findings list is unreadable
+       without the denominator that says how many vectors could probe at all
        7b. Persist first-class red_team_strategies/red_team_probes rows (OPS-13)
        7c. Persist one first-class red_team_findings row per finding, status='open'
            (OPS-14) — the deploy gate reads this table, not the findings JSONB
@@ -49,13 +51,15 @@ from app.models.agent import Agent
 from app.services.agent_tools import RetrievalStrategy, build_tool_server
 from app.services.red_team_probe import _build_transactional_probe_fn
 from app.services.red_team_service import (
-    run_conversation_injection_agent,
+    VectorObservation,
+    run_confused_deputy_agent,
     run_content_injection_agent,
+    run_conversation_injection_agent,
+    run_coverage,
     run_data_leakage_agent,
     run_hallucination_agent,
-    run_confused_deputy_agent,
-    run_value_bound_evasion_agent,
     run_identity_bypass_agent,
+    run_value_bound_evasion_agent,
 )
 from app.worker.celery_app import celery_app
 
@@ -216,7 +220,9 @@ def run_red_team(self, agent_id: str) -> dict:
            Hallucination → ConfusedDeputy → ValueBoundEvasion → IdentityBypass
            agents sequentially.
         6. Compute max_severity and deployment_blocked flag.
-        7. Update red_team_run row to 'complete' with findings JSONB.
+        7. Update red_team_run row to 'complete' with findings JSONB and the run's
+       own coverage (migration 0015) — an empty findings list is unreadable
+       without the denominator that says how many vectors could probe at all.
         8. Return result dict.
 
     Args:
@@ -224,9 +230,20 @@ def run_red_team(self, agent_id: str) -> dict:
 
     Returns:
         {"run_id": str, "blocked": bool, "max_severity": str,
-         "critical_count": int, "high_count": int}  on success.
+         "critical_count": int, "high_count": int, "vectors_attempted": int,
+         "vectors_valid": int, "invalid_vectors": list[str],
+         "coverage_complete": bool, "findings_count": int}  on success.
         {"status": "already_running"}                on idempotent skip.
         {}                                            on retry exhaustion.
+
+    (vectors_attempted, vectors_valid, findings_count) is the validity triple:
+    how many attack vectors were dispatched, how many actually observed an
+    outcome IN THIS RUN, and how many findings came back. Without the middle
+    number an empty findings list is unreadable — "nothing succeeded" and
+    "nothing could try" produce the identical list. The middle number comes
+    from the runners' own observations (red_team_service.run_coverage), never
+    from red_team_coverage(), which describes the build and has been the
+    constant 7-of-7 since the SDK attackers were wired.
     """
     # ------------------------------------------------------------------
     # Step 1 — Fetch agent from control DB; decrypt conn_str at runtime
@@ -358,12 +375,24 @@ def run_red_team(self, agent_id: str) -> dict:
     # Step 5 — Run six agents sequentially (no chord — worker_pool=solo)
     # Wrapped in a single try so a partial failure can update status='failed'.
     # ------------------------------------------------------------------
+    # The run's own validity ledger (P4 review). Every runner appends exactly
+    # one VectorObservation saying what IT observed, and run_coverage() below
+    # turns those into this run's (attempted, valid). It used to be
+    # red_team_coverage() — a description of the shipped BUILD which, since
+    # SDK_ATTACKERS_CAN_PROBE became True, is the constant 7-of-7 in every
+    # environment. On a worker with no Claude Code CLI that stored "full
+    # coverage" for a run in which four vectors raised at ClaudeSDKClient(...)
+    # and observed nothing. A vector that reports no observation is counted
+    # INVALID, so the ledger can only ever cost coverage, never buy it.
+    observations: list[VectorObservation] = []
+
     _agents_conn = psycopg2.connect(conn_str, connect_timeout=5)
     try:
         conversation_injection_findings = run_conversation_injection_agent(
             probe_fn,
             max_turns=settings.RED_TEAM_MAX_TURNS,
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
+            observations=observations,
         )
         # SEC-03 / OD-7: content_injection also receives the conversational
         # probe_fn (not transactional_probe_fn) — this variant tests retrieval
@@ -375,31 +404,37 @@ def run_red_team(self, agent_id: str) -> dict:
             max_turns=settings.RED_TEAM_MAX_TURNS,
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
             conn_str=conn_str,
+            observations=observations,
         )
         leakage_findings = run_data_leakage_agent(
             probe_fn,
             max_turns=settings.RED_TEAM_MAX_TURNS,
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
+            observations=observations,
         )
         hallucination_findings = run_hallucination_agent(
             probe_fn,
             max_turns=settings.RED_TEAM_MAX_TURNS,
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
+            observations=observations,
         )
         confused_deputy_findings = run_confused_deputy_agent(
             transactional_probe_fn,
             max_turns=settings.RED_TEAM_MAX_TURNS,
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
+            observations=observations,
         )
         value_bound_findings = run_value_bound_evasion_agent(
             transactional_probe_fn,
             max_turns=settings.RED_TEAM_MAX_TURNS,
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
+            observations=observations,
         )
         identity_bypass_findings = run_identity_bypass_agent(
             transactional_probe_fn,
             max_turns=settings.RED_TEAM_MAX_TURNS,
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
+            observations=observations,
         )
         all_findings = (
             conversation_injection_findings
@@ -426,29 +461,88 @@ def run_red_team(self, agent_id: str) -> dict:
         critical_count = sum(1 for f in all_findings if f.severity == "critical")
         high_count = sum(1 for f in all_findings if f.severity == "high")
 
+        # (attempted, valid, findings) — the validity denominator for THIS RUN,
+        # derived from what each vector reported observing rather than from what
+        # the build is capable of. Zero findings means one of two very different
+        # things: seven vectors probed and none succeeded, or three probed and
+        # four could not. Reporting the findings count alone renders the second
+        # as the first, which is a cleanliness nobody measured — and reporting
+        # red_team_coverage() here did the same thing one level up, because it
+        # answers "can this code probe" (always yes since P4) and never "did
+        # this run probe".
+        coverage = run_coverage(observations)
+
         # ------------------------------------------------------------------
         # Step 7 — Update red_team_run row to 'complete'
+        #
+        # THE COVERAGE IS STORED ON THE RUN (P2 review). It used to reach a
+        # structlog line and this task's return dict and stop there, so the
+        # stored row — the only thing the ops room and the deploy gate can read
+        # afterwards — still said `findings: [], max_severity: null,
+        # deployment_blocked: false` for a run in which four of seven attackers
+        # never probed. That is byte-identical to a clean seven-vector run.
+        #
+        # It must be the RUN's coverage rather than the reader's, and P4's
+        # review made that concrete: with SDK_ATTACKERS_CAN_PROBE True,
+        # red_team_coverage() reports seven-of-seven for every run in every
+        # environment, so the figure had to come from the run's own
+        # observations before storing it meant anything at all.
+        #
+        # `coverage` arrived with migration 0015 and a tenant provisioned before
+        # it does not have the column (tenants are migrated at provision time
+        # only), so UndefinedColumn falls back to the pre-0015 statement — the
+        # run still completes, it simply cannot record what it covered, and its
+        # readers report that as unrecorded rather than as full.
         # ------------------------------------------------------------------
+        _complete_params = (
+            json.dumps([f.model_dump() for f in all_findings]),
+            max_severity,
+            deployment_blocked,
+        )
         try:
-            with _agents_conn.cursor() as _cur:
-                _cur.execute(
-                    """
-                    UPDATE red_team_runs
-                    SET status = 'complete',
-                        finished_at = NOW(),
-                        findings = %s,
-                        max_severity = %s,
-                        deployment_blocked = %s
-                    WHERE id = %s
-                    """,
-                    (
-                        json.dumps([f.model_dump() for f in all_findings]),
-                        max_severity,
-                        deployment_blocked,
-                        run_id,
+            try:
+                with _agents_conn.cursor() as _cur:
+                    _cur.execute(
+                        """
+                        UPDATE red_team_runs
+                        SET status = 'complete',
+                            finished_at = NOW(),
+                            findings = %s,
+                            max_severity = %s,
+                            deployment_blocked = %s,
+                            coverage = %s
+                        WHERE id = %s
+                        """,
+                        (*_complete_params, json.dumps(coverage), run_id),
+                    )
+                _agents_conn.commit()
+            except psycopg2.errors.UndefinedColumn:
+                # The aborted transaction must be rolled back before the
+                # connection will accept another statement.
+                _agents_conn.rollback()
+                log.warning(
+                    "run_red_team.coverage_column_absent",
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    detail=(
+                        "tenant DB predates alembic_tenant 0015 — this run "
+                        "cannot record how much of the attack surface it covered"
                     ),
                 )
-            _agents_conn.commit()
+                with _agents_conn.cursor() as _cur:
+                    _cur.execute(
+                        """
+                        UPDATE red_team_runs
+                        SET status = 'complete',
+                            finished_at = NOW(),
+                            findings = %s,
+                            max_severity = %s,
+                            deployment_blocked = %s
+                        WHERE id = %s
+                        """,
+                        (*_complete_params, run_id),
+                    )
+                _agents_conn.commit()
         except Exception as update_exc:
             log.warning(
                 "run_red_team.update_complete_failed",
@@ -582,6 +676,10 @@ def run_red_team(self, agent_id: str) -> dict:
             blocked=deployment_blocked,
             critical_count=critical_count,
             high_count=high_count,
+            vectors_attempted=coverage["vectors_attempted"],
+            vectors_valid=coverage["vectors_valid"],
+            invalid_vectors=coverage["invalid_vectors"],
+            findings_count=len(all_findings),
         )
         return {
             "run_id": run_id,
@@ -589,6 +687,14 @@ def run_red_team(self, agent_id: str) -> dict:
             "max_severity": max_severity,
             "critical_count": critical_count,
             "high_count": high_count,
+            # (attempted, valid, findings). vectors_valid is the denominator:
+            # an attack-success rate over vectors_attempted while some vectors
+            # cannot probe reports a coverage the run never had.
+            "vectors_attempted": coverage["vectors_attempted"],
+            "vectors_valid": coverage["vectors_valid"],
+            "invalid_vectors": coverage["invalid_vectors"],
+            "coverage_complete": coverage["complete"],
+            "findings_count": len(all_findings),
         }
 
     except Exception as exc:

@@ -141,9 +141,12 @@ def test_migration_0009_db_roundtrip():
     - both tables are removed after downgrade to 0008
     - re-upgrade to 0009 re-creates them without error
     """
-    from alembic import command
     from alembic.config import Config
-    from sqlalchemy import create_engine, inspect as sa_inspect, pool, text as sa_text
+    from sqlalchemy import create_engine, pool
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    from alembic import command
 
     admin_url = os.environ.get(
         "TEST_ADMIN_DB_URL", "postgresql://wchats:wchats@localhost:5432/postgres"

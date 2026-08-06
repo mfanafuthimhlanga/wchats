@@ -10,12 +10,12 @@ Forbidden v2 patterns are not used (D-16 / CLAUDE.md Rule 6).
 """
 
 import os
-import structlog
 from typing import Literal
 
 import anthropic
-from pydantic import BaseModel, field_validator
+import structlog
 from langfuse import Langfuse
+from pydantic import BaseModel, field_validator
 
 log = structlog.get_logger(__name__)
 
@@ -379,7 +379,8 @@ def _log_verdict(
     if _langfuse is None:
         return
     try:
-        with _langfuse.start_as_current_generation(
+        with _langfuse.start_as_current_observation(
+            as_type="generation",
             name=f"{judge_name}-judge",
             model=HAIKU_MODEL,
             input=input_payload,

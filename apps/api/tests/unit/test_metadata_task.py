@@ -14,8 +14,8 @@ the original module paths (e.g. patch app.worker.tasks.pipeline.metadata.fernet_
 not app.core.security.fernet_decrypt).
 """
 
-import os
 import base64
+import os
 
 # ---------------------------------------------------------------------------
 # Environment setup — MUST run before any `from app` import (pydantic-settings)
@@ -40,10 +40,8 @@ os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
 # ---------------------------------------------------------------------------
 
 import inspect
-import pytest
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch, call
-
+from unittest.mock import MagicMock
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -349,7 +347,7 @@ def test_generate_metadata_upserts_entities_with_on_conflict_normalized_type(mon
     assert len(entity_upsert_sqls) >= 1, (
         "Expected at least one SQL with 'INSERT INTO entities' AND "
         "'ON CONFLICT (normalized, type)' but found none.\n"
-        f"All recorded SQLs:\n" + "\n".join(all_sqls)
+        "All recorded SQLs:\n" + "\n".join(all_sqls)
     )
 
     # chunk_entities INSERT: must contain INSERT INTO chunk_entities + ON CONFLICT DO NOTHING
@@ -360,7 +358,7 @@ def test_generate_metadata_upserts_entities_with_on_conflict_normalized_type(mon
     assert len(ce_sqls) >= 1, (
         "Expected at least one SQL with 'INSERT INTO chunk_entities' AND "
         "'ON CONFLICT DO NOTHING' but found none.\n"
-        f"All recorded SQLs:\n" + "\n".join(all_sqls)
+        "All recorded SQLs:\n" + "\n".join(all_sqls)
     )
 
 
@@ -371,7 +369,6 @@ def test_generate_metadata_upserts_entities_with_on_conflict_normalized_type(mon
 
 def test_generate_metadata_emits_event_sequence(monkeypatch):
     """generate_metadata emits metadata.started then metadata.complete (in that order)."""
-    from app.services.metadata_service import ChunkMetadataAndEntities
     from app.worker.tasks.pipeline.metadata import generate_metadata
 
     mock_db = MagicMock()

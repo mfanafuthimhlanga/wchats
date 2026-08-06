@@ -8,7 +8,7 @@ Schema: prd-M1.md §5
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, Index, Integer, Text, text
+from sqlalchemy import DateTime, Integer, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base

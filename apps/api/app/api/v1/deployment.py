@@ -35,12 +35,7 @@ from app.models.checklist_run import ChecklistRun
 from app.models.tenant import Tenant
 from app.schemas.deployment import (
     AcknowledgeRequest,
-    AcknowledgeResponse,
     ApproveDeploymentRequest,
-    ApproveDeploymentResponse,
-    ChecklistRunListResponse,
-    ChecklistRunResponse,
-    ChecklistRunTriggerResponse,
 )
 from app.services.capability_service import canonical_envelope_hash, envelope_drift
 from app.services.deployment_service import _make_iframe_snippet

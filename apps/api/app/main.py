@@ -21,9 +21,9 @@ Threat mitigations:
                 misconfigured or stale-cached PyJWKClient.
 """
 
-import structlog
 from contextlib import asynccontextmanager
 
+import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -141,7 +141,26 @@ async def add_cache_control(request: Request, call_next):
 # Routers
 # ---------------------------------------------------------------------------
 
-from app.api.v1 import agents, documents, health, jobs, tenants, query, agent_chat, widget, webhooks, evals, red_team, deployment, observability, traces, metrics, prompt_versions, capability_envelopes, pending_confirmations  # noqa: E402
+from app.api.v1 import (  # noqa: E402
+    agent_chat,
+    agents,
+    capability_envelopes,
+    deployment,
+    documents,
+    evals,
+    health,
+    jobs,
+    metrics,
+    observability,
+    pending_confirmations,
+    prompt_versions,
+    query,
+    red_team,
+    tenants,
+    traces,
+    webhooks,
+    widget,
+)
 
 # webhooks router registered FIRST — ensures /webhooks/clerk and /me/provision are matched
 # before any wildcard route patterns

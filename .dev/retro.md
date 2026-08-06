@@ -26,8 +26,35 @@ anticipate, not just what the code did wrong. Recurring families raise planning 
 criteria asked "does the code run and do the tests pass", never "could this test fail if the
 behaviour were deleted". A green suite is evidence about the suite, not about the system.
 
+5. **`_run_orchestrator_loop` was never awaited** (2026-08-06, found by the tier-2 judge). The
+   backend suite emits this `RuntimeWarning` from `test_deployment_service.py` — the *same warning
+   class* this repo's own audit cites as runtime proof that D4's attacker loops were mocked away.
+   `run_orchestrator` is never executed anywhere on the branch, so every claim about how the
+   orchestrator prompt's prose blocking conditions interact with the evidence gate is untested by
+   construction. **Four implementation phases and the tier-1 reviewer all read past it**, in the very
+   branch built to eliminate this family.
+6. **A test whose docstring claims bidirectional protection, demonstrated false in one direction**
+   (2026-08-06). `test_the_capability_flag_cannot_be_flipped_without_wiring_the_tools` stayed GREEN
+   under tier-1's mutation deleting `mcp_servers=` — `ALLOWED_PROBE_TOOLS`' references to
+   `_TOOL_SEND_PROBE['name']` satisfy the string count with no wiring present.
+7. **A guard demonstrated only inside the complement of its own blind spot** (2026-08-06). The
+   `human_scores.csv` write-ban is a substring list missing the most idiomatic form,
+   `with open(HUMAN_SCORES_CSV, 'w')`. Its red demonstration used `csv.DictWriter` — a form that *is*
+   on the list. The demonstration passed; the guard has a hole.
+
 **Standing rule:** for any guard, absence pin, or fail-closed path — mutate it, observe red, restore
 from `HEAD` unconditionally, observe green, record the observed output.
+
+**Second standing rule, added 2026-08-06:** mutate the guard *in the form the defect would actually
+take*, not in a form you already listed. And treat a `RuntimeWarning: coroutine ... was never awaited`
+as a **finding**, not noise — it is this repo's most reliable runtime signal that a region is mocked
+away. Grep the gate output for it.
+
+**Counter-example worth keeping.** During P1 an implementer mutated the narrow-`except` guard on
+`insert_eval_run` and the test **stayed green** — it had injected failure on both the wide and narrow
+INSERT, so the fallback re-raised and the test passed for the wrong reason. It diagnosed its own
+tautology, rewrote the test to inject on the wide INSERT only plus assert the fallback never ran, and
+re-ran the mutation to a real red. That is the discipline catching itself, and it is the standard.
 
 ## Family B — "missing data treated as passing data"
 
@@ -52,6 +79,31 @@ writing down which way it should fail.
 **Prior art in this repo, already correct:** `red_team_service.py:1076` treats
 `provider_not_configured` as a finding because the run was *"INVALID, not clean."* One place got it
 right; it never became a system rule.
+
+## Family B, recurrence 3 — Langfuse generation tracing has never run
+
+Found 2026-08-06 by mypy, on a branch whose only purpose was making the type checker run at all.
+
+`validation_service.py:382`, `actor_seam.py:279` and `agent.py:443` all called
+`_langfuse.start_as_current_generation(...)`. **`langfuse 4.14.0` has no such method** — verified at
+runtime: `hasattr(langfuse.Langfuse, 'start_as_current_generation')` is `False`, and the only
+`start_*` methods are `start_as_current_observation` and `start_observation`.
+
+Every call site is inside a `try: ... except Exception:` fire-and-forget wrapper, so the
+`AttributeError` was swallowed silently. **Judge tracing, Actor-gate tracing and agent-turn tracing
+have therefore never produced a single Langfuse generation**, while the code reads as though
+observability is wired and CLAUDE.md rule 3 records "Langfuse v4 API only" as satisfied.
+
+Fixed here by switching all three to `start_as_current_observation(as_type="generation", ...)`.
+
+**What the plans failed to anticipate:** a fire-and-forget `except` around an observability call
+converts "this feature is broken" into "this feature is quiet". Nothing distinguishes a tracer that
+emitted nothing because nothing happened from one that emitted nothing because the method does not
+exist. Same shape as D3's swallowed `UndefinedColumn` and the tool-less attackers' clean runs — third
+recurrence, third different subsystem.
+
+**Standing rule:** an `except` around an optional subsystem must log at a level someone reads, and
+name the exception type. If observability is worth calling, its failure is worth one warning line.
 
 ## Family C — "an in-memory or ephemeral marker advanced before/instead of a durable write"
 
@@ -104,6 +156,33 @@ sensible.
 
 **Standing rule:** when a human supplies a signal, write down what the signal *means* before writing
 where it is stored. A label whose polarity is unstated will eventually be stored backwards.
+
+## Family G — "prose that describes an architecture its own diff deleted"
+
+**Recurrences: 4, all found by the tier-2 judge on one branch (2026-08-06).**
+
+Four of the judge's eight evidence mismatches were comments and docstrings contradicted by the code
+they annotate, written in the same commit:
+
+1. `eval_service.py:18,199-200` still describes `branch_conn_str` as used by `write_eval_results` and
+   `promote_to_verified_qa`, and scoring as running against the branch — the same phase removed the
+   parameter from both functions and made scoring open no database at all.
+2. `_fetch_eval_summary_sync`'s docstring asserts the `kind` filter means gate and console "can never
+   disagree" — `_LIST_EVAL_RUNS_SQL` and `_LIST_EVAL_RUN_DATASETS_SQL` carry no `kind` filter, so two
+   agents in one tenant DB read different runs entirely.
+3. Migration `0015`'s docstring justifies itself by "unknown and pass render the same on screen" —
+   true, and still true after the migration, because no frontend file is in the diff.
+4. The `verified_qa` comment says red-team rows "never assert what the right answer is" —
+   `red_team.py:398` writes an authored correct answer. The refusal to promote holds, but for a
+   different reason than the comment a future reader would rely on.
+
+**What the plans failed to anticipate:** a docstring is the artifact a future reader trusts *instead
+of* reading the code, so a stale one is worse than none. Nothing in the gate checks prose against
+behaviour, and reviewers reading a diff for defects read comments as intent rather than as claims.
+
+**Standing rule:** when a change removes a parameter, a call, or a guarantee, grep the module's own
+docstrings and comments for it in the same commit. A comment asserting a property is a claim and gets
+the same scrutiny as a test.
 
 ## Family F — "over-broad mechanical gates produce false positives on their own prose"
 

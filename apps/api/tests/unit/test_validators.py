@@ -11,7 +11,7 @@ Test coverage intent (per VAL-01 through VAL-06):
   test_auditor_verdict           — VAL-03: AuditorVerdict Pydantic model validates + normalises
   test_auditor_inserts_candidate — VAL-04: run_auditor inserts into verified_qa_candidates when confident
   test_strategist_verdict        — VAL-05: StrategistVerdict Pydantic model validates + normalises
-  test_langfuse_logged           — VAL-05: _log_verdict() calls start_as_current_generation
+  test_langfuse_logged           — VAL-05: _log_verdict() calls start_as_current_observation
   test_resynthesis_flag          — VAL-06: run_auditor sets strategy_resynthesis_flagged on 3+ ungrounded
 
 Mock strategy mirrors test_agent_task.py:
@@ -26,7 +26,6 @@ import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -61,8 +60,9 @@ def _make_db_ctx(db: MagicMock) -> MagicMock:
 
 def test_gatekeeper_verdict():
     """GatekeeperVerdict Pydantic model validates and normalises verdict field."""
-    from app.services.validation_service import GatekeeperVerdict
     from pydantic import ValidationError
+
+    from app.services.validation_service import GatekeeperVerdict
 
     # field_validator lowercases verdict — "Pass" → "pass"
     v = GatekeeperVerdict.model_validate({"verdict": "Pass", "confidence": 0.92, "reason": "ok"})
@@ -89,8 +89,8 @@ def test_gatekeeper_verdict():
 
 def test_run_gatekeeper_task():
     """run_gatekeeper emits 'gatekeeper.complete' with agent_id after calling the judge."""
-    from app.worker.tasks.runtime.validators import run_gatekeeper
     from app.services.validation_service import GatekeeperVerdict
+    from app.worker.tasks.runtime.validators import run_gatekeeper
 
     agent_id = str(uuid.uuid4())
     job_id = str(uuid.uuid4())
@@ -187,8 +187,8 @@ def test_auditor_verdict():
 
 def test_auditor_inserts_candidate():
     """run_auditor inserts into verified_qa_candidates when auditor_confidence >= threshold."""
-    from app.worker.tasks.runtime.validators import run_auditor
     from app.services.validation_service import AuditorVerdict, CitationSpan
+    from app.worker.tasks.runtime.validators import run_auditor
 
     agent_id = str(uuid.uuid4())
     job_id = str(uuid.uuid4())
@@ -252,8 +252,9 @@ def test_auditor_inserts_candidate():
 
 def test_strategist_verdict():
     """StrategistVerdict Pydantic model validates and normalises verdict field."""
-    from app.services.validation_service import StrategistVerdict
     from pydantic import ValidationError
+
+    from app.services.validation_service import StrategistVerdict
 
     # field_validator lowercases verdict — "SHIP" → "ship"
     v = StrategistVerdict.model_validate({
@@ -300,17 +301,17 @@ def test_strategist_verdict():
 # ---------------------------------------------------------------------------
 
 def test_langfuse_logged(monkeypatch):
-    """_log_verdict() calls start_as_current_generation and flush when _langfuse is set."""
+    """_log_verdict() calls start_as_current_observation and flush when _langfuse is set."""
     import app.services.validation_service as vs
     from app.services.validation_service import _log_verdict
 
     # Set up a MagicMock for _langfuse at module level
     mock_lf = MagicMock()
-    # start_as_current_generation must work as a context manager
+    # start_as_current_observation must work as a context manager
     mock_cm = MagicMock()
     mock_cm.__enter__ = MagicMock(return_value=mock_cm)
     mock_cm.__exit__ = MagicMock(return_value=False)
-    mock_lf.start_as_current_generation.return_value = mock_cm
+    mock_lf.start_as_current_observation.return_value = mock_cm
 
     monkeypatch.setattr(vs, "_langfuse", mock_lf)
 
@@ -322,9 +323,9 @@ def test_langfuse_logged(monkeypatch):
         verdict_dict={"verdict": "pass", "confidence": 0.92, "reason": "ok"},
     )
 
-    # start_as_current_generation must have been called
-    mock_lf.start_as_current_generation.assert_called_once()
-    call_kwargs = mock_lf.start_as_current_generation.call_args
+    # start_as_current_observation must have been called
+    mock_lf.start_as_current_observation.assert_called_once()
+    call_kwargs = mock_lf.start_as_current_observation.call_args
     assert call_kwargs.kwargs.get("name") == "gatekeeper-judge" or (
         len(call_kwargs.args) > 0 and call_kwargs.args[0] == "gatekeeper-judge"
     )
@@ -345,8 +346,8 @@ def test_langfuse_logged(monkeypatch):
 
 def test_resynthesis_flag():
     """run_auditor sets strategy_resynthesis_flagged=TRUE after 3 ungrounded verdicts in 24h."""
-    from app.worker.tasks.runtime.validators import run_auditor
     from app.services.validation_service import AuditorVerdict
+    from app.worker.tasks.runtime.validators import run_auditor
 
     agent_id = str(uuid.uuid4())
     job_id = str(uuid.uuid4())

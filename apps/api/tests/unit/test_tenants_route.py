@@ -15,8 +15,8 @@ from uuid import uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.main import app
 from app.core.database import get_async_db
+from app.main import app
 
 
 def _make_mock_db_for_tenant():

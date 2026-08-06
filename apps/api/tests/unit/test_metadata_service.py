@@ -13,8 +13,8 @@ Patch target: app.services.metadata_service._anthropic
 (NOT anthropic.Anthropic — always patch the symbol imported into the module under test)
 """
 
-import os
 import base64
+import os
 
 # ---------------------------------------------------------------------------
 # Environment setup — MUST run before any `from app` import (pydantic-settings)
@@ -38,10 +38,10 @@ os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
 # Imports (after env setup)
 # ---------------------------------------------------------------------------
 
-import pytest
-import httpx
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
+import httpx
+import pytest
 
 # ---------------------------------------------------------------------------
 # Test 1: enrich_chunk returns ChunkMetadataAndEntities with correct fields
@@ -51,9 +51,8 @@ from unittest.mock import MagicMock, patch, call
 def test_enrich_chunk_returns_chunk_metadata_and_entities():
     """enrich_chunk returns a ChunkMetadataAndEntities instance with expected field values."""
     from app.services.metadata_service import (
-        enrich_chunk,
         ChunkMetadataAndEntities,
-        HAIKU_MODEL,
+        enrich_chunk,
     )
 
     mock_result = MagicMock()
@@ -83,9 +82,9 @@ def test_enrich_chunk_returns_chunk_metadata_and_entities():
 def test_enrich_chunk_uses_haiku_model_constant():
     """enrich_chunk calls messages.parse with model=HAIKU_MODEL (not a hard-coded string)."""
     from app.services.metadata_service import (
-        enrich_chunk,
-        ChunkMetadataAndEntities,
         HAIKU_MODEL,
+        ChunkMetadataAndEntities,
+        enrich_chunk,
     )
 
     mock_result = MagicMock()
@@ -112,8 +111,8 @@ def test_enrich_chunk_uses_haiku_model_constant():
 def test_enrich_chunk_uses_output_format_pydantic():
     """enrich_chunk calls messages.parse with output_format=ChunkMetadataAndEntities (class, not instance)."""
     from app.services.metadata_service import (
-        enrich_chunk,
         ChunkMetadataAndEntities,
+        enrich_chunk,
     )
 
     mock_result = MagicMock()
@@ -144,7 +143,8 @@ def test_enrich_chunk_retries_on_rate_limit():
     (the constructor requires response.request to be set and response.headers to exist).
     """
     import anthropic as anthropic_lib
-    from app.services.metadata_service import enrich_chunk, ChunkMetadataAndEntities
+
+    from app.services.metadata_service import ChunkMetadataAndEntities, enrich_chunk
 
     # Build a valid RateLimitError (requires request on response)
     real_request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
@@ -194,6 +194,7 @@ def test_enrich_chunk_retries_on_rate_limit():
 def test_entity_extraction_validates_type_literal():
     """EntityExtraction raises ValidationError when type is not one of the five allowed values."""
     import pydantic
+
     from app.services.metadata_service import EntityExtraction
 
     with pytest.raises((pydantic.ValidationError, ValueError)):
@@ -239,10 +240,10 @@ def test_enrich_chunks_batch_happy_path():
     max_tokens=4096.
     """
     from app.services.metadata_service import (
-        enrich_chunks_batch,
-        ChunkMetadataAndEntities,
-        BatchResult,
         HAIKU_MODEL,
+        BatchResult,
+        ChunkMetadataAndEntities,
+        enrich_chunks_batch,
     )
 
     batch = BatchResult(
@@ -293,9 +294,9 @@ def test_enrich_chunks_batch_happy_path():
 def test_enrich_chunks_batch_size_mismatch_raises_value_error():
     """enrich_chunks_batch raises ValueError when Haiku returns a different count."""
     from app.services.metadata_service import (
-        enrich_chunks_batch,
-        ChunkMetadataAndEntities,
         BatchResult,
+        ChunkMetadataAndEntities,
+        enrich_chunks_batch,
     )
 
     # Sent 2 chunks but model returns only 1 result
@@ -323,10 +324,11 @@ def test_enrich_chunks_batch_size_mismatch_raises_value_error():
 def test_enrich_chunks_batch_retries_on_rate_limit():
     """enrich_chunks_batch retries when Anthropic raises RateLimitError."""
     import anthropic as anthropic_lib
+
     from app.services.metadata_service import (
-        enrich_chunks_batch,
-        ChunkMetadataAndEntities,
         BatchResult,
+        ChunkMetadataAndEntities,
+        enrich_chunks_batch,
     )
 
     real_request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
@@ -379,6 +381,7 @@ def test_enrich_chunks_batch_retries_on_rate_limit():
 def test_enrich_chunks_batch_auth_error_is_fatal():
     """enrich_chunks_batch does NOT retry on AuthenticationError — raised immediately."""
     import anthropic as anthropic_lib
+
     from app.services.metadata_service import enrich_chunks_batch
 
     real_request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")

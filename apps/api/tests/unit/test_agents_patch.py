@@ -19,13 +19,13 @@ from uuid import uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-# conftest.py sets all required env vars before app import
-from app.main import app
 from app.api.deps import get_current_tenant
 from app.core.database import get_async_db
+
+# conftest.py sets all required env vars before app import
+from app.main import app
 from app.models.agent import Agent
 from app.models.tenant import Tenant
-
 
 # ---------------------------------------------------------------------------
 # Helpers

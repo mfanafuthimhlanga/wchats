@@ -75,7 +75,7 @@ def _poll_for_neon_project_id(db_session, agent_id: uuid.UUID, timeout: int = 30
         if row and row[0] is not None:
             return row[0]
         if row and row[1] == "failed":
-            pytest.fail(f"agent.status became 'failed' — provision_neon did not succeed")
+            pytest.fail("agent.status became 'failed' — provision_neon did not succeed")
         time.sleep(1)
         db_session.expire_all()
 
@@ -138,9 +138,6 @@ def test_provision_neon_idempotency(celery_worker, test_agent_and_job, db_sessio
         # Wait for neon_project_id to be written
         _poll_for_neon_project_id(db_session, agent_id, timeout=30)
 
-        # Capture call count after first dispatch
-        create_calls_after_first = rmock.calls.call_count
-
         # Second dispatch — should hit idempotency guard (neon_project_id already set)
         provision_neon.apply_async(
             args=(str(tenant_id), str(agent_id)),
@@ -148,8 +145,6 @@ def test_provision_neon_idempotency(celery_worker, test_agent_and_job, db_sessio
         )
         # Brief wait for second task to be processed
         time.sleep(5)
-
-        create_calls_after_second = rmock.calls.call_count
 
     # The POST /projects route should have been called exactly once across both dispatches
     # After second call, total calls should not have increased by another POST /projects
@@ -180,8 +175,8 @@ def test_provision_neon_stores_encrypted_connection_string(
     Uses respx.mock to simulate Neon API returning a local Postgres URL as the
     connection URI (so the bytes stored are an encrypted local Postgres URL).
     """
-    from app.worker.tasks.pipeline.provision import provision_neon
     from app.core.security import fernet_decrypt
+    from app.worker.tasks.pipeline.provision import provision_neon
 
     tenant_id, agent_id, job_id = test_agent_and_job
     fake_project_id = f"test-enc-{uuid.uuid4().hex[:8]}"
@@ -229,7 +224,7 @@ def test_provision_neon_stores_encrypted_connection_string(
         )
 
     # Poll DB for agent.neon_connection_string to be set (30s timeout)
-    conn_bytes = _poll_for_connection_string(db_session, agent_id, timeout=30)
+    _poll_for_connection_string(db_session, agent_id, timeout=30)
 
     # Fetch raw bytes from DB
     row = db_session.execute(

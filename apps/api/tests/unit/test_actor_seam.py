@@ -5,7 +5,7 @@ Coverage:
   ACT-01 — Haiku forced-tool-use returns approve | block | require_human + rationale
   ACT-03 — skip short-circuit: low-value action (max_amount_cents < threshold AND
             requires_confirmation=False) returns approve WITHOUT calling the Anthropic client
-  ACT-06 — Langfuse v4 start_as_current_generation + create_score + flush called on Haiku call
+  ACT-06 — Langfuse v4 start_as_current_observation + create_score + flush called on Haiku call
 
 Mock strategy:
   - Patch ANTHROPIC_CLIENT.messages.create at module boundary
@@ -23,7 +23,7 @@ Named skip tests (-k skip_threshold selects both):
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -370,10 +370,10 @@ class TestHistoryFallback:
 
 
 class TestLangfuseLogging:
-    """ACT-06: Langfuse v4 start_as_current_generation + create_score logged; NO per-call flush."""
+    """ACT-06: Langfuse v4 start_as_current_observation + create_score logged; NO per-call flush."""
 
     def test_langfuse_logged_on_haiku_call(self):
-        """On an approve verdict, start_as_current_generation and create_score are each
+        """On an approve verdict, start_as_current_observation and create_score are each
         called exactly once; flush is NOT called on the request path (ACT-06 — the Actor
         is synchronous pre-mutation, so a per-call flush would add a Langfuse network
         round-trip to every mutating call; the SDK background-flushes instead)."""
@@ -382,11 +382,11 @@ class TestLangfuseLogging:
 
         # Mock Langfuse instance
         langfuse_mock = MagicMock()
-        # start_as_current_generation is a context manager
+        # start_as_current_observation is a context manager
         gen_ctx = MagicMock()
         gen_ctx.__enter__ = MagicMock(return_value=gen_ctx)
         gen_ctx.__exit__ = MagicMock(return_value=False)
-        langfuse_mock.start_as_current_generation.return_value = gen_ctx
+        langfuse_mock.start_as_current_observation.return_value = gen_ctx
 
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 
@@ -401,9 +401,9 @@ class TestLangfuseLogging:
                 )
             )
 
-        # Langfuse v4 pattern: start_as_current_generation called exactly once
-        langfuse_mock.start_as_current_generation.assert_called_once()
-        call_kwargs = langfuse_mock.start_as_current_generation.call_args.kwargs
+        # Langfuse v4 pattern: start_as_current_observation called exactly once
+        langfuse_mock.start_as_current_observation.assert_called_once()
+        call_kwargs = langfuse_mock.start_as_current_observation.call_args.kwargs
         assert call_kwargs.get("name") == "actor-gate"
         assert "verdict" in call_kwargs.get("output", {})
 
@@ -425,7 +425,7 @@ class TestLangfuseLogging:
         api_mock = MagicMock(return_value=_make_api_response(approve_block))
 
         langfuse_mock = MagicMock()
-        langfuse_mock.start_as_current_generation.side_effect = RuntimeError("Langfuse down")
+        langfuse_mock.start_as_current_observation.side_effect = RuntimeError("Langfuse down")
 
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 

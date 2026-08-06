@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_tenant
 from app.core.database import get_async_db
-from app.core.security import fernet_decrypt
+from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.models.tenant import Tenant
 from app.services import bench_service
@@ -105,7 +105,7 @@ async def list_traces(
     if status != "failing":
         raise HTTPException(status_code=400, detail="Only status=failing is supported")
 
-    conn_str = fernet_decrypt(agent.neon_connection_string)
+    conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
 
     result = await bench_service.list_failing_traces(db, conn_str, str(agent_id))
 

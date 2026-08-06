@@ -30,12 +30,12 @@ Threat mitigations (T-02-04):
     T-02-04-06: log calls reference chunk_id and document_id ONLY — never content.
 """
 
-import structlog
 from typing import Literal
 
 import anthropic
+import structlog
 from pydantic import BaseModel
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 
@@ -134,7 +134,10 @@ def enrich_chunk(text: str) -> ChunkMetadataAndEntities:
         max_tokens=1024,  # 512 for summary/keywords/questions + room for entity list
         output_format=ChunkMetadataAndEntities,
     )
-    return result.parsed_output
+    parsed = result.parsed_output
+    if parsed is None:
+        raise ValueError("Metadata extraction returned no parsed output")
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +226,8 @@ def enrich_chunks_batch(texts: list[str]) -> list[ChunkMetadataAndEntities]:
         output_format=BatchResult,
     )
     batch = result.parsed_output
+    if batch is None:
+        raise ValueError("Batch metadata extraction returned no parsed output")
     if len(batch.chunks) != len(texts):
         raise ValueError(
             f"Batch size mismatch: sent {len(texts)} chunks, got {len(batch.chunks)} results"

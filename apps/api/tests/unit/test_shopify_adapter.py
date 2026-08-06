@@ -32,10 +32,9 @@ Test infrastructure:
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Task 1 Tests: issue_refund + place_order + shop_url_from_constructor

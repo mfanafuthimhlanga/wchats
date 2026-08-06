@@ -42,7 +42,12 @@ def send_escalation_email(agent, reason: str, context: str) -> None:
         - Logs structlog WARNING when SMTP not configured or SMTP call fails.
     """
     # Guard: all three SMTP fields must be non-None and non-empty.
-    if not all([settings.SMTP_HOST, settings.SMTP_FROM, settings.OWNER_EMAIL]):
+    # Bound to locals so the narrowing survives for the type checker — mypy cannot
+    # narrow through all([...]), and these are Optional[str] on Settings.
+    smtp_host = settings.SMTP_HOST
+    smtp_from = settings.SMTP_FROM
+    owner_email = settings.OWNER_EMAIL
+    if not smtp_host or not smtp_from or not owner_email:
         log.warning(
             "escalation.email_not_configured",
             agent_id=str(getattr(agent, "id", "")),
@@ -59,17 +64,17 @@ def send_escalation_email(agent, reason: str, context: str) -> None:
     )
     msg = MIMEText(body)
     msg["Subject"] = f"[W Chats] Escalation: {agent.name}"
-    msg["From"] = settings.SMTP_FROM
-    msg["To"] = settings.OWNER_EMAIL
+    msg["From"] = smtp_from
+    msg["To"] = owner_email
 
     try:
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT or 587, timeout=5) as server:
+        with smtplib.SMTP(smtp_host, settings.SMTP_PORT or 587, timeout=5) as server:
             server.starttls()
-            server.sendmail(settings.SMTP_FROM, [settings.OWNER_EMAIL], msg.as_string())
+            server.sendmail(smtp_from, [owner_email], msg.as_string())
         log.info(
             "escalation.email_sent",
             agent_id=str(getattr(agent, "id", "")),
-            to=settings.OWNER_EMAIL,
+            to=owner_email,
         )
     except Exception as exc:
         # Fire-and-forget: log warning but NEVER re-raise (T-04-03-03).

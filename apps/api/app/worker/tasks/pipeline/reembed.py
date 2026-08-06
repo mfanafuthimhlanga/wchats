@@ -42,12 +42,12 @@ Queue: pipeline (declared on the decorator; pipeline.* routing rule in celery_ap
 already routes this module to the pipeline queue).
 """
 
-import structlog
 import psycopg2
 import psycopg2.extensions
+import structlog
 
 from app.core.database import get_sync_db
-from app.core.security import fernet_decrypt
+from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.services import bedrock_embedding_service
 from app.worker.celery_app import celery_app
@@ -107,8 +107,8 @@ def reembed_corpus(self, agent_id: str) -> dict:
             return {"agent_id": agent_id, "total_reembedded": 0, "model": target_model}
 
         # conn_str and direct_conn_str are NEVER logged (T-13-04-03)
-        conn_str = fernet_decrypt(agent.neon_connection_string)           # pooled  → DML
-        direct_conn_str = fernet_decrypt(agent.neon_direct_connection_string)  # direct → REINDEX
+        conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))           # pooled  → DML
+        direct_conn_str = fernet_decrypt(require_ciphertext(agent.neon_direct_connection_string, "agents.neon_direct_connection_string"))  # direct → REINDEX
 
     # ------------------------------------------------------------------
     # Open ONE pooled connection for all DML (SELECT batches + upserts).

@@ -17,7 +17,6 @@ Acceptance criteria:
 - test_event_sequence_in_order: all 6 events in exact order in job_events table
 """
 
-import json
 import time
 import uuid
 
@@ -53,7 +52,7 @@ def _neon_mock_routes(project_id: str, local_db_url: str):
             json={
                 "project": {
                     "id": project_id,
-                    "name": f"vrd-test",
+                    "name": "vrd-test",
                     "region_id": "aws-us-east-1",
                 }
             },

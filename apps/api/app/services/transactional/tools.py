@@ -71,6 +71,10 @@ from app.core.database import get_sync_db
 from app.models.pending_confirmation import PendingConfirmation
 from app.services.actor_seam import call_actor_gate
 from app.services.transactional.audit import write_audit_row
+from app.services.transactional.credential_service import (
+    CredentialDecryptionError,
+    ProviderNotConfiguredError,
+)
 from app.services.transactional.enforcement import (
     apply_rate_and_constraint_checks,
     check_capability_access,
@@ -81,10 +85,6 @@ from app.services.transactional.idempotency import (
     mark_reservation_in_flight,
     release_idempotency,
     reserve_idempotency,
-)
-from app.services.transactional.credential_service import (
-    CredentialDecryptionError,
-    ProviderNotConfiguredError,
 )
 from app.services.transactional.provider_adapter import get_adapter_for_skill
 from app.services.transactional.registry import TOOL_REGISTRY

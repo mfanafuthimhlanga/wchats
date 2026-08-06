@@ -111,7 +111,12 @@ def send_digest_email(agent_name: str, agent_id: str, stats: dict) -> None:
     """Send weekly digest email to OWNER_EMAIL. NEVER raises (fire-and-forget)."""
     if not settings.DIGEST_ENABLED:
         return
-    if not all([settings.SMTP_HOST, settings.SMTP_FROM, settings.OWNER_EMAIL]):
+    # Bound to locals so the narrowing survives for the type checker — mypy cannot
+    # narrow through all([...]), and these are Optional[str] on Settings.
+    smtp_host = settings.SMTP_HOST
+    smtp_from = settings.SMTP_FROM
+    owner_email = settings.OWNER_EMAIL
+    if not smtp_host or not smtp_from or not owner_email:
         log.warning("digest_service.smtp_not_configured", agent_id=agent_id)
         return
 
@@ -129,15 +134,15 @@ def send_digest_email(agent_name: str, agent_id: str, stats: dict) -> None:
     )
     msg = MIMEText(body)
     msg["Subject"] = f"[W Chats] Weekly Digest: {agent_name}"
-    msg["From"] = settings.SMTP_FROM
-    msg["To"] = settings.OWNER_EMAIL
+    msg["From"] = smtp_from
+    msg["To"] = owner_email
 
     try:
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT or 587, timeout=5) as server:
+        with smtplib.SMTP(smtp_host, settings.SMTP_PORT or 587, timeout=5) as server:
             server.starttls()
             if settings.SMTP_USER and settings.SMTP_PASSWORD:
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-            server.sendmail(settings.SMTP_FROM, [settings.OWNER_EMAIL], msg.as_string())
-        log.info("digest_service.email_sent", agent_id=agent_id, to=settings.OWNER_EMAIL)
+            server.sendmail(smtp_from, [owner_email], msg.as_string())
+        log.info("digest_service.email_sent", agent_id=agent_id, to=owner_email)
     except Exception as exc:
         log.warning("digest_service.email_failed", agent_id=agent_id, error=str(exc))

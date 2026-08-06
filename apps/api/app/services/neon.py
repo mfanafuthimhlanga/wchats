@@ -25,7 +25,7 @@ SDK limitation (bug fix — 2026-05-15):
     raises NeonHTTPError which carries .status_code explicitly.
 """
 
-import json
+import re as _re
 import time
 
 import requests
@@ -61,9 +61,6 @@ def _neon_headers() -> dict:
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
-
-
-import re as _re
 
 
 def _project_slug(agent_name: str, account_tag: str) -> str:

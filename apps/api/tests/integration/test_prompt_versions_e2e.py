@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import os
 import random
-from datetime import datetime, timezone
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -65,10 +64,11 @@ def control_session():
     """
     _require_real_db()
 
-    from alembic import command
     from alembic.config import Config
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from alembic import command
 
     _tests_dir = os.path.dirname(os.path.dirname(__file__))
     alembic_ini = os.path.normpath(os.path.join(_tests_dir, "../alembic.ini"))

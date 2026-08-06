@@ -138,8 +138,9 @@ def test_migration_0018_db_roundtrip():
     Verifies prompt_versions exists with the expected columns after upgrade
     and is fully removed after downgrade.
     """
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     sync_url = os.environ.get("CONTROL_DB_SYNC_URL", "")
     if not sync_url or "test" not in sync_url.lower():
@@ -151,7 +152,8 @@ def test_migration_0018_db_roundtrip():
 
     command.upgrade(cfg, "0018")
 
-    from sqlalchemy import create_engine, inspect as sa_inspect
+    from sqlalchemy import create_engine
+    from sqlalchemy import inspect as sa_inspect
 
     engine = create_engine(sync_url)
     insp = sa_inspect(engine)

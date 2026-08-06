@@ -13,8 +13,8 @@ original module paths (e.g. patch app.worker.tasks.pipeline.chunk.fernet_decrypt
 not app.core.security.fernet_decrypt).
 """
 
-import os
 import base64
+import os
 
 # ---------------------------------------------------------------------------
 # Environment setup — MUST run before any `from app` import (pydantic-settings)
@@ -38,10 +38,8 @@ os.environ.setdefault("VOYAGE_API_KEY", "test_voyage")
 # ---------------------------------------------------------------------------
 
 import inspect
-import pytest
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch, call
-
+from unittest.mock import MagicMock
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -79,8 +77,6 @@ def _make_mock_tenant_conn(sql_records: list | None = None):
     mock_cursor.fetchone.return_value = ("x.pdf", "pdf", "parsed", None)
 
     # Record execute() calls for assertion
-    original_execute = mock_cursor.execute
-
     def _record_execute(sql, params=None):
         sql_records.append((str(sql), params))
 
@@ -214,15 +210,15 @@ def test_chunk_documents_upserts_with_on_conflict(monkeypatch):
     # At least one INSERT INTO chunks ... ON CONFLICT (id) DO UPDATE must exist
     upsert_sqls = [s for s in all_sqls if "INSERT INTO chunks" in s and "ON CONFLICT (id) DO UPDATE" in s]
     assert len(upsert_sqls) >= 1, (
-        f"Expected at least one 'INSERT INTO chunks ... ON CONFLICT (id) DO UPDATE' SQL.\n"
-        f"All recorded SQLs:\n" + "\n".join(all_sqls)
+        "Expected at least one 'INSERT INTO chunks ... ON CONFLICT (id) DO UPDATE' SQL.\n"
+        "All recorded SQLs:\n" + "\n".join(all_sqls)
     )
 
     # At least one UPDATE documents SET chunk_count must exist
     update_sqls = [s for s in all_sqls if "UPDATE documents SET chunk_count" in s]
     assert len(update_sqls) >= 1, (
-        f"Expected at least one 'UPDATE documents SET chunk_count' SQL.\n"
-        f"All recorded SQLs:\n" + "\n".join(all_sqls)
+        "Expected at least one 'UPDATE documents SET chunk_count' SQL.\n"
+        "All recorded SQLs:\n" + "\n".join(all_sqls)
     )
 
 

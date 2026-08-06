@@ -5,21 +5,60 @@ Reads human_scores.csv (scenario_id, dimension, human_score), loads the
 corresponding recorded response from responses/, calls the judge, then
 computes Spearman rank correlation between judge scores and human scores.
 
-Target: Spearman ≥ 0.75 (AI-SPEC.md §5.2) before trusting automated
+Target: Spearman >= 0.75 (AI-SPEC.md §5.2) before trusting automated
 judge results at scale.
 
 Usage:
     python apps/api/tests/evals/calibration/compute_correlation.py
+    python apps/api/tests/evals/calibration/compute_correlation.py --check
+
+    --check reports readiness only. It touches no network and no API key: it
+    says which inputs the harness has and which it is missing, which is the
+    question worth asking before spending a judge call per row.
+
+WHOSE COLUMN human_score IS
+    The owner's, and no one else's. Every cell ships empty by design. An
+    agent-filled calibration set would silently destroy the only instrument
+    that can say whether ANY judge in this system is trustworthy — the
+    Gatekeeper, the Auditor, the Strategist, classify_severity, and the Actor
+    gate that runs synchronously before money moves. Nothing in this file
+    writes to human_scores.csv; it is opened for reading only, and
+    tests/unit/test_calibration_harness.py pins both halves of that.
+
+WHY THE EXIT CODES CHANGED (audit D7)
+    The shipped script exited 0 both when the judge was calibrated and when
+    nobody had scored anything yet, calling the second case "informational".
+    In CI, in a checklist, or in a summary, exit 0 reads as success — so an
+    instrument that had never been given a single label reported the same
+    thing as one that had passed. Missing data is never passing data. An
+    unscored file now exits EXIT_NOT_CALIBRATED_YET, which is neither pass nor
+    fail but is distinguishable from both.
 
 Requirements:
-    - responses/ populated via capture_responses.py
-    - human_scores.csv has human_score column filled (1–5 integer scale)
+    - responses/ populated via capture_responses.py (needs a live, ingested
+      agent and AGENT_E2E_ENABLED=1 — see --check for what is missing)
+    - human_scores.csv has the human_score column filled by a human (1-5)
     - ANTHROPIC_API_KEY set in environment
 
 Exit codes:
-    0 — correlation ≥ 0.75, or no scored rows yet (informational)
-    1 — correlation < 0.75 (judge not calibrated; review rubrics)
-    2 — missing responses/ files or other setup error
+    0 (EXIT_CALIBRATED)         — correlation >= 0.75 over >= MIN_PAIRS pairs
+    1 (EXIT_NOT_CALIBRATED)     — correlation < 0.75; judge not calibrated
+    2 (EXIT_SETUP_ERROR)        — missing files, unusable rows, other setup error
+    3 (EXIT_NOT_CALIBRATED_YET) — no human scores, fewer than MIN_PAIRS usable
+                                  pairs, or the judge failed too many of its own
+                                  calls to have measured the set. NOT a pass and
+                                  NOT a failure of the judge: the measurement has
+                                  not been made.
+    4 (EXIT_READY_TO_CALIBRATE) — `--check` only: every input is present and the
+                                  correlation has NOT been computed.
+
+    --check NEVER RETURNS 0. It makes no judge call by design, so it cannot
+    establish the one thing exit 0 means. The first version of this fix returned
+    EXIT_CALIBRATED from --check on a merely-ready tree, which is audit D7's own
+    defect ("exit 0 is success to every reader") reintroduced on the new code
+    path: a checklist step keyed on the documented exit code would have recorded
+    the judge as calibrated while rho had never been computed and could have
+    been -1.0.
 """
 
 from __future__ import annotations
@@ -40,6 +79,56 @@ RESPONSES_DIR = EVALS_DIR / "responses"
 HUMAN_SCORES_CSV = CALIBRATION_DIR / "human_scores.csv"
 
 THRESHOLD = 0.75  # AI-SPEC.md §5.2
+
+# Spearman over two points is not a correlation, it is a line through two
+# points. spearman() already returns nan below three; this names the same floor
+# so the status machinery can say "not calibrated yet" rather than "nan".
+MIN_PAIRS = 3
+
+# The second floor, and the P4 review is why it exists (MIN_PAIRS alone is not
+# enough). A judge that returns verdict='ERROR' on seven of ten labelled rows —
+# Anthropic 529s, a JSON parse failure, judge.py:170-177's score=0 on any
+# exception — still leaves three pairs, and if those three happen to rank in
+# agreement the harness reported rho=1.000 and "PASS - judge is calibrated. Safe
+# to trust automated results." over a judge that failed 70% of its calls. The
+# three survivors are not a random sample of the set either: whatever made the
+# other seven fail (long transcripts, one dimension's prompt) selected them.
+# A correlation over a fifth of the labelled rows is not a measurement of the
+# set the human scored, so it reports NOT CALIBRATED YET rather than a verdict.
+MIN_PAIR_RATE = 0.8
+
+# ---------------------------------------------------------------------------
+# Exit codes and the statuses they encode
+# ---------------------------------------------------------------------------
+# Four outcomes, four codes, because three of them used to be 0. The status
+# strings are what a caller (a test, a checklist, a future CI job) should
+# branch on; the exit codes are the same information for a shell.
+
+EXIT_CALIBRATED = 0
+EXIT_NOT_CALIBRATED = 1
+EXIT_SETUP_ERROR = 2
+EXIT_NOT_CALIBRATED_YET = 3
+
+# Not a status — a readiness answer. `--check` computes no correlation, so no
+# --check outcome may ever share an exit code with one that did. See the
+# module docstring.
+EXIT_READY_TO_CALIBRATE = 4
+
+STATUS_CALIBRATED = "calibrated"
+STATUS_NOT_CALIBRATED = "not_calibrated"
+STATUS_SETUP_ERROR = "setup_error"
+STATUS_NOT_CALIBRATED_YET = "not_calibrated_yet"
+
+EXIT_CODE_FOR_STATUS: dict[str, int] = {
+    STATUS_CALIBRATED: EXIT_CALIBRATED,
+    STATUS_NOT_CALIBRATED: EXIT_NOT_CALIBRATED,
+    STATUS_SETUP_ERROR: EXIT_SETUP_ERROR,
+    STATUS_NOT_CALIBRATED_YET: EXIT_NOT_CALIBRATED_YET,
+}
+
+# The one status a reader may treat as "this judge may be trusted at scale".
+# Everything else, including STATUS_NOT_CALIBRATED_YET, means it may not.
+TRUSTWORTHY_STATUS = STATUS_CALIBRATED
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +155,7 @@ def _rank_with_ties(vals: list[float]) -> list[float]:
 def spearman(xs: list[float], ys: list[float]) -> float:
     """Spearman rank correlation coefficient with average-rank tie handling."""
     n = len(xs)
-    if n < 3:
+    if n < MIN_PAIRS:
         return float("nan")
     rx = _rank_with_ties(xs)
     ry = _rank_with_ties(ys)
@@ -84,34 +173,82 @@ def spearman(xs: list[float], ys: list[float]) -> float:
 # CSV reader
 # ---------------------------------------------------------------------------
 
-def load_human_scores() -> list[dict]:
-    """Read human_scores.csv; return rows where human_score is filled."""
-    if not HUMAN_SCORES_CSV.exists():
-        print(f"ERROR: {HUMAN_SCORES_CSV} not found.")
-        sys.exit(2)
+def read_human_score_rows(path: pathlib.Path | None = None) -> dict:
+    """Read human_scores.csv and report (attempted, valid) over its rows.
 
-    rows = []
-    with HUMAN_SCORES_CSV.open(newline="", encoding="utf-8") as f:
+    Opened read-only. This function is the only thing in the harness that
+    touches the file at all, and it never writes it — see the module docstring.
+
+    `attempted` is every data row present. `valid` is the subset carrying a
+    human score this harness can use, and it is the denominator: a correlation
+    computed over `attempted` while nine of ten cells are empty would describe
+    a calibration nobody performed.
+
+    Args:
+        path: Override for tests. Defaults to HUMAN_SCORES_CSV.
+
+    Returns:
+        {"attempted", "valid", "rows", "unusable", "missing_file"} where
+        `rows` are the usable rows and `unusable` names each rejected row with
+        its reason (never silently dropped).
+    """
+    csv_path = path or HUMAN_SCORES_CSV
+    if not csv_path.exists():
+        return {
+            "attempted": 0,
+            "valid": 0,
+            "rows": [],
+            "unusable": [],
+            "missing_file": True,
+        }
+
+    rows: list[dict] = []
+    unusable: list[str] = []
+    attempted = 0
+
+    with csv_path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            score_str = row.get("human_score", "").strip()
+            attempted += 1
+            scenario_id = (row.get("scenario_id") or "").strip()
+            dimension = (row.get("dimension") or "").strip()
+            score_str = (row.get("human_score") or "").strip()
+
             if not score_str:
+                unusable.append(f"{scenario_id}/{dimension}: human_score not filled in yet")
                 continue
             try:
                 score = int(score_str)
             except ValueError:
-                print(f"WARNING: non-integer human_score for {row['scenario_id']} — skipping")
+                unusable.append(f"{scenario_id}/{dimension}: non-integer human_score {score_str!r}")
                 continue
             if not 1 <= score <= 5:
-                print(f"WARNING: human_score {score} out of 1–5 range for {row['scenario_id']} — skipping")
+                unusable.append(f"{scenario_id}/{dimension}: human_score {score} outside 1-5")
                 continue
+
             rows.append({
-                "scenario_id": row["scenario_id"].strip(),
-                "dimension": row["dimension"].strip(),
+                "scenario_id": scenario_id,
+                "dimension": dimension,
                 "human_score": score,
-                "notes": row.get("notes", "").strip(),
+                "notes": (row.get("notes") or "").strip(),
             })
-    return rows
+
+    return {
+        "attempted": attempted,
+        "valid": len(rows),
+        "rows": rows,
+        "unusable": unusable,
+        "missing_file": False,
+    }
+
+
+def load_human_scores() -> list[dict]:
+    """Back-compatible accessor: the usable rows only.
+
+    Kept because it was the shipped public name. New code should call
+    read_human_score_rows() and read the denominator alongside the rows.
+    """
+    return read_human_score_rows()["rows"]
 
 
 # ---------------------------------------------------------------------------
@@ -146,31 +283,186 @@ def build_transcript(scenario: dict, response: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Readiness — every input except the one that is the owner's
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    from tests.evals.judge import judge  # noqa: PLC0415
+def readiness() -> dict:
+    """Report which calibration inputs exist and which are missing.
 
-    scored_rows = load_human_scores()
+    Answers the question that is actually blocking: not "is the judge
+    calibrated" (it cannot be, yet) but "what is stopping anyone from finding
+    out". Every check here is local — no network, no ANTHROPIC_API_KEY, no
+    judge call — so it is safe to run anywhere, including a machine with none
+    of the runtime services.
 
-    if not scored_rows:
-        print(
-            "No scored rows in human_scores.csv.\n"
-            "Fill the human_score column (1–5) for the scenarios you reviewed,\n"
-            "then re-run this script."
+    `human_scores_valid` is reported beside `human_scores_attempted` rather than
+    as a bare count, and `blocking` never says "the human scores are missing" as
+    though that were a defect to fix in code: filling them is the owner's step
+    and an agent must never perform it.
+
+    Returns:
+        A dict with per-input counts, the list of missing response files, any
+        row referencing a scenario or judge dimension that does not exist, and
+        `ready_to_calibrate` — True only when a judge run could actually produce
+        MIN_PAIRS usable pairs.
+    """
+    from tests.evals.judge import JUDGE_RUBRICS  # noqa: PLC0415  (avoid import at CLI parse time)
+
+    scenario_files = sorted(SCENARIOS_DIR.glob("S-*.json"))
+    scenario_ids = {p.name.split("_")[0] for p in scenario_files}
+
+    parsed = read_human_score_rows()
+    referenced = [(r["scenario_id"], r["dimension"]) for r in parsed["rows"]]
+
+    # Every row in the file, scored or not — a typo in an unscored row is worth
+    # catching before the owner spends an evening grading against it.
+    all_referenced_ids: list[str] = []
+    all_referenced_dims: list[str] = []
+    if not parsed["missing_file"]:
+        with HUMAN_SCORES_CSV.open(newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                all_referenced_ids.append((row.get("scenario_id") or "").strip())
+                all_referenced_dims.append((row.get("dimension") or "").strip())
+
+    unknown_scenarios = sorted({s for s in all_referenced_ids if s and s not in scenario_ids})
+    unknown_dimensions = sorted({d for d in all_referenced_dims if d and d not in JUDGE_RUBRICS})
+
+    responses_present = sorted(p.stem for p in RESPONSES_DIR.glob("S-*.json")) if RESPONSES_DIR.exists() else []
+    responses_missing = sorted({s for s in all_referenced_ids if s and s not in set(responses_present)})
+
+    blocking: list[str] = []
+    if parsed["missing_file"]:
+        blocking.append(f"{HUMAN_SCORES_CSV.name} does not exist")
+    if not RESPONSES_DIR.exists():
+        blocking.append(
+            f"{RESPONSES_DIR.name}/ has never been captured - run capture_responses.py "
+            "against a live, ingested agent (AGENT_E2E_ENABLED=1, AGENT_ID, API_KEY)"
         )
-        sys.exit(0)
+    elif responses_missing:
+        blocking.append(
+            f"{len(responses_missing)} recorded response(s) missing: {', '.join(responses_missing)}"
+        )
+    if unknown_scenarios:
+        blocking.append(f"human_scores.csv references unknown scenario(s): {', '.join(unknown_scenarios)}")
+    if unknown_dimensions:
+        blocking.append(f"human_scores.csv references unknown judge dimension(s): {', '.join(unknown_dimensions)}")
 
-    print(f"Calibration run — {len(scored_rows)} human-scored pairs\n")
-    print(f"{'Scenario':<10}  {'Dimension':<30}  {'Human':>6}  {'Judge':>6}  {'Diff':>5}  Reason")
-    print("-" * 100)
+    awaiting_owner = parsed["valid"] < MIN_PAIRS
+
+    return {
+        "scenarios_present": len(scenario_files),
+        "human_scores_attempted": parsed["attempted"],
+        "human_scores_valid": parsed["valid"],
+        "human_scores_unusable": parsed["unusable"],
+        "responses_present": len(responses_present),
+        "responses_missing": responses_missing,
+        "unknown_scenarios": unknown_scenarios,
+        "unknown_dimensions": unknown_dimensions,
+        "referenced_pairs": referenced,
+        "blocking": blocking,
+        "awaiting_owner_scores": awaiting_owner,
+        "ready_to_calibrate": not blocking and not awaiting_owner,
+    }
+
+
+def print_readiness(report: dict) -> int:
+    """Render a readiness report and return the exit code it implies.
+
+    Never returns EXIT_CALIBRATED. Readiness is a statement about the INPUTS;
+    calibration is a statement about the judge, and this function makes no judge
+    call. See the module docstring's note on --check.
+    """
+    print("Calibration readiness (no judge calls, no network)\n")
+    print(f"  scenarios on disk          : {report['scenarios_present']}")
+    print(
+        f"  human_scores.csv rows      : {report['human_scores_valid']} scored "
+        f"/ {report['human_scores_attempted']} present"
+    )
+    print(f"  recorded responses on disk : {report['responses_present']}")
+
+    if report["unknown_scenarios"]:
+        print(f"  unknown scenario ids       : {', '.join(report['unknown_scenarios'])}")
+    if report["unknown_dimensions"]:
+        print(f"  unknown judge dimensions   : {', '.join(report['unknown_dimensions'])}")
+
+    print()
+    if report["blocking"]:
+        print("Blocking (machine-fixable):")
+        for item in report["blocking"]:
+            print(f"  - {item}")
+        print()
+    if report["awaiting_owner_scores"]:
+        print(
+            f"Awaiting the owner: {report['human_scores_valid']} of the {MIN_PAIRS} human "
+            "scores needed are filled in.\n"
+            "  That column is yours. Do not let anything - or anyone - fill it for you:\n"
+            "  a judge calibrated against model-written labels measures agreement with\n"
+            "  itself, which is exactly the tautology this file exists to detect.\n"
+        )
+
+    if report["ready_to_calibrate"]:
+        print("READY - every input is present; run without --check to compute the correlation.")
+        print("Ready is not calibrated: no judge has been called and rho is unknown.")
+        return EXIT_READY_TO_CALIBRATE
+
+    print("NOT READY - the correlation cannot be computed yet, so the judge is UNCALIBRATED.")
+    print("Uncalibrated is not 'passing'. No automated verdict in this system has been")
+    print("validated against a human until this reports READY and the run reports PASS.")
+    return EXIT_NOT_CALIBRATED_YET
+
+
+# ---------------------------------------------------------------------------
+# The correlation run
+# ---------------------------------------------------------------------------
+
+def compute_correlation(judge_fn) -> dict:
+    """Score every human-labelled row with `judge_fn` and correlate.
+
+    Pure of sys.exit and of print formatting decisions so the status can be
+    asserted by a test without driving a CLI. `judge_fn` is injected for the
+    same reason — the shipped code reached into tests.evals.judge inside main().
+
+    Returns:
+        {"status", "rho", "pairs", "pair_rate", "attempted", "valid", "errors",
+        "table"}. `rho` is None whenever status is anything but
+        calibrated/not_calibrated, so a caller can never read a number out of a
+        run that did not make the measurement. `pair_rate` is pairs/valid — the
+        fraction of the human-labelled set that actually produced a comparable
+        pair, which is the judge's own success rate on this run — and it is
+        GATED, not merely reported: see MIN_PAIR_RATE.
+    """
+    parsed = read_human_score_rows()
+
+    if parsed["missing_file"]:
+        return {
+            "status": STATUS_SETUP_ERROR,
+            "rho": None,
+            "pairs": 0,
+            "pair_rate": None,
+            "attempted": 0,
+            "valid": 0,
+            "errors": [f"{HUMAN_SCORES_CSV} not found."],
+            "table": [],
+        }
+
+    if parsed["valid"] == 0:
+        return {
+            "status": STATUS_NOT_CALIBRATED_YET,
+            "rho": None,
+            "pairs": 0,
+            "pair_rate": None,
+            "attempted": parsed["attempted"],
+            "valid": 0,
+            "errors": [],
+            "table": [],
+        }
 
     human_scores: list[float] = []
     judge_scores: list[float] = []
     errors: list[str] = []
+    table: list[dict] = []
 
-    for row in scored_rows:
+    for row in parsed["rows"]:
         sid = row["scenario_id"]
         dim = row["dimension"]
         h_score = row["human_score"]
@@ -180,55 +472,161 @@ def main() -> None:
             response = load_response(sid)
         except FileNotFoundError as exc:
             errors.append(str(exc))
-            print(f"{sid:<10}  {dim:<30}  {h_score:>6}  {'N/A':>6}  {'—':>5}  ERROR: {exc}")
+            table.append({"scenario_id": sid, "dimension": dim, "human": h_score,
+                          "judge": None, "reason": f"ERROR: {exc}"})
             continue
 
-        transcript = build_transcript(scenario, response)
-        tool_calls_log = response.get("tool_calls_log", [])
-
-        verdict = judge(dim, transcript, tool_calls_log)
+        verdict = judge_fn(dim, build_transcript(scenario, response),
+                           response.get("tool_calls_log", []))
         j_score = verdict["score"]
 
+        # The judge wrapper returns score=0 with verdict="ERROR" on any
+        # exception. Zero is not a low score, it is the absence of one, and
+        # correlating it would move rho with the failure rate of the API.
         if j_score == 0:
             errors.append(f"{sid}/{dim}: judge returned ERROR — {verdict['reason']}")
-            print(f"{sid:<10}  {dim:<30}  {h_score:>6}  {'ERR':>6}  {'—':>5}  {verdict['reason'][:60]}")
+            table.append({"scenario_id": sid, "dimension": dim, "human": h_score,
+                          "judge": None, "reason": verdict["reason"]})
             continue
 
-        diff = j_score - h_score
         human_scores.append(float(h_score))
         judge_scores.append(float(j_score))
-        print(f"{sid:<10}  {dim:<30}  {h_score:>6}  {j_score:>6}  {diff:>+5}  {verdict['reason'][:60]}")
+        table.append({"scenario_id": sid, "dimension": dim, "human": h_score,
+                      "judge": j_score, "reason": verdict["reason"]})
 
-    print()
+    pairs = len(human_scores)
+    pair_rate = pairs / parsed["valid"]
 
-    if errors:
-        print(f"Errors ({len(errors)}):")
-        for e in errors:
+    if pairs < MIN_PAIRS:
+        return {
+            "status": STATUS_NOT_CALIBRATED_YET,
+            "rho": None,
+            "pairs": pairs,
+            "pair_rate": pair_rate,
+            "attempted": parsed["attempted"],
+            "valid": parsed["valid"],
+            "errors": errors,
+            "table": table,
+        }
+
+    # The denominator gate. `pairs` alone answers "is there enough to correlate";
+    # this answers "did the judge actually score the set the human labelled".
+    if pair_rate < MIN_PAIR_RATE:
+        return {
+            "status": STATUS_NOT_CALIBRATED_YET,
+            "rho": None,
+            "pairs": pairs,
+            "pair_rate": pair_rate,
+            "attempted": parsed["attempted"],
+            "valid": parsed["valid"],
+            "errors": errors + [
+                f"Only {pairs} of {parsed['valid']} human-labelled row(s) produced a "
+                f"judge score ({pair_rate:.0%}, floor {MIN_PAIR_RATE:.0%}) - a "
+                "correlation over the rows that happened to succeed is not a "
+                "measurement of the set that was scored."
+            ],
+            "table": table,
+        }
+
+    rho = spearman(human_scores, judge_scores)
+    if rho != rho:  # NaN — zero variance on one side; no ranking to correlate
+        return {
+            "status": STATUS_NOT_CALIBRATED_YET,
+            "rho": None,
+            "pairs": pairs,
+            "pair_rate": pair_rate,
+            "attempted": parsed["attempted"],
+            "valid": parsed["valid"],
+            "errors": errors + [
+                "Spearman is undefined (no variance in one of the two score sets) - "
+                "score a wider spread of scenarios."
+            ],
+            "table": table,
+        }
+
+    return {
+        "status": STATUS_CALIBRATED if rho >= THRESHOLD else STATUS_NOT_CALIBRATED,
+        "rho": rho,
+        "pairs": pairs,
+        "pair_rate": pair_rate,
+        "attempted": parsed["attempted"],
+        "valid": parsed["valid"],
+        "errors": errors,
+        "table": table,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point. Returns the exit code rather than calling sys.exit."""
+    args = sys.argv[1:] if argv is None else argv
+
+    if "--check" in args:
+        return print_readiness(readiness())
+
+    from tests.evals.judge import judge  # noqa: PLC0415
+
+    result = compute_correlation(judge)
+
+    print(
+        f"Calibration run - {result['valid']} scored / {result['attempted']} rows present\n"
+    )
+    if result["table"]:
+        print(f"{'Scenario':<10}  {'Dimension':<30}  {'Human':>6}  {'Judge':>6}  {'Diff':>5}  Reason")
+        print("-" * 100)
+        for entry in result["table"]:
+            j = entry["judge"]
+            diff = f"{j - entry['human']:+d}" if j is not None else "—"
+            j_txt = str(j) if j is not None else "ERR"
+            print(
+                f"{entry['scenario_id']:<10}  {entry['dimension']:<30}  "
+                f"{entry['human']:>6}  {j_txt:>6}  {diff:>5}  {entry['reason'][:60]}"
+            )
+        print()
+
+    if result["errors"]:
+        print(f"Errors ({len(result['errors'])}):")
+        for e in result["errors"]:
             print(f"  - {e}")
         print()
 
-    n = len(human_scores)
-    if n < 3:
+    status = result["status"]
+
+    if status == STATUS_SETUP_ERROR:
+        print("SETUP ERROR - the harness could not read its own inputs.")
+    elif status == STATUS_NOT_CALIBRATED_YET:
+        rate = result.get("pair_rate")
         print(
-            f"Only {n} valid pair(s) — need at least 3 to compute correlation.\n"
-            "Fill more rows in human_scores.csv and re-run."
+            f"NOT CALIBRATED YET - {result['pairs']} usable pair(s) out of "
+            f"{result['valid']} labelled row(s)"
+            + (f" ({rate:.0%})" if rate is not None else "")
+            + f"; {MIN_PAIRS} pairs and {MIN_PAIR_RATE:.0%} of the set are needed.\n"
+            "This is neither a pass nor a judge failure: the measurement has not been made.\n"
+            "Run with --check to see exactly which input is missing. If it is the\n"
+            "human_score column, that one is the owner's and must be filled by a human."
         )
-        sys.exit(0)
-
-    rho = spearman(human_scores, judge_scores)
-
-    print(f"Spearman ρ = {rho:.3f}  (n={n}, threshold={THRESHOLD})")
-
-    if rho >= THRESHOLD:
-        print(f"PASS — judge is calibrated (ρ {rho:.3f} ≥ {THRESHOLD}). Safe to trust automated results.")
-        sys.exit(0)
+    elif status == STATUS_CALIBRATED:
+        print(
+            f"Spearman rho = {result['rho']:.3f}  (n={result['pairs']} of "
+            f"{result['valid']} labelled, threshold={THRESHOLD})"
+        )
+        print(
+            f"PASS - judge is calibrated (rho {result['rho']:.3f} >= {THRESHOLD}) "
+            f"over {result['pair_rate']:.0%} of the scored set. "
+            "Safe to trust automated results."
+        )
     else:
+        print(f"Spearman rho = {result['rho']:.3f}  (n={result['pairs']}, threshold={THRESHOLD})")
         print(
-            f"FAIL — judge is NOT calibrated (ρ {rho:.3f} < {THRESHOLD}).\n"
-            "Review rubrics in judge.py and adjust JUDGE_RUBRICS until ρ ≥ 0.75."
+            f"FAIL - judge is NOT calibrated (rho {result['rho']:.3f} < {THRESHOLD}).\n"
+            "Review rubrics in judge.py and adjust JUDGE_RUBRICS until rho >= 0.75."
         )
-        sys.exit(1)
+
+    return EXIT_CODE_FOR_STATUS[status]
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

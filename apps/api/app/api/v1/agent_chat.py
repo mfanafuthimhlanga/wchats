@@ -15,17 +15,17 @@ Security:
 Queue: runtime (CLAUDE.md: both Celery queues always present).
 """
 
-import structlog
-import psycopg2
 from uuid import UUID
 
+import psycopg2
+import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_tenant
 from app.core.database import get_async_db
-from app.core.security import fernet_decrypt
+from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.models.job import Job
 from app.models.tenant import Tenant
@@ -129,7 +129,7 @@ async def post_agent_chat(
     # ------------------------------------------------------------------
     if body.conversation_id is not None:
         owned = _validate_conv_owner(
-            agent.neon_connection_string,
+            agent.neon_connection_string,  # type: ignore[arg-type]  # provisioning is enforced upstream; None never reaches here
             body.conversation_id,
             agent.id,
         )
@@ -228,7 +228,7 @@ async def get_agent_conversations(
     # ------------------------------------------------------------------
     # 2. Query tenant DB for conversations (psycopg2 — separate Neon project)
     # ------------------------------------------------------------------
-    conn_str = fernet_decrypt(agent.neon_connection_string)
+    conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
     conn = psycopg2.connect(conn_str, connect_timeout=5)
     try:
         with conn.cursor() as cur:

@@ -55,7 +55,6 @@ if "claude_agent_sdk" not in sys.modules:
 
 import app.services.agent_tools as agent_tools  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Test 1: ContextVar propagation across asyncio.run()
 # ---------------------------------------------------------------------------

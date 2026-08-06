@@ -8,15 +8,13 @@ Tests:
     - SoulSchema requires do and do_not fields
 """
 
-import os
 
 import pytest
 from pydantic import ValidationError
 
 # env vars are set in conftest.py (loaded before this file);
 # the setdefault calls in individual test files use setdefault so conftest wins.
-from app.schemas.agent import AgentCreate, AgentCreateResponse, AgentResponse, AgentSoulUpdate, SoulSchema
-
+from app.schemas.agent import AgentCreate, AgentCreateResponse, AgentSoulUpdate, SoulSchema
 
 # ---------------------------------------------------------------------------
 # SoulSchema

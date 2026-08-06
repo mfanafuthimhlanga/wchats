@@ -20,8 +20,8 @@ Mock strategy:
     - dependency_overrides.clear() in finally blocks to avoid test pollution
 """
 
-import os
 import base64
+import os
 
 # Safety: ensure required env vars are present even if conftest is not loaded
 os.environ.setdefault("NEON_API_KEY", "test_neon_key")
@@ -38,7 +38,6 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
-import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.api.deps import get_async_db, get_current_tenant

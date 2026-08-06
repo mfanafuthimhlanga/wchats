@@ -7,7 +7,6 @@ Environment: NEON_ENCRYPTION_KEY must be set before importing security module.
 
 import base64
 import os
-import secrets
 
 import pytest
 
@@ -27,7 +26,6 @@ from app.core.security import (  # noqa: E402
     hash_api_key,
     verify_api_key,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fernet encrypt / decrypt

@@ -20,9 +20,9 @@ Security (T-04-07-02):
 """
 
 import json
-import structlog
-
 from typing import Any
+
+import structlog
 
 log = structlog.get_logger(__name__)
 

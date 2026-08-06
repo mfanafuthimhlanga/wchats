@@ -27,7 +27,6 @@ import uuid
 
 import pytest
 from sqlalchemy import create_engine, pool, text
-from sqlalchemy.orm import sessionmaker
 
 pytestmark = pytest.mark.integration
 
@@ -169,7 +168,6 @@ def test_apply_migrations_creates_v1_schema():
 
         # Assert no unexpected extra tables (only 10 + alembic_version)
         # Extra tables from Postgres system are filtered by information_schema.tables
-        extra = tables_in_db - V1_TABLES
         # pgvector may add internal tables; check only that our 10 are present
         assert V1_TABLES.issubset(tables_in_db), (
             f"Not all V1 tables are present. Found: {sorted(tables_in_db)}"

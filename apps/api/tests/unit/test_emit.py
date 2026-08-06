@@ -10,17 +10,15 @@ Tests:
     - emit() does not mutate the caller's original dict
 """
 
-import json
-import os
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, call, patch
-from uuid import uuid4
-
-import pytest
-
 # Set minimal env so settings module can load.
 # Generate a valid Fernet key (URL-safe base64-encoded 32 bytes).
 import base64
+import json
+import os
+from datetime import datetime
+from unittest.mock import MagicMock
+from uuid import uuid4
+
 _TEST_KEY = base64.urlsafe_b64encode(os.urandom(32)).decode()
 os.environ.setdefault("NEON_ENCRYPTION_KEY", _TEST_KEY)
 os.environ.setdefault("NEON_API_KEY", "test_neon")
@@ -29,7 +27,6 @@ os.environ.setdefault("CONTROL_DB_SYNC_URL", "postgresql://user:pass@localhost/t
 os.environ.setdefault("ADMIN_KEY", "test_admin")
 
 from app.services.events import emit  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -67,7 +64,6 @@ class TestEmitDbPersistence:
         assert isinstance(added_obj, JobEvent)
 
     def test_job_event_has_correct_job_id(self):
-        from app.models.job_event import JobEvent
 
         job_id, mock_db, mock_redis = make_mocks()
         emit(job_id, "job.started", {"k": "v"}, mock_db, mock_redis)
@@ -75,7 +71,6 @@ class TestEmitDbPersistence:
         assert added_obj.job_id == job_id
 
     def test_job_event_has_correct_event_type(self):
-        from app.models.job_event import JobEvent
 
         job_id, mock_db, mock_redis = make_mocks()
         emit(job_id, "neon.project.ready", {}, mock_db, mock_redis)
@@ -122,6 +117,50 @@ class TestEmitRedisPublish:
 
 
 # ---------------------------------------------------------------------------
+# str job_id — the form every Celery worker actually uses
+# ---------------------------------------------------------------------------
+
+
+class TestEmitAcceptsStringJobId:
+    """emit() is declared ``job_id: UUID | str`` and both forms must agree.
+
+    Celery task arguments are JSON, so every task in app/worker/tasks/ holds
+    job_id as a ``str`` and calls emit() with it; API-side callers pass the ORM
+    ``Job.id``, a ``UUID``.  Before these tests the str form — the one the entire
+    worker fleet uses — had no unit coverage at all, and the annotation claimed
+    UUID only.  If the two forms ever stop producing the same channel name, SSE
+    subscribers (app/services/sse.py:79 subscribes with the UUID form) silently
+    stop receiving worker events.
+    """
+
+    def test_str_and_uuid_produce_the_same_channel(self):
+        job_uuid, mock_db, mock_redis = make_mocks()
+        emit(job_uuid, "job.started", {}, mock_db, mock_redis)
+        uuid_channel = mock_redis.publish.call_args[0][0]
+
+        _, mock_db2, mock_redis2 = make_mocks()
+        emit(str(job_uuid), "job.started", {}, mock_db2, mock_redis2)
+        str_channel = mock_redis2.publish.call_args[0][0]
+
+        assert str_channel == uuid_channel
+        assert str_channel == f"job_events:{job_uuid}"
+
+    def test_str_job_id_reaches_the_row_unchanged(self):
+        job_uuid, mock_db, mock_redis = make_mocks()
+        emit(str(job_uuid), "job.started", {}, mock_db, mock_redis)
+        added_obj = mock_db.add.call_args[0][0]
+        # Handed to SQLAlchemy as-is; the Uuid column coerces the canonical form.
+        assert added_obj.job_id == str(job_uuid)
+
+    def test_str_job_id_still_publishes_and_commits_once(self):
+        job_uuid, mock_db, mock_redis = make_mocks()
+        emit(str(job_uuid), "job.started", {}, mock_db, mock_redis)
+        mock_redis.publish.assert_called_once()
+        mock_db.add.assert_called_once()
+        mock_db.commit.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # "at" timestamp injection
 # ---------------------------------------------------------------------------
 
@@ -144,7 +183,6 @@ class TestEmitTimestamp:
 
     def test_job_event_payload_contains_at(self):
         """The DB row's payload dict also has 'at'."""
-        from app.models.job_event import JobEvent
 
         job_id, mock_db, mock_redis = make_mocks()
         emit(job_id, "job.started", {"extra": "data"}, mock_db, mock_redis)

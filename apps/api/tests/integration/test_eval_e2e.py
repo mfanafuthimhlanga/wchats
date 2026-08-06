@@ -11,13 +11,18 @@ Gate:
 Test coverage:
     (a) run_eval_for_agent orchestrates the full sequence:
         update_eval_run_status(running) → run_ragas_eval →
-        write_eval_results → promote_to_verified_qa →
-        update_eval_run_status(complete)
-    (b) Neon branch is created before eval and deleted in finally block
-        (D-10 LOCKED).
-    (c) Promoted verified_qa rows have source='sandbox_test' and
-        promoted_by='system' (D-22 LOCKED).
-    (d) Scenarios with scores below threshold are NOT promoted (D-21).
+        write_eval_results → update_eval_run_status(complete)
+    (b) Scoring targets the Neon branch while the run's own observations
+        (status, results) target production — audit D2 / P1.
+    (c) No scenario is promoted to verified_qa, at any score, because no
+        scenario source the shipped schema allows clears the label trust
+        hierarchy — audit D5 / P1.
+
+    verified_qa promotion coverage that used to live here (D-21 thresholds,
+    D-22 provenance, D-23 question_vector) now lives in
+    tests/unit/test_eval_service.py::TestPromoteToVerifiedQA, which exercises
+    the promotion machinery against a hypothetical human-authored source so
+    that "nothing is promoted" stays distinguishable from "the path is dead".
 
 Mock strategy:
     - Patch at service boundary (app.services.eval_service.*)
@@ -31,7 +36,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -109,7 +114,7 @@ class TestRunEvalForAgentE2E:
         mock_psycopg2,
         mock_get_vo,
     ):
-        """run_eval_for_agent completes full sequence: running → eval → results → promotion → complete."""
+        """run_eval_for_agent completes the full sequence: running → eval → results → complete."""
         from app.services.eval_service import run_eval_for_agent
 
         scenario_id = str(uuid.uuid4())
@@ -150,7 +155,7 @@ class TestRunEvalForAgentE2E:
         result = run_eval_for_agent(
             eval_run_id=eval_run_id,
             scenarios=scenarios,
-            branch_conn_str="postgresql://branch-conn",
+            conn_str="postgresql://production-conn",
         )
 
         # Result structure
@@ -158,13 +163,21 @@ class TestRunEvalForAgentE2E:
         assert result["scenario_count"] == 1
         assert "means" in result
         assert "promoted_count" in result
-        assert result["promoted_count"] == 1  # score >= threshold
+        # Zero at any score: source='generated' is model-written and cannot
+        # clear the label trust hierarchy (P1).
+        assert result["promoted_count"] == 0
 
         # Ragas evaluate() was called
         assert mock_evaluate.called
 
-        # DB connections were made (status updates + results + promotion)
-        assert mock_psycopg2.connect.call_count >= 3  # running + results + promotion + complete
+        # Status (running + complete) and results — all on production, which is
+        # now the only connection string this function is given at all.
+        assert mock_psycopg2.connect.call_count >= 3
+        opened = [c.args[0] for c in mock_psycopg2.connect.call_args_list if c.args]
+        assert set(opened) == {"postgresql://production-conn"}, (
+            "audit D2: a run's own observations were written somewhere other "
+            "than production — the branch is deleted in the caller's `finally`"
+        )
 
     @patch("app.services.eval_service._get_vo")
     @patch("app.services.eval_service.psycopg2")
@@ -177,7 +190,7 @@ class TestRunEvalForAgentE2E:
     @patch("app.services.eval_service.anthropic")
     @patch("app.services.eval_service.evaluate")
     @patch("app.services.eval_service.EvaluationDataset")
-    def test_run_eval_for_agent_no_promotion_below_threshold(
+    def test_run_eval_for_agent_never_promotes_to_verified_qa(
         self,
         mock_dataset_cls,
         mock_evaluate,
@@ -191,7 +204,12 @@ class TestRunEvalForAgentE2E:
         mock_psycopg2,
         mock_get_vo,
     ):
-        """Scenarios below threshold are not promoted to verified_qa (D-21 LOCKED)."""
+        """No verified_qa write happens, below threshold or above it.
+
+        verified_qa is served to real customers ahead of hybrid search, so the
+        gate is WHO WROTE the label (source='generated' means Haiku did), not
+        how well it scored. D-21's thresholds still exist behind that gate.
+        """
         from app.services.eval_service import run_eval_for_agent
 
         scenario_id = str(uuid.uuid4())
@@ -227,19 +245,18 @@ class TestRunEvalForAgentE2E:
         result = run_eval_for_agent(
             eval_run_id=eval_run_id,
             scenarios=scenarios,
-            branch_conn_str="postgresql://branch-conn",
+            conn_str="postgresql://production-conn",
         )
 
-        assert result["promoted_count"] == 0, (
-            "D-21 violation: scenario below threshold was promoted"
-        )
+        assert result["promoted_count"] == 0
 
         # No INSERT INTO verified_qa should have been executed
         for call_obj in mock_cursor.execute.call_args_list:
             args = call_obj[0]
             sql = args[0] if args else ""
             assert "INSERT INTO verified_qa" not in sql, (
-                "INSERT INTO verified_qa executed despite score below threshold (D-21 violation)"
+                "INSERT INTO verified_qa executed by an eval run — that row "
+                "would be served to a customer by verified_qa_lookup"
             )
 
     def test_eval_e2e_guard_is_active(self):

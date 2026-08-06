@@ -183,8 +183,9 @@ def test_create_agent_real_neon() -> None:
             # 3. Dispatch the Celery chain
             # ------------------------------------------------------------------
             from celery import chain
-            from app.worker.tasks.pipeline.provision import provision_neon
+
             from app.worker.tasks.pipeline.migrations import apply_migrations
+            from app.worker.tasks.pipeline.provision import provision_neon
 
             chain(
                 provision_neon.s(str(tenant_id), str(agent_id)),

@@ -14,19 +14,18 @@ Celery chain is patched to prevent real task dispatch.
 """
 
 import unittest.mock
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-# conftest.py sets all required env vars before app import
-from app.main import app
 from app.api.deps import get_async_redis, get_current_tenant
 from app.core.database import get_async_db
-from app.models.tenant import Tenant
 
+# conftest.py sets all required env vars before app import
+from app.main import app
+from app.models.tenant import Tenant
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -55,9 +54,6 @@ def _make_mock_db_for_create():
 
     _agent_id = uuid4()
     _job_id = uuid4()
-
-    # Track how many times refresh is called to distinguish agent vs job
-    refresh_calls = []
 
     async def _refresh(obj):
         """Inject UUIDs into ORM objects, simulating DB server_default."""

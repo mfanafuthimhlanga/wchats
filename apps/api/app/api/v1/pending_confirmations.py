@@ -55,6 +55,8 @@ Security:
 
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Literal
 from uuid import UUID, uuid4
 
 import structlog
@@ -131,7 +133,7 @@ async def _execution_outcome_for(
     agent_id: UUID,
     skill: str,
     arguments: dict | None,
-) -> tuple[str | None, str | None, object | None]:
+) -> tuple[Literal["executed", "not_executed"] | None, str | None, datetime | None]:
     """Read-time execution-outcome lookup against tool_calls_audit (OD-3).
 
     No new column, no 0020 migration — the resolver already writes exactly
@@ -181,7 +183,12 @@ async def _execution_outcome_for(
     return "not_executed", row["error"], row["created_at"]
 
 
-def _row_to_response(row: dict, execution_outcome: str | None, execution_error: str | None, executed_at: object | None) -> PendingConfirmationResponse:
+def _row_to_response(
+    row: dict,
+    execution_outcome: Literal["executed", "not_executed"] | None,
+    execution_error: str | None,
+    executed_at: datetime | None,
+) -> PendingConfirmationResponse:
     """Build one PendingConfirmationResponse from a scripted/claimed row dict."""
     return PendingConfirmationResponse(
         id=row["id"],
