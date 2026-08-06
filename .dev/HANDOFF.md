@@ -1,5 +1,8 @@
 # HANDOFF — 2026-08-06
 
+> **`.dev/BACKLOG.md` is the single ordered list of open work.** Read it before starting anything.
+> This file is the current-state snapshot; that one is the queue.
+
 **All three PRs are merged. `main` is at `fd47133`** — the `.dev` convention (#1), the eval foundation
 (#2) and the CI repair (#3). Suite 1199 → **1675 passed / 11 skipped / 0 failed**; ruff 461 → 0;
 mypy 75 → 0. Trace: `.dev/traces/260805-eval-foundation.md`.

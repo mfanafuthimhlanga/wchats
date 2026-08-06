@@ -68,18 +68,24 @@ trivial tasks still run solo. Regardless of engine, artifacts persist in `.dev/`
 
 ```
 .dev/
+  BACKLOG.md                         ← THE single ordered list of open work. Read first.
+  HANDOFF.md                         ← current-state snapshot; read at session start
   plans/     YYMMDD-<slug>.md        ← BEFORE execution: goal, approach, phases, files, risks, tests
   traces/    YYMMDD-<slug>.md        ← AFTER execution: what actually changed, decisions, deviations
   workflows/ <name>.workflow.js      ← the orchestration itself, versioned and re-runnable
   reference/ <topic>.md              ← durable findings that outlive one task
   reviews/   <flattened-branch>.md   ← diff-review packets (SUSPENDED — see below)
   retro.md                           ← append-only regression retro log
-  HANDOFF.md                         ← session pause handoff
 ```
 
 Rules:
 
 - **No execution of a non-trivial task without a plan file first. No task is done without its trace.**
+- **`BACKLOG.md` is the queue and it is maintained transactionally.** A phase that closes an
+  item deletes its row in the same commit that lands the fix; a phase that discovers work adds a
+  row. Outstanding work living only in the tail of a trace or a plan is how it gets lost.
+- **A workflow's tier-2 judgement is extracted to `.dev/reference/` before the session ends.**
+  The workflow journal lives in a temp directory and does not survive.
 - When a Workflow runs, copy its script into `.dev/workflows/` so the orchestration is versioned.
 - Plans and traces are **terse working documents** — bullets, file lists, decisions. The GSD habit of
   600-word narrative paragraphs per plan is what `.planning/` became; do not reproduce it here.
