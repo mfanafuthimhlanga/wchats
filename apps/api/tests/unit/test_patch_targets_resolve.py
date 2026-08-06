@@ -34,6 +34,7 @@ AST cannot.
 from __future__ import annotations
 
 import ast
+from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 
@@ -43,27 +44,32 @@ _TESTS = _API_ROOT / "tests"
 # ---------------------------------------------------------------------------
 # Targets that do NOT resolve today. Every entry is pre-existing — none was
 # introduced by the lint work — and every entry is a real defect, not an
-# exemption. Keyed by (test file, target) so it survives line renumbering.
-# test_known_broken_targets_are_still_broken below fails if one of these starts
-# resolving, so the list cannot rot into a permanent excuse.
+# exemption. Keyed by (test file, target) so it survives line renumbering, and
+# valued by (number of call sites, reason) so the phase record's headline count
+# is checked by the suite instead of being retyped from a scroll-back.
+# test_known_broken_targets_are_still_broken fails if one of these starts
+# resolving, so the list cannot rot into a permanent excuse;
+# test_known_broken_site_counts_are_exact fails if a count drifts either way.
 # ---------------------------------------------------------------------------
-_KNOWN_BROKEN: dict[tuple[str, str], str] = {
+_KNOWN_BROKEN: dict[tuple[str, str], tuple[int, str]] = {
     (
         "tests/integration/test_actor_latency.py",
         "app.services.transactional.tools.get_adapter",
     ): (
+        1,
         "app/services/transactional/tools.py:89 imports `get_adapter_for_skill`. "
         "`get_adapter` is the older name and was never re-pointed. The test would "
-        "raise AttributeError at patch time; it has never run."
+        "raise AttributeError at patch time; it has never run.",
     ),
     (
         "tests/integration/test_ingestion_chain.py",
         "app.services.chunking_service.HybridChunker",
     ): (
-        "4 sites. Identical to the defect fixed in tests/unit/test_chunking_service.py: "
+        4,
+        "Identical to the defect fixed in tests/unit/test_chunking_service.py: "
         "chunking_service.py imports HybridChunker inside the function body, so the "
         "module has no such attribute. The unit copy was corrected; this integration "
-        "copy was not, and integration has never reached a test."
+        "copy was not, and integration has never reached a test.",
     ),
 }
 
@@ -168,6 +174,25 @@ def _unresolved() -> list[tuple[str, str, int, str]]:
     return problems
 
 
+def _measure() -> dict[str, int]:
+    """The three counts this module is the authority for.
+
+    Anything written about those counts in a commit message or a phase record should be
+    produced by running this, not retyped from a terminal scroll-back:
+
+        cd apps/api && .venv/Scripts/python.exe tests/unit/test_patch_targets_resolve.py
+    """
+    unresolved = _unresolved()
+    return {
+        "targets_scanned": sum(
+            len(_app_patch_targets(f.read_text(encoding="utf-8", errors="replace")))
+            for f in _TESTS.rglob("*.py")
+        ),
+        "unresolvable_sites": len(unresolved),
+        "pinned_targets": len({(rel, target) for rel, target, _, _ in unresolved}),
+    }
+
+
 def test_every_app_patch_target_is_bound_at_module_level():
     """A patch target that names nothing is a test that raises instead of testing."""
     problems = [p for p in _unresolved() if (p[0], p[1]) not in _KNOWN_BROKEN]
@@ -186,10 +211,44 @@ def test_known_broken_targets_are_still_broken():
     )
 
 
+def test_known_broken_site_counts_are_exact():
+    """How MANY sites each pin covers is part of the pin, not a number someone remembers.
+
+    Without this, `_KNOWN_BROKEN` says only *that* a (file, target) pair is broken. A
+    later phase that fixes three of the four `HybridChunker` sites would leave both
+    assertions above green while the defect is still live, and a phase that reads the
+    record's headline count has nothing to check it against — which is exactly how the
+    P2 log came to claim six unresolvable targets against a tree that has five.
+    """
+    live = Counter((rel, target) for rel, target, _, _ in _unresolved())
+    drifted = [
+        f"  {rel}  {target}  pinned {expected} site(s), found {live.get((rel, target), 0)}"
+        for (rel, target), (expected, _) in sorted(_KNOWN_BROKEN.items())
+        if live.get((rel, target), 0) != expected
+    ]
+    assert not drifted, (
+        "Pinned site counts no longer match the suite. Fixing sites is good — update the "
+        "count (or drop the entry) in the same commit:\n" + "\n".join(drifted)
+    )
+
+    expected_total = sum(count for count, _ in _KNOWN_BROKEN.values())
+    measured = _measure()
+    assert measured["unresolvable_sites"] == expected_total, (
+        f"{measured['unresolvable_sites']} unresolvable sites, but the pins account for "
+        f"{expected_total}. Every unresolvable site must be pinned with its count."
+    )
+    assert measured["pinned_targets"] == len(_KNOWN_BROKEN), (
+        f"{measured['pinned_targets']} distinct (file, target) pairs are unresolvable, "
+        f"but _KNOWN_BROKEN has {len(_KNOWN_BROKEN)} entries."
+    )
+
+
 def test_the_scan_actually_finds_targets():
     """A silent scan of zero files would make both assertions above vacuous."""
-    total = sum(
-        len(_app_patch_targets(f.read_text(encoding="utf-8", errors="replace")))
-        for f in _TESTS.rglob("*.py")
-    )
+    total = _measure()["targets_scanned"]
     assert total > 500, f"expected the suite's ~1150 app.* patch targets, scanned {total}"
+
+
+if __name__ == "__main__":  # pragma: no cover - a re-measurement entry point, not a test
+    for _name, _value in _measure().items():
+        print(f"{_name:20} {_value}")

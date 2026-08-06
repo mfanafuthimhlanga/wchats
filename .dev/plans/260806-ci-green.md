@@ -169,12 +169,24 @@ Closed: the ruff config deprecation. Everything below is open.
   loop of the gate command capturing `--tb=long`, to find out which of the three assertions failed.
   If it is `mock_sleep.assert_called_once_with(1)`, the thread hypothesis is confirmed and the fix is
   `assert_any_call(1)` — `mock_create_engine.call_count == 2` already pins the loop to exactly one
-  sleep, so nothing real is lost.
-- **Six `patch("app...")` targets in the suite name something that does not exist.** All pre-existing,
-  all pinned with reasons in `tests/unit/test_patch_targets_resolve.py::_KNOWN_BROKEN`. The notable one:
-  `tests/integration/test_ingestion_chain.py` patches `app.services.chunking_service.HybridChunker` at
-  4 sites — the identical defect P1 corrected in `tests/unit/test_chunking_service.py`, still live in
-  the integration copy, which has never reached a test.
+  sleep, so nothing real is lost. Take the green baseline for that loop from the coverage bullet
+  below (it is per-commit, and it moves whenever a test is added): a passing run whose count differs
+  from it is a stale record, not the flake and not a regression, so reconcile it against a fresh
+  measurement before chasing anything.
+- **Five `patch("app...")` sites in the suite name something that does not exist**, across two
+  `(file, target)` pairs. All pre-existing, both pinned — with a reason *and now an exact site count* —
+  in `tests/unit/test_patch_targets_resolve.py::_KNOWN_BROKEN`. The full list, so a later phase knows
+  when it is done:
+  - `tests/integration/test_ingestion_chain.py` → `app.services.chunking_service.HybridChunker`,
+    **4 sites** (lines 580, 720, 865, 955). The identical defect P1 corrected in
+    `tests/unit/test_chunking_service.py`, still live in the integration copy, which has never reached
+    a test.
+  - `tests/integration/test_actor_latency.py` → `app.services.transactional.tools.get_adapter`,
+    **1 site** (line 221). The module binds `get_adapter_for_skill`; the old name was never re-pointed.
+
+  There is no sixth. Re-measure rather than trusting this paragraph — from `apps/api`:
+  `.venv/Scripts/python.exe tests/unit/test_patch_targets_resolve.py` prints the three counts
+  (`targets_scanned` / `unresolvable_sites` / `pinned_targets`; **1157 / 5 / 2** at `50d97f9`).
 - **`tests/integration/test_integration_e2e.py` has zero T-16-01 credential-leak coverage.** The block
   that claimed it built two strings and looped over six forbidden patterns with `pass` as the body.
   The dead code is gone and a comment marks the gap; the real assertion still needs writing, by a phase
@@ -183,7 +195,40 @@ Closed: the ruff config deprecation. Everything below is open.
   `pipeline/parse.py` only ever calls `parse_document_from_bytes`, so the patched `parse_document` could
   not have been called. The import is kept (`# noqa: F401`) because deleting it turns four tests into
   AttributeErrors — observed — but the assertion proves nothing.
-- **Coverage margin narrowed to 0.86 points.** CI's own command gives 1668 passed, 13 skipped, 80.86%
-  against `--cov-fail-under=80`, down from the 81.17% P1 measured — clearing F401 deletes covered
-  module-level import statements. Measured on Windows with `apps/api/.env` present; CI is Linux with no
-  `.env` and a fresh pip resolve. The threshold was not touched.
+- **Coverage margin narrowed to 0.86 points.** CI's own command
+  (`pytest tests/unit -x --tb=short --cov=app --cov-fail-under=80`) gives **1671 passed, 13 skipped,
+  80.86%** against `--cov-fail-under=80` at `50d97f9`, down from the 81.17% P1 measured at `8bf225e`
+  (1668 passed, 13 skipped) — clearing F401 deletes covered module-level import statements. Measured on
+  Windows with `apps/api/.env` present; CI is Linux with no `.env` and a fresh pip resolve. The
+  threshold was not touched.
+
+  The two skips CI sees and the repo gate does not are `test_chunking_service.py` and
+  `test_docling_service.py`, which the gate command `--ignore`s and CI collects-and-skips (docling is
+  not installed here). So the same tree reads 1671/11 under the gate command and 1671/13 under CI's.
+
+  The P2 review-fix commit adds one guard test, taking the branch to **1672 passed / 13 skipped /
+  80.89%** under CI's command and 1672/11 under the gate command. Note the coverage moved without any
+  `app/` change and without the new test importing `app`: 80.86% → 80.89% on the same product code, so
+  the percentage jitters by a few hundredths run to run (the Langfuse daemon threads execute `app/`
+  code on their own schedule). At a 0.86-point margin that is harmless; it is worth knowing before
+  anyone reads a small coverage move as a real one.
+
+#### Corrections to this record (re-measured 2026-08-06 at `50d97f9`)
+
+Three counts above and in `b318bda`'s commit message were transcribed from a scroll-back rather than
+re-measured, and each was wrong by one step. Corrected in place above; kept here because a branch whose
+whole claim is *the numbers are measured* should show its own misses rather than quietly restate them.
+
+| Claimed | Actual | How it went wrong |
+| --- | --- | --- |
+| `1668 passed, 13 skipped` under CI's command, post-P2 | `1671 passed, 13 skipped` | The **pre-P2** pass count, paired with the post-P2 coverage figure. Verified: a worktree at `8bf225e` gives exactly 1668/13/81.17%. |
+| "Six `patch(...)` targets ... do not exist" | **5** sites / **2** pinned pairs | Neither reading of the module's output is six. `b318bda` repeats it. |
+| "all **1158** `patch(...)`/`setattr(...)` string targets" (`b318bda`) | **1157** | Off by one. The module docstring's looser "~1150" was never wrong. |
+
+Two of the three are now checked by the suite rather than by prose:
+`test_patch_targets_resolve.py::test_known_broken_site_counts_are_exact` pins each entry's site count
+and asserts the pins account for every unresolvable site, so "five" fails the build if it drifts either
+way — including the case that motivated it, a later phase fixing 3 of the 4 `HybridChunker` sites and
+leaving the older assertions green. The scanned-target total stays a loose lower bound on purpose
+(pinning 1157 exactly would break on every test that adds a `patch`); `_measure()` and the module's
+`__main__` entry point exist so it is re-read in one command instead of remembered.
