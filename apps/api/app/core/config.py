@@ -191,3 +191,20 @@ class Settings(BaseSettings):
 
 # Module-level singleton — imported by every module that needs config
 settings = Settings()
+
+
+# ---------------------------------------------------------------------------
+# Pinned model identifiers (constants, deliberately NOT Settings fields)
+# ---------------------------------------------------------------------------
+# AGENT_TURN_MODEL is the model that serves a customer turn — the model an eval
+# score is actually an assertion ABOUT. It is a constant rather than a Settings
+# field because it is not an operational knob: changing it changes what every
+# recorded score means, so it must move by code review and land in the eval
+# run's configuration tuple (eval_runs.config.model_id, migration 0013), never
+# by an environment variable that no run record would notice.
+#
+# Single source of truth for run_agent_turn's ClaudeAgentOptions(model=...),
+# its Langfuse generation trace, and eval_service.build_eval_run_config. A
+# second literal anywhere else is a drift bug: the score would be attributed to
+# a model that did not produce it.
+AGENT_TURN_MODEL = "claude-haiku-4-5-20251001"

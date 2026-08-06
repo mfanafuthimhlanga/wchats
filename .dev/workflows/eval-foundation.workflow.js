@@ -24,6 +24,12 @@ export const meta = {
 const PLAN = '.dev/plans/260805-eval-foundation.md'
 const AUDIT = '.dev/reference/measurement-layer-audit.md'
 
+// Diff base for the tier-2 artifact. NOT `main`: this branch sits on top of
+// chore/dev-workflow-convention (fd8fa20), which carries the .dev scaffold and the plan
+// itself. Diffing from main would sweep ~1500 lines of convention docs into the judge's
+// bounded artifact, crowding out the implementation it is supposed to be judging.
+const BASE = 'fd8fa20'
+
 const PHASES = [
   { id: 'P1', title: 'P1 persistence + tuple + label' },
   { id: 'P2', title: 'P2 gate + golden set' },
@@ -80,7 +86,7 @@ const ARTIFACT_SCHEMA = {
   additionalProperties: false,
   required: ['stat', 'diff', 'omitted', 'test_inventory'],
   properties: {
-    stat: { type: 'string', description: 'git diff --stat main...HEAD, verbatim' },
+    stat: { type: 'string', description: 'git diff --stat <BASE>...HEAD, verbatim' },
     diff: { type: 'string', description: 'the unified diff of the source changes, verbatim. Prefer completeness; drop lockfiles/generated/snapshot files first.' },
     omitted: { type: 'array', items: { type: 'string' }, description: 'every path whose diff was left out, with the reason. Never omit silently.' },
     test_inventory: { type: 'string', description: 'names of the test functions added/changed in this branch (from the diff), one per line — the judge needs to see what is actually pinned' },
@@ -254,7 +260,7 @@ Run the backend gate. All green -> commit as fix(evals): ${p.id} review fixes wi
 function collectPrompt() {
   return `Assemble the bounded review artifact for the eval-foundation branch in the repo at the current working directory. You are a collector, not a reviewer — do not judge anything, do not fix anything, do not run tests.
 
-Run: git diff --stat main...HEAD, then git diff main...HEAD.
+Run: git diff --stat ${BASE}...HEAD, then git diff ${BASE}...HEAD. Use that base commit exactly — do NOT diff against main, which would pull in an unrelated convention-scaffold commit.
 
 Return the stat verbatim, and the diff verbatim in the diff field. This is the ONLY view a downstream judge will have of this work — it cannot open a file, so anything you leave out is invisible to it. If the diff is too large to return whole, drop in this order and only as far as you must: lockfiles, generated artifacts, then large mechanical fixture files. NEVER drop a source file to save room, and record every omission with its reason in "omitted". A silent truncation would make the judge's verdict a statement about a diff nobody read.
 

@@ -149,5 +149,7 @@ reaches the attacker; a run with zero valid probes reports `valid=0` and is not 
   not a regression, but state it.
 - **P4 may be unbounded.** The SDK tool-registration surface is unknown until read. The phase is
   written to permit an honest stop.
-- **The baseline is unverified.** 1199/8 was recorded from an executor's output, not re-observed.
-  Establish the real number before claiming any delta.
+- ~~The baseline is unverified.~~ **Resolved 2026-08-05: observed 1199 passed / 8 skipped / 0 failed
+  / 33 warnings in 202s at `fd8fa20`**, matching the recorded figure. Deltas are measured against
+  this. The run also produced runtime evidence for D4 — three attacker coroutines reported "was never
+  awaited" — recorded in the audit.

@@ -423,6 +423,56 @@ class TestOpenFindings:
         assert finding["id"] == str(finding_id)
         assert finding["description"] == "The agent complied with the injected instruction."
 
+    def test_an_invalid_run_finding_explains_itself_in_the_console(self):
+        """P4 review claimed the INVALID finding's sentence never reaches the
+        console because red_team_findings has no description column. It does.
+
+        The correlation is built from the SHIPPED finding here, not from a
+        hand-written snapshot: `_invalid_observation_finding` produces the row
+        and the JSONB entry, and the (attack_vector, probe_message, turn_count)
+        triple is what carries the explanation across. Without this, the owner
+        sees a `high` severity beside `probe_message='0 probe(s) attempted...'`
+        and `agent_response='<no agent response was observed>'`, names no
+        vulnerability from it, and contains it.
+        """
+        from app.services import redteam_programme_service
+        from app.services.red_team_service import (
+            ProbeSession,
+            _invalid_observation_finding,
+        )
+
+        finding = _invalid_observation_finding(
+            ProbeSession(attack_vector="hallucination", sequences_requested=3),
+            "The attacker loop raised: no SDK transport.",
+        )
+        finding_id = uuid4()
+        run_id = uuid4()
+        row = (
+            finding_id,
+            run_id,
+            None,
+            finding.severity,
+            finding.attack_vector,
+            finding.probe_message,
+            finding.agent_response,
+            finding.turn_count,
+            None,
+            [finding.model_dump()],  # exactly what red_team.py Step 7 stores
+        )
+        mock_conn, _ = _make_programme_cursor(open_finding_rows=[row])
+
+        with patch.object(
+            redteam_programme_service.psycopg2, "connect", return_value=mock_conn
+        ):
+            result = redteam_programme_service.read_programme(
+                "postgresql://fake/tenantdb", "agent-invalid"
+            )
+
+        assert len(result["open_findings"]) == 1
+        description = result["open_findings"][0]["description"]
+        assert description is not None
+        assert "INVALID, not clean" in description
+
     def test_correlation_miss_on_turn_count_returns_finding_with_null_description(self):
         """The snapshot entry differs from the finding row in turn_count only —
         proves the match is on the full (attack_vector, probe_message,

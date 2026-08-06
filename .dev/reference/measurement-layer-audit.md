@@ -103,6 +103,21 @@ so `report_finding`'s `agent_response` would be whatever it invents.
 patch `app.services.red_team_service.asyncio.run` with a canned return, so `_run_agent_loop` — the
 entire broken region — never executes under test.
 
+**Runtime corroboration (baseline run, 2026-08-05).** The suite itself says so, in warnings nobody
+was reading:
+
+```
+tests/unit/test_red_team_service.py::TestHallucinationAgent::test_hallucination_agent_detects_false_confidence
+  RuntimeWarning: coroutine 'run_conversation_injection_agent.<locals>._run_agent_loop' was never awaited
+  RuntimeWarning: coroutine 'run_data_leakage_agent.<locals>._run_agent_loop' was never awaited
+tests/unit/test_red_team_service.py::TestInjectionSplit::test_content_runner_returns_empty_without_conn_str
+  RuntimeWarning: coroutine 'run_hallucination_agent.<locals>._run_agent_loop' was never awaited
+```
+
+The coroutine is constructed and discarded, unawaited, because the `asyncio.run` that would have
+driven it is patched out. Three named attacker loops, confirmed at runtime as never executed. This is
+independent of the source reading above and reaches the same conclusion.
+
 Affected: `conversation_injection`, `data_leakage`, `hallucination`, `confused_deputy`. (Plus
 `run_prompt_injection_agent`, the back-compat alias at `:347`.)
 

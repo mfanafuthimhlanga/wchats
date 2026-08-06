@@ -17,6 +17,15 @@ class RedTeamRunResponse(BaseModel):
     findings: list[dict[str, Any]]  # raw JSONB list from tenant DB, each dict is a finding object
     max_severity: str | None
     deployment_blocked: bool
+    # The run's own (vectors_attempted, vectors_valid, invalid_vectors,
+    # complete), stored on the row at completion by migration 0015. None means
+    # the run did not record it — every run written before 0015 — and
+    # coverage_recorded says which of the two it is, because an empty findings
+    # list without a denominator cannot distinguish "nothing succeeded" from
+    # "nothing could try". Defaulted so a construction predating the column
+    # still validates.
+    coverage: dict[str, Any] | None = None
+    coverage_recorded: bool = False
 
 
 class RedTeamRunListResponse(BaseModel):
