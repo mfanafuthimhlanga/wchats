@@ -276,7 +276,8 @@ async def call_actor_gate(
     # T-15-07: Langfuse unavailability must never alter the decision or block the gate.
     if _langfuse is not None:
         try:
-            with _langfuse.start_as_current_generation(
+            with _langfuse.start_as_current_observation(
+            as_type="generation",
                 name="actor-gate",
                 model=HAIKU_MODEL,
                 input={"skill": skill, "args_keys": list(arguments.keys())},

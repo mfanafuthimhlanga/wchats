@@ -129,9 +129,6 @@ def ready_agent_with_tenant_db(db_session, test_tenant):
 
     # Create agent with status='ready' and the encrypted connection string.
     # NOTE: Use cast() to avoid SQLAlchemy interpreting ::jsonb as a named param.
-    from sqlalchemy import cast
-    from sqlalchemy.dialects.postgresql import JSONB as PG_JSONB
-    import json as _json
 
     db_session.execute(
         text(
@@ -359,7 +356,7 @@ def _mock_redis_client():
 
 def _build_metadata_mock():
     """Return a mock Anthropic result with valid ChunkMetadataAndEntities."""
-    from app.services.metadata_service import ChunkMetadataAndEntities, EntityExtraction
+    from app.services.metadata_service import ChunkMetadataAndEntities
 
     parsed = ChunkMetadataAndEntities(
         summary="A test summary.",
@@ -546,6 +543,7 @@ def test_full_chain_runs_in_eager_mode_with_mocks(
     tenant_id, agent_id, job_id, tenant_db_url = ready_agent_with_tenant_db
 
     from celery import chain
+
     from app.worker.tasks.pipeline.chunk import chunk_documents
     from app.worker.tasks.pipeline.embed import embed_and_migrate
     from app.worker.tasks.pipeline.metadata import generate_metadata
@@ -686,6 +684,7 @@ def test_idempotent_chain(
     tenant_id, agent_id, job_id, tenant_db_url = ready_agent_with_tenant_db
 
     from celery import chain
+
     from app.worker.tasks.pipeline.chunk import chunk_documents
     from app.worker.tasks.pipeline.embed import embed_and_migrate
     from app.worker.tasks.pipeline.metadata import generate_metadata
@@ -830,6 +829,7 @@ def test_chain_emits_all_11_m2_event_types(
     tenant_id, agent_id, job_id, tenant_db_url = ready_agent_with_tenant_db
 
     from celery import chain
+
     from app.worker.tasks.pipeline.chunk import chunk_documents
     from app.worker.tasks.pipeline.embed import embed_and_migrate
     from app.worker.tasks.pipeline.metadata import generate_metadata
@@ -925,6 +925,7 @@ def test_chain_no_conn_strings_logged(
     tenant_id, agent_id, job_id, tenant_db_url = ready_agent_with_tenant_db
 
     from celery import chain
+
     from app.worker.tasks.pipeline.chunk import chunk_documents
     from app.worker.tasks.pipeline.embed import embed_and_migrate
     from app.worker.tasks.pipeline.metadata import generate_metadata

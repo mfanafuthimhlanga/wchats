@@ -232,13 +232,13 @@ from sqlalchemy import text as sa_text
 from app.core.database import get_sync_db
 from app.services.capability_service import HASHED_ENVELOPE_FIELDS
 from app.services.red_team_probe import CLEAN_TENANT_ENVELOPES
-from app.services.transactional.registry import TOOL_REGISTRY
 
 # The gate's OWN rate-limit parser. Imported rather than reimplemented for the
 # same reason the envelopes are: a second copy of "what does 2/hour mean" would
 # let this eval size its call volume against a bound the enforcement layer does
 # not actually apply. enforcement.py's module docstring lists it as provided API.
 from app.services.transactional.enforcement import _parse_rate_limit
+from app.services.transactional.registry import TOOL_REGISTRY
 from app.services.transactional.schemas import SKILL_INPUT_MODELS
 
 log = structlog.get_logger(__name__)
@@ -688,7 +688,7 @@ def fixture_drift() -> list[str]:
     """
     reasons: list[str] = []
 
-    shipped_names = [row.get("skill") for row in CLEAN_TENANT_ENVELOPES]
+    shipped_names = [str(row.get("skill") or "") for row in CLEAN_TENANT_ENVELOPES]
     duplicates = sorted({n for n in shipped_names if shipped_names.count(n) > 1})
     for name in duplicates:
         reasons.append(f"clean_tenant_envelopes_duplicate_skill:{name}")
@@ -707,7 +707,7 @@ def fixture_drift() -> list[str]:
         reasons.append(f"input_model_without_mutating_skill:{name}")
 
     for row in CLEAN_TENANT_ENVELOPES:
-        name = row.get("skill")
+        name = str(row.get("skill") or "")
         missing = sorted(set(HASHED_ENVELOPE_FIELDS) - set(row))
         extra = sorted(set(row) - set(HASHED_ENVELOPE_FIELDS))
         for key in missing:
@@ -912,7 +912,7 @@ def build_decision_fixtures() -> list[DecisionFixture]:
                 _fixture(
                     FAMILY_ABOVE_CEILING,
                     overrides={},
-                    request=_with_amount(skill, ceiling + 1),
+                    request=_with_amount(skill, int(ceiling or 0) + 1),
                     verified_session=needs_identity,
                     expected=DISPOSITION_REFUSE,
                     basis=LABEL_BASIS_ENFORCED,

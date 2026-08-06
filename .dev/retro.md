@@ -80,6 +80,31 @@ writing down which way it should fail.
 `provider_not_configured` as a finding because the run was *"INVALID, not clean."* One place got it
 right; it never became a system rule.
 
+## Family B, recurrence 3 — Langfuse generation tracing has never run
+
+Found 2026-08-06 by mypy, on a branch whose only purpose was making the type checker run at all.
+
+`validation_service.py:382`, `actor_seam.py:279` and `agent.py:443` all called
+`_langfuse.start_as_current_generation(...)`. **`langfuse 4.14.0` has no such method** — verified at
+runtime: `hasattr(langfuse.Langfuse, 'start_as_current_generation')` is `False`, and the only
+`start_*` methods are `start_as_current_observation` and `start_observation`.
+
+Every call site is inside a `try: ... except Exception:` fire-and-forget wrapper, so the
+`AttributeError` was swallowed silently. **Judge tracing, Actor-gate tracing and agent-turn tracing
+have therefore never produced a single Langfuse generation**, while the code reads as though
+observability is wired and CLAUDE.md rule 3 records "Langfuse v4 API only" as satisfied.
+
+Fixed here by switching all three to `start_as_current_observation(as_type="generation", ...)`.
+
+**What the plans failed to anticipate:** a fire-and-forget `except` around an observability call
+converts "this feature is broken" into "this feature is quiet". Nothing distinguishes a tracer that
+emitted nothing because nothing happened from one that emitted nothing because the method does not
+exist. Same shape as D3's swallowed `UndefinedColumn` and the tool-less attackers' clean runs — third
+recurrence, third different subsystem.
+
+**Standing rule:** an `except` around an optional subsystem must log at a level someone reads, and
+name the exception type. If observability is worth calling, its failure is worth one warning line.
+
 ## Family C — "an in-memory or ephemeral marker advanced before/instead of a durable write"
 
 **Recurrences: 2.**

@@ -28,9 +28,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import types
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # Monkeypatch claude_agent_sdk BEFORE importing agent_tools.
@@ -83,10 +81,8 @@ import app.services.agent_tools as agent_tools  # noqa: E402  (after monkeypatch
 from app.services.agent_tools import (  # noqa: E402
     ALLOWED_LOOKUP_TABLES,
     MAX_CHUNKS,
-    MAX_CHUNK_TOKENS,
     build_tool_server,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

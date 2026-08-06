@@ -14,9 +14,9 @@ from uuid import uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.main import app
 from app.api.deps import get_async_redis, get_current_tenant
 from app.core.database import get_async_db
+from app.main import app
 from app.models.tenant import Tenant
 
 
@@ -31,7 +31,6 @@ def _make_fake_tenant() -> Tenant:
 def _make_mock_db_with_job(job_found: bool = True):
     """Mock DB that either returns a job or None."""
     from app.models.job import Job
-    from app.models.job_event import JobEvent
 
     mock_session = AsyncMock()
 

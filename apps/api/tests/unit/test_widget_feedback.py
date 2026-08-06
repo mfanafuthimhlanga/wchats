@@ -35,7 +35,6 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
-import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -43,7 +42,6 @@ from app.api.deps import get_async_db, get_async_redis
 from app.api.v1 import widget as widget_module
 from app.api.v1.widget import create_widget_jwt
 from app.models.agent import Agent
-
 
 # ---------------------------------------------------------------------------
 # Targeted import — a minimal FastAPI app wrapping ONLY the widget router, so

@@ -235,7 +235,7 @@ def _register_neon_mock_routes(project_id: str, local_db_url: str):
             json={
                 "project": {
                     "id": project_id,
-                    "name": f"vrd-test-kill9",
+                    "name": "vrd-test-kill9",
                     "region_id": "aws-us-east-1",
                 }
             },
@@ -315,8 +315,9 @@ def test_worker_kill_9_chain_completes():
             )
 
             from celery import chain as celery_chain
-            from app.worker.tasks.pipeline.provision import provision_neon
+
             from app.worker.tasks.pipeline.migrations import apply_migrations
+            from app.worker.tasks.pipeline.provision import provision_neon
 
             celery_chain(
                 provision_neon.s(str(tenant_id), str(agent_id)),

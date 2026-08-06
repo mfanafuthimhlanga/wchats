@@ -14,8 +14,6 @@ import psycopg2
 import structlog
 from sqlalchemy import text
 
-from app.core.config import settings
-
 log = structlog.get_logger(__name__)
 
 HAIKU_MODEL = "claude-haiku-4-5"
@@ -103,7 +101,7 @@ def generate_scenarios_from_chunks(chunks: list[dict], n: int = 5) -> list[dict]
                 ),
             }
         ],
-        tools=[SCENARIO_TOOL],
+        tools=[SCENARIO_TOOL],  # type: ignore[call-overload] # anthropic/agent-sdk stubs are narrower than the runtime contract
         tool_choice={"type": "tool", "name": "submit_scenarios"},
     )
 

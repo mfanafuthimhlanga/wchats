@@ -5,8 +5,8 @@ De-xfailed in Phase 10-05. Tests cover:
     test_get_alerts_idor_guard      — wrong tenant key returns 401 or 403
 """
 
-import os
 import base64
+import os
 
 # Safety: ensure required env vars are present even if conftest is not loaded
 os.environ.setdefault("NEON_API_KEY", "test_neon_key")
@@ -27,7 +27,9 @@ async def test_get_alerts_returns_list():
     """GET /api/v1/agents/{id}/alerts returns 200 with a JSON list."""
     from unittest.mock import AsyncMock, MagicMock
     from uuid import uuid4
+
     from httpx import ASGITransport, AsyncClient
+
     from app.api.deps import get_async_db, get_current_tenant
     from app.main import app
     from app.models.agent import Agent
@@ -70,7 +72,9 @@ async def test_get_alerts_idor_guard():
     """Wrong tenant returns 401 or 403 — IDOR guard."""
     from unittest.mock import AsyncMock, MagicMock
     from uuid import uuid4
+
     from httpx import ASGITransport, AsyncClient
+
     from app.api.deps import get_async_db, get_current_tenant
     from app.main import app
     from app.models.agent import Agent

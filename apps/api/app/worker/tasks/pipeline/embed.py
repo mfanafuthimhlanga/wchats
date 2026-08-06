@@ -53,21 +53,20 @@ Threat mitigations (T-02-05):
 """
 
 import ssl
-import structlog
 from datetime import datetime, timezone
-from pathlib import Path
 
 import psycopg2
 import psycopg2.extensions
 import redis as redis_lib
+import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
-from app.core.security import fernet_decrypt
+from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.models.job import Job
+from app.services.embedding_service import EMBEDDING_MODEL, embed_chunks
 from app.services.events import emit
-from app.services.embedding_service import embed_chunks, EMBEDDING_MODEL
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
@@ -112,7 +111,11 @@ def embed_and_migrate(self, result: dict) -> dict:
     job_id = result.get("job_id")
     document_ids = result.get("document_ids")
 
-    if not all([tenant_id, agent_id, job_id, document_ids is not None]):
+    # Spelled as an `or` chain rather than `not all([...])` so the type checker
+    # narrows the four Optionals for the rest of the function.  Logically
+    # identical to the previous `not all([tenant_id, agent_id, job_id,
+    # document_ids is not None])`: falsy id, or a missing document_ids key.
+    if not tenant_id or not agent_id or not job_id or document_ids is None:
         log.error(
             "embed_and_migrate.invalid_result_dict",
             keys=list(result.keys()),
@@ -150,7 +153,7 @@ def embed_and_migrate(self, result: dict) -> dict:
         # Decrypt POOLED connection string — DML only, pooled URI is correct
         # (T-02-05-01: conn_str never logged)
         # ------------------------------------------------------------------
-        conn_str = fernet_decrypt(agent.neon_connection_string)
+        conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
 
         # ------------------------------------------------------------------
         # Open tenant DB connection for DML writes

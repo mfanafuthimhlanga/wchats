@@ -23,9 +23,10 @@ Threat context (T-02-02-02):
   does not invalidate the extracted content.
 """
 
-import structlog
 from io import BytesIO
 from pathlib import Path
+
+import structlog
 
 log = structlog.get_logger(__name__)
 
@@ -95,7 +96,7 @@ def parse_document_from_bytes(content: bytes, filename: str) -> object:
         RuntimeError: If Docling reports ConversionStatus.FAILURE (hard failure).
             PARTIAL_SUCCESS is accepted with a warning.
     """
-    from docling.datamodel.base_models import DocumentStream, ConversionStatus  # noqa: PLC0415
+    from docling.datamodel.base_models import ConversionStatus, DocumentStream  # noqa: PLC0415
     stream = DocumentStream(name=filename, stream=BytesIO(content))
     result = _get_converter().convert(stream, raises_on_error=False)
     if result.status == ConversionStatus.PARTIAL_SUCCESS:

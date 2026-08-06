@@ -33,17 +33,15 @@ import asyncio
 import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-import pytest
+from app.services.transactional.audit import write_audit_row
+from app.services.transactional.enforcement import _parse_rate_limit, check_capability_envelope
 
 # ---------------------------------------------------------------------------
 # _parse_rate_limit — pure function, no DB/Redis needed
 # ---------------------------------------------------------------------------
-
-from app.services.transactional.enforcement import _parse_rate_limit
 
 
 class TestParseRateLimit:
@@ -69,8 +67,6 @@ class TestParseRateLimit:
 # ---------------------------------------------------------------------------
 # check_capability_envelope — mocked DB + Redis
 # ---------------------------------------------------------------------------
-
-from app.services.transactional.enforcement import check_capability_envelope
 
 
 def _make_envelope_mapping(
@@ -131,7 +127,6 @@ class TestCheckCapabilityEnvelope:
         args = _make_args()
 
         mock_cm = _mock_db_session(None)  # no row
-        logs: list[dict] = []
 
         with (
             patch("app.services.transactional.enforcement.get_sync_db", mock_cm),
@@ -368,8 +363,6 @@ class TestSnapshotJsonSerializable:
 # ---------------------------------------------------------------------------
 # Task 3 — write_audit_row tests
 # ---------------------------------------------------------------------------
-
-from app.services.transactional.audit import write_audit_row
 
 
 class TestWriteAuditRow:
@@ -757,6 +750,7 @@ class TestEnforcementSplit:
     def test_wr04_rediss_url_with_insecure_false_uses_cert_required(self):
         """WR-04: rediss:// with REDIS_TLS_INSECURE=False must pass ssl_cert_reqs=ssl.CERT_REQUIRED."""
         import ssl
+
         import app.services.transactional.enforcement as enf_module  # noqa: PLC0415
 
         enf_module._rate_limit_redis = None  # reset singleton so factory re-runs

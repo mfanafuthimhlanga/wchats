@@ -31,11 +31,10 @@ import time
 import uuid
 
 import pytest
-import redis as sync_redis_lib
 import redis.asyncio as aioredis
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 pytestmark = pytest.mark.integration
 
@@ -176,9 +175,9 @@ def _make_app_with_real_deps():
     We use FastAPI dependency_overrides to inject real async sessions pointed at
     the local test DB and a real async Redis pointed at the local Redis.
     """
-    from app.main import app
+    from app.api.deps import get_async_redis
     from app.core.database import get_async_db
-    from app.api.deps import get_async_redis, get_current_tenant
+    from app.main import app
 
     # Create async engine + session factory for the test DB
     test_async_engine = create_async_engine(

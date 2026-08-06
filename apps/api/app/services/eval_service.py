@@ -63,20 +63,20 @@ import anthropic
 import instructor
 import psycopg2
 import structlog
-from sqlalchemy import text as sa_text
+from ragas import EvaluationDataset, evaluate
+from ragas.llms import InstructorLLM
 
 # ---------------------------------------------------------------------------
 # Ragas 0.4.x imports — D-01 LOCKED: exact import path
 # Do NOT use the 0.3.x ragas.metrics path — it has been removed.
 # ---------------------------------------------------------------------------
 from ragas.metrics.collections import (
-    Faithfulness,
     AnswerRelevancy,
     ContextPrecision,
     ContextRecall,
+    Faithfulness,
 )
-from ragas import EvaluationDataset, evaluate
-from ragas.llms import InstructorLLM
+from sqlalchemy import text as sa_text
 
 from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db
@@ -666,14 +666,14 @@ def run_ragas_eval(scenarios: list[dict]) -> dict:
     llm = InstructorLLM(client=_anthropic_client, model=HAIKU_MODEL, provider="anthropic")
     metrics = [
         Faithfulness(llm=llm),
-        AnswerRelevancy(llm=llm),
+        AnswerRelevancy(llm=llm),  # type: ignore[call-arg]  # ragas 0.4.x accepts these at runtime; installed stubs are narrower
         ContextPrecision(llm=llm),
         ContextRecall(llm=llm),
     ]
 
-    results = evaluate(dataset=dataset, metrics=metrics, llm=llm)
+    results = evaluate(dataset=dataset, metrics=metrics, llm=llm)  # type: ignore[arg-type]  # ragas 0.4.x accepts these at runtime; installed stubs are narrower
 
-    df = results.to_pandas()
+    df = results.to_pandas()  # type: ignore[union-attr]  # ragas 0.4.x accepts these at runtime; installed stubs are narrower
 
     # Build per-scenario score dicts. The metric names come from the one
     # METRIC_KEYS tuple rather than a local literal list: audit D3 is a second
@@ -711,7 +711,7 @@ def run_ragas_eval(scenarios: list[dict]) -> dict:
             # is reported as unplaced and written nowhere.
             unattributed += 1
             continue
-        score_row = {"scenario_id": scenario_id}
+        score_row: dict[str, object] = {"scenario_id": scenario_id}
         for col in metric_columns:
             raw = row.get(col)
             score_row[col] = float(raw) if raw is not None and raw == raw else None  # NaN check
@@ -723,9 +723,10 @@ def run_ragas_eval(scenarios: list[dict]) -> dict:
     means = {}
     for col in metric_columns:
         values = [
-            score[col] for score in score_rows if score.get(col) is not None
+            v for v in (score.get(col) for score in score_rows)
+            if isinstance(v, (int, float))
         ]
-        means[col] = (sum(values) / len(values)) if values else None
+        means[col] = (sum(values) / len(values)) if values else None  # type: ignore[assignment]
 
     if unattributed:
         log.warning(

@@ -19,10 +19,9 @@ Mock strategy:
 from __future__ import annotations
 
 import uuid
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # test_generate_scenarios_from_chunks_calls_haiku

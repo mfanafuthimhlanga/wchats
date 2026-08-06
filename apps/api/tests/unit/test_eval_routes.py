@@ -18,7 +18,7 @@ Coverage:
 
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import psycopg2
 import pytest
@@ -29,7 +29,6 @@ from app.api.deps import get_async_db, get_current_tenant
 from app.main import app
 from app.models.agent import Agent
 from app.models.tenant import Tenant
-
 
 # ---------------------------------------------------------------------------
 # Helper factories
@@ -935,7 +934,7 @@ class TestTriggerEvalRun:
             with patch(
                 "app.api.v1.evals.run_eval_suite.apply_async",
                 return_value=mock_async_result,
-            ) as mock_dispatch:
+            ):
                 async with AsyncClient(
                     transport=ASGITransport(app=app), base_url="http://test"
                 ) as client:

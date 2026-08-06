@@ -47,7 +47,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
 
 import structlog
 from sqlalchemy import select, text
@@ -70,7 +69,6 @@ from app.services.deployment_service import (
     _fetch_verified_qa_stats_sync,
     apply_signal_evidence_gate,
     derive_blast_radius_warnings,
-    run_orchestrator,
 )
 from app.worker.celery_app import celery_app
 
@@ -111,6 +109,7 @@ def _dispatch_first_eval_run(agent_id: str) -> bool:
     """
     try:
         from celery import chain  # noqa: PLC0415
+
         from app.worker.tasks.runtime.eval import (  # noqa: PLC0415
             generate_eval_suite,
             run_eval_suite,
@@ -374,7 +373,7 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
 
             # Validate via Pydantic — ensures recommendation is a known value
             report = DeploymentReport(
-                recommendation=gated_recommendation,
+                recommendation=gated_recommendation,  # type: ignore[arg-type]  # DeploymentReport validates the literal at construction
                 summary=report_data.get("summary", ""),
                 warnings=report_data.get("warnings", []),
                 eval_summary=eval_summary,

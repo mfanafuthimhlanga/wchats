@@ -15,8 +15,8 @@ Patch targets are symbols imported into app.worker.tasks.pipeline.reembed:
     - app.worker.tasks.pipeline.reembed.bedrock_embedding_service
 """
 
-import os
 import base64
+import os
 
 # ---------------------------------------------------------------------------
 # Environment setup — MUST run before any `from app` import (pydantic-settings)
@@ -42,10 +42,8 @@ os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_webhook_secret
 # Imports (after env setup)
 # ---------------------------------------------------------------------------
 
-import pytest
 from contextlib import contextmanager
 from unittest.mock import MagicMock
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -270,7 +268,7 @@ def test_reembed_corpus_migrates_chunks(monkeypatch):
     ]
     assert len(upsert_sqls) >= 1, (
         "Expected INSERT INTO embeddings ... ON CONFLICT (chunk_id) DO UPDATE SQL "
-        f"but none found. All SQLs:\n" + "\n".join(all_sqls)
+        "but none found. All SQLs:\n" + "\n".join(all_sqls)
     )
 
     # Model bound in the INSERT params equals the target model

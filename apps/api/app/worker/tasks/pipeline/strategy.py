@@ -31,9 +31,9 @@ from __future__ import annotations
 
 import json
 import ssl
-import structlog
 
 import redis as redis_lib
+import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
@@ -83,10 +83,11 @@ def synthesize_retrieval_strategy(self, result: dict) -> dict:
     # ------------------------------------------------------------------
     # Step 1 — Extract result dict keys (defensive validation)
     # ------------------------------------------------------------------
-    tenant_id = result.get("tenant_id")
+    # tenant_id and document_ids are deliberately not read here: this task returns
+    # `result` verbatim, so the chain contract is preserved by pass-through rather
+    # than by re-assembling the dict. Binding them was dead code (F841).
     agent_id = result.get("agent_id")
     job_id = result.get("job_id")
-    document_ids = result.get("document_ids", [])
 
     if not agent_id:
         log.error(

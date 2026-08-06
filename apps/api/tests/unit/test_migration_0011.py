@@ -156,9 +156,12 @@ def test_migration_0011_db_roundtrip():
     migration ran without raising (Pitfall 2's warning sign: broad
     try/except insert helpers silently swallow CheckViolation).
     """
-    from alembic import command
     from alembic.config import Config
-    from sqlalchemy import create_engine, inspect as sa_inspect, pool, text as sa_text
+    from sqlalchemy import create_engine, pool
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    from alembic import command
 
     admin_url = os.environ.get(
         "TEST_ADMIN_DB_URL", "postgresql://wchats:wchats@localhost:5432/postgres"

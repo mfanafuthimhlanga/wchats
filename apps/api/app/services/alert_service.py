@@ -119,7 +119,12 @@ def _write_alert(
 
 def send_alert_email(agent_name: str, agent_id: str, alert_type: str, message: str) -> None:
     """Send alert notification email. NEVER raises."""
-    if not all([settings.SMTP_HOST, settings.SMTP_FROM, settings.OWNER_EMAIL]):
+    # Bound to locals so the narrowing survives for the type checker — mypy cannot
+    # narrow through all([...]), and these are Optional[str] on Settings.
+    smtp_host = settings.SMTP_HOST
+    smtp_from = settings.SMTP_FROM
+    owner_email = settings.OWNER_EMAIL
+    if not smtp_host or not smtp_from or not owner_email:
         log.warning("alert_service.smtp_not_configured", agent_id=agent_id)
         return
     subject_map = {
@@ -129,14 +134,14 @@ def send_alert_email(agent_name: str, agent_id: str, alert_type: str, message: s
     subject = f"[W Chats] {subject_map.get(alert_type, 'Alert')}: {agent_name}"
     msg = MIMEText(f"Alert for agent: {agent_name}\n\n{message}\n")
     msg["Subject"] = subject
-    msg["From"] = settings.SMTP_FROM
-    msg["To"] = settings.OWNER_EMAIL
+    msg["From"] = smtp_from
+    msg["To"] = owner_email
     try:
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT or 587, timeout=5) as server:
+        with smtplib.SMTP(smtp_host, settings.SMTP_PORT or 587, timeout=5) as server:
             server.starttls()
             if settings.SMTP_USER and settings.SMTP_PASSWORD:
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-            server.sendmail(settings.SMTP_FROM, [settings.OWNER_EMAIL], msg.as_string())
+            server.sendmail(smtp_from, [owner_email], msg.as_string())
         log.info("alert_service.email_sent", agent_id=agent_id, alert_type=alert_type)
     except Exception as exc:
         log.warning("alert_service.email_failed", agent_id=agent_id, error=str(exc))

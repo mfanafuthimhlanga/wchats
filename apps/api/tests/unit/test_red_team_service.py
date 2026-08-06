@@ -26,8 +26,8 @@ Mock strategy:
     - No live Anthropic or Agent SDK calls in any test
 """
 
-import os
 import base64
+import os
 
 # Safety: ensure required env vars are present even if conftest is not loaded
 os.environ.setdefault("NEON_API_KEY", "test_neon_key")
@@ -42,9 +42,9 @@ os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 
 import uuid
 from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services import red_team_service
 from app.services.red_team_service import (
@@ -52,32 +52,31 @@ from app.services.red_team_service import (
     INJECTION_ATTACK_VECTORS,
     INVALID_OBSERVATION_SEVERITY,
     NO_OBSERVATION_MARKER,
-    RED_TEAM_VECTORS,
-    SDK_ATTACKER_VECTORS,
-    VectorObservation,
-    run_coverage,
     POISONED_CHUNK_CANARY,
     POISONED_CHUNK_PROBE_QUESTION,
     POISONED_CHUNK_TEXT,
     POISONED_CHUNK_VECTOR_DIM,
     RED_TEAM_MCP_SERVER_NAME,
+    RED_TEAM_VECTORS,
+    SDK_ATTACKER_VECTORS,
     ProbeSession,
     RedTeamFinding,
     RedTeamResult,
     SeverityVerdict,
+    VectorObservation,
     build_attacker_options,
     build_probe_tools,
     classify_severity,
     probe_tool_basename,
     run_confused_deputy_agent,
-    run_conversation_injection_agent,
     run_content_injection_agent,
-    run_prompt_injection_agent,
+    run_conversation_injection_agent,
+    run_coverage,
     run_data_leakage_agent,
     run_hallucination_agent,
+    run_prompt_injection_agent,
     seed_poisoned_chunk,
 )
-
 
 # ---------------------------------------------------------------------------
 # TestClassifySeverity
@@ -1178,7 +1177,6 @@ class TestInjectionSplit:
         values = vector_param.strip("[]").split(",")
         assert len(values) == POISONED_CHUNK_VECTOR_DIM
         assert all(v == "0" for v in values)
-from app.services import red_team_service  # noqa: E402  (P2 — module-level access)
 
 
 # ---------------------------------------------------------------------------

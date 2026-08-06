@@ -13,8 +13,8 @@ the original module paths (e.g. patch app.worker.tasks.pipeline.parse.fernet_dec
 not app.core.security.fernet_decrypt).
 """
 
-import os
 import base64
+import os
 
 # ---------------------------------------------------------------------------
 # Environment setup — MUST run before any `from app` import (pydantic-settings)
@@ -38,11 +38,8 @@ os.environ.setdefault("VOYAGE_API_KEY", "test_voyage")
 # ---------------------------------------------------------------------------
 
 import inspect
-import uuid
-import pytest
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch, call
-
+from unittest.mock import MagicMock
 
 # ---------------------------------------------------------------------------
 # Helpers

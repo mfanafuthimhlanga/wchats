@@ -181,8 +181,9 @@ def test_migration_0019_db_roundtrip():
     capability_envelopes.skill (both pre-0019) survive the downgrade —
     proving the downgrade is scoped to 0019's own additions only.
     """
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     sync_url = os.environ.get("CONTROL_DB_SYNC_URL", "")
     if not sync_url or "test" not in sync_url.lower():
@@ -194,7 +195,8 @@ def test_migration_0019_db_roundtrip():
 
     command.upgrade(cfg, "0019")
 
-    from sqlalchemy import create_engine, inspect as sa_inspect
+    from sqlalchemy import create_engine
+    from sqlalchemy import inspect as sa_inspect
 
     engine = create_engine(sync_url)
     insp = sa_inspect(engine)

@@ -26,7 +26,6 @@ from app.core.database import get_async_db
 from app.models.agent import Agent
 from app.models.tenant import Tenant
 
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------

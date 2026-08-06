@@ -32,15 +32,15 @@ Queue: runtime (CLAUDE.md non-negotiable: both Celery queues always present)
 """
 
 import ssl
-import structlog
 from datetime import datetime, timezone
 
 import redis as redis_lib
+import structlog
 from sqlalchemy import text as sa_text
 
 from app.core.config import settings
 from app.core.database import get_sync_db
-from app.core.security import fernet_decrypt
+from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.models.job import Job
 from app.services.events import emit
@@ -134,7 +134,7 @@ def retrieve_and_rank(self, job_id: str, agent_id: str, query: str) -> dict:
         # (T-02-05-01 / CLAUDE.md non-negotiable rule: conn_str at runtime only)
         # conn_str is intentionally not logged.
         # ------------------------------------------------------------------
-        conn_str = fernet_decrypt(agent.neon_connection_string)
+        conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
 
         try:
             # --------------------------------------------------------------

@@ -15,9 +15,9 @@ Security:
 Queue: runtime (CLAUDE.md non-negotiable: both Celery queues always present).
 """
 
-import structlog
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession

@@ -36,8 +36,9 @@ os.environ.setdefault("VOYAGE_API_KEY", "test_voyage_key")
 # Imports (after env setup)
 # ---------------------------------------------------------------------------
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 # ---------------------------------------------------------------------------
 # Helpers

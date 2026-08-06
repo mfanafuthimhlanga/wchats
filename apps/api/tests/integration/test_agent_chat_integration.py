@@ -27,7 +27,7 @@ Canned dict contract — must match run_agent_turn's expected result shape from 
 
 import os
 import uuid
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -62,8 +62,8 @@ CANNED_SDK_RESULT = {
 @pytest.fixture(scope="session")
 def seed_tenant_agent():
     """Insert test Tenant + Agent rows in the real control DB; clean up after session."""
-    import base64
     import hashlib
+
     import psycopg2
     from cryptography.fernet import Fernet
 
@@ -145,7 +145,8 @@ async def test_post_agent_chat_emits_thinking_then_response_via_eager_task(seed_
         → job_events table gains agent.thinking then agent.response rows
     """
     import psycopg2
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import app
 
     tenant_id, agent_id, api_key_plaintext, _ = seed_tenant_agent
@@ -159,7 +160,7 @@ async def test_post_agent_chat_emits_thinking_then_response_via_eager_task(seed_
     job_id_seen = None
 
     with (
-        patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=CANNED_SDK_RESULT) as mock_run,
+        patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=CANNED_SDK_RESULT),
         patch(
             "app.worker.tasks.runtime.agent._create_conversation_row",
             return_value=sentinel_conversation_id,
@@ -238,6 +239,7 @@ def test_post_agent_chat_idempotent_on_retry():
       Assert no new job_events rows are added — idempotency guard fires.
     """
     import psycopg2
+
     from app.worker.tasks.runtime.agent import run_agent_turn
 
     sync_url = os.environ.get(
@@ -272,7 +274,7 @@ def test_post_agent_chat_idempotent_on_retry():
             rows_before = cur.fetchone()[0]
 
         # Trigger eager task — idempotency guard should short-circuit
-        result = run_agent_turn.apply(args=[job_id, agent_id, "test message", None])
+        run_agent_turn.apply(args=[job_id, agent_id, "test message", None])
 
         # Count rows after — should be unchanged
         with conn.cursor() as cur:

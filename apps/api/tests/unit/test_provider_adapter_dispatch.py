@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import base64
 import json
-import os
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -118,10 +118,6 @@ def _calendly_config():
 # ---------------------------------------------------------------------------
 # Helper: context manager that sets up the standard mocks for every dispatch test
 # ---------------------------------------------------------------------------
-
-from contextlib import contextmanager
-from unittest.mock import patch
-
 
 @contextmanager
 def _dispatch_ctx(config_or_none, tenant_id: str = _TEST_TENANT_ID):

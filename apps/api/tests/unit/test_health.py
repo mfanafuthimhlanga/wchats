@@ -11,17 +11,17 @@ Uses FastAPI dependency overrides to inject mock DB and Redis clients,
 avoiding any real database or Redis connections.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# conftest.py sets all required env vars before app import
-from app.main import app
 from app.api.deps import get_async_redis
 from app.core.database import get_async_db
 
+# conftest.py sets all required env vars before app import
+from app.main import app
 
 # ---------------------------------------------------------------------------
 # Helpers

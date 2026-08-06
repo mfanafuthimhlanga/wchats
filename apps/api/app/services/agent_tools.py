@@ -44,7 +44,6 @@ from typing import Any
 import psycopg2
 import redis as redis_lib
 import structlog
-
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from app.core.config import settings
@@ -362,7 +361,7 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
             cached = rc.get(cache_key)
             if cached is not None:
                 log.debug("retrieve_tool.cache_hit", key_prefix="qembed:")
-                return json.loads(cached)
+                return json.loads(cached)  # type: ignore[arg-type]  # sync redis client returns bytes|str
             vector = embed_query(q)
             rc.setex(cache_key, 3600, json.dumps(vector))
             return vector
@@ -798,13 +797,13 @@ def build_tool_server(
     # tools.py imports _agent_id_var from this module at function call time, so
     # importing tools here (after the ContextVar definitions above) is safe.
     from app.services.transactional.tools import (  # noqa: PLC0415
-        place_order_tool,
-        cancel_order_tool,
-        issue_refund_tool,
-        update_subscription_tool,
         book_slot_tool,
-        update_customer_record_tool,
+        cancel_order_tool,
         confirm_action_tool,
+        issue_refund_tool,
+        place_order_tool,
+        update_customer_record_tool,
+        update_subscription_tool,
     )
 
     return create_sdk_mcp_server(

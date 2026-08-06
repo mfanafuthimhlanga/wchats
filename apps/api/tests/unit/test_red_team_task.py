@@ -21,8 +21,8 @@ Mock strategy:
     - Tasks called via .run(...) to bypass Celery broker
 """
 
-import os
 import base64
+import os
 
 # Safety: ensure required env vars are present even if conftest is not loaded
 os.environ.setdefault("NEON_API_KEY", "test_neon_key")
@@ -36,10 +36,8 @@ os.environ.setdefault("JWT_SECRET", "test_jwt_secret")
 os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 
 import uuid
-import pytest
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch, call
-
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # Helper: build a mock get_sync_db context manager
@@ -180,8 +178,8 @@ class TestRunRedTeamComplete:
         hallucination return empty lists. deployment_blocked must be False
         because max_severity is 'high' (not 'critical').
         """
-        from app.worker.tasks.runtime.red_team import run_red_team
         from app.services.red_team_service import RedTeamFinding
+        from app.worker.tasks.runtime.red_team import run_red_team
 
         agent_id = str(uuid.uuid4())
 
@@ -270,7 +268,6 @@ class TestRunRedTeamComplete:
             f"Expected high_count=1, got {result.get('high_count')}"
         )
 from contextlib import ExitStack  # noqa: E402  (P2)
-
 
 # ---------------------------------------------------------------------------
 # P2 — the run reports its validity denominator, not just its findings

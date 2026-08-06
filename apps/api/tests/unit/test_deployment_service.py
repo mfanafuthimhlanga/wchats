@@ -22,8 +22,8 @@ Mock strategy:
     - No live Anthropic, Agent SDK, or DB calls in any test
 """
 
-import os
 import base64
+import os
 
 # Safety: ensure required env vars are present even if conftest is not loaded
 os.environ.setdefault("NEON_API_KEY", "test_neon_key")
@@ -50,33 +50,30 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.services.deployment_service import (
-    DeploymentReport,
-    DeploymentWarning,
-    BLAST_RADIUS_DEFAULT_SIGNAL,
+    _DEPLOYMENT_SYSTEM_PROMPT,
+    COVERAGE_SOURCE_CURRENT_BUILD,
+    COVERAGE_SOURCE_RUN,
+    DENOMINATOR_SOURCE_EVAL_RESULTS,
+    DENOMINATOR_SOURCE_RUN_CONFIG,
     EVAL_SIGNAL_MEASURED,
     EVAL_SIGNAL_NO_RUNS,
     EVAL_SIGNAL_NO_VALID_SCORES,
     EVAL_SIGNAL_UNAVAILABLE,
     EVAL_SUMMARY_UNAVAILABLE_SIGNAL,
-    COVERAGE_SOURCE_CURRENT_BUILD,
-    COVERAGE_SOURCE_RUN,
-    DENOMINATOR_SOURCE_EVAL_RESULTS,
-    DENOMINATOR_SOURCE_RUN_CONFIG,
     RED_TEAM_SIGNAL_MEASURED,
     RED_TEAM_SIGNAL_NO_RUNS,
     RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL,
-    _DEPLOYMENT_SYSTEM_PROMPT,
+    DeploymentReport,
+    DeploymentWarning,
     _compute_envelope_hash_sync,
     _fetch_blast_radius_sync,
     _fetch_eval_summary_sync,
     _fetch_red_team_summary_sync,
-    _make_iframe_snippet,
     _resolve_blast_radius_thresholds,
     apply_signal_evidence_gate,
     derive_blast_radius_warnings,
     run_orchestrator,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helper: build a mock psycopg2 connection with controllable cursor

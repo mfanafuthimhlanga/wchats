@@ -28,9 +28,6 @@ import types
 import uuid
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-
 # ---------------------------------------------------------------------------
 # Monkeypatch claude_agent_sdk BEFORE importing the agent task module.
 # ---------------------------------------------------------------------------
@@ -242,7 +239,7 @@ def test_turn_metrics_insert_failure_does_not_fail_the_turn():
     with (
         patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
         patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
-        patch("app.worker.tasks.runtime.agent.psycopg2.connect") as mock_connect,
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
         patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
         patch("app.worker.tasks.runtime.agent._persist_messages"),

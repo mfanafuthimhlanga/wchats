@@ -214,7 +214,6 @@ def test_place_order_exactly_once_replay_e2e(db_session):
 
 def test_replay_returns_original_result_e2e(db_session):
     """The replay response content must match the original call's response content."""
-    from app.services.transactional.provider_adapter import StubProviderAdapter
 
     agent_id_str = str(uuid4())
     idem_key = f"e2e-result-{uuid4()}"

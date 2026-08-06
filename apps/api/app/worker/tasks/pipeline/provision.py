@@ -53,22 +53,22 @@ SDK note (2026-05-15):
 """
 
 import ssl
-import structlog
 from datetime import datetime, timezone
 
 import redis as redis_lib
 import requests as req_lib
+import structlog
+from celery.exceptions import MaxRetriesExceededError
 
 from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.security import fernet_encrypt
 from app.models.agent import Agent
 from app.models.job import Job
-from app.services.events import emit
 from app.models.tenant import Tenant
-from app.services.neon import NeonHTTPError, _NEON_API_BASE, _neon_headers, _project_slug, create_neon_project
+from app.services.events import emit
+from app.services.neon import _NEON_API_BASE, NeonHTTPError, _neon_headers, _project_slug, create_neon_project
 from app.worker.celery_app import celery_app
-from celery.exceptions import MaxRetriesExceededError
 
 log = structlog.get_logger(__name__)
 

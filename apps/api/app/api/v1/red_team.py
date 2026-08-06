@@ -30,7 +30,6 @@ from app.core.database import get_async_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.models.tenant import Tenant
-from app.schemas.red_team import RedTeamRunListResponse, RedTeamRunResponse, RedTeamTriggerResponse
 from app.services.redteam_programme_service import read_programme
 from app.services.scenario_service import insert_provenance_scenario
 from app.worker.tasks.runtime.red_team import run_red_team

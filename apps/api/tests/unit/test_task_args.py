@@ -23,7 +23,6 @@ import inspect
 from app.worker.tasks.pipeline.migrations import apply_migrations
 from app.worker.tasks.pipeline.provision import provision_neon
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

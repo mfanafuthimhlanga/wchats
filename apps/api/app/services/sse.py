@@ -88,7 +88,7 @@ async def event_generator(
             .order_by(JobEvent.created_at)
         )
         for evt in past.scalars():
-            seen_ids.add(evt.id)
+            seen_ids.add(evt.id)  # type: ignore[arg-type]
             if await request.is_disconnected():
                 return
             yield ServerSentEvent(
@@ -132,7 +132,7 @@ async def event_generator(
             for evt in fresh.scalars():
                 if evt.id in seen_ids:
                     continue
-                seen_ids.add(evt.id)
+                seen_ids.add(evt.id)  # type: ignore[arg-type]
                 if await request.is_disconnected():
                     return
                 yield ServerSentEvent(

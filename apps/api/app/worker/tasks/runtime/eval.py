@@ -75,8 +75,8 @@ from app.services.eval_service import (
     insert_eval_run,
     run_ragas_eval,
     summarise_run_validity,
-    write_eval_results,
     update_eval_run_status,
+    write_eval_results,
 )
 from app.services.neon import create_branch, delete_branch, wait_for_neon_ready
 from app.services.scenario_service import (

@@ -26,10 +26,11 @@ Connection injection:
 from pathlib import Path
 
 import structlog
-from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, pool
+
+from alembic import command
 
 log = structlog.get_logger(__name__)
 

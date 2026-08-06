@@ -23,10 +23,7 @@ from __future__ import annotations
 import sys
 import types
 import uuid
-from unittest.mock import MagicMock, call, patch
-
-import pytest
-
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # Monkeypatch claude_agent_sdk BEFORE importing the agent task module.
@@ -253,7 +250,7 @@ def test_first_turn_creates_conversation_and_stores_sdk_session_id():
         patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_RESULT_WITH_CITATION),
         patch("app.worker.tasks.runtime.agent.emit", side_effect=fake_emit),
     ):
-        result = run_agent_turn.run(
+        run_agent_turn.run(
             job_id=job_id,
             agent_id=agent_id,
             message="What is the return policy?",
@@ -466,7 +463,7 @@ def test_citations_missing_returns_empty_list_and_warns():
             conversation_id=None,
         )
 
-    assert len(response_payloads) == 1, f"Expected 1 agent.response event"
+    assert len(response_payloads) == 1, "Expected 1 agent.response event"
     assert response_payloads[0]["citations"] == [], (
         f"Expected empty citations list, got: {response_payloads[0]['citations']}"
     )
@@ -537,7 +534,7 @@ def test_validators_dispatched():
         patch("app.worker.tasks.runtime.agent.emit"),
         patch("app.worker.tasks.runtime.agent.celery_chain", mock_celery_chain),
     ):
-        result = run_agent_turn.run(
+        run_agent_turn.run(
             job_id=job_id,
             agent_id=agent_id,
             message="What is the return policy?",
@@ -659,7 +656,6 @@ def test_max_turns_allows_synthesis_after_retrieve():
 
 def test_wall_clock_guard_is_ninety_seconds():
     """D-11 regression: asyncio.wait_for must be called with timeout=90."""
-    import asyncio as _asyncio
 
     from app.worker.tasks.runtime.agent import run_agent_turn
 

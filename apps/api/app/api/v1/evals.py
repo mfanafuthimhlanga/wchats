@@ -61,7 +61,6 @@ So every metric now travels with the fact of its own measurement:
 from __future__ import annotations
 
 import asyncio
-import json
 from uuid import UUID
 
 import psycopg2

@@ -52,7 +52,6 @@ import pandas as pd
 import psycopg2
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # The scenario sources the SCHEMA allows, parsed from migration 0011 itself.
 #
@@ -1276,7 +1275,6 @@ class TestInsertEvalRun:
         )
         assert conn.close.called, "the connection must be closed on every path"
 from app.services import eval_service  # noqa: E402  (P2 — module-level access)
-
 
 # ---------------------------------------------------------------------------
 # P2 — datasets and denominators (pure functions, no I/O)

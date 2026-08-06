@@ -138,7 +138,10 @@ async def clerk_webhook(
 @router.post("/me/provision", status_code=status.HTTP_201_CREATED)
 async def provision_me(
     credentials: HTTPAuthorizationCredentials = Security(_bearer_scheme_prov),
-    response: Response = None,
+    # FastAPI injects the Response object; the None default is FastAPI's own
+    # convention. Annotating this Optional makes FastAPI treat it as a response
+    # model field and every route module fails to import (observed 2026-08-06).
+    response: Response = None,  # type: ignore[assignment]
     db: AsyncSession = Depends(get_async_db),
 ) -> dict:
     """Self-healing tenant provisioning from JWT sub claim (RISK-01 mitigation).
@@ -159,6 +162,7 @@ async def provision_me(
 
     # Check if tenant already exists
     from sqlalchemy import select
+
     from app.models.tenant import Tenant
 
     result = await db.execute(

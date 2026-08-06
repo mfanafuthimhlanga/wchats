@@ -7,10 +7,7 @@ and migrations service with mocked Alembic and SQLAlchemy.
 Also covers app.core.logging (configure_logging, RequestIdMiddleware).
 """
 
-import os
-import time
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -245,7 +242,6 @@ class TestConfigureLogging:
 class TestRequestIdMiddleware:
     async def test_request_id_middleware_binds_context_for_http(self):
         """Middleware binds request_id contextvars for HTTP requests."""
-        import structlog
         from app.core.logging import RequestIdMiddleware
 
         # Track what was called on the inner app

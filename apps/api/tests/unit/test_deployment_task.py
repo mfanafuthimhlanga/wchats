@@ -36,8 +36,8 @@ Phase 18 BLR-02 addition:
       whatever is or isn't listening on localhost:5432.
 """
 
-import os
 import base64
+import os
 
 # Safety: ensure required env vars are present even if conftest is not loaded
 os.environ.setdefault("NEON_API_KEY", "test_neon_key")
@@ -53,7 +53,6 @@ os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 import uuid
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
-
 
 # ---------------------------------------------------------------------------
 # Helper: build a mock get_sync_db context manager
@@ -252,8 +251,9 @@ class TestRunDeploymentChecklistFailurePath:
         exception rather than scheduling it. We catch Retry (or the underlying RuntimeError)
         here and verify the 'failed' status was committed.
         """
-        from app.worker.tasks.runtime.deployment import run_deployment_checklist
         from celery.exceptions import Retry
+
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
 
         agent_id = str(uuid.uuid4())
         mock_run_id = str(uuid.uuid4())

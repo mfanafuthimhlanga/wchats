@@ -20,8 +20,8 @@ Provider seam note (P13-02):
     (_vo) as these tests expect. Bedrock-path tests live in test_embedding_bedrock.py.
 """
 
-import os
 import base64
+import os
 
 # ---------------------------------------------------------------------------
 # Environment setup — MUST run before any `from app` import (pydantic-settings)
@@ -45,9 +45,9 @@ os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
 # Imports (after env setup)
 # ---------------------------------------------------------------------------
 
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Provider seam fixture — force Voyage path for all tests in this module
@@ -120,7 +120,7 @@ def test_embed_chunks_batches_at_128():
 
 def test_embed_chunks_uses_pinned_model():
     """embed_chunks calls _vo.embed with model='voyage-3' (pinned, never voyage-latest)."""
-    from app.services.embedding_service import embed_chunks, EMBEDDING_MODEL
+    from app.services.embedding_service import EMBEDDING_MODEL, embed_chunks
 
     with patch("app.services.embedding_service._vo") as mock_vo:
         mock_vo.embed.return_value = MagicMock(embeddings=[[0.1] * 1024])

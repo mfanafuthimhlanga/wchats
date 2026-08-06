@@ -214,7 +214,11 @@ def _load_probe_substrate() -> None:
     if invoke_probe_tool is None or red_team_mode is None or ProbeToolResult is None:
         from app.services.red_team_probe import (
             ProbeToolResult as _ProbeToolResult,
+        )
+        from app.services.red_team_probe import (
             invoke_probe_tool as _invoke_probe_tool,
+        )
+        from app.services.red_team_probe import (
             red_team_mode as _red_team_mode,
         )
 
@@ -677,9 +681,11 @@ def summarise_probe_run(entries: list[dict], results: list) -> dict:
 
 @pytest.fixture
 def tenant_db_url():
-    from alembic import command
     from alembic.config import Config
-    from sqlalchemy import create_engine, pool, text as sa_text
+    from sqlalchemy import create_engine, pool
+    from sqlalchemy import text as sa_text
+
+    from alembic import command
 
     admin_url = os.environ.get(
         "TEST_ADMIN_DB_URL", "postgresql://wchats:wchats@localhost:5432/postgres"
@@ -722,9 +728,11 @@ def tenant_db_url():
 
 @pytest.fixture
 def control_db_url():
-    from alembic import command
     from alembic.config import Config
-    from sqlalchemy import create_engine, pool, text as sa_text
+    from sqlalchemy import create_engine, pool
+    from sqlalchemy import text as sa_text
+
+    from alembic import command
 
     admin_url = os.environ.get(
         "TEST_ADMIN_DB_URL", "postgresql://wchats:wchats@localhost:5432/postgres"
@@ -899,7 +907,8 @@ def _activate_agent_track(clean_tenant: _CleanTenant, rate_track: str) -> None:
 
 @pytest.fixture
 def clean_tenant(control_db_url, tenant_db_url):
-    from sqlalchemy import create_engine, text as sa_text
+    from sqlalchemy import create_engine
+    from sqlalchemy import text as sa_text
 
     from app.services.red_team_probe import CLEAN_TENANT_SPEC
 

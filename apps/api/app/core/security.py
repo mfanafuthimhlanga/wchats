@@ -4,6 +4,7 @@ Security helpers for W Chats control plane.
 Provides:
     fernet_encrypt  — encrypt a plaintext str → bytes (for BYTEA storage)
     fernet_decrypt  — decrypt bytes → plaintext str
+    require_ciphertext — narrow a nullable encrypted column to bytes, or raise
     hash_api_key    — argon2id hash of a raw API key → stored hash str
     verify_api_key  — constant-time compare: returns bool, never raises on mismatch
     generate_api_key — generate a "vrd_live_" prefixed URL-safe token
@@ -65,6 +66,54 @@ def fernet_decrypt(ciphertext: bytes) -> str:
     Never pass the return value to a log statement (T-02-01).
     """
     return _get_fernet().decrypt(ciphertext).decode()
+
+
+class UnprovisionedSecretError(RuntimeError):
+    """A required encrypted column was NULL when a caller needed its plaintext.
+
+    Every ``agents.neon_*_connection_string`` column is nullable: an agent row
+    exists from the moment a tenant creates it, but the Neon project (and hence
+    the connection string) only exists once provisioning has finished.  Callers
+    that decrypt one are relying on an invariant they establish elsewhere —
+    ``agent.status == "ready"`` in the API routes, chain position in the Celery
+    tasks — which no type checker can see.
+
+    Before this existed, a NULL reaching the decrypt path surfaced as
+    ``TypeError: token must be bytes or str`` raised from inside cryptography,
+    naming neither the column nor the agent.  Raising here keeps the failure a
+    failure (it is still unhandled at every call site, still a 500 / a failed
+    task) while making it greppable and attributable.
+    """
+
+
+def require_ciphertext(value: bytes | None, field: str) -> bytes:
+    """Assert a nullable encrypted column is populated, and return its bytes.
+
+    Written as a narrowing helper around the *value* rather than as a
+    None-tolerant variant of ``fernet_decrypt`` for two reasons:
+
+    1.  ``fernet_decrypt`` keeps its strict ``bytes`` parameter, so the next
+        genuinely-optional value that reaches it is still a type error rather
+        than a silently accepted None.
+    2.  ``fernet_decrypt`` stays the name the call sites call.  158 test
+        references patch ``<module>.fernet_decrypt``; routing decryption through
+        a differently-named wrapper would leave every one of those patches
+        resolving but never intercepting.
+
+    Args:
+        value: The encrypted column value, typed ``bytes | None`` by the ORM
+               because the column is nullable.
+        field: Dotted column name, used in the error message only.  Never pass
+               the value itself — it is credential material (T-02-01).
+
+    Raises:
+        UnprovisionedSecretError: if *value* is None.
+    """
+    if value is None:
+        raise UnprovisionedSecretError(
+            f"{field} is NULL — the agent has no provisioned Neon project yet"
+        )
+    return value
 
 
 # ---------------------------------------------------------------------------
