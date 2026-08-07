@@ -106,6 +106,34 @@ except Exception:
 CITATIONS_REGEX = re.compile(r"CITATIONS:\n((?:- Document: .+ \| Section: .+\n?)+)")
 _CITATION_ENTRY = re.compile(r"- Document: (.+) \| Section: (.+)")
 
+# ---------------------------------------------------------------------------
+# Two bounds on a turn that were literals inside the functions below and are now
+# named, because a SECOND caller reads them (D1/P2, .dev/plans/260807-d1-agent-
+# invocation.md). Neither value changes; this is extraction, not tuning.
+#
+# The eval task drives the same `_run_sdk_turn` with the same wall-clock ceiling,
+# and it stamps the retrieve cap on the run's provenance. A second copy of either
+# number in eval.py would be the audit's D3 defect wearing new clothes: the
+# deploy gate's eval query fails open to this day because one call site kept its
+# own copy of a column name. So there is one copy, here, and the other reader
+# imports it.
+# ---------------------------------------------------------------------------
+
+#: How much of a `retrieve` tool result is captured onto `tool_calls_log`.
+#: The Auditor reads it (further trimmed to 600 chars per context in the
+#: validator dispatch below) and, from P2, the eval scores Faithfulness against
+#: it. That is why the number has to travel: a claim whose support was CUT at
+#: this boundary is marked unsupported by the judge, and a run that does not
+#: record the cap cannot tell that apart from a genuinely ungrounded claim.
+RETRIEVE_RESULT_CAPTURE_CHARS = 1800
+
+#: Wall-clock ceiling on one SDK turn, enforced by asyncio.wait_for.
+#: D-11 raised it from 30s to 90s — a warm-but-not-hot Agent SDK subprocess needs
+#: up to 90s on slower ARM VMs; the SSE layer retains 120s (30s headroom). The
+#: eval's per-run cost ceiling is derived from this value rather than from a
+#: guess about it.
+AGENT_TURN_TIMEOUT_S = 90
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers — tenant DB writes via psycopg2 (parameterised only)
@@ -816,9 +844,15 @@ async def _run_sdk_turn(
                             redis,
                         )
                         # Capture retrieve result for Auditor (M5 — plan 05-04)
+                        # and, from D1/P2, for the eval's retrieved_contexts.
+                        # RETRIEVE_RESULT_CAPTURE_CHARS, not a literal: the eval
+                        # stamps the same constant on the run so a truncated
+                        # context is a recorded fact rather than an implicit one.
                         for tc in reversed(tool_calls_log):
                             if tc.get("tool_name") == "retrieve" and "result" not in tc:
-                                tc["result"] = str(getattr(block, "content", ""))[:1800]
+                                tc["result"] = str(getattr(block, "content", ""))[
+                                    :RETRIEVE_RESULT_CAPTURE_CHARS
+                                ]
                                 break
 
             elif isinstance(msg, ResultMessage):
@@ -1114,7 +1148,7 @@ def run_agent_turn(
                         db=db,
                         redis=_redis,
                     ),
-                    timeout=90,
+                    timeout=AGENT_TURN_TIMEOUT_S,
                 )
             )
             latency_ms = int((time.monotonic() - _turn_start_monotonic) * 1000)

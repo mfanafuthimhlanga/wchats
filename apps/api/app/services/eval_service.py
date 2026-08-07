@@ -98,41 +98,57 @@ HAIKU_MODEL = "claude-haiku-4-5"
 # ---------------------------------------------------------------------------
 # What this harness measures — and what it does not (audit D1)
 # ---------------------------------------------------------------------------
-# Two properties of the shipped scoring half that every consumer of a score has
-# to know. They are constants rather than prose so they can be stamped on the
-# run record and pinned by a test, instead of being rediscovered by reading
-# three files.
+# Two properties of the scoring half that every consumer of a score has to know.
+# They are constants rather than prose so they can be stamped on the run record
+# and pinned by a test, instead of being rediscovered by reading three files.
 #
-# 1. THE AGENT IS NEVER INVOKED. eval.py builds every sample with
-#    agent_response = reference_answer, so Ragas scores the reference answer
-#    against the contexts that reference answer was written from. Faithfulness
-#    and AnswerRelevancy approach 1.0 by construction, and — the part that
-#    matters for the configuration tuple — the score is INVARIANT to the
-#    agent's model, prompt, retrieval configuration, capability envelope and
-#    corpus. Recording those dimensions on a run without recording this makes
-#    an uncomparable measurement look comparable: two runs differing only on
-#    config.model_id would carry statistically identical scores and read as
-#    "the model swap was quality-neutral". Fixing D1 is not this phase's scope;
-#    hiding it would be worse than leaving it.
+# 1. THE AGENT IS NOW INVOKED — and whether it was is an OBSERVATION, never an
+#    assumption. Until D1/P2 (.dev/plans/260807-d1-agent-invocation.md) eval.py
+#    built every sample with agent_response = reference_answer, so Ragas scored
+#    the reference answer against the contexts that answer was written from:
+#    Faithfulness and AnswerRelevancy approached 1.0 by construction and the
+#    score was INVARIANT to the agent's model, prompt, retrieval configuration,
+#    capability envelope and corpus. Recording those dimensions on a run without
+#    recording that made an uncomparable measurement look comparable — two runs
+#    differing only on config.model_id carried statistically identical scores and
+#    read as "the model swap was quality-neutral".
+#
+#    EVAL_INVOKES_AGENT below is a claim about the CODE: this harness drives the
+#    customer agent per scenario, through agent.build_agent_options. It is NOT
+#    the same claim as `config["agent_invoked"]`, which is a claim about ONE RUN
+#    and is written from what that run observed. The distinction is the whole
+#    lesson of D1: a constant that says the agent was invoked, stamped on a run
+#    that invoked nothing, is the tautology with a newer comment.
 #
 # 2. SCORING TOUCHES NO DATABASE. run_ragas_eval executes no statement against
 #    anything — it takes rows already in memory and calls the judge API. The
 #    Neon branch the caller creates per run (D-10) is therefore isolation held
-#    IN RESERVE for the day this harness starts invoking retrieval or the agent
-#    against tenant data, not isolation in use. The caller reads
+#    IN RESERVE, not isolation in use. The caller reads
 #    EVAL_SCORING_REQUIRES_BRANCH to decide whether a branch it cannot create
 #    is fatal; while it is False, abandoning a run over that branch would throw
 #    away a night's measurement for a resource nothing reads.
+#
+#    P2 does not change this. The agent turns happen in eval.py BEFORE scoring
+#    and they read the tenant's PRODUCTION connection string, because retrieval
+#    has to see the corpus the customer is served; what stops them writing is
+#    recorded mode (BACKLOG 2.5), not the branch.
 
-EVAL_INVOKES_AGENT = False
+EVAL_INVOKES_AGENT = True
 
-# Where the text scored as the "response" comes from while D1 stands.
-EVAL_SCORED_RESPONSE_SOURCE = "reference_answer"
+# Where the text scored as the "response" comes from now that D1 is closed. The
+# per-run key `config["scored_response_source"]` is derived from the run's own
+# observation, not from this constant — see invocation_provenance.
+EVAL_SCORED_RESPONSE_SOURCE = "agent_response"
+
+# What the same key says on a run whose eval_runs row exists but whose
+# invocation phase has not reported yet. It is the value every run carries at
+# INSERT time, and it is what a run that died mid-invocation keeps.
+EVAL_RESPONSE_SOURCE_PENDING = "pending_invocation"
 
 # Dimensions of the run record — config keys plus the prompt_version_id column —
-# that cannot influence a score while EVAL_INVOKES_AGENT is False. judge_model_id
-# is deliberately NOT here: the judge does run, so a judge change does move the
-# numbers.
+# that cannot influence a score when the run did not measure an invoked agent.
+# judge_model_id is deliberately NOT here: the judge does run, so a judge change
+# does move the numbers whatever the agent did.
 AGENT_DEPENDENT_DIMENSIONS: list[str] = [
     "prompt_version_id",
     "model_id",
@@ -316,6 +332,244 @@ def dataset_of(value: str | None) -> str:
     itself is just the old random sample wearing a stable name.
     """
     return DATASET_GOLDEN if value == DATASET_GOLDEN else DATASET_EXPLORATORY
+
+
+# ---------------------------------------------------------------------------
+# Invoking the agent: the bounds, the floor, and the observation (D1/P2)
+# ---------------------------------------------------------------------------
+# THE COST SHAPE CHANGED, AND SILENTLY IF NOBODY BOUNDS IT. Before P2 a nightly
+# eval was seconds of arithmetic plus judge calls. Now every selected row costs
+# one live SDK turn — the whole golden set unsampled, plus EXPLORATORY_SAMPLE_SIZE
+# rotating rows — at a 90s per-turn ceiling, per agent, every night, billed. Two
+# bounds, and both are stamped on the run so a reader can tell a cheap run from a
+# truncated one instead of inferring it from a bill.
+
+#: How many agent turns run at once. ONE, and the implementation asserts it
+#: rather than trusting it: this box has 4 GB of RAM (CLAUDE.md environment
+#: constraints) and each turn is an Agent SDK subprocess. Raising the number
+#: without changing the loop would make the provenance say something the run did
+#: not do, which is the defect class this whole phase exists to remove — so
+#: eval.py raises on any other value instead of quietly running sequentially.
+AGENT_INVOCATION_CONCURRENCY = 1
+
+#: The per-run ceiling on live SDK turns. The binding cost control: worst-case
+#: wall clock for a run is this times the per-turn timeout.
+#:
+#: It sits BELOW GOLDEN_SET_SOFT_CEILING (200) on purpose, and the two disagree
+#: on purpose. The golden set is unsampled because a paired per-item delta is the
+#: only regression signal available at n=30; a tenant who designates more golden
+#: rows than this gets the first AGENT_INVOCATION_MAX_CALLS_PER_RUN of them
+#: invoked and the remainder reported as `ceiling_skipped`, golden-first, never
+#: silently. Truncating the golden set breaks the pairing, so the breakage is
+#: made loud (a warning and a counter) rather than resolved by guessing which of
+#: the two ceilings the owner meant.
+AGENT_INVOCATION_MAX_CALLS_PER_RUN = 60
+
+#: The floor under a response rate, same shape and same value as
+#: tests/evals/calibration/compute_correlation.py's MIN_PAIR_RATE (0.8) — and
+#: the same argument: a metric computed over the rows that happened to succeed
+#: is not a measurement of the set that was scored. Below it the run reports
+#: 'unknown'. Not zero, not a low score: the absence of one.
+#:
+#: Deliberately NOT a second absolute-count floor (compute_correlation's
+#: MIN_PAIRS). The denominator travels with every figure this module returns, so
+#: a consumer that wants "at least N observations" can apply it to `responded`
+#: without a second constant here drifting from the first.
+MIN_RESPONSE_RATE = 0.8
+
+#: Statuses for the invocation phase of a run.
+AGENT_INVOCATION_NOT_STARTED = "not_started"   # the row exists; no turn ran yet
+AGENT_INVOCATION_MEASURED = "measured"         # enough rows answered to measure
+AGENT_INVOCATION_UNKNOWN = "unknown"           # too few did — never 'pass'
+
+#: Recorded side-effect kinds that are TELEMETRY about a turn rather than a
+#: decision the agent made. Counted on the run, never carried in full: one
+#: retrieval_metrics row per retrieve call, times sixty scenarios, is tens of
+#: kilobytes of float in a jsonb column nobody queries for it.
+#:
+#: Everything NOT named here is carried in full, which is the fail-open
+#: direction that matters: a new `kind` someone adds to the tool layer arrives
+#: as eval signal by default instead of vanishing into a counter.
+SIDE_EFFECT_KINDS_TELEMETRY: tuple[str, ...] = ("retrieval_metrics.write",)
+
+#: Cap on how many capability attempts are carried verbatim on one run. A run
+#: that exceeds it says so (`capability_attempts_truncated`) rather than
+#: silently reporting the first hundred as if they were all of them.
+MAX_CAPABILITY_ATTEMPTS_RECORDED = 100
+
+
+def summarise_agent_invocation(
+    records: list[dict],
+    *,
+    valid: int,
+    ceiling_skipped: int,
+    ceiling_skipped_golden: int,
+    per_turn_timeout_s: int,
+    retrieved_context_char_cap: int,
+    pii_firewall_applied: bool,
+) -> dict:
+    """Turn per-scenario invocation records into the run's observation. Pure.
+
+    A SCENARIO WHOSE AGENT CALL FAILED IS EXCLUDED AND COUNTED, NEVER SCORED 0.
+    Zero is not a low score, it is the absence of one — the lesson
+    tests/evals/calibration/compute_correlation.py:485 already learned about a
+    judge that errors. The same rule applies one layer earlier here: a turn that
+    timed out, raised, or came back with no text produced no observation about
+    answer quality, and averaging a zero in would move every metric with the
+    failure rate of the Agent SDK rather than with the agent's behaviour.
+
+    Args:
+        records: one dict per scenario an agent turn was ATTEMPTED for, each
+            carrying `responded` (bool), `error` (str|None), `retrieve_calls`
+            (int), `retrieve_at_cap` (bool) and `side_effects` (list of the
+            entries recorded mode collected during that turn).
+        valid: rows in the run that carry a label, i.e. that could have been
+            invoked. `valid == len(records) + ceiling_skipped` always.
+        ceiling_skipped: valid rows the per-run ceiling did not invoke.
+        ceiling_skipped_golden: how many of those were golden rows — reported
+            separately because skipping a golden row breaks the paired per-item
+            delta the golden set exists for.
+        per_turn_timeout_s / retrieved_context_char_cap: the two bounds the turn
+            actually ran under, carried so a reader never has to look them up in
+            a different module's source at a different commit.
+        pii_firewall_applied: whether the served-path PII deflection ran over
+            these responses. False, and stated: see eval.py's invocation block.
+
+    Returns:
+        The `agent_invocation` provenance object. `status` is
+        AGENT_INVOCATION_MEASURED only when at least one turn was attempted AND
+        the response rate cleared MIN_RESPONSE_RATE; otherwise
+        AGENT_INVOCATION_UNKNOWN, which includes the zero-attempt case — a rate
+        over an empty denominator is unknown, never a pass.
+    """
+    attempted = len(records)
+    responded = sum(1 for r in records if r.get("responded"))
+    failed = sum(1 for r in records if r.get("error"))
+    # Neither responded nor errored: the SDK returned, with no text. That is the
+    # max_turns / max_budget signature (agent.py's D-10 notes), and it is a
+    # different failure from an exception, so it is counted apart from one.
+    empty = attempted - responded - failed
+
+    errors: dict[str, int] = {}
+    for record in records:
+        error = record.get("error")
+        if error:
+            errors[str(error)] = errors.get(str(error), 0) + 1
+
+    counts: dict[str, int] = {}
+    capability_attempts: list[dict] = []
+    truncated = False
+    for record in records:
+        for entry in record.get("side_effects") or []:
+            kind = str(entry.get("kind", "unknown"))
+            counts[kind] = counts.get(kind, 0) + 1
+            if kind in SIDE_EFFECT_KINDS_TELEMETRY:
+                continue
+            if len(capability_attempts) >= MAX_CAPABILITY_ATTEMPTS_RECORDED:
+                truncated = True
+                continue
+            capability_attempts.append(
+                {
+                    "scenario_id": record.get("scenario_id"),
+                    "kind": kind,
+                    "detail": entry.get("detail"),
+                }
+            )
+
+    response_rate = (responded / attempted) if attempted else None
+    status = (
+        AGENT_INVOCATION_MEASURED
+        if attempted and response_rate is not None and response_rate >= MIN_RESPONSE_RATE
+        else AGENT_INVOCATION_UNKNOWN
+    )
+
+    return {
+        "status": status,
+        # (valid, attempted, responded) are three different claims, exactly like
+        # (attempted, valid, scored) one layer up. `valid` is what could have
+        # been invoked, `attempted` is what the ceiling allowed, `responded` is
+        # what produced text. A rate built from any two of them without the
+        # third understates or overstates.
+        "valid": valid,
+        "attempted": attempted,
+        "responded": responded,
+        "failed": failed,
+        "empty": empty,
+        "errors": errors,
+        "ceiling_skipped": ceiling_skipped,
+        "ceiling_skipped_golden": ceiling_skipped_golden,
+        "response_rate": response_rate,
+        "min_response_rate": MIN_RESPONSE_RATE,
+        "concurrency": AGENT_INVOCATION_CONCURRENCY,
+        "max_calls_per_run": AGENT_INVOCATION_MAX_CALLS_PER_RUN,
+        "per_turn_timeout_s": per_turn_timeout_s,
+        # The worst case this run could have cost in wall clock, derived from the
+        # two bounds rather than asserted beside them.
+        "max_wall_clock_s": AGENT_INVOCATION_MAX_CALLS_PER_RUN * per_turn_timeout_s,
+        # THE TRUNCATION, MADE EXPLICIT (the plan's P2, third bullet). Faithfulness
+        # over a context that was CUT marks a claim unsupported when the support
+        # was merely beyond the cap. `retrieved_context_at_cap` counts the turns
+        # where at least one retrieve result came back exactly at the boundary,
+        # which is the observable signature of a cut.
+        "retrieved_context_char_cap": retrieved_context_char_cap,
+        "retrieved_context_at_cap": sum(
+            1 for r in records if r.get("retrieve_at_cap")
+        ),
+        "no_retrieval": sum(
+            1 for r in records if r.get("responded") and not r.get("retrieve_calls")
+        ),
+        # False, and said out loud: the eval scores the agent's own text, not the
+        # deflection a customer would receive if the output firewall fired.
+        "pii_firewall_applied": pii_firewall_applied,
+        "side_effect_attempts": {
+            "counts": counts,
+            "capability_attempts": capability_attempts,
+            "capability_attempts_truncated": truncated,
+        },
+    }
+
+
+def invocation_provenance(agent_invocation: dict | None) -> dict:
+    """The four D1 keys of `eval_runs.config`, derived from ONE observation.
+
+    Called twice per run and that is the point: once by build_eval_run_config
+    at INSERT, with None, and once by the task after the invocation phase, with
+    the summary. Two derivations of "was the agent invoked" would be two chances
+    to disagree, and the one that disagreed would be the one the deploy gate
+    reads.
+
+    `agent_invoked` IS THE GATE-FACING CLAIM AND IT IS A CONJUNCTION: the scored
+    responses came from real agent turns AND enough rows answered to constitute a
+    measurement. A run where six of sixty scenarios answered did invoke the agent
+    and measured nothing, and a gate reading a bare "we called it" would ship on
+    it — missing data treated as passing data, which is the rule this repo wrote
+    down after the last time. A reader who wants the raw fact reads
+    `agent_invocation["attempted"]`; the two claims stay separable, they just
+    stay separate.
+
+    None (the INSERT case) yields agent_invoked False, so a run that dies between
+    its eval_runs row and its first turn fails closed at the gate rather than
+    inheriting a hopeful default.
+    """
+    invoked = bool(
+        agent_invocation
+        and agent_invocation.get("status") == AGENT_INVOCATION_MEASURED
+    )
+    attempted = int((agent_invocation or {}).get("attempted") or 0)
+    return {
+        "agent_invoked": invoked,
+        "scored_response_source": (
+            EVAL_SCORED_RESPONSE_SOURCE if attempted else EVAL_RESPONSE_SOURCE_PENDING
+        ),
+        "dimensions_not_exercised": (
+            [] if invoked else list(AGENT_DEPENDENT_DIMENSIONS)
+        ),
+        "agent_invocation": (
+            dict(agent_invocation)
+            if agent_invocation is not None
+            else {"status": AGENT_INVOCATION_NOT_STARTED}
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -612,10 +866,16 @@ def run_ragas_eval(scenarios: list[dict]) -> dict:
         scenarios: List of scenario dicts. Each must contain:
             - question (str): The user question.
             - reference_answer (str): Ground-truth answer (D-02).
-            - agent_response (str, optional): The agent's generated answer.
-              While EVAL_INVOKES_AGENT is False this is the reference answer
-              itself (audit D1), so the metrics below are self-scoring.
-            - retrieved_contexts (list[str], optional): Retrieved chunk contents.
+            - agent_response (str): The agent's own response text, produced by
+              the turn eval.py drove through agent.build_agent_options. It was
+              the reference answer itself until D1/P2 — the metrics were then
+              self-scoring and approached 1.0 by construction. A caller handing
+              this the reference answer again reinstates the tautology, which is
+              why the pin lives in the task's tests rather than here.
+            - retrieved_contexts (list[str], optional): the contexts the AGENT
+              retrieved during that turn — not the scenario's stored
+              `retrieved_contexts` column. Scoring faithfulness against contexts
+              the agent never saw is D1 in a different costume.
 
     Returns:
         Dict with five keys:
@@ -909,6 +1169,7 @@ def build_eval_run_config(
     agent_id: str,
     conn_str: str,
     dataset: dict | None = None,
+    agent_invocation: dict | None = None,
 ) -> dict:
     """Collect the configuration tuple an eval run is an assertion about.
 
@@ -917,14 +1178,25 @@ def build_eval_run_config(
     of continuous improvement. Every dimension below was already captured
     somewhere in the system; none of them was ever stamped on the run.
 
-    WHAT THE TUPLE CERTIFIES IS NOT WHAT THE RUN EXERCISED. The dimensions
-    describe the configuration the agent is deployed with; while
-    EVAL_INVOKES_AGENT is False the scores are invariant to all of them
-    (audit D1), and `config["agent_invoked"]` / `config["scored_response_source"]`
-    / `config["dimensions_not_exercised"]` say so on every run. That pairing is
+    WHAT THE TUPLE CERTIFIES IS NOT AUTOMATICALLY WHAT THE RUN EXERCISED. The
+    dimensions describe the configuration the agent is deployed with; whether the
+    run's scores are a function of any of them depends on whether the agent was
+    actually invoked and enough of it answered. `config["agent_invoked"]` /
+    `config["scored_response_source"]` / `config["dimensions_not_exercised"]` /
+    `config["agent_invocation"]` carry that, and they come from
+    invocation_provenance so there is one derivation. The pairing is
     load-bearing: a tuple that records a dimension the measurement cannot see
     turns "two runs, one difference, identical scores" into a false finding of
-    quality-neutrality.
+    quality-neutrality — which is exactly what every pre-P2 run said.
+
+    AT INSERT TIME THE HONEST ANSWER IS ALWAYS "NOT YET". This function runs
+    before the first agent turn, because the eval_runs row is also the per-agent
+    idempotency key and inserting it after sixty SDK calls would let a concurrent
+    dispatch double-invoke. So `agent_invocation` is None here on the live path
+    and the run is stamped agent_invoked=False; run_eval_suite patches the
+    observed value in afterwards with update_eval_run_config. A run that dies in
+    between keeps the False and fails closed at the deploy gate, which is the
+    direction that costs a blocked deploy rather than a shipped tautology.
 
     Read from the same sources the deploy gate already reads, so a checklist and
     an eval run can never disagree about what the live configuration was:
@@ -957,6 +1229,9 @@ def build_eval_run_config(
             which rows it covered. None is stored as null rather than as an
             empty composition — "this run did not record its dataset" is not
             "this run scored no rows".
+        agent_invocation: summarise_agent_invocation()'s observation, or None
+            when the invocation phase has not reported. None is the live path's
+            only value — see the paragraph above.
 
     Returns:
         {"prompt_version_id": str | None, "config": dict} — ready to hand
@@ -1047,9 +1322,9 @@ def build_eval_run_config(
 
     config = {
         # The model that serves a customer turn, read from the one constant
-        # run_agent_turn uses. It describes the DEPLOYED configuration; while
-        # agent_invoked below is False it is not a dimension these scores
-        # measure — see dimensions_not_exercised.
+        # run_agent_turn uses. It describes the DEPLOYED configuration; whether
+        # these scores are a function of it is a separate claim, carried by
+        # agent_invoked / dimensions_not_exercised below.
         "model_id": AGENT_TURN_MODEL,
         # The model grading the run. A different dimension entirely: a judge
         # change moves every score without the agent changing at all.
@@ -1071,23 +1346,16 @@ def build_eval_run_config(
         "dataset": dict(dataset) if dataset is not None else None,
         # --- What the run actually exercised (audit D1) -----------------
         # The keys above certify the configuration the agent is DEPLOYED with.
-        # These three say which of them the score is a function of, and the
-        # honest answer today is: none. eval.py scores each scenario's
-        # reference answer against the contexts it was written from, so no
-        # agent turn, no retrieval and no capability envelope participates.
-        # Without this, the tuple actively misleads: two nightly runs
+        # These four say which of them the score is a function of, and they are
+        # derived from the run's OWN observation rather than from a module
+        # constant. Without them the tuple actively misleads: two nightly runs
         # differing on exactly one recorded dimension (config.model_id, say)
-        # would carry statistically identical scores, and the reader the tuple
-        # was built for would conclude the model swap is quality-neutral and
-        # ship it. A configuration tuple that makes an uncomparable
-        # measurement look comparable is worse than no tuple at all, so the
-        # exclusion travels with every run rather than living in an audit
-        # nobody queries.
-        "agent_invoked": EVAL_INVOKES_AGENT,
-        "scored_response_source": EVAL_SCORED_RESPONSE_SOURCE,
-        "dimensions_not_exercised": (
-            [] if EVAL_INVOKES_AGENT else list(AGENT_DEPENDENT_DIMENSIONS)
-        ),
+        # carrying statistically identical scores read as "the model swap is
+        # quality-neutral", which is what a tautology looks like from the
+        # outside. A configuration tuple that makes an uncomparable measurement
+        # look comparable is worse than no tuple at all, so the exclusion
+        # travels with every run rather than living in an audit nobody queries.
+        **invocation_provenance(agent_invocation),
         # Names the dimensions that could not be READ. Empty list = every
         # dimension was collected; a None value with nothing here means the
         # dimension was read and is genuinely absent.
@@ -1168,6 +1436,85 @@ def insert_eval_run(
             return False
     finally:
         conn.close()
+
+
+_UPDATE_EVAL_RUN_CONFIG_SQL = """
+    UPDATE eval_runs
+    SET config = COALESCE(config, '{}'::jsonb) || %(patch)s::jsonb
+    WHERE id = %(id)s::uuid
+"""
+
+
+def update_eval_run_config(run_id: str, patch: dict, conn_str: str) -> bool:
+    """Merge observed provenance into an existing eval_runs.config. PRODUCTION.
+
+    The one write that turns `agent_invoked` from a hope into an observation.
+    The row has to exist before the first agent turn — it is the per-agent
+    idempotency key, and inserting it after sixty SDK calls would let a
+    concurrent dispatch double-invoke — so the run is stamped agent_invoked=False
+    at INSERT and corrected here once the invocation phase has reported.
+
+    `||` is a SHALLOW jsonb merge, which is the semantics wanted: the whole
+    `agent_invocation` object is replaced by the observed one rather than
+    half-merged with the `{"status": "not_started"}` placeholder, and no key the
+    caller did not name is disturbed.
+
+    FAILURE LEAVES THE RUN CLAIMING LESS THAN IT DID, NEVER MORE. If this write
+    does not land, the run keeps agent_invoked=False and the deploy gate refuses
+    it. That is a blocked deploy on a run that was fine — annoying, and the right
+    direction, because the other direction ships on a run whose measurement
+    nobody can vouch for. So the exception is caught, logged at error level, and
+    reported as False rather than failing a run that has already been scored.
+
+    Tolerates a tenant DB that predates migration 0013 exactly as insert_eval_run
+    does, and by the same narrow `UndefinedColumn` catch: a broad `except` here
+    would swallow a genuine write failure and report the patch as applied.
+
+    Args:
+        run_id: UUID string of the eval_runs row.
+        patch: the config keys to merge. Serialised as jsonb by this function.
+        conn_str: PRODUCTION tenant connection string — never the eval branch.
+
+    Returns:
+        True when the patch landed; False when the column is absent or the write
+        failed. Never raises.
+    """
+    try:
+        conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
+        try:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        _UPDATE_EVAL_RUN_CONFIG_SQL,
+                        {"patch": json.dumps(patch), "id": run_id},
+                    )
+                conn.commit()
+                return True
+            except psycopg2.errors.UndefinedColumn:
+                conn.rollback()
+                log.warning(
+                    "update_eval_run_config.config_column_absent",
+                    run_id=run_id,
+                    detail=(
+                        "tenant DB predates alembic_tenant 0013 — the run cannot "
+                        "record that the agent was invoked, so the deploy gate "
+                        "will refuse it"
+                    ),
+                )
+                return False
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.error(
+            "update_eval_run_config.failed",
+            run_id=run_id,
+            error=str(exc),
+            detail=(
+                "the run keeps agent_invoked=false and will be refused by the "
+                "deploy gate — fail-closed, but the measurement is lost"
+            ),
+        )
+        return False
 
 
 # ---------------------------------------------------------------------------

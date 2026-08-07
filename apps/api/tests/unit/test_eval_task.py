@@ -161,12 +161,70 @@ def wired(monkeypatch):
         "composition": [],
         "cursor": cursor,
         "inserted": [],
+        "invoked": [],
+        "config_patched": [],
         "ragas": [],
         "readiness": [],
         "results": [],
         "status": [],
         "deleted": [],
     }
+
+    # D1/P2: the agent invocation is doubled here so these tests keep testing
+    # what they were written to test — which connection string each write opens
+    # and what the branch does — rather than accidentally exercising a live SDK
+    # turn against a MagicMock agent row. The scenarios that come back carry an
+    # `agent_response` that is deliberately NOT the reference answer, so any
+    # test in this module that starts scoring self-answers fails loudly.
+    # tests/unit/test_eval_agent_invocation.py drives the real helper.
+    def _fake_invoke(*, agent_id, conn_str, scenarios, prompt_version_id):
+        rec["invoked"].append(
+            {
+                "agent_id": agent_id,
+                "conn_str": conn_str,
+                "scenario_ids": [s["id"] for s in scenarios],
+                "prompt_version_id": prompt_version_id,
+            }
+        )
+        rows = [
+            {
+                **s,
+                "agent_response": f"AGENT SAID: {s['question']}",
+                "retrieved_contexts": [f"CTX for {s['id']}"],
+            }
+            for s in scenarios
+        ]
+        # Built by the real summariser so the fixture can never hand the task a
+        # shape the production summariser does not produce.
+        summary = mod.summarise_agent_invocation(
+            [
+                {
+                    "scenario_id": s["id"],
+                    "responded": True,
+                    "error": None,
+                    "retrieve_calls": 1,
+                    "retrieve_at_cap": False,
+                    "side_effects": [],
+                }
+                for s in scenarios
+            ],
+            valid=len(scenarios),
+            ceiling_skipped=0,
+            ceiling_skipped_golden=0,
+            per_turn_timeout_s=90,
+            retrieved_context_char_cap=1800,
+            pii_firewall_applied=False,
+        )
+        return rows, summary
+
+    monkeypatch.setattr(mod, "_invoke_agent_for_scenarios", _fake_invoke)
+    monkeypatch.setattr(
+        mod,
+        "update_eval_run_config",
+        lambda run_id, patch, conn_str: (
+            rec["config_patched"].append((run_id, patch, conn_str)) or True
+        ),
+    )
 
     monkeypatch.setattr(
         mod,

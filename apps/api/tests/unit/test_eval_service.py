@@ -353,8 +353,16 @@ class TestConnectTimeouts:
             lambda svc: svc.insert_eval_run(
                 "run-1", "m6:a", None, None, "postgresql://production"
             ),
+            lambda svc: svc.update_eval_run_config(
+                "run-1", {"agent_invoked": True}, "postgresql://production"
+            ),
         ],
-        ids=["write_eval_results", "update_eval_run_status", "insert_eval_run"],
+        ids=[
+            "write_eval_results",
+            "update_eval_run_status",
+            "insert_eval_run",
+            "update_eval_run_config",
+        ],
     )
     def test_production_writers_bound_the_connect(self, monkeypatch, call):
         from app.services import eval_service
@@ -1095,16 +1103,25 @@ class TestBuildEvalRunConfig:
 
         assert hashes[0] == hashes[1]
 
-    def test_config_says_the_agent_was_not_invoked(self, config_env):
+    def test_config_at_insert_says_the_agent_has_not_been_invoked_yet(
+        self, config_env
+    ):
         """The tuple certifies a configuration; this key says whether the run
         exercised it. Without it the tuple makes an uncomparable measurement
-        look comparable."""
+        look comparable.
+
+        At INSERT the honest answer is always "not yet": the eval_runs row is
+        also the per-agent idempotency key, so it has to exist before the first
+        of sixty SDK turns. A run that dies in between keeps this False and is
+        refused by the deploy gate — the fail-closed direction.
+        """
         from app.services import eval_service
 
         config = eval_service.build_eval_run_config("a", "postgresql://p")["config"]
 
         assert config["agent_invoked"] is False
-        assert config["scored_response_source"] == "reference_answer"
+        assert config["scored_response_source"] == "pending_invocation"
+        assert config["agent_invocation"]["status"] == "not_started"
 
     def test_config_names_every_dimension_the_score_cannot_see(self, config_env):
         """The failing input: change AGENT_TURN_MODEL and run two nightly evals.
@@ -1143,45 +1160,92 @@ class TestBuildEvalRunConfig:
         config = eval_service.build_eval_run_config("a", "postgresql://p")["config"]
         assert "judge_model_id" not in config["dimensions_not_exercised"]
 
-    def test_nothing_is_excluded_once_the_agent_is_invoked(
-        self, monkeypatch, config_env
+    def test_nothing_is_excluded_once_a_run_measured_an_invoked_agent(
+        self, config_env
     ):
-        """The key is derived from EVAL_INVOKES_AGENT, not hardcoded — so
-        fixing D1 clears the exclusion instead of leaving a stale disclaimer
-        that a reader would learn to ignore."""
+        """The exclusion is derived from the RUN's observation, not from a
+        module constant — so a run that measured the agent clears it, and a run
+        that did not keeps it, without anyone editing a disclaimer."""
         from app.services import eval_service
 
-        monkeypatch.setattr(eval_service, "EVAL_INVOKES_AGENT", True)
-        config = eval_service.build_eval_run_config("a", "postgresql://p")["config"]
+        config = eval_service.build_eval_run_config(
+            "a",
+            "postgresql://p",
+            agent_invocation={
+                "status": eval_service.AGENT_INVOCATION_MEASURED,
+                "attempted": 10,
+                "responded": 10,
+            },
+        )["config"]
 
         assert config["agent_invoked"] is True
+        assert config["scored_response_source"] == "agent_response"
         assert config["dimensions_not_exercised"] == []
 
-    def test_the_task_still_scores_the_reference_answer_against_itself(self):
-        """Pins EVAL_INVOKES_AGENT to what the task actually builds (D1).
+    def test_a_run_below_the_floor_is_not_certified_even_though_it_invoked(
+        self, config_env
+    ):
+        """THE CONJUNCTION. `agent_invoked` is the gate-facing claim and it
+        means BOTH "the agent produced the scored responses" and "enough of
+        them did to be a measurement".
 
-        A constant that says "the agent was not invoked" is only worth having
-        if it cannot drift from the code it describes. eval.py builds each
-        sample's agent_response from the same row column as its
-        reference_answer; while that holds, EVAL_INVOKES_AGENT must be False,
-        and the day it stops holding this test forces the constant to move.
+        The failing input it exists for: sixty scenarios, six responses, the
+        rest timing out on a degraded Agent SDK. Every score in that run is
+        real, and six of sixty is not a measurement of the agent's quality. A
+        gate reading a bare "we called it" would ship on it — missing data
+        treated as passing data, which is the rule this repo wrote down after
+        the last time.
         """
         from app.services import eval_service
-        from app.worker.tasks.runtime import eval as eval_task
 
-        source = inspect.getsource(eval_task)
-        reference_column = re.search(r'"reference_answer": (row\[\d+\])', source)
-        response_column = re.search(r'"agent_response": (row\[\d+\])', source)
-        assert reference_column and response_column, (
-            "could not find the scenario dict in eval.py — this test reads the "
-            "task rather than restating it, so a parse failure is a real failure"
+        config = eval_service.build_eval_run_config(
+            "a",
+            "postgresql://p",
+            agent_invocation={
+                "status": eval_service.AGENT_INVOCATION_UNKNOWN,
+                "attempted": 60,
+                "responded": 6,
+            },
+        )["config"]
+
+        assert config["agent_invoked"] is False, (
+            "a run where 6 of 60 scenarios answered certified itself as having "
+            "measured the agent"
         )
+        # …and it still says the scored rows came from the agent, because they
+        # did. The two claims are separable and stay separate.
+        assert config["scored_response_source"] == "agent_response"
+        assert config["agent_invocation"]["responded"] == 6
 
-        scores_itself = reference_column.group(1) == response_column.group(1)
-        assert scores_itself is not eval_service.EVAL_INVOKES_AGENT, (
-            "eval.py and EVAL_INVOKES_AGENT disagree about whether the agent "
-            "produces the scored response — every eval_runs.config row is "
-            "certifying dimensions on the strength of that constant"
+    def test_the_provenance_is_derived_once_not_twice(self):
+        """build_eval_run_config and the task's post-run patch must not each
+        decide what `agent_invoked` means.
+
+        Two derivations are two chances to disagree, and the one that disagreed
+        would be the one the deploy gate reads. Both go through
+        invocation_provenance, and this asserts the config keys are exactly its
+        output rather than a re-spelling of it.
+        """
+        from app.services import eval_service
+
+        observation = {
+            "status": eval_service.AGENT_INVOCATION_MEASURED,
+            "attempted": 4,
+            "responded": 4,
+        }
+        provenance = eval_service.invocation_provenance(observation)
+
+        assert set(provenance) == {
+            "agent_invoked",
+            "scored_response_source",
+            "dimensions_not_exercised",
+            "agent_invocation",
+        }
+        assert provenance["agent_invoked"] is True
+        assert provenance["agent_invocation"] == observation
+        assert provenance["agent_invocation"] is not observation, (
+            "the provenance hands out the caller's own dict — a later mutation "
+            "of the summary would silently rewrite what the run recorded"
         )
 
     def test_promotion_decision_is_copied_not_shared(self, config_env):
@@ -1274,6 +1338,92 @@ class TestInsertEvalRun:
             "write failure would be reported as a successfully started run"
         )
         assert conn.close.called, "the connection must be closed on every path"
+
+
+class TestUpdateEvalRunConfig:
+    """The write that turns `agent_invoked` from a hope into an observation.
+
+    The eval_runs row has to exist before the first of sixty SDK turns — it is
+    the per-agent idempotency key — so it is inserted claiming agent_invoked
+    false and corrected here. Every failure mode of this function therefore
+    leaves the run claiming LESS than it did, never more, and the tests below
+    are about proving that direction rather than the happy path.
+    """
+
+    def _connect(self, monkeypatch, cursor):
+        from app.services import eval_service
+
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        monkeypatch.setattr(eval_service.psycopg2, "connect", lambda *a, **kw: conn)
+        return conn
+
+    def test_the_patch_is_a_shallow_jsonb_merge_on_production(self, monkeypatch):
+        from app.services.eval_service import update_eval_run_config
+
+        cursor = _RecordingCursor()
+        self._connect(monkeypatch, cursor)
+
+        assert (
+            update_eval_run_config(
+                "run-1", {"agent_invoked": True}, "postgresql://production"
+            )
+            is True
+        )
+        sql, params = cursor.executed[0]
+        assert "UPDATE eval_runs" in sql
+        assert "||" in sql, (
+            "the patch replaces the whole config instead of merging into it — "
+            "the dataset composition and the configuration tuple written at "
+            "INSERT would be destroyed by the correction"
+        )
+        assert json.loads(params["patch"]) == {"agent_invoked": True}
+        assert params["id"] == "run-1"
+
+    def test_a_tenant_without_the_config_column_reports_false_not_raises(
+        self, monkeypatch
+    ):
+        """Migration 0013 added `config`; tenants are migrated at provision time
+        only. A run on an older tenant cannot record that it invoked the agent,
+        so it must say it could not — and the deploy gate then refuses it."""
+        from app.services.eval_service import update_eval_run_config
+
+        cursor = _RecordingCursor(
+            raise_on="UPDATE eval_runs",
+            exc=psycopg2.errors.UndefinedColumn("column config does not exist"),
+        )
+        conn = self._connect(monkeypatch, cursor)
+
+        assert (
+            update_eval_run_config("run-1", {"agent_invoked": True}, "postgresql://p")
+            is False
+        )
+        assert conn.rollback.called
+        assert conn.close.called
+
+    def test_a_write_failure_never_fails_an_already_scored_run(self, monkeypatch):
+        """Fail-closed, not fail-loud. The invocation already happened and cost
+        real money; raising here would turn a lost provenance write into a lost
+        run AND a Celery retry that re-invokes sixty scenarios."""
+        from app.services import eval_service
+
+        monkeypatch.setattr(
+            eval_service.psycopg2,
+            "connect",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("production down")),
+        )
+
+        assert (
+            eval_service.update_eval_run_config(
+                "run-1", {"agent_invoked": True}, "postgresql://p"
+            )
+            is False
+        ), (
+            "a failed provenance write reported success — the run would read as "
+            "certified while eval_runs still says agent_invoked=false"
+        )
+
+
 from app.services import eval_service  # noqa: E402  (P2 — module-level access)
 
 # ---------------------------------------------------------------------------

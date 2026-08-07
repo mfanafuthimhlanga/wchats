@@ -51,10 +51,54 @@ score and an exploratory score are different measurements.
 Every report carries (attempted, valid, scored): rows fetched, rows carrying a
 label, rows Ragas returned a real number for. A rate without its denominator
 must not be constructible from what this task returns.
+
+The agent is invoked (audit D1, plan P2)
+----------------------------------------
+Until this phase the task built every sample with
+
+    # For M6: use reference_answer as proxy agent_response to test the eval harness
+    "agent_response": row[3],       # row[3] IS reference_answer
+
+so Ragas scored each reference answer against the contexts that answer was
+written from. Faithfulness and AnswerRelevancy approached 1.0 BY CONSTRUCTION,
+the score was invariant to the agent's model, prompt, retrieval configuration
+and capability envelope, and every layer built on top — the configuration tuple,
+the deploy gate's eval half — was reasoning about a number that measured
+nothing. Three years of scaffolding on one line of scaffolding.
+
+Now each scenario's question is put to the customer agent, through the SAME
+constructor run_agent_turn uses (agent.build_agent_options — the seam, P1), and
+the agent's own response is what gets scored. Four properties, each of which is
+a way this could have gone wrong and been invisible:
+
+  * ALWAYS side_effects="recorded", never "live". The seam grants eleven tools
+    and six of them reach a real ProviderAdapter; one eval scenario in which the
+    agent decides to refund would execute a refund against the tenant's
+    provider. The parameter is mandatory precisely so it cannot be forgotten,
+    and tests/unit/test_eval_agent_invocation.py fails if this module ever asks
+    for "live".
+  * retrieved_contexts come from the AGENT'S OWN retrieve result, never from the
+    scenario's stored column. Scoring faithfulness against contexts the agent
+    never saw is D1 wearing a different hat, so the stored column is carried
+    under a name run_ragas_eval does not read (`stored_retrieved_contexts`)
+    rather than left where a future edit could reconnect it.
+  * A scenario whose agent call FAILS is EXCLUDED AND COUNTED, never scored 0.
+    Zero is not a low score, it is the absence of one.
+  * A run where too few scenarios answered reports 'unknown', never 'pass', at
+    the MIN_RESPONSE_RATE floor.
+
+And the mutating-skill attempts recorded mode captured travel out with the run.
+That the agent CHOSE to call issue_refund is capability-envelope adherence and
+one of the more valuable things an eval can observe; it is invisible unless it
+is carried out of the turn.
+
+EXPECT THE NUMBERS TO GET WORSE. Faithfulness falls from ~1.0 to whatever is
+true. That is the instrument starting to work, not a regression.
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import psycopg2
@@ -65,6 +109,8 @@ from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.services.eval_service import (
+    AGENT_INVOCATION_CONCURRENCY,
+    AGENT_INVOCATION_MAX_CALLS_PER_RUN,
     DATASET_GOLDEN,
     EVAL_SCORING_REQUIRES_BRANCH,
     EXPLORATORY_SAMPLE_SIZE,
@@ -73,8 +119,11 @@ from app.services.eval_service import (
     dataset_composition,
     dataset_of,
     insert_eval_run,
+    invocation_provenance,
     run_ragas_eval,
+    summarise_agent_invocation,
     summarise_run_validity,
+    update_eval_run_config,
     update_eval_run_status,
     write_eval_results,
 )
@@ -114,6 +163,328 @@ def _mark_failed_on_production(run_id: str, conn_str: str, agent_id: str) -> Non
             error=str(status_exc),
             detail="production eval_runs row still reads 'running' for a finished run",
         )
+
+
+# ---------------------------------------------------------------------------
+# Invoking the agent, per scenario (audit D1 / plan P2)
+# ---------------------------------------------------------------------------
+# WHY THE IMPORTS BELOW ARE LAZY. `agent.py` and `agent_tools.py` both import
+# `claude_agent_sdk` at module scope, and several test modules install a FAKE
+# `claude_agent_sdk` into `sys.modules` at import time. Pulling either into THIS
+# module's import graph would make `tests/unit/test_eval_task.py` — which has
+# nothing to do with the SDK — depend on pytest's collection order for whether it
+# gets the real package or a stand-in. `test_agent_options_seam.py` records that
+# exact failure ("a guard whose meaning depends on collection order is not a
+# guard"), and `eval_service.build_eval_run_config` already imports
+# `deployment_service` inside the function body for the same class of reason.
+#
+# They are imported BY NAME rather than through an accessor, because the static
+# half of tests/unit/test_eval_agent_invocation.py reads this module's AST to
+# prove every `build_agent_options(...)` call asks for recorded side effects, and
+# a computed callee has no name to read.
+
+
+class _EvalEventSink:
+    """The db/redis double `_run_sdk_turn` emits SSE events through.
+
+    `_run_sdk_turn` calls `emit(job_id, "agent.tool_call", …, db, redis)` for
+    every tool use it observes. On the chat path those rows are the durable
+    replay log a late-joining widget reads. On the eval path there is no widget,
+    no SSE subscriber and — this is the part that matters — NO `jobs` ROW: the
+    job_id is synthesised per scenario. Writing sixty scenarios' worth of
+    `job_events` into the CONTROL DB under ids that name no job would put eval
+    traffic into the same table the ops room and the SSE replay endpoint read,
+    which is the tenant-data pollution approach (b) was chosen to avoid, one
+    table over.
+
+    So the events are dropped, deliberately and visibly, rather than persisted
+    to a place nothing will ever read them from. `emit` is unchanged: it still
+    publishes and still commits, into this.
+
+    This is the SSE/persistence divergence the plan named as inherent to
+    approach (b) — "Persistence and SSE differ by design" — and it is confined
+    to this class so that the divergence has one location and a name.
+    """
+
+    def publish(self, channel: str, message: str) -> int:  # redis half
+        return 0
+
+    def add(self, obj) -> None:  # SQLAlchemy Session half
+        return None
+
+    def commit(self) -> None:
+        return None
+
+
+def _run_one_eval_turn(
+    *,
+    agent_id: str,
+    conn_str: str,
+    question: str,
+    prompt_version_id: str | None,
+) -> dict:
+    """Put one scenario question to the customer agent. Returns `_run_sdk_turn`'s dict.
+
+    Same constructor as the chat path (`build_agent_options` — the seam, P1) and
+    same turn loop (`_run_sdk_turn`), so what is measured is what is served. What
+    differs is stated here rather than discovered later:
+
+      * `side_effects="recorded"` — ALWAYS, never "live". Six of the eleven tools
+        the seam grants reach a real ProviderAdapter, and this loop runs nightly,
+        unattended, against a real tenant.
+      * `verified_session_token=""` — an eval scenario is an UNVERIFIED customer.
+        Every identity-gated skill therefore refuses, which is the correct
+        posture for a question that arrived with no IDV session, and it is the
+        posture a mined production scenario carries no evidence against.
+      * `resume=None` and a fresh conversation id per scenario — scenarios are
+        independent by construction; a shared session would let scenario 12's
+        answer be shaped by scenario 11.
+      * No `conversations` row is created. Nothing writes one because recorded
+        mode suppresses every tenant write the tools would make, and creating one
+        would put eval traffic into the table `mine_production_scenarios` reads —
+        the eval would begin generating its own future test set from its own
+        output, which is the reason approach (a) was rejected.
+
+    The canary is deliberately NOT re-rolled. `prompt_version_id` is the
+    PRODUCTION label already resolved by `build_eval_run_config` for this run's
+    attribution, and the same helper the chat path uses re-fetches that exact
+    version's soul fields by id. Passing None instead would serve the agent's
+    live `soul_*` columns while `eval_runs.prompt_version_id` still named the
+    production version — a score attributed to a prompt that never produced it,
+    which is BACKLOG 2.3's defect exactly.
+    """
+    from app.worker.tasks.runtime.agent import (  # noqa: PLC0415
+        AGENT_TURN_TIMEOUT_S,
+        _resolve_turn_prompt_version,
+        _run_sdk_turn,
+        build_agent_options,
+    )
+
+    conversation_id = str(uuid.uuid4())
+    job_id = str(uuid.uuid4())
+
+    # The control-DB session is held only for as long as the options need it.
+    # build_agent_options reads every field it wants off the agent row before it
+    # returns, so the SDK turn — up to AGENT_TURN_TIMEOUT_S of it, sixty times a
+    # night — runs with no session open.
+    with get_sync_db() as db:
+        agent = db.get(Agent, agent_id)
+        if agent is None:
+            raise RuntimeError("agent row disappeared mid-run")
+
+        soul_override: dict | None = None
+        if prompt_version_id:
+            _pv_id, soul_override, _needs_persist = _resolve_turn_prompt_version(
+                db,
+                agent_id=agent_id,
+                local_conversation_id=conversation_id,
+                existing_prompt_version_id=prompt_version_id,
+            )
+
+        options = build_agent_options(
+            agent=agent,
+            conn_str=conn_str,
+            conversation_id=conversation_id,
+            job_id=job_id,
+            side_effects="recorded",
+            verified_session_token="",
+            soul_override=soul_override,
+            resume=None,
+        )
+
+    sink = _EvalEventSink()
+    return asyncio.run(
+        asyncio.wait_for(
+            _run_sdk_turn(
+                message=question,
+                options=options,
+                job_id=job_id,
+                local_conversation_id=conversation_id,
+                conn_str=conn_str,
+                db=sink,
+                redis=sink,
+            ),
+            timeout=AGENT_TURN_TIMEOUT_S,
+        )
+    )
+
+
+def _invoke_agent_for_scenarios(
+    *,
+    agent_id: str,
+    conn_str: str,
+    scenarios: list[dict],
+    prompt_version_id: str | None,
+) -> tuple[list[dict], dict]:
+    """Drive the agent over the run's scenarios. Returns (scored_rows, observation).
+
+    `scored_rows` is the subset that produced a response, each carrying the
+    agent's own `agent_response` and the contexts the AGENT retrieved. Those are
+    the only rows handed to Ragas. A row that is not in this list was not scored
+    — not scored 0, not scored against its reference answer, not scored at all —
+    and the observation says how many there were and why.
+
+    Args:
+        scenarios: the VALID rows of the run (those carrying a label), golden
+            first. Order is load-bearing: the per-run ceiling takes a prefix, so
+            golden-first means the fixed set is invoked before the rotating one.
+        prompt_version_id: the production prompt version this run is attributed
+            to, or None.
+
+    Returns:
+        (scored_rows, summarise_agent_invocation(...)).
+
+    Never raises. An invocation phase that fails wholesale yields zero scored
+    rows and an observation saying so, and the run still completes and still
+    records its provenance — which is what lets the deploy gate refuse it for a
+    stated reason instead of blocking on an absence.
+    """
+    from app.services.agent_tools import (  # noqa: PLC0415
+        get_recorded_side_effects,
+        reset_side_effect_context,
+    )
+    from app.worker.tasks.runtime.agent import (  # noqa: PLC0415
+        AGENT_TURN_TIMEOUT_S,
+        RETRIEVE_RESULT_CAPTURE_CHARS,
+    )
+
+    # The provenance says concurrency=1 and the loop below is sequential. Rather
+    # than let those two drift into disagreement — a run whose record claims a
+    # bound it did not run under is this phase's whole subject — raise. 4 GB of
+    # RAM and one Agent SDK subprocess per turn is why the number is 1.
+    if AGENT_INVOCATION_CONCURRENCY != 1:
+        raise RuntimeError(
+            "AGENT_INVOCATION_CONCURRENCY is "
+            f"{AGENT_INVOCATION_CONCURRENCY}, but this loop invokes scenarios "
+            "one at a time. Change the loop in the same edit, or the run's "
+            "provenance describes a bound nothing enforced."
+        )
+
+    invocable = scenarios[:AGENT_INVOCATION_MAX_CALLS_PER_RUN]
+    skipped = scenarios[AGENT_INVOCATION_MAX_CALLS_PER_RUN:]
+    skipped_golden = sum(
+        1 for s in skipped if dataset_of(s.get("dataset")) == DATASET_GOLDEN
+    )
+    if skipped:
+        log.warning(
+            "run_eval_suite.invocation_ceiling_reached",
+            agent_id=agent_id,
+            invoked=len(invocable),
+            skipped=len(skipped),
+            skipped_golden=skipped_golden,
+            ceiling=AGENT_INVOCATION_MAX_CALLS_PER_RUN,
+            detail=(
+                "golden rows beyond the ceiling were not invoked — the paired "
+                "per-item delta does not cover them this run"
+            ),
+        )
+
+    records: list[dict] = []
+    scored_rows: list[dict] = []
+    try:
+        for scenario in invocable:
+            record: dict = {
+                "scenario_id": str(scenario.get("id", "")),
+                "responded": False,
+                "error": None,
+                "retrieve_calls": 0,
+                "retrieve_at_cap": False,
+                "side_effects": [],
+            }
+            turn: dict | None = None
+            try:
+                turn = _run_one_eval_turn(
+                    agent_id=agent_id,
+                    conn_str=conn_str,
+                    question=scenario.get("question", ""),
+                    prompt_version_id=prompt_version_id,
+                )
+            except Exception as exc:
+                # EXCLUDED AND COUNTED, never scored 0 — the lesson
+                # tests/evals/calibration/compute_correlation.py:485 learned
+                # about a judge that errors, applied one layer earlier. A zero
+                # here would move every metric with the failure rate of the
+                # Agent SDK rather than with the agent's behaviour, and it would
+                # do it in the direction that looks like a quality regression.
+                record["error"] = type(exc).__name__
+                log.warning(
+                    "run_eval_suite.scenario_invocation_failed",
+                    agent_id=agent_id,
+                    scenario_id=record["scenario_id"],
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+
+            # Read on BOTH paths and before the next turn resets the sink: a
+            # scenario that drove the agent to attempt a refund and then timed
+            # out still observed the attempt, and the attempt is the eval signal.
+            record["side_effects"] = get_recorded_side_effects()
+
+            if turn is not None:
+                contexts = [
+                    tc["result"]
+                    for tc in turn.get("tool_calls_log", [])
+                    if tc.get("tool_name") == "retrieve" and tc.get("result")
+                ]
+                record["retrieve_calls"] = len(contexts)
+                record["retrieve_at_cap"] = any(
+                    len(str(c)) >= RETRIEVE_RESULT_CAPTURE_CHARS for c in contexts
+                )
+                response_text = str(turn.get("response_text") or "")
+                if response_text.strip():
+                    record["responded"] = True
+                    scored_rows.append(
+                        {
+                            **scenario,
+                            # THE LINE THAT WAS D1. It used to be row[3], the
+                            # reference answer, making the label the prediction.
+                            "agent_response": response_text,
+                            # THE OTHER HALF OF D1. The contexts the AGENT
+                            # retrieved during this turn, never the scenario's
+                            # stored column — scoring faithfulness against
+                            # contexts the agent never saw measures the corpus
+                            # the scenario was written from, not the retrieval
+                            # the customer gets.
+                            "retrieved_contexts": contexts,
+                        }
+                    )
+
+            records.append(record)
+    finally:
+        # The mode is process-context sticky and the Celery prefork pool does not
+        # isolate contextvars per task. Leaving "recorded" in force would mean the
+        # next thing to run in this context stops refunding real customers with no
+        # error anywhere — a failure a customer finds, not us. build_agent_options
+        # resets on entry too; this closes the window between the two.
+        reset_side_effect_context()
+
+    summary = summarise_agent_invocation(
+        records,
+        valid=len(scenarios),
+        ceiling_skipped=len(skipped),
+        ceiling_skipped_golden=skipped_golden,
+        per_turn_timeout_s=AGENT_TURN_TIMEOUT_S,
+        retrieved_context_char_cap=RETRIEVE_RESULT_CAPTURE_CHARS,
+        # The served path deflects a response that trips the PII firewall
+        # (agent.py's scan_response) before a customer sees it. The eval does
+        # NOT, and the reason is that the deflection is not an answer: scoring it
+        # would measure the firewall's hit rate as if it were the agent's
+        # grounding. Recorded rather than left implicit, because it is a real
+        # difference between the text scored here and the text a customer reads.
+        pii_firewall_applied=False,
+    )
+    log.info(
+        "run_eval_suite.invocation_complete",
+        agent_id=agent_id,
+        status=summary["status"],
+        attempted=summary["attempted"],
+        responded=summary["responded"],
+        failed=summary["failed"],
+        empty=summary["empty"],
+        response_rate=summary["response_rate"],
+        ceiling_skipped=summary["ceiling_skipped"],
+    )
+    return scored_rows, summary
 
 
 # ---------------------------------------------------------------------------
@@ -190,8 +561,10 @@ def run_eval_suite(self, agent_id: str) -> dict:
         5. Create the Neon branch. Readiness is probed only if scoring is going
            to connect to it, and a branch that cannot be created is fatal only
            then — see EVAL_SCORING_REQUIRES_BRANCH and the block comment below.
-        6. try: run Ragas eval (no database) → write results to PRODUCTION →
-                mark complete on PRODUCTION.
+        6. try: INVOKE THE AGENT once per valid scenario (recorded side effects)
+                → patch the observation onto the run's config on PRODUCTION
+                → run Ragas eval over the rows that answered (no database)
+                → write results to PRODUCTION → mark complete on PRODUCTION.
            except: mark failed on PRODUCTION.
            finally: delete the Neon branch if one was created (D-10 — always
                 runs, even on exception).
@@ -208,7 +581,8 @@ def run_eval_suite(self, agent_id: str) -> dict:
         {"run_id", "scenario_count", "attempted", "valid", "scored", "datasets",
          "dataset_column_available", "golden_set_present", "promoted",
          "config_recorded", "promotion_disabled_reason",
-         "branch_isolation"}                                     on success.
+         "branch_isolation", "agent_invoked", "agent_invocation",
+         "invocation_recorded"}                                  on success.
         {"status": "already_running"}                            on idempotent skip.
         {"status": "no_scenarios", "run_id", "run_recorded", "attempted",
          "valid", "scored", "dataset_column_available"}          when nothing was
@@ -367,12 +741,29 @@ def run_eval_suite(self, agent_id: str) -> dict:
             "source": row[1],
             "question": row[2],
             "reference_answer": row[3],
-            "retrieved_contexts": row[4] if isinstance(row[4], list) else [],
+            # NOT `retrieved_contexts`, AND THE NAME IS THE GUARD. run_ragas_eval
+            # reads `retrieved_contexts` off each sample; this column holds the
+            # chunks the SCENARIO was written from, which for a source='generated'
+            # row are the exact chunks Haiku was told to answer from
+            # (scenario_service.py:118). Scoring the agent's answer against them
+            # measures the corpus the question came out of rather than the
+            # retrieval the customer gets, and scoring the REFERENCE answer
+            # against them was D1 itself. The key is carried under a name the
+            # scorer does not read so that reconnecting the two is an edit
+            # somebody has to make on purpose.
+            "stored_retrieved_contexts": row[4] if isinstance(row[4], list) else [],
             # NULL (never designated) resolves to exploratory — membership of
             # the golden set is asserted, never inherited.
             "dataset": dataset_of(row[5] if len(row) > 5 else None),
-            # For M6: use reference_answer as proxy agent_response to test the eval harness
-            "agent_response": row[3],
+            # NO `agent_response` KEY. This is where D1 lived:
+            #     # For M6: use reference_answer as proxy agent_response …
+            #     "agent_response": row[3],   # row[3] IS reference_answer
+            # It is set by _invoke_agent_for_scenarios, from the agent's own
+            # turn, and ONLY on rows that produced one. A row that never reached
+            # the agent has no response key at all rather than a plausible
+            # placeholder, so the failure mode is a missing row in the scored
+            # set — visible in (attempted, valid, scored) — instead of a number
+            # that looks like a measurement.
         }
         for row in rows
     ]
@@ -505,6 +896,19 @@ def run_eval_suite(self, agent_id: str) -> dict:
     # above. So the branch is isolation held IN RESERVE, and this block says
     # which of the two it is instead of asserting the one that is false.
     #
+    # P2 DID NOT CHANGE THAT, and the reason is worth stating because it is the
+    # obvious place to be wrong. The agent turns below run against the tenant's
+    # PRODUCTION connection string, not the branch, and they must: `retrieve`
+    # has to see the corpus the customer is served, and a branch is a copy taken
+    # at run start. What stops those turns writing is RECORDED MODE (BACKLOG
+    # 2.5) — the retrieval_metrics row, the escalation marker and mail, and the
+    # six mutating skills' ProviderAdapter calls are all suppressed and recorded
+    # at the tool layer. Two independent mechanisms for two different jobs:
+    # the branch would isolate a WRITE, recorded mode prevents one. Pointing the
+    # agent at the branch instead would swap a real measurement for a measurement
+    # against a snapshot, and would still not stop the ProviderAdapter, which is
+    # outside the database entirely.
+    #
     #   * It is still created and still deleted in `finally`, so the guarantee
     #     is already in place the day scoring starts issuing statements.
     #   * A branch that cannot be created or readied no longer abandons the
@@ -556,9 +960,33 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # fetched (attempted) or the rows Ragas came back with (scored).
         valid_scenarios = [s for s in scenarios if s.get("reference_answer")]
 
-        # No connection string is passed: scoring opens nothing (audit D1 —
-        # each sample's "response" is its own reference answer).
-        results = run_ragas_eval(valid_scenarios)
+        # ------------------------------------------------------------------
+        # THE AGENT RUNS (audit D1). One turn per valid scenario, through the
+        # same seam run_agent_turn uses, with side_effects="recorded" so a
+        # scenario in which the agent decides to refund records the attempt
+        # instead of moving money. Rows that produced no response are excluded
+        # here and counted in `invocation` — never scored 0, and never scored
+        # against their own reference answer, which is the defect being closed.
+        # ------------------------------------------------------------------
+        scored_scenarios, invocation = _invoke_agent_for_scenarios(
+            agent_id=agent_id,
+            conn_str=conn_str,
+            scenarios=valid_scenarios,
+            prompt_version_id=attribution["prompt_version_id"],
+        )
+
+        # WRITTEN BEFORE SCORING, DELIBERATELY. The invocation is the expensive,
+        # unrepeatable half of the run; scoring can fail on a judge outage and be
+        # retried. Patching the observation in first means a run that dies in
+        # Ragas still carries what its agent actually did, and a run that dies
+        # BEFORE this point keeps the agent_invoked=false it was inserted with —
+        # so the deploy gate refuses it rather than inheriting a hopeful default.
+        provenance = invocation_provenance(invocation)
+        invocation_recorded = update_eval_run_config(run_id, provenance, conn_str)
+
+        # No connection string is passed: scoring opens nothing. It scores the
+        # AGENT'S responses against the contexts the AGENT retrieved.
+        results = run_ragas_eval(scored_scenarios)
 
         # Observations about the run land on PRODUCTION, which is the whole
         # point of the split: the branch below is about to be destroyed.
@@ -587,6 +1015,11 @@ def run_eval_suite(self, agent_id: str) -> dict:
             promoted=0,
             promotion_enabled=VERIFIED_QA_PROMOTION_DECISION["enabled"],
             branch_isolation=branch_isolation,
+            agent_invoked=provenance["agent_invoked"],
+            invocation_status=invocation["status"],
+            invocation_responded=invocation["responded"],
+            invocation_attempted=invocation["attempted"],
+            invocation_recorded=invocation_recorded,
         )
         return {
             "run_id": run_id,
@@ -619,6 +1052,17 @@ def run_eval_suite(self, agent_id: str) -> dict:
             # against it; 'unavailable' — Neon could not give us one and the
             # run scored anyway. Never absent, so the state is always readable.
             "branch_isolation": branch_isolation,
+            # --- audit D1: did this run measure the agent? ------------------
+            # The gate-facing conjunction (the agent produced the scored
+            # responses AND enough rows answered to be a measurement), and
+            # beside it the observation it was derived from, so "invoked but
+            # below the floor" and "never invoked" stay different claims.
+            "agent_invoked": provenance["agent_invoked"],
+            "agent_invocation": invocation,
+            # False means the run's config could not be patched — the row still
+            # reads agent_invoked=false and the deploy gate will refuse it. A
+            # measurement lost, in the fail-closed direction.
+            "invocation_recorded": invocation_recorded,
         }
 
     except Exception as exc:
