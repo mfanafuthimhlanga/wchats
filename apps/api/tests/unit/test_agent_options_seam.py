@@ -1273,17 +1273,39 @@ def test_the_seam_rejects_a_mode_it_does_not_implement():
     parameter is called in most codebases — and a bare `== "recorded"` check
     would read it as live and move real money on the eval path. Fail loudly on
     the third value rather than silently on the safe-looking one.
+
+    Both collaborators are patched out, and `match=` pins the seam's OWN message.
+    Neither is fussiness. The first version of this test called the real
+    `build_tool_server`, which has the same check one layer down — so it was
+    green with the seam's `raise` deleted, and its mutation proof said so:
+
+        M2 seam drops the unknown-mode ValueError
+          RED:   1 passed in 10.57s
+
+    It was demonstrating the tool layer's guard while claiming to demonstrate
+    the seam's. The seam's check is not redundant with that one — it fires
+    BEFORE `build_tool_server` sets any per-task ContextVar or the system prompt
+    is assembled, and it names `build_agent_options`, which is where the caller
+    made the mistake — but a test cannot prove a guard it never reaches.
     """
     from app.worker.tasks.runtime.agent import build_agent_options
 
-    with pytest.raises(ValueError, match="side_effects"):
-        build_agent_options(
-            agent=_make_agent(),
-            conn_str=_CONN_STR,
-            conversation_id="00000000-0000-0000-0000-00000000fffe",
-            job_id=str(uuid.uuid4()),
-            side_effects="dry_run",
-        )
+    with (
+        patch("app.worker.tasks.runtime.agent.build_tool_server",
+              side_effect=_tool_server_marker),
+        patch("app.worker.tasks.runtime.agent.build_system_prompt",
+              side_effect=_system_prompt_marker),
+        patch("app.worker.tasks.runtime.agent.ClaudeAgentOptions",
+              side_effect=_RecordingOptions),
+    ):
+        with pytest.raises(ValueError, match="build_agent_options: side_effects"):
+            build_agent_options(
+                agent=_make_agent(),
+                conn_str=_CONN_STR,
+                conversation_id="00000000-0000-0000-0000-00000000fffe",
+                job_id=str(uuid.uuid4()),
+                side_effects="dry_run",
+            )
 
 
 def test_recorded_mode_grants_exactly_the_same_capability_surface_as_live():
