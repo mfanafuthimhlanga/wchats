@@ -97,18 +97,25 @@ inversion in the same change activates a path that serves a human-flagged failur
 
 ## Toolchain state
 
-- `apps/api/.venv` exists but is a **shell** — 34 packages, no pytest. Restore:
-  `cd apps/api && uv sync --extra dev`. (A restore was in progress at handoff; two concurrent `uv`
-  runs deadlock on the wheel cache lock — run one at a time.)
+- `apps/api/.venv` is **restored** (2026-08-07): pytest 9.1.1, 396 packages. The earlier "shell, 34
+  packages, no pytest" reading is superseded. If it is disk-cleaned again: `cd apps/api && uv sync
+  --extra dev`, and run one `uv` at a time — two concurrent runs deadlock on the wheel cache lock.
 - `apps/admin/node_modules` and `apps/widget/node_modules` are present.
-- Backend suite baseline **OBSERVED 2026-08-05 at `fd8fa20`: 1199 passed, 8 skipped, 0 failed,
-  33 warnings, 202s.** Matches the figure `23-09` recorded from its executor's output. Any phase
-  claiming a delta measures against this.
+- Backend suite baseline **OBSERVED 2026-08-07 at `af0f601` (main): 1675 passed, 11 skipped,
+  0 failed, 30 warnings, 451s.** Supersedes the 2026-08-05 `fd8fa20` reading of 1199/8/0/202s, which
+  predates the eval-foundation merge. Any phase claiming a delta measures against 1675/11.
+  (Wall clock roughly doubled with the test count; 451s is the number to expect, not a warning sign.)
 
 ## Next move
 
-1. Finish the toolchain restore, observe the real baseline.
-2. Run `.dev/workflows/eval-foundation.workflow.js` on `feat/eval-foundation`.
-3. Step 0 of the ladder is **owner work, not agent work**: score
+1. ~~Finish the toolchain restore, observe the real baseline.~~ **Done 2026-08-07** — see above.
+2. ~~Run `.dev/workflows/eval-foundation.workflow.js` on `feat/eval-foundation`.~~ **Superseded** —
+   that branch merged at `fd47133`; the workflow is archived in `.dev/workflows/` as the reference
+   implementation of the tier-2 pattern, not as pending work.
+3. **CI (§1) is paused by the owner, 2026-08-07** — blocked on the Actions billing cap (`0.3`), which
+   is not a code problem. `1.3` and `1.4` remain available as local work.
+4. Step 0 of the ladder is **owner work, not agent work**: score
    `apps/api/tests/evals/calibration/human_scores.csv`. Nothing above it can be trusted until judges
    are calibrated. The workflow prepares the inputs; it cannot supply the judgement.
+5. The unblocked headline is **D1** (`BACKLOG` §2) — `app/worker/tasks/runtime/eval.py:374-375`
+   still sets `"agent_response": row[3]`, where `row[3]` is `reference_answer`.

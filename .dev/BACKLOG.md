@@ -16,11 +16,16 @@ Legend — **[owner]** needs a human, **[blocked]** has an external precondition
 
 | # | Item | Source |
 |---|---|---|
-| 0.1 | **[owner]** Score the 10 rows in `apps/api/tests/evals/calibration/human_scores.csv`. Until then every LLM judge in the system is uncalibrated — Gatekeeper, Auditor, Strategist, `classify_severity`, and the **Actor gate that runs before money moves**. The harness exists and gates at Spearman ≥ 0.75; no agent may fill that column. | audit D7 |
+| 0.1 | **[blocked, then owner]** Score the 10 rows in `apps/api/tests/evals/calibration/human_scores.csv`. Until then every LLM judge in the system is uncalibrated — Gatekeeper, Auditor, Strategist, `classify_severity`, and the **Actor gate that runs before money moves**. The harness exists and gates at Spearman ≥ 0.75; no agent may fill that column. **Corrected 2026-08-07: this is not yet owner work — it is behind `0.2`.** `--check` exits 3 and names one blocker: `responses/` has never been captured (0 on disk, 20 scenarios). `capture_responses.py` needs `AGENT_E2E_ENABLED=1`, a live API, a provisioned *and ingested* agent, and its plaintext key. There is nothing to score yet, by a human or anyone else. | audit D7 |
 | 0.2 | **[blocked]** Install a local PostgreSQL server. One precondition unblocks `VER-01`, `AUD-03`, `CAP-03`, the 6 blocked `23-UAT.md` checkpoints, the 4 `human_needed` items in `23-VERIFICATION.md`, and the 3 migration roundtrips below. Nothing listens on 5432-5435; `CONTROL_DB_URL` is live Neon production and is never a substitute. | HANDOFF |
 | 0.3 | **[owner]** Actions minutes / spending limit at `github.com/settings/billing`. Two runs cancelled at 15m03s and 15m02s with every job killed — Lint included, which takes 11s. Until this lifts CI reports nothing and the gate is unreadable. | HANDOFF |
 
 ## 1. CI — finish what the cap interrupted
+
+> **PAUSED by the owner, 2026-08-07.** The wall-clock cap is the binding constraint and it is a
+> billing question, not a code one. `1.1` and `1.2` cannot execute until `0.3` lifts — they need a
+> runner. `1.3` (the flake) and `1.4` (frontend gates absent from `ci.yml`) are local work and stay
+> available. Do not spend runner minutes probing the cap.
 
 | # | Item | Source |
 |---|---|---|
@@ -95,7 +100,13 @@ From the data-science framing. Each depends on everything above it.
 
 ## Suggested order
 
-`0.1` and `0.2` are cheap and unblock disproportionately — do them first, in parallel with anything.
-Then **§1** (CI must be readable before it can gate), then **§2 (D1)**, because §3's verification debt
-is mostly about a metric that does not yet measure and some of it dissolves once it does. §5 closes
-the milestone. §6 is the actual product ambition and is gated on all of it.
+**Revised 2026-08-07.** The earlier order said `0.1` and `0.2` were cheap and could run in parallel
+with anything. `0.1` is not parallel to `0.2` — it is **behind** it, because the responses a human
+would score cannot be captured without a database. Corrected above.
+
+`0.2` (a local PostgreSQL) is now the single highest-leverage owner action: it unblocks `0.1`, the
+three migration roundtrips, `VER-01`/`AUD-03`/`CAP-03`, the 6 UAT checkpoints, the 4 `human_needed`
+items — and the end-to-end proof of §2. **§1 is paused** on the billing cap, which is not a code
+problem. So the working order is **§2 (D1)** — unblocked for implementation and unit proof, blocked
+only for its end-to-end observation — then §3's verification debt, much of which dissolves once the
+metric moves, then §5 to close the milestone. §6 is the product ambition and is gated on all of it.
