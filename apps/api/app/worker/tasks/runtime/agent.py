@@ -67,6 +67,7 @@ from app.services.agent_tools import (
     SideEffectMode,
     build_tool_server,
     record_suppressed_side_effect,
+    reset_side_effect_context,
 )
 from app.services.escalation import send_escalation_email
 from app.services.events import emit
@@ -613,6 +614,16 @@ def build_agent_options(
             unrecognised value would compare unequal to "recorded" and be served
             as live — a real refund on the eval path.
     """
+    # The mode is process-context sticky and the Celery prefork pool does not
+    # isolate contextvars per task, so a previous turn's value is still in force
+    # on entry. Today build_tool_server below always republishes it — but only
+    # if we REACH it, and three things above it raise: this validation, the
+    # RetrievalStrategy parse, and build_tool_server's own. A turn that dies in
+    # any of them would leave a stale "recorded" behind for whatever ran next in
+    # this context. Resetting FIRST, before anything that can throw, makes that
+    # a property of this function rather than of the call graph's current shape.
+    reset_side_effect_context()
+
     if side_effects not in SIDE_EFFECT_MODES:
         raise ValueError(
             f"build_agent_options: side_effects must be one of {SIDE_EFFECT_MODES}, "

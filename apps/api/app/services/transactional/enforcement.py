@@ -309,7 +309,28 @@ async def apply_rate_and_constraint_checks(
     if parsed is not None:
         max_calls, window_secs = parsed
         window_key = int(time.time()) // window_secs
-        redis_key = f"ratelimit:{agent_id_str}:{skill}:{window_key}"
+        # D1/P1b: the rate counter is SHARED STATE, and the eval drives this
+        # same dispatcher. Keyed only on (agent, skill, window) an overnight
+        # eval with six refund-shaped scenarios exhausts an envelope that
+        # allows five refunds an hour, and the next REAL customer refund in
+        # that window comes back "Request denied by rate or constraint check
+        # (reason: rate_limit)" — silent from the eval's side, and reading as
+        # an ordinary envelope denial from the customer's side.
+        #
+        # Namespacing rather than suppressing: the eval still measures the
+        # ceiling, on its own counter. Suppressing the INCR would make
+        # "the agent kept refunding past its limit" unfalsifiable, which is the
+        # same mistake as handing the eval a read-only tool subset. Rolling the
+        # INCR back is not an option either — the pipeline is not transactional
+        # against a concurrent real caller.
+        #
+        # Lazy import: agent_tools imports transactional.tools (which imports
+        # this module) inside build_tool_server, so a module-level import here
+        # would close that loop.
+        from app.services.agent_tools import _side_effects_var  # noqa: PLC0415
+
+        mode_prefix = "recorded:" if _side_effects_var.get() == "recorded" else ""
+        redis_key = f"ratelimit:{mode_prefix}{agent_id_str}:{skill}:{window_key}"
 
         def _do_rate_limit_pipeline() -> tuple[int, Any]:
             client = _get_redis()

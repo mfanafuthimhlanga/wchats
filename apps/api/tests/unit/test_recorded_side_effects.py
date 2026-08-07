@@ -159,30 +159,37 @@ def _refund_adapter() -> MagicMock:
 
 
 @contextmanager
-def _dispatcher(*, adapter, audit, release, get_adapter):
-    """Steps 1-5 all wired to PASS, so the only question left is step 6.
+def _dispatcher(*, adapter, audit, release, get_adapter, **overrides):
+    """Steps 1-5 all wired to PASS by default, so the only question left is step 6.
 
     Recorded mode's whole claim is that steps 1-5 are unchanged, so none of them
     is short-circuited here: capability access granted, reservation won, rate
     checks clear, Actor approves. What differs between the live and recorded
     assertions below is solely whether `get_adapter_for_skill` is reached.
+
+    `**overrides` replaces any of those defaults by name. It exists because the
+    all-pass wiring demonstrates the APPROVE path and nothing else, and the two
+    outcomes it excluded — `require_human` and `replay` — turned out to be the
+    two that returned before the recorded branch and reached real, durable
+    effects anyway. A fixture that can only express one outcome is a fixture
+    that hides the others.
     """
-    patches = (
-        patch(f"{_T}.check_capability_access",
-              AsyncMock(return_value=({"enabled": True, "skill": "issue_refund"}, None))),
-        patch(f"{_T}.reserve_idempotency", AsyncMock(return_value=_reservation("reserved"))),
-        patch(f"{_T}.mark_reservation_in_flight", AsyncMock(return_value=None)),
-        patch(f"{_T}.apply_rate_and_constraint_checks", AsyncMock(return_value=None)),
-        patch(f"{_T}.finalize_idempotency", AsyncMock(return_value=None)),
-        patch(f"{_T}.release_idempotency", release),
-        patch(f"{_T}.compute_args_hash", MagicMock(return_value="fakehash")),
-        patch(f"{_T}.call_actor_gate", AsyncMock(return_value=("approve", "within envelope"))),
-        patch(f"{_T}.write_audit_row", audit),
-        patch(f"{_T}.get_adapter_for_skill", get_adapter),
-    )
+    defaults: dict = {
+        "check_capability_access": AsyncMock(return_value=({"enabled": True}, None)),
+        "reserve_idempotency": AsyncMock(return_value=_reservation("reserved")),
+        "mark_reservation_in_flight": AsyncMock(return_value=None),
+        "apply_rate_and_constraint_checks": AsyncMock(return_value=None),
+        "finalize_idempotency": AsyncMock(return_value=None),
+        "release_idempotency": release,
+        "compute_args_hash": MagicMock(return_value="fakehash"),
+        "call_actor_gate": AsyncMock(return_value=("approve", "within envelope")),
+        "write_audit_row": audit,
+        "get_adapter_for_skill": get_adapter,
+    }
+    defaults.update(overrides)
     with ExitStack() as stack:
-        for p in patches:
-            stack.enter_context(p)
+        for name, replacement in defaults.items():
+            stack.enter_context(patch(f"{_T}.{name}", replacement))
         yield adapter
 
 
@@ -191,6 +198,82 @@ def _run_refund(args: dict | None = None):
 
     handler = getattr(issue_refund_tool, "handler", issue_refund_tool)
     return asyncio.run(handler(args if args is not None else _valid_refund_args()))
+
+
+# ---------------------------------------------------------------------------
+# All six mutating skills. issue_refund is the one the money guard was written
+# for; the other five have the same dispatcher, the same adapter and the same
+# capacity to move money or tenant state, and were demonstrated nowhere.
+# ---------------------------------------------------------------------------
+
+MUTATING_SKILL_ARGS: dict[str, dict] = {
+    "place_order": {
+        "idempotency_key": "idem-po-001",
+        "product_id": "SKU-1",
+        "quantity": 2,
+        "customer_email": "c@example.com",
+        "shipping_address": "1 Main Rd, Johannesburg",
+        "amount_cents": 12000,
+    },
+    "cancel_order": {
+        "idempotency_key": "idem-co-001",
+        "order_id": "ORD-9001",
+        "reason": "Customer changed their mind",
+    },
+    "issue_refund": {
+        "idempotency_key": "idem-ir-001",
+        "order_id": "ORD-9001",
+        "refund_amount_cents": 4500,
+        "reason": "Customer reported a damaged item",
+    },
+    "update_subscription": {
+        "idempotency_key": "idem-us-001",
+        "subscription_id": "SUB-1",
+        "new_plan": "pro",
+        "effective_date": "2026-09-01",
+    },
+    "book_slot": {
+        "idempotency_key": "idem-bs-001",
+        "service_type": "consultation",
+        "preferred_date": "2026-09-01",
+        "preferred_time": "09:30",
+        "customer_name": "Thandi Mokoena",
+    },
+    "update_customer_record": {
+        "idempotency_key": "idem-ucr-001",
+        "field_name": "email",
+        "new_value": "new@example.com",
+    },
+}
+
+
+def _handler_for(skill: str):
+    import app.services.transactional.tools as tools_mod
+
+    tool_obj = getattr(tools_mod, f"{skill}_tool")
+    return getattr(tool_obj, "handler", tool_obj)
+
+
+def _run_skill(skill: str, args: dict | None = None):
+    handler = _handler_for(skill)
+    return asyncio.run(handler(dict(args if args is not None else MUTATING_SKILL_ARGS[skill])))
+
+
+def _generic_adapter(skill: str) -> MagicMock:
+    """An adapter whose method returns something `.model_dump()`-able.
+
+    Deliberately NOT the real Output model for each of the six: the point of the
+    parametrized sweep is the dispatcher branch, and a per-skill Output fixture
+    would be five more chances to write a fixture that never reaches the
+    dispatcher — the failure `test_the_refund_fixture_actually_reaches_the_dispatcher`
+    exists to catch. The refund tests keep the real model, where the artefact
+    assertions need it.
+    """
+    result_obj = MagicMock()
+    result_obj.model_dump = MagicMock(return_value={"message": f"{skill} done [STUB]"})
+    adapter = MagicMock()
+    setattr(adapter, skill, AsyncMock(return_value=result_obj))
+    return adapter
 
 
 def _set_dispatcher_identity() -> None:
@@ -411,9 +494,60 @@ def test_the_recorded_refund_is_returned_as_an_unmissable_failure():
             f"the recorded tool result carries the adapter's output ({artefact!r}), "
             f"which is impossible unless the adapter ran. Got: {text!r}"
         )
-    assert "completed" not in text.split("Do not tell")[0], (
-        "the recorded tool result claims completion before it disclaims it. "
-        f"Got: {text!r}"
+    # The property the owner attached is about the FIRST thing the agent reads,
+    # not about the paragraph as a whole. The previous form of this assertion
+    # (`"completed" not in text.split("Do not tell")[0]`) was satisfied by the
+    # construction of the message it was written against: the only occurrence of
+    # "completed" sat in the trailing disclaimer, so the split always removed it
+    # and the assertion could not fail for the reason it named. Asserting on the
+    # first sentence can.
+    first_sentence = text.split(".")[0]
+    assert first_sentence.startswith("NOT EXECUTED"), (
+        "the recorded tool result does not OPEN with NOT EXECUTED. The first "
+        "sentence is what the agent conditions the rest of its turn on; a "
+        "confirmation followed by a disclaimer is still a confirmation. "
+        f"Got first sentence: {first_sentence!r}"
+    )
+
+
+def test_the_recorded_result_does_not_disclose_the_evaluation_frame():
+    """The eval must measure the agent production serves, not one that knows.
+
+    The first version of this text told the agent, in its own context, "this
+    agent is running in evaluation mode (side_effects='recorded')" and then
+    instructed it not to tell the customer the action completed. From that token
+    on, every sentence the agent produced was produced by an evaluation-AWARE
+    agent — and Faithfulness and AnswerRelevancy score exactly those sentences.
+    A conversation that structurally could not occur in production is the drift
+    class approach (b) and the seam exist to close, so scoring one is the same
+    defect as D1 wearing a different hat.
+
+    The marker did not disappear; it moved to the two places whose readers
+    actually need it. `tool_calls_audit.error` carries it for the human grader
+    and the labelled Actor set, and `get_recorded_side_effects()` carries the
+    full attempt for P2 — both asserted elsewhere in this file. What the MODEL
+    sees is a failed tool call, which is a thing production produces.
+    """
+    _set_dispatcher_identity()
+
+    with _mode("recorded"), _dispatcher(
+        adapter=_refund_adapter(), audit=AsyncMock(), release=AsyncMock(),
+        get_adapter=AsyncMock(return_value=_refund_adapter()),
+    ):
+        text = _run_refund()["content"][0]["text"]
+
+    lowered = text.lower()
+    for tell in ("evaluation", "eval mode", "side_effects", "recorded", "measurement", "test mode"):
+        assert tell not in lowered, (
+            f"the recorded tool result puts {tell!r} in the model's context. "
+            "Every token the agent produces afterwards is conditioned on "
+            "knowing it is under evaluation, and those are the tokens the eval "
+            f"scores. Got: {text!r}"
+        )
+    assert "do not tell the customer" not in lowered, (
+        "the recorded tool result instructs the agent about what to tell the "
+        "customer. Production emits no such instruction, so the turn the eval "
+        f"scores is not a turn production could produce. Got: {text!r}"
     )
 
 
@@ -553,3 +687,712 @@ def test_the_shared_adapter_helper_stays_free_of_the_mode():
         "_execute_transactional_tool no longer reads the side-effect mode, so "
         "nothing stands between an eval scenario and a real refund."
     )
+
+
+# ===========================================================================
+# The paths that return BEFORE step 5.5 — where the branch could not see them
+#
+# The money guard above sits at step 5.5, after the Actor approves. Two arms
+# return earlier and both reached durable, real effects: the step-5
+# `require_human` verdict wrote a `pending_confirmations` row the owner's
+# approval queue dispatches into a live ProviderAdapter, and the step-3
+# idempotency `replay` returned a stored REAL provider result. Neither was
+# demonstrated by the all-pass fixture, because the all-pass fixture cannot
+# express them.
+# ===========================================================================
+
+
+def _db_session():
+    """(get_sync_db replacement, session mock). `.first()` defaults to None.
+
+    A bare MagicMock would make the require_human branch's pre-insert dedup
+    lookup return a truthy row, which the branch reads as "a duplicate already
+    exists" and skips the insert — so a test asserting "no row was written"
+    would pass without recorded mode doing anything at all.
+    """
+    session = MagicMock()
+    session.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+    session.__enter__ = lambda s: s
+    session.__exit__ = MagicMock(return_value=False)
+
+    @contextmanager
+    def _ctx():
+        yield session
+
+    return _ctx, session
+
+
+def test_recorded_require_human_queues_no_pending_confirmation():
+    """THE SECOND MONEY GUARD, and the one step 5.5 structurally could not be.
+
+    A `require_human` verdict writes a `pending_confirmations` row carrying the
+    agent's full chosen arguments. That row is not inert. It is not filtered by
+    `_is_confirm_action_shaped` (it holds `idempotency_key`, never
+    `action_reference`), it appears in `GET /agents/{id}/pending-confirmations`
+    with nothing marking it as an eval's, and approving it dispatches
+    `resolve_confirmation_task` -> `execute_approved_confirmation` ->
+    `_execute_adapter_and_audit` -> `get_adapter_for_skill` -> a real
+    Stripe/Shopify/Woo/Calendly call.
+
+    So a nightly eval scenario that provokes a large refund silently queued a
+    real refund for the owner to approve — the fast path to the adapter was
+    closed and the slow one was not.
+    """
+    _set_dispatcher_identity()
+    db_ctx, session = _db_session()
+
+    with _mode("recorded"), _dispatcher(
+        adapter=_refund_adapter(), audit=AsyncMock(), release=AsyncMock(),
+        get_adapter=AsyncMock(return_value=_refund_adapter()),
+        call_actor_gate=AsyncMock(return_value=("require_human", "above the owner's ceiling")),
+        get_sync_db=db_ctx,
+    ):
+        result = _run_refund()
+
+    session.add.assert_not_called()
+    session.commit.assert_not_called()
+    assert result.get("is_error") is True, (
+        "the recorded require_human return is not an error. Production returns "
+        "a cheerful non-error naming a confirmation ID; recorded mode created "
+        "no confirmation, so returning that text would tell the agent an "
+        f"approval is coming that nobody will ever see. Got: {result!r}"
+    )
+    assert "NOT EXECUTED" in result["content"][0]["text"]
+
+
+def test_live_require_human_still_queues_the_pending_confirmation():
+    """The anti-tautology partner. Without it, deleting the require_human arm
+    entirely would pass the guard above.
+
+    The owner's approval queue is a shipped product surface: an agent that hits
+    the Actor's require_human verdict on a real customer turn MUST leave a row
+    for a human to act on, or the customer is told an approval is coming and
+    none is.
+    """
+    _set_dispatcher_identity()
+    db_ctx, session = _db_session()
+
+    with _mode("live"), _dispatcher(
+        adapter=_refund_adapter(), audit=AsyncMock(), release=AsyncMock(),
+        get_adapter=AsyncMock(return_value=_refund_adapter()),
+        call_actor_gate=AsyncMock(return_value=("require_human", "above the owner's ceiling")),
+        get_sync_db=db_ctx,
+    ):
+        result = _run_refund()
+
+    session.add.assert_called_once()
+    session.commit.assert_called_once()
+    assert "is_error" not in result
+
+
+def test_recorded_require_human_records_the_attempt_and_marks_the_audit_row():
+    """The verdict is the eval signal; not writing the row must not lose it.
+
+    "The agent tried to refund R45 and the Actor gate escalated it" is a cell of
+    the measurement audit's confusion matrix. The pending row was never what
+    carried that observation — the Actor verdict is — so suppressing the row
+    costs nothing provided the verdict still lands in both places P2 reads.
+    """
+    _set_dispatcher_identity()
+    audit = AsyncMock()
+    db_ctx, _session = _db_session()
+
+    with _mode("recorded"), _dispatcher(
+        adapter=_refund_adapter(), audit=audit, release=AsyncMock(),
+        get_adapter=AsyncMock(return_value=_refund_adapter()),
+        call_actor_gate=AsyncMock(return_value=("require_human", "above the owner's ceiling")),
+        get_sync_db=db_ctx,
+    ):
+        _run_refund()
+        recorded = agent_tools.get_recorded_side_effects()
+
+    assert len(recorded) == 1, f"expected one recorded attempt, got {recorded!r}"
+    detail = recorded[0]["detail"]
+    assert detail["reason"] == "actor_require_human"
+    assert detail["actor_decision"] == "require_human"
+    assert detail["arguments"]["refund_amount_cents"] == 4500
+
+    from app.services.transactional.tools import RECORDED_NOT_EXECUTED
+
+    error = audit.call_args.kwargs["error"]
+    assert error.startswith(RECORDED_NOT_EXECUTED), (
+        "the recorded require_human audit row is unmarked, so it is "
+        "byte-identical to a production require_human row. Every consumer that "
+        "labels the Actor gate from tool_calls_audit would then train on "
+        f"decisions that never happened. Got: {error!r}"
+    )
+    assert "actor_require_human" in error, (
+        "the marked audit row lost the reason it was written. The marker says "
+        "'an eval did this'; the reason says WHICH cell of the confusion matrix "
+        f"it belongs in, and both are needed. Got: {error!r}"
+    )
+
+
+def test_recorded_mode_never_hands_the_agent_a_stored_replay_result():
+    """A recorded turn may not be handed a genuine success.
+
+    `idempotency_key` is MODEL-supplied on every mutating Input model, and models
+    produce deterministic keys ("refund-ORD-9001"). An eval scenario mined from a
+    production conversation can therefore hit the exact key a real completed call
+    used, and step 3's replay arm returns that call's stored REAL result — the
+    agent reads "Refund of R45.00 issued" and the whole rest of the turn reasons
+    from money having moved. That is the silent success the owner ruled out,
+    arriving through a door in FRONT of step 5.5 rather than behind it.
+    """
+    _set_dispatcher_identity()
+    stored = {"content": [{"type": "text", "text": "Refund of R45.00 issued [STUB] RFND-real"}]}
+
+    with _mode("recorded"), _dispatcher(
+        adapter=_refund_adapter(), audit=AsyncMock(), release=AsyncMock(),
+        get_adapter=AsyncMock(return_value=_refund_adapter()),
+        reserve_idempotency=AsyncMock(return_value=_reservation("replay", stored)),
+    ):
+        result = _run_refund()
+        recorded = agent_tools.get_recorded_side_effects()
+
+    text = result["content"][0]["text"]
+    for artefact in ("RFND-real", "Refund of R45.00", "[STUB]"):
+        assert artefact not in text, (
+            f"the recorded replay handed the agent the stored REAL provider "
+            f"result ({artefact!r}). Got: {text!r}"
+        )
+    assert result.get("is_error") is True
+    assert "NOT EXECUTED" in text
+    assert [e["detail"]["reason"] for e in recorded] == ["idempotency.replay"], (
+        f"the declined replay was not recorded for P2. Got: {recorded!r}"
+    )
+
+
+def test_live_mode_still_returns_the_stored_replay_result():
+    """The anti-tautology partner: WR-01 replay semantics are unchanged for
+    customers. A retry of a completed refund must still return the original
+    result rather than refunding twice."""
+    _set_dispatcher_identity()
+    stored = {"content": [{"type": "text", "text": "Refund of R45.00 issued [STUB]"}]}
+
+    with _mode("live"), _dispatcher(
+        adapter=_refund_adapter(), audit=AsyncMock(), release=AsyncMock(),
+        get_adapter=AsyncMock(return_value=_refund_adapter()),
+        reserve_idempotency=AsyncMock(return_value=_reservation("replay", stored)),
+    ):
+        result = _run_refund()
+
+    assert result is stored
+
+
+def test_the_recorded_keyspace_is_separate_from_productions():
+    """The eval reserves its own idempotency keys, not the tenant's.
+
+    The collision runs both ways and only one of them is the replay above. An
+    eval that reserves "refund-ORD-9001" first makes a real customer's later
+    call with that key read as a replay or a stranded reservation — an outage
+    caused by a measurement. A recorded execution never finalizes, so nothing is
+    ever stored under a "recorded:" key and a recorded replay becomes
+    unreachable rather than merely guarded.
+    """
+    _set_dispatcher_identity()
+    reserve = AsyncMock(return_value=_reservation("reserved"))
+
+    with _mode("recorded"), _dispatcher(
+        adapter=_refund_adapter(), audit=AsyncMock(), release=AsyncMock(),
+        get_adapter=AsyncMock(return_value=_refund_adapter()),
+        reserve_idempotency=reserve,
+    ):
+        _run_refund(_valid_refund_args("idem-collide"))
+    recorded_key = reserve.call_args.args[2]
+
+    reserve_live = AsyncMock(return_value=_reservation("reserved"))
+    with _mode("live"), _dispatcher(
+        adapter=_refund_adapter(), audit=AsyncMock(), release=AsyncMock(),
+        get_adapter=AsyncMock(return_value=_refund_adapter()),
+        reserve_idempotency=reserve_live,
+    ):
+        _run_refund(_valid_refund_args("idem-collide"))
+    live_key = reserve_live.call_args.args[2]
+
+    assert live_key == "idem-collide", (
+        "the LIVE idempotency key changed. Customers' replay protection is "
+        f"keyed on the value the model supplied. Got: {live_key!r}"
+    )
+    assert recorded_key != live_key, (
+        "recorded mode reserves the same idempotency key production does, so "
+        "an eval and a real customer share one keyspace in the control DB. "
+        f"Got: {recorded_key!r} for both."
+    )
+    assert recorded_key.startswith("recorded:")
+
+
+# ===========================================================================
+# The refused column — every non-executing outcome, recorded and marked
+# ===========================================================================
+
+_DECLINE_CASES = [
+    (
+        "capability_denial",
+        {"check_capability_access": AsyncMock(return_value=({"enabled": False}, "disabled"))},
+        "capability.denial:disabled",
+        True,
+    ),
+    (
+        "rate_denial",
+        {"apply_rate_and_constraint_checks": AsyncMock(return_value="rate_limit")},
+        "capability.denial:rate_limit",
+        True,
+    ),
+    (
+        "actor_block",
+        {"call_actor_gate": AsyncMock(return_value=("block", "policy violation"))},
+        "actor_block",
+        True,
+    ),
+    (
+        "args_mismatch",
+        {"reserve_idempotency": AsyncMock(return_value=_reservation("args_mismatch"))},
+        "idempotency.args_mismatch",
+        True,
+    ),
+    (
+        "stranded_reservation",
+        {"reserve_idempotency": AsyncMock(return_value=_reservation("unknown"))},
+        "idempotency.stranded_reservation",
+        True,
+    ),
+    (
+        "in_progress",
+        {"reserve_idempotency": AsyncMock(return_value=_reservation("in_progress"))},
+        "idempotency.in_progress",
+        False,   # AUD-01 writes no audit row for a concurrent duplicate, in either mode
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "name,overrides,reason,writes_audit",
+    _DECLINE_CASES,
+    ids=[c[0] for c in _DECLINE_CASES],
+)
+def test_every_declined_outcome_is_recorded_and_marked(name, overrides, reason, writes_audit):
+    """The *refused* column of the confusion matrix, which recorded nothing.
+
+    `record_suppressed_side_effect` had exactly three call sites and not one of
+    them was on a denial, block or IDV-refusal path — so
+    `get_recorded_side_effects()` systematically omitted every attempt the
+    envelope stopped, and P2 could not tell "the agent never tried" from "the
+    agent tried and was refused". Those two are scored oppositely: one is
+    correct restraint, the other is a capability-envelope save.
+
+    Falling back to `tool_calls_audit` did not rescue it either. Only step 5.5's
+    row carried the recorded marker, so a recorded `actor_block` row was
+    byte-identical to a production one — the exact contamination
+    RECORDED_NOT_EXECUTED's own comment says it exists to prevent.
+    """
+    from app.services.transactional.tools import RECORDED_NOT_EXECUTED
+
+    _set_dispatcher_identity()
+    audit = AsyncMock()
+
+    with _mode("recorded"), _dispatcher(
+        adapter=_refund_adapter(), audit=audit, release=AsyncMock(),
+        get_adapter=AsyncMock(return_value=_refund_adapter()),
+        **overrides,
+    ):
+        _run_refund()
+        recorded = agent_tools.get_recorded_side_effects()
+
+    assert [e["detail"]["reason"] for e in recorded] == [reason], (
+        f"the {name} outcome recorded {recorded!r} rather than one entry "
+        f"reasoned {reason!r}. An eval reading this turn back sees a turn in "
+        "which the agent attempted nothing."
+    )
+    assert recorded[0]["kind"] == "transactional.declined", (
+        "a declined attempt is recorded under the same kind as a suppressed "
+        "execution, so P2 cannot separate the two columns of the matrix. "
+        f"Got: {recorded[0]['kind']!r}"
+    )
+    assert recorded[0]["detail"]["arguments"]["refund_amount_cents"] == 4500
+
+    if writes_audit:
+        error = audit.call_args.kwargs["error"]
+        assert error == f"{RECORDED_NOT_EXECUTED}|{reason}", (
+            f"the recorded {name} audit row reads {error!r}. Unmarked it is "
+            "byte-identical to the production row for the same outcome, and "
+            "the labelled Actor set silently absorbs decisions that never ran."
+        )
+    else:
+        audit.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "name,overrides,reason,writes_audit",
+    _DECLINE_CASES,
+    ids=[c[0] for c in _DECLINE_CASES],
+)
+def test_live_mode_leaves_every_declined_audit_row_unmarked(name, overrides, reason, writes_audit):
+    """The anti-tautology partner of the sweep above, and a regression pin.
+
+    A marker applied unconditionally would corrupt the production decision log
+    in the opposite direction: every real `actor_block` would read as an eval's
+    and the Actor set would have nothing left in it. The live rows must be byte
+    for byte what they were before recorded mode existed.
+    """
+    _set_dispatcher_identity()
+    audit = AsyncMock()
+
+    with _mode("live"), _dispatcher(
+        adapter=_refund_adapter(), audit=audit, release=AsyncMock(),
+        get_adapter=AsyncMock(return_value=_refund_adapter()),
+        **overrides,
+    ):
+        _run_refund()
+        recorded = agent_tools.get_recorded_side_effects()
+
+    assert recorded == [], (
+        f"live mode recorded {recorded!r}. The sink is the eval's; a customer's "
+        "turn filling it means the mode is not what gates the recording."
+    )
+    if writes_audit:
+        assert audit.call_args.kwargs["error"] == reason
+
+
+# ===========================================================================
+# All six mutating skills, not just the one the guard was written for
+# ===========================================================================
+
+
+def test_every_mutating_skill_in_the_registry_has_a_fixture():
+    """The sweep below is only a sweep if it covers the registry.
+
+    Parametrizing over a hand-written dict silently stops covering a skill the
+    day a seventh mutating one is added — the tests keep passing and the new
+    skill is the one cell nobody looked at, which is the shape of the defect
+    this whole review round is about.
+    """
+    from app.services.transactional.registry import TOOL_REGISTRY
+
+    registry_mutating = {
+        name for name, entry in TOOL_REGISTRY.items() if getattr(entry, "mutating", False)
+    }
+    assert registry_mutating == set(MUTATING_SKILL_ARGS), (
+        "MUTATING_SKILL_ARGS no longer matches the registry's mutating skills.\n"
+        f"  registry: {sorted(registry_mutating)}\n"
+        f"  fixtures: {sorted(MUTATING_SKILL_ARGS)}\n"
+        "A skill with no fixture is a skill with no recorded-mode money guard."
+    )
+
+
+@pytest.mark.parametrize("skill", sorted(MUTATING_SKILL_ARGS))
+def test_every_skill_fixture_actually_validates(skill):
+    """Each fixture is pinned against its schema, by name.
+
+    `test_the_refund_fixture_actually_reaches_the_dispatcher` exists because the
+    first draft of the refund args said `amount_cents` where the schema says
+    `refund_amount_cents`, the tool returned a ValidationError before the
+    dispatcher was entered, and the money guard went green having proved
+    nothing. Writing five more fixtures is five more chances to do it — and
+    `place_order` did, omitting `amount_cents`, caught here.
+    """
+    from app.services.transactional.schemas import (
+        BookSlotInput,
+        CancelOrderInput,
+        IssueRefundInput,
+        PlaceOrderInput,
+        UpdateCustomerRecordInput,
+        UpdateSubscriptionInput,
+    )
+
+    models = {
+        "place_order": PlaceOrderInput,
+        "cancel_order": CancelOrderInput,
+        "issue_refund": IssueRefundInput,
+        "update_subscription": UpdateSubscriptionInput,
+        "book_slot": BookSlotInput,
+        "update_customer_record": UpdateCustomerRecordInput,
+    }
+    validated = models[skill](**MUTATING_SKILL_ARGS[skill])
+    assert validated.idempotency_key == MUTATING_SKILL_ARGS[skill]["idempotency_key"]
+
+
+@pytest.mark.parametrize("skill", sorted(MUTATING_SKILL_ARGS))
+def test_recorded_mode_reaches_no_adapter_for_any_mutating_skill(skill):
+    """The guard was demonstrated at ONE point of a two-dimensional space.
+
+    Six skills x seven dispatcher outcomes, and `issue_refund` at the all-pass
+    outcome was the only cell with a test. `book_slot` has a different schema
+    and no `refund_amount_cents`; `update_customer_record` writes tenant PII.
+    A future edit that gave any of them its own early return would move
+    money-adjacent state with every guard in this file green.
+    """
+    _set_dispatcher_identity()
+    get_adapter = AsyncMock(return_value=_generic_adapter(skill))
+
+    with _mode("recorded"), _dispatcher(
+        adapter=_generic_adapter(skill), audit=AsyncMock(), release=AsyncMock(),
+        get_adapter=get_adapter,
+    ):
+        result = _run_skill(skill)
+        recorded = agent_tools.get_recorded_side_effects()
+
+    get_adapter.assert_not_called()
+    assert "NOT EXECUTED" in result["content"][0]["text"], (
+        f"{skill}: the adapter was not reached AND the recorded branch did not "
+        f"run, so this guard proved nothing about {skill}. Got: {result!r}"
+    )
+    assert [e["detail"]["skill"] for e in recorded] == [skill]
+
+
+@pytest.mark.parametrize("skill", sorted(MUTATING_SKILL_ARGS))
+def test_live_mode_reaches_the_adapter_for_any_mutating_skill(skill):
+    """The per-skill anti-tautology partner.
+
+    Without it, a fixture whose args fail `model_validate` returns is_error
+    before the dispatcher is entered and the guard above passes for a reason
+    that has nothing to do with recorded mode. That is not hypothetical — it is
+    exactly how the first draft of the refund fixture went green.
+    """
+    _set_dispatcher_identity()
+    adapter = _generic_adapter(skill)
+    get_adapter = AsyncMock(return_value=adapter)
+
+    with _mode("live"), _dispatcher(
+        adapter=adapter, audit=AsyncMock(), release=AsyncMock(), get_adapter=get_adapter,
+    ):
+        result = _run_skill(skill)
+
+    get_adapter.assert_called_once()
+    getattr(adapter, skill).assert_called_once()
+    assert "is_error" not in result, f"{skill}: {result!r}"
+
+
+# ===========================================================================
+# confirm_action — in allowed_tools, not routed through the dispatcher
+# ===========================================================================
+
+
+def _run_confirm_action(skill: str = "issue_refund", reference: str = "idem-refund-001"):
+    from app.services.transactional.tools import confirm_action_tool
+
+    handler = getattr(confirm_action_tool, "handler", confirm_action_tool)
+    return asyncio.run(handler({"skill": skill, "action_reference": reference}))
+
+
+def test_recorded_confirm_action_writes_no_row_and_records_the_attempt():
+    """`confirm_action` never touches `_execute_transactional_tool`, so step 5.5
+    never saw it — and it is granted in BOTH modes on purpose, because an eval
+    agent that cannot request approval cannot be scored on choosing to.
+
+    Left ungated it wrote a durable row into the owner's triage queue on every
+    eval scenario in which the agent decided to ask, nightly. Less dangerous
+    than the require_human row — `_is_confirm_action_shaped` DOES filter this
+    shape, so approving one never reaches an adapter — but it is queue pollution
+    the owner would have to triage, and nothing recorded that the agent made the
+    choice, so it was lost eval signal as well.
+    """
+    _set_dispatcher_identity()
+    db_ctx, session = _db_session()
+
+    with _mode("recorded"), ExitStack() as stack:
+        stack.enter_context(patch(
+            f"{_T}.check_capability_access",
+            AsyncMock(return_value=({"enabled": True}, None)),
+        ))
+        stack.enter_context(patch(f"{_T}.get_sync_db", db_ctx))
+        result = _run_confirm_action()
+        recorded = agent_tools.get_recorded_side_effects()
+
+    session.add.assert_not_called()
+    session.commit.assert_not_called()
+    assert result.get("is_error") is True
+    assert len(recorded) == 1, f"expected the attempt to be recorded, got {recorded!r}"
+    assert recorded[0]["kind"] == "transactional.confirm_action"
+    assert recorded[0]["detail"]["skill"] == "issue_refund"
+    assert recorded[0]["detail"]["action_reference"] == "idem-refund-001"
+
+
+def test_live_confirm_action_still_writes_its_row():
+    """The anti-tautology partner: the owner's approval queue is a real product
+    surface, and a customer turn that requests approval must still leave a row
+    in it."""
+    _set_dispatcher_identity()
+    db_ctx, session = _db_session()
+
+    with _mode("live"), ExitStack() as stack:
+        stack.enter_context(patch(
+            f"{_T}.check_capability_access",
+            AsyncMock(return_value=({"enabled": True}, None)),
+        ))
+        stack.enter_context(patch(f"{_T}.get_sync_db", db_ctx))
+        result = _run_confirm_action()
+
+    session.add.assert_called_once()
+    session.commit.assert_called_once()
+    assert "is_error" not in result
+
+
+# ===========================================================================
+# escalate_to_human — the mail is one edge of it, the tenant UPDATE is the other
+# ===========================================================================
+
+
+def _run_escalation():
+    handler = getattr(
+        agent_tools.escalate_to_human_tool, "handler", agent_tools.escalate_to_human_tool
+    )
+    return asyncio.run(handler({"reason": "Customer frustrated", "context": "Order delayed"}))
+
+
+@contextmanager
+def _escalation_context(rowcount: int = 1):
+    """Tool-level identity plus a psycopg2 whose UPDATE matched `rowcount` rows."""
+    notify_fn = MagicMock()
+    agent_tools._conversation_id_var.set("conv-escalate-0001")
+    agent_tools._agent_id_var.set("agent-escalate-0001")
+    agent_tools._conn_str_var.set("postgresql://TENANT-REAL-DB")
+    agent_tools._notify_fn_var.set(notify_fn)
+
+    conn = MagicMock()
+    cursor = MagicMock()
+    cursor.__enter__ = MagicMock(return_value=cursor)
+    cursor.__exit__ = MagicMock(return_value=False)
+    cursor.rowcount = rowcount
+    conn.cursor.return_value = cursor
+
+    connect = MagicMock(return_value=conn)
+    with patch("psycopg2.connect", connect):
+        yield connect, conn, notify_fn
+
+
+def test_recorded_mode_does_not_mark_the_tenant_conversation_escalated():
+    """Recorded mode suppressed the escalation MAIL and nothing else.
+
+    `escalate_to_human_tool` still opened a psycopg2 connection to the TENANT's
+    real database and committed `UPDATE conversations ... SET metadata
+    escalated=true` before notify_fn was ever consulted. P2's scenarios are
+    mined from real conversations, so the conversation_id the seam is handed is
+    exactly the kind that exists — and an eval scenario that escalates would
+    mark a real customer's conversation escalated, changing what the owner's
+    inbox and every escalation dashboard show.
+
+    The guard that was supposed to cover this called the seam's notify_fn
+    closure directly and never entered the tool, so it could not see the UPDATE
+    at all. This one drives the tool.
+    """
+    with _mode("recorded"), _escalation_context() as (connect, conn, notify_fn):
+        result = _run_escalation()
+        recorded = agent_tools.get_recorded_side_effects()
+
+    connect.assert_not_called()
+    conn.commit.assert_not_called()
+    assert [e["kind"] for e in recorded] == ["conversation.escalated_marker"], (
+        f"the suppressed conversations UPDATE was not recorded. Got: {recorded!r}"
+    )
+    assert recorded[0]["detail"]["conversation_id"] == "conv-escalate-0001"
+    # The customer-facing half is unchanged: escalation TEXT is not a side effect.
+    assert notify_fn.call_count == 1, (
+        "the recorded escalation notification did not fire. With the UPDATE "
+        "suppressed there is no rowcount to be zero, so the recording must no "
+        "longer depend on it — that dependency is what made the escalation "
+        "guard green against an edge P2 would never reach."
+    )
+    assert "flagged this conversation" in result["content"][0]["text"]
+
+
+def test_live_mode_still_marks_the_tenant_conversation_escalated():
+    """The anti-tautology partner. A customer's escalation must still be durable:
+    the owner's inbox, the escalation dashboard and the `escalated` flag on the
+    conversations list all read that column."""
+    with _mode("live"), _escalation_context() as (connect, conn, notify_fn):
+        _run_escalation()
+        recorded = agent_tools.get_recorded_side_effects()
+
+    connect.assert_called_once()
+    conn.cursor.return_value.execute.assert_called_once()
+    conn.commit.assert_called_once()
+    assert recorded == []
+    assert notify_fn.call_count == 1
+
+
+def test_the_already_escalated_return_carries_content():
+    """Every other tool in agent_tools returns a "content" list; this one
+    returned a bare `{"already_escalated": True}`.
+
+    The SDK hands the agent whatever text it finds in `content`, so on this path
+    the agent's next turn reasoned over nothing at all. It is reachable in
+    production on any second escalation of a conversation — and BACKLOG 2.7
+    showed it becoming the NORMAL outcome on the eval path, where the UPDATE
+    matches zero rows. Recorded mode no longer runs the UPDATE, so the eval
+    cannot reach it; production still can.
+    """
+    with _mode("live"), _escalation_context(rowcount=0) as (_connect, _conn, notify_fn):
+        result = _run_escalation()
+
+    assert result.get("already_escalated") is True
+    assert "content" in result, (
+        f"the already-escalated return has no content key: {result!r}"
+    )
+    assert isinstance(result["content"], list) and result["content"][0]["type"] == "text"
+    assert "already flagged" in result["content"][0]["text"]
+    assert notify_fn.call_count == 0, (
+        "the duplicate escalation fired notify_fn again — F3's idempotency "
+        "guard is what stops the owner being paged twice for one conversation."
+    )
+
+
+# ===========================================================================
+# Shared state the eval must not consume: the Redis rate counter
+# ===========================================================================
+
+
+def test_the_rate_counter_is_namespaced_by_mode():
+    """Step 4 runs live in recorded mode BY DESIGN — and INCRs a shared counter.
+
+    Keyed only on (agent, skill, window), an overnight eval with six
+    refund-shaped scenarios exhausts an envelope that allows five refunds an
+    hour, and the next REAL customer refund inside that window comes back
+    "Request denied by rate or constraint check (reason: rate_limit)". Silent
+    from the eval's side; indistinguishable from an ordinary envelope denial
+    from the customer's side.
+
+    Namespacing rather than suppressing: the eval still measures the ceiling, on
+    its own counter. Suppressing the INCR would make "the agent kept refunding
+    past its limit" unfalsifiable — the same mistake as handing the eval a
+    read-only tool subset.
+    """
+    import app.services.transactional.enforcement as enforcement
+
+    keys: list[str] = []
+
+    class _Pipe:
+        def incr(self, key):
+            keys.append(key)
+
+        def expire(self, key, ttl):
+            pass
+
+        def execute(self):
+            return [1, True]
+
+    client = MagicMock()
+    client.pipeline = MagicMock(return_value=_Pipe())
+    snapshot = {"enabled": True, "rate_limit": "5/hour", "constraints": {}}
+
+    with patch.object(enforcement, "_get_redis", MagicMock(return_value=client)):
+        with _mode("live"):
+            asyncio.run(enforcement.apply_rate_and_constraint_checks(
+                "agent-rate-001", "issue_refund", snapshot, MagicMock(spec=[]),
+            ))
+        with _mode("recorded"):
+            asyncio.run(enforcement.apply_rate_and_constraint_checks(
+                "agent-rate-001", "issue_refund", snapshot, MagicMock(spec=[]),
+            ))
+
+    assert len(keys) == 2, f"expected one INCR per mode, got {keys!r}"
+    live_key, recorded_key = keys
+    assert live_key == recorded_key.replace("recorded:", ""), (
+        f"the two keys differ by more than the mode namespace: {keys!r}"
+    )
+    assert live_key != recorded_key, (
+        "the eval INCRs the tenant's PRODUCTION per-skill rate counter, so an "
+        "overnight run consumes budget a real customer needs the next morning. "
+        f"Both modes used {live_key!r}."
+    )
+    assert recorded_key.startswith("ratelimit:recorded:")

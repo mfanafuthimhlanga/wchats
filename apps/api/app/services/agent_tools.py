@@ -251,13 +251,26 @@ def current_side_effect_mode() -> str:
 
 
 def record_suppressed_side_effect(kind: str, detail: dict) -> dict:
-    """Record one side effect that recorded mode suppressed, and return the entry.
+    """Record one attempt recorded mode observed, and return the entry.
 
     This is eval signal, not bookkeeping. That the agent CHOSE to call
     issue_refund is capability-envelope adherence — the measurement audit's
     confusion matrix has a whole cell for it ("executed when it should have
     refused: money moves wrongly, critical") — and it is the observation an eval
     would otherwise throw away, scoring only the prose that followed.
+
+    Two kinds of entry, and the distinction is the whole point of the confusion
+    matrix, so both are recorded:
+
+      * **suppressed** — the envelope let the call through and recorded mode
+        swapped the outer edge (`transactional.adapter`, `escalation.notify`,
+        `retrieval_metrics.write`, `conversation.escalated_marker`). This is the
+        matrix's *executed* column.
+      * **declined** — the agent tried and something in steps 1-5 stopped it
+        (`transactional.declined`, `transactional.confirm_action`). This is the
+        matrix's *refused* column, and recording ONLY the first kind is how an
+        eval ends up unable to tell "the agent never tried" from "the agent
+        tried and the envelope stopped it" (the two are scored oppositely).
 
     Never raises: a recording failure must not fail the turn it is observing.
     A missing sink is logged at WARNING rather than swallowed, because the one
@@ -281,13 +294,35 @@ def record_suppressed_side_effect(kind: str, detail: dict) -> dict:
 
 
 def get_recorded_side_effects() -> list[dict]:
-    """Everything recorded mode suppressed during the current turn.
+    """Everything recorded mode suppressed or declined during the current turn.
 
     Returns a copy, so a caller iterating it cannot be surprised by a late
     append, and cannot clear the sink by mutating what it got back.
     """
     sink = _recorded_side_effects_var.get()
     return list(sink) if sink else []
+
+
+def reset_side_effect_context() -> None:
+    """Return this context to the safe default: live, with an empty sink.
+
+    The mode is process-context sticky and nothing resets it between Celery
+    tasks — the prefork pool does not isolate contextvars per task. Today every
+    entry point calls `build_tool_server`, which republishes the mode, so a
+    leaked "recorded" is closed by a coincidence of the call graph rather than
+    by construction. It stops being a coincidence the moment a caller raises
+    BEFORE reaching `build_tool_server`: `build_agent_options` validates its
+    arguments and parses `RetrievalStrategy` first, and either can throw.
+
+    So `build_agent_options` calls this before it can fail. The direction is
+    deliberate: a stale "recorded" surviving into a customer's chat turn stops
+    refunding real customers with no error anywhere, and would be found by a
+    customer rather than by us. A stale "live" surviving into an eval turn is
+    the loud failure — it moves money, and every other guard in this phase
+    exists to catch it.
+    """
+    _side_effects_var.set("live")
+    _recorded_side_effects_var.set([])
 
 
 # ---------------------------------------------------------------------------
@@ -775,19 +810,66 @@ async def escalate_to_human_tool(args: dict[str, Any]) -> dict[str, Any]:
     agent_id = _agent_id_var.get()
     conn_str = _conn_str_var.get()
     notify_fn = _notify_fn_var.get()
+    # D1/P1b: read into a local before any run_in_executor handoff, same rule and
+    # same reason as every other ContextVar above.
+    side_effects = _side_effects_var.get()
 
     loop = asyncio.get_running_loop()
 
-    # Write escalation marker to conversations table (idempotency guard inside).
-    result = await loop.run_in_executor(
-        None,
-        lambda: _mark_conversation_escalated(
-            conversation_id, agent_id, reason, context, conn_str
-        ),
-    )
+    # -------------------------------------------------------------------
+    # D1/P1b: the escalation edge has TWO outer effects, not one. The mail is
+    # swapped at the seam (agent.build_agent_options builds a recording
+    # notify_fn), but this UPDATE is the other half and it lands in the
+    # TENANT's `conversations` table. An eval scenario that escalates would
+    # otherwise mark a real customer conversation as escalated — changing what
+    # the owner's inbox and every escalation dashboard show — and mined
+    # scenarios come from real conversations, so the id it is handed is
+    # precisely the kind that exists.
+    #
+    # Suppressing it also removes the dependency BACKLOG 2.7 named: with the
+    # UPDATE gone there is no rowcount to be zero, so the recorded escalation
+    # notification fires regardless of what conversation_id P2 chooses. The
+    # eval signal no longer hangs on a decision P2 has not made yet.
+    # -------------------------------------------------------------------
+    if side_effects == "recorded":
+        record_suppressed_side_effect(
+            "conversation.escalated_marker",
+            {
+                "conversation_id": conversation_id,
+                "agent_id": agent_id,
+                "reason": reason,
+                "context": context,
+            },
+        )
+        result: dict = {}
+    else:
+        # Write escalation marker to conversations table (idempotency guard inside).
+        result = await loop.run_in_executor(
+            None,
+            lambda: _mark_conversation_escalated(
+                conversation_id, agent_id, reason, context, conn_str
+            ),
+        )
 
     if result.get("already_escalated"):
-        return result
+        # A duplicate escalation is a benign no-op, not a failure — the
+        # conversation IS flagged and a human IS coming — so no is_error. What
+        # it must not do is hand the SDK a bare {"already_escalated": True}:
+        # every other tool in this file returns a "content" list, and the
+        # agent's next turn reasons over whatever text it finds there. A dict
+        # with no content leaves it reasoning over nothing.
+        return {
+            "already_escalated": True,
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "This conversation is already flagged for our support team. "
+                        "A human will follow up shortly."
+                    ),
+                }
+            ],
+        }
 
     # Fire-and-forget notification (email / webhook / slack — injected by task).
     # Prefix with [AGENT-DETECTED — UNVERIFIED] so recipients know this is LLM-sourced.
@@ -917,13 +999,6 @@ def build_tool_server(
     # ContextVar.set() ensures the reset is scoped to this task's context only.
     _retrieve_call_count_var.set(0)
 
-    # D1/P1b: publish the mode and install a FRESH recording sink for this turn.
-    # Fresh matters: a sink carried over from the previous turn would report one
-    # eval scenario's refund attempt as another scenario's, which is worse than
-    # no recording at all — it is a wrong observation that looks like a right one.
-    _side_effects_var.set(side_effects)
-    _recorded_side_effects_var.set([])
-
     # IDV-05: thread the verified session token into the task-scoped ContextVar.
     # The enforcement gate in transactional/tools.py (17-06) reads this value.
     # NEVER referenced in any log call (T-04-03-05).
@@ -949,7 +1024,7 @@ def build_tool_server(
         update_subscription_tool,
     )
 
-    return create_sdk_mcp_server(
+    server = create_sdk_mcp_server(
         name="customer-tools",
         version="1.0.0",
         tools=[
@@ -968,3 +1043,21 @@ def build_tool_server(
             confirm_action_tool,
         ],
     )
+
+    # D1/P1b: publish the mode and install a FRESH recording sink for this turn.
+    #
+    # LAST, after every step that can raise. The mode is process-context sticky
+    # and the prefork pool does not isolate contextvars per task, so publishing
+    # it before create_sdk_mcp_server would mean a half-built tool server leaves
+    # a "recorded" behind for whatever runs next in this worker's context — a
+    # customer turn that then silently stops refunding, with no error anywhere.
+    # Nothing between here and the return reads either variable, so the move
+    # costs nothing.
+    #
+    # Fresh sink matters as much as the mode: one carried over from the previous
+    # turn would report one eval scenario's refund attempt as another's, which
+    # is worse than no recording at all — a wrong observation that looks right.
+    _side_effects_var.set(side_effects)
+    _recorded_side_effects_var.set([])
+
+    return server

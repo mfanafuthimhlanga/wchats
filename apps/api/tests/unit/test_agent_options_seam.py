@@ -94,13 +94,24 @@ BEHAVIOUR_DETERMINING_CALLS = (
 )
 
 #: Modules permitted to construct ClaudeAgentOptions anywhere under `app/`.
-#: `agent.py` is the seam; the other three build ADVERSARIES and orchestrators,
-#: not the customer agent, and are grandfathered deliberately. The name that
-#: matters is the one absent: `app/worker/tasks/runtime/eval.py`. P2 makes the
-#: eval invoke the agent, and the whole value of approach (b) evaporates the
-#: moment the eval builds its own options — the eval would then score an agent
-#: no customer is served. That is not caught by anything scoped to agent.py, so
-#: it is caught here.
+#: `agent.py` is the seam. `deployment_service.py` and `red_team_service.py`
+#: build orchestrators and ADVERSARIES, not the customer agent, and are
+#: grandfathered deliberately.
+#:
+#: `red_team_probe.py` is NOT that, and the earlier wording here ("adversaries
+#: and tooling, not the customer agent") was wrong about it. Its
+#: `_build_transactional_probe_fn` builds the VICTIM turn — the customer agent —
+#: by hand, with its own `_PROBE_MODEL` and its own `_ALLOWED_TOOLS`. So RTX-01's
+#: confused-deputy findings are about an agent with a different model and a
+#: different tool list from the one production serves and the eval will measure.
+#: Routing it through the seam is BACKLOG 2.9; until then this entry is a known
+#: divergence, recorded rather than implied.
+#:
+#: The name that matters is the one absent: `app/worker/tasks/runtime/eval.py`.
+#: P2 makes the eval invoke the agent, and the whole value of approach (b)
+#: evaporates the moment the eval builds its own options — the eval would then
+#: score an agent no customer is served. That is not caught by anything scoped
+#: to agent.py, so it is caught here.
 MODULES_ALLOWED_TO_CONSTRUCT_OPTIONS = {
     "app/worker/tasks/runtime/agent.py",
     "app/services/deployment_service.py",
@@ -1569,3 +1580,151 @@ def test_the_canary_choice_is_committed_once_the_options_exist():
         "that dies in options-building would again leave the conversation "
         "sticky to a version that never served it."
     )
+
+
+def test_a_failed_canary_commit_never_fails_the_turn():
+    """T-21-09-05's tenant-DB half, which had no test anywhere.
+
+    Moving the canary WRITE behind the seam put it on the turn's critical path
+    for the first time, and it writes to the TENANT database — a Neon cold start
+    or a dropped connection is the ordinary case, not the exotic one. Unwrapped,
+    it would fail a customer turn whose answer had already been produced. The
+    `try/except` in `run_agent_turn` is what stops that, and deleting it left
+    the whole suite green: the pre-existing test that covered a tenant-DB
+    failure (`..._never_raises_on_bad_db`) was rewritten during P1b to cover a
+    CONTROL-DB failure instead, so this half lost its only coverage and the
+    replacement's docstring asserted it in prose.
+
+    What must survive the failure: the SDK turn runs, the turn returns, and the
+    failure is logged rather than swallowed silently.
+    """
+    from app.worker.tasks.runtime.agent import run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent = _make_agent()
+    agent_id = str(agent.id)
+    local_conv_id = "00000000-0000-0000-0000-0000000000ff"
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None
+    mock_db.get.side_effect = [agent, _make_job()]
+
+    ran: list[str] = []
+
+    async def fake_sdk_turn(**kwargs):
+        ran.append("sdk_turn")
+        return dict(_CANNED_TURN_RESULT)
+
+    with (
+        patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_db_ctx(mock_db)),
+        patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value=_CONN_STR),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
+        patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
+        patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
+        patch(
+            "app.worker.tasks.runtime.agent._persist_messages",
+            return_value="assistant-msg-id-canary-fail",
+        ),
+        patch(
+            "app.worker.tasks.runtime.agent.resolve_prompt_version",
+            return_value=(_PROMPT_VERSION_ID, dict(_SOUL_OVERRIDE)),
+        ),
+        patch(
+            "app.worker.tasks.runtime.agent._set_prompt_version_id",
+            side_effect=RuntimeError("simulated tenant DB outage"),
+        ) as mock_commit,
+        patch(
+            "app.worker.tasks.runtime.agent.build_agent_options",
+            side_effect=lambda **kwargs: _SeamSentinel(),
+        ),
+        patch("app.worker.tasks.runtime.agent._run_sdk_turn", side_effect=fake_sdk_turn),
+        patch("app.worker.tasks.runtime.agent.emit"),
+        patch("app.worker.tasks.runtime.agent.celery_chain", MagicMock()),
+        patch("app.worker.tasks.runtime.agent.log.warning") as mock_warn,
+    ):
+        result = run_agent_turn.run(
+            job_id=job_id,
+            agent_id=agent_id,
+            message="What is the return policy?",
+            conversation_id=None,
+        )
+
+    mock_commit.assert_called_once()
+    assert ran == ["sdk_turn"], (
+        "the SDK turn never ran: a tenant-DB failure on the canary write killed "
+        "a turn the customer is waiting on. The write is bookkeeping about "
+        "which prompt version served the turn; losing it costs stickiness, and "
+        "the next turn of this conversation re-rolls. Losing the turn costs the "
+        "answer."
+    )
+    assert isinstance(result, dict)
+    warned = [c.args[0] for c in mock_warn.call_args_list if c.args]
+    assert "run_agent_turn.prompt_version_persist_failed" in warned, (
+        "the canary-write failure was swallowed without a log line. A silent "
+        "except is how a conversation stops being sticky and nobody finds out "
+        f"until the canary's denominator is wrong. Warnings logged: {warned}"
+    )
+
+
+@pytest.mark.parametrize("failing_step", ["strategy", "tool_server"])
+def test_a_failed_seam_leaves_the_side_effect_mode_at_the_safe_default(failing_step):
+    """The mode is process-context sticky and nothing resets it between tasks.
+
+    Celery's prefork pool does not isolate contextvars per task. Once an eval
+    task sets the mode to "recorded" it stays set in that worker's context until
+    something calls `build_tool_server` again — and the entire safety argument
+    for the `"live"` default rested on the untested claim that every path that
+    reaches the tools does. `build_agent_options` raises above
+    `build_tool_server` in three places (its own validation, the
+    `RetrievalStrategy` parse, and `build_tool_server` itself), so a stale
+    "recorded" could survive into whatever ran next in that context: a customer
+    turn that silently stops refunding, with no error anywhere, found by a
+    customer rather than by us.
+
+    Two changes close it, and this test drives both. `build_agent_options`
+    resets to the safe default FIRST, before anything that can throw; and
+    `build_tool_server` publishes the mode LAST, after `create_sdk_mcp_server`,
+    rather than before it. `strategy` dies before `build_tool_server` and
+    `tool_server` dies inside it — on opposite sides of where the mode used to
+    be published, so neither change alone makes both cases pass.
+    """
+    import app.services.agent_tools as agent_tools
+    from app.worker.tasks.runtime.agent import build_agent_options
+
+    token = agent_tools._side_effects_var.set("recorded")
+    try:
+        # The expected exception is matched by MESSAGE, not by `Exception`. A
+        # bare `pytest.raises(Exception)` swallows a NameError from a missing
+        # import and the seam is never called at all — which is exactly how the
+        # first draft of this test passed the reset assertion for no reason.
+        if failing_step == "strategy":
+            failure = patch(
+                "app.worker.tasks.runtime.agent.RetrievalStrategy.model_validate",
+                side_effect=ValueError("malformed retrieval_strategy"),
+            )
+            expected: tuple = (ValueError, "malformed retrieval_strategy")
+        else:
+            failure = patch(
+                "app.services.agent_tools.create_sdk_mcp_server",
+                side_effect=RuntimeError("mcp server could not be built"),
+            )
+            expected = (RuntimeError, "mcp server could not be built")
+
+        with failure, pytest.raises(expected[0], match=expected[1]):
+            build_agent_options(
+                agent=_make_agent(),
+                conn_str=_CONN_STR,
+                conversation_id="conv-stale-mode",
+                job_id="job-stale-mode",
+                side_effects="recorded",
+            )
+
+        assert agent_tools.current_side_effect_mode() == "live", (
+            f"a seam call that died at {failing_step!r} left the previous "
+            "turn's 'recorded' in force. The next thing to run in this Celery "
+            "worker context is a customer turn whose refunds silently stop "
+            "happening — a failure that produces no error and is found by the "
+            "customer."
+        )
+    finally:
+        agent_tools._side_effects_var.reset(token)
