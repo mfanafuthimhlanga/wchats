@@ -240,6 +240,7 @@ from app.services.red_team_probe import CLEAN_TENANT_ENVELOPES
 from app.services.transactional.enforcement import _parse_rate_limit
 from app.services.transactional.registry import TOOL_REGISTRY
 from app.services.transactional.schemas import SKILL_INPUT_MODELS
+from app.services.transactional.tools import RECORDED_NOT_EXECUTED
 
 log = structlog.get_logger(__name__)
 
@@ -1063,6 +1064,19 @@ _APPROVING_DECISIONS: tuple[str, ...] = ("approve",)
 CAPABILITY_DENIAL_PREFIX = "capability.denial:"
 
 _ERROR_DISPOSITIONS: tuple[tuple[str, str | None, str], ...] = (
+    # FIRST, and it must stay first: every audit row recorded mode writes carries
+    # this as a PREFIX on the reason it would otherwise have written, so any
+    # entry placed above it would classify an eval's row as a real decision.
+    #
+    # `None` — not a disposition — because the row records a decision that did
+    # not act on anything. The Actor genuinely decided, so the row is not
+    # meaningless; but it decided about a scenario, not a customer, and the
+    # adapter, the pending_confirmations row and the money were all suppressed.
+    # Admitting it is exactly the contamination `RECORDED_NOT_EXECUTED` exists to
+    # prevent: a supervised set for the Actor gate assembled half from requests
+    # that happened and half from requests that did not — with the eval, whose
+    # scenarios are chosen to provoke refusals, supplying the second half.
+    (RECORDED_NOT_EXECUTED, None, "recorded_not_executed"),
     # The gate escalated: a pending_confirmations row exists and the adapter did
     # not run (tools.py step 5, require_human branch).
     ("actor_require_human", DISPOSITION_REQUIRE_HUMAN, "actor_require_human"),

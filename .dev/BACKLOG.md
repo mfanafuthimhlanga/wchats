@@ -50,11 +50,13 @@ that cannot move.
 > distinction is load-bearing — tier-2 is a Fable judge reading a bounded artifact and asking whether
 > the claims match the evidence, and that question has not been asked about P1 or P1b.
 
-Numbering note: `2.5` and `2.6` were recorded mode and the canary write order. Both were closed by
-P1b and their rows deleted per the maintenance rule. The numbers are **not reused** — `agent.py`,
-`transactional/tools.py` and the plan all cite "BACKLOG 2.5"/"2.6" for those decisions, and a reader
-following one of those comments must not land on an unrelated row. New work discovered by P1b is
-`2.7`/`2.8`.
+Numbering note: `2.5`, `2.6` and `2.7` are closed and their rows deleted per the maintenance rule —
+`2.5` recorded mode, `2.6` the canary write order, `2.7` the escalation `conversation_id` decision
+(closed 2026-08-07 by suppressing `_mark_conversation_escalated` under recorded mode: with no UPDATE
+there is no rowcount to be zero, so the recorded notification fires whatever id P2 chooses). The
+numbers are **not reused** — `agent.py`, `transactional/tools.py` and the plan all cite "BACKLOG
+2.5"/"2.6" for those decisions, and a reader following one of those comments must not land on an
+unrelated row.
 
 | # | Item | Source |
 |---|---|---|
@@ -62,8 +64,9 @@ following one of those comments must not land on an unrelated row. New work disc
 | 2.2 | The deploy gate fail-closes on an **absent** eval signal while shipping on a **present** one that measures nothing. No gate test reads `config.agent_invoked`. | tier-2 #1 |
 | 2.3 | The config tuple now stamps `prompt_version_id` / `model_id` onto that tautology, which makes it *look* credible. | tier-2 #1 |
 | 2.4 | Mined scenarios are inert by construction — written with `reference_answer=''`, selected by `WHERE reference_answer != ''`. EVL-03 produces write-only data. | audit D6 |
-| 2.7 | **P2 must decide what `conversation_id` it hands the seam, and the escalation path is the tell.** Recorded mode suppresses the escalation *mail*, which is what the owner settled — it does not suppress `_mark_conversation_escalated`, which UPDATEs the tenant `conversations` row. Approach (b) exists so the eval writes no `conversations` rows, so that UPDATE will match zero rows, and `escalate_to_human_tool` returns `{"already_escalated": True}` **without calling notify_fn at all**. An eval scenario about escalation would then read "already escalated" where production reads "I've flagged this conversation", and the recorded notification would never fire. Not a bug in P1b; a decision P2 owns and must make on purpose. | D1/P1b |
 | 2.8 | **Recorded mode does not bound the eval's Actor-gate spend.** Steps 1-5 of the transactional dispatcher run live by design — the envelope, IDV gate, rate ceiling and Actor seam are what the eval measures. The Actor gate is a synchronous Haiku call per mutating attempt, so a scenario set that provokes many attempts bills per attempt on top of the per-turn SDK call. Belongs with the plan's existing "cost and latency, unbounded by default" risk and its per-run ceiling. | D1/P1b |
+| 2.9 | **`red_team_probe._build_transactional_probe_fn` builds the CUSTOMER agent by hand, not through the seam.** `red_team_probe.py:313-329` constructs its own `ClaudeAgentOptions` with `_PROBE_MODEL` and `_ALLOWED_TOOLS`, so the RTX victim turn is an agent with a different model and a different tool list from the one production serves and the eval measures — RTX-01's confused-deputy findings are therefore about an adjacent agent. `MODULES_ALLOWED_TO_CONSTRUCT_OPTIONS` grandfathers it; the allowlist comment now says why rather than implying it is an adversary. Route it through `build_agent_options(side_effects=...)`. | P1b tier-2 #12 |
+| 2.10 | **Recorded rows are excluded from the decision eval, and the exclusion is a whole cell of its denominator.** `observed_disposition` classifies `side_effects.recorded:not_executed*` as `None` (`recorded_not_executed`), which is right — an eval's own rows must never become its evidence — but it means an agent driven mainly by the nightly eval contributes nothing to `valid`. Once P2 lands, check whether the decision eval's `valid` count is dominated by production traffic or starved by eval traffic, and report `unknown` rather than a thin `pass`. | P1b tier-2 follow-on |
 
 ## 3. Verification debt from the eval branch
 
