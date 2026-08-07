@@ -3,6 +3,14 @@
 > **`.dev/BACKLOG.md` is the single ordered list of open work.** Read it before starting anything.
 > This file is the current-state snapshot; that one is the queue.
 
+**In flight (2026-08-07): `feat/d1-agent-invocation`, unmerged.** P1 (the options seam, `ec5f445` +
+`d15be3a`) and P1b (recorded mode + the canary write order, `487ebbe` + `117de05`). **P2 and P3 have
+not started**, so the eval still sets `agent_response = reference_answer` and D1 is still open.
+Branch suite: **1716 passed / 11 skipped / 0 failed** (branch baseline before P1b was 1695/11/0 at
+`9d81e34`; `main`'s 1675/11/0 below is the pre-branch number and is not the figure to measure a
+P2 delta against). Trace: `.dev/traces/260807-d1-p1b-recorded-mode.md`. Mutation proofs:
+`.dev/reference/p1b-mutation-proofs.md`. No tier-2 judge has read this branch.
+
 **All three PRs are merged. `main` is at `fd47133`** — the `.dev` convention (#1), the eval foundation
 (#2) and the CI repair (#3). Suite 1199 → **1675 passed / 11 skipped / 0 failed**; ruff 461 → 0;
 mypy 75 → 0. Trace: `.dev/traces/260805-eval-foundation.md`.
