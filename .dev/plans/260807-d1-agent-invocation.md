@@ -39,13 +39,18 @@ Three consequences already shipped on top of it (BACKLOG 2.1-2.3):
 | **b** | Extract the shared core — options construction + `_run_sdk_turn` — and call it from both | Same system prompt, tools and capability envelope as production, which is what actually determines agent behaviour. Persistence and SSE differ by design. Risk: the extracted seam drifts from the production caller and we measure something adjacent to the real thing, which is this repo's recurring defect. |
 | **c** | HTTP against the running API, as `capture_responses.py` does | Most faithful, and unrunnable from inside a Celery task on this machine. |
 
-**Recommendation: (b), with the drift risk closed structurally rather than by intention** — one
-constructor for `ClaudeAgentOptions` that both callers must go through, and a test that fails if
-`run_agent_turn` builds options by any other route. Recommending (b) over (a) because eval traffic in
-`conversations` would corrupt `mine_production_scenarios`, which reads that table: the eval would
-begin generating its own future test set.
+**SETTLED by the owner, 2026-08-07: (b), the shared seam.** The drift risk is closed structurally
+rather than by intention — one constructor for `ClaudeAgentOptions` that both callers must go
+through, and a test that fails if `run_agent_turn` builds options by any other route. (b) over (a)
+because eval traffic in `conversations` would corrupt `mine_production_scenarios`, which reads that
+table: the eval would begin generating its own future test set from its own output.
 
-**Not settled by me.** This is the shape of the whole change.
+**Also settled: P3 refuses an absent `agent_invoked`, not only an explicit `false`.** Every eval run
+persisted to date was produced by the tautology and carries no such field, so a gate that refuses
+only `false` would keep shipping on the whole of history — the exact shape of BACKLOG 3.1, where
+pre-P4 red-team runs still read `signal='measured'` with clean findings. Consequence, accepted: once
+P3 lands and before P2 does, the gate refuses every eval signal. That is a mid-branch state on one
+branch, and it fails closed.
 
 ## Phases
 
