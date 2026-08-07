@@ -78,7 +78,36 @@ needs one. Settle it before the first invocation, not at runtime against a real 
 - **or** a read-only `allowed_tools` subset for the eval, plus a test that fails if any of
   `MUTATING_SKILLS` (named in `tests/unit/test_agent_options_seam.py`) reaches that path.
 
-Whichever is chosen, it is a behaviour change and needs its own red-observed test.
+**SETTLED by the owner, 2026-08-07: recorded mode on the seam.** `side_effects: Literal["live",
+"recorded"]`, mandatory, no default — a caller that does not state which it wants does not compile
+past review. Chosen over the read-only subset because removing the mutating skills would mean the
+eval measures an agent with fewer capabilities than production serves: a scenario testing *"the
+agent should refuse to refund here"* could no longer fail, because the agent could not even try. That
+is drift, and drift is the thing P1 exists to prevent.
+
+Consequences that are now requirements:
+
+- The no-op must be **unmissable, never a silent success.** A recorded `issue_refund` that returns a
+  cheerful confirmation teaches the agent it succeeded and diverges the rest of the turn. It records
+  the attempt and returns something the transcript shows plainly.
+- **The recording is eval signal, not debris.** That the agent chose to call `issue_refund` is one of
+  the more valuable things an eval can observe — capability-envelope adherence. Persist it.
+- `live` stays the behaviour `run_agent_turn` has today, byte-for-byte. The chat path must not
+  change; its 1695/11/0 is the evidence.
+
+### P1b — the two agent.py changes P1's review surfaced
+
+Both settled, both on the turn path, both needing their own red-observed test. Kept out of P2 so the
+eval diff stays reviewable.
+
+1. **Recorded mode**, above.
+2. **Canary ordering (BACKLOG 2.6) — resolve before, commit after.** The soul fields genuinely must
+   resolve before the system prompt is built, so `_resolve_turn_prompt_version` stays where P1 put
+   it. What moves back is the *write*: `conversations.metadata.prompt_version_id` is committed only
+   once `build_agent_options` has returned, so a turn that dies in options-building re-rolls as it
+   did before P1. This inverts `test_the_canary_choice_is_committed_before_the_options_can_fail`,
+   which currently pins P1's behaviour — that test must be rewritten to pin the new one, and observed
+   red against the old code.
 
 - `eval.py` calls the agent per scenario. `agent_response` becomes the agent's `response_text`.
 - **`retrieved_contexts` must come from the agent's own `retrieve` result, not from `row[4]`.**

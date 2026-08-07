@@ -5,6 +5,9 @@ export const meta = {
     { title: 'P1 seam' },
     { title: 'P1 review' },
     { title: 'P1 fix' },
+    { title: 'P1b safety' },
+    { title: 'P1b review' },
+    { title: 'P1b fix' },
     { title: 'P2 invoke' },
     { title: 'P2 review' },
     { title: 'P2 fix' },
@@ -198,6 +201,100 @@ ${JSON.stringify(p1r, null, 2)}
 Re-run the gate command and report the verbatim final line. Commit.`, { schema: IMPL_SCHEMA })
 
 // ---------------------------------------------------------------------------
+// P1b — the two agent.py changes P1's review surfaced. Both settled by the owner.
+// ---------------------------------------------------------------------------
+
+phase('P1b safety')
+const p1b = await agent(`${CONTEXT}
+
+TASK — Phase P1b of the plan. Read the plan's "P1b" section; it is the contract. TWO changes to
+app/worker/tasks/runtime/agent.py, both already decided by the owner. Implement the decisions; do not
+reopen them.
+
+--- 1. RECORDED MODE. This one is why P2 cannot start without you. ---
+
+build_agent_options currently returns options carrying a LIVE tool server bound to the tenant's real
+conn_str, granting all six mutating skills — tests/unit/test_agent_options_seam.py:1147 pins exactly
+that. From P2, an eval scenario in which the agent decides to refund would execute a real refund
+against the tenant's provider.
+
+SETTLED: a mandatory \`side_effects: Literal["live", "recorded"]\` parameter on the seam. NO DEFAULT —
+a caller that does not state which it wants must fail loudly, because a default is how the eval path
+silently ends up live.
+
+  - "live"     — byte-for-byte what run_agent_turn does today. The chat path must not change; the
+                 suite reading 1695 passed / 11 skipped / 0 failed is your evidence that it did not.
+  - "recorded" — swaps notify_fn, the retrieval-metrics writer and the transactional ProviderAdapter
+                 for no-ops.
+
+The owner rejected the alternative (stripping mutating skills from the eval's allowed_tools) for a
+reason you must preserve: the agent must still SEE all seven tools and still be able to CHOOSE them,
+so a scenario testing "the agent should refuse to refund here" can still fail. An agent that cannot
+attempt the wrong thing cannot be measured on refusing it.
+
+Two further requirements the owner attached:
+  - THE NO-OP MUST BE UNMISSABLE, NEVER A SILENT SUCCESS. A recorded issue_refund that returns a
+    cheerful confirmation teaches the agent it worked and diverges the remainder of the turn. Record
+    the attempt and return something the transcript shows plainly for what it is.
+  - THE RECORDING IS EVAL SIGNAL, NOT DEBRIS. That the agent chose to call a mutating skill is one of
+    the most valuable things an eval can observe — it is capability-envelope adherence. Make it
+    retrievable by P2, do not just drop it on the floor.
+
+--- 2. CANARY ORDERING (BACKLOG 2.6). ---
+
+P1 moved _resolve_turn_prompt_version ahead of the seam, so conversations.metadata.prompt_version_id
+is now committed BEFORE build_agent_options can raise. A turn that dies there leaves the conversation
+sticky to a version that never served it, where it used to re-roll.
+
+SETTLED: resolve before, commit after. The resolution stays where P1 put it — its soul fields are a
+genuine input to the system prompt. The WRITE moves back behind a successful build_agent_options.
+
+  - tests/unit/test_agent_options_seam.py::test_the_canary_choice_is_committed_before_the_options_can_fail
+    currently pins P1's behaviour. It must be INVERTED to pin the new behaviour, and you must observe
+    it RED against the current code before your change and green after. Record both verbatim.
+
+--- BOTH ---
+
+Every guard you add or invert gets the full treatment: mutate, run, observe red, restore from HEAD,
+run, observe green, record the verbatim output of both. Commit on feat/d1-agent-invocation when the
+gate suite is green, and report its verbatim final line.`, { schema: IMPL_SCHEMA })
+
+phase('P1b review')
+const p1br = await agent(`${CONTEXT}
+${REVIEW_STANCE}
+
+Review the P1b commit(s) on feat/d1-agent-invocation.
+
+The implementer reported:
+${JSON.stringify(p1b, null, 2)}
+
+The questions that matter most, in order:
+  1. CAN THE EVAL PATH REACH A LIVE ADAPTER? Trace every route from build_agent_options(side_effects=
+     "recorded") to the six mutating skills and to notify_fn. If ANY of them still touches the real
+     ProviderAdapter, the real mailer, or the tenant's metrics tables, that is critical and it is the
+     finding that matters most in this entire phase. Money is downstream of it.
+  2. Is there any way to call the seam WITHOUT stating side_effects — a default that crept in, a
+     **kwargs, a wrapper, a partial? Try it and see what happens.
+  3. Is the recorded no-op distinguishable from a real success IN THE TRANSCRIPT THE AGENT SEES? If a
+     recorded issue_refund reads like a successful one, the agent's subsequent turns diverge from
+     production and the eval measures a conversation that could not happen.
+  4. Does "live" still behave byte-for-byte as before? The chat path is production.
+  5. On the canary inversion: does the rewritten test fail against the OLD code for the RIGHT reason,
+     or does it fail incidentally (missing attribute, wrong mock) — the exact defect P1's own guard
+     was found to have?`, { schema: REVIEW_SCHEMA })
+
+phase('P1b fix')
+const p1bf = await agent(`${CONTEXT}
+
+Fix the findings below on feat/d1-agent-invocation. BOUNDED: these findings only. Do not start P2.
+A finding you believe is wrong goes in not_done with your reason — never silently skipped.
+
+FINDINGS:
+${JSON.stringify(p1br, null, 2)}
+
+Re-run the gate command, report the verbatim final line, commit.`, { schema: IMPL_SCHEMA })
+
+// ---------------------------------------------------------------------------
 // P2 — invoke, and record that you invoked
 // ---------------------------------------------------------------------------
 
@@ -206,13 +303,21 @@ const p2 = await agent(`${CONTEXT}
 
 TASK — Phase P2 of the plan: INVOKE. Read the plan's P2 section; it is the contract.
 
-P1 built the seam (and its review/fix are done). Now make app/worker/tasks/runtime/eval.py actually
-invoke the agent through that seam, per scenario, instead of eval.py:374-375's
+P1 built the seam and P1b added recorded mode to it (both reviewed and fixed). Now make
+app/worker/tasks/runtime/eval.py actually invoke the agent through that seam, per scenario, instead
+of eval.py:374-375's
   # For M6: use reference_answer as proxy agent_response to test the eval harness
   "agent_response": row[3],
 where row[3] IS reference_answer. That line is D1. Killing it is this phase.
 
 Requirements, each of which the plan explains:
+  - THE EVAL PATH INVOKES THE SEAM WITH side_effects="recorded", ALWAYS. Never "live". P1b made the
+    parameter mandatory precisely so this cannot be forgotten; add a test that fails if the eval path
+    ever requests "live", and observe it red. One eval scenario in which the agent decides to refund
+    would otherwise execute a real refund against the tenant's provider.
+  - The mutating-skill attempts P1b records ARE eval signal. Persist them with the run: an agent that
+    tried to issue a refund it should have refused is a finding, and it is invisible unless you carry
+    it out of the turn.
   - agent_response becomes the agent's real response_text.
   - retrieved_contexts must come from the AGENT'S OWN retrieve tool result, not from row[4].
     Scoring faithfulness against contexts the agent never saw is D1 in a different costume.
@@ -345,7 +450,11 @@ Produce:
      summarised and how many lines you dropped. NEVER silently truncate.
   2. The verbatim final pytest line from the last gate run, and how it compares to the 1675/11/0
      baseline at af0f601.
-  3. Every implementer claim and every mutation proof, verbatim, from all six implementation reports.
+  3. Every implementer claim and every mutation proof, verbatim, from all EIGHT implementation
+     reports (P1, P1b, P2, P3, and each of their bounded fixes).
+  3b. THE MONEY QUESTION, answered from the diff and stated plainly for the judge: can any eval path
+     reach a live ProviderAdapter, the real mailer, or the tenant's metrics tables? Quote the hunks
+     that decide it. This is the single highest-consequence claim on the branch.
   4. Every tier-1 finding, and whether the diff shows it was fixed, partially fixed, or not fixed.
      Determine this from the DIFF, not from the fixer's say-so.
   5. What the branch does NOT prove: list every gate that skipped, every migration unapplied, every
@@ -430,6 +539,7 @@ log('D1 workflow complete — tier-2 verdict returned')
 
 return {
   p1: { impl: p1, review: p1r, fix: p1f },
+  p1b: { impl: p1b, review: p1br, fix: p1bf },
   p2: { impl: p2, review: p2r, fix: p2f },
   p3: { impl: p3, review: p3r, fix: p3f },
   verdict,
