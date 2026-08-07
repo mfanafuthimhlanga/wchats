@@ -497,6 +497,138 @@ def _extract_citations(text: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# THE SEAM — the one place ClaudeAgentOptions is constructed
+#
+# D1 (.dev/plans/260807-d1-agent-invocation.md, P1). The nightly eval scored
+# reference answers against the contexts those answers were written from and
+# never invoked the agent at all. The fix is to make the eval invoke it — and
+# the only version of that fix worth having is one where the eval and the
+# customer are served by the SAME agent. "Same agent" is not the same model id;
+# it is the system prompt, the tool server (which is where the capability
+# envelope is enforced), the allowed-tool list, the turn and budget ceilings and
+# the model, together. Assemble any of those twice and the eval measures
+# something adjacent to the product, which the measurement-layer audit records
+# as this repo's recurring defect.
+#
+# So they are assembled exactly once, here, and both callers go through it.
+# tests/unit/test_agent_options_seam.py fails if run_agent_turn constructs
+# options — or a tool server, or a system prompt — by any other route. That test
+# is the mechanism; this comment is only its explanation.
+#
+# What is deliberately NOT a parameter: notify_fn. Escalation mail is a side
+# effect of a tool, not an input that changes what the agent decides, and an
+# unused escape hatch added before the caller that needs it exists is how a seam
+# starts drifting. P2 adds it, with its own test, if the eval needs one.
+# ---------------------------------------------------------------------------
+
+def build_agent_options(
+    *,
+    agent,
+    conn_str: str,
+    conversation_id: str,
+    job_id: str,
+    verified_session_token: str = "",
+    soul_override: dict | None = None,
+    resume: str | None = None,
+) -> "ClaudeAgentOptions":
+    """Build the ClaudeAgentOptions for one turn of `agent`.
+
+    Side effect, and it is the point: build_tool_server sets the per-task
+    ContextVars (conn_str, agent_id, tenant_id, strategy, conversation_id,
+    notify_fn, job_id, verified session token, retrieve counter) that every tool
+    handler reads. Calling this twice for one turn would leave the second call's
+    context in force — hence the "exactly once" pin in the seam test.
+
+    Args:
+        agent:                  Control-DB Agent row. Supplies id, tenant_id,
+                                name, retrieval_strategy and the soul fields
+                                build_system_prompt reads.
+        conn_str:               Decrypted tenant DB connection string. Never
+                                logged, never a task arg (CTL-08).
+        conversation_id:        Conversation UUID string — escalation writes and
+                                tool-side conversation scoping.
+        job_id:                 Celery job id (OPS-05/06 retrieval metrics).
+        verified_session_token: IDV-05 token, "" when there is no verified
+                                session. NEVER logged (T-04-03-05).
+        soul_override:          Prompt-version soul fields (OPS-16) or None to
+                                serve the agent's live soul_* columns.
+        resume:                 SDK session id to continue, or None to start one.
+    """
+    strategy = RetrievalStrategy.model_validate(agent.retrieval_strategy or {})
+
+    tool_server = build_tool_server(
+        conn_str=conn_str,
+        agent_id=str(agent.id),
+        agent_name=agent.name,
+        strategy=strategy,
+        conversation_id=str(conversation_id),
+        notify_fn=lambda r, c: send_escalation_email(agent, r, c),
+        tenant_id=str(agent.tenant_id),
+        verified_session_token=verified_session_token,
+        job_id=job_id,
+    )
+
+    system_prompt = build_system_prompt(agent, soul_override=soul_override)
+
+    # D-10 note (13-07): The Voyage 3 RPM free-tier prompt-level retrieve-cap
+    # instruction was removed now that embeddings move to Bedrock (PROD-06).
+    # Bedrock has no comparable RPM constraint; the per-turn retrieve counter in
+    # agent_tools.retrieve_tool remains active as a DoS guard (ceiling raised to 8).
+
+    # R-05: allowed_tools use full MCP namespace mcp__customer-tools__*
+    # D-10 fix phase 1 (2026-06-01): max_turns raised from 3 to 6.
+    #   Root cause: max_turns=3 cut the agent off after the retrieve tool
+    #   round-trip (tool_use + tool_result = 2 turns), leaving no turn to
+    #   compose the final text answer → empty response_text.
+    #   The Voyage RPM guard is now enforced solely by the tool-level counter
+    #   in agent_tools.retrieve_tool (blocks the 3rd call per turn), making
+    #   max_turns free to cover the full retrieve → synthesis cycle.
+    #   6 turns is sufficient for: thinking + retrieve + synthesis + any
+    #   clarify/escalate follow-ups while still bounding DoS risk (T-04-03-06).
+    # D-10 fix phase 2 (2026-06-01): max_budget_usd raised from 0.05 to
+    #   settings.AGENT_MAX_BUDGET_USD (default 0.50).
+    #   Root cause (additional): the 0.05 USD cap was too tight for a
+    #   turn that uses extended thinking (~38s) + retrieved context + synthesis.
+    #   A Haiku extended-thinking + retrieve + synthesis turn can exceed $0.05.
+    #   When the budget is exceeded the CLI emits result{subtype:error_max_budget,
+    #   is_error:true} → receive_response() terminates → response_text stays ""
+    #   with no exception raised (identical empty-text signature to max_turns).
+    #   0.50 USD gives headroom while still serving as a DoS guardrail.
+    #   Configure via AGENT_MAX_BUDGET_USD env var for tighter prod limits.
+    # R-05: allowed_tools suppresses SDK permission prompts only.
+    # The capability envelope check inside each transactional tool handler
+    # is the real access gate (fail-closed) — T-14-04-03.
+    return ClaudeAgentOptions(
+        # AGENT_TURN_MODEL, not a literal — eval_runs.config.model_id
+        # reads the same constant, so a score can never be attributed
+        # to a model that did not serve the turn (migration 0013).
+        model=AGENT_TURN_MODEL,
+        system_prompt=system_prompt,
+        mcp_servers={"customer-tools": tool_server},  # type: ignore[dict-item]  # agent-sdk/anthropic stubs are narrower than the runtime contract
+        allowed_tools=[
+            # Original 4 tools — retained (TXN-04 requirement)
+            "mcp__customer-tools__retrieve",
+            "mcp__customer-tools__lookup_structured",
+            "mcp__customer-tools__escalate_to_human",
+            "mcp__customer-tools__clarify",
+            # Phase 14 Plan 04 — 7 transactional tools
+            # Listing here suppresses SDK permission prompts only;
+            # the capability envelope in each handler is the real gate.
+            "mcp__customer-tools__place_order",
+            "mcp__customer-tools__cancel_order",
+            "mcp__customer-tools__issue_refund",
+            "mcp__customer-tools__update_subscription",
+            "mcp__customer-tools__book_slot",
+            "mcp__customer-tools__update_customer_record",
+            "mcp__customer-tools__confirm_action",
+        ],
+        resume=resume,
+        max_turns=6,   # D-10 fix: was 3 (too low — cut off synthesis after retrieve)
+        max_budget_usd=settings.AGENT_MAX_BUDGET_USD,  # D-10 fix phase 2: was 0.05 (too low for thinking+retrieve+synthesis)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Async SDK turn helper — bridged into sync Celery task via asyncio.run()
 # ---------------------------------------------------------------------------
 
@@ -780,27 +912,19 @@ def run_agent_turn(
                 sdk_resume = conv_row["metadata"].get("sdk_session_id")
                 existing_prompt_version_id = conv_row["metadata"].get("prompt_version_id")
 
-            # --------------------------------------------------------------
-            # Build retrieval strategy, tool server, system prompt, options
-            # --------------------------------------------------------------
-            strategy = RetrievalStrategy.model_validate(agent.retrieval_strategy or {})
-
-            tool_server = build_tool_server(
-                conn_str=conn_str,
-                agent_id=str(agent.id),
-                agent_name=agent.name,
-                strategy=strategy,
-                conversation_id=str(local_conversation_id),
-                notify_fn=lambda r, c: send_escalation_email(agent, r, c),
-                tenant_id=str(agent.tenant_id),
-                verified_session_token=verified_session_token,
-                job_id=job_id,
-            )
-
             # ----------------------------------------------------------------
             # OPS-16: canary prompt-version resolution — sticky per conversation,
             # never fails a turn (T-21-09-05). See _resolve_turn_prompt_version's
             # own docstring for the first-turn-vs-subsequent-turn distinction.
+            #
+            # This now runs BEFORE the tool server is built rather than after.
+            # The soul fields it resolves are an input to the system prompt, and
+            # the system prompt is built inside build_agent_options together with
+            # the tool server, so the resolution has to precede the one call that
+            # consumes both. Nothing in _resolve_turn_prompt_version reads the
+            # ContextVars build_tool_server sets — it takes the control-DB
+            # session and the tenant connection explicitly — so the two are
+            # order-independent and only their relative position moved.
             # ----------------------------------------------------------------
             prompt_version_id, soul_override = _resolve_turn_prompt_version(
                 db,
@@ -810,63 +934,21 @@ def run_agent_turn(
                 existing_prompt_version_id=existing_prompt_version_id,
             )
 
-            system_prompt = build_system_prompt(agent, soul_override=soul_override)
-
-            # D-10 note (13-07): The Voyage 3 RPM free-tier prompt-level retrieve-cap
-            # instruction was removed now that embeddings move to Bedrock (PROD-06).
-            # Bedrock has no comparable RPM constraint; the per-turn retrieve counter in
-            # agent_tools.retrieve_tool remains active as a DoS guard (ceiling raised to 8).
-
-            # R-05: allowed_tools use full MCP namespace mcp__customer-tools__*
-            # D-10 fix phase 1 (2026-06-01): max_turns raised from 3 to 6.
-            #   Root cause: max_turns=3 cut the agent off after the retrieve tool
-            #   round-trip (tool_use + tool_result = 2 turns), leaving no turn to
-            #   compose the final text answer → empty response_text.
-            #   The Voyage RPM guard is now enforced solely by the tool-level counter
-            #   in agent_tools.retrieve_tool (blocks the 3rd call per turn), making
-            #   max_turns free to cover the full retrieve → synthesis cycle.
-            #   6 turns is sufficient for: thinking + retrieve + synthesis + any
-            #   clarify/escalate follow-ups while still bounding DoS risk (T-04-03-06).
-            # D-10 fix phase 2 (2026-06-01): max_budget_usd raised from 0.05 to
-            #   settings.AGENT_MAX_BUDGET_USD (default 0.50).
-            #   Root cause (additional): the 0.05 USD cap was too tight for a
-            #   turn that uses extended thinking (~38s) + retrieved context + synthesis.
-            #   A Haiku extended-thinking + retrieve + synthesis turn can exceed $0.05.
-            #   When the budget is exceeded the CLI emits result{subtype:error_max_budget,
-            #   is_error:true} → receive_response() terminates → response_text stays ""
-            #   with no exception raised (identical empty-text signature to max_turns).
-            #   0.50 USD gives headroom while still serving as a DoS guardrail.
-            #   Configure via AGENT_MAX_BUDGET_USD env var for tighter prod limits.
-            # R-05: allowed_tools suppresses SDK permission prompts only.
-            # The capability envelope check inside each transactional tool handler
-            # is the real access gate (fail-closed) — T-14-04-03.
-            options = ClaudeAgentOptions(
-                # AGENT_TURN_MODEL, not a literal — eval_runs.config.model_id
-                # reads the same constant, so a score can never be attributed
-                # to a model that did not serve the turn (migration 0013).
-                model=AGENT_TURN_MODEL,
-                system_prompt=system_prompt,
-                mcp_servers={"customer-tools": tool_server},  # type: ignore[dict-item]  # agent-sdk/anthropic stubs are narrower than the runtime contract
-                allowed_tools=[
-                    # Original 4 tools — retained (TXN-04 requirement)
-                    "mcp__customer-tools__retrieve",
-                    "mcp__customer-tools__lookup_structured",
-                    "mcp__customer-tools__escalate_to_human",
-                    "mcp__customer-tools__clarify",
-                    # Phase 14 Plan 04 — 7 transactional tools
-                    # Listing here suppresses SDK permission prompts only;
-                    # the capability envelope in each handler is the real gate.
-                    "mcp__customer-tools__place_order",
-                    "mcp__customer-tools__cancel_order",
-                    "mcp__customer-tools__issue_refund",
-                    "mcp__customer-tools__update_subscription",
-                    "mcp__customer-tools__book_slot",
-                    "mcp__customer-tools__update_customer_record",
-                    "mcp__customer-tools__confirm_action",
-                ],
+            # --------------------------------------------------------------
+            # THE SEAM (D1/P1). Retrieval strategy, tool server, system prompt,
+            # model, allowed tools and the turn/budget ceilings are assembled in
+            # build_agent_options above — the same callable the eval task goes
+            # through — so the agent measured is the agent served. Constructing
+            # any of them here instead is what test_agent_options_seam.py fails on.
+            # --------------------------------------------------------------
+            options = build_agent_options(
+                agent=agent,
+                conn_str=conn_str,
+                conversation_id=str(local_conversation_id),
+                job_id=job_id,
+                verified_session_token=verified_session_token,
+                soul_override=soul_override,
                 resume=sdk_resume,
-                max_turns=6,   # D-10 fix: was 3 (too low — cut off synthesis after retrieve)
-                max_budget_usd=settings.AGENT_MAX_BUDGET_USD,  # D-10 fix phase 2: was 0.05 (too low for thinking+retrieve+synthesis)
             )
 
             # --------------------------------------------------------------
