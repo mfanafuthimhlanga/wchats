@@ -793,26 +793,80 @@ def test_the_bounds_the_run_ran_under_are_on_the_run():
     )
 
 
-def test_the_retrieve_cap_is_read_from_the_turn_path_not_copied():
-    """One copy of the number, and the eval imports it.
+@pytest.mark.parametrize(
+    "constant_name",
+    ["RETRIEVE_RESULT_CAPTURE_CHARS", "AGENT_TURN_TIMEOUT_S"],
+)
+def test_the_turn_bounds_are_read_from_one_copy_of_the_number(constant_name):
+    """One copy of each number, and the eval imports it.
 
-    A second literal here is the audit's D3 defect wearing new clothes: the
-    deploy gate's eval query fails open to this day because one call site kept
-    its own copy of a column name. If agent.py's capture is retuned, this run's
-    provenance has to move with it or the run reports a cap it did not use.
+    A second literal is the audit's D3 defect wearing new clothes: the deploy
+    gate's eval query fails open to this day because one call site kept its own
+    copy of a column name. If agent.py's retrieve capture is retuned or the turn
+    timeout moves, this run's provenance has to move with it or every run
+    reports a bound it did not run under.
+
+    ANTI-TAUTOLOGY NOTE. The first version of this test read
+    `inspect.getsource` and asserted the constant's NAME appeared and `[:1800]`
+    did not. Both halves were satisfied by prose: the name appears in the
+    comment above the slice, and a reformatted literal is not the substring
+    `[:1800]`. Mutating the slice back to a literal left it green — a guard
+    demonstrated only inside the complement of its own blind spot (BACKLOG
+    3.3's defect class). It reads the AST now, where a comment does not exist
+    and formatting cannot hide an integer.
     """
-    import inspect
+    import ast
+    from pathlib import Path
 
     from app.worker.tasks.runtime import agent as agent_module
 
-    source = inspect.getsource(agent_module._run_sdk_turn)
-    assert "RETRIEVE_RESULT_CAPTURE_CHARS" in source, (
-        "_run_sdk_turn no longer truncates through the named constant, so the "
-        "cap the eval stamps on every run is no longer the cap it ran under"
+    tree = ast.parse(Path(agent_module.__file__).read_text(encoding="utf-8"))
+
+    defined = [
+        node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == constant_name for t in node.targets
+        )
+        and isinstance(node.value, ast.Constant)
+    ]
+    assert len(defined) == 1, (
+        f"{constant_name} is not defined exactly once at module scope in "
+        f"agent.py (found {defined}) — the eval imports it by that name"
     )
-    assert "[:1800]" not in source, (
-        "the literal is back beside the constant — two copies, one of which "
-        "will move first"
+    value = defined[0]
+
+    literals = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and type(node.value) is int
+        and node.value == value
+        and node.lineno
+        != next(
+            n.lineno
+            for n in tree.body
+            if isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == constant_name for t in n.targets)
+        )
+    ]
+    assert literals == [], (
+        f"the integer {value} appears in agent.py at line(s) "
+        f"{[n.lineno for n in literals]} as well as in the {constant_name} "
+        "definition. Two copies of a bound, one of which will move first, and "
+        "the run's provenance will keep reporting the other."
+    )
+
+    names = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id == constant_name
+        and isinstance(node.ctx, ast.Load)
+    ]
+    assert names, (
+        f"nothing in agent.py READS {constant_name} — it is defined for the "
+        "eval's benefit and no longer bounds the turn it describes"
     )
 
 

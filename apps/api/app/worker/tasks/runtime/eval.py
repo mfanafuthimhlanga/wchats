@@ -334,10 +334,14 @@ def _invoke_agent_for_scenarios(
     Returns:
         (scored_rows, summarise_agent_invocation(...)).
 
-    Never raises. An invocation phase that fails wholesale yields zero scored
-    rows and an observation saying so, and the run still completes and still
-    records its provenance — which is what lets the deploy gate refuse it for a
-    stated reason instead of blocking on an absence.
+    No SCENARIO can raise out of here. An invocation phase where every turn fails
+    yields zero scored rows and an observation saying so, and the run still
+    completes and still records its provenance — which is what lets the deploy
+    gate refuse it for a stated reason instead of blocking on an absence.
+
+    The one exception is the concurrency guard below, and it is deliberate: that
+    is a programming error in this file, not a runtime condition, and it fires
+    before any turn has cost anything.
     """
     from app.services.agent_tools import (  # noqa: PLC0415
         get_recorded_side_effects,
@@ -376,6 +380,8 @@ def _invoke_agent_for_scenarios(
             detail=(
                 "golden rows beyond the ceiling were not invoked — the paired "
                 "per-item delta does not cover them this run"
+                if skipped_golden
+                else "exploratory rows beyond the ceiling were not invoked"
             ),
         )
 

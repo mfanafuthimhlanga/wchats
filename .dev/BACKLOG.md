@@ -35,38 +35,47 @@ Legend — **[owner]** needs a human, **[blocked]** has an external precondition
 | 1.4 | Frontend gates (`tsc`, `check:no-dusk-tokens`, `check:ops-room-wiring`, playwright) are **not in `ci.yml` at all**. | ci-green non-goals |
 | 1.5 | `nightly.yml` E2E also failing, pre-existing, never diagnosed. | ci-green non-goals |
 
-## 2. D1 — the measurement still measures nothing
+## 2. D1 — the measurement, and what still stands between it and a gate
 
-**This is the headline.** Everything the eval-foundation branch built is scaffolding around a metric
-that cannot move.
+**Was the headline.** Everything the eval-foundation branch built was scaffolding around a metric that
+could not move. **P2 made it move** (`d127b4d`); what remains here is the gate that reads it (`2.2`)
+and the consequences P2 itself created.
 
-> **Status 2026-08-07: P1 + P1b.** `feat/d1-agent-invocation` carries the seam (`ec5f445`), its
-> hardened guard (`d15be3a`) and P1b — recorded mode plus the canary write reorder, which closed the
-> two rows that blocked P2. **P2 and P3 have still not executed**, so `2.1`–`2.4` remain open: the
-> eval still sets `agent_response = reference_answer`.
+> **Status 2026-08-08: P1 + P1b + P2.** `feat/d1-agent-invocation` carries the seam (`ec5f445`), its
+> hardened guard (`d15be3a`), P1b (recorded mode + the canary write reorder, `487ebbe` + `117de05`)
+> and **P2 — the eval now invokes the agent** (`d127b4d`). `2.1` and `2.3` are closed and their rows
+> deleted per the maintenance rule. **`2.2` (P3) has not executed**, so nothing yet reads
+> `config.agent_invoked` — which P2 writes. Trace: `.dev/traces/260808-d1-p2-invoke.md`. Mutation
+> proofs: `.dev/reference/p2-mutation-proofs.md`.
+>
+> **The metric has not been observed to move**, and cannot be on this machine: no end-to-end eval run
+> is possible without `0.2`. P2 is unit-proven and unprovable end to end, exactly as the plan said.
 >
 > **No tier-2 judge has read this branch.** `d15be3a`'s message and the former rows `2.5`/`2.6`
 > originally credited "tier-2"; they were **tier-1** findings from the P1 adversarial reviewer. The
 > distinction is load-bearing — tier-2 is a Fable judge reading a bounded artifact and asking whether
-> the claims match the evidence, and that question has not been asked about P1 or P1b.
+> the claims match the evidence, and that question has not been asked about P1, P1b or P2.
 
-Numbering note: `2.5`, `2.6` and `2.7` are closed and their rows deleted per the maintenance rule —
-`2.5` recorded mode, `2.6` the canary write order, `2.7` the escalation `conversation_id` decision
-(closed 2026-08-07 by suppressing `_mark_conversation_escalated` under recorded mode: with no UPDATE
-there is no rowcount to be zero, so the recorded notification fires whatever id P2 chooses). The
-numbers are **not reused** — `agent.py`, `transactional/tools.py` and the plan all cite "BACKLOG
-2.5"/"2.6" for those decisions, and a reader following one of those comments must not land on an
-unrelated row.
+Numbering note: `2.1`, `2.3`, `2.5`, `2.6` and `2.7` are closed and their rows deleted per the
+maintenance rule — `2.1` the tautology itself and `2.3` the config tuple stamped on it (both
+2026-08-08, P2: `agent_response` is the agent's own text, `retrieved_contexts` are the agent's own
+retrieve result, and the eval serves the production prompt version the run is attributed to rather
+than the agent's live soul columns), `2.5` recorded mode, `2.6` the canary write order, `2.7` the
+escalation `conversation_id` decision. The numbers are **not reused** — `agent.py`,
+`transactional/tools.py`, `eval.py` and the plan all cite "BACKLOG 2.1"/"2.5"/"2.6" for those
+decisions, and a reader following one of those comments must not land on an unrelated row.
 
 | # | Item | Source |
 |---|---|---|
-| 2.1 | `eval.py` still sets `agent_response = reference_answer`. The agent is never invoked; the label is the prediction. Faithfulness and AnswerRelevancy approach 1.0 by construction. | audit D1 |
-| 2.2 | The deploy gate fail-closes on an **absent** eval signal while shipping on a **present** one that measures nothing. No gate test reads `config.agent_invoked`. | tier-2 #1 |
-| 2.3 | The config tuple now stamps `prompt_version_id` / `model_id` onto that tautology, which makes it *look* credible. | tier-2 #1 |
+| 2.2 | The deploy gate fail-closes on an **absent** eval signal while shipping on a **present** one that measures nothing. No gate test reads `config.agent_invoked`. **P2 now writes it** (false at INSERT, patched to the observed value after the invocation), so P3 is unblocked: refuse `false` **and** absent. | tier-2 #1 |
 | 2.4 | Mined scenarios are inert by construction — written with `reference_answer=''`, selected by `WHERE reference_answer != ''`. EVL-03 produces write-only data. | audit D6 |
-| 2.8 | **Recorded mode does not bound the eval's Actor-gate spend.** Steps 1-5 of the transactional dispatcher run live by design — the envelope, IDV gate, rate ceiling and Actor seam are what the eval measures. The Actor gate is a synchronous Haiku call per mutating attempt, so a scenario set that provokes many attempts bills per attempt on top of the per-turn SDK call. Belongs with the plan's existing "cost and latency, unbounded by default" risk and its per-run ceiling. | D1/P1b |
+| 2.8 | **Recorded mode does not bound the eval's Actor-gate spend.** Steps 1-5 of the transactional dispatcher run live by design — the envelope, IDV gate, rate ceiling and Actor seam are what the eval measures. The Actor gate is a synchronous Haiku call per mutating attempt, so a scenario set that provokes many attempts bills per attempt on top of the per-turn SDK call. **P2 bounds the TURNS (`AGENT_INVOCATION_MAX_CALLS_PER_RUN = 60`) but not the attempts within a turn**, so this stays open, narrower. | D1/P1b |
 | 2.9 | **`red_team_probe._build_transactional_probe_fn` builds the CUSTOMER agent by hand, not through the seam.** `red_team_probe.py:313-329` constructs its own `ClaudeAgentOptions` with `_PROBE_MODEL` and `_ALLOWED_TOOLS`, so the RTX victim turn is an agent with a different model and a different tool list from the one production serves and the eval measures — RTX-01's confused-deputy findings are therefore about an adjacent agent. `MODULES_ALLOWED_TO_CONSTRUCT_OPTIONS` grandfathers it; the allowlist comment now says why rather than implying it is an adversary. Route it through `build_agent_options(side_effects=...)`. | P1b tier-2 #12 |
-| 2.10 | **Recorded rows are excluded from the decision eval, and the exclusion is a whole cell of its denominator.** `observed_disposition` classifies `side_effects.recorded:not_executed*` as `None` (`recorded_not_executed`), which is right — an eval's own rows must never become its evidence — but it means an agent driven mainly by the nightly eval contributes nothing to `valid`. Once P2 lands, check whether the decision eval's `valid` count is dominated by production traffic or starved by eval traffic, and report `unknown` rather than a thin `pass`. | P1b tier-2 follow-on |
+| 2.10 | **Recorded rows are excluded from the decision eval, and the exclusion is a whole cell of its denominator.** `observed_disposition` classifies `side_effects.recorded:not_executed*` as `None` (`recorded_not_executed`), which is right — an eval's own rows must never become its evidence — but it means an agent driven mainly by the nightly eval contributes nothing to `valid`. **P2 has landed, so this is now checkable**: measure whether the decision eval's `valid` is dominated by production traffic or starved by eval traffic, and report `unknown` rather than a thin `pass`. | P1b tier-2 follow-on |
+| 2.11 | **The eval scores the agent's raw text; production serves the PII-firewall deflection.** `run_agent_turn` runs `scan_response` before a customer sees a reply; the eval path deliberately does not, because a deflection is not an answer and scoring one would measure the firewall's hit rate as if it were the agent's grounding. Recorded on every run as `agent_invocation.pii_firewall_applied: false`. Decide whether firewall hits should be a counted, excluded category (the same shape as a failed turn) rather than scored as ordinary answers. | D1/P2 |
+| 2.12 | **`AGENT_INVOCATION_MAX_CALLS_PER_RUN` (60) sits below `GOLDEN_SET_SOFT_CEILING` (200).** A tenant designating more than 60 golden rows gets the first 60 invoked and the remainder reported as `ceiling_skipped_golden` — the paired per-item delta the golden set exists for does not cover the tail that night, and *which* rows are covered is stable, so the tail is never measured at all. Reported loudly, not resolved: reconcile the two ceilings, or rotate which golden rows are covered when the set exceeds the call budget. | D1/P2 |
+| 2.13 | **`retrieved_contexts` on the eval path are the 1800-char capture, not the full retrieve result.** `RETRIEVE_RESULT_CAPTURE_CHARS` truncates in `_run_sdk_turn`, so faithfulness can mark a claim unsupported when the support was merely beyond the cap. P2 took the plan's second option — record the cap and the `retrieved_context_at_cap` count in provenance — because carrying the untruncated result means changing `_run_sdk_turn` on the chat path. Carry it properly: a second key on `tool_calls_log` that persistence ignores. | D1/P2 |
+| 2.14 | **`update_eval_run_config`'s jsonb merge has never executed against a database.** `config = COALESCE(config,'{}'::jsonb) || %(patch)s::jsonb` is asserted at the call site against a cursor double. It is the write that turns `agent_invoked` into an observation, and P3's gate reads exactly what it writes. Behind `0.2`, same standing debt as `3.5`. | D1/P2 |
 
 ## 3. Verification debt from the eval branch
 

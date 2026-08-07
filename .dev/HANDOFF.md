@@ -3,13 +3,27 @@
 > **`.dev/BACKLOG.md` is the single ordered list of open work.** Read it before starting anything.
 > This file is the current-state snapshot; that one is the queue.
 
-**In flight (2026-08-07): `feat/d1-agent-invocation`, unmerged.** P1 (the options seam, `ec5f445` +
-`d15be3a`) and P1b (recorded mode + the canary write order, `487ebbe` + `117de05`). **P2 and P3 have
-not started**, so the eval still sets `agent_response = reference_answer` and D1 is still open.
-Branch suite: **1716 passed / 11 skipped / 0 failed** (branch baseline before P1b was 1695/11/0 at
-`9d81e34`; `main`'s 1675/11/0 below is the pre-branch number and is not the figure to measure a
-P2 delta against). Trace: `.dev/traces/260807-d1-p1b-recorded-mode.md`. Mutation proofs:
-`.dev/reference/p1b-mutation-proofs.md`. No tier-2 judge has read this branch.
+**In flight (2026-08-08): `feat/d1-agent-invocation`, unmerged.** P1 (the options seam, `ec5f445` +
+`d15be3a`), P1b (recorded mode + the canary write order, `487ebbe` + `117de05`) and **P2 — the eval
+invokes the agent** (`d127b4d`). `eval.py` no longer sets `agent_response = reference_answer`: each
+scenario's question goes to the customer agent through the seam with `side_effects="recorded"`, the
+agent's own text and its own retrieved contexts are what get scored, failed scenarios are excluded and
+counted, a run below `MIN_RESPONSE_RATE` reports `unknown`, and `config.agent_invoked` is written as an
+observation. **P3 has not started** — nothing reads `agent_invoked` yet, so the deploy gate still ships
+on a present-but-meaningless eval signal (BACKLOG 2.2).
+
+Branch suite: **1795 passed / 11 skipped / 0 failed**, measured against a clean stashed baseline of
+**1766 / 11 / 0** at `1d3a7bd`. (`main`'s 1675/11/0 below is the pre-branch number and is not the
+figure to measure a P2 delta against.) `mypy app` clean; `ruff check app tests` clean via
+`uvx ruff@latest` — ruff is **not** installed in `apps/api/.venv`.
+
+Trace: `.dev/traces/260808-d1-p2-invoke.md`. Mutation proofs: `.dev/reference/p2-mutation-proofs.md`
+(19 mutations, red then green; **one guard was found proving a comment** and was rewritten — see the
+M13 entry). Earlier: `.dev/traces/260807-d1-p1b-recorded-mode.md`,
+`.dev/reference/p1b-mutation-proofs.md`. **No tier-2 judge has read this branch.**
+
+**Unprovable here, and stated as such:** no end-to-end eval run, no live SDK turn, and
+`update_eval_run_config`'s jsonb merge has never executed against a database. All behind BACKLOG `0.2`.
 
 **All three PRs are merged. `main` is at `fd47133`** — the `.dev` convention (#1), the eval foundation
 (#2) and the CI repair (#3). Suite 1199 → **1675 passed / 11 skipped / 0 failed**; ruff 461 → 0;
