@@ -8,7 +8,23 @@ dispatcher outcomes) and that two outcomes bypassed it entirely.
 ## Observed gate
 
 - before: `1716 passed, 11 skipped, 28 warnings in 351.56s (0:05:51)` (at `b7619fe`)
-- after:  see the tail of this file
+- after:  `1766 passed, 11 skipped, 28 warnings in 404.69s (0:06:44)` (at `df0a0b7`)
+
+`+50`, no test deleted: `test_recorded_side_effects.py` 11 → 55 (`+44`),
+`test_agent_options_seam.py` 28 → 31 (`+3`), `test_decision_eval_service.py` 119 → 122 (`+3`). The
+intermediate run at `0580ea8` was `1 failed, 1762 passed` — the failure was
+`test_the_ast_walk_actually_finds_the_dispatcher_vocabulary`, an existing guard catching the marker
+wrapper, and it is the reason the decision-eval work in `df0a0b7` exists.
+
+Lint/types after: `ruff … app/ tests/` → `All checks passed!`;
+`mypy app/` → `Success: no issues found in 132 source files`.
+
+One pre-existing artifact worth naming so a future reader does not mistake it for a regression:
+running `test_recorded_side_effects.py` (or `test_retrieval_metrics.py`) BEFORE
+`test_transactional_tools.py` in a hand-picked subset yields `74 failed` with
+`'function' object has no attribute 'handler'` — those files install a passthrough `@tool` fake when
+no SDK is in `sys.modules`. Confirmed identical at `b7619fe` with the same file selection. The full
+suite's alphabetical order does not hit it; a subset run can.
 
 ## What was actually wrong
 
