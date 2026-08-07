@@ -64,6 +64,22 @@ Mutate it, observe red, restore from `HEAD`, observe green, and record the obser
 
 ### P2 — invoke, and record that you invoked
 
+**PRECONDITION, added 2026-08-07 after P1's tier-2 read (BACKLOG 2.5).** The seam returns options
+carrying a **live** tool server bound to the tenant's real `conn_str`. `retrieve` writes
+`retrieval_metrics`; `escalate_to_human` marks the conversation and sends mail; the six mutating
+skills write `tool_calls_audit` and call the real `ProviderAdapter`. (b) was chosen over (a) to keep
+eval traffic out of tenant data, and (b) as built still writes tenant tables **and can move money** —
+one eval scenario in which the agent decides to refund executes a refund. P1's seam comment
+pre-argued against adding the parameter P2 now needs; that argument does not survive a caller that
+needs one. Settle it before the first invocation, not at runtime against a real tenant:
+
+- **either** a mandatory `side_effects: Literal["live", "recorded"]` on the seam that swaps
+  `notify_fn`, the metrics writer and the transactional adapter for no-ops on the eval path,
+- **or** a read-only `allowed_tools` subset for the eval, plus a test that fails if any of
+  `MUTATING_SKILLS` (named in `tests/unit/test_agent_options_seam.py`) reaches that path.
+
+Whichever is chosen, it is a behaviour change and needs its own red-observed test.
+
 - `eval.py` calls the agent per scenario. `agent_response` becomes the agent's `response_text`.
 - **`retrieved_contexts` must come from the agent's own `retrieve` result, not from `row[4]`.**
   Scoring faithfulness against contexts the agent never saw is D1 wearing a different hat.

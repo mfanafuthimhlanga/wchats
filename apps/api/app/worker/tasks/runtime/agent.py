@@ -519,6 +519,22 @@ def _extract_citations(text: str) -> list[dict]:
 # effect of a tool, not an input that changes what the agent decides, and an
 # unused escape hatch added before the caller that needs it exists is how a seam
 # starts drifting. P2 adds it, with its own test, if the eval needs one.
+#
+# UNRESOLVED, AND P2 CANNOT PROCEED WITHOUT SETTLING IT (BACKLOG 2.5). The
+# options this returns carry a LIVE tool server bound to the tenant's real
+# connection string. Every caller of this seam therefore gets, today:
+#   * retrieve            -> write_retrieval_metrics(conn_str, …) into the tenant DB
+#   * escalate_to_human   -> _mark_conversation_escalated(…) + send_escalation_email
+#   * the 6 mutating transactional skills -> a tool_calls_audit row AND the real
+#     ProviderAdapter: place_order, cancel_order, issue_refund,
+#     update_subscription, book_slot, update_customer_record.
+# The plan chose approach (b) over (a) precisely to keep eval traffic out of
+# tenant data; (b) as built still writes to tenant tables and can move money.
+# One eval scenario in which the agent decides to refund executes a refund. The
+# paragraph above argues against adding an unused parameter, and that argument
+# does not survive a caller that needs one — P2 is that caller. Decide the
+# policy (a mandatory side_effects='live'|'recorded' switch, or a read-only
+# allowed_tools subset on the eval path) BEFORE the eval invokes this.
 # ---------------------------------------------------------------------------
 
 def build_agent_options(
@@ -921,10 +937,21 @@ def run_agent_turn(
             # The soul fields it resolves are an input to the system prompt, and
             # the system prompt is built inside build_agent_options together with
             # the tool server, so the resolution has to precede the one call that
-            # consumes both. Nothing in _resolve_turn_prompt_version reads the
-            # ContextVars build_tool_server sets — it takes the control-DB
-            # session and the tenant connection explicitly — so the two are
-            # order-independent and only their relative position moved.
+            # consumes both.
+            #
+            # The move is ContextVar-independent — _resolve_turn_prompt_version
+            # takes the control-DB session and the tenant connection explicitly
+            # and reads nothing build_tool_server sets. It is NOT behaviour-free,
+            # and the earlier claim that it was is corrected here: this call
+            # commits (_set_prompt_version_id -> conn.commit()), and it now
+            # commits before RetrievalStrategy.model_validate or build_tool_server
+            # can raise. A turn that fails there leaves the conversation sticky
+            # to a version that never served it; previously the retry re-rolled.
+            # Attribution on the successful retry stays correct (the sticky id is
+            # reused and does serve), so this is a canary-sampling difference,
+            # not a provenance one — but it is a difference. Pinned by
+            # test_the_canary_choice_is_committed_before_the_options_can_fail and
+            # open as BACKLOG 2.6.
             # ----------------------------------------------------------------
             prompt_version_id, soul_override = _resolve_turn_prompt_version(
                 db,
