@@ -30,6 +30,7 @@ patched, so the code tries to hit a real DB and fails — confirming RED.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import os
 from contextlib import contextmanager
@@ -2183,13 +2184,30 @@ class TestFourNodeStructuralAssertion:
         """
         src = self._tools_src()
         dispatcher_start = src.index("async def _execute_transactional_tool(")
-        # 22 000-char slice covers the full dispatcher body (steps 1-7 + 2.5 IDV gate + require_human branch).
-        # Increased from 14 000 to 20 000 in 17-06 after Step 2.5 IDV gate added
-        # ~1 500 chars before get_adapter_for_skill. Increased from 20 000 to
-        # 22 000 in the 22-REVIEW-FIX WR-01 pass: the require_human branch's
-        # idempotency_key pre-insert dedup check (WR-01) landed before the
-        # adapter step, pushing _execute_adapter_and_audit( past 20 000 chars.
-        dispatcher_body = src[dispatcher_start : dispatcher_start + 22000]
+
+        # The dispatcher body, sliced EXACTLY, via the parser rather than a
+        # character count.
+        #
+        # This used to be `src[dispatcher_start : dispatcher_start + N]`, and N
+        # had been raised three times — 14 000 -> 20 000 (17-06's IDV gate) ->
+        # 22 000 (22-REVIEW-FIX's WR-01 dedup check) — each time because a step
+        # landed BEFORE the adapter and pushed it past the window. D1/P1b's
+        # recorded-mode branch (step 5.5) was the fourth, and the failure mode is
+        # a ValueError from .index() rather than a readable assertion, which
+        # sends the reader looking for a deleted call site instead of a stale
+        # constant. A guard whose maintenance is "raise the magic number until it
+        # passes" is one bump away from someone raising it far enough to swallow
+        # the next function, where `_execute_adapter_and_audit(` would be found
+        # in a body this test was never reading. ast.unparse gives the
+        # dispatcher's own source and nothing else, permanently.
+        module = ast.parse(src)
+        dispatcher_node = next(
+            node
+            for node in module.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "_execute_transactional_tool"
+        )
+        dispatcher_body = ast.unparse(dispatcher_node)
 
         call_actor_pos = dispatcher_body.index("call_actor_gate(")
         adapter_step_pos = dispatcher_body.index("_execute_adapter_and_audit(")

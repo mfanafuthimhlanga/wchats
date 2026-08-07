@@ -61,7 +61,13 @@ from app.models.agent import Agent
 from app.models.job import Job
 from app.models.prompt_version import PromptVersion
 from app.services.agent_prompt import build_system_prompt
-from app.services.agent_tools import RetrievalStrategy, build_tool_server
+from app.services.agent_tools import (
+    SIDE_EFFECT_MODES,
+    RetrievalStrategy,
+    SideEffectMode,
+    build_tool_server,
+    record_suppressed_side_effect,
+)
 from app.services.escalation import send_escalation_email
 from app.services.events import emit
 from app.services.prompt_version_service import resolve_prompt_version
@@ -217,22 +223,31 @@ def _set_prompt_version_id(conn, conv_id: str, prompt_version_id: str) -> None:
 
 def _resolve_turn_prompt_version(
     db,
-    tenant_conn,
     *,
     agent_id: str,
     local_conversation_id: str,
     existing_prompt_version_id: str | None,
-) -> tuple[str | None, dict | None]:
+) -> tuple[str | None, dict | None, bool]:
     """Resolve the prompt version to serve this turn, sticky per conversation (OPS-16).
 
+    READ ONLY — control DB. This function used to also WRITE the resolved id to
+    conversations.metadata, and P1 moved the whole thing ahead of the seam
+    because the soul fields it returns are an input to the system prompt. The
+    write came along for the ride, so a turn that then died in
+    build_agent_options left the conversation permanently sticky to a version
+    that never served it, where the Celery retry previously re-rolled (BACKLOG
+    2.6). Settled 2026-08-07: resolve before, commit after. The read stays here;
+    the write is the caller's, behind a successful options build.
+
     First turn of a conversation (existing_prompt_version_id is None): calls
-    resolve_prompt_version (weighted pick, control DB) and — if a version was
-    found — persists the choice on conversations.metadata (tenant DB) so every
-    subsequent turn on this conversation reuses it (A-CANARY: no mid-
-    conversation persona flip; the version is never re-rolled).
+    resolve_prompt_version (weighted pick, control DB) and reports back that the
+    caller must persist the choice, so every subsequent turn on this
+    conversation reuses it (A-CANARY: no mid-conversation persona flip; the
+    version is never re-rolled).
 
     Subsequent turns (existing_prompt_version_id provided): re-fetches that
-    EXACT version's soul fields by id — never re-rolls, never re-picks.
+    EXACT version's soul fields by id — never re-rolls, never re-picks, and
+    nothing to persist because the id is already stored.
 
     T-21-09-05 (never fails a turn): any exception here is caught and treated
     as "no version resolved" — the caller falls back to the agent's live
@@ -242,27 +257,32 @@ def _resolve_turn_prompt_version(
     blocks or fails the served turn.
 
     Returns:
-        (prompt_version_id, soul_override) — both None on no-version-exists,
-        resolution failure, or a stale/deleted stored version id.
+        (prompt_version_id, soul_override, needs_persist).
+
+        needs_persist is True only for a first turn that actually resolved a
+        version — the one case where conversations.metadata does not yet hold
+        the id. It is returned rather than re-derived by the caller from
+        `existing_prompt_version_id is None` so that a future change to the
+        resolution rules (a stale id that re-rolls, say) cannot leave the
+        caller's copy of the logic silently disagreeing with this one.
     """
     try:
         if existing_prompt_version_id:
             pv = db.get(PromptVersion, existing_prompt_version_id)
             if pv is None:
-                return None, None
+                return None, None, False
             return str(pv.id), {
                 "soul_role": pv.soul_role,
                 "soul_voice": pv.soul_voice,
                 "soul_do_list": pv.soul_do_list,
                 "soul_donot_list": pv.soul_donot_list,
-            }
+            }, False
 
         resolved_id, soul_override = resolve_prompt_version(db, agent_id)
         if resolved_id is None:
-            return None, None
+            return None, None, False
 
-        _set_prompt_version_id(tenant_conn, local_conversation_id, resolved_id)
-        return resolved_id, soul_override
+        return resolved_id, soul_override, True
     except Exception as exc:
         log.warning(
             "run_agent_turn.prompt_version_resolve_failed",
@@ -270,7 +290,7 @@ def _resolve_turn_prompt_version(
             conversation_id=local_conversation_id,
             error=str(exc),
         )
-        return None, None
+        return None, None, False
 
 
 def _persist_messages(
@@ -515,26 +535,35 @@ def _extract_citations(text: str) -> list[dict]:
 # options — or a tool server, or a system prompt — by any other route. That test
 # is the mechanism; this comment is only its explanation.
 #
-# What is deliberately NOT a parameter: notify_fn. Escalation mail is a side
-# effect of a tool, not an input that changes what the agent decides, and an
-# unused escape hatch added before the caller that needs it exists is how a seam
-# starts drifting. P2 adds it, with its own test, if the eval needs one.
-#
-# UNRESOLVED, AND P2 CANNOT PROCEED WITHOUT SETTLING IT (BACKLOG 2.5). The
-# options this returns carry a LIVE tool server bound to the tenant's real
-# connection string. Every caller of this seam therefore gets, today:
+# SETTLED, AND IT IS WHY P2 CAN NOW PROCEED (BACKLOG 2.5, owner, 2026-08-07).
+# The options this returns carry a LIVE tool server bound to the tenant's real
+# connection string. Every caller of this seam therefore reaches, by default:
 #   * retrieve            -> write_retrieval_metrics(conn_str, …) into the tenant DB
 #   * escalate_to_human   -> _mark_conversation_escalated(…) + send_escalation_email
 #   * the 6 mutating transactional skills -> a tool_calls_audit row AND the real
 #     ProviderAdapter: place_order, cancel_order, issue_refund,
 #     update_subscription, book_slot, update_customer_record.
 # The plan chose approach (b) over (a) precisely to keep eval traffic out of
-# tenant data; (b) as built still writes to tenant tables and can move money.
-# One eval scenario in which the agent decides to refund executes a refund. The
-# paragraph above argues against adding an unused parameter, and that argument
-# does not survive a caller that needs one — P2 is that caller. Decide the
-# policy (a mandatory side_effects='live'|'recorded' switch, or a read-only
-# allowed_tools subset on the eval path) BEFORE the eval invokes this.
+# tenant data; (b) as built still wrote to tenant tables and could move money —
+# one eval scenario in which the agent decides to refund executed a refund.
+#
+# The answer is `side_effects`, below: MANDATORY, no default. A default is
+# exactly the mechanism by which the eval path silently ends up live, so a caller
+# that does not state which it wants raises TypeError at the call site rather
+# than discovering the question against a real tenant at 3am.
+#
+# The alternative — a read-only allowed_tools subset for the eval — was rejected,
+# and the reason is worth keeping here because it constrains every future change
+# to this function: removing the mutating skills would make the eval measure an
+# agent with fewer capabilities than production serves, and a scenario testing
+# "the agent should refuse to refund here" could no longer FAIL, because the
+# agent could not even try. An agent that cannot attempt the wrong thing cannot
+# be measured on refusing it. So allowed_tools is identical in both modes, and
+# the capability envelope, IDV gate and Actor seam all still run; what changes is
+# only the outer edge, where a call would leave this process. notify_fn is now a
+# parameter of that edge (it was deliberately hardcoded in P1 — "an unused escape
+# hatch added before the caller that needs it exists is how a seam starts
+# drifting"; P2 is that caller, so the hatch is no longer unused).
 # ---------------------------------------------------------------------------
 
 def build_agent_options(
@@ -543,6 +572,7 @@ def build_agent_options(
     conn_str: str,
     conversation_id: str,
     job_id: str,
+    side_effects: SideEffectMode,
     verified_session_token: str = "",
     soul_override: dict | None = None,
     resume: str | None = None,
@@ -564,13 +594,56 @@ def build_agent_options(
         conversation_id:        Conversation UUID string — escalation writes and
                                 tool-side conversation scoping.
         job_id:                 Celery job id (OPS-05/06 retrieval metrics).
+        side_effects:           MANDATORY, no default (BACKLOG 2.5). "live" is
+                                production, byte for byte what the chat path has
+                                always done. "recorded" is the eval path: the
+                                escalation notification, the retrieval_metrics
+                                write and the transactional ProviderAdapter are
+                                suppressed and recorded instead. Everything the
+                                agent can see or choose is identical.
         verified_session_token: IDV-05 token, "" when there is no verified
                                 session. NEVER logged (T-04-03-05).
         soul_override:          Prompt-version soul fields (OPS-16) or None to
                                 serve the agent's live soul_* columns.
         resume:                 SDK session id to continue, or None to start one.
+
+    Raises:
+        ValueError: side_effects is neither "live" nor "recorded". Literal is a
+            type-checker annotation and enforces nothing at run time, so an
+            unrecognised value would compare unequal to "recorded" and be served
+            as live — a real refund on the eval path.
     """
+    if side_effects not in SIDE_EFFECT_MODES:
+        raise ValueError(
+            f"build_agent_options: side_effects must be one of {SIDE_EFFECT_MODES}, "
+            f"got {side_effects!r}. There is no third mode and no fallback: an "
+            f"unrecognised value read as live is how an eval scenario issues a real "
+            f"refund against the tenant's provider (BACKLOG 2.5)."
+        )
+
     strategy = RetrievalStrategy.model_validate(agent.retrieval_strategy or {})
+
+    # The escalation edge. On the eval path the mail is recorded rather than
+    # sent — a scenario that drives the agent to escalate would otherwise page
+    # the owner about a customer who does not exist, and would do it nightly.
+    # A conditional expression rather than two `def`s: nested function
+    # definitions in this module are banned by the seam suite, which attributes
+    # every call to the module-scope function containing it.
+    notify_fn = (
+        (lambda reason, context: send_escalation_email(agent, reason, context))
+        if side_effects == "live"
+        else (
+            lambda reason, context: record_suppressed_side_effect(
+                "escalation.notify",
+                {
+                    "agent_id": str(agent.id),
+                    "conversation_id": str(conversation_id),
+                    "reason": reason,
+                    "context": context,
+                },
+            )
+        )
+    )
 
     tool_server = build_tool_server(
         conn_str=conn_str,
@@ -578,10 +651,11 @@ def build_agent_options(
         agent_name=agent.name,
         strategy=strategy,
         conversation_id=str(conversation_id),
-        notify_fn=lambda r, c: send_escalation_email(agent, r, c),
+        notify_fn=notify_fn,
         tenant_id=str(agent.tenant_id),
         verified_session_token=verified_session_token,
         job_id=job_id,
+        side_effects=side_effects,
     )
 
     system_prompt = build_system_prompt(agent, soul_override=soul_override)
@@ -933,29 +1007,25 @@ def run_agent_turn(
             # never fails a turn (T-21-09-05). See _resolve_turn_prompt_version's
             # own docstring for the first-turn-vs-subsequent-turn distinction.
             #
-            # This now runs BEFORE the tool server is built rather than after.
-            # The soul fields it resolves are an input to the system prompt, and
-            # the system prompt is built inside build_agent_options together with
-            # the tool server, so the resolution has to precede the one call that
-            # consumes both.
+            # This RESOLUTION runs BEFORE the tool server is built rather than
+            # after. The soul fields it returns are an input to the system
+            # prompt, and the system prompt is built inside build_agent_options
+            # together with the tool server, so the resolution has to precede the
+            # one call that consumes both. That part of P1's move stands.
             #
-            # The move is ContextVar-independent — _resolve_turn_prompt_version
-            # takes the control-DB session and the tenant connection explicitly
-            # and reads nothing build_tool_server sets. It is NOT behaviour-free,
-            # and the earlier claim that it was is corrected here: this call
-            # commits (_set_prompt_version_id -> conn.commit()), and it now
-            # commits before RetrievalStrategy.model_validate or build_tool_server
-            # can raise. A turn that fails there leaves the conversation sticky
-            # to a version that never served it; previously the retry re-rolled.
-            # Attribution on the successful retry stays correct (the sticky id is
-            # reused and does serve), so this is a canary-sampling difference,
-            # not a provenance one — but it is a difference. Pinned by
-            # test_the_canary_choice_is_committed_before_the_options_can_fail and
-            # open as BACKLOG 2.6.
+            # The WRITE does not: it now happens after build_agent_options
+            # returns (BACKLOG 2.6, settled 2026-08-07 — "resolve before, commit
+            # after"). _resolve_turn_prompt_version used to call
+            # _set_prompt_version_id itself, so P1's move carried the commit
+            # forward with the read, and a turn that then died in
+            # RetrievalStrategy.model_validate or build_tool_server left the
+            # conversation permanently sticky to a version that never served it
+            # — where before P1 the Celery retry re-rolled. Pinned in both
+            # directions by test_the_canary_choice_is_not_committed_when_the_
+            # options_build_fails and ..._is_committed_once_the_options_exist.
             # ----------------------------------------------------------------
-            prompt_version_id, soul_override = _resolve_turn_prompt_version(
+            prompt_version_id, soul_override, canary_needs_persist = _resolve_turn_prompt_version(
                 db,
-                tenant_conn,
                 agent_id=agent_id,
                 local_conversation_id=str(local_conversation_id),
                 existing_prompt_version_id=existing_prompt_version_id,
@@ -967,16 +1037,48 @@ def run_agent_turn(
             # build_agent_options above — the same callable the eval task goes
             # through — so the agent measured is the agent served. Constructing
             # any of them here instead is what test_agent_options_seam.py fails on.
+            #
+            # side_effects="live" is the chat path, stated rather than defaulted
+            # (BACKLOG 2.5). This is the turn a customer is waiting on: its
+            # refunds are real, its escalation mail must arrive, and its
+            # retrieval_metrics row is what the ops room reads.
             # --------------------------------------------------------------
             options = build_agent_options(
                 agent=agent,
                 conn_str=conn_str,
                 conversation_id=str(local_conversation_id),
                 job_id=job_id,
+                side_effects="live",
                 verified_session_token=verified_session_token,
                 soul_override=soul_override,
                 resume=sdk_resume,
             )
+
+            # --------------------------------------------------------------
+            # BACKLOG 2.6: the canary choice becomes sticky only now that there
+            # is an agent for it to be sticky to. A turn that died above
+            # re-rolls on retry, as it did before P1.
+            #
+            # Wrapped, and never fatal (T-21-09-05): a tenant-DB failure here
+            # must not fail a turn whose options are already built. The
+            # consequence of that failure is narrower than it was — the version
+            # still served this turn and turn_metrics still attributes the turn
+            # to it, which is the honest record; only the stickiness is lost, so
+            # the next turn of this conversation re-rolls.
+            # --------------------------------------------------------------
+            if canary_needs_persist and prompt_version_id:
+                try:
+                    _set_prompt_version_id(
+                        tenant_conn, str(local_conversation_id), prompt_version_id
+                    )
+                except Exception as canary_exc:
+                    log.warning(
+                        "run_agent_turn.prompt_version_persist_failed",
+                        job_id=job_id,
+                        agent_id=agent_id,
+                        conversation_id=str(local_conversation_id),
+                        error=str(canary_exc),
+                    )
 
             # --------------------------------------------------------------
             # Bridge async SDK into sync Celery worker.

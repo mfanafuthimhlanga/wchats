@@ -39,7 +39,7 @@ import math
 import re
 import ssl
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, Literal
 
 import psycopg2
 import redis as redis_lib
@@ -190,6 +190,105 @@ _job_id_var: ContextVar[str] = ContextVar("job_id", default="")
 # 21-DOMAIN-NOTES.md §3 (context rot).
 CONTEXT_WINDOW_BUDGET: int = 200_000
 
+# ---------------------------------------------------------------------------
+# D1/P1b — the side-effect mode (BACKLOG 2.5).
+#
+# From P2 the nightly eval drives this same tool layer through the same seam the
+# customer's chat turn goes through, which is the entire point of approach (b):
+# the agent that is measured has to be the agent that is served. What must NOT
+# come with it is the outer edge. Three calls here leave this process and change
+# something a customer or a bank can see:
+#
+#     notify_fn                escalation mail to the owner
+#     write_retrieval_metrics  a row in the tenant's retrieval_metrics
+#     ProviderAdapter          money and tenant state, via the six mutating skills
+#
+# "recorded" suppresses exactly those three and records each one instead.
+#
+# What recorded mode deliberately does NOT do is give the eval a smaller agent.
+# The alternative the owner rejected was handing the eval a read-only
+# allowed_tools subset; it would have stopped the refund too, and would have made
+# "the agent should have refused to refund here" unfalsifiable, because an agent
+# that cannot attempt the wrong thing cannot be measured on refusing it. So the
+# tool list, the system prompt, the capability envelope, the IDV gate and the
+# Actor seam are identical in both modes.
+#
+# On the default being "live": that is the safe direction here, not the reckless
+# one. Every path that reaches these tools calls build_tool_server, and the seam
+# above it (agent.build_agent_options) takes the mode as a MANDATORY parameter
+# with no default, so the eval cannot arrive here by forgetting to choose. A
+# "recorded" default would instead mean that a caller who forgot silently stops
+# refunding real customers — a failure that produces no error anywhere and would
+# be found by a customer, not by us. The red-team probes (red_team.py,
+# red_team_probe.py) rely on this default: they read real dispatcher verdict tags
+# and are the two genuinely sound vectors in the measurement audit.
+# ---------------------------------------------------------------------------
+
+SideEffectMode = Literal["live", "recorded"]
+
+#: The only two accepted values, checked at runtime. `Literal` is a type-checker
+#: annotation and enforces nothing at run time; `side_effects="dry_run"` would
+#: otherwise compare unequal to "recorded", read as live, and move real money on
+#: the eval path.
+SIDE_EFFECT_MODES: tuple[str, ...] = ("live", "recorded")
+
+_side_effects_var: ContextVar[str] = ContextVar("side_effects", default="live")
+
+#: Per-turn sink for suppressed side effects. Holds the LIST OBJECT itself, set
+#: once by build_tool_server in the sync task body: asyncio.run() copies the
+#: context, so a .set() inside the turn would not be visible to the caller
+#: afterwards, but appends to a list installed BEFORE the copy are — the list is
+#: one shared object, not a per-context value. That is what lets P2 read back,
+#: after the turn returns, what the agent tried to do during it.
+_recorded_side_effects_var: ContextVar[list | None] = ContextVar(
+    "recorded_side_effects", default=None
+)
+
+
+def current_side_effect_mode() -> str:
+    """The side-effect mode in force for the current task context."""
+    return _side_effects_var.get()
+
+
+def record_suppressed_side_effect(kind: str, detail: dict) -> dict:
+    """Record one side effect that recorded mode suppressed, and return the entry.
+
+    This is eval signal, not bookkeeping. That the agent CHOSE to call
+    issue_refund is capability-envelope adherence — the measurement audit's
+    confusion matrix has a whole cell for it ("executed when it should have
+    refused: money moves wrongly, critical") — and it is the observation an eval
+    would otherwise throw away, scoring only the prose that followed.
+
+    Never raises: a recording failure must not fail the turn it is observing.
+    A missing sink is logged at WARNING rather than swallowed, because the one
+    way this becomes dangerous is by looking like it worked.
+    """
+    entry = {"kind": kind, "detail": detail}
+    sink = _recorded_side_effects_var.get()
+    if sink is None:
+        log.warning(
+            "side_effects.recorded_without_sink",
+            kind=kind,
+            note=(
+                "recorded mode suppressed a side effect but no sink was installed "
+                "— build_tool_server was not called for this context"
+            ),
+        )
+    else:
+        sink.append(entry)
+    log.info("side_effects.suppressed", kind=kind)
+    return entry
+
+
+def get_recorded_side_effects() -> list[dict]:
+    """Everything recorded mode suppressed during the current turn.
+
+    Returns a copy, so a caller iterating it cannot be surprised by a late
+    append, and cannot clear the sink by mutating what it got back.
+    """
+    sink = _recorded_side_effects_var.get()
+    return list(sink) if sink else []
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -307,6 +406,9 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     # OPS-05/06: job_id is read into a local here too — never .get() inside the
     # write's executor lambda below (Pitfall 4).
     job_id = _job_id_var.get()
+    # D1/P1b: same rule, same reason — read the mode into a local here rather
+    # than inside the executor lambda, which would see the default.
+    side_effects = _side_effects_var.get()
 
     if count > _RETRIEVE_CALLS_PER_TURN_MAX:
         log.warning(
@@ -498,9 +600,22 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
 
     # job_id/conn_str/metrics_row are locals captured from the async body —
     # safe for the executor thread (no ContextVar.get() calls inside the lambda).
-    await loop.run_in_executor(
-        None, lambda: write_retrieval_metrics(conn_str, metrics_row)
-    )
+    #
+    # D1/P1b: on the eval path the row is recorded rather than written. These are
+    # observations about the tenant's PRODUCTION retrieval quality — OPS-05/06
+    # feeds the ops room's recall/nDCG tiles — and an eval's scenario queries
+    # would move those numbers without a single customer having asked anything.
+    # The retrieve RESULT below is unchanged: retrieval is a read, the agent must
+    # see exactly what production would hand it, and only the write is suppressed.
+    if side_effects == "recorded":
+        record_suppressed_side_effect(
+            "retrieval_metrics.write",
+            {"job_id": job_id, "conversation_id": conversation_id, "row": metrics_row},
+        )
+    else:
+        await loop.run_in_executor(
+            None, lambda: write_retrieval_metrics(conn_str, metrics_row)
+        )
 
     # SEC-02/L6: framing is applied after the _CONTENT_CHAR_LIMIT truncation loop
     # above, so a truncated chunk is still fully enclosed by the header/footer.
@@ -733,6 +848,7 @@ def build_tool_server(
     tenant_id: str = "",
     verified_session_token: str = "",
     job_id: str = "",
+    side_effects: str = "live",
 ) -> object:
     """Inject tenant-scoped state into ContextVars and return the MCP server.
 
@@ -761,6 +877,18 @@ def build_tool_server(
         job_id:                  OPS-05/06 (Phase 21 Plan 03): Celery job_id, threaded into
                                  retrieve_tool's retrieval_metrics write path via _job_id_var.
                                  Empty string when omitted (backward compatible).
+        side_effects:            D1/P1b (BACKLOG 2.5): "live" or "recorded". Defaults to
+                                 "live" so every pre-existing caller — notably the red-team
+                                 probes, which must read REAL dispatcher verdict tags —
+                                 keeps the behaviour it had. The mandatory-no-default rule
+                                 lives one layer up, on agent.build_agent_options, which is
+                                 where the eval path is chosen. See the SideEffectMode block
+                                 above for why the default points this way.
+
+    Raises:
+        ValueError: side_effects is neither "live" nor "recorded". Deliberately loud:
+            a typo that silently read as "not recorded, therefore live" would move
+            real money on the eval path.
 
     Returns:
         MCP server object (create_sdk_mcp_server result) registering all 11 tools:
@@ -768,6 +896,14 @@ def build_tool_server(
         7 transactional tools added in Phase 14 Plan 04 (place_order, cancel_order,
         issue_refund, update_subscription, book_slot, update_customer_record, confirm_action).
     """
+    if side_effects not in SIDE_EFFECT_MODES:
+        raise ValueError(
+            f"build_tool_server: side_effects must be one of {SIDE_EFFECT_MODES}, "
+            f"got {side_effects!r}. An unrecognised value would compare unequal to "
+            f"'recorded' and be served as live — which on the eval path means a "
+            f"real refund against the tenant's provider (BACKLOG 2.5)."
+        )
+
     _conn_str_var.set(conn_str)
     _agent_id_var.set(agent_id)
     _tenant_id_var.set(tenant_id)
@@ -780,6 +916,13 @@ def build_tool_server(
     # D-10 (suspenders): reset per-turn retrieve counter for this new task invocation.
     # ContextVar.set() ensures the reset is scoped to this task's context only.
     _retrieve_call_count_var.set(0)
+
+    # D1/P1b: publish the mode and install a FRESH recording sink for this turn.
+    # Fresh matters: a sink carried over from the previous turn would report one
+    # eval scenario's refund attempt as another scenario's, which is worse than
+    # no recording at all — it is a wrong observation that looks like a right one.
+    _side_effects_var.set(side_effects)
+    _recorded_side_effects_var.set([])
 
     # IDV-05: thread the verified session token into the task-scoped ContextVar.
     # The enforcement gate in transactional/tools.py (17-06) reads this value.

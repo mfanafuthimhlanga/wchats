@@ -50,13 +50,18 @@ which the dynamic halves patch out.
 
 Known scope limits, stated rather than implied:
 
-  * `notify_fn` is hardcoded inside the seam (escalation mail) and is not a
-    parameter, so it is not compared — see the seam's own header comment.
-  * The seam returns options carrying a LIVE tool server bound to the tenant
-    connection string: it writes `retrieval_metrics` and `tool_calls_audit`,
-    marks conversations escalated, and dispatches the real transactional
-    adapters. There is no dry-run switch. BACKLOG 2.5 is that decision and it
-    must be settled before P2 invokes the agent from the eval task.
+  * `notify_fn` is a closure built inside the seam, so two builds never produce
+    equal values and it is excluded from the value comparison. Which of the two
+    closures the mode selected is asserted directly instead, in
+    `test_recorded_mode_records_the_escalation_instead_of_sending_it`.
+  * The seam's options carry a LIVE tool server bound to the tenant connection
+    string, and from P1b `side_effects` decides what that means: "live" writes
+    `retrieval_metrics`, sends escalation mail and dispatches the real
+    transactional adapters; "recorded" records those three instead. BACKLOG 2.5,
+    settled 2026-08-07. The tests here pin the seam's half of it — mandatory
+    parameter, identical capability surface in both modes, mode threaded into
+    the tool server. The tool layer's half is
+    `tests/unit/test_recorded_side_effects.py`.
 """
 
 from __future__ import annotations
@@ -703,9 +708,11 @@ def _tool_server_marker(**kwargs) -> str:
     Keyed on every input that decides what the tools can do and whose data they
     touch, so two calls with the same inputs produce equal markers and any
     divergence — a blanked `verified_session_token`, a different conn_str, a
-    mutated retrieval strategy — produces unequal ones. `notify_fn` is excluded:
-    it is a closure the seam hardcodes, it is not a parameter, and it would
-    never compare equal across two calls.
+    mutated retrieval strategy, a `side_effects` mode that reached the seam and
+    then never reached the tools — produces unequal ones. `notify_fn` is
+    excluded: it is a closure built inside the seam and would never compare
+    equal across two calls; which of the two closures was chosen is asserted
+    directly in `test_recorded_mode_records_the_escalation_instead_of_sending_it`.
     """
     return (
         "tool-server["
@@ -716,7 +723,8 @@ def _tool_server_marker(**kwargs) -> str:
         f"conversation_id={kwargs['conversation_id']}|"
         f"strategy={kwargs['strategy']!r}|"
         f"verified_session_token={kwargs['verified_session_token']}|"
-        f"job_id={kwargs['job_id']}]"
+        f"job_id={kwargs['job_id']}|"
+        f"side_effects={kwargs['side_effects']}]"
     )
 
 
@@ -881,7 +889,7 @@ def test_the_options_served_match_an_independently_built_reference():
         ),
         patch(
             "app.worker.tasks.runtime.agent._resolve_turn_prompt_version",
-            return_value=(_PROMPT_VERSION_ID, dict(_SOUL_OVERRIDE)),
+            return_value=(_PROMPT_VERSION_ID, dict(_SOUL_OVERRIDE), False),
         ),
         patch("app.worker.tasks.runtime.agent._run_sdk_turn", side_effect=fake_sdk_turn),
         patch("app.worker.tasks.runtime.agent.emit"),
@@ -924,6 +932,7 @@ def test_the_options_served_match_an_independently_built_reference():
             conn_str=_CONN_STR,
             conversation_id=local_conv_id,
             job_id=job_id,
+            side_effects="live",
             verified_session_token=_VERIFIED_TOKEN,
             soul_override=dict(_SOUL_OVERRIDE),
             resume=None,
@@ -1029,7 +1038,7 @@ def test_the_seam_receives_the_turn_s_own_inputs():
         ),
         patch(
             "app.worker.tasks.runtime.agent._resolve_turn_prompt_version",
-            return_value=(_PROMPT_VERSION_ID, dict(_SOUL_OVERRIDE)),
+            return_value=(_PROMPT_VERSION_ID, dict(_SOUL_OVERRIDE), False),
         ),
         patch(
             "app.worker.tasks.runtime.agent.build_agent_options",
@@ -1073,11 +1082,19 @@ def test_the_seam_receives_the_turn_s_own_inputs():
         "as 'no verified session' and every identity-gated transactional skill "
         "refuses a customer who did verify."
     )
+    assert kwargs.get("side_effects") == "live", (
+        "the chat path did not ask for live side effects; it asked for "
+        f"{kwargs.get('side_effects')!r}. This is the turn a customer is waiting "
+        "on. Recorded here means their refund silently does not happen, their "
+        "escalation never reaches the owner, and the ops room's retrieval "
+        "metrics stop being written — none of which raises anything."
+    )
     assert set(kwargs) == {
         "agent",
         "conn_str",
         "conversation_id",
         "job_id",
+        "side_effects",
         "verified_session_token",
         "soul_override",
         "resume",
@@ -1122,6 +1139,7 @@ def test_build_agent_options_assembles_the_full_contract():
             conn_str=_CONN_STR,
             conversation_id=conv_id,
             job_id=job_id,
+            side_effects="live",
             verified_session_token=_VERIFIED_TOKEN,
             soul_override=dict(_SOUL_OVERRIDE),
             resume="resume-me",
@@ -1147,12 +1165,7 @@ def test_build_agent_options_assembles_the_full_contract():
     assert MUTATING_SKILLS <= set(options.allowed_tools), (
         "the seam no longer grants the mutating transactional skills. If that "
         "is a deliberate narrowing, good — but it changes what production can "
-        "do, so update EXPECTED_ALLOWED_TOOLS and say so. This assertion exists "
-        "to keep the fact visible: the seam hands EVERY caller a live tool "
-        "server bound to the tenant connection string, so from P2 an eval "
-        "scenario in which the agent decides to refund executes a refund "
-        "against the tenant's provider. BACKLOG 2.5 is that decision and it is "
-        "not made yet."
+        "do, so update EXPECTED_ALLOWED_TOOLS and say so."
     )
     assert set(options.mcp_servers) == {"customer-tools"}, (
         "the MCP server key must stay 'customer-tools' — it is one third of a "
@@ -1176,25 +1189,240 @@ def test_build_agent_options_assembles_the_full_contract():
     assert callable(tool_kwargs["notify_fn"])
 
 
-def test_the_canary_choice_is_committed_before_the_options_can_fail():
-    """Pins a behaviour change P1 made on the failure path and did not test.
+# ---------------------------------------------------------------------------
+# The side-effect mode — the seam's half of BACKLOG 2.5
+#
+# Settled by the owner, 2026-08-07: a mandatory `side_effects` parameter,
+# "live" or "recorded", NO DEFAULT. The tool layer's half of the same decision
+# — that recorded mode actually stops the ProviderAdapter, the metrics write and
+# the mail — lives in tests/unit/test_recorded_side_effects.py. Both halves are
+# needed: a seam that takes the parameter and drops it is green on that file,
+# and a tool layer that honours a mode nothing sets is green on this one.
+# ---------------------------------------------------------------------------
+
+
+def _build(**overrides):
+    """Build options through the real seam with the collaborators stubbed out."""
+    from app.worker.tasks.runtime.agent import build_agent_options
+
+    kwargs = {
+        "agent": _make_agent(),
+        "conn_str": _CONN_STR,
+        "conversation_id": "00000000-0000-0000-0000-0000000000ff",
+        "job_id": str(uuid.uuid4()),
+        "verified_session_token": _VERIFIED_TOKEN,
+        "soul_override": dict(_SOUL_OVERRIDE),
+        "resume": None,
+    }
+    kwargs.update(overrides)
+
+    with (
+        patch(
+            "app.worker.tasks.runtime.agent.build_tool_server",
+            side_effect=_tool_server_marker,
+        ) as mock_tools,
+        patch(
+            "app.worker.tasks.runtime.agent.build_system_prompt",
+            side_effect=_system_prompt_marker,
+        ),
+        patch(
+            "app.worker.tasks.runtime.agent.ClaudeAgentOptions",
+            side_effect=_RecordingOptions,
+        ),
+    ):
+        options = build_agent_options(**kwargs)
+    return options, mock_tools, kwargs["agent"]
+
+
+def test_the_seam_refuses_to_build_without_a_side_effects_mode():
+    """NO DEFAULT. This is the entire mechanism, and it is one word wide.
+
+    Give `side_effects` a default of "live" and every guard in both files stays
+    green while P2's eval — written months from now by someone reading the
+    signature, not the plan — quietly issues real refunds against a real
+    tenant's provider. A default is not a convenience here, it is the failure
+    mode: the caller who most needs to think about this question is exactly the
+    one who would never be asked it.
+
+    TypeError from Python's own binding, rather than a runtime check, because it
+    fires at the call site with the parameter's name in it.
+    """
+    from app.worker.tasks.runtime.agent import build_agent_options
+
+    with pytest.raises(TypeError, match="side_effects"):
+        with (
+            patch("app.worker.tasks.runtime.agent.build_tool_server",
+                  side_effect=_tool_server_marker),
+            patch("app.worker.tasks.runtime.agent.build_system_prompt",
+                  side_effect=_system_prompt_marker),
+            patch("app.worker.tasks.runtime.agent.ClaudeAgentOptions",
+                  side_effect=_RecordingOptions),
+        ):
+            build_agent_options(
+                agent=_make_agent(),
+                conn_str=_CONN_STR,
+                conversation_id="00000000-0000-0000-0000-00000000ffff",
+                job_id=str(uuid.uuid4()),
+            )
+
+
+def test_the_seam_rejects_a_mode_it_does_not_implement():
+    """`Literal` is a type annotation and stops nothing at run time.
+
+    `side_effects="dry_run"` is the plausible mistake — it is what this
+    parameter is called in most codebases — and a bare `== "recorded"` check
+    would read it as live and move real money on the eval path. Fail loudly on
+    the third value rather than silently on the safe-looking one.
+    """
+    from app.worker.tasks.runtime.agent import build_agent_options
+
+    with pytest.raises(ValueError, match="side_effects"):
+        build_agent_options(
+            agent=_make_agent(),
+            conn_str=_CONN_STR,
+            conversation_id="00000000-0000-0000-0000-00000000fffe",
+            job_id=str(uuid.uuid4()),
+            side_effects="dry_run",
+        )
+
+
+def test_recorded_mode_grants_exactly_the_same_capability_surface_as_live():
+    """THE REJECTED-ALTERNATIVE PIN. The reason recorded mode exists at all.
+
+    The other way to stop an eval refund was to hand the eval a read-only
+    `allowed_tools` subset. The owner rejected it because it makes the sentence
+    *"the agent should have refused to refund here"* unfalsifiable: the scenario
+    could no longer FAIL, since the agent could not attempt the thing it was
+    supposed to refuse. An agent that cannot do the wrong thing tells you
+    nothing by not doing it.
+
+    That rejection is only durable if something notices the day someone
+    "hardens" recorded mode by trimming the tool list — which reads like an
+    improvement, passes every money-related guard in the suite, and silently
+    turns a whole class of eval scenario into a tautology. This is that
+    something. Every behaviour-determining kwarg is compared, not just
+    allowed_tools, because the same reasoning applies to max_turns, the budget
+    ceiling and the system prompt.
+    """
+    live, _, _ = _build(side_effects="live")
+    recorded, _, _ = _build(side_effects="recorded")
+
+    assert recorded.allowed_tools == live.allowed_tools == EXPECTED_ALLOWED_TOOLS
+    assert MUTATING_SKILLS <= set(recorded.allowed_tools), (
+        "recorded mode no longer grants the six mutating skills. That looks "
+        "like safety and is the opposite: an eval agent that cannot attempt a "
+        "refund cannot be scored on refusing one, so every capability-envelope "
+        "scenario silently becomes unfalsifiable. Recorded mode's job is to "
+        "make the attempt harmless, never to prevent it."
+    )
+
+    live_snapshot = live.snapshot()
+    recorded_snapshot = recorded.snapshot()
+    assert set(live_snapshot) == set(recorded_snapshot)
+    differences = [
+        name
+        for name in sorted(live_snapshot)
+        # mcp_servers legitimately differs: it is the one field the mode is
+        # supposed to reach, and _tool_server_marker keys on it.
+        if name != "mcp_servers" and repr(live_snapshot[name]) != repr(recorded_snapshot[name])
+    ]
+    assert differences == [], (
+        f"recorded mode changed what the agent sees or can choose: {differences}. "
+        "Only the outer edge may differ between the two modes — the eval must "
+        "measure the agent production serves, not a quieter one."
+    )
+
+
+@pytest.mark.parametrize("mode", ["live", "recorded"])
+def test_the_seam_threads_the_mode_into_the_tool_server(mode):
+    """A parameter the seam accepts and then forgets is worse than none.
+
+    It reads as settled in every review, satisfies the mandatory-parameter test
+    above, and leaves the eval fully live. The tool layer is where the mode has
+    its effect, so the only thing that matters is that it arrives there.
+    """
+    _, mock_tools, _ = _build(side_effects=mode)
+    assert mock_tools.call_args.kwargs["side_effects"] == mode, (
+        f"the seam was asked for side_effects={mode!r} and passed "
+        f"{mock_tools.call_args.kwargs.get('side_effects')!r} to "
+        "build_tool_server. The mode has no effect anywhere else."
+    )
+
+
+def test_live_mode_sends_the_real_escalation_mail():
+    """The anti-tautology partner of the recorded-escalation test below.
+
+    Asserting only that recorded mode does not send mail would stay green if the
+    seam never wired escalation mail at all. This drives the notify_fn the seam
+    actually handed the tool server and asserts the owner still gets paged.
+    """
+    _, mock_tools, agent = _build(side_effects="live")
+    notify_fn = mock_tools.call_args.kwargs["notify_fn"]
+
+    with (
+        patch("app.worker.tasks.runtime.agent.send_escalation_email") as mock_mail,
+        patch("app.worker.tasks.runtime.agent.record_suppressed_side_effect") as mock_record,
+    ):
+        notify_fn("customer asked for a human", "three failed lookups")
+
+    mock_mail.assert_called_once_with(
+        agent, "customer asked for a human", "three failed lookups"
+    )
+    mock_record.assert_not_called()
+
+
+def test_recorded_mode_records_the_escalation_instead_of_sending_it():
+    """The escalation edge, which the value comparison structurally cannot see.
+
+    `notify_fn` is a closure, so two builds never produce equal values and it is
+    excluded from `test_the_options_served_match_an_independently_built_reference`'s
+    sweep by design. That leaves it as the one behaviour-determining input in
+    the seam with no coverage — and an eval that escalates would page a real
+    owner about a customer who does not exist, nightly, for as long as the
+    scenario stays in the golden set.
+    """
+    _, mock_tools, agent = _build(side_effects="recorded")
+    notify_fn = mock_tools.call_args.kwargs["notify_fn"]
+
+    with (
+        patch("app.worker.tasks.runtime.agent.send_escalation_email") as mock_mail,
+        patch("app.worker.tasks.runtime.agent.record_suppressed_side_effect") as mock_record,
+    ):
+        notify_fn("customer asked for a human", "three failed lookups")
+
+    mock_mail.assert_not_called()
+    mock_record.assert_called_once()
+    kind, detail = mock_record.call_args.args
+    assert kind == "escalation.notify"
+    assert detail["reason"] == "customer asked for a human"
+    assert detail["context"] == "three failed lookups"
+    assert detail["agent_id"] == str(agent.id), (
+        "the recorded escalation does not name the agent that escalated, so an "
+        "eval reading it back cannot attribute the escalation to a scenario."
+    )
+
+
+def test_the_canary_choice_is_not_committed_when_the_options_build_fails():
+    """RESOLVE BEFORE, COMMIT AFTER — the settled answer to BACKLOG 2.6.
+
+    This test replaces `test_the_canary_choice_is_committed_before_the_options_can_fail`,
+    which pinned P1's behaviour and was written to be inverted the moment the
+    question was settled. The history it records:
 
     P1 moved `_resolve_turn_prompt_version` ahead of the seam, because the soul
-    fields it resolves are an input to the system prompt the seam builds. The
-    commit message called the move "order-independent"; the evidence given
-    covered ContextVars only, which is narrower. `_resolve_turn_prompt_version`
-    calls `_set_prompt_version_id`, which COMMITS to `conversations.metadata`.
-    Under the previous order, `RetrievalStrategy.model_validate` and
-    `build_tool_server` ran first, so a malformed `retrieval_strategy` JSONB or
-    a tool-server failure aborted the turn before any version was committed and
-    the Celery retry re-rolled the canary. It no longer does.
+    fields it resolves are an input to the system prompt the seam builds. That
+    move was correct and stays. But the helper also CALLED
+    `_set_prompt_version_id`, which commits to `conversations.metadata` — so the
+    write moved forward with the read, and a turn that then died in
+    `RetrievalStrategy.model_validate` or `build_tool_server` left the
+    conversation permanently sticky to a prompt version that never served it.
+    Before P1 the Celery retry re-rolled. A canary whose denominator counts
+    conversations it never spoke in is a canary reporting on a population it
+    does not have.
 
-    This test does not claim the new behaviour is better. It makes it VISIBLE:
-    the conversation is sticky to the resolved version even when the turn that
-    resolved it never ran. If someone later decides the commit belongs after the
-    options build, this test goes red and they change it deliberately, with
-    BACKLOG 2.6 in front of them, rather than discovering the difference from a
-    canary report that does not add up.
+    Settled by the owner on 2026-08-07: the resolution stays where P1 put it,
+    the WRITE moves back behind a successful `build_agent_options`. The
+    conversation becomes sticky only once there is an agent to be sticky to.
     """
     from app.worker.tasks.runtime.agent import run_agent_turn
 
@@ -1232,11 +1460,90 @@ def test_the_canary_choice_is_committed_before_the_options_can_fail():
                 conversation_id=None,
             )
 
-        assert mock_commit.call_count == 1, (
-            "the canary choice was not committed before the options build "
-            f"failed (call_count={mock_commit.call_count}). If that is now "
-            "deliberate, this test is the record of the old behaviour and "
-            "should be rewritten to assert the new one — and BACKLOG 2.6 "
-            "closed in the same commit."
+        assert mock_commit.call_count == 0, (
+            "the canary choice was committed even though the options build "
+            f"failed (call_count={mock_commit.call_count}). The conversation is "
+            "now sticky to a prompt version that never served a turn, and the "
+            "Celery retry can no longer re-roll it. Move the "
+            "_set_prompt_version_id call back behind a successful "
+            "build_agent_options — BACKLOG 2.6, settled 2026-08-07."
         )
-        assert mock_commit.call_args.args[1:] == (local_conv_id, _PROMPT_VERSION_ID)
+
+
+def test_the_canary_choice_is_committed_once_the_options_exist():
+    """The other half of "resolve before, commit after", and the half that keeps
+    the fix from being a deletion.
+
+    Not committing at all would pass the test above and silently end OPS-16
+    canary stickiness: every turn of a conversation would re-roll, the persona
+    would flip mid-conversation (A-CANARY's whole prohibition), and
+    `turn_metrics.prompt_version_id` would attribute consecutive turns of one
+    conversation to different versions. So the write must still happen on the
+    success path, exactly once, with the same arguments as before — and strictly
+    AFTER the seam returned, which is the ordering the pair of tests pins.
+    """
+    from app.worker.tasks.runtime.agent import run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent = _make_agent()
+    agent_id = str(agent.id)
+    local_conv_id = "00000000-0000-0000-0000-0000000000ee"
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None
+    mock_db.get.side_effect = [agent, _make_job()]
+
+    order: list[str] = []
+
+    async def fake_sdk_turn(**kwargs):
+        order.append("sdk_turn")
+        return dict(_CANNED_TURN_RESULT)
+
+    with (
+        patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_db_ctx(mock_db)),
+        patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value=_CONN_STR),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
+        patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
+        patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
+        patch(
+            "app.worker.tasks.runtime.agent._persist_messages",
+            return_value="assistant-msg-id-canary",
+        ),
+        patch(
+            "app.worker.tasks.runtime.agent.resolve_prompt_version",
+            return_value=(_PROMPT_VERSION_ID, dict(_SOUL_OVERRIDE)),
+        ),
+        patch(
+            "app.worker.tasks.runtime.agent._set_prompt_version_id",
+            side_effect=lambda *a, **k: order.append("commit"),
+        ) as mock_commit,
+        patch(
+            "app.worker.tasks.runtime.agent.build_agent_options",
+            side_effect=lambda **kwargs: (order.append("seam"), _SeamSentinel())[1],
+        ),
+        patch("app.worker.tasks.runtime.agent._run_sdk_turn", side_effect=fake_sdk_turn),
+        patch("app.worker.tasks.runtime.agent.emit"),
+        patch("app.worker.tasks.runtime.agent.celery_chain", MagicMock()),
+    ):
+        run_agent_turn.run(
+            job_id=job_id,
+            agent_id=agent_id,
+            message="What is the return policy?",
+            conversation_id=None,
+        )
+
+    assert mock_commit.call_count == 1, (
+        "the canary choice was never committed on a SUCCESSFUL turn "
+        f"(call_count={mock_commit.call_count}). Deleting the write passes the "
+        "failure-path test above and quietly ends per-conversation stickiness: "
+        "every turn re-rolls, the persona flips mid-conversation, and "
+        "consecutive turns of one conversation are attributed to different "
+        "prompt versions."
+    )
+    assert mock_commit.call_args.args[1:] == (local_conv_id, _PROMPT_VERSION_ID)
+    assert order.index("commit") > order.index("seam"), (
+        f"the commit did not follow the seam call (order={order}). Committing "
+        "first is exactly the P1 behaviour BACKLOG 2.6 settled against — a turn "
+        "that dies in options-building would again leave the conversation "
+        "sticky to a version that never served it."
+    )

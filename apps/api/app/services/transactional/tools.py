@@ -103,6 +103,12 @@ log = structlog.get_logger(__name__)
 # Default TTL for pending_confirmations rows (Phase 18 will extend/configure this).
 _CONFIRM_TTL_HOURS: int = 24
 
+#: tool_calls_audit.error marker for a call recorded-mode declined to execute
+#: (D1/P1b, BACKLOG 2.5). A constant rather than a literal because the eval and
+#: any future Actor-labelling pass have to filter on the same string: an
+#: unmarked recorded row and a real execution tell the same story in that table.
+RECORDED_NOT_EXECUTED: str = "side_effects.recorded:not_executed"
+
 
 # ---------------------------------------------------------------------------
 # Shared steps 6-7 — adapter execute + audit row + finalize
@@ -284,6 +290,11 @@ async def _execute_transactional_tool(
                            ONLY for the fresh reserved winner — never for replays
                            denial → release + audit + is_error
       5. Actor seam      — call_actor_gate: block → release + audit + is_error
+      5.5 Recorded mode  — D1/P1b: on the eval path (side_effects='recorded') the
+                           ProviderAdapter is suppressed. Records the attempt,
+                           releases, writes the audit row marked
+                           RECORDED_NOT_EXECUTED, returns is_error. Steps 1-5 all
+                           ran; only the money did not move.
       6. Adapter execute — try/except; error → release + audit + is_error
       7. Audit + finalize— success path: audit row (no error) + finalize_idempotency + return
 
@@ -720,6 +731,91 @@ async def _execute_transactional_tool(
                     ),
                 }
             ]
+        }
+
+    # ---------------------------------------------- 5.5 Recorded mode (D1/P1b, BACKLOG 2.5)
+    # The eval invokes this agent through the same seam production uses, which is
+    # the whole point of approach (b) — and which means an eval scenario in which
+    # the agent decides to refund would execute a real refund. On the eval path
+    # the ProviderAdapter is suppressed and the attempt is recorded instead.
+    #
+    # Placed HERE, after step 5, and not inside _execute_adapter_and_audit. Two
+    # reasons, both load-bearing:
+    #
+    #   * Everything above still runs. The capability envelope, the IDV gate, the
+    #     idempotency reservation, the rate ceiling and the Actor seam are what
+    #     the eval is measuring. Short-circuiting ahead of them would hand the
+    #     recorded agent "not executed" where production hands it "access
+    #     denied", and the remainder of the turn would diverge from the product —
+    #     the exact drift the seam exists to close.
+    #   * _execute_adapter_and_audit is shared with
+    #     confirmation_resolution.execute_approved_confirmation, the human-approval
+    #     resolver. That resolver runs hours later, in another task, with no
+    #     per-turn context, and is forbidden from reading dispatcher ContextVars
+    #     (OD-5, test_resolver_reads_no_dispatcher_contextvar). Putting the check
+    #     in the shared helper would make an approved refund's fate depend on
+    #     ambient state nobody in that call stack set.
+    #
+    # AUD-01 symmetry is preserved: this is a non-replay entry, so it writes
+    # exactly one tool_calls_audit row, marked as recorded so the labelled Actor
+    # set is never contaminated by an action that did not run. The reservation is
+    # released like every other decline-to-execute path, because a key held by an
+    # action that never happened makes the next caller's "unknown" a lie.
+    from app.services.agent_tools import (  # noqa: PLC0415
+        _side_effects_var,
+        record_suppressed_side_effect,
+    )
+
+    if _side_effects_var.get() == "recorded":
+        record_suppressed_side_effect(
+            "transactional.adapter",
+            {
+                "skill": skill,
+                "adapter_method": adapter_method,
+                "arguments": raw_args,
+                "agent_id": agent_id,
+                "conversation_id": conversation_id,
+                "actor_decision": decision,
+                "actor_rationale": rationale,
+                "capability_snapshot": snapshot,
+            },
+        )
+        await release_idempotency(agent_id, skill, validated.idempotency_key)
+        await write_audit_row(
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            skill=skill,
+            arguments=raw_args,
+            result=None,
+            actor_decision=decision,
+            actor_rationale=rationale,
+            capability_snapshot=snapshot,
+            latency_ms=None,
+            error=RECORDED_NOT_EXECUTED,
+        )
+        log.info(
+            "transactional_tool.side_effect_recorded",
+            agent_id=agent_id,
+            skill=skill,
+        )
+        # is_error, and it says so in words. A cheerful confirmation here would
+        # teach the agent the money moved, and every sentence it produced for the
+        # rest of the turn would be reasoning from a false premise — an eval
+        # scoring a conversation that could not have happened in production.
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        f"NOT EXECUTED: this agent is running in evaluation mode "
+                        f"(side_effects='recorded'). The {skill} call was recorded "
+                        f"for measurement and no provider was contacted. No money "
+                        f"moved and no record changed. Do not tell the customer "
+                        f"this action completed."
+                    ),
+                }
+            ],
+            "is_error": True,
         }
 
     # -------------------------------------------------------- 6-7. Adapter + audit

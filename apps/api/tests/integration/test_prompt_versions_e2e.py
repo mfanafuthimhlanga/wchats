@@ -226,64 +226,92 @@ class _FakeCursor:
 
 
 def test_resolve_turn_prompt_version_sticky_across_turns(control_session):
-    """First turn resolves + stores; second turn reuses without re-rolling
-    (A-CANARY: canary stickiness is per-conversation, never mid-conversation)."""
-    from app.worker.tasks.runtime.agent import _resolve_turn_prompt_version
+    """First turn resolves and asks to be stored; second turn reuses without
+    re-rolling (A-CANARY: canary stickiness is per-conversation, never
+    mid-conversation).
+
+    Updated for BACKLOG 2.6 (settled 2026-08-07, "resolve before, commit
+    after"): `_resolve_turn_prompt_version` no longer writes. It is a control-DB
+    read that RETURNS whether the caller must persist, and `run_agent_turn`
+    does the write once `build_agent_options` has returned — so a turn that dies
+    in options-building re-rolls instead of leaving the conversation sticky to a
+    version that never served it. The persist call itself is exercised through
+    `_set_prompt_version_id` directly here, against the same fake tenant conn,
+    because that is the contract the caller now invokes.
+    """
+    from app.worker.tasks.runtime.agent import (
+        _resolve_turn_prompt_version,
+        _set_prompt_version_id,
+    )
 
     session, created_agent_ids = control_session
     agent = _make_real_agent(session, created_agent_ids)
     _make_real_version(session, agent.id, 1, "production", soul_role="sticky role")
 
     fake_tenant_conn = _FakeTenantConn()
+    conv_id = str(uuid4())
 
-    # First turn: no existing_prompt_version_id -> resolves and stores.
-    first_id, first_override = _resolve_turn_prompt_version(
+    # First turn: no existing_prompt_version_id -> resolves, and reports that
+    # the caller must persist.
+    first_id, first_override, needs_persist = _resolve_turn_prompt_version(
         session,
-        fake_tenant_conn,
         agent_id=str(agent.id),
-        local_conversation_id=str(uuid4()),
+        local_conversation_id=conv_id,
         existing_prompt_version_id=None,
     )
     assert first_id is not None
     assert first_override["soul_role"] == "sticky role"
+    assert needs_persist is True
+    assert fake_tenant_conn.metadata.get("prompt_version_id") is None, (
+        "the resolver wrote to the tenant DB. It must not: the write belongs "
+        "behind a successful build_agent_options (BACKLOG 2.6)."
+    )
+
+    # What run_agent_turn does next, once the options exist.
+    _set_prompt_version_id(fake_tenant_conn, conv_id, first_id)
     assert fake_tenant_conn.metadata.get("prompt_version_id") == first_id
 
     # Second turn: existing_prompt_version_id passed through (as the
     # conversation-branching code in run_agent_turn would read it back from
-    # conv_row["metadata"]) -> must reuse the SAME version, never re-roll.
-    second_id, second_override = _resolve_turn_prompt_version(
+    # conv_row["metadata"]) -> must reuse the SAME version, never re-roll, and
+    # nothing to persist because the id is already stored.
+    second_id, second_override, second_needs_persist = _resolve_turn_prompt_version(
         session,
-        fake_tenant_conn,
         agent_id=str(agent.id),
         local_conversation_id=str(uuid4()),
         existing_prompt_version_id=fake_tenant_conn.metadata["prompt_version_id"],
     )
     assert second_id == first_id
     assert second_override["soul_role"] == "sticky role"
+    assert second_needs_persist is False
 
 
-def test_resolve_turn_prompt_version_never_raises_on_bad_db(control_session):
+def test_resolve_turn_prompt_version_never_raises_on_bad_control_db(control_session):
     """T-21-09-05: a resolution failure never raises — caller falls back to
-    the live agent soul (None, None)."""
+    the live agent soul (None, None, False).
+
+    The failure injected is now a CONTROL-DB one, because that is the only
+    database this function still touches: the tenant write moved out to
+    `run_agent_turn` under BACKLOG 2.6, and `run_agent_turn` wraps it in its own
+    try/except so a tenant outage still cannot fail a turn.
+    """
     from app.worker.tasks.runtime.agent import _resolve_turn_prompt_version
 
     session, created_agent_ids = control_session
     agent = _make_real_agent(session, created_agent_ids)
 
-    broken_conn = MagicMock()
-    broken_conn.cursor.side_effect = RuntimeError("simulated tenant DB outage")
+    broken_session = MagicMock()
+    broken_session.get.side_effect = RuntimeError("simulated control DB outage")
 
-    result_id, result_override = _resolve_turn_prompt_version(
-        session,
-        broken_conn,
+    result_id, result_override, needs_persist = _resolve_turn_prompt_version(
+        broken_session,
         agent_id=str(agent.id),
         local_conversation_id=str(uuid4()),
-        existing_prompt_version_id=None,
+        existing_prompt_version_id=str(uuid4()),
     )
-    # No prompt_versions rows exist for this agent either, but even if one
-    # did, the broken tenant_conn write must not propagate as an exception.
     assert result_id is None
     assert result_override is None
+    assert needs_persist is False
 
 
 # ---------------------------------------------------------------------------

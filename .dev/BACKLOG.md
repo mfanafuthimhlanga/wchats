@@ -40,15 +40,21 @@ Legend — **[owner]** needs a human, **[blocked]** has an external precondition
 **This is the headline.** Everything the eval-foundation branch built is scaffolding around a metric
 that cannot move.
 
-> **Status 2026-08-07: P1 only.** `feat/d1-agent-invocation` carries the seam (`ec5f445`) and its
-> hardened guard (`d15be3a`). **P2, P3, the collector and the tier-2 judge never executed** — eight
-> agents died on an Anthropic session limit. So `2.1`–`2.4` are all still open: the eval still sets
-> `agent_response = reference_answer`.
+> **Status 2026-08-07: P1 + P1b.** `feat/d1-agent-invocation` carries the seam (`ec5f445`), its
+> hardened guard (`d15be3a`) and P1b — recorded mode plus the canary write reorder, which closed the
+> two rows that blocked P2. **P2 and P3 have still not executed**, so `2.1`–`2.4` remain open: the
+> eval still sets `agent_response = reference_answer`.
 >
-> **No tier-2 judge has read this branch.** `d15be3a`'s message and rows `2.5`/`2.6` originally
-> credited "tier-2"; they are **tier-1** findings from the P1 adversarial reviewer, corrected here.
-> The distinction is load-bearing — tier-2 is a Fable judge reading a bounded artifact and asking
-> whether the claims match the evidence, and that question has not been asked about P1.
+> **No tier-2 judge has read this branch.** `d15be3a`'s message and the former rows `2.5`/`2.6`
+> originally credited "tier-2"; they were **tier-1** findings from the P1 adversarial reviewer. The
+> distinction is load-bearing — tier-2 is a Fable judge reading a bounded artifact and asking whether
+> the claims match the evidence, and that question has not been asked about P1 or P1b.
+
+Numbering note: `2.5` and `2.6` were recorded mode and the canary write order. Both were closed by
+P1b and their rows deleted per the maintenance rule. The numbers are **not reused** — `agent.py`,
+`transactional/tools.py` and the plan all cite "BACKLOG 2.5"/"2.6" for those decisions, and a reader
+following one of those comments must not land on an unrelated row. New work discovered by P1b is
+`2.7`/`2.8`.
 
 | # | Item | Source |
 |---|---|---|
@@ -56,8 +62,8 @@ that cannot move.
 | 2.2 | The deploy gate fail-closes on an **absent** eval signal while shipping on a **present** one that measures nothing. No gate test reads `config.agent_invoked`. | tier-2 #1 |
 | 2.3 | The config tuple now stamps `prompt_version_id` / `model_id` onto that tautology, which makes it *look* credible. | tier-2 #1 |
 | 2.4 | Mined scenarios are inert by construction — written with `reference_answer=''`, selected by `WHERE reference_answer != ''`. EVL-03 produces write-only data. | audit D6 |
-| 2.5 | **[owner] BLOCKS P2. The seam hands its caller a live, side-effecting tool server.** `build_agent_options` returns options bound to the tenant's real `conn_str`: `retrieve` writes `retrieval_metrics`, `escalate_to_human` marks the conversation and sends mail, and the six mutating skills (`place_order`, `cancel_order`, `issue_refund`, `update_subscription`, `book_slot`, `update_customer_record`) write `tool_calls_audit` and call the real `ProviderAdapter`. There is no dry-run parameter. The plan chose (b) over (a) to keep eval traffic out of tenant data; (b) as built still writes tenant tables **and can move money** — one eval scenario in which the agent decides to refund executes a refund. **SETTLED 2026-08-07: recorded mode** — mandatory `side_effects: Literal['live','recorded']` on the seam, no default. Rejected the read-only subset: it would stop a scenario testing *"should refuse to refund"* from being able to fail at all. The no-op must be unmissable, never a silent success, and the recorded attempt is eval signal worth persisting. Implemented in P1b. | D1/P1 **tier-1** |
-| 2.6 | **The canary choice is now committed before the turn can fail.** P1 moved `_resolve_turn_prompt_version` ahead of the seam (its soul fields are an input to the system prompt). It commits `conversations.metadata.prompt_version_id`, and now does so before `RetrievalStrategy.model_validate` / `build_tool_server` can raise — so a turn that fails there leaves the conversation sticky to a version that never served it, where the retry previously re-rolled. Attribution on the successful retry stays correct, so this is a canary-*sampling* difference, not a provenance one. Behaviour pinned (red-observed) by `test_the_canary_choice_is_committed_before_the_options_can_fail`. **SETTLED 2026-08-07: resolve before, commit after.** The resolution stays where P1 put it (its soul fields are a genuine input to the prompt); the *write* to `conversations.metadata.prompt_version_id` moves back behind a successful `build_agent_options`, so a failed turn re-rolls as it did before. That test must be inverted and observed red against the current code. Implemented in P1b. | D1/P1 **tier-1** |
+| 2.7 | **P2 must decide what `conversation_id` it hands the seam, and the escalation path is the tell.** Recorded mode suppresses the escalation *mail*, which is what the owner settled — it does not suppress `_mark_conversation_escalated`, which UPDATEs the tenant `conversations` row. Approach (b) exists so the eval writes no `conversations` rows, so that UPDATE will match zero rows, and `escalate_to_human_tool` returns `{"already_escalated": True}` **without calling notify_fn at all**. An eval scenario about escalation would then read "already escalated" where production reads "I've flagged this conversation", and the recorded notification would never fire. Not a bug in P1b; a decision P2 owns and must make on purpose. | D1/P1b |
+| 2.8 | **Recorded mode does not bound the eval's Actor-gate spend.** Steps 1-5 of the transactional dispatcher run live by design — the envelope, IDV gate, rate ceiling and Actor seam are what the eval measures. The Actor gate is a synchronous Haiku call per mutating attempt, so a scenario set that provokes many attempts bills per attempt on top of the per-turn SDK call. Belongs with the plan's existing "cost and latency, unbounded by default" risk and its per-run ceiling. | D1/P1b |
 
 ## 3. Verification debt from the eval branch
 

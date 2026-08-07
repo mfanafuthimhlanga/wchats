@@ -347,3 +347,113 @@ def test_retrieve_tool_metrics_handles_empty_candidates():
     assert row["ctx_window_utilization"] == 0.0
     assert row["carried_never_cited_tokens"] == 0
     assert row["compaction_ratio"] is None
+
+
+# ---------------------------------------------------------------------------
+# Test 6-8 (D1/P1b, BACKLOG 2.5): the recorded side-effect mode.
+#
+# From P2 the nightly eval drives retrieve_tool through the same seam the chat
+# path uses. These rows are observations about the tenant's PRODUCTION retrieval
+# quality — OPS-05/06 is what the ops room's recall and nDCG tiles read — and an
+# eval's scenario queries would move those numbers nightly without a single
+# customer having asked anything. Faithfulness would then be measured against a
+# corpus whose reported retrieval health is partly the eval's own reflection.
+#
+# What is NOT suppressed is the retrieve RESULT. Retrieval is a read; the agent
+# under evaluation must see exactly the chunks production would hand it, or the
+# eval measures a different agent, which is the one failure this whole phase
+# exists to prevent.
+# ---------------------------------------------------------------------------
+
+
+from contextlib import contextmanager  # noqa: E402
+
+
+@contextmanager
+def _side_effect_mode(mode: str):
+    """Enter `mode` with a fresh sink, and leave nothing behind.
+
+    ContextVars persist for the whole pytest session — a leaked "recorded" would
+    make Tests 1-5 above stop writing their row while still asserting on it, and
+    they would fail for a reason unrelated to what they test. Reset by token
+    rather than by re-setting a guessed previous value.
+    """
+    token_mode = agent_tools._side_effects_var.set(mode)
+    token_sink = agent_tools._recorded_side_effects_var.set([])
+    try:
+        yield
+    finally:
+        agent_tools._recorded_side_effects_var.reset(token_sink)
+        agent_tools._side_effects_var.reset(token_mode)
+
+
+def test_recorded_mode_does_not_write_the_retrieval_metrics_row():
+    agent_tools._retrieve_call_count_var.set(0)
+    agent_tools._conn_str_var.set("postgresql://test:test@localhost/testdb")
+    agent_tools._conversation_id_var.set("conv-recorded-6")
+    agent_tools._job_id_var.set("job-recorded-6")
+
+    rrf_result, reranked = _build_fixture()
+
+    with (
+        _side_effect_mode("recorded"),
+        patch("app.services.agent_tools.embed_query", return_value=[0.1] * 1024),
+        patch("app.services.agent_tools.rrf_fuse", return_value=rrf_result),
+        patch("app.services.agent_tools.rerank", return_value=reranked),
+        patch("app.services.agent_tools.write_retrieval_metrics") as mock_write,
+    ):
+        result = _run(_fn(agent_tools.retrieve_tool)({"query": "test query"}))
+        recorded = agent_tools.get_recorded_side_effects()
+
+    mock_write.assert_not_called()
+
+    # The row is recorded, not discarded: it is still a real observation of what
+    # the agent's own retrieval did on this scenario, which is exactly what P2
+    # needs when it scores faithfulness against the contexts the agent SAW
+    # rather than the ones the scenario was written from.
+    assert len(recorded) == 1, f"expected one recorded side effect, got {recorded!r}"
+    assert recorded[0]["kind"] == "retrieval_metrics.write"
+    assert recorded[0]["detail"]["job_id"] == "job-recorded-6"
+    assert recorded[0]["detail"]["row"]["bm25_top_score"] == 0.6
+
+    # And the agent still gets its chunks. Suppressing the write must not
+    # suppress the read.
+    assert result.get("is_error") is not True
+    assert "content" in result
+    assert result["_citations"], (
+        "recorded mode returned no citations, so the agent under evaluation saw "
+        "less than production would hand it — the eval would be measuring a "
+        "differently-informed agent."
+    )
+
+
+def test_live_mode_still_writes_the_retrieval_metrics_row():
+    """The anti-tautology partner of the test above.
+
+    `assert_not_called` is satisfied by a retrieve that never reached the write
+    at all — a raised exception, an early return, a broken fixture. Driving the
+    identical fixture in live mode and asserting the write DOES happen isolates
+    the mode as the only difference between the two outcomes.
+    """
+    agent_tools._retrieve_call_count_var.set(0)
+    agent_tools._conn_str_var.set("postgresql://test:test@localhost/testdb")
+    agent_tools._conversation_id_var.set("conv-recorded-7")
+    agent_tools._job_id_var.set("job-recorded-7")
+
+    rrf_result, reranked = _build_fixture()
+
+    with (
+        _side_effect_mode("live"),
+        patch("app.services.agent_tools.embed_query", return_value=[0.1] * 1024),
+        patch("app.services.agent_tools.rrf_fuse", return_value=rrf_result),
+        patch("app.services.agent_tools.rerank", return_value=reranked),
+        patch("app.services.agent_tools.write_retrieval_metrics") as mock_write,
+    ):
+        _run(_fn(agent_tools.retrieve_tool)({"query": "test query"}))
+        recorded = agent_tools.get_recorded_side_effects()
+
+    mock_write.assert_called_once()
+    assert recorded == [], (
+        "live mode recorded a suppressed side effect. It suppressed nothing, so "
+        f"there is nothing to record; got {recorded!r}."
+    )
