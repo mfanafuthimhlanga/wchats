@@ -41,7 +41,23 @@ retrieve call is excluded and counted rather than scored 0 on three context metr
 own guards were proved not to be guards — most sharply, a one-token fallback to the stored context
 column passed all 163 eval tests.
 
-Branch suite: **1821 passed / 11 skipped / 0 failed** (was 1795 at `7a7486e`, 1766 at `1d3a7bd`).
+**Branch suite OBSERVED at the tip (`1d85789`), 2026-08-08: 1873 passed, 11 skipped, 0 failed,
+30 warnings, 366.48s.** 1884 collected. Zero `FAILED`/`ERROR` lines. This supersedes the 1821 below,
+which was recorded at the P2 review fixes — P3 and its review fixes added tests after it.
+
+Two notes for whoever runs it next, both learned the hard way here:
+
+- **The gate takes ~6 minutes and fits the tooling fine.** Three consecutive backgrounded attempts
+  were killed at ~3-4% and it was briefly written up as a wall-clock regression. That was wrong:
+  a detached run (`Start-Process`, output redirected to a file) completed in 366s, faster than
+  `main`'s 451s with 178 more tests. Cause of the kills unknown; if it recurs, detach rather than
+  concluding anything about the suite.
+- **~15 tests cost 14-16s each**, all in `test_agent_task.py`, `test_agent_turn_metrics.py`,
+  `test_agent_turn_connection_batch.py` and `test_agent_options_seam.py` — about 225s of the 366s.
+  A characteristic of the turn-path tests, not a regression. Isolated-module timings mislead here:
+  `test_agent_task.py` alone reads 142s for 13 tests, which invites exactly the wrong conclusion.
+
+Superseded figure: 1821 passed / 11 skipped / 0 failed (was 1795 at `7a7486e`, 1766 at `1d3a7bd`).
 `mypy app` clean; `ruff check app tests` clean via `uvx ruff@latest` — ruff is **not** installed
 in `apps/api/.venv`.
 (`main`'s 1675/11/0 below is the pre-branch number and is not the figure to measure a delta against.)
