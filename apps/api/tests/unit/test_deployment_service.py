@@ -1705,7 +1705,20 @@ class TestFailedRunIsNotEvidence:
 
     def test_the_failed_run_s_scores_do_not_travel(self):
         """Same suppression as every other absent state. A 0.90 beside a
-        refusal is what the orchestrator narrates."""
+        refusal is what the orchestrator narrates.
+
+        A PROPERTY PIN, AND NEITHER LAYER ALONE CAN FALSIFY IT — stated here
+        because P3 drew a stronger conclusion from the same shape and the
+        tier-2 read was right to reject it. The suppression happens twice: this
+        state's return omits the `pass_rates=` argument, and _eval_summary nulls
+        `rates` outside EVAL_SIGNAL_MEASURED. Adding `pass_rates=pass_rates` to
+        the call leaves this green, because the second layer nulls it; removing
+        the second layer leaves it green too, because the first passes nothing
+        and the default is already None. Both were RUN separately and observed
+        green, and only the pair turns it red. Recorded as one mutation in
+        `.dev/reference/p3-review-mutation-proofs.md` rather than dressed up as
+        two independent defences.
+        """
         result = self._collect("failed")
 
         assert result["pass_rates"] is None
