@@ -55,6 +55,22 @@ EVAL_SIGNAL_MEASURED = "measured"
 EVAL_SIGNAL_NO_RUNS = "no_runs"
 EVAL_SIGNAL_NO_VALID_SCORES = "no_valid_scores"
 EVAL_SIGNAL_UNAVAILABLE = "unavailable"
+# Audit D1 (P3). The fifth state, and the only one whose scores EXIST and are
+# still not evidence. eval.py:374-375 read
+#     "agent_response": row[3],   # row[3] IS reference_answer
+# so Ragas scored the reference answer against the contexts that reference
+# answer was written from. Faithfulness and AnswerRelevancy approach 1.0 BY
+# CONSTRUCTION, the agent is never invoked, and the resulting run arrives at
+# this collector as a full set of high pass_rates over thirty scenarios. Every
+# other absent-signal state is absent by having nothing; this one is absent by
+# having a number that is about the label rather than about the agent.
+#
+# So the score is suppressed, exactly as it is in the other three states.
+# Letting a tautology's 0.99 travel while the recommendation blocks would
+# reproduce BACKLOG 5.4 one layer down: the orchestrator narrates the number it
+# was given, the owner reads "excellent answer quality" above a refusal, and
+# the prose is the part they believe.
+EVAL_SIGNAL_AGENT_NOT_INVOKED = "agent_not_invoked"
 
 RED_TEAM_SIGNAL_MEASURED = "measured"
 # An agent that has never been security-tested. This state is the whole reason
@@ -113,12 +129,21 @@ Blocking conditions (always use recommendation='block'):
 - red_team_summary.deployment_blocked == True
 - DEP_BLOCK_ON_HIGH_RED_TEAM is True and red_team_summary.high_count > 0
 - Any eval metric pass_rate < 0.70
-- eval_summary.eval_signal is anything other than 'measured'. The four states
+- eval_summary.eval_signal is anything other than 'measured'. The five states
   are 'measured', 'no_runs' (never evaluated), 'no_valid_scores' (a run that
-  produced no valid score for any metric) and 'unavailable' (the signal could
-  not be read). Only 'measured' is evidence. An absent measurement is UNKNOWN
-  quality, never acceptable quality, and eval_summary.pass_rates is null — not
-  an empty object — in every one of the other three states.
+  produced no valid score for any metric), 'agent_not_invoked' (a run that
+  scored something OTHER than this agent's own answers) and 'unavailable' (the
+  signal could not be read). Only 'measured' is evidence. An absent measurement
+  is UNKNOWN quality, never acceptable quality, and eval_summary.pass_rates is
+  null — not an empty object — in every one of the other four states.
+- eval_summary.agent_invoked is anything other than true. Until this release
+  the eval scored each scenario's own reference answer instead of asking the
+  agent, so its metrics were near-perfect by construction and said nothing
+  about the deployed agent. A run that does not record having invoked the agent
+  gets no benefit of the doubt: false and absent are refused identically,
+  because every run stored before the fix is silent rather than false. Do not
+  describe such a run's quality at all — you have not been given its numbers,
+  and their absence here is deliberate.
 - red_team_summary.signal is anything other than 'measured'. The three states
   are 'measured', 'no_runs' (this agent has NEVER been security-tested) and
   'unavailable' (the signal could not be read). Zero open findings from zero
@@ -140,7 +165,8 @@ Warning conditions (recommendation='ship_with_warnings'):
   uncertainty; do not describe the result as full coverage.
 
 Ship condition (recommendation='ship'):
-- eval_summary.eval_signal == 'measured' AND all eval metrics >= 0.85
+- eval_summary.eval_signal == 'measured' AND eval_summary.agent_invoked is true
+  AND all eval metrics >= 0.85
 - deployment_blocked=False and high_count=0
 - verified_qa_stats.row_count >= 50
 
@@ -291,6 +317,7 @@ def _eval_summary(
     scored_scenario_count: int = 0,
     denominator_source: str | None = None,
     pass_rates: dict | None = None,
+    agent_invoked: bool | None = None,
     detail: str | None = None,
 ) -> dict:
     """Build an eval signal payload in which absence is always distinguishable.
@@ -312,12 +339,26 @@ def _eval_summary(
     says which of the two possible origins the attempted count has, because an
     attempted count derived from eval_results is bounded below by the scored
     count and its equality with it means nothing.
+
+    `agent_invoked` DEFAULTS TO None, NOT False (audit D1, P3). False is the
+    claim "this run looked and the agent was not invoked"; None is "no run said
+    either way", which is what a state with no run at all — no_runs,
+    unavailable — actually has. Both are refused by apply_signal_evidence_gate,
+    which tests `is not True`, so the distinction costs nothing at the gate and
+    keeps the payload from asserting a measurement it never made. Same
+    discipline as `valid_scenario_count`.
     """
     measured = signal == EVAL_SIGNAL_MEASURED
     rates = pass_rates if measured else None
     return {
         "eval_signal": signal,
         "signal_detail": detail,
+        # The D1 provenance claim, read out of eval_runs.config where
+        # eval_service.invocation_provenance() writes it. True only when the
+        # run both invoked the agent and got enough answers back to constitute
+        # a measurement — it is a conjunction on the writing side, and this
+        # side must not try to reconstitute either half.
+        "agent_invoked": agent_invoked,
         "last_run_at": last_run_at,
         # A run that FAILED still has a started_at and now, since the P1
         # persistence split, still lands a terminal status on production. Its
@@ -366,6 +407,48 @@ def _attempted_from_run_config(config: object) -> tuple[int | None, int | None]:
     )
 
 
+def _agent_invoked_from_run_config(config: object) -> bool | None:
+    """Read the D1 provenance claim out of an eval_runs.config JSONB payload.
+
+    Returns True / False when the run recorded one, and None when it recorded
+    nothing readable. THE THREE ARE KEPT APART AND ONLY ONE OF THEM SHIPS:
+
+      True   — eval_service.invocation_provenance() observed that the agent was
+               invoked AND that enough scenarios answered to be a measurement.
+      False  — the same function looked and said no. A run below
+               MIN_RESPONSE_RATE, or one that died before its first turn.
+      None   — no claim exists. A run from before D1 (the whole of history), a
+               run on a tenant DB provisioned before alembic_tenant 0013 and so
+               having no `config` column at all, or a config whose value is not
+               a bool.
+
+    None IS NOT A MILDER FAILURE THAN False, and the caller must not treat it
+    as one. Every eval run persisted before this branch was produced by the
+    tautology at eval.py:374-375 and carries no such key, so a gate that
+    refused only False would keep shipping on all of it — the exact shape of
+    BACKLOG 3.1, where pre-P4 red-team runs still read signal='measured' with
+    clean findings because absence was read as assent. The accepted consequence
+    is that every pre-D1 run, and every pre-0013 tenant, fails closed until a
+    fresh eval runs on the current build.
+
+    A non-bool value is None rather than passed through. `bool("false")` is
+    True, and a string is the shape a hand-written or externally-patched config
+    would most plausibly arrive in; coercing it would turn the string "false"
+    into a shipping signal.
+    """
+    if not isinstance(config, dict):
+        return None
+    invoked = config.get("agent_invoked")
+    # `is True` / `is False` rather than isinstance: numpy bools and 0/1 ints
+    # are not this claim either, and the gate's fail-closed direction means
+    # anything unrecognised costs a blocked deploy rather than a shipped one.
+    if invoked is True:
+        return True
+    if invoked is False:
+        return False
+    return None
+
+
 def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
     """Fetch the most recent eval run summary from the tenant DB.
 
@@ -386,7 +469,7 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
     and apply_signal_evidence_gate() refuses to ship on it. Missing data is
     never passing data.
 
-    The four states this can report, all different claims:
+    The five states this can report, all different claims:
         measured         — a run exists, it produced at least one real score.
         no_runs          — no FINISHED eval run exists for this agent: either
                            nothing has ever been measured, or the only run is
@@ -398,6 +481,11 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
         no_valid_scores  — a run exists and every score is NULL. The judge
                            produced no valid observation; the run measured
                            nothing.
+        agent_not_invoked— a run exists and may well carry excellent scores,
+                           but it does not record having asked the agent
+                           anything (audit D1). The scores are about the
+                           dataset's own reference answers. Suppressed, for the
+                           same reason the other absent states suppress theirs.
         unavailable      — the query could not be executed. We did not look.
 
     THE ATTEMPTED COUNT COMES FROM THE RUN, NOT FROM ITS RESULTS (P2 review).
@@ -411,8 +499,8 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
     when present and the eval_results-derived count is used only as a labelled
     floor. `denominator_source` says which of the two happened.
 
-    Returns dict with keys: eval_signal, signal_detail, last_run_at,
-    last_run_status, scenario_count, valid_scenario_count,
+    Returns dict with keys: eval_signal, signal_detail, agent_invoked,
+    last_run_at, last_run_status, scenario_count, valid_scenario_count,
     scored_scenario_count, denominator_source, pass_rates, failing_scenarios.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=10)
@@ -521,6 +609,8 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                 # dropped. The run stamped what it covered into
                 # config["dataset"] before the judge was ever called; that is
                 # the only figure in the system that knows the difference.
+                agent_invoked = _agent_invoked_from_run_config(run_config)
+
                 config_attempted, config_valid = _attempted_from_run_config(run_config)
                 if config_attempted is not None:
                     attempted = config_attempted
@@ -534,6 +624,42 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                     # whole payload exists to carry.
                     valid = None
                     denominator_source = DENOMINATOR_SOURCE_EVAL_RESULTS
+
+                # THE ROOT CAUSE IS REPORTED BEFORE THE SYMPTOM (audit D1, P3).
+                # This is checked ahead of `not pass_rates` because a run can be
+                # in both states at once and only one of them names what is
+                # wrong. A pre-D1 run has scores AND no invocation claim; a
+                # below-floor P2 run writes no eval_results AND records
+                # agent_invoked=false. Reporting the second as
+                # 'no_valid_scores' would send the owner after the judge when
+                # the judge was never the problem, and would leave the far
+                # larger population — every historical run, all of which DO have
+                # scores — with no state of its own at all.
+                if agent_invoked is not True:
+                    log.warning(
+                        "deployment_service.eval_summary.agent_not_invoked",
+                        agent_id=agent_id,
+                        run_status=last_run_status,
+                        recorded_claim=agent_invoked,
+                        scored=scored,
+                    )
+                    return _eval_summary(
+                        EVAL_SIGNAL_AGENT_NOT_INVOKED,
+                        last_run_at=last_run_at,
+                        last_run_status=last_run_status,
+                        scenario_count=attempted,
+                        valid_scenario_count=valid,
+                        scored_scenario_count=scored,
+                        denominator_source=denominator_source,
+                        agent_invoked=agent_invoked,
+                        detail=(
+                            "the most recent eval run recorded that the agent "
+                            "was not invoked"
+                            if agent_invoked is False
+                            else "the most recent eval run does not record "
+                            "whether the agent was invoked at all"
+                        ),
+                    )
 
                 if not pass_rates:
                     # The run exists and scored nothing — every score NULL, or
@@ -557,6 +683,7 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                         valid_scenario_count=valid,
                         scored_scenario_count=scored,
                         denominator_source=denominator_source,
+                        agent_invoked=agent_invoked,
                         detail=(
                             "the most recent eval run produced no valid score "
                             "for any metric"
@@ -571,6 +698,7 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                     valid_scenario_count=valid,
                     scored_scenario_count=scored,
                     denominator_source=denominator_source,
+                    agent_invoked=agent_invoked,
                     pass_rates=pass_rates,
                 )
             except Exception as exc:
@@ -1135,6 +1263,10 @@ def _compute_envelope_hash_sync(agent_id: str) -> str:
 EVAL_SUMMARY_UNAVAILABLE_SIGNAL: dict = {
     "eval_signal": EVAL_SIGNAL_UNAVAILABLE,
     "signal_detail": "the eval signal collector raised",
+    # None, never False: the collector raised, so no run was asked whether it
+    # invoked the agent. The gate refuses None and False identically, so this
+    # costs nothing and avoids attributing a claim to a run nobody read.
+    "agent_invoked": None,
     "last_run_at": None,
     "last_run_status": None,
     "scenario_count": 0,
@@ -1153,6 +1285,40 @@ RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL: dict = _red_team_summary(
     RED_TEAM_SIGNAL_UNAVAILABLE,
     detail="the red-team signal collector raised",
 )
+
+
+def _agent_not_invoked_warning(eval_summary: dict) -> DeploymentWarning:
+    """The owner-facing half of the D1 refusal (P3).
+
+    ONE warning_id for both routes into it — the collector's
+    EVAL_SIGNAL_AGENT_NOT_INVOKED and the gate's own `agent_invoked is not
+    True` — because the precedent this module sets is that a distinct
+    warning_id marks a distinct REMEDY, not a distinct cause (see the
+    eval_never_run / eval_signal_unavailable pair, split precisely because
+    "wait for the run we started" and "try again in a few minutes" are
+    different instructions). Here the remedy is identical in every case: run a
+    fresh eval on the current build. The forensic difference between "the run
+    said no" and "the run said nothing" travels on `eval_summary.agent_invoked`
+    itself, which is where a reader who cares can find it.
+
+    The message does not use the word "eval": a non-technical owner reading
+    "the evaluation did not invoke the agent" learns nothing actionable. It
+    says what was measured instead.
+    """
+    return DeploymentWarning(
+        warning_id="eval_agent_not_invoked",
+        category="eval_quality",
+        message=(
+            "This agent's last quality check scored a set of pre-written model "
+            "answers instead of the agent's own replies, so it does not tell us "
+            "how this agent performs and it cannot be approved for launch on "
+            "that basis. Run a fresh evaluation from the Evaluation page — the "
+            "new results will be about the agent itself, and are likely to be "
+            "lower than the old ones because the old ones were not measuring "
+            "anything."
+        ),
+        severity_level="warning",
+    )
 
 
 def apply_signal_evidence_gate(
@@ -1202,6 +1368,33 @@ def apply_signal_evidence_gate(
     were prose in a system prompt and nothing else; run against the shipped
     code, this function returned 'ship' for all three.
 
+    FIVE NOW: `agent_invoked is not True` (audit D1, P3). A signal that says
+    'measured' is a claim that a run produced scores, not a claim that the
+    scores are about this agent — and until this release they were not. The
+    eval set `agent_response` to the scenario's own `reference_answer`
+    (eval.py:374-375), so every stored run reports near-perfect faithfulness
+    over answers the agent never wrote, and this gate shipped on all of them.
+
+    TWO ROUTES TO THE SAME REFUSAL, AND BOTH ARE LOAD-BEARING. The collector
+    already downgrades such a run to EVAL_SIGNAL_AGENT_NOT_INVOKED, so in
+    production the first branch catches it. The `elif` below catches a payload
+    that claims 'measured' and carries no invocation claim — a hand-built
+    summary, a second collector added later, a caller that copies the dict and
+    drops a key. That is the same defence the "A MISSING key" paragraph above
+    describes, applied to the field this phase adds, and it is the one that
+    makes the rule enforceable independently of who assembled the payload.
+
+    ABSENT IS REFUSED EXACTLY AS FALSE IS, and this is the whole decision.
+    `is not True`, never `is False`: None must fail the same way, because None
+    is what the entire history of stored runs carries. A gate refusing only
+    False would have been satisfied by every tautological run ever written —
+    the same failure as BACKLOG 3.1, where pre-P4 red-team runs still read
+    'measured' with clean findings because nobody had recorded the absence.
+    The accepted consequence, settled by the owner 2026-08-07, is that every
+    pre-D1 run and every tenant DB older than alembic_tenant 0013 fails closed
+    until a fresh eval runs. That costs blocked deploys; the alternative costs
+    shipped agents nobody measured.
+
     Args:
         recommendation: the orchestrator's own recommendation.
         eval_summary: _fetch_eval_summary_sync's payload, or the unavailable
@@ -1220,7 +1413,9 @@ def apply_signal_evidence_gate(
     if eval_signal != SHIPPABLE_SIGNAL:
         blocked = True
         detail = eval_summary.get("signal_detail") or "no eval signal was produced"
-        if eval_signal == EVAL_SIGNAL_NO_RUNS:
+        if eval_signal == EVAL_SIGNAL_AGENT_NOT_INVOKED:
+            warnings.append(_agent_not_invoked_warning(eval_summary))
+        elif eval_signal == EVAL_SIGNAL_NO_RUNS:
             # The day-1 state, and the one the owner can actually act on. The
             # checklist task starts the first eval itself when it finds this
             # (run_deployment_checklist step 4b) and records that on the signal,
@@ -1259,6 +1454,15 @@ def apply_signal_evidence_gate(
                     severity_level="warning",
                 )
             )
+    elif eval_summary.get("agent_invoked") is not True:
+        # A payload that claims 'measured' and does not claim to have invoked
+        # the agent. In production _fetch_eval_summary_sync has already turned
+        # this into EVAL_SIGNAL_AGENT_NOT_INVOKED above, so reaching here means
+        # the payload came from somewhere else — and somewhere else is exactly
+        # where the next fail-open comes from. See the docstring's TWO ROUTES
+        # paragraph.
+        blocked = True
+        warnings.append(_agent_not_invoked_warning(eval_summary))
 
     red_team_signal = red_team_summary.get("signal")
     if red_team_signal != SHIPPABLE_SIGNAL:

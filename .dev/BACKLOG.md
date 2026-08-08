@@ -41,12 +41,24 @@ Legend — **[owner]** needs a human, **[blocked]** has an external precondition
 could not move. **P2 made it move** (`d127b4d`); what remains here is the gate that reads it (`2.2`)
 and the consequences P2 itself created.
 
-> **Status 2026-08-08: P1 + P1b + P2.** `feat/d1-agent-invocation` carries the seam (`ec5f445`), its
-> hardened guard (`d15be3a`), P1b (recorded mode + the canary write reorder, `487ebbe` + `117de05`)
-> and **P2 — the eval now invokes the agent** (`d127b4d`). `2.1` and `2.3` are closed and their rows
-> deleted per the maintenance rule. **`2.2` (P3) has not executed**, so nothing yet reads
-> `config.agent_invoked` — which P2 writes. Trace: `.dev/traces/260808-d1-p2-invoke.md`. Mutation
+> **Status 2026-08-08: P1 + P1b + P2 + P3.** `feat/d1-agent-invocation` carries the seam (`ec5f445`),
+> its hardened guard (`d15be3a`), P1b (recorded mode + the canary write reorder, `487ebbe` +
+> `117de05`), **P2 — the eval now invokes the agent** (`d127b4d`) and **P3 — the deploy gate now
+> refuses a run that does not record having invoked it**. `2.1`, `2.2` and `2.3` are closed and their
+> rows deleted per the maintenance rule. Trace: `.dev/traces/260808-d1-p2-invoke.md`. Mutation
 > proofs: `.dev/reference/p2-mutation-proofs.md`.
+>
+> **P3 needed no migration, and that is a finding rather than an omission.** The plan's P3 section
+> assumed `agent_invoked` was a new column; P2 put it inside `eval_runs.config`, the JSONB that
+> `alembic_tenant` 0013 already added, so there is no DDL to write. A dedicated column would create a
+> second home for the one gate-facing claim — the disagreement `eval_service.invocation_provenance`'s
+> docstring exists to prevent — and a backfill stamping `agent_invoked: false` onto history would
+> change no gate outcome, because absent and false are refused identically. `0015` remains the tenant
+> head.
+>
+> **The accepted cost, now live:** every eval run stored before this branch, and every tenant DB older
+> than `alembic_tenant` 0013 (no `config` column at all), fails closed at the deploy gate until that
+> DB is re-migrated and a fresh eval runs.
 >
 > **The metric has not been observed to move**, and cannot be on this machine: no end-to-end eval run
 > is possible without `0.2`. P2 is unit-proven and unprovable end to end, exactly as the plan said.
@@ -56,8 +68,12 @@ and the consequences P2 itself created.
 > distinction is load-bearing — tier-2 is a Fable judge reading a bounded artifact and asking whether
 > the claims match the evidence, and that question has not been asked about P1, P1b or P2.
 
-Numbering note: `2.1`, `2.3`, `2.5`, `2.6`, `2.7` and `2.13` are closed and their rows deleted per the
-maintenance rule — `2.1` the tautology itself and `2.3` the config tuple stamped on it (both
+Numbering note: `2.1`, `2.2`, `2.3`, `2.5`, `2.6`, `2.7` and `2.13` are closed and their rows deleted
+per the maintenance rule — `2.2` the deploy gate itself (2026-08-08, P3: `apply_signal_evidence_gate`
+refuses `agent_invoked` false OR absent, `_fetch_eval_summary_sync` derives the fifth signal state
+`agent_not_invoked` from `eval_runs.config` and suppresses the tautology's scores rather than letting
+the orchestrator narrate them), `2.1` the tautology itself and `2.3` the config tuple stamped on it
+(both
 2026-08-08, P2: `agent_response` is the agent's own text, `retrieved_contexts` are the agent's own
 retrieve result, and the eval serves the production prompt version the run is attributed to rather
 than the agent's live soul columns), `2.5` recorded mode, `2.6` the canary write order, `2.7` the
@@ -74,7 +90,6 @@ name.
 
 | # | Item | Source |
 |---|---|---|
-| 2.2 | The deploy gate fail-closes on an **absent** eval signal while shipping on a **present** one that measures nothing. No gate test reads `config.agent_invoked`. **P2 now writes it** (false at INSERT, patched to the observed value after the invocation), so P3 is unblocked: refuse `false` **and** absent. **Interim, 2026-08-08 (P2 review):** a run whose invocation is below the floor now writes no `eval_results` at all, so the gate reads `EVAL_SIGNAL_NO_VALID_SCORES` and refuses. That closes the ship-on-2-of-40 window using machinery that exists; it does NOT close this row, because a run produced by the pre-P2 tautology still carries scores and no `agent_invoked`. | tier-2 #1 |
 | 2.4 | Mined scenarios are inert by construction — written with `reference_answer=''`, selected by `WHERE reference_answer != ''`. EVL-03 produces write-only data. | audit D6 |
 | 2.8 | **Recorded mode does not bound the eval's Actor-gate spend.** Steps 1-5 of the transactional dispatcher run live by design — the envelope, IDV gate, rate ceiling and Actor seam are what the eval measures. The Actor gate is a synchronous Haiku call per mutating attempt, so a scenario set that provokes many attempts bills per attempt on top of the per-turn SDK call. **P2 bounds the TURNS (`AGENT_INVOCATION_MAX_CALLS_PER_RUN = 60`) but not the attempts within a turn**, so this stays open, narrower. | D1/P1b |
 | 2.9 | **`red_team_probe._build_transactional_probe_fn` builds the CUSTOMER agent by hand, not through the seam.** `red_team_probe.py:313-329` constructs its own `ClaudeAgentOptions` with `_PROBE_MODEL` and `_ALLOWED_TOOLS`, so the RTX victim turn is an agent with a different model and a different tool list from the one production serves and the eval measures — RTX-01's confused-deputy findings are therefore about an adjacent agent. `MODULES_ALLOWED_TO_CONSTRUCT_OPTIONS` grandfathers it; the allowlist comment now says why rather than implying it is an adversary. Route it through `build_agent_options(side_effects=...)`. | P1b tier-2 #12 |
@@ -83,8 +98,8 @@ name.
 | 2.12 | **`AGENT_INVOCATION_MAX_CALLS_PER_RUN` (60) sits below `GOLDEN_SET_SOFT_CEILING` (200).** A tenant designating more than 60 golden rows gets the first 60 invoked and the remainder reported as `ceiling_skipped_golden` — the paired per-item delta the golden set exists for does not cover the tail that night, and *which* rows are covered is stable, so the tail is never measured at all. Reported loudly, not resolved: reconcile the two ceilings, or rotate which golden rows are covered when the set exceeds the call budget. | D1/P2 |
 | 2.14 | **`update_eval_run_config`'s jsonb merge has never executed against a database.** `config = COALESCE(config,'{}'::jsonb) || %(patch)s::jsonb` is asserted at the call site against a cursor double. It is the write that turns `agent_invoked` into an observation, and P3's gate reads exactly what it writes. Behind `0.2`, same standing debt as `3.5`. | D1/P2 |
 | 2.15 | **A responded turn with no retrieve call is dropped from scoring entirely, including AnswerRelevancy.** Faithfulness / ContextPrecision / ContextRecall over an empty context list are structurally 0 or NaN, so those rows are excluded and counted (`no_retrieval`) rather than scored 0 — but AnswerRelevancy is well defined without contexts and is lost with them. Ragas 0.4.x `evaluate()` runs one metric list over one dataset, so scoring them needs a second `evaluate()` call with a narrower metric list and per-row NULLs for the three context metrics. An agent that legitimately answers many questions from its soul is measured on fewer rows than it answered. | D1/P2 review |
-| 2.16 | **`coverage_rate` is reported and nothing gates on it.** `response_rate` divides by what the per-run ceiling ALLOWED; `coverage_rate` divides by what the tenant designated, so a tenant with 200 labelled rows whose first 60 all answer reports response_rate 1.0 and coverage 0.3. Both travel on the run. `MIN_RESPONSE_RATE` is applied to the first only — deliberately, because gating on coverage would permanently block every tenant above the ceiling (see `2.12`, the same collision). The gate that reads coverage belongs with P3. | D1/P2 review |
-| 2.17 | **A below-floor run's surviving scores are discarded, not stored un-gated.** The interim fail-closed in `run_eval_suite` skips `run_ragas_eval` entirely when the invocation is below the floor, so the 2 real observations from a 2-of-40 run are never computed and never stored. That is the honest choice while the gate cannot refuse them (`2.2`), and it loses debugging signal: once P3 reads `agent_invoked`, score them and let the gate refuse the run instead. | D1/P2 review |
+| 2.16 | **`coverage_rate` is reported and nothing gates on it.** `response_rate` divides by what the per-run ceiling ALLOWED; `coverage_rate` divides by what the tenant designated, so a tenant with 200 labelled rows whose first 60 all answer reports response_rate 1.0 and coverage 0.3. Both travel on the run. `MIN_RESPONSE_RATE` is applied to the first only — deliberately, because gating on coverage would permanently block every tenant above the ceiling (see `2.12`, the same collision). **P3 has landed and did NOT take this on** — it gates `agent_invoked` only, so `coverage_rate` still travels on the run and still gates nothing. Stated rather than quietly carried forward. | D1/P2 review |
+| 2.17 | **A below-floor run's surviving scores are discarded, not stored un-gated.** The interim fail-closed in `run_eval_suite` skips `run_ragas_eval` entirely when the invocation is below the floor, so the 2 real observations from a 2-of-40 run are never computed and never stored. It was the honest choice while the gate could not refuse them; **P3 has now landed, so the precondition is met** — a below-floor run records `agent_invoked=false` and the gate refuses it on that basis alone. Score the survivors and store them for debugging, and delete the `run_ragas_eval` skip. | D1/P2 review |
 
 ## 3. Verification debt from the eval branch
 

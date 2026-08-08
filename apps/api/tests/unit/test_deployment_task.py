@@ -387,6 +387,13 @@ def _measured_eval_signal():
     return {
         "eval_signal": "measured",
         "signal_detail": None,
+        # D1/P3, and the same argument as `eval_signal` above one release later:
+        # from this release the gate refuses a 'measured' signal that does not
+        # record having invoked the agent, because until P2 the eval scored each
+        # scenario's own reference answer and every stored run is silent on the
+        # question. Omitting it here would downgrade every wiring test to
+        # 'block' and they would stop testing what their names say.
+        "agent_invoked": True,
         "last_run_at": "2026-05-23T02:00:00",
         "last_run_status": "complete",
         "scenario_count": 30,
