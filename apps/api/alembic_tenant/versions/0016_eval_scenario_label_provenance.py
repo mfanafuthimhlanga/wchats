@@ -28,13 +28,22 @@ Context:
 
     label_trust_tier TEXT
         NULL on every row that exists today and on every row any model-driven
-        producer writes. Non-NULL ONLY when a human authored or verified the
-        reference_answer. The CHECK below permits nothing else in it, so the
-        column's presence IS the human claim — there is no value of this column
-        that means "a model wrote this", because a model's label has no claim to
-        record. `eval_service.label_trust_tier()` resolves NULL to the row's
+        producer writes. The CHECK below admits nothing but NULL and the two
+        human tiers, so **there is no value of this column that means "a model
+        wrote this"** — a model's label records no claim at all, which is what
+        NULL says. `eval_service.label_trust_tier()` resolves NULL to the row's
         source-derived tier, which can never be a human tier (pinned by
         test_no_schema_allowed_source_can_produce_a_human_label_tier).
+
+        WHAT THE CHECK DOES **NOT** SAY, corrected 2026-08-09. It constrains the
+        VALUE, never the AUTHOR. An earlier version of this docstring claimed
+        that "the column is set" and "a human wrote this" were the same
+        statement at the database level for any caller including one bypassing
+        the service layer. They are not: the constraint refuses
+        'model_generated' — the one value a forging writer would never choose —
+        and accepts 'human_authored' from anyone holding a tenant connection.
+        WHO may write a human value is enforced in Python by
+        `label_service`'s four restrictions, not here.
 
     labelled_by TEXT
         Who. NULL when label_trust_tier is NULL.
@@ -66,10 +75,22 @@ Context:
             the introspection matches nothing, and the ADD is skipped — the
             whole block is idempotent.
 
-        And it is load-bearing rather than decorative: it is the one guard in
-        this stack that holds even for a caller that bypasses the service layer
-        entirely. A raw `UPDATE eval_scenarios SET label_trust_tier =
-        'model_generated'` is refused by the database itself.
+        And it is load-bearing rather than decorative, in the narrow sense that
+        is actually true: a raw `UPDATE eval_scenarios SET label_trust_tier =
+        'model_generated'` is refused by the database itself, so the column
+        cannot come to hold a non-human vocabulary. A raw `... = 'human_authored'`
+        is NOT refused. The database bounds the vocabulary; it does not
+        authenticate the writer.
+
+        The second arm — a human tier requires a non-empty reference_answer —
+        closes the pairing the tier is a claim about. `label_trust_tier =
+        'human_authored'` beside `reference_answer = ''` asserts that a person
+        authored nothing, on a row the eval selector's `WHERE reference_answer
+        != ''` then never scores. `label_service.record_human_label` already
+        refuses to create it; this stops a direct write, a partial restore, or a
+        downgrade-and-re-upgrade from leaving one behind. It cannot break an
+        existing row: every row's tier is NULL, so every row satisfies the first
+        arm and the second is never evaluated.
 
     What this migration deliberately does NOT do:
         It does not widen 0011's `source` CHECK. Adding a human-flavoured source
@@ -139,38 +160,62 @@ def upgrade() -> None:
     # Both halves are guarded, so a re-run is a no-op.
     #
     # NULL passes: an unlabelled row makes no claim. Any non-human value is
-    # rejected by the database, which is what makes "this column is
-    # non-NULL" and "a human wrote this label" the same statement.
+    # rejected by the database, so the column has no vocabulary for "a model
+    # wrote this" — which is a bound on the VALUE and not on the writer.
+    #
+    # SCHEMA-QUALIFIED, unlike 0011's copy of this block. 0011 filters on
+    # `rel.relname = 'eval_scenarios'` with no pg_namespace join and then
+    # EXECUTEs a DROP against an unqualified table name: if a tenant DB ever
+    # carried eval_scenarios in more than one schema, the name would be
+    # discovered from one table and the DROP applied to whichever the
+    # search_path resolves — dropping a constraint governing a different
+    # table's column. 0016 has never been applied anywhere, so fixing the
+    # inherited gap here is free; 0011's copy is deployed and is a separate
+    # decision.
     # ------------------------------------------------------------------
     op.execute(f"""
         DO $$
         DECLARE
             con_name text;
+            con_schema text;
         BEGIN
-            SELECT con.conname INTO con_name
+            SELECT con.conname, nsp.nspname INTO con_name, con_schema
             FROM pg_constraint con
             JOIN pg_class rel ON rel.oid = con.conrelid
+            JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
             JOIN pg_attribute att
                 ON att.attrelid = rel.oid AND att.attnum = ANY(con.conkey)
             WHERE rel.relname = 'eval_scenarios'
+              AND nsp.nspname = current_schema()
               AND con.contype = 'c'
               AND att.attname = 'label_trust_tier'
               AND con.conname <> '{_LABEL_TIER_CONSTRAINT_NAME}'
             LIMIT 1;
 
             IF con_name IS NOT NULL THEN
-                EXECUTE format('ALTER TABLE eval_scenarios DROP CONSTRAINT %I', con_name);
+                EXECUTE format(
+                    'ALTER TABLE %I.%I DROP CONSTRAINT %I',
+                    con_schema, 'eval_scenarios', con_name
+                );
             END IF;
 
             IF NOT EXISTS (
-                SELECT 1 FROM pg_constraint
-                WHERE conname = '{_LABEL_TIER_CONSTRAINT_NAME}'
+                SELECT 1
+                FROM pg_constraint con
+                JOIN pg_class rel ON rel.oid = con.conrelid
+                JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+                WHERE con.conname = '{_LABEL_TIER_CONSTRAINT_NAME}'
+                  AND rel.relname = 'eval_scenarios'
+                  AND nsp.nspname = current_schema()
             ) THEN
                 ALTER TABLE eval_scenarios
                     ADD CONSTRAINT {_LABEL_TIER_CONSTRAINT_NAME}
                     CHECK (
                         label_trust_tier IS NULL
-                        OR label_trust_tier IN ('human_verified', 'human_authored')
+                        OR (
+                            label_trust_tier IN ('human_verified', 'human_authored')
+                            AND COALESCE(reference_answer, '') <> ''
+                        )
                     );
             END IF;
         END $$;

@@ -143,6 +143,30 @@ def test_0016_is_the_sole_child_of_0015_and_the_tree_is_unforked():
     )
 
 
+def test_0016_is_the_tenant_head():
+    """Head IDENTITY, pinned once for the tree rather than inside each
+    revision's parentage test.
+
+    `test_migration_tenant_0015.py` used to assert `heads == {"0015"}`, and this
+    phase relaxed it to `len(heads) == 1` — correctly, because that file's
+    subject is 0015's parentage and a test that names the current tip has to be
+    edited by every subsequent migration, which teaches the next author to edit
+    tests rather than obey them. But relaxing it left NOTHING asserting which
+    revision the tree ends at, and the ignored-new-files control cannot see an
+    assertion getting weaker inside a test that still passes.
+
+    So the claim moves here, to the file the phase owns, stated once: 0016 is
+    the tip. 0017 will move this line and only this line.
+    """
+    revisions = _all_tenant_revisions()
+    parents = {down for down in revisions.values() if down is not None}
+    heads = set(revisions) - parents
+    assert heads == {"0016"}, (
+        f"the tenant head is {sorted(heads)}, not 0016 — if a later revision "
+        "landed, move this assertion to its test file rather than deleting it"
+    )
+
+
 # ---------------------------------------------------------------------------
 # The three columns
 # ---------------------------------------------------------------------------
@@ -296,26 +320,31 @@ def test_no_backfill_invents_a_human_label_for_an_existing_row():
 
 def test_the_only_check_is_on_the_new_column():
     """A CHECK is permitted here where 0014 and 0015 banned one, and the
-    difference is which column it lands on.
+    difference is which column it is GOVERNED BY.
 
     0005's `source` CHECK was inline, unnamed, and on a column live INSERTs
     already wrote — so 0011 had to introspect Postgres' auto-generated name just
     to widen it, and 0014 drew the lesson as "do not repeat that". This CHECK is
-    on a column that did not exist a moment ago: no existing row can violate it
-    and no existing INSERT statement names it, so it cannot break a live tenant
-    on apply. What it buys is the one guard that survives a caller who bypasses
-    the service layer altogether — the database itself refuses to store a
-    non-human tier in the column that means "a human wrote this".
+    gated on a column that did not exist a moment ago and is NULL on every row,
+    so its second arm is never evaluated for any existing row: it cannot break a
+    live tenant on apply.
 
-    The test is that it lands ONLY there. A CHECK anywhere else in this
-    migration would be constraining a column that already has rows in it.
+    WHAT IT BUYS, stated as narrowly as it is true: no NON-HUMAN tier can be
+    stored, so the column has no vocabulary meaning "a model wrote this". It
+    does NOT authenticate the writer — 'human_authored' is accepted from anyone
+    holding a tenant connection, and WHO may write it is enforced in Python by
+    `label_service`'s R1-R4.
+
+    The test is that no OTHER column's value set is constrained. `reference_answer`
+    appears in the second arm as an emptiness test, not as a value list — that is
+    a constraint on the PAIR (a human tier beside an empty answer), which no
+    existing row can be in.
     """
     mod = _load_migration()
     upgrade_sql = _sql_only(mod.upgrade)
     checks = re.findall(r"CHECK\s*\(", upgrade_sql)
     assert len(checks) == 1, f"expected exactly one CHECK, found {len(checks)}"
 
-    # The single CHECK's body mentions the new column and nothing else.
     body = upgrade_sql[upgrade_sql.index("CHECK") :]
     assert "label_trust_tier" in body
     for other in ("source", "dataset", "reference_answer", "question"):
@@ -328,16 +357,87 @@ def test_the_check_admits_null_and_only_the_human_tiers():
     """NULL passes (an unlabelled row makes no claim) and nothing but the two
     human tiers may occupy the column.
 
-    That equivalence is the design: `label_trust_tier IS NOT NULL` and "a human
-    wrote this label" are the same statement, because there is no value of this
-    column that means "a model wrote it". A model's label records no claim at
-    all, which is what NULL says.
+    There is no value of this column that means "a model wrote it" — a model's
+    label records no claim at all, which is what NULL says. Note what that does
+    and does not give you: it bounds the VOCABULARY, so the column can never
+    carry a model's provenance; it does not bound the WRITER, so it is not the
+    guard that stops a bypassing caller writing 'human_authored'.
     """
     mod = _load_migration()
     normalised = " ".join(_sql_only(mod.upgrade).split())
-    assert "label_trust_tier IS NULL OR label_trust_tier IN (" in normalised, (
+    assert re.search(
+        r"label_trust_tier IS NULL\s+OR\s+\(?\s*label_trust_tier IN \(", normalised
+    ), (
         "0016's CHECK must admit NULL explicitly — without the IS NULL arm "
         "every model-written INSERT into eval_scenarios starts failing"
+    )
+
+
+def test_the_check_refuses_a_human_tier_on_an_empty_answer():
+    """A tier is a claim about a string. There must be a string.
+
+    `label_trust_tier = 'human_authored'` beside `reference_answer = ''` asserts
+    that a person authored nothing — and the eval selector's `WHERE
+    reference_answer != ''` then never scores that row, so the claim hangs on
+    something nothing measures. `record_human_label` refuses to create it; this
+    arm stops a direct write, a partial restore, or a downgrade-and-re-upgrade
+    from leaving one behind.
+
+    Free to add: the column is brand new and NULL everywhere, so no existing row
+    can violate it, and the migration has never been applied anywhere.
+    """
+    mod = _load_migration()
+    normalised = " ".join(_sql_only(mod.upgrade).split())
+    assert re.search(
+        r"COALESCE\(\s*reference_answer\s*,\s*''\s*\)\s*<>\s*''", normalised
+    ), (
+        "0016's CHECK must require a non-empty reference_answer whenever a "
+        "human tier is present"
+    )
+    # And it must be ANDed inside the human-tier arm, never a top-level
+    # condition — a top-level `reference_answer <> ''` would constrain every
+    # existing unlabelled row and fail the ALTER on any live tenant.
+    assert re.search(
+        r"label_trust_tier IS NULL\s+OR\s+\(", normalised
+    ), "the emptiness test must sit inside the human-tier arm, not beside it"
+
+
+def test_the_catalog_lookup_and_the_drop_are_schema_qualified():
+    """Discovery and DROP must refer to the SAME table.
+
+    0011's DO block filters on `rel.relname = 'eval_scenarios'` with no
+    pg_namespace join and then EXECUTEs `ALTER TABLE eval_scenarios DROP
+    CONSTRAINT %I` against an unqualified name. If a tenant DB ever carried
+    `eval_scenarios` in more than one schema, the constraint name would be
+    discovered from one table and the DROP applied to whichever the search_path
+    resolves — dropping a constraint governing a different table's column.
+
+    0016 inherited that shape and no longer has it. This is unobservable here:
+    there is no PostgreSQL on this machine, no migration has been applied, and
+    the roundtrip below skips. It is a source-level constraint like every other
+    assertion in this file.
+    """
+    mod = _load_migration()
+    upgrade_sql = _sql_only(mod.upgrade)
+
+    assert "pg_namespace" in upgrade_sql, (
+        "0016's catalog lookup must join pg_namespace so it discovers a "
+        "constraint on the table it is about to alter"
+    )
+    assert "current_schema()" in upgrade_sql, (
+        "0016's catalog lookup must filter to the schema alembic is targeting"
+    )
+    assert re.search(r"ALTER TABLE %I\.%I DROP CONSTRAINT %I", upgrade_sql), (
+        "the DROP must be executed against the schema the name was discovered "
+        "in, not against whatever the search_path resolves"
+    )
+    # The existence guard must be qualified too: a same-named constraint on a
+    # different table in a different schema must not make this migration skip
+    # its own ADD.
+    guard = upgrade_sql[upgrade_sql.index("IF NOT EXISTS") :]
+    assert "pg_namespace" in guard and "current_schema()" in guard, (
+        "the 'already present' guard must be scoped to this table in this "
+        "schema, or a same-named constraint elsewhere suppresses the ADD"
     )
 
 
@@ -597,11 +697,26 @@ def test_migration_tenant_0016_db_roundtrip():
                 )
         assert "check" in str(excinfo.value).lower()
 
+        # And it refuses a human tier over the empty reference_answer the row
+        # was inserted with — a claim that a person authored nothing.
+        with pytest.raises(Exception) as excinfo:
+            with engine.begin() as conn:
+                conn.execute(
+                    sa_text(
+                        "UPDATE eval_scenarios SET label_trust_tier = "
+                        "'human_authored' WHERE question = 't0016 q'"
+                    )
+                )
+        assert "check" in str(excinfo.value).lower()
+
+        # The tier and the answer must land together, which is exactly what
+        # label_service.record_human_label's single UPDATE does.
         with engine.begin() as conn:
             conn.execute(
                 sa_text(
-                    "UPDATE eval_scenarios SET label_trust_tier = 'human_authored' "
-                    "WHERE question = 't0016 q'"
+                    "UPDATE eval_scenarios SET reference_answer = "
+                    "'We refund within 14 days.', label_trust_tier = "
+                    "'human_authored' WHERE question = 't0016 q'"
                 )
             )
         engine.dispose()
