@@ -1107,6 +1107,11 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # observation, so "this run measured too little" stays readable — it is
         # the SCORES that are withheld, not the record.
         # ------------------------------------------------------------------
+        # Annotated, because the two branches below assign different literal
+        # types and the join would otherwise be dict[str, object] — which makes
+        # `results["scores"]` an `object` that write_eval_results and
+        # summarise_run_validity both reject.
+        results: dict
         if invocation["status"] != AGENT_INVOCATION_MEASURED:
             log.warning(
                 "run_eval_suite.below_measurement_floor",

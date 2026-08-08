@@ -4,23 +4,35 @@
 > This file is the current-state snapshot; that one is the queue.
 
 **In flight (2026-08-08): `feat/d1-agent-invocation`, unmerged.** P1 (the options seam, `ec5f445` +
-`d15be3a`), P1b (recorded mode + the canary write order, `487ebbe` + `117de05`) and **P2 — the eval
-invokes the agent** (`d127b4d`). `eval.py` no longer sets `agent_response = reference_answer`: each
-scenario's question goes to the customer agent through the seam with `side_effects="recorded"`, the
-agent's own text and its own retrieved contexts are what get scored, failed scenarios are excluded and
-counted, a run below `MIN_RESPONSE_RATE` reports `unknown`, and `config.agent_invoked` is written as an
-observation. **P3 has not started** — nothing reads `agent_invoked` yet, so the deploy gate still ships
-on a present-but-meaningless eval signal (BACKLOG 2.2).
+`d15be3a`), P1b (recorded mode + the canary write order, `487ebbe` + `117de05`), **P2 — the eval
+invokes the agent** (`d127b4d`) and **the P2 tier-2 review fixes** (`b62186f` + `075550d`).
+`eval.py` no longer sets `agent_response = reference_answer`: each scenario's question goes to the
+customer agent through the seam with `side_effects="recorded"`, the agent's own text and its own
+retrieved contexts are what get scored, failed scenarios are excluded and counted, a run below
+`MIN_RESPONSE_RATE` reports `unknown`, and `config.agent_invoked` is written as an observation.
+**P3 has not started** (BACKLOG 2.2) — but the ship-on-nothing window it was going to leave open is
+closed in the interim: a run below the floor now writes **no `eval_results` at all**, so the gate
+reads `EVAL_SIGNAL_NO_VALID_SCORES` and refuses. A run produced by the pre-P2 tautology still carries
+scores and no `agent_invoked`, which is still P3's job.
 
-Branch suite: **1795 passed / 11 skipped / 0 failed**, measured against a clean stashed baseline of
-**1766 / 11 / 0** at `1d3a7bd`. (`main`'s 1675/11/0 below is the pre-branch number and is not the
-figure to measure a P2 delta against.) `mypy app` clean; `ruff check app tests` clean via
-`uvx ruff@latest` — ruff is **not** installed in `apps/api/.venv`.
+**The tier-2 judge HAS now read P2** (at `7a7486e`): 17 findings, 7 unsupported claims, all
+addressed in `b62186f`. Four changed what a run means — the below-floor fail-closed above; the
+contexts handed to Ragas are now one untruncated string per chunk rather than a truncated repr of the
+SDK block as a single element; the broker's `visibility_timeout` (3600) was below the worst case a run
+stamps on itself (5400) and the idempotency window was 1/9 of it; and a responded turn with no
+retrieve call is excluded and counted rather than scored 0 on three context metrics. Three of P2's
+own guards were proved not to be guards — most sharply, a one-token fallback to the stored context
+column passed all 163 eval tests.
 
-Trace: `.dev/traces/260808-d1-p2-invoke.md`. Mutation proofs: `.dev/reference/p2-mutation-proofs.md`
-(19 mutations, red then green; **one guard was found proving a comment** and was rewritten — see the
-M13 entry). Earlier: `.dev/traces/260807-d1-p1b-recorded-mode.md`,
-`.dev/reference/p1b-mutation-proofs.md`. **No tier-2 judge has read this branch.**
+Branch suite: **1821 passed / 11 skipped / 0 failed** (was 1795 at `7a7486e`, 1766 at `1d3a7bd`).
+`mypy app` clean; `ruff check app tests` clean via `uvx ruff@latest` — ruff is **not** installed
+in `apps/api/.venv`.
+(`main`'s 1675/11/0 below is the pre-branch number and is not the figure to measure a delta against.)
+
+Traces: `.dev/traces/260808-d1-p2-review-fixes.md` (latest), `.dev/traces/260808-d1-p2-invoke.md`.
+Mutation proofs: `.dev/reference/p2-review-mutation-proofs.md` (23, red then green; **one did not go
+red first time** and the fixture gap is recorded), `.dev/reference/p2-mutation-proofs.md` (19).
+Earlier: `.dev/traces/260807-d1-p1b-recorded-mode.md`, `.dev/reference/p1b-mutation-proofs.md`.
 
 **Unprovable here, and stated as such:** no end-to-end eval run, no live SDK turn, and
 `update_eval_run_config`'s jsonb merge has never executed against a database. All behind BACKLOG `0.2`.
