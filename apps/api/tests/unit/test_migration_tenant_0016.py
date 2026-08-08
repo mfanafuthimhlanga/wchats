@@ -39,6 +39,7 @@ Note on encoding:
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import inspect
 import os
@@ -185,34 +186,54 @@ def test_upgrade_touches_only_eval_scenarios():
 # ---------------------------------------------------------------------------
 
 
-def test_no_added_column_is_not_null():
-    """Nullability is asserted per ADD COLUMN, not by banning the substring.
+def _add_column_statements() -> list[str]:
+    """Each ADD COLUMN statement in the migration, whitespace-collapsed.
 
-    0015's version of this test banned "NOT NULL" outright, which cannot be
-    reused here: this migration's idempotency block legitimately contains `IF
-    con_name IS NOT NULL THEN` and `IF NOT EXISTS`, and a test that fired on
-    those would be a test about SQL keywords rather than about column
-    nullability. So the claim is made where it means something — on the tail of
-    each ADD COLUMN statement.
-
-    It matters because these three columns are added to a table that already has
-    rows on every live tenant: a NOT NULL with no DEFAULT fails the ALTER
-    outright, and a NOT NULL with a DEFAULT writes a human label onto every row
-    a model produced.
+    Read out of the SQL string literals via ast rather than by line-matching the
+    Python source. The first version of this helper used
+    `re.findall(r"ADD COLUMN IF NOT EXISTS \\w+ ([^\\n]*)")`, which captures only
+    the remainder of the SAME LINE — so a `NOT NULL DEFAULT 'human_authored'`
+    wrapped onto the next line sailed straight through it. Found by mutation.
     """
-    mod = _load_migration()
-    statements = re.findall(
-        r"ADD COLUMN IF NOT EXISTS \w+ ([^\n]*)", _sql_only(mod.upgrade)
+    with open(MIGRATION_FILE, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    statements: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            collapsed = " ".join(node.value.split())
+            if "ADD COLUMN IF NOT EXISTS" in collapsed.upper():
+                statements.append(collapsed)
+    return statements
+
+
+def test_every_added_column_is_the_bare_alter_and_nothing_else():
+    """Nullability asserted as an exact statement shape, not a banned substring.
+
+    0015's version of this test banned "NOT NULL" anywhere in the upgrade, which
+    cannot be reused here: this migration's idempotency block legitimately
+    contains `IF con_name IS NOT NULL THEN` and `IF NOT EXISTS`, and a test that
+    fired on those would be about SQL keywords rather than about columns. So the
+    claim is made as an equality on the whole statement — the ALTER, the column,
+    the type, and nothing after it. An equality has no blind spot for a clause
+    somebody adds on the next line.
+
+    It matters because these three columns land on a table that already has rows
+    on every live tenant. NOT NULL with no DEFAULT fails the ALTER outright and
+    the tenant's migration stops there; NOT NULL with a DEFAULT succeeds and
+    writes a human label onto every row a model produced, which is worse,
+    because it is indistinguishable afterwards from the real thing.
+    """
+    statements = _add_column_statements()
+    expected = [
+        "ALTER TABLE eval_scenarios ADD COLUMN IF NOT EXISTS label_trust_tier TEXT",
+        "ALTER TABLE eval_scenarios ADD COLUMN IF NOT EXISTS labelled_by TEXT",
+        "ALTER TABLE eval_scenarios ADD COLUMN IF NOT EXISTS labelled_at TIMESTAMPTZ",
+    ]
+    assert sorted(statements) == sorted(expected), (
+        "an ADD COLUMN statement in 0016 carries something beyond its column "
+        f"and type:\n  found:    {sorted(statements)}\n  expected: "
+        f"{sorted(expected)}"
     )
-    assert len(statements) == 3, f"expected three ADD COLUMN, found {statements}"
-    for tail in statements:
-        upper = tail.upper()
-        assert "NOT NULL" not in upper, f"a column is added NOT NULL: {tail!r}"
-        assert "DEFAULT" not in upper, f"a column is added with a DEFAULT: {tail!r}"
-        assert "CHECK" not in upper, (
-            f"an inline CHECK rides along with an ADD COLUMN: {tail!r} — 0005 did "
-            "exactly that and 0011 spent a migration undoing it"
-        )
 
 
 @pytest.mark.parametrize(
