@@ -6,6 +6,14 @@
 **Written** 2026-08-08. Persisted here per `BACKLOG 2.20` — the previous branch lost 17 of 48
 review findings to a temp-directory journal that did not survive the session.
 
+> **CORRECTED 2026-08-09 after the adversarial review.** Three claims in this document were false
+> and are struck through / rewritten in place below: R3's "physically cannot" (§3), the CHECK's
+> "the same statement at the database level" (§2), and §6's use of the ignored-new-files control as
+> evidence for an assertion getting weaker. The findings are in
+> `.dev/reference/d6-p1-adversarial-review.md`; the fixes and their 12 mutation proofs are in
+> `.dev/reference/d6-p1-review-fixes.md`. **Read that file alongside this one** — the gate numbers
+> and file list below are P1's, not the branch's current state.
+
 ---
 
 ## 1. The defect P1 closes
@@ -34,13 +42,23 @@ means two things, which then gets read as whichever one the reader had in mind �
 
 So: three new nullable columns on `eval_scenarios`, and `source` keeps meaning what it meant.
 
-### The column's presence *is* the human claim
+### What the column's presence does and does not claim
 
-`label_trust_tier` may hold **only NULL or one of the two human tiers** — enforced by 0016's named
-CHECK. There is deliberately no value meaning "a model wrote this label", because a model's label
-records no claim at all; NULL says that. So `label_trust_tier IS NOT NULL` and "a human wrote this
-answer" are the same statement, at the database level, for any caller including one that bypasses
-the service layer entirely.
+**CORRECTED 2026-08-09.** This section used to say that `label_trust_tier IS NOT NULL` and "a human
+wrote this answer" were the same statement, *at the database level, for any caller including one
+that bypasses the service layer entirely.* **That is false.** The CHECK constrains the VALUE, never
+the AUTHOR: it refuses `'model_generated'` — the one value a forging writer would never choose —
+and accepts `'human_authored'` from anyone holding a tenant connection.
+
+What is true, and is all that is true:
+
+- `label_trust_tier` may hold **only NULL or one of the two human tiers**, so the column has **no
+  vocabulary for "a model wrote this"**. A model's label records no claim at all; NULL says that.
+- **WHO may write a human value is enforced in Python**, by `label_service`'s R1–R4 — and, as the
+  review demonstrated, R3 was the only one of the four covering a caller that writes raw SQL. It
+  now covers it in two independent ways (`d6-p1-review-fixes.md` §2).
+- Since 2026-08-09 the CHECK also refuses a human tier beside an **empty `reference_answer`**: a
+  tier is a claim about a string, and there has to be a string.
 
 ### The fallback direction, and why it is safe
 
@@ -70,8 +88,8 @@ red rather than quietly halving the wall.
 | | restriction | pinned by | mutation proof |
 |---|---|---|---|
 | **R1** | the writer has **no tier parameter** — the tier is a module constant it stamps, not something a caller can name | `TestR1NoTierParameter` | #1 |
-| **R2** | **only `app/api/`** may reference `label_service` — nothing under `app/worker/` (every Celery task), nothing else under `app/services/` (every agent tool, judge, scenario producer, and `eval_service`, which the tasks import), no conftest fixture | `TestR2ImportBoundary` | #2, #3 |
-| **R3** | the **model-driven writers cannot write the columns** — `store_scenarios` and `insert_provenance_scenario` are the only `INSERT INTO eval_scenarios` paths and neither names a label column, so generated suites, mined failures, promoted traces and contained red-team findings physically cannot populate one | `TestR3TheModelWritersCannotWrite` | #4 |
+| **R2** | ~~only `app/api/`~~ **CORRECTED 2026-08-09: only `app/api/v1/evals.py`** may reference `label_service`. `app/api/` was never an authentication property — it holds `widget.py`, whose header records `/config` and `/events` as no-auth. Nothing under `app/worker/`, nothing else under `app/services/`, nothing under `scripts/` or `_runlogs/`, and no test module but its own | `TestR2ImportBoundary` | #2, #3; review #2, #3, #5 |
+| **R3** | ~~the model-driven writers **physically cannot** populate a label column~~ **FALSE, refuted by observation.** R3 was a substring scan over single `ast.Constant` nodes; an f-string `UPDATE` in a real Celery task module stamped `human_authored` with every test green. It is now a composed-SQL reconstruction **plus** a name-level absence pin, with 8 forgery fixtures. The true claim is *no forgery shape anyone has devised passes unnoticed* | `TestR3TheModelWritersCannotWrite` | #4 (used the one spelling the old detector could see); review #1 |
 | **R4** | the writer **refuses at runtime** inside a Celery task or an agent tool context, before it opens a cursor | `TestR4RuntimeContextGuard` | #5, #6 |
 
 ### R4's known hole, stated rather than papered over
@@ -137,7 +155,7 @@ becomes eligible to it with no change to it, which is the plan's stated intent.
 | `apps/api/app/services/eval_service.py` | `HUMAN_LABEL_TIERS`, `LABEL_TIER_COLUMN`, `is_human_label_tier()`, `label_trust_tier()`, `is_human_labelled()` |
 | `apps/api/tests/unit/test_label_provenance.py` | new — vocabulary, R1–R4, the write, the absence pins |
 | `apps/api/tests/unit/test_migration_tenant_0016.py` | new |
-| `apps/api/tests/unit/test_migration_tenant_0015.py` | head assertion relaxed `heads == {"0015"}` → `len(heads) == 1`, matching 0013/0014 |
+| `apps/api/tests/unit/test_migration_tenant_0015.py` | head assertion relaxed `heads == {"0015"}` → `len(heads) == 1`, matching 0013/0014. **The relaxation is correct; the P1 report's justification for it was not** — it cited the ignored-new-files control, which confirms count and status and *cannot* see an assertion getting weaker inside a test that still passes. Head identity is now pinned once, in `test_migration_tenant_0016.py`, as `heads == {"0016"}` (review #14) |
 
 ## 6. Gate observations — all run, all observed
 
@@ -370,8 +388,14 @@ have churned a file the control is meant to hold still. **Proposed BACKLOG row:*
 
 ## 10. Hand-off to P2 / P3
 
-1. **The queue write goes in `app/api/v1/evals.py`** — that is the only tree R2 permits to import
-   `label_service`, and R2's test will fail the build if P2 puts it anywhere else.
+> **Item 7 added 2026-08-09.** Read `.dev/reference/d6-p1-review-fixes.md` §4 and §5 before P2:
+> `labelled_by` must be derived from the authenticated principal (`BACKLOG 4.7`), and **nothing
+> reads `label_trust_tier` today** — the eval selector does not project it, so the trust machinery
+> is still decorative and this phase must not be described as having closed the "model prose reaches
+> the eval" gap.
+
+1. **The queue write goes in `app/api/v1/evals.py`** — that is now the only MODULE R2 permits to
+   reference `label_service`, and R2's test will fail the build if P2 puts it anywhere else.
 2. **`label_trust_tier(scenario)` takes the whole row**, deliberately, so a caller cannot pass the
    source where the label tier belongs. P2's `GET` should select the three new columns and P3's
    readers should call this rather than reading `scenario["label_trust_tier"]` raw — the raw read
