@@ -431,13 +431,65 @@ class TestR2ImportBoundary:
 
         assert offenders == {}, f"conftest fixtures reference the writer: {offenders}"
 
-    def test_the_boundary_check_can_actually_see_a_reference(self):
-        """The detector is exercised against a file that DOES reference the
-        writer, so a scan that silently matches nothing cannot pass as a wall.
+    @pytest.mark.parametrize(
+        "route,snippet",
+        [
+            ("plain import", "import app.services.label_service\n"),
+            (
+                "from-import of the symbol",
+                "from app.services.label_service import record_human_label\n",
+            ),
+            ("from-import of the module", "from app.services import label_service\n"),
+            (
+                "attribute call with no import in the file",
+                "def f(conn):\n    return label_service.record_human_label(conn)\n",
+            ),
+            (
+                "importlib back door",
+                "import importlib\n"
+                "m = importlib.import_module('app.services.label_service')\n",
+            ),
+        ],
+    )
+    def test_the_boundary_detector_sees_every_route_to_the_writer(
+        self, tmp_path, route, snippet
+    ):
+        """Each arm of the detector is exercised separately.
 
-        Without this, a typo in the watched-name set would make every assertion
-        above vacuously true.
+        A boundary test is worth what its detector catches, and a detector with
+        one arm doing all the work reports a clean tree the moment somebody
+        reaches the writer by one of the other four. Found by mutation:
+        misspelling the watched-name set left the earlier version of this class
+        entirely green, because every reference it had ever been shown arrived
+        through the module-path arm.
         """
+        path = tmp_path / "candidate.py"
+        path.write_text(snippet, encoding="utf-8")
+        assert _references_label_writer(str(path)), (
+            f"the detector is blind to the {route} route — every boundary "
+            "assertion in this class is vacuous for that route"
+        )
+
+    def test_the_boundary_detector_does_not_fire_on_unrelated_label_code(
+        self, tmp_path
+    ):
+        """The negative control. Reading and ranking a label tier is what most
+        of the codebase legitimately does; only WRITING one is walled off, so a
+        detector that fired on `label_trust_tier` would push the next author
+        into weakening it rather than obeying it."""
+        path = tmp_path / "innocent.py"
+        path.write_text(
+            "from app.services.eval_service import label_trust_tier, "
+            "is_human_labelled\n"
+            "def f(row):\n"
+            "    return label_trust_tier(row), is_human_labelled(row)\n",
+            encoding="utf-8",
+        )
+        assert _references_label_writer(str(path)) == []
+
+    def test_the_boundary_check_can_actually_see_a_reference(self):
+        """The detector run against a real file that references the writer —
+        this one — so the scan cannot pass by matching nothing at all."""
         hits = _references_label_writer(os.path.abspath(__file__))
         assert hits, (
             "_references_label_writer found nothing in this very file, which "
