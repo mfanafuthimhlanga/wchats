@@ -99,13 +99,22 @@ def _all_tenant_revisions() -> dict[str, str | None]:
     return revisions
 
 
-def test_0015_is_the_single_tenant_head():
-    """0015 is the sole child of 0014 and the sole head of the tenant tree.
+def test_0015_is_the_sole_child_of_0014_and_the_tree_is_unforked():
+    """0015 is the sole child of 0014, and the tenant tree has one head.
 
     A fork is invisible on this machine and fatal on a live tenant: `alembic
     upgrade head` refuses to run with two heads, so every subsequent tenant
     provision breaks. Read out of the versions directory rather than restated,
     so a second child of 0014 landing later fails here.
+
+    The head assertion is `len(heads) == 1`, matching 0013 and 0014, rather than
+    `heads == {"0015"}`. The stricter form asserted that no migration would ever
+    follow 0015, which made every later revision (0016 landed the label
+    provenance columns) fail a test about 0015's parentage — a test that fires
+    on a change it is not about teaches the reader to edit it rather than read
+    it. What must stay true of 0015 forever is that it has exactly one parent
+    and that it did not fork the tree; which revision is currently at the tip is
+    the tip's business.
     """
     revisions = _all_tenant_revisions()
     assert "0015" in revisions, "0015 was not discovered in alembic_tenant/versions"
@@ -117,8 +126,8 @@ def test_0015_is_the_single_tenant_head():
 
     parents = [down for down in revisions.values() if down is not None]
     heads = set(revisions) - set(parents)
-    assert heads == {"0015"}, (
-        f"Expected 0015 to be the single tenant head, got heads={sorted(heads)}"
+    assert len(heads) == 1, (
+        f"the tenant tree is forked — expected a single head, got {sorted(heads)}"
     )
 
 

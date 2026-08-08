@@ -296,6 +296,79 @@ def is_promotable_to_verified_qa(source: str | None) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# The tier a LABEL carries — which is not the tier its QUESTION's origin earns
+# ---------------------------------------------------------------------------
+# SCENARIO_SOURCE_TRUST_TIER above answers "where did this QUESTION come from?".
+# It is the only tier resolver that existed, and it is why LABEL_TRUST_TIERS
+# declared human_verified and human_authored that nothing could produce: there
+# was no source value a human could occupy without also claiming to be the
+# question's origin.
+#
+# A mined production failure whose answer the owner then writes by hand is
+# `customer_negative` in ORIGIN and `human_authored` in LABEL, at the same time,
+# and both statements are true. Collapsing them into one column is how a
+# model_generated string ends up admitted on a human tier — the failure
+# promotable_answer's docstring already warns about. So the label carries its
+# own tier, in alembic_tenant 0016's `label_trust_tier` column, and the row's
+# `source` keeps meaning exactly what it meant before.
+#
+# THE TWO TIERS THAT ASSERT A HUMAN. Kept in step with 0016's CHECK constraint
+# by test_the_human_tiers_match_the_migrations_check_constraint, which parses the
+# migration rather than restating it.
+HUMAN_LABEL_TIERS: tuple[str, ...] = ("human_verified", "human_authored")
+
+# The eval_scenarios column 0016 adds. Named here so the read path and the write
+# path (label_service) agree on one spelling.
+LABEL_TIER_COLUMN = "label_trust_tier"
+
+
+def is_human_label_tier(tier: str | None) -> bool:
+    """True iff *tier* is one of the two tiers that assert a human wrote it."""
+    return tier in HUMAN_LABEL_TIERS
+
+
+def label_trust_tier(scenario: dict) -> str:
+    """The trust tier of the scenario's LABEL (its reference_answer).
+
+    Three cases, and the direction of each is the whole point:
+
+      the column is set to a human tier  -> that tier. The label outranks the
+          origin, which is the case the column exists for: an owner-written
+          answer on a mined question.
+      the column is NULL / absent        -> the origin's tier, via
+          scenario_trust_tier(source). This is a DOWNGRADE path only: no source
+          the schema allows resolves to a human tier (pinned by
+          test_no_schema_allowed_source_can_produce_a_human_label_tier), so the
+          fallback can never manufacture a human claim out of a row's origin.
+      the column holds anything else     -> 'unknown', which ranks BELOW
+          model_generated. 0016's CHECK permits only NULL or a human tier there,
+          so any other value means the column was written by something that
+          bypassed both the service layer and the database constraint, and a
+          provenance nobody can account for is worth less than one that has been
+          accounted for and found untrustworthy.
+
+    Takes the whole scenario dict rather than two strings so that a caller
+    cannot pass the source where the label tier belongs, or reach past this to
+    read `scenario["label_trust_tier"]` raw and skip the fail-closed branch.
+    """
+    raw = scenario.get(LABEL_TIER_COLUMN)
+    if raw is None or raw == "":
+        return scenario_trust_tier(scenario.get("source"))
+    if is_human_label_tier(raw):
+        return str(raw)
+    return "unknown"
+
+
+def is_human_labelled(scenario: dict) -> bool:
+    """True iff a human authored or verified this scenario's reference_answer.
+
+    False for every row that predates alembic_tenant 0016 and for every row any
+    model-driven producer writes, because those carry no label tier at all.
+    """
+    return is_human_label_tier(label_trust_tier(scenario))
+
+
+# ---------------------------------------------------------------------------
 # The golden set, and the denominators every measurement travels with
 # ---------------------------------------------------------------------------
 # TWO DATASETS, NEVER ONE NUMBER. A golden-set score and an exploratory score
