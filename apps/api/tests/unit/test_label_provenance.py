@@ -84,9 +84,15 @@ def _schema_allowed_scenario_sources() -> list[str]:
     )
     allowed: set[str] = set()
     for clause in clauses:
-        allowed.update(
-            part.strip().strip("'\"") for part in clause.split(",") if part.strip()
-        )
+        # Quoted literals only, matching test_eval_service's parser exactly. A
+        # `clause.split(",")` version of this picked up `...` as a source,
+        # because 0011's own docstring quotes the shape of the constraint it is
+        # replacing (`CHECK (source IN (...))`) and the clause regex matches
+        # prose as happily as SQL. The phantom source was harmless — it is not
+        # promotable and yields no human tier — which is precisely why it would
+        # have sat in five parametrised tests indefinitely, inflating what they
+        # looked like they covered.
+        allowed.update(re.findall(r"'([^']+)'", clause))
     return sorted(allowed)
 
 

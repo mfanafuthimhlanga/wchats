@@ -361,9 +361,9 @@ def test_the_human_tiers_match_eval_services_declared_tiers():
         "this test's whole point is to read the schema rather than restate it, "
         "so a parse failure is a real failure."
     )
-    in_migration = {
-        part.strip().strip("'\"") for part in clause.group(1).split(",") if part.strip()
-    }
+    # Quoted literals only — the same extraction test_eval_service uses on
+    # 0011, for the same reason: a clause regex matches prose as happily as SQL.
+    in_migration = set(re.findall(r"'([^']+)'", clause.group(1)))
 
     assert in_migration == set(HUMAN_LABEL_TIERS), (
         f"migration 0016 admits {sorted(in_migration)} but "
