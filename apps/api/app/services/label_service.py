@@ -22,22 +22,49 @@ THE FOUR RESTRICTIONS, EACH INDEPENDENTLY MUTABLE AND EACH SEPARATELY PINNED
        Pinned by test_the_writer_has_no_tier_parameter.
 
     2. The import boundary.
-       Only `app/api/` may reference this module. Nothing under `app/worker/`
-       (every Celery task), nothing else under `app/services/` (every agent
-       tool, judge, scenario producer and eval service), and no conftest
-       fixture. The writer is reachable from an authenticated HTTP request and
-       from nowhere else in the tree.
-       Pinned by test_no_model_driven_module_may_import_the_human_label_writer.
+       Only `app/api/v1/evals.py` may reference this module. Nothing under
+       `app/worker/` (every Celery task), nothing else under `app/services/`
+       (every agent tool, judge, scenario producer and eval service), nothing
+       under `scripts/` or `_runlogs/`, and no test module but the one that
+       tests it.
+       Pinned by test_only_the_one_named_api_module_may_reference_the_writer
+       and by test_no_worker_or_service_module_imports_the_api_layer, which
+       closes the transitive route through a re-export.
 
-    3. The model-driven writers cannot write the columns.
+       WHAT THIS IS NOT. It used to say "reachable from an authenticated HTTP
+       request and from nowhere else in the tree", with `app/api/` as the
+       permitted region. `app/api/` is not an authentication property: it also
+       holds `widget.py`, whose own header records `/widget/{agent_id}/config`
+       and `/widget/jobs/{job_id}/events` as no-auth, and whose chat routes run
+       behind a JWT issued to an anonymous website visitor. The test asserts a
+       module path, so the claim is a module path.
+
+    3. The model-driven writers do not write the label columns — and do not
+       name them.
        `scenario_service.store_scenarios` and
        `scenario_service.insert_provenance_scenario` are the only INSERT paths
-       into `eval_scenarios`, and between them they carry every model-driven
-       producer: generated suites, mined production failures, promoted traces,
-       contained red-team findings. Neither statement names a label-provenance
-       column, so those producers physically cannot populate one — the failure
-       mode is a NULL tier, which reads as "no human labelled this".
-       Pinned by test_only_the_label_writer_writes_the_label_columns.
+       into `eval_scenarios` that go through a service, and between them they
+       carry every model-driven producer: generated suites, mined production
+       failures, promoted traces, contained red-team findings. Neither
+       statement names a label-provenance column, so the failure mode of that
+       route is a NULL tier, which reads as "no human labelled this".
+
+       THIS SAID "PHYSICALLY CANNOT" UNTIL 2026-08-09, AND THAT WAS FALSE. The
+       P1 adversarial review appended a function to a real Celery task module
+       that issued an f-string `UPDATE eval_scenarios SET ...
+       label_trust_tier = 'human_authored'` — importing nothing, calling
+       nothing — and every test in test_label_provenance.py stayed green,
+       because R3 was a substring scan over single string constants. R3 is now
+       two scans with different blind spots: a composed-SQL reconstruction
+       (f-strings, `+`, `%`, `.format`, `.join`, `public.` and quoted
+       identifiers) and a name-level absence pin over `app/worker/`, the rest
+       of `app/services/`, `scripts/` and `_runlogs/`. What is true is that no
+       forgery shape anyone has yet devised passes unnoticed; what is NOT true
+       is that raw SQL cannot reach the column.
+       Pinned by test_only_the_label_writer_writes_the_label_columns,
+       test_no_model_driven_module_names_a_label_column_at_all, and the eight
+       forgery fixtures in
+       test_the_write_scan_sees_a_forged_label_write_however_it_is_spelled.
 
     4. The runtime context guard.
        Belt to the import boundary's braces, and the one that survives a caller
@@ -56,6 +83,35 @@ THE FOUR RESTRICTIONS, EACH INDEPENDENTLY MUTABLE AND EACH SEPARATELY PINNED
     stated rather than papered over, and it is the reason restriction 4 is the
     last line rather than the only one: restrictions 2 and 3 do not depend on
     which thread is asking.
+
+WHAT THE FOUR RESTRICTIONS DO NOT COVER, AND WHAT P2 OWES
+    They authenticate the CALL SITE. They say nothing about the CONTENT of
+    `reference_answer` or about the identity in `labelled_by`, both of which
+    this function takes on the caller's word — which is, at the human, exactly
+    the defect restriction 1 forbids at the tier. An `app/api/` route that asks
+    a model to draft an answer and forwards it as
+    `record_human_label(reference_answer=<model prose>,
+    labelled_by='owner@example.com')` produces a `human_authored` row of model
+    output and trips none of R1-R4: no Celery task, no agent ContextVar, no
+    import violation, no SQL scan hit.
+
+    THE DECISION, TAKEN NOW SO THAT P2 INHERITS IT RATHER THAN INVENTING IT:
+
+      - `labelled_by` is DERIVED FROM THE AUTHENTICATED PRINCIPAL inside the
+        handler. It is never read from the request body, and no route may
+        accept it as a field. Same argument as restriction 1: a caller able to
+        name the human is a caller able to name any human.
+      - `reference_answer` must arrive ON the authenticated request, as text
+        the principal submitted. A server-side composition step between a model
+        and this call is what makes `human_authored` mean "some code said so".
+      - If a machine-drafted candidate is ever offered for a human to approve,
+        that is `human_verified`, not `human_authored`, and it needs its own
+        writer recording who approved what — which is why 0016's CHECK admits
+        `human_verified` although nothing produces it yet.
+
+    Nothing here can pin those today: the route does not exist, and a test
+    asserting a property of a module that has not been written is a test that
+    passes vacuously. It is written down, and it is a BACKLOG row against P2.
 
 WHAT THIS MODULE DOES NOT DO
     It does not promote anything into `verified_qa`. A human label improves what
@@ -105,18 +161,34 @@ def _current_celery_task():
 
     `celery._state.get_current_task()` is the plain function behind the
     `celery.current_task` proxy; it returns None outside a task. Imported
-    lazily and defensively so that this module stays importable in an API
-    process that has no Celery wiring at all — a guard that raises on import is
-    a guard that gets deleted.
+    lazily so that this module stays importable in an API process that has no
+    Celery wiring at all — a guard that raises on import is a guard that gets
+    deleted.
+
+    THE TWO FAILURE CASES ARE NOT THE SAME, and treating them as one made the
+    one function whose entire job is to fail closed the only place in this
+    module that failed open:
+
+      ImportError — Celery is not installed in this process. There is then no
+          Celery task to be inside, so `None` is the true answer and the guard
+          stays silent. This is what the lazy import is for.
+      anything else — the detector itself malfunctioned. A detector that
+          malfunctioned cannot certify that no model is driving this call, and
+          "I could not tell" must never resolve to "go ahead and stamp
+          `human_authored`". It refuses.
     """
     try:
         from celery import _state  # noqa: PLC0415
-    except Exception:  # pragma: no cover - celery is a hard dependency here
+    except ImportError:
         return None
     try:
         return _state.get_current_task()
-    except Exception:  # pragma: no cover - defensive
-        return None
+    except Exception as exc:
+        raise HumanLabelRefused(
+            "could not determine whether a Celery task is driving this call "
+            f"({type(exc).__name__}: {exc}); a human trust tier is never "
+            "stamped on an unverified context"
+        ) from exc
 
 
 def _current_agent_id() -> str:
@@ -124,13 +196,24 @@ def _current_agent_id() -> str:
 
     Set by `agent_tools.build_tool_server()` for the duration of an agent turn,
     so a non-empty value means a model is driving this call stack.
+
+    Same split as `_current_celery_task`: a missing `agent_tools` means there is
+    no agent context in this process (`''`); any other failure means the
+    detector could not answer, and an unanswerable question about who is driving
+    the call refuses rather than proceeds.
     """
     try:
         from app.services.agent_tools import _agent_id_var  # noqa: PLC0415
-
-        return str(_agent_id_var.get() or "")
-    except Exception:  # pragma: no cover - defensive
+    except ImportError:
         return ""
+    try:
+        return str(_agent_id_var.get() or "")
+    except Exception as exc:
+        raise HumanLabelRefused(
+            "could not determine whether an agent tool context is driving this "
+            f"call ({type(exc).__name__}: {exc}); a human trust tier is never "
+            "stamped on an unverified context"
+        ) from exc
 
 
 def assert_human_context() -> None:
@@ -204,7 +287,12 @@ def record_human_label(
             making the row eligible to a selector that filters on
             `reference_answer != ''`.
         labelled_by: Identifier of the human. Must be non-empty — a label with
-            no author is a tier with nothing behind it.
+            no author is a tier with nothing behind it. NON-EMPTY IS ALL THIS
+            FUNCTION CAN CHECK: it is caller-asserted free text, and nothing
+            here binds it to an authenticated principal. The caller must derive
+            it from the request's principal and must never read it from a
+            request body — see "WHAT THE FOUR RESTRICTIONS DO NOT COVER" in the
+            module docstring.
 
     Returns:
         {"scenario_id": str, "label_trust_tier": str, "labelled_by": str,

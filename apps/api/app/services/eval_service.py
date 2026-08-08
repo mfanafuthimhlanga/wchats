@@ -321,16 +321,41 @@ HUMAN_LABEL_TIERS: tuple[str, ...] = ("human_verified", "human_authored")
 # path (label_service) agree on one spelling.
 LABEL_TIER_COLUMN = "label_trust_tier"
 
+# Sentinel distinguishing "the row has no reference_answer key" (a narrow
+# projection) from "the row has an empty one" (a human claim about a string that
+# is not there). `None` cannot do that job: it is a legitimate column value.
+_NO_REFERENCE_ANSWER_KEY = object()
+
 
 def is_human_label_tier(tier: str | None) -> bool:
     """True iff *tier* is one of the two tiers that assert a human wrote it."""
     return tier in HUMAN_LABEL_TIERS
 
 
+def _is_an_eval_scenario(scenario: dict) -> bool:
+    """Does this mapping look like an `eval_scenarios` row at all?
+
+    A row selected from that table always carries `source` (NOT NULL since 0005)
+    or `reference_answer` (NOT NULL since 0005) — usually both. A mapping with
+    neither is not a scenario, whatever `label_trust_tier` key it happens to
+    hold.
+
+    This exists because of a real collision, not a hypothetical one:
+    `decision_eval_service` used to publish `label_trust_tier: 'human_authored'`
+    on every `DecisionFixture` and on its run report, meaning "these fixtures
+    were hand-written". Handed to the function below, all 23 of them resolved as
+    `is_human_labelled() is True` — a human-authorship claim about a
+    `reference_answer` those objects do not have. That constant is now named
+    `FIXTURE_LABEL_PROVENANCE`; this check is the half that does not depend on
+    every other module in the tree choosing a different spelling.
+    """
+    return "source" in scenario or "reference_answer" in scenario
+
+
 def label_trust_tier(scenario: dict) -> str:
     """The trust tier of the scenario's LABEL (its reference_answer).
 
-    Three cases, and the direction of each is the whole point:
+    Four cases, and the direction of each is the whole point:
 
       the column is set to a human tier  -> that tier. The label outranks the
           origin, which is the case the column exists for: an owner-written
@@ -340,6 +365,13 @@ def label_trust_tier(scenario: dict) -> str:
           the schema allows resolves to a human tier (pinned by
           test_no_schema_allowed_source_can_produce_a_human_label_tier), so the
           fallback can never manufacture a human claim out of a row's origin.
+      a human tier on an EMPTY reference_answer -> 'unknown'. The claim is about
+          a string that is not there. `record_human_label` refuses to create
+          that row and 0016's CHECK refuses to store it, so a row in that state
+          arrived by bypassing both — which is the same situation as the branch
+          below, and gets the same answer. Note the shape: the check applies
+          only when the key is PRESENT, so a narrow projection that did not
+          select `reference_answer` is not silently downgraded.
       the column holds anything else     -> 'unknown', which ranks BELOW
           model_generated. 0016's CHECK permits only NULL or a human tier there,
           so any other value means the column was written by something that
@@ -350,11 +382,19 @@ def label_trust_tier(scenario: dict) -> str:
     Takes the whole scenario dict rather than two strings so that a caller
     cannot pass the source where the label tier belongs, or reach past this to
     read `scenario["label_trust_tier"]` raw and skip the fail-closed branch.
+    Taking the whole dict is also what makes `_is_an_eval_scenario` possible:
+    the function can tell a scenario from something else that merely has the
+    key, which two loose strings could not.
     """
     raw = scenario.get(LABEL_TIER_COLUMN)
     if raw is None or raw == "":
         return scenario_trust_tier(scenario.get("source"))
+    if not _is_an_eval_scenario(scenario):
+        return "unknown"
     if is_human_label_tier(raw):
+        answer = scenario.get("reference_answer", _NO_REFERENCE_ANSWER_KEY)
+        if answer is not _NO_REFERENCE_ANSWER_KEY and not str(answer or "").strip():
+            return "unknown"
         return str(raw)
     return "unknown"
 
