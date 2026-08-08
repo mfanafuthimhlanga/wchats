@@ -274,7 +274,7 @@ class TestFixtureDerivation:
 
     def test_no_label_in_the_set_is_model_generated(self, fixtures):
         """A model-generated label may never gate a deploy or reach a customer."""
-        assert {f.label_trust_tier for f in fixtures} == {des.FIXTURE_LABEL_TRUST_TIER}
+        assert {f.label_provenance for f in fixtures} == {des.FIXTURE_LABEL_PROVENANCE}
 
     def test_the_trust_tier_is_one_eval_service_defines(self):
         """The vocabulary is shared, so `human_authored` cannot mean two things.
@@ -285,7 +285,33 @@ class TestFixtureDerivation:
         """
         from app.services.eval_service import LABEL_TRUST_TIERS
 
-        assert des.FIXTURE_LABEL_TRUST_TIER in LABEL_TRUST_TIERS
+        assert des.FIXTURE_LABEL_PROVENANCE in LABEL_TRUST_TIERS
+
+    def test_a_decision_fixture_does_not_read_as_a_labelled_eval_scenario(
+        self, fixtures
+    ):
+        """The namespace collision this constant was renamed to end.
+
+        `eval_service.label_trust_tier(mapping)` reads its key off ANY mapping.
+        While this module spelled its constant `label_trust_tier`, every
+        `DecisionFixture` dict and the `score_decision_run` report resolved to
+        `is_human_labelled() is True` — asserting a human authored a
+        `reference_answer` that these objects do not have. Pinned from this side
+        as well as from `test_label_provenance.py`, because either module could
+        reintroduce the spelling.
+        """
+        import dataclasses
+
+        from app.services.eval_service import is_human_labelled
+
+        report = score(fixtures, [], RUN_ID)
+        assert "label_trust_tier" not in report
+        assert is_human_labelled(report) is False
+
+        for fixture in fixtures:
+            row = dataclasses.asdict(fixture)
+            assert "label_trust_tier" not in row
+            assert is_human_labelled(row) is False
 
 
 class TestFixtureDrift:
@@ -1930,7 +1956,7 @@ class TestUnknownIsNotAPass:
         from "has never been executed by anything"."""
         report = score(fixtures, [], RUN_ID)
         assert report["has_driver"] is des.DECISION_EVAL_HAS_A_DRIVER is False
-        assert report["label_trust_tier"] == des.FIXTURE_LABEL_TRUST_TIER
+        assert report["fixture_label_provenance"] == des.FIXTURE_LABEL_PROVENANCE
         assert report["fixture_drift"] == []
 
 

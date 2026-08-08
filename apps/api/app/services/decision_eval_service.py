@@ -198,10 +198,21 @@ Label trust
 -----------
 Every label here is human-authored: it follows from the shipped envelope, which
 is the owner's own policy statement, or from an enforcement order documented in
-`transactional/enforcement.py`. None is model-generated. `FIXTURE_LABEL_TRUST_TIER`
+`transactional/enforcement.py`. None is model-generated. `FIXTURE_LABEL_PROVENANCE`
 records that in the vocabulary `eval_service.LABEL_TRUST_TIERS` already defines,
 because a decision eval is exactly the kind of instrument that would one day gate
 a deploy, and a model-generated label may never do that.
+
+    NOT named `label_trust_tier`, and renamed away from it on 2026-08-09.
+    `eval_scenarios.label_trust_tier` is now a real database column added by
+    alembic_tenant 0016, and `eval_service.label_trust_tier(scenario)` reads
+    that key off any mapping handed to it. While this module used the same
+    spelling, every `DecisionFixture` and the `score_decision_run` report
+    resolved through that function as `is_human_labelled() is True` — objects
+    that are not eval scenarios, carry no `reference_answer`, and whose
+    "human_authored" means something else entirely ("these fixtures were
+    hand-written"). No caller did that, and the collision was one import away
+    from a decision-eval artefact being counted as a labelled eval scenario.
 
 What this does NOT measure — stated, not hidden
 -----------------------------------------------
@@ -281,12 +292,16 @@ OUTCOMES: tuple[str, ...] = (
 DECISION_SIGNAL_MEASURED = "measured"
 DECISION_SIGNAL_NO_OBSERVATIONS = "no_observations"
 
-# The trust tier of every label in this fixture set, in eval_service's
+# The provenance of every label in this fixture set, in eval_service's
 # vocabulary. Not imported from there: eval_service pulls ragas, instructor and
 # anthropic at module scope, and a read-only scorer should not carry that import
 # cost. A unit test asserts the literal is a key of LABEL_TRUST_TIERS, so the two
 # cannot drift apart.
-FIXTURE_LABEL_TRUST_TIER = "human_authored"
+#
+# The NAME is deliberately not `label_trust_tier` — see the module docstring's
+# "Label trust" section. That spelling now belongs to an eval_scenarios column
+# and to the resolver that reads it off any mapping.
+FIXTURE_LABEL_PROVENANCE = "human_authored"
 
 # Is there anything in the shipped system that runs these fixtures? No. See the
 # module docstring, § What this does NOT measure. This travels on the report so a
@@ -524,7 +539,7 @@ class DecisionFixture:
     label_basis: str
     rationale: str
     label_fields: tuple[str, ...]
-    label_trust_tier: str = FIXTURE_LABEL_TRUST_TIER
+    label_provenance: str = FIXTURE_LABEL_PROVENANCE
 
     def session_precondition_is_material(self) -> bool:
         """Does the identity gate actually run for this case?
@@ -1516,7 +1531,7 @@ def score_decision_run(
           signal
               'measured' or 'no_observations'.
 
-          fixture_drift / has_driver / label_trust_tier
+          fixture_drift / has_driver / fixture_label_provenance
               the run's own attribution: what the fixture set no longer matches,
               whether anything shipped executes it, and whose labels these are.
     """
@@ -1769,7 +1784,10 @@ def score_decision_run(
         ),
         "fixture_drift": fixture_drift(),
         "has_driver": DECISION_EVAL_HAS_A_DRIVER,
-        "label_trust_tier": FIXTURE_LABEL_TRUST_TIER,
+        # Key renamed from "label_trust_tier" on 2026-08-09: that spelling is an
+        # eval_scenarios column, and eval_service.label_trust_tier() reads it off
+        # any mapping — so this report read as a human-labelled eval scenario.
+        "fixture_label_provenance": FIXTURE_LABEL_PROVENANCE,
     }
 
 
