@@ -111,7 +111,9 @@ from app.models.agent import Agent
 from app.services.eval_service import (
     AGENT_INVOCATION_CONCURRENCY,
     AGENT_INVOCATION_MAX_CALLS_PER_RUN,
+    AGENT_INVOCATION_MEASURED,
     DATASET_GOLDEN,
+    EVAL_RUN_IDEMPOTENCY_SLACK_S,
     EVAL_SCORING_REQUIRES_BRANCH,
     EXPLORATORY_SAMPLE_SIZE,
     VERIFIED_QA_PROMOTION_DECISION,
@@ -163,6 +165,20 @@ def _mark_failed_on_production(run_id: str, conn_str: str, agent_id: str) -> Non
             error=str(status_exc),
             detail="production eval_runs row still reads 'running' for a finished run",
         )
+
+
+def _agent_turn_timeout_s() -> int:
+    """agent.py's per-turn wall-clock bound. ONE copy of the number, imported.
+
+    Lazy for the reason the block comment below gives for every other agent.py
+    import in this module, and a function rather than a module constant so the
+    laziness survives: a second literal here would be the audit's D3 defect
+    wearing new clothes, and this one would decide the idempotency window a
+    redelivered message is judged against.
+    """
+    from app.worker.tasks.runtime.agent import AGENT_TURN_TIMEOUT_S  # noqa: PLC0415
+
+    return AGENT_TURN_TIMEOUT_S
 
 
 # ---------------------------------------------------------------------------
@@ -344,11 +360,15 @@ def _invoke_agent_for_scenarios(
     before any turn has cost anything.
     """
     from app.services.agent_tools import (  # noqa: PLC0415
+        CHUNK_CONTENT_CHAR_LIMIT,
         get_recorded_side_effects,
         reset_side_effect_context,
     )
     from app.worker.tasks.runtime.agent import (  # noqa: PLC0415
         AGENT_TURN_TIMEOUT_S,
+        RETRIEVE_CHUNKS_KEY,
+        RETRIEVE_CHUNKS_SOURCE_KEY,
+        RETRIEVE_CHUNKS_UNPARSED,
         RETRIEVE_RESULT_CAPTURE_CHARS,
     )
 
@@ -389,12 +409,27 @@ def _invoke_agent_for_scenarios(
     scored_rows: list[dict] = []
     try:
         for scenario in invocable:
+            # THE SINK IS EMPTIED BEFORE THE TURN, NOT ONLY INSIDE IT.
+            # build_agent_options resets it on entry, but everything
+            # _run_one_eval_turn does BEFORE reaching the seam can raise:
+            # get_sync_db(), the agent row lookup (which raises when the row is
+            # gone), _resolve_turn_prompt_version. The unconditional read below
+            # then returned the PREVIOUS scenario's sink, so a scenario 5 that
+            # attempted a refund and a scenario 6 whose control-DB session
+            # blipped produced two transactional.adapter entries, the second
+            # carrying scenario_id 's6' for an attempt s6 never made — a
+            # fabricated observation in the exact confusion-matrix cell the
+            # recording exists to populate.
+            reset_side_effect_context()
             record: dict = {
                 "scenario_id": str(scenario.get("id", "")),
                 "responded": False,
+                "scorable": False,
                 "error": None,
                 "retrieve_calls": 0,
                 "retrieve_at_cap": False,
+                "retrieve_unparsed": 0,
+                "retrieved_chunks": 0,
                 "side_effects": [],
             }
             turn: dict | None = None
@@ -427,18 +462,40 @@ def _invoke_agent_for_scenarios(
             record["side_effects"] = get_recorded_side_effects()
 
             if turn is not None:
-                contexts = [
-                    tc["result"]
-                    for tc in turn.get("tool_calls_log", [])
-                    if tc.get("tool_name") == "retrieve" and tc.get("result")
-                ]
-                record["retrieve_calls"] = len(contexts)
-                record["retrieve_at_cap"] = any(
-                    len(str(c)) >= RETRIEVE_RESULT_CAPTURE_CHARS for c in contexts
-                )
+                # ONE STRING PER CHUNK, not one repr per tool call. `result` is
+                # the audit capture — a Python repr of the SDK content block, cut
+                # at RETRIEVE_RESULT_CAPTURE_CHARS, which is below one full
+                # retrieval — and scoring it made the capture format the dominant
+                # term in Faithfulness and collapsed ContextPrecision's ranking
+                # to a single element. agent.py decodes the framed payload back
+                # into the chunks the agent was shown; those are what is scored.
+                contexts: list[str] = []
+                for tc in turn.get("tool_calls_log", []):
+                    if tc.get("tool_name") != "retrieve" or "result" not in tc:
+                        continue
+                    record["retrieve_calls"] += 1
+                    if tc.get(RETRIEVE_CHUNKS_SOURCE_KEY) == RETRIEVE_CHUNKS_UNPARSED:
+                        record["retrieve_unparsed"] += 1
+                    chunks = [str(c) for c in (tc.get(RETRIEVE_CHUNKS_KEY) or []) if c]
+                    if any(len(c) >= CHUNK_CONTENT_CHAR_LIMIT for c in chunks):
+                        record["retrieve_at_cap"] = True
+                    contexts.extend(chunks)
+                record["retrieved_chunks"] = len(contexts)
+
                 response_text = str(turn.get("response_text") or "")
                 if response_text.strip():
                     record["responded"] = True
+                # EXCLUDED AND COUNTED, one metric over. A responded turn with no
+                # retrieved context scores Faithfulness / ContextPrecision /
+                # ContextRecall over an empty list, which is structurally 0 or
+                # NaN — and a 0 for a question the agent answered correctly from
+                # its system prompt ("what are your opening hours?") is the same
+                # "zero is not a low score" error the failure path already
+                # refuses. summarise_agent_invocation reports these as
+                # `no_retrieval` / `retrieved_nothing_scorable`; they are not
+                # failures and do not depress `response_rate`.
+                if record["responded"] and contexts:
+                    record["scorable"] = True
                     scored_rows.append(
                         {
                             **scenario,
@@ -450,7 +507,10 @@ def _invoke_agent_for_scenarios(
                             # stored column — scoring faithfulness against
                             # contexts the agent never saw measures the corpus
                             # the scenario was written from, not the retrieval
-                            # the customer gets.
+                            # the customer gets. NO FALLBACK: `contexts or
+                            # scenario["stored_retrieved_contexts"]` is one token
+                            # of D1 restored, and it fires precisely in the case
+                            # no dynamic test covers.
                             "retrieved_contexts": contexts,
                         }
                     )
@@ -470,7 +530,13 @@ def _invoke_agent_for_scenarios(
         ceiling_skipped=len(skipped),
         ceiling_skipped_golden=skipped_golden,
         per_turn_timeout_s=AGENT_TURN_TIMEOUT_S,
-        retrieved_context_char_cap=RETRIEVE_RESULT_CAPTURE_CHARS,
+        # Two caps, and only the second bounds the evidence the judge saw. The
+        # first bounds `tool_calls_log[*]["result"]`, the audit copy, which five
+        # 2000-char chunks exceed by construction — reporting it as THE context
+        # cap made `retrieved_context_at_cap` ~100% on every retrieving turn and
+        # therefore a constant dressed as an observation.
+        audit_capture_char_cap=RETRIEVE_RESULT_CAPTURE_CHARS,
+        retrieved_context_chunk_char_cap=CHUNK_CONTENT_CHAR_LIMIT,
         # The served path deflects a response that trips the PII firewall
         # (agent.py's scan_response) before a customer sees it. The eval does
         # NOT, and the reason is that the deflection is not an answer: scoring it
@@ -485,9 +551,13 @@ def _invoke_agent_for_scenarios(
         status=summary["status"],
         attempted=summary["attempted"],
         responded=summary["responded"],
+        scorable=summary["scorable"],
         failed=summary["failed"],
         empty=summary["empty"],
+        no_retrieval=summary["no_retrieval"],
+        retrieved_context_unparsed=summary["retrieved_context_unparsed"],
         response_rate=summary["response_rate"],
+        coverage_rate=summary["coverage_rate"],
         ceiling_skipped=summary["ceiling_skipped"],
     )
     return scored_rows, summary
@@ -620,7 +690,20 @@ def run_eval_suite(self, agent_id: str) -> dict:
         conn_str = fernet_decrypt(agent.neon_connection_string)
         neon_project_id = agent.neon_project_id
 
-    # Check eval_runs table on tenant DB for a recent running run
+    # Check eval_runs table on tenant DB for a recent running run.
+    #
+    # THE WINDOW HAS TO COVER A RUN THAT CONSUMES ITS OWN CEILING. It was a flat
+    # 10 minutes, written when a run was seconds of arithmetic. P2 made the worst
+    # case AGENT_INVOCATION_MAX_CALLS_PER_RUN x AGENT_TURN_TIMEOUT_S — 90 minutes
+    # — so a 10-minute window let a redelivered or re-dispatched message start a
+    # SECOND concurrent invocation of the same agent while the first was still
+    # running: two live agents, two sets of turns, two eval_runs rows. Derived
+    # from the same two constants the run stamps on itself rather than guessed
+    # beside them.
+    idempotency_window_s = (
+        AGENT_INVOCATION_MAX_CALLS_PER_RUN * _agent_turn_timeout_s()
+        + EVAL_RUN_IDEMPOTENCY_SLACK_S
+    )
     try:
         _check_conn = psycopg2.connect(conn_str, connect_timeout=5)
         try:
@@ -630,17 +713,21 @@ def run_eval_suite(self, agent_id: str) -> dict:
                     SELECT id FROM eval_runs
                     WHERE kind = %s
                       AND status = 'running'
-                      AND started_at > NOW() - INTERVAL '10 minutes'
+                      AND started_at > NOW() - (%s * INTERVAL '1 second')
                     LIMIT 1
                     """,
-                    (f"m6:{agent_id}",),
+                    (f"m6:{agent_id}", idempotency_window_s),
                 )
                 _existing = _cur.fetchone()
         finally:
             _check_conn.close()
 
         if _existing:
-            log.info("run_eval_suite.idempotent_skip", agent_id=agent_id)
+            log.info(
+                "run_eval_suite.idempotent_skip",
+                agent_id=agent_id,
+                window_s=idempotency_window_s,
+            )
             return {"status": "already_running"}
     except Exception as exc:
         # If we cannot check, proceed — idempotency guard is best-effort
@@ -937,6 +1024,9 @@ def run_eval_suite(self, agent_id: str) -> dict:
     # ------------------------------------------------------------------
     branch_id_for_finally: str | None = None
     branch_isolation = "provisioned_unused"
+    # Set the moment the first SDK turn could have run. A retry after that point
+    # re-invokes the whole set — see the `except` below.
+    agent_was_invoked = False
     try:
         try:
             branch_id_for_finally, branch_conn_str = create_branch(
@@ -980,6 +1070,8 @@ def run_eval_suite(self, agent_id: str) -> dict:
             scenarios=valid_scenarios,
             prompt_version_id=attribution["prompt_version_id"],
         )
+        # From here on a retry would re-run every turn above. See the `except`.
+        agent_was_invoked = True
 
         # WRITTEN BEFORE SCORING, DELIBERATELY. The invocation is the expensive,
         # unrepeatable half of the run; scoring can fail on a judge outage and be
@@ -990,14 +1082,65 @@ def run_eval_suite(self, agent_id: str) -> dict:
         provenance = invocation_provenance(invocation)
         invocation_recorded = update_eval_run_config(run_id, provenance, conn_str)
 
-        # No connection string is passed: scoring opens nothing. It scores the
-        # AGENT'S responses against the contexts the AGENT retrieved.
-        results = run_ragas_eval(scored_scenarios)
+        # ------------------------------------------------------------------
+        # A RUN THAT DID NOT MEASURE THE AGENT WRITES NO SCORES.
+        #
+        # `agent_invocation.status` was 'unknown' for a below-floor run and the
+        # run scored anyway: 2 surviving rows out of 40 produced 2x4 eval_results
+        # rows, update_eval_run_status marked it 'complete', and
+        # deployment_service._fetch_eval_summary_sync built a non-empty
+        # pass_rates from them and returned EVAL_SIGNAL_MEASURED. The 'unknown'
+        # lived in a config key that nothing outside this module reads, so
+        # everything a consumer actually reads reported a pass over two
+        # observations. Before P2 that state was unreachable — every fetched row
+        # was always 'scored'.
+        #
+        # The deploy gate learning to read `agent_invoked` is P3. Until it does,
+        # the refusal has to be here, where the observation is: no eval_results
+        # rows means _fetch_eval_summary_sync finds an empty pass_rates and
+        # returns EVAL_SIGNAL_NO_VALID_SCORES, which apply_signal_evidence_gate
+        # already refuses. Fail-closed with the machinery that exists rather than
+        # a window in which the plan's "reports unknown, never pass" is true of
+        # one key and false of the run.
+        #
+        # The run still ends terminally and still carries its whole invocation
+        # observation, so "this run measured too little" stays readable — it is
+        # the SCORES that are withheld, not the record.
+        # ------------------------------------------------------------------
+        if invocation["status"] != AGENT_INVOCATION_MEASURED:
+            log.warning(
+                "run_eval_suite.below_measurement_floor",
+                agent_id=agent_id,
+                run_id=run_id,
+                invocation_status=invocation["status"],
+                attempted=invocation["attempted"],
+                responded=invocation["responded"],
+                scorable=invocation["scorable"],
+                response_rate=invocation["response_rate"],
+                min_response_rate=invocation["min_response_rate"],
+                min_scored_observations=invocation["min_scored_observations"],
+                detail=(
+                    "no eval_results written and no judge call billed — a run "
+                    "below the floor is not a measurement, and writing its "
+                    "scores would make the deploy gate read it as one"
+                ),
+            )
+            update_eval_run_status(
+                run_id, "complete", finished_at=True, conn_str=conn_str
+            )
+            results = {"scores": [], "means": {}, "sent": 0, "returned": 0,
+                       "unattributed": 0}
+        else:
+            # No connection string is passed: scoring opens nothing. It scores
+            # the AGENT'S responses against the contexts the AGENT retrieved.
+            results = run_ragas_eval(scored_scenarios)
 
-        # Observations about the run land on PRODUCTION, which is the whole
-        # point of the split: the branch below is about to be destroyed.
-        write_eval_results(run_id, results["scores"], conn_str)
-        update_eval_run_status(run_id, "complete", finished_at=True, conn_str=conn_str)
+            # Observations about the run land on PRODUCTION, which is the whole
+            # point of the split: the branch below is about to be destroyed.
+            write_eval_results(run_id, results["scores"], conn_str)
+            update_eval_run_status(
+                run_id, "complete", finished_at=True, conn_str=conn_str
+            )
 
         # (attempted, valid, scored) for the run and for each dataset. Computed
         # over the FETCHED set, not the valid one, so the two counts stay
@@ -1077,8 +1220,30 @@ def run_eval_suite(self, agent_id: str) -> dict:
             agent_id=agent_id,
             run_id=run_id,
             error=str(exc),
+            agent_was_invoked=agent_was_invoked,
         )
         _mark_failed_on_production(run_id, conn_str, agent_id)
+        # A RETRY AFTER THE INVOCATION RE-BUYS THE INVOCATION. `max_retries=2`
+        # meant a judge outage in run_ragas_eval re-entered this task body, drew
+        # a fresh run_id and put all sixty scenarios to the agent again — one
+        # nightly dispatch costing three times the ceiling the run stamps on
+        # itself, and no field on the run expressing that. Losing one night's
+        # scores to a judge outage is the cheaper failure by two orders of
+        # magnitude, and tonight's beat repeats tomorrow. Retries before the
+        # first turn (an insert failure, a branch failure) are unaffected and
+        # still cost nothing.
+        if agent_was_invoked:
+            log.error(
+                "run_eval_suite.not_retrying_after_invocation",
+                agent_id=agent_id,
+                run_id=run_id,
+                detail=(
+                    "the agent was already invoked for this run; retrying would "
+                    "re-run every SDK turn. The run is recorded failed and the "
+                    "next nightly dispatch is the retry."
+                ),
+            )
+            return {}
         if self.request.retries >= self.max_retries:
             return {}
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)

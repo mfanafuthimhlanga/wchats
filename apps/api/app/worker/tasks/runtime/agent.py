@@ -29,6 +29,7 @@ SSE event sequence:
 Queue: runtime (CLAUDE.md non-negotiable: both Celery queues always present)
 """
 
+import ast
 import asyncio
 import json
 import os
@@ -62,6 +63,8 @@ from app.models.job import Job
 from app.models.prompt_version import PromptVersion
 from app.services.agent_prompt import build_system_prompt
 from app.services.agent_tools import (
+    RETRIEVED_CONTEXT_FOOTER,
+    RETRIEVED_CONTEXT_HEADER,
     SIDE_EFFECT_MODES,
     RetrievalStrategy,
     SideEffectMode,
@@ -127,12 +130,116 @@ _CITATION_ENTRY = re.compile(r"- Document: (.+) \| Section: (.+)")
 #: record the cap cannot tell that apart from a genuinely ungrounded claim.
 RETRIEVE_RESULT_CAPTURE_CHARS = 1800
 
+#: The key on a `tool_calls_log` retrieve entry that carries the retrieved
+#: chunks as ONE STRING PER CHUNK, untruncated. Beside it, `result` keeps the
+#: audit capture unchanged — `str(block.content)[:RETRIEVE_RESULT_CAPTURE_CHARS]`,
+#: which is a Python repr of the SDK content block cut mid-structure.
+#:
+#: WHY BOTH. The eval scores Faithfulness / ContextPrecision / ContextRecall
+#: against what this turn retrieved. Handing it `result` handed the judge (a) a
+#: repr — `[{'type': 'text', 'text': "<<<HEADER>>>\n[{'chunk_id': ...` — whose
+#: dict-syntax noise is most of the token budget, (b) cut at 1800 chars, which is
+#: below ONE full chunk on any realistic corpus, so essentially every retrieving
+#: turn was at the cap and `retrieved_context_at_cap` was a constant rather than
+#: an observation, and (c) as a SINGLE element, which collapses ContextPrecision's
+#: ranking semantics to a coin flip over one blob. Three ways for the capture
+#: format to dominate the score of the thing being measured.
+#:
+#: `result` is deliberately NOT changed: the Auditor and the retrieval-faithfulness
+#: sampler read it and the chat path stays byte-for-byte.
+RETRIEVE_CHUNKS_KEY = "retrieved_chunks"
+
+#: Companion to the key above: 'chunks' when the framed payload was split back
+#: into per-chunk strings, 'unparsed' when it could not be. Never absent, so the
+#: eval reports a turn whose contexts could not be read as an unparsed
+#: observation instead of as a turn that retrieved nothing.
+RETRIEVE_CHUNKS_SOURCE_KEY = "retrieved_chunks_source"
+RETRIEVE_CHUNKS_PARSED = "chunks"
+RETRIEVE_CHUNKS_UNPARSED = "unparsed"
+
 #: Wall-clock ceiling on one SDK turn, enforced by asyncio.wait_for.
 #: D-11 raised it from 30s to 90s — a warm-but-not-hot Agent SDK subprocess needs
 #: up to 90s on slower ARM VMs; the SSE layer retains 120s (30s headroom). The
 #: eval's per-run cost ceiling is derived from this value rather than from a
 #: guess about it.
 AGENT_TURN_TIMEOUT_S = 90
+
+
+# ---------------------------------------------------------------------------
+# Reading a retrieve tool result back out of the SDK stream (D1/P2 review)
+# ---------------------------------------------------------------------------
+
+
+def _tool_result_text(content: object) -> str:
+    """The TEXT of a ToolResultBlock, whatever shape the SDK handed it in.
+
+    `str(block.content)` — what the audit capture below still does — is a Python
+    repr when the block carries the MCP list-of-blocks shape our tools return
+    (`[{'type': 'text', 'text': '...'}]`). Reprs are fine for an audit column and
+    ruinous for a judge: the dict syntax is noise the metric cannot distinguish
+    from evidence.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(str(block.get("text", "")))
+            else:
+                text = getattr(block, "text", None)
+                if text is not None:
+                    parts.append(str(text))
+        if parts:
+            return "\n".join(parts)
+    return str(content)
+
+
+def _retrieved_chunk_texts(result_text: str) -> list[str] | None:
+    """Split a framed retrieve result back into ONE STRING PER CHUNK.
+
+    `agent_tools.retrieve_tool` returns
+    `_frame_retrieved_context(str(chunks))` — the header, then the repr of a
+    list of chunk dicts, then the footer. This undoes exactly that, so what the
+    eval scores is the chunk text the agent was shown rather than the transport
+    encoding around it.
+
+    Returns None — never `[]` — when the payload cannot be read, because "this
+    turn retrieved nothing" and "this turn retrieved something this function
+    could not parse" are different observations and the second must not be
+    reported as the first. `ast.literal_eval` (never `eval`) is the parser: the
+    payload originates from a tool result and is therefore attacker-influenced
+    text, so it may only ever become data.
+    """
+    text = result_text
+    header_at = text.find(RETRIEVED_CONTEXT_HEADER)
+    if header_at == -1:
+        return None
+    payload = text[header_at + len(RETRIEVED_CONTEXT_HEADER):]
+    footer_at = payload.rfind(RETRIEVED_CONTEXT_FOOTER)
+    if footer_at != -1:
+        payload = payload[:footer_at]
+
+    try:
+        chunks = ast.literal_eval(payload.strip())
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        return None
+    if not isinstance(chunks, list):
+        return None
+
+    texts: list[str] = []
+    for chunk in chunks:
+        if isinstance(chunk, dict):
+            content = chunk.get("content", "")
+        else:
+            content = chunk
+        rendered = str(content) if content is not None else ""
+        if rendered:
+            texts.append(rendered)
+    return texts
 
 
 # ---------------------------------------------------------------------------
@@ -843,16 +950,31 @@ async def _run_sdk_turn(
                             db,
                             redis,
                         )
-                        # Capture retrieve result for Auditor (M5 — plan 05-04)
-                        # and, from D1/P2, for the eval's retrieved_contexts.
-                        # RETRIEVE_RESULT_CAPTURE_CHARS, not a literal: the eval
-                        # stamps the same constant on the run so a truncated
-                        # context is a recorded fact rather than an implicit one.
+                        # TWO captures of one retrieve result, for two readers.
+                        #
+                        # `result` — unchanged, byte-for-byte: the Auditor's
+                        # retrieved_context_json and the retrieval-faithfulness
+                        # sampler read it, and RETRIEVE_RESULT_CAPTURE_CHARS
+                        # bounds it because it also reaches a jsonb column.
+                        #
+                        # RETRIEVE_CHUNKS_KEY — the same result decoded into one
+                        # string per CHUNK, untruncated, for the eval (D1/P2
+                        # review). Handing Ragas `result` handed it a repr, cut
+                        # below one full chunk, in a single-element list; the
+                        # capture format then dominated Faithfulness and
+                        # ContextPrecision. Not persisted: _persist_messages
+                        # writes tool_name / input / result only.
                         for tc in reversed(tool_calls_log):
                             if tc.get("tool_name") == "retrieve" and "result" not in tc:
-                                tc["result"] = str(getattr(block, "content", ""))[
-                                    :RETRIEVE_RESULT_CAPTURE_CHARS
-                                ]
+                                raw = getattr(block, "content", "")
+                                tc["result"] = str(raw)[:RETRIEVE_RESULT_CAPTURE_CHARS]
+                                chunks = _retrieved_chunk_texts(_tool_result_text(raw))
+                                tc[RETRIEVE_CHUNKS_KEY] = chunks or []
+                                tc[RETRIEVE_CHUNKS_SOURCE_KEY] = (
+                                    RETRIEVE_CHUNKS_PARSED
+                                    if chunks is not None
+                                    else RETRIEVE_CHUNKS_UNPARSED
+                                )
                                 break
 
             elif isinstance(msg, ResultMessage):

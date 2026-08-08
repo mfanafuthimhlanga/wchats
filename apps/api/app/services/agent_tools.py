@@ -118,7 +118,13 @@ def _sanitise_escalation_field(value: str, max_len: int = 500) -> str:
 MAX_CHUNKS: int = 5
 MAX_CHUNK_TOKENS: int = 500  # approximate; character proxy = MAX_CHUNK_TOKENS * 4 = 2000
 
-_CONTENT_CHAR_LIMIT: int = MAX_CHUNK_TOKENS * 4  # 2000 chars
+#: Per-CHUNK cap on retrieved content. Public, and the name changed from
+#: `_CONTENT_CHAR_LIMIT` because a second reader arrived: the eval scores
+#: Faithfulness against these chunks (D1/P2) and stamps this number on the run.
+#: A claim whose support was cut at THIS boundary is marked unsupported by the
+#: judge, and a run that does not record the cap cannot tell that apart from a
+#: genuinely ungrounded claim. One copy of the number, imported by the reader.
+CHUNK_CONTENT_CHAR_LIMIT: int = MAX_CHUNK_TOKENS * 4  # 2000 chars
 
 # ---------------------------------------------------------------------------
 # SEC-02/L6 (OD-5): data-not-instructions framing on retrieve_tool's tool-result
@@ -522,11 +528,14 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
         None, lambda: rerank(query, rrf_result["fused"], strategy)
     )
 
-    # Truncate to MAX_CHUNKS and cap content at _CONTENT_CHAR_LIMIT chars each.
+    # Truncate to MAX_CHUNKS and cap content at CHUNK_CONTENT_CHAR_LIMIT chars each.
     chunks = reranked[:MAX_CHUNKS]
     for chunk in chunks:
-        if isinstance(chunk.get("content"), str) and len(chunk["content"]) > _CONTENT_CHAR_LIMIT:
-            chunk["content"] = chunk["content"][:_CONTENT_CHAR_LIMIT]
+        if (
+            isinstance(chunk.get("content"), str)
+            and len(chunk["content"]) > CHUNK_CONTENT_CHAR_LIMIT
+        ):
+            chunk["content"] = chunk["content"][:CHUNK_CONTENT_CHAR_LIMIT]
 
     citations = [
         {
@@ -652,7 +661,7 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
             None, lambda: write_retrieval_metrics(conn_str, metrics_row)
         )
 
-    # SEC-02/L6: framing is applied after the _CONTENT_CHAR_LIMIT truncation loop
+    # SEC-02/L6: framing is applied after the CHUNK_CONTENT_CHAR_LIMIT truncation loop
     # above, so a truncated chunk is still fully enclosed by the header/footer.
     # sanitize_chunk_text at ingest is complementary rather than superseded — this
     # is the retrieval-time layer, that is the admit-time layer, against the same

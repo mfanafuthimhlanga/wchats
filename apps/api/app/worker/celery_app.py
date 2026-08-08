@@ -55,6 +55,26 @@ from kombu import Exchange, Queue
 from app.core.config import settings
 
 # ---------------------------------------------------------------------------
+# How long the broker waits before deciding a delivered message was lost
+# ---------------------------------------------------------------------------
+# THE LONGEST TASK IN THIS SYSTEM IS NO LONGER PROVISIONING. It was 3600 s with
+# a comment reasoning about "provision + migrations can take ~60 s". D1/P2 made
+# `run_eval_suite` invoke the customer agent once per scenario: sixty turns at a
+# 90 s ceiling is 5400 s of worst case, which the run STAMPS ON ITSELF as
+# `max_wall_clock_s`. A run that actually consumes the bound it advertises was
+# therefore redelivered at 60 minutes and a second worker began running the same
+# agent concurrently — the run's own record describing a bound the broker would
+# not let it reach.
+#
+# Deliberately NOT imported from eval_service: that module pulls ragas,
+# instructor and anthropic at import time, and celery_app is imported by every
+# task module and by the API process. The relation is pinned by a test instead —
+# tests/unit/test_eval_agent_invocation.py asserts this exceeds
+# AGENT_INVOCATION_MAX_CALLS_PER_RUN x AGENT_TURN_TIMEOUT_S, so the two cannot
+# drift apart silently the way a copied number would.
+BROKER_VISIBILITY_TIMEOUT_S = 7200
+
+# ---------------------------------------------------------------------------
 # Celery application instance
 # ---------------------------------------------------------------------------
 
@@ -158,8 +178,8 @@ celery_app.conf.update(
     # keepalive probes; socket_timeout causes a blocked socket op to raise after
     # 30 s so Kombu reconnects. retry_on_timeout retries BLPOP instead of
     # propagating the timeout exception. visibility_timeout must exceed the
-    # longest expected task runtime (provision + migrations can take ~60 s;
-    # 3600 s is a safe ceiling). On Windows, TCP_KEEPIDLE/INTVL/CNT are set
+    # longest expected task runtime — see BROKER_VISIBILITY_TIMEOUT_S above, which
+    # is no longer about provisioning. On Windows, TCP_KEEPIDLE/INTVL/CNT are set
     # at the OS level and socket_keepalive_options is ignored — but
     # socket_keepalive=True and retry_on_timeout=True still apply.
     broker_transport_options={
@@ -175,7 +195,7 @@ celery_app.conf.update(
             ]
             if k is not None
         },
-        "visibility_timeout": 3600,
+        "visibility_timeout": BROKER_VISIBILITY_TIMEOUT_S,
         "retry_on_timeout": True,
     },
 

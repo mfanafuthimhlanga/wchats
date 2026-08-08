@@ -510,6 +510,47 @@ class TestSignalCollectionFunctions:
         assert result["last_run_at"] == run_ts.isoformat()
         assert result["last_run_status"] == "complete"
 
+    def test_an_in_flight_run_does_not_shadow_the_last_finished_one(self):
+        """A run in progress must not block the deploy it is measuring for.
+
+        The selector took the newest eval_runs row with NO status filter, so for
+        the whole duration of a run the gate read a 'running' row that has no
+        eval_results yet, returned EVAL_SIGNAL_NO_VALID_SCORES, and refused the
+        deploy with "this agent's answer quality has not been measured" — while
+        a perfectly good completed run sat one row below it. That window was
+        minutes before D1/P2 and is up to ninety per agent per night after it:
+        the nightly beat fires at 02:00 UTC and drives up to sixty live SDK turns
+        at 90 s each.
+
+        Asserted on the SQL, because the double cannot express "there is also an
+        older row": the filter is the whole behaviour.
+        """
+        run_id = uuid.uuid4()
+        mock_conn = _make_eval_conn(
+            (run_id, datetime(2026, 5, 23, 2, 0, 0), "complete"),
+            metric_rows=[("faithfulness", Decimal("0.92"), 30)],
+            count_row=(30, 30),
+        )
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        assert result["eval_signal"] == EVAL_SIGNAL_MEASURED
+        run_selects = [
+            sql for sql in mock_conn.executed if "FROM eval_runs" in sql
+        ]
+        assert run_selects, "no eval_runs SELECT was issued"
+        for sql in run_selects:
+            assert "status <> 'running'" in sql, (
+                "the deploy gate selects the newest eval_runs row without "
+                f"excluding in-flight ones: {sql!r}. For the duration of every "
+                "nightly run the owner is told their agent has not been "
+                "measured, because its own eval is in progress."
+            )
+
     def test_fetch_eval_summary_sync_no_runs(self):
         """No eval run at all is 'no_runs' with a NULL pass_rates, not an empty dict."""
         mock_conn = _make_eval_conn(None)

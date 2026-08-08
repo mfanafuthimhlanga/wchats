@@ -388,8 +388,13 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
 
     The four states this can report, all different claims:
         measured         — a run exists, it produced at least one real score.
-        no_runs          — the eval_runs table is empty. Nothing has ever been
-                           measured for this agent.
+        no_runs          — no FINISHED eval run exists for this agent: either
+                           nothing has ever been measured, or the only run is
+                           still in flight. Both mean "there is no result to
+                           read", and both are remedied by waiting for or
+                           starting a run — the gate's day-1 path dispatches one
+                           and run_eval_suite's own idempotency guard, whose
+                           window now covers a full run, refuses the duplicate.
         no_valid_scores  — a run exists and every score is NULL. The judge
                            produced no valid observation; the run measured
                            nothing.
@@ -426,11 +431,25 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                 # eval_service.insert_eval_run's pre-0013 fallback. The narrow
                 # except matters — a broad one would hide a real read failure
                 # behind a payload that looks like a successful degraded read.
+                #
+                # AN IN-FLIGHT RUN MUST NOT SHADOW THE LAST FINISHED ONE. This
+                # took the newest row with no status filter, so for the whole
+                # duration of a run the gate read a 'running' row that has no
+                # eval_results yet, returned EVAL_SIGNAL_NO_VALID_SCORES and
+                # blocked the deploy with "this agent's answer quality has not
+                # been measured" — while a perfectly good completed run sat one
+                # row below. That window was minutes before P2 and is up to
+                # ninety per agent per night after it (the nightly beat fires at
+                # 02:00 UTC and invokes up to sixty live turns at 90 s each).
+                # `status <> 'running'` rather than an IN-list of terminal names:
+                # a status this query has not heard of is still terminal, and
+                # excluding it would resurrect the same shadowing.
                 run_config: object = None
                 try:
                     cur.execute(
                         "SELECT id, finished_at, status, config FROM eval_runs "
-                        "WHERE kind = %s ORDER BY started_at DESC LIMIT 1",
+                        "WHERE kind = %s AND status <> 'running' "
+                        "ORDER BY started_at DESC LIMIT 1",
                         (f"m6:{agent_id}",),
                     )
                     wide_row = cur.fetchone()
@@ -450,7 +469,8 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                     )
                     cur.execute(
                         "SELECT id, finished_at, status FROM eval_runs "
-                        "WHERE kind = %s ORDER BY started_at DESC LIMIT 1",
+                        "WHERE kind = %s AND status <> 'running' "
+                        "ORDER BY started_at DESC LIMIT 1",
                         (f"m6:{agent_id}",),
                     )
                     run_row = cur.fetchone()

@@ -145,6 +145,13 @@ EVAL_SCORED_RESPONSE_SOURCE = "agent_response"
 # INSERT time, and it is what a run that died mid-invocation keeps.
 EVAL_RESPONSE_SOURCE_PENDING = "pending_invocation"
 
+# And what it says when the invocation phase DID report and nothing reached the
+# scorer — every turn raised, or every response came back with no usable
+# retrieved context. Distinct from 'pending_invocation' (the phase never ran) and
+# from 'agent_response' (a set of scored rows exists and came from the agent),
+# because a claim about an empty set is neither of those.
+EVAL_RESPONSE_SOURCE_NONE_SCORED = "no_response_scored"
+
 # Dimensions of the run record — config keys plus the prompt_version_id column —
 # that cannot influence a score when the run did not measure an invoked agent.
 # judge_model_id is deliberately NOT here: the judge does run, so a judge change
@@ -264,6 +271,19 @@ def trust_tier_rank(tier: str) -> int:
     return LABEL_TRUST_TIERS.get(tier, LABEL_TRUST_TIERS["unknown"])
 
 
+def promotable_answer(scenario: dict) -> str:
+    """The ONE text that may be written into verified_qa for a scenario.
+
+    It is the scenario's `reference_answer` and never its `agent_response`. The
+    trust gate reasons about `scenario["source"]`, which is the provenance of the
+    LABEL; writing the agent's own turn under that gate would admit a
+    model_generated string on the strength of a human_authored tier. Callers must
+    not reach past this to pick a field themselves — that is exactly how the two
+    came apart.
+    """
+    return str(scenario.get("reference_answer") or "")
+
+
 def is_promotable_to_verified_qa(source: str | None) -> bool:
     """True iff a scenario from *source* may have its answer served to customers.
 
@@ -370,12 +390,29 @@ AGENT_INVOCATION_MAX_CALLS_PER_RUN = 60
 #: the same argument: a metric computed over the rows that happened to succeed
 #: is not a measurement of the set that was scored. Below it the run reports
 #: 'unknown'. Not zero, not a low score: the absence of one.
-#:
-#: Deliberately NOT a second absolute-count floor (compute_correlation's
-#: MIN_PAIRS). The denominator travels with every figure this module returns, so
-#: a consumer that wants "at least N observations" can apply it to `responded`
-#: without a second constant here drifting from the first.
 MIN_RESPONSE_RATE = 0.8
+
+#: The ABSOLUTE floor, and compute_correlation.py's MIN_PAIRS (3) is both the
+#: shape and the value. A rate alone cannot refuse a one-observation run: a
+#: tenant with a single labelled scenario that answers gives response_rate 1.0
+#: and would certify itself as measured off one turn.
+#:
+#: An earlier comment here argued the opposite — "the denominator travels, so a
+#: consumer can apply its own absolute floor". No consumer does, and the one
+#: that would (the deploy gate) reads `agent_invoked`, which is computed HERE.
+#: A floor that every consumer must remember to reapply is a floor nobody has.
+#:
+#: It is applied to the rows that reached the SCORER, not to the rows that
+#: answered: those are different numbers once a responded-but-never-retrieved
+#: row is excluded from context scoring, and the smaller of the two is the one
+#: the metrics were actually computed over.
+MIN_SCORED_OBSERVATIONS = 3
+
+#: Slack added to a run's worst-case wall clock when deriving the idempotency
+#: window in eval.py. The window has to COVER a run that consumes its whole
+#: ceiling, or a redelivered message starts a second concurrent invocation of the
+#: same agent; it was a flat 10 minutes against a 90-minute worst case.
+EVAL_RUN_IDEMPOTENCY_SLACK_S = 600
 
 #: Statuses for the invocation phase of a run.
 AGENT_INVOCATION_NOT_STARTED = "not_started"   # the row exists; no turn ran yet
@@ -405,7 +442,8 @@ def summarise_agent_invocation(
     ceiling_skipped: int,
     ceiling_skipped_golden: int,
     per_turn_timeout_s: int,
-    retrieved_context_char_cap: int,
+    audit_capture_char_cap: int,
+    retrieved_context_chunk_char_cap: int,
     pii_firewall_applied: bool,
 ) -> dict:
     """Turn per-scenario invocation records into the run's observation. Pure.
@@ -420,30 +458,42 @@ def summarise_agent_invocation(
 
     Args:
         records: one dict per scenario an agent turn was ATTEMPTED for, each
-            carrying `responded` (bool), `error` (str|None), `retrieve_calls`
-            (int), `retrieve_at_cap` (bool) and `side_effects` (list of the
-            entries recorded mode collected during that turn).
+            carrying `responded` (bool), `scorable` (bool — reached the scorer),
+            `error` (str|None), `retrieve_calls` (int), `retrieve_at_cap` (bool),
+            `retrieve_unparsed` (int), `retrieved_chunks` (int) and
+            `side_effects` (list of the entries recorded mode collected during
+            that turn).
         valid: rows in the run that carry a label, i.e. that could have been
             invoked. `valid == len(records) + ceiling_skipped` always.
         ceiling_skipped: valid rows the per-run ceiling did not invoke.
         ceiling_skipped_golden: how many of those were golden rows — reported
             separately because skipping a golden row breaks the paired per-item
             delta the golden set exists for.
-        per_turn_timeout_s / retrieved_context_char_cap: the two bounds the turn
-            actually ran under, carried so a reader never has to look them up in
-            a different module's source at a different commit.
+        per_turn_timeout_s: the wall-clock bound each turn ran under, carried so
+            a reader never has to look it up in a different module's source at a
+            different commit.
+        audit_capture_char_cap: the cap on `tool_calls_log[*]["result"]`. It
+            bounds the AUDIT copy of a retrieve result and NOT the contexts that
+            were scored — recorded under a name that says so, because while it
+            was called `retrieved_context_char_cap` it read as the bound on the
+            evidence the judge saw, and the derived `retrieved_context_at_cap`
+            was consequently true on essentially every retrieving turn.
+        retrieved_context_chunk_char_cap: the cap that DOES bound the scored
+            evidence — agent_tools.CHUNK_CONTENT_CHAR_LIMIT, applied per chunk.
         pii_firewall_applied: whether the served-path PII deflection ran over
             these responses. False, and stated: see eval.py's invocation block.
 
     Returns:
         The `agent_invocation` provenance object. `status` is
-        AGENT_INVOCATION_MEASURED only when at least one turn was attempted AND
-        the response rate cleared MIN_RESPONSE_RATE; otherwise
+        AGENT_INVOCATION_MEASURED only when all three hold: at least one turn was
+        attempted, the response rate cleared MIN_RESPONSE_RATE, and at least
+        MIN_SCORED_OBSERVATIONS rows reached the scorer. Otherwise
         AGENT_INVOCATION_UNKNOWN, which includes the zero-attempt case — a rate
         over an empty denominator is unknown, never a pass.
     """
     attempted = len(records)
     responded = sum(1 for r in records if r.get("responded"))
+    scorable = sum(1 for r in records if r.get("scorable"))
     failed = sum(1 for r in records if r.get("error"))
     # Neither responded nor errored: the SDK returned, with no text. That is the
     # max_turns / max_budget signature (agent.py's D-10 notes), and it is a
@@ -477,9 +527,25 @@ def summarise_agent_invocation(
             )
 
     response_rate = (responded / attempted) if attempted else None
+    # A SECOND, EXPLICIT DENOMINATOR. `response_rate` divides by what the ceiling
+    # allowed; this divides by what the tenant designated, so a run that put 60
+    # of 200 labelled rows to the agent cannot report full coverage. It is the
+    # shape compute_correlation.py:498 uses (`pairs / parsed["valid"]`) and this
+    # function's rate silently diverged from it.
+    coverage_rate = (responded / valid) if valid else None
     status = (
         AGENT_INVOCATION_MEASURED
-        if attempted and response_rate is not None and response_rate >= MIN_RESPONSE_RATE
+        if (
+            attempted
+            and response_rate is not None
+            and response_rate >= MIN_RESPONSE_RATE
+            # THE ABSOLUTE FLOOR, applied to the rows that reached the SCORER.
+            # Without it a one-scenario run answers once, reports 1.0, and
+            # certifies a deploy off a single observation; and a run where 38 of
+            # 40 responses never retrieved would report 'measured' over the two
+            # rows that did.
+            and scorable >= MIN_SCORED_OBSERVATIONS
+        )
         else AGENT_INVOCATION_UNKNOWN
     )
 
@@ -493,6 +559,11 @@ def summarise_agent_invocation(
         "valid": valid,
         "attempted": attempted,
         "responded": responded,
+        # Rows that reached run_ragas_eval. Smaller than `responded` by exactly
+        # the rows excluded for having no retrieved context — see `no_retrieval`
+        # below — and it, not `responded`, is the denominator the metrics were
+        # computed over.
+        "scorable": scorable,
         "failed": failed,
         "empty": empty,
         "errors": errors,
@@ -500,23 +571,57 @@ def summarise_agent_invocation(
         "ceiling_skipped_golden": ceiling_skipped_golden,
         "response_rate": response_rate,
         "min_response_rate": MIN_RESPONSE_RATE,
+        "coverage_rate": coverage_rate,
+        "min_scored_observations": MIN_SCORED_OBSERVATIONS,
         "concurrency": AGENT_INVOCATION_CONCURRENCY,
         "max_calls_per_run": AGENT_INVOCATION_MAX_CALLS_PER_RUN,
         "per_turn_timeout_s": per_turn_timeout_s,
         # The worst case this run could have cost in wall clock, derived from the
         # two bounds rather than asserted beside them.
         "max_wall_clock_s": AGENT_INVOCATION_MAX_CALLS_PER_RUN * per_turn_timeout_s,
-        # THE TRUNCATION, MADE EXPLICIT (the plan's P2, third bullet). Faithfulness
-        # over a context that was CUT marks a claim unsupported when the support
-        # was merely beyond the cap. `retrieved_context_at_cap` counts the turns
-        # where at least one retrieve result came back exactly at the boundary,
-        # which is the observable signature of a cut.
-        "retrieved_context_char_cap": retrieved_context_char_cap,
+        # THE TRUNCATION, MADE EXPLICIT (the plan's P2, third bullet) — and
+        # pointed at the cap that actually bounds the evidence. Faithfulness over
+        # a context that was CUT marks a claim unsupported when the support was
+        # merely beyond the cap, so `retrieved_context_at_cap` counts the turns
+        # where at least one SCORED CHUNK came back exactly at the per-chunk
+        # boundary. It used to count turns where the 1800-char AUDIT capture was
+        # at ITS boundary, which five 2000-char chunks exceed by construction:
+        # the figure was ~100% on every retrieving turn and read as signal.
+        "audit_capture_char_cap": audit_capture_char_cap,
+        "retrieved_context_source": "agent_retrieve_chunks",
+        "retrieved_context_chunk_char_cap": retrieved_context_chunk_char_cap,
         "retrieved_context_at_cap": sum(
             1 for r in records if r.get("retrieve_at_cap")
         ),
+        "retrieved_context_chunks": sum(
+            int(r.get("retrieved_chunks") or 0) for r in records
+        ),
+        # Retrieve results whose framed payload could not be split back into
+        # chunks. Counted apart from "retrieved nothing": a turn whose evidence
+        # this build could not read did not retrieve nothing, and reporting it as
+        # such would be the missing-data-as-passing-data error inverted.
+        "retrieved_context_unparsed": sum(
+            int(r.get("retrieve_unparsed") or 0) for r in records
+        ),
+        # Responded, called retrieve zero times. EXCLUDED FROM SCORING and
+        # counted here: Faithfulness / ContextPrecision / ContextRecall over an
+        # empty context list are structurally 0 or NaN, and a 0 for an answer the
+        # agent gave correctly from its system prompt is the "zero is not a low
+        # score" error one metric over. It is a bucket, not a failure — an agent
+        # answering "what are your opening hours?" without retrieving is behaving
+        # correctly, so these rows do not depress `response_rate`.
         "no_retrieval": sum(
             1 for r in records if r.get("responded") and not r.get("retrieve_calls")
+        ),
+        # Responded, retrieved, and still reached the scorer with nothing: every
+        # retrieve result was unparsed or empty. Also excluded, also counted, and
+        # kept apart from `no_retrieval` because the remedy is different.
+        "retrieved_nothing_scorable": sum(
+            1
+            for r in records
+            if r.get("responded")
+            and r.get("retrieve_calls")
+            and not r.get("scorable")
         ),
         # False, and said out loud: the eval scores the agent's own text, not the
         # deflection a customer would receive if the output firewall fired.
@@ -550,17 +655,29 @@ def invocation_provenance(agent_invocation: dict | None) -> dict:
     None (the INSERT case) yields agent_invoked False, so a run that dies between
     its eval_runs row and its first turn fails closed at the gate rather than
     inheriting a hopeful default.
+
+    `scored_response_source` is derived from what was SCORED, not from what was
+    attempted. Deriving it from `attempted` meant a run that attempted sixty
+    turns and got zero responses still claimed its scored responses came from
+    the agent — a claim about a set that does not exist, and one a future
+    consumer could read as evidence of an agent-sourced measurement.
     """
     invoked = bool(
         agent_invocation
         and agent_invocation.get("status") == AGENT_INVOCATION_MEASURED
     )
-    attempted = int((agent_invocation or {}).get("attempted") or 0)
+    observation = agent_invocation or {}
+    attempted = int(observation.get("attempted") or 0)
+    scorable = int(observation.get("scorable") or 0)
+    if scorable:
+        scored_response_source = EVAL_SCORED_RESPONSE_SOURCE
+    elif attempted:
+        scored_response_source = EVAL_RESPONSE_SOURCE_NONE_SCORED
+    else:
+        scored_response_source = EVAL_RESPONSE_SOURCE_PENDING
     return {
         "agent_invoked": invoked,
-        "scored_response_source": (
-            EVAL_SCORED_RESPONSE_SOURCE if attempted else EVAL_RESPONSE_SOURCE_PENDING
-        ),
+        "scored_response_source": scored_response_source,
         "dimensions_not_exercised": (
             [] if invoked else list(AGENT_DEPENDENT_DIMENSIONS)
         ),
@@ -1586,6 +1703,13 @@ def select_promotion_candidates(
             _refuse(f"trust_tier:{scenario_trust_tier(source)}")
             continue
 
+        # The tier just cleared is a claim about the LABEL. A row whose label is
+        # empty would be promoted on the strength of a tier describing a string
+        # it does not have, and would serve a blank answer to a customer.
+        if not promotable_answer(scenario):
+            _refuse("no_promotable_answer")
+            continue
+
         if not _meets_score_thresholds(score):
             _refuse("below_score_threshold")
             continue
@@ -1615,6 +1739,10 @@ def promote_to_verified_qa(
     is correct and will be needed once human-verified labels exist, and a
     surviving second lock on the door means a future caller that reintroduces
     the call still cannot serve a model-written answer to a customer.
+
+    THE ANSWER WRITTEN IS THE SCENARIO'S LABEL, never the agent's own turn — see
+    promotable_answer. The gate reasons about the label's provenance, so the
+    label is what may be admitted.
 
     Promoted rows are written with source='sandbox_test', promoted_by='system'
     (D-22 LOCKED) and a Voyage question_vector (D-23 LOCKED). Idempotency on
@@ -1700,7 +1828,20 @@ def promote_to_verified_qa(
                     [question], model="voyage-3", input_type="query"
                 ).embeddings[0]
 
-                answer = scenario.get("agent_response", "")
+                # THE GATE AND THE PAYLOAD MUST DESCRIBE THE SAME ARTIFACT.
+                # This wrote `scenario["agent_response"]`, and the trust gate
+                # above inspects `scenario["source"]` — the provenance of the
+                # REFERENCE answer. Before D1/P2 those were the same string
+                # (eval.py set agent_response = reference_answer), so gating on
+                # the source was correct by accident. After P2, agent_response is
+                # model-generated output whose tier is `model_generated` whatever
+                # the scenario's source says — so the day a human_authored source
+                # exists and the gate opens, the row retrieval_service serves to
+                # a real customer ahead of hybrid search would be the agent's own
+                # answer. The written answer is the LABEL, which is the text the
+                # tier the gate checked is about. Pinned by
+                # test_the_promoted_answer_is_the_label_not_the_agents_own_text.
+                answer = promotable_answer(scenario)
                 citations = scenario.get("citations", [])
 
                 cur.execute(insert_sql, {
@@ -1768,12 +1909,28 @@ def run_eval_for_agent(
     VERIFIED_QA_PROMOTION_DECISION. Restoring it means clearing the trust gate
     in promote_to_verified_qa, not re-adding the call here.
 
+    IT REFUSES A TAUTOLOGY AT THE DOOR (D1/P2 review). This is a SECOND
+    orchestrator: it takes caller-supplied scenario dicts, invokes no agent, and
+    hands them straight to run_ragas_eval. Every guard P2 built reads eval.py's
+    AST or drives eval.py's loop, so none of them reach here — a future caller
+    wiring a synchronous "score these rows" route could pass
+    agent_response = reference_answer and reinstate D1 with all of P2 still
+    green. So the refusal lives here, in the only place that can see these rows:
+    every scenario must carry a non-empty `agent_response` that DIFFERS from its
+    `reference_answer`, and a batch that does not raises ValueError before a
+    single judge call is billed.
+
     On exception: update_eval_run_status → 'failed' on production, then re-raise.
 
     Args:
         eval_run_id: UUID string — the eval_runs row already created by caller.
-        scenarios: List of scenario dicts from the eval_scenarios table.
+        scenarios: List of scenario dicts from the eval_scenarios table, each
+            carrying an `agent_response` distinct from its `reference_answer`.
         conn_str: PRODUCTION tenant connection string — status + results land here.
+
+    Raises:
+        ValueError: a scenario has no agent_response, or its agent_response is
+            its own reference_answer.
 
     Returns:
         Dict: {
@@ -1783,6 +1940,24 @@ def run_eval_for_agent(
             "promoted_count": int,   # always 0 while promotion is disabled
         }
     """
+    tautologies = [
+        str(s.get("id", ""))
+        for s in scenarios
+        if s.get("reference_answer")
+        and (
+            not str(s.get("agent_response") or "").strip()
+            or s.get("agent_response") == s.get("reference_answer")
+        )
+    ]
+    if tautologies:
+        raise ValueError(
+            "run_eval_for_agent was handed rows whose prediction is their own "
+            f"label (or is empty): {tautologies[:10]}. Faithfulness and "
+            "AnswerRelevancy would approach 1.0 by construction and no change "
+            "to the agent could move them — that is audit D1, and this function "
+            "is the door P2's guards do not cover."
+        )
+
     log.info("run_eval_for_agent.start", eval_run_id=eval_run_id)
     update_eval_run_status(eval_run_id, "running", finished_at=False, conn_str=conn_str)
 

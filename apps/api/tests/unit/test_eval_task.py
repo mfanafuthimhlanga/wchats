@@ -133,13 +133,21 @@ def wired(monkeypatch):
     monkeypatch.setattr(mod, "get_sync_db", _make_sync_db_context(mock_db))
     monkeypatch.setattr(mod, "fernet_decrypt", lambda _e: PRODUCTION)
 
-    # One golden row and one exploratory row, so every test in this module
+    # Two golden rows and two exploratory rows, so every test in this module
     # exercises the two-query selector rather than only the sampled half.
+    #
+    # FOUR, NOT TWO, since the P2 review: eval_service.MIN_SCORED_OBSERVATIONS is
+    # the MIN_PAIRS-analogue absolute floor under a measurement, and a two-row run
+    # is BELOW it — correctly, because two observations do not certify a deploy.
+    # A fixture that stays under the floor would make every test in this module a
+    # test of the fail-closed branch, which is not what any of them are about.
     golden_rows = [
         ("g0000000-0000-0000-0000-000000000001", "generated", "GQ1", "GA1", [], "golden"),
+        ("g0000000-0000-0000-0000-000000000002", "generated", "GQ2", "GA2", [], "golden"),
     ]
     exploratory_rows = [
         ("11111111-1111-1111-1111-111111111111", "generated", "Q1", "A1", [], None),
+        ("22222222-2222-2222-2222-222222222222", "generated", "Q2", "A2", [], None),
     ]
     cursor = _Cursor(
         golden_rows=golden_rows,
@@ -201,9 +209,12 @@ def wired(monkeypatch):
                 {
                     "scenario_id": s["id"],
                     "responded": True,
+                    "scorable": True,
                     "error": None,
                     "retrieve_calls": 1,
                     "retrieve_at_cap": False,
+                    "retrieve_unparsed": 0,
+                    "retrieved_chunks": 1,
                     "side_effects": [],
                 }
                 for s in scenarios
@@ -212,7 +223,8 @@ def wired(monkeypatch):
             ceiling_skipped=0,
             ceiling_skipped_golden=0,
             per_turn_timeout_s=90,
-            retrieved_context_char_cap=1800,
+            audit_capture_char_cap=1800,
+            retrieved_context_chunk_char_cap=2000,
             pii_firewall_applied=False,
         )
         return rows, summary
@@ -359,8 +371,8 @@ class TestPersistenceSplit:
         # and a golden SET that moved are indistinguishable after the fact
         # unless the composition was stamped on the run.
         composition = config["dataset"]
-        assert composition["golden"]["attempted"] == 1
-        assert composition["exploratory"]["attempted"] == 1
+        assert composition["golden"]["attempted"] == 2
+        assert composition["exploratory"]["attempted"] == 2
         assert composition["golden_set_present"] is True
         assert composition["dataset_column_available"] is True
 
@@ -405,18 +417,63 @@ class TestBranchDeletion:
 
     def test_retry_path_still_deletes_the_branch(self, wired, monkeypatch):
         """retries < max_retries: `self.retry` propagates out of the task and the
-        `finally` is the only thing standing between that and a leaked branch."""
+        `finally` is the only thing standing between that and a leaked branch.
+
+        Driven by a failure BEFORE the first agent turn, because that is the only
+        remaining retrying path — see
+        test_a_failure_after_the_invocation_does_not_re_buy_sixty_sdk_turns.
+        """
         from celery.exceptions import Retry
 
         monkeypatch.setattr(
             mod,
-            "run_ragas_eval",
-            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("ragas exploded")),
+            "_invoke_agent_for_scenarios",
+            lambda **kw: (_ for _ in ()).throw(RuntimeError("SDK unavailable")),
         )
         with pytest.raises((Retry, RuntimeError)):
             _run(retries=0)
 
         assert wired["deleted"] == [("neon-project-1", "branch-1")]
+
+    def test_a_failure_after_the_invocation_does_not_re_buy_sixty_sdk_turns(
+        self, wired, monkeypatch
+    ):
+        """A judge outage must not re-run the agent (D1/P2 review).
+
+        `max_retries=2` meant a raise anywhere after the invocation re-entered
+        the task body, drew a fresh run_id and put every scenario to the agent
+        again — up to three times the ceiling the run stamps on itself as
+        `max_wall_clock_s`, which no field on the run expressed. Losing one
+        night's scores is cheaper by orders of magnitude, and tonight's beat
+        repeats tomorrow.
+
+        retries=0, so a retrying path WOULD raise Retry here. It must not.
+        """
+        from celery.exceptions import Retry
+
+        monkeypatch.setattr(
+            mod,
+            "run_ragas_eval",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("judge outage")),
+        )
+
+        try:
+            result = _run(retries=0)
+        except Retry:  # pragma: no cover - the assertion below is the message
+            pytest.fail(
+                "the task retried after the agent had already been invoked, so "
+                "one judge outage buys a second full set of live SDK turns"
+            )
+
+        assert result == {}
+        assert ("failed", PRODUCTION) in wired["status"], (
+            "the run must still reach a terminal state on production — not "
+            "retrying is not the same as not finishing"
+        )
+        assert wired["deleted"] == [("neon-project-1", "branch-1")]
+        assert len(wired["invoked"]) == 1, (
+            f"the agent was invoked {len(wired['invoked'])} times for one dispatch"
+        )
 
     def test_branch_is_deleted_when_the_production_result_write_raises(
         self, wired, monkeypatch
@@ -793,7 +850,7 @@ class TestGoldenSetIsHeldFixed:
             _run()
             goldens.append(wired["composition"][-1]["golden"])
 
-        assert goldens[0]["attempted"] == 1
+        assert goldens[0]["attempted"] == 2
         assert goldens == [goldens[0]] * 3, (
             f"the golden set moved between runs: {goldens}"
         )
@@ -802,8 +859,8 @@ class TestGoldenSetIsHeldFixed:
         result = _run()
 
         assert set(result["datasets"]) == {"golden", "exploratory"}
-        assert result["datasets"]["golden"]["valid"] == 1
-        assert result["datasets"]["exploratory"]["valid"] == 1
+        assert result["datasets"]["golden"]["valid"] == 2
+        assert result["datasets"]["exploratory"]["valid"] == 2
         assert result["golden_set_present"] is True
 
     def test_a_tenant_without_the_dataset_column_degrades_and_says_so(
@@ -857,8 +914,8 @@ class TestValidityDenominators:
     def test_the_run_reports_all_three_counts(self, wired):
         result = _run()
 
-        assert result["attempted"] == 2, "two rows were fetched"
-        assert result["valid"] == 2, "both carried a label"
+        assert result["attempted"] == 4, "four rows were fetched"
+        assert result["valid"] == 4, "all four carried a label"
         assert result["scored"] == 0, (
             "the doubled scorer returns a score row for a scenario_id that is "
             "not in the fetched set, so nothing is attributable"
@@ -892,8 +949,8 @@ class TestValidityDenominators:
 
         result = _run()
 
-        assert result["valid"] == 2
-        assert result["scored"] == 1, "one of the two valid rows produced a score"
+        assert result["valid"] == 4
+        assert result["scored"] == 1, "one of the four valid rows produced a score"
         assert result["datasets"]["golden"]["scored"] == 1
         assert result["datasets"]["exploratory"]["scored"] == 0
 
@@ -928,7 +985,7 @@ class TestValidityDenominators:
 
         result = _run()
 
-        assert result["valid"] == 2
+        assert result["valid"] == 4
         assert result["scored"] == 0
         for name in ("golden", "exploratory"):
             for metric in result["datasets"][name]["metrics"].values():

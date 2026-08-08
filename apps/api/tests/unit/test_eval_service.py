@@ -675,6 +675,148 @@ class TestPromoteToVerifiedQA:
         assert candidates == []
         assert refusals == {"below_score_threshold": 1}
 
+    def test_the_promoted_answer_is_the_label_not_the_agents_own_text(
+        self, monkeypatch
+    ):
+        """THE GATE AND THE PAYLOAD MUST DESCRIBE THE SAME ARTIFACT (P2 review).
+
+        `select_promotion_candidates` refuses on `scenario["source"]` — the
+        provenance of the REFERENCE answer. `promote_to_verified_qa` wrote
+        `scenario["agent_response"]`. Before D1/P2 those were the same string,
+        because eval.py set agent_response = reference_answer, so gating on the
+        source was correct by accident. After P2 agent_response is model-
+        generated output whose tier is `model_generated` regardless of what the
+        scenario's source says — so on the day a human_authored source exists and
+        the gate opens, the row retrieval_service.verified_qa_lookup serves to a
+        real customer ahead of hybrid search would be the agent's own answer.
+
+        Which is exactly the state this test creates: a promotable tier, and an
+        agent_response that differs from the label.
+        """
+        from app.services import eval_service
+
+        monkeypatch.setitem(
+            eval_service.SCENARIO_SOURCE_TRUST_TIER, "owner_written", "human_authored"
+        )
+
+        cursor = _RecordingCursor(fetchone_result=None)
+        connect, _conn = _recording_connect(cursor, [])
+        monkeypatch.setattr(eval_service.psycopg2, "connect", connect)
+
+        vo = MagicMock()
+        embed_result = MagicMock()
+        embed_result.embeddings = [[0.1] * 1024]
+        vo.embed.return_value = embed_result
+        monkeypatch.setattr(eval_service, "_get_vo", lambda: vo)
+
+        scenario, score = _scored("owner_written", 0.95, 0.92)
+        scenario["reference_answer"] = "THE HUMAN-AUTHORED ANSWER"
+        scenario["agent_response"] = "WHAT THE MODEL SAID INSTEAD"
+
+        result = eval_service.promote_to_verified_qa(
+            [scenario], [score], "postgresql://production"
+        )
+
+        assert result["promoted"] == 1
+        inserts = [
+            params
+            for sql, params in cursor.executed
+            if "INSERT INTO verified_qa" in sql
+        ]
+        assert len(inserts) == 1
+        assert inserts[0]["answer"] == "THE HUMAN-AUTHORED ANSWER", (
+            f"verified_qa was given {inserts[0]['answer']!r} as the answer a "
+            "customer will be served. The trust tier that admitted this row is "
+            "a claim about the LABEL, not about the agent's turn."
+        )
+        assert inserts[0]["answer"] != scenario["agent_response"]
+
+    def test_a_row_with_no_label_is_refused_rather_than_promoted_blank(
+        self, monkeypatch
+    ):
+        """The tier cleared describes a string the row does not have.
+
+        Writing `reference_answer` instead of `agent_response` closes the
+        provenance hole and opens a smaller one: a promotable source whose label
+        is empty would serve a blank answer. Refused with its own reason so the
+        denominator still accounts for it.
+        """
+        from app.services import eval_service
+
+        monkeypatch.setitem(
+            eval_service.SCENARIO_SOURCE_TRUST_TIER, "owner_written", "human_authored"
+        )
+
+        scenario, score = _scored("owner_written", 0.95, 0.95)
+        scenario["reference_answer"] = ""
+
+        candidates, refusals = eval_service.select_promotion_candidates(
+            [scenario], [score]
+        )
+        assert candidates == []
+        assert refusals == {"no_promotable_answer": 1}
+
+
+class TestTheSecondOrchestrator:
+    """run_eval_for_agent is a second door to run_ragas_eval, and P2's guards
+    all read eval.py."""
+
+    def test_it_refuses_a_prediction_that_is_its_own_label(self):
+        """D1, reinstated through the door nothing was watching.
+
+        Every guard P2 built either reads eval.py's AST or drives eval.py's
+        loop. This function takes caller-supplied scenario dicts, invokes no
+        agent and hands them straight to the scorer — so a future synchronous
+        "score these rows" route could pass agent_response = reference_answer
+        and reproduce the tautology with the whole D1 suite still green.
+        """
+        from app.services import eval_service
+
+        with pytest.raises(ValueError, match="their own label"):
+            eval_service.run_eval_for_agent(
+                "run-1",
+                [{"id": "s1", "question": "q", "reference_answer": "a",
+                  "agent_response": "a"}],
+                "postgresql://production",
+            )
+
+    def test_it_refuses_a_row_with_no_prediction_at_all(self):
+        """`run_ragas_eval` reads `s.get("agent_response", "")` and would score
+        an empty string against the label rather than raise."""
+        from app.services import eval_service
+
+        with pytest.raises(ValueError, match="their own label"):
+            eval_service.run_eval_for_agent(
+                "run-1",
+                [{"id": "s1", "question": "q", "reference_answer": "a"}],
+                "postgresql://production",
+            )
+
+    def test_the_refusal_happens_before_a_single_judge_call_is_billed(
+        self, monkeypatch
+    ):
+        """A refusal after scoring would cost the money it exists to protect."""
+        from app.services import eval_service
+
+        monkeypatch.setattr(
+            eval_service,
+            "run_ragas_eval",
+            lambda *a, **kw: pytest.fail("the judge was called for a tautology"),
+        )
+        monkeypatch.setattr(
+            eval_service,
+            "update_eval_run_status",
+            lambda *a, **kw: pytest.fail("the run was marked running for a tautology"),
+        )
+
+        with pytest.raises(ValueError):
+            eval_service.run_eval_for_agent(
+                "run-1",
+                [{"id": "s1", "question": "q", "reference_answer": "a",
+                  "agent_response": "a"}],
+                "postgresql://production",
+            )
+
 
 # ---------------------------------------------------------------------------
 # D2 — the persistence split
@@ -772,7 +914,17 @@ class TestPersistenceSplit:
 
         result = eval_service.run_eval_for_agent(
             "run-1",
-            [{"id": "s1", "question": "q", "reference_answer": "a"}],
+            [
+                {
+                    "id": "s1",
+                    "question": "q",
+                    "reference_answer": "a",
+                    # Distinct from the label, because this door refuses a
+                    # tautology — see
+                    # test_the_second_orchestrator_refuses_a_prediction_that_is_its_own_label.
+                    "agent_response": "what the agent actually said",
+                }
+            ],
             "postgresql://production",
         )
 
@@ -1175,6 +1327,7 @@ class TestBuildEvalRunConfig:
                 "status": eval_service.AGENT_INVOCATION_MEASURED,
                 "attempted": 10,
                 "responded": 10,
+                "scorable": 10,
             },
         )["config"]
 
@@ -1205,6 +1358,7 @@ class TestBuildEvalRunConfig:
                 "status": eval_service.AGENT_INVOCATION_UNKNOWN,
                 "attempted": 60,
                 "responded": 6,
+                "scorable": 6,
             },
         )["config"]
 
@@ -1232,6 +1386,7 @@ class TestBuildEvalRunConfig:
             "status": eval_service.AGENT_INVOCATION_MEASURED,
             "attempted": 4,
             "responded": 4,
+            "scorable": 4,
         }
         provenance = eval_service.invocation_provenance(observation)
 
