@@ -38,15 +38,22 @@ Legend — **[owner]** needs a human, **[blocked]** has an external precondition
 ## 2. D1 — the measurement, and what still stands between it and a gate
 
 **Was the headline.** Everything the eval-foundation branch built was scaffolding around a metric that
-could not move. **P2 made it move** (`d127b4d`); what remains here is the gate that reads it (`2.2`)
-and the consequences P2 itself created.
+could not move. **P2 made it move** (`d127b4d`) and **P3 built the gate that reads it** (`5011f97`,
+carried through to the approve route in `8b124d4`). What remains here is the consequences P2 and P3
+themselves created.
 
-> **Status 2026-08-08: P1 + P1b + P2 + P3.** `feat/d1-agent-invocation` carries the seam (`ec5f445`),
-> its hardened guard (`d15be3a`), P1b (recorded mode + the canary write reorder, `487ebbe` +
-> `117de05`), **P2 — the eval now invokes the agent** (`d127b4d`) and **P3 — the deploy gate now
-> refuses a run that does not record having invoked it**. `2.1`, `2.2` and `2.3` are closed and their
-> rows deleted per the maintenance rule. Trace: `.dev/traces/260808-d1-p2-invoke.md`. Mutation
-> proofs: `.dev/reference/p2-mutation-proofs.md`.
+> **Status 2026-08-08: P1 + P1b + P2 + P3 + P3's tier-2 review fixes.**
+> `feat/d1-agent-invocation` carries the seam (`ec5f445`), its hardened guard (`d15be3a`), P1b
+> (recorded mode + the canary write reorder, `487ebbe` + `117de05`), **P2 — the eval now invokes the
+> agent** (`d127b4d`), **P3 — the deploy gate now refuses a run that does not record having invoked
+> it** (`5011f97`) and **the P3 review fixes** (`8b124d4`, `9106412`), which carried the refusal
+> through to `POST /approve-deployment`, stopped the owner-facing warning narrating a cause it did
+> not observe, refused a run whose own terminal status is not `complete`, and extended the
+> first-eval dispatch to the historical population. `2.1`, `2.2` and `2.3` are closed and their rows
+> deleted per the maintenance rule. Traces: `.dev/traces/260808-d1-p2-invoke.md`,
+> `260808-d1-p3-gate.md`, `260808-d1-p3-review-fixes.md`. Mutation proofs:
+> `.dev/reference/p2-mutation-proofs.md`, `p2-review-mutation-proofs.md`,
+> `p3-review-mutation-proofs.md`.
 >
 > **P3 needed no migration, and that is a finding rather than an omission.** The plan's P3 section
 > assumed `agent_invoked` was a new column; P2 put it inside `eval_runs.config`, the JSONB that
@@ -63,10 +70,12 @@ and the consequences P2 itself created.
 > **The metric has not been observed to move**, and cannot be on this machine: no end-to-end eval run
 > is possible without `0.2`. P2 is unit-proven and unprovable end to end, exactly as the plan said.
 >
-> **No tier-2 judge has read this branch.** `d15be3a`'s message and the former rows `2.5`/`2.6`
-> originally credited "tier-2"; they were **tier-1** findings from the P1 adversarial reviewer. The
-> distinction is load-bearing — tier-2 is a Fable judge reading a bounded artifact and asking whether
-> the claims match the evidence, and that question has not been asked about P1, P1b or P2.
+> **A tier-2 judge has now read P2 and P3, and nothing else on this branch.** `d15be3a`'s message
+> and the former rows `2.5`/`2.6` originally credited "tier-2"; they were **tier-1** findings from
+> the P1 adversarial reviewer. The distinction is load-bearing — tier-2 is a Fable judge reading a
+> bounded artifact and asking whether the claims match the evidence. That question has been asked
+> about P2 (17 findings, closed in `b62186f`/`075550d`) and about P3 (11 findings and 6 unsupported
+> claims, closed in `8b124d4`/`9106412`). It has **not** been asked about P1 or P1b.
 
 Numbering note: `2.1`, `2.2`, `2.3`, `2.5`, `2.6`, `2.7` and `2.13` are closed and their rows deleted
 per the maintenance rule — `2.2` the deploy gate itself (2026-08-08, P3: `apply_signal_evidence_gate`
@@ -100,6 +109,8 @@ name.
 | 2.15 | **A responded turn with no retrieve call is dropped from scoring entirely, including AnswerRelevancy.** Faithfulness / ContextPrecision / ContextRecall over an empty context list are structurally 0 or NaN, so those rows are excluded and counted (`no_retrieval`) rather than scored 0 — but AnswerRelevancy is well defined without contexts and is lost with them. Ragas 0.4.x `evaluate()` runs one metric list over one dataset, so scoring them needs a second `evaluate()` call with a narrower metric list and per-row NULLs for the three context metrics. An agent that legitimately answers many questions from its soul is measured on fewer rows than it answered. | D1/P2 review |
 | 2.16 | **`coverage_rate` is reported and nothing gates on it.** `response_rate` divides by what the per-run ceiling ALLOWED; `coverage_rate` divides by what the tenant designated, so a tenant with 200 labelled rows whose first 60 all answer reports response_rate 1.0 and coverage 0.3. Both travel on the run. `MIN_RESPONSE_RATE` is applied to the first only — deliberately, because gating on coverage would permanently block every tenant above the ceiling (see `2.12`, the same collision). **P3 has landed and did NOT take this on** — it gates `agent_invoked` only, so `coverage_rate` still travels on the run and still gates nothing. Stated rather than quietly carried forward. | D1/P2 review |
 | 2.17 | **A below-floor run's surviving scores are discarded, not stored un-gated.** The interim fail-closed in `run_eval_suite` skips `run_ragas_eval` entirely when the invocation is below the floor, so the 2 real observations from a 2-of-40 run are never computed and never stored. It was the honest choice while the gate could not refuse them; **P3 has now landed, so the precondition is met** — a below-floor run records `agent_invoked=false` and the gate refuses it on that basis alone. Score the survivors and store them for debugging, and delete the `run_ragas_eval` skip. | D1/P2 review |
+| 2.18 | **A pre-0013 tenant re-dispatches an eval on every readiness check.** The P3 review extended step 4b to fire for `agent_not_invoked` with `agent_invoked is None` — the historical population, which converges because a fresh run on a 0013+ tenant writes the key either way. A tenant DB with no `config` column cannot record it, so absence recurs there and every readiness check queues another `generate_eval_suite -> run_eval_suite` chain, bounded only by `run_eval_suite`'s in-flight idempotency window. Cheapest fix is `0.2` plus the migration roundtrip (`3.5`); the alternative is a "this tenant cannot record provenance" state the dispatch reads. | P3 tier-2 #3 |
+| 2.19 | **`checklist_runs` has no gate version, so a stored 'ship' outlives the rules that produced it.** `POST /approve-deployment` validates against a `recommendation` frozen at checklist time. The P3 review closed D1's slice by re-reading `report.eval_summary.agent_invoked` at approve time, and `5.1` is the same hole on the red-team half. The general form: stamp a gate-version integer on the run at write time and 422 any run below the current version. Needs a control-DB migration, so it is behind `0.2`. Until then each new gate condition has to remember to add its own approve-time re-read, which is exactly the "a floor every consumer must remember to reapply is a floor nobody has" failure. | P3 tier-2 #1 |
 
 ## 3. Verification debt from the eval branch
 
@@ -131,7 +142,7 @@ name.
 
 | # | Item | Source |
 |---|---|---|
-| 5.1 | **OPS-15 server gap.** `POST /approve-deployment` gates on the frozen `run.recommendation`, never live `open_findings`. Console can no longer deploy over a critical finding; any script still can. Fails closed, so not a hole — but the milestone audit calls it a blocker. | v1.2 audit |
+| 5.1 | **OPS-15 server gap.** `POST /approve-deployment` gates on the frozen `run.recommendation`, never live `open_findings`. Console can no longer deploy over a critical finding; any script still can. Fails closed, so not a hole — but the milestone audit calls it a blocker. **The eval sibling of this was closed 2026-08-08** (`8b124d4`: the route re-reads `report.eval_summary.agent_invoked` rather than trusting the frozen verdict); this row is the red-team half, and `2.19` is the general form that would close both. | v1.2 audit |
 | 5.2 | `REQUIREMENTS.md`: `WIRE-01..05` has **zero rows**; the v1.2 rollup sentence is stale; the `OPS-01..06` collision is live (lines 274-279 hold them Phase 10 `Pending` while line 415 ticks them complete via Phase 21). | v1.2 audit |
 | 5.3 | Nyquist `status: draft` on `20/21/23-VALIDATION.md`; Phase 20 has no `20-SECURITY.md`. | v1.2 audit |
 | 5.4 | Console renders unknown as `0 critical · 0 high` with a **Pass chip** (`deploy/page.tsx:2428`). Family B closed in the gate, alive at the surface. | trace · tier-2 #5 mismatch |
