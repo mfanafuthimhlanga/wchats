@@ -3,9 +3,26 @@
 > **`.dev/BACKLOG.md` is the single ordered list of open work.** Read it before starting anything.
 > This file is the current-state snapshot; that one is the queue.
 
+> **STATE AS OF 2026-08-08, end of the D1 workflow.** All 14 agents completed. P1, P1b, P2, P3, their
+> tier-1 reviews and bounded fixes, and — for the first time on this branch — **the tier-2 judge**.
+> Verdict: **`mergeable: true`**, extracted to `.dev/reference/tier2-judge-d1.md`. Its one-line read:
+> *"a correctly-shaped, fail-closed measurement pipeline that has never measured anything — which is
+> a large improvement over a pipeline that confidently measured its own label, and is honestly
+> labelled as such."*
+>
+> **Two owner decisions block the merge**, filed as `BACKLOG 0.4` and `0.5`: production customer rows
+> can reach the Ragas judge API with the PII firewall off (an *egress* question `2.11` frames only as
+> scoring fidelity), and the `alembic_tenant` migration the plan required does not exist — argued
+> away coherently, but a written-contract deviation only you can accept.
+>
+> **Naming caveat for anything below and in `.dev/traces/`:** every in-phase reviewer on this branch
+> was **tier-1**. Several commit messages, three trace filenames (`…-p1b-tier2-fixes.md`,
+> `…-p2-review-fixes.md`, `…-p3-review-fixes.md`) and earlier BACKLOG text call them "tier-2". They
+> are not. Tier-2 is the Fable judge, it ran once, and its output is the reference file above.
+
 **In flight (2026-08-08): `feat/d1-agent-invocation`, unmerged.** P1 (the options seam, `ec5f445` +
 `d15be3a`), P1b (recorded mode + the canary write order, `487ebbe` + `117de05`), **P2 — the eval
-invokes the agent** (`d127b4d`) and **the P2 tier-2 review fixes** (`b62186f` + `075550d`).
+invokes the agent** (`d127b4d`) and the P2 review fixes (`b62186f` + `075550d`).
 `eval.py` no longer sets `agent_response = reference_answer`: each scenario's question goes to the
 customer agent through the seam with `side_effects="recorded"`, the agent's own text and its own
 retrieved contexts are what get scored, failed scenarios are excluded and counted, a run below

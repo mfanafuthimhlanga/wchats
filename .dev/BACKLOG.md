@@ -18,6 +18,8 @@ Legend — **[owner]** needs a human, **[blocked]** has an external precondition
 |---|---|---|
 | 0.1 | **[blocked, then owner]** Score the 10 rows in `apps/api/tests/evals/calibration/human_scores.csv`. Until then every LLM judge in the system is uncalibrated — Gatekeeper, Auditor, Strategist, `classify_severity`, and the **Actor gate that runs before money moves**. The harness exists and gates at Spearman ≥ 0.75; no agent may fill that column. **Corrected 2026-08-07: this is not yet owner work — it is behind `0.2`.** `--check` exits 3 and names one blocker: `responses/` has never been captured (0 on disk, 20 scenarios). `capture_responses.py` needs `AGENT_E2E_ENABLED=1`, a live API, a provisioned *and ingested* agent, and its plaintext key. There is nothing to score yet, by a human or anyone else. | audit D7 |
 | 0.2 | **[blocked]** Install a local PostgreSQL server. One precondition unblocks `VER-01`, `AUD-03`, `CAP-03`, the 6 blocked `23-UAT.md` checkpoints, the 4 `human_needed` items in `23-VERIFICATION.md`, and the 3 migration roundtrips below. Nothing listens on 5432-5435; `CONTROL_DB_URL` is live Neon production and is never a substitute. | HANDOFF |
+| 0.4 | **[owner] BLOCKS THE D1 MERGE. Production customer rows can reach the Ragas judge API.** Up to 60 nightly eval turns run against the tenant's **production** `conn_str`; `lookup_structured` returns `SELECT *` customer rows into the transcript; that transcript goes to the judge API with `pii_firewall_applied=False`. `2.11` records this only as a *scoring-fidelity* question — whether a firewall deflection should be scored as an answer. The **egress** reading is addressed nowhere on the branch. Decide before the first real eval run: firewall on the eval path, or accepted egress, named as such. | D1 tier-2 must-fix #2 |
+| 0.5 | **[owner] BLOCKS THE D1 MERGE. Settle the missing `alembic_tenant` migration.** The plan and the workflow prompt both required one; none exists and `0015` remains head. P2 put `agent_invoked` inside `eval_runs.config`, the JSONB that `0013` already added, so the implementers argue there is no DDL to write — coherent, and it avoids a second home for the one gate-facing claim. But it is a **deviation from a written contract**, and only you can accept it. One signed-off line in this file or HANDOFF suffices; silence does not. | D1 tier-2 must-fix #1 |
 | 0.3 | **[owner]** Actions minutes / spending limit at `github.com/settings/billing`. Two runs cancelled at 15m03s and 15m02s with every job killed — Lint included, which takes 11s. Until this lifts CI reports nothing and the gate is unreadable. | HANDOFF |
 
 ## 1. CI — finish what the cap interrupted
@@ -70,12 +72,24 @@ themselves created.
 > **The metric has not been observed to move**, and cannot be on this machine: no end-to-end eval run
 > is possible without `0.2`. P2 is unit-proven and unprovable end to end, exactly as the plan said.
 >
-> **A tier-2 judge has now read P2 and P3, and nothing else on this branch.** `d15be3a`'s message
-> and the former rows `2.5`/`2.6` originally credited "tier-2"; they were **tier-1** findings from
-> the P1 adversarial reviewer. The distinction is load-bearing — tier-2 is a Fable judge reading a
-> bounded artifact and asking whether the claims match the evidence. That question has been asked
-> about P2 (17 findings, closed in `b62186f`/`075550d`) and about P3 (11 findings and 6 unsupported
-> claims, closed in `8b124d4`/`9106412`). It has **not** been asked about P1 or P1b.
+> **THE TIER-2 JUDGE HAS NOW RUN, once, over the whole branch — 2026-08-08.** Verdict extracted to
+> **`.dev/reference/tier2-judge-d1.md`** per the CLAUDE.md rule (it was also the judge's own
+> must-fix #3). `mergeable: true`, with 3 must-fix items, 10 unproven claims, 10 evidence mismatches
+> and 8 new backlog items — rows `2.20`–`2.27` below. Two of its three must-fix items are **owner
+> decisions** and are filed at the top of this file as `0.4` and `0.5`, because a merge should not
+> proceed past them.
+>
+> **Provenance, corrected a second time.** Every in-phase reviewer on this branch was **tier-1**: a
+> session-model agent that investigated the codebase and asked "what is broken?". The P1 fix commit
+> (`d15be3a`), the former rows `2.5`/`2.6`, and this block's own earlier text all credited "tier-2"
+> for P1, P2 and P3 reviews. They were not. Tier-2 is a **Fable** judge reading a *bounded artifact*
+> and asking "do the claims match the evidence?", and until 2026-08-08 it had read nothing here. The
+> mislabel recurred across three separate phases, which makes it a process defect rather than a
+> slip — see `2.17`.
+>
+> The judge's one-line read: *"a correctly-shaped, fail-closed measurement pipeline that has never
+> measured anything — which is a large improvement over a pipeline that confidently measured its own
+> label, and is honestly labelled as such."*
 
 Numbering note: `2.1`, `2.2`, `2.3`, `2.5`, `2.6`, `2.7` and `2.13` are closed and their rows deleted
 per the maintenance rule — `2.2` the deploy gate itself (2026-08-08, P3: `apply_signal_evidence_gate`
@@ -110,6 +124,14 @@ name.
 | 2.16 | **`coverage_rate` is reported and nothing gates on it.** `response_rate` divides by what the per-run ceiling ALLOWED; `coverage_rate` divides by what the tenant designated, so a tenant with 200 labelled rows whose first 60 all answer reports response_rate 1.0 and coverage 0.3. Both travel on the run. `MIN_RESPONSE_RATE` is applied to the first only — deliberately, because gating on coverage would permanently block every tenant above the ceiling (see `2.12`, the same collision). **P3 has landed and did NOT take this on** — it gates `agent_invoked` only, so `coverage_rate` still travels on the run and still gates nothing. Stated rather than quietly carried forward. | D1/P2 review |
 | 2.17 | **A below-floor run's surviving scores are discarded, not stored un-gated.** The interim fail-closed in `run_eval_suite` skips `run_ragas_eval` entirely when the invocation is below the floor, so the 2 real observations from a 2-of-40 run are never computed and never stored. It was the honest choice while the gate could not refuse them; **P3 has now landed, so the precondition is met** — a below-floor run records `agent_invoked=false` and the gate refuses it on that basis alone. Score the survivors and store them for debugging, and delete the `run_ragas_eval` skip. | D1/P2 review |
 | 2.18 | **A pre-0013 tenant re-dispatches an eval on every readiness check.** The P3 review extended step 4b to fire for `agent_not_invoked` with `agent_invoked is None` — the historical population, which converges because a fresh run on a 0013+ tenant writes the key either way. A tenant DB with no `config` column cannot record it, so absence recurs there and every readiness check queues another `generate_eval_suite -> run_eval_suite` chain, bounded only by `run_eval_suite`'s in-flight idempotency window. Cheapest fix is `0.2` plus the migration roundtrip (`3.5`); the alternative is a "this tenant cannot record provenance" state the dispatch reads. | P3 tier-2 #3 |
+| 2.20 | **Tier-1 review outputs are lost to a temp directory.** This branch lost **17 of 48 tier-1 findings** and 7 of 13 unsupported-claim entries — unadjudicatable, because the workflow journal does not survive the session. The CLAUDE.md persistence rule covers only the tier-2 judgement. Extend it to tier-1: every reviewer's output lands in `.dev/reference/` or a committed trace before the run ends. | D1 tier-2 must-fix #3 |
+| 2.21 | **44 of 122 claimed mutation proofs have no surviving record** — P1 ×12, P1-fix ×12, P1b-fix ×18 — including all of P1, the phase the plan itself calls "the whole bet". Either re-run them or formally write them off in writing. Also harden the protocol: record each proof's selector and import order (the repo has a known fake-`@tool` import artifact producing 74 spurious failures in hand-picked subsets), and adopt P3-fix's sha256-both-sides restore as standard. Extends `3.9`. | D1 tier-2 backlog #2 |
+| 2.22 | **The scorable floor can be thin.** A run with 60 responses but only 3 retrieving turns is `MEASURED` with **3 scored observations gating a deploy**. Coverage is reported; nothing bounds the scorable fraction. Decide whether a scorable-rate floor belongs alongside `MIN_SCORED_OBSERVATIONS`. Adjacent to `2.15`/`2.16`, not identical. | D1 tier-2 backlog #8 |
+| 2.23 | **The admin console has no consumer for `agent_invoked`, `eval_signal` or the new `warning_id`.** The owner-facing account of a refused deploy exists only as API payload text. The four frontend gates were never run against this branch. | D1 tier-2 backlog #4 |
+| 2.24 | **Pre-existing `sys.modules` pollution.** `test_agent_task.py` installs a fake `claude_agent_sdk` and never removes it, so class identity depends on collection order (observed directly by P1-fix). The passthrough `@tool` fake in `test_recorded_side_effects.py` / `test_retrieval_metrics.py` causes a 74-failure ordering artifact. | D1 tier-2 backlog #5 |
+| 2.25 | **Lint claims depend on a network fetch.** `ruff` is not installed in `apps/api/.venv`; the branch's clean-lint claims came from `uvx ruff@latest`, which leaves no pinned artifact and cannot be reproduced offline. Install it into the venv or pin the version in the gate command. | D1 tier-2 backlog #6 |
+| 2.26 | **Only P1 ran the ignored-new-files control.** Later phases proved their delta by def-test-count arithmetic, which cannot see a pre-existing test silently changing status. Adopt the control (run the gate with the new test file `--ignore`d and compare to baseline) as the standard per-phase proof. | D1 tier-2 backlog #7 |
+| 2.27 | **`_build_transactional_probe_fn` egress** — see `2.9`; the judge raised the same seam bypass independently. Kept as one row there. | D1 tier-2 |
 | 2.19 | **`checklist_runs` has no gate version, so a stored 'ship' outlives the rules that produced it.** `POST /approve-deployment` validates against a `recommendation` frozen at checklist time. The P3 review closed D1's slice by re-reading `report.eval_summary.agent_invoked` at approve time, and `5.1` is the same hole on the red-team half. The general form: stamp a gate-version integer on the run at write time and 422 any run below the current version. Needs a control-DB migration, so it is behind `0.2`. Until then each new gate condition has to remember to add its own approve-time re-read, which is exactly the "a floor every consumer must remember to reapply is a floor nobody has" failure. | P3 tier-2 #1 |
 
 ## 3. Verification debt from the eval branch
