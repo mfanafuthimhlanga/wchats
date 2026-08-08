@@ -1187,11 +1187,8 @@ def test_the_bounds_the_run_ran_under_are_on_the_run():
 def test_a_run_that_only_ever_saw_short_chunks_reports_none_at_the_cap():
     """The complement, and the reason the test above is not a tautology.
 
-    `retrieved_context_at_cap` was previously computed against the 1800-char
-    AUDIT capture, which any realistic five-chunk retrieval exceeds — so it was
-    1 for every retrieving turn no matter what the retrieval contained, and the
-    provenance field the plan asked for carried no information. A guard that
-    only ever observes the TRUE case cannot tell a constant from an observation.
+    A guard that only ever observes the TRUE case cannot tell a constant from an
+    observation, and the figure it replaced WAS a constant.
     """
     _rows, summary, _calls = _invoke(
         _scenarios(3), lambda q: _turn(f"A to {q}", contexts=["short chunk"])
@@ -1201,6 +1198,51 @@ def test_a_run_that_only_ever_saw_short_chunks_reports_none_at_the_cap():
     assert summary["retrieved_context_at_cap"] == 0, (
         "every turn reported a context at the cap while no chunk was anywhere "
         "near it — the figure is a constant, not an observation"
+    )
+
+
+def test_a_full_retrieval_of_uncut_chunks_is_not_reported_as_truncated():
+    """THE PRODUCTION SHAPE, and the only fixture that separates the two caps.
+
+    `retrieved_context_at_cap` used to be `len(result) >= 1800` over the AUDIT
+    capture — a repr of the whole tool-result block. Five chunks of up to 2000
+    chars each blow past 1800 whatever they contain, so the figure was 1 on
+    essentially every retrieving turn: a constant wearing an observation's name,
+    reported beside a low faithfulness score as if it explained it.
+
+    This is that case and only that case: three 700-char chunks. The repr of
+    them is far over the 1800-char audit cap (so the OLD derivation says
+    "truncated") while every chunk is far under the 2000-char per-chunk cap that
+    can actually cut evidence (so the NEW one says "nothing was cut"). Nothing
+    was cut. The short-chunk and at-cap tests above cannot tell the two apart —
+    for a single short chunk the audit repr is short too, and for a 2000-char
+    chunk both caps trip.
+    """
+    from app.services.agent_tools import CHUNK_CONTENT_CHAR_LIMIT
+    from app.worker.tasks.runtime.agent import RETRIEVE_RESULT_CAPTURE_CHARS
+
+    chunks = ["c" * 700, "d" * 700, "e" * 700]
+    for chunk in chunks:
+        assert len(chunk) < CHUNK_CONTENT_CHAR_LIMIT
+
+    entry = _retrieve_entry(chunks)
+    assert len(entry["result"]) >= RETRIEVE_RESULT_CAPTURE_CHARS, (
+        "this fixture does not reproduce the production shape: the audit "
+        "capture must be AT its cap while no chunk is at the per-chunk cap, or "
+        "the two derivations are indistinguishable here"
+    )
+
+    _rows, summary, _calls = _invoke(
+        _scenarios(3), lambda q: _turn(f"A to {q}", contexts=chunks)
+    )
+
+    assert summary["scorable"] == 3
+    assert summary["retrieved_context_chunks"] == 9
+    assert summary["retrieved_context_at_cap"] == 0, (
+        f"{summary['retrieved_context_at_cap']} of 3 turns were reported as "
+        "hitting the context cap while every chunk came back whole. That is the "
+        "audit capture's 1800-char bound being read as the evidence bound — a "
+        "faithfulness miss would be excused by a truncation that never happened."
     )
 
 
