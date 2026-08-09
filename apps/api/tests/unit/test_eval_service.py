@@ -630,11 +630,20 @@ class TestPromoteToVerifiedQA:
         from "the promotion path is dead", and re-enabling it later would be a
         rewrite rather than a policy change. Registers a hypothetical
         human-authored source and asserts the D-22/D-23 machinery runs.
+
+        BOTH LOCKS ARE LIFTED HERE, and that is the change D6 P3 made: a
+        promotable source is no longer sufficient, because
+        VERIFIED_QA_PROMOTION_DECISION["enabled"] is now consulted as the last
+        gate. Lifting only one of the two would make this test assert that the
+        machinery is dead, which is the opposite of what it is for.
         """
         from app.services import eval_service
 
         monkeypatch.setitem(
             eval_service.SCENARIO_SOURCE_TRUST_TIER, "owner_written", "human_authored"
+        )
+        monkeypatch.setitem(
+            eval_service.VERIFIED_QA_PROMOTION_DECISION, "enabled", True
         )
 
         cursor = _RecordingCursor(fetchone_result=None)
@@ -690,13 +699,18 @@ class TestPromoteToVerifiedQA:
         the gate opens, the row retrieval_service.verified_qa_lookup serves to a
         real customer ahead of hybrid search would be the agent's own answer.
 
-        Which is exactly the state this test creates: a promotable tier, and an
-        agent_response that differs from the label.
+        Which is exactly the state this test creates: a promotable tier, the
+        decision flipped on (D6 P3's third gate, or nothing would be promoted at
+        all and the assertion below would be vacuous), and an agent_response that
+        differs from the label.
         """
         from app.services import eval_service
 
         monkeypatch.setitem(
             eval_service.SCENARIO_SOURCE_TRUST_TIER, "owner_written", "human_authored"
+        )
+        monkeypatch.setitem(
+            eval_service.VERIFIED_QA_PROMOTION_DECISION, "enabled", True
         )
 
         cursor = _RecordingCursor(fetchone_result=None)

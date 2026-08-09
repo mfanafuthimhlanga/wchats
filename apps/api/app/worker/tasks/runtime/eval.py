@@ -650,13 +650,22 @@ def run_eval_suite(self, agent_id: str) -> dict:
     trust hierarchy and unreachable for every scenario source the schema allows,
     and the decision is recorded on the run in eval_runs.config.
 
+    A HUMAN-LABELLED ROW CHANGES NOTHING ABOUT THAT (D6 P3). Labelling makes a
+    row eligible to the SELECTOR above — it acquires a reference_answer, so it
+    is fetched, counted in `valid`, put to the agent and scored — and it changes
+    nothing downstream of the score. It does not touch `dataset`, so it joins the
+    exploratory half and never the golden one (membership of the golden set is
+    asserted, never inherited); and it does not touch `source`, so it stays
+    unpromotable, on top of the decision flag now returned as
+    `promotion_enabled`.
+
     Args:
         agent_id: UUID string of the agent to evaluate.
 
     Returns:
         {"run_id", "scenario_count", "attempted", "valid", "scored", "datasets",
          "dataset_column_available", "golden_set_present", "promoted",
-         "config_recorded", "promotion_disabled_reason",
+         "config_recorded", "promotion_enabled", "promotion_disabled_reason",
          "branch_isolation", "agent_invoked", "agent_invocation",
          "invocation_recorded"}                                  on success.
         {"status": "already_running"}                            on idempotent skip.
@@ -1201,6 +1210,14 @@ def run_eval_suite(self, agent_id: str) -> dict:
             # missing key it might treat as "not measured".
             "promoted": 0,
             "config_recorded": config_recorded,
+            # THE FLAG TRAVELS WITH THE PROSE. `promoted: 0` and a reason string
+            # are what a run reported before D6, and neither is machine-readable
+            # as a policy: 0 is also what an ENABLED run that promoted nothing
+            # reports, and a reader cannot tell "promotion is off" from "nothing
+            # qualified" without parsing English. Since D6 the two are genuinely
+            # different — the system can now produce a label that would qualify —
+            # so the boolean is stated beside the count it explains.
+            "promotion_enabled": VERIFIED_QA_PROMOTION_DECISION["enabled"],
             "promotion_disabled_reason": VERIFIED_QA_PROMOTION_DECISION["reason"],
             # 'provisioned_unused' — a branch exists and no statement ran
             # against it; 'unavailable' — Neon could not give us one and the

@@ -1653,3 +1653,63 @@ class TestP1OpenedNoCustomerFacingDoor:
                 assert "INSERT INTO VERIFIED_QA" not in collapsed
                 assert "UPDATE VERIFIED_QA" not in collapsed
         assert label_service is not None
+
+
+class TestTheWriteChangesNothingElse:
+    """D6 P3 — the downstream half, for the two facts only this module may read.
+
+    Everything else P3 asserts lives in tests/unit/test_label_downstream.py.
+    These two cannot: R2 above forbids every test module but this one from so
+    much as naming the writer, and both of these are statements ABOUT the
+    writer. The rest of P3 reaches the same tier through
+    `eval_service.VERIFIED_QA_PROMOTION_DECISION["producible_label_tier"]`,
+    which the second test below pins equal to the writer's own constant — so the
+    indirection is a pin rather than a hope.
+    """
+
+    def test_the_label_write_assigns_exactly_four_columns_and_never_dataset(self):
+        """Labelling a row must not change which dataset it belongs to.
+
+        `dataset='golden'` designates the FIXED half that runs unsampled every
+        night so consecutive runs are a paired per-item comparison. A row that
+        joined or left that half as a side effect of being labelled would change
+        the population the comparison is over, and the run report has no field
+        that could say so.
+
+        Parsed from the statement and compared by EQUALITY, not by "is `dataset`
+        absent": a banned-substring check is just as happy with a statement that
+        assigns six columns as with one that assigns four, so it cannot notice a
+        column arriving under a name nobody thought to ban.
+        """
+        from app.services import label_service
+
+        body = label_service._LABEL_SQL.split("SET", 1)[1].split("WHERE", 1)[0]
+        assigned = {part.split("=", 1)[0].strip() for part in body.split(",")}
+
+        assert assigned == {
+            "reference_answer",
+            "label_trust_tier",
+            "labelled_by",
+            "labelled_at",
+        }, (
+            f"the label UPDATE assigns {sorted(assigned)}, which is not the "
+            "column list D6 reasoned about"
+        )
+
+    def test_the_tier_the_writer_stamps_is_the_tier_the_run_record_names(self):
+        """One spelling, pinned across the boundary the import wall creates.
+
+        `eval_service` cannot import the writer to state this tier — the writer
+        imports `eval_service`, so the dependency only runs one way — and no
+        other test module may name the writer. So the run record spells the tier
+        as a literal and this is the single place the two are compared. Without
+        it, editing HUMAN_AUTHORED_TIER would leave every run recording a
+        promotion decision about a tier nothing produces.
+        """
+        from app.services.eval_service import VERIFIED_QA_PROMOTION_DECISION
+        from app.services.label_service import HUMAN_AUTHORED_TIER
+
+        assert (
+            VERIFIED_QA_PROMOTION_DECISION["producible_label_tier"]
+            == HUMAN_AUTHORED_TIER
+        )

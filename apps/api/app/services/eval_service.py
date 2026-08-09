@@ -205,11 +205,29 @@ CONNECT_TIMEOUT_S = 5
 #   human_verified    (2) — a human read a candidate answer and confirmed it.
 #   human_authored    (3) — a human wrote the answer.
 #
-# Nothing in the shipped system produces tier >= human_verified yet: there is no
-# correction UI. That is precisely why VERIFIED_QA_MIN_TRUST_TIER is set there —
-# promotion is unreachable BY CONSTRUCTION rather than by an `if False`, and it
-# becomes reachable the moment a genuinely human-verified source exists, without
-# anyone having to remember to remove a flag.
+# THIS PARAGRAPH USED TO READ "nothing in the shipped system produces tier >=
+# human_verified yet: there is no correction UI", AND D6 MADE IT FALSE.
+# `label_service.record_human_label` — reachable from the labelling route in
+# app/api/v1/evals.py, and only behind a Clerk session — stamps `human_authored`,
+# rank 3, which CLEARS VERIFIED_QA_MIN_TRUST_TIER (rank 2) outright.
+#
+# The old argument was that promotion is "unreachable BY CONSTRUCTION rather than
+# by an `if False`, and becomes reachable the moment a genuinely human-verified
+# source exists, without anyone having to remember to remove a flag". That
+# property has inverted from a feature into a hazard: the owner settled on
+# 2026-08-08 that the labelling loop is EVAL-ONLY, so "it turns itself on the
+# moment a human tier exists" is precisely what must not happen. The flag that
+# paragraph was proud of not having is VERIFIED_QA_PROMOTION_DECISION["enabled"]
+# below, and select_promotion_candidates consults it.
+#
+# TWO INDEPENDENT LOCKS, because either alone is one edit away from being wrong:
+#   the RESOLVER — the promotion gate reads `source`, the QUESTION's origin,
+#       which labelling never changes (record_human_label does not touch it), so
+#       no labelled row clears it. One "obvious fix" swapping that to
+#       label_trust_tier() would open the door, which is why it is not the only
+#       lock; and
+#   the DECISION — `enabled: False`, consulted LAST, so a row that cleared every
+#       other gate is refused and COUNTED rather than promoted.
 LABEL_TRUST_TIERS: dict[str, int] = {
     "unknown": -1,
     "model_generated": 0,
@@ -239,19 +257,66 @@ SCENARIO_SOURCE_TRUST_TIER: dict[str, str] = {
 # verified_qa, which retrieval_service serves to customers ahead of retrieval.
 VERIFIED_QA_MIN_TRUST_TIER = "human_verified"
 
+# The refusal string `select_promotion_candidates` counts a row under when the
+# DECISION, rather than any property of the row, is what held it back. Named
+# separately from the reason prose because it is the key a reader greps for in a
+# refusals dict, and because it carries a measurement: while promotion is off,
+# `refusals[PROMOTION_DISABLED_REFUSAL]` is exactly "how many rows would have
+# been written into verified_qa if the owner flipped the decision" — the number
+# the owner needs in hand to make that call later, and a number that does not
+# exist if the disablement is implemented as an early `return []`.
+PROMOTION_DISABLED_REFUSAL = "promotion_disabled:eval_only"
+
 # Recorded verbatim on every run in eval_runs.config so the disablement is a
 # statement in the run record with a reason attached, rather than an absence a
 # future reader has to infer. Copied (never handed out by reference) at every
 # use site so a caller mutating the returned dict cannot poison the constant.
+#
+# KEPT FLAT ON PURPOSE. `build_eval_run_config` copies it with `dict(...)`, which
+# is shallow, so a nested dict or list here would be handed out by reference and
+# a caller mutating it would poison the constant for the process —
+# test_promotion_decision_is_copied_not_shared only observes the top level.
+#
+# THE REASON CHANGED IN D6 P3, AND THE OLD ONE WOULD NOW MISLEAD. It said "no row
+# is promotable until a correction UI produces human-verified answers". D6 P1/P2
+# built that correction UI. A run stamping the old text would be telling a later
+# reader that the door is held by an absent producer, when the producer now
+# exists and the door is held by a decision and a resolver choice. An absence a
+# reader has to infer is bad; a stale statement a reader will believe is worse.
 VERIFIED_QA_PROMOTION_DECISION: dict = {
     "enabled": False,
     "min_trust_tier": VERIFIED_QA_MIN_TRUST_TIER,
+    # Eval-only: a label improves what the eval can measure and reaches no
+    # customer. Owner, 2026-08-08 (.dev/plans/260808-d6-labelling-loop.md).
+    "scope": "eval_only",
+    "decided_on": "2026-08-08",
+    # The tier the shipped human-label writer stamps. Spelled as a literal here
+    # because that writer imports THIS module, so the dependency cannot run the
+    # other way; pinned equal across the boundary by a test rather than by hope.
+    #
+    # AND THE PROSE BELOW MAY NOT NAME THAT MODULE EITHER. R2's import-boundary
+    # scan in test_label_provenance.py reads every non-docstring string constant
+    # in this tree and refuses any that MENTIONS the writer's module or function
+    # name — because `import_module("app.services." + "...")` is how the
+    # full-dotted-path version of that scan was evaded. A prose mention would be
+    # indistinguishable from that, so the reason describes the writer instead of
+    # naming it. The scan fired on the first draft of this constant, which is
+    # the only evidence worth having that it is still doing its job.
+    "producible_label_tier": "human_authored",
+    "refusal_reason": PROMOTION_DISABLED_REFUSAL,
     "reason": (
-        "verified_qa is served to customers ahead of retrieval, so only a "
-        "human-verified or human-authored answer may enter it. Every scenario "
-        "source the schema currently allows is model-generated or labels a "
-        "negative, so no row is promotable until a correction UI produces "
-        "human-verified answers."
+        "verified_qa is served to customers by retrieval_service."
+        "verified_qa_lookup AHEAD of retrieval, so one mistyped label would be "
+        "answered to a real customer with no eval between the typo and them. "
+        "Since D6 the owner CAN produce a human_authored label, through the "
+        "one labelling route a Clerk session may drive, and that tier outranks "
+        "min_trust_tier — so the disablement is no longer the absence of a "
+        "producer, it is the owner's settled decision of 2026-08-08 that the "
+        "labelling loop is eval-only. Two things hold it shut: "
+        "select_promotion_candidates gates on eval_scenarios.source, which "
+        "labelling never changes, and it refuses outright while enabled is "
+        "false. Turning promotion on is a decision plus a code change, and "
+        "never a migration."
     ),
 }
 
@@ -1793,7 +1858,7 @@ def select_promotion_candidates(
 ) -> tuple[list[tuple[dict, dict]], dict[str, int]]:
     """Decide which scored scenarios may enter verified_qa. Pure — no I/O.
 
-    Two independent gates, applied in this order:
+    Three independent gates, applied in this order:
 
     1. TRUST TIER — is this scenario's answer allowed to be served to a
        customer at all? Checked FIRST and it is not a tiebreak: a high score on
@@ -1801,8 +1866,23 @@ def select_promotion_candidates(
        not about the answer's truth, so no score may buy a source out of its
        tier. Checking it first also means an unpromotable row never reaches the
        embedding call below.
+
+       IT READS `source`, THE QUESTION'S ORIGIN, AND THAT IS DELIBERATE RATHER
+       THAN LEFT OVER. `label_trust_tier(scenario)` is the resolver that answers
+       "who wrote this ANSWER", and since D6 it can return `human_authored` for
+       an owner-labelled row. Swapping this gate to it would be a one-line
+       change that turns customer-facing promotion on for every owner label —
+       against the settled decision — so the swap is not made here, and gate 3
+       exists so that making it anyway still does not open the door.
     2. SCORE THRESHOLD — D-21's 0.90/0.90 quality bar, applied only to answers
        that cleared the tier gate.
+    3. THE DECISION — VERIFIED_QA_PROMOTION_DECISION["enabled"]. Not a property
+       of the row: a policy the owner set. LAST on purpose, so the refusals dict
+       keeps saying WHY each row was held back. A row refused here cleared every
+       property gate and was stopped only by the decision, which makes
+       `refusals[PROMOTION_DISABLED_REFUSAL]` the measurement of what turning
+       promotion on would actually promote. An early `return []` would report
+       the same zero and destroy that number.
 
     A score whose scenario cannot be found is refused ('scenario_not_found'),
     not skipped silently: promoting an answer we cannot attribute to a question
@@ -1846,6 +1926,16 @@ def select_promotion_candidates(
             _refuse("below_score_threshold")
             continue
 
+        # THE LAST GATE IS A DECISION, NOT A PROPERTY OF THE ROW. Everything
+        # above asked something about this scenario; this asks whether the owner
+        # has turned the customer-facing write on at all, and the answer is no
+        # (eval-only, 2026-08-08). Last, so the count above stays diagnostic:
+        # this refusal means "would have been promoted", which is the only place
+        # in the system that number can be read.
+        if not VERIFIED_QA_PROMOTION_DECISION["enabled"]:
+            _refuse(PROMOTION_DISABLED_REFUSAL)
+            continue
+
         candidates.append((scenario, score))
 
     return candidates, refusals
@@ -1862,13 +1952,22 @@ def promote_to_verified_qa(
     retrieval_service.verified_qa_lookup BEFORE hybrid search, at 0.93 cosine
     similarity — so this function's output goes straight to end users. Its gate
     is therefore the label trust hierarchy first (select_promotion_candidates),
-    the D-21 score thresholds second. No scenario source the shipped schema
-    allows clears the trust gate today, so this function performs zero writes
-    and does not open a connection at all.
+    the D-21 score thresholds second, and the owner's decision last.
+
+    WHY IT IS UNREACHABLE HAS CHANGED, AND THE OLD ANSWER IS NO LONGER THE WHOLE
+    ANSWER. It used to be "no scenario source the shipped schema allows clears
+    the trust gate", full stop. That is still true — labelling does not touch
+    `source` — but D6 gave the system a producer of `human_authored` labels, so
+    "unreachable" now rests on TWO things and a reader must be told both: the
+    gate reads the question's origin rather than the label's tier, AND
+    VERIFIED_QA_PROMOTION_DECISION["enabled"] is False by the owner's settled
+    eval-only decision of 2026-08-08. Either one alone would be a single edit
+    from wrong. This function still performs zero writes and does not open a
+    connection at all.
 
     It is retained rather than deleted for two reasons: the promotion machinery
     (D-22 provenance, D-23 question_vector, the SELECT-first idempotency check)
-    is correct and will be needed once human-verified labels exist, and a
+    is correct and will be needed if the decision is ever flipped, and a
     surviving second lock on the door means a future caller that reintroduces
     the call still cannot serve a model-written answer to a customer.
 
