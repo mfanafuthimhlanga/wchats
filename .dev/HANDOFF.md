@@ -27,7 +27,29 @@
 > - **P1 landed** (`alembic_tenant` 0016 + `app/services/label_service.py`): the `human_authored`
 >   tier that `LABEL_TRUST_TIERS` had declared since D5 and nothing could produce, behind four
 >   restrictions. **P2 landed** (`4962ff5`, review fixes `17a5774`): `GET .../eval-scenarios/unlabelled`
->   and `POST .../eval-scenarios/{id}/label`. **P3 and P4 are unstarted.**
+>   and `POST .../eval-scenarios/{id}/label`. **P3 landed** (`edb4fbb`). **P4 is unstarted**, by the
+>   owner's "backend only this run".
+> - **P3's finding is that the run record had gone stale, not that plumbing was missing.**
+>   `VERIFIED_QA_PROMOTION_DECISION["reason"]` — stamped into `eval_runs.config` on every run — said
+>   "no row is promotable until a correction UI produces human-verified answers". **P1 and P2 built
+>   that correction UI**, and `human_authored` (rank 3) clears `VERIFIED_QA_MIN_TRUST_TIER` (rank 2),
+>   so the pre-D6 guarantee — "unreachable by construction, no flag needed, and it becomes reachable
+>   the moment a human tier exists" — had inverted from a feature into a hazard against the owner's
+>   eval-only decision. Promotion is now held by **two independent locks**: the gate reads
+>   `eval_scenarios.source` (which labelling never touches) and `enabled: False` refuses last, so a
+>   row it refuses is *counted* under `promotion_disabled:eval_only` — which is the measurement of
+>   what flipping the decision would actually promote. Downstream, a labelled row enters the eval,
+>   joins **no** golden set (the label UPDATE assigns four columns and `dataset` is not one), and
+>   raises the **denominator** without raising `scored` when the agent cannot answer it.
+>   Long form and all 12 mutation proofs: `.dev/reference/d6-p3-label-downstream.md`.
+> - **R2 fired twice on P3's own work and was not weakened** — once on prose naming the writer inside
+>   a string constant, once on the new test module importing it. Two tests consequently live in
+>   `test_label_provenance.py`; the new module reaches the tier through
+>   `VERIFIED_QA_PROMOTION_DECISION["producible_label_tier"]`, pinned equal there.
+> - Branch suite at `edb4fbb`+: **2101 passed, 12 skipped**. Ignored-new-files control: **2077/12**,
+>   which is the *measured* baseline at `1c2b471` — so no pre-existing test changed status. Note the
+>   D6 workflow brief's "1873/11" is the branch point `4179a5c`, before P1 and P2 landed; it is not a
+>   baseline for anything on this branch.
 > - **`BACKLOG 2.4`'s "mined scenarios are inert by construction" is now narrowed but NOT closed.**
 >   The tier exists, the routes exist, and **0016 has been applied to no database**, so every label
 >   attempt on every tenant today returns a 503 naming the migration. No row has ever left the

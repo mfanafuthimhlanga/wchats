@@ -322,14 +322,25 @@ class TestALabelledRowEntersTheEval:
     def test_the_owners_answer_is_the_reference_and_never_the_prediction(
         self, monkeypatch
     ):
-        """The row reaching the scorer carries the owner's text as the LABEL and
-        the agent's own turn as the prediction.
+        """The owner's exact text is what reaches the scorer as the LABEL.
 
-        This is audit D1 aimed at the new row: eval.py used to set
-        `agent_response = reference_answer`, which made faithfulness approach 1.0
-        by construction. A human-labelled row is the most tempting place for that
-        to come back, because its reference answer is the best text in the
-        database and scoring against it looks like a good idea.
+        The first assertion is the load-bearing one and it caught a real
+        mutation: carrying `row[2]` (the question) instead of `row[3]` through
+        eval.py's row builder turns the run into Ragas scoring the agent against
+        the question it was asked, silently, on the one row a human took the
+        trouble to write.
+
+        THE SECOND ASSERTION IS WEAKER THAN IT LOOKS, AND SAYING SO IS THE POINT.
+        It reads like a pin against audit D1 (`agent_response = reference_answer`,
+        which made faithfulness approach 1.0 by construction). It is not one.
+        `_invoke_agent_for_scenarios` — real or doubled — sets `agent_response`
+        from the turn with `{**s, "agent_response": ...}`, so it overwrites
+        whatever the row builder put there and reinstating D1 upstream of it
+        would not turn this red. It is a fixture sanity check: it fails if this
+        module's own double ever starts feeding the scorer a self-answer. D1
+        itself is pinned in test_eval_agent_invocation.py and by
+        run_eval_for_agent's tautology refusal, which are the two places that
+        can see it.
         """
         rec = _wire(
             monkeypatch, exploratory_rows=[*_EXPLORATORY_ROWS, _LABELLED_ROW]
