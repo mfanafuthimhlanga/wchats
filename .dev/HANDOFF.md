@@ -3,6 +3,34 @@
 > **`.dev/BACKLOG.md` is the single ordered list of open work.** Read it before starting anything.
 > This file is the current-state snapshot; that one is the queue.
 
+> # MERGED — 2026-08-09, `main` is at `57be16b`
+>
+> `feat/d6-labelling-loop` merged with `--no-ff`, carrying `feat/d1-agent-invocation` with it (D6
+> contained all 22 of D1's commits). 42 commits, 67 files, +35,033/-411, no conflicts. **The merged
+> tree is byte-identical to the tip measured at 2112 passed / 12 skipped / 0 failed** — verified with
+> `git diff feat/d6-labelling-loop main`, which is empty — so that observation carries to `main`
+> without re-running.
+>
+> **Merged with `0.4` and `0.5` unsettled.** The owner's call, recorded, not argued. What changed:
+> - **Nothing deployed.** No workflow triggers a deploy; the repo has only `ci.yml` and `nightly.yml`.
+>   No eval has run against any production tenant.
+> - **`0.4` moved rather than lapsed.** `celery_app.py:208` schedules `eval-nightly` at 02:00 UTC
+>   daily, so the first beat worker running this code against production tenants sends customer rows
+>   to the Ragas judge with `pii_firewall_applied=False`. There is no further merge in the way — the
+>   next gate is a deploy, and deploys are not gated here.
+> - **`0.5` was decided by merging.** The deviation is on `main`. The row stays open only to record
+>   which way, and it is cheap either way.
+>
+> **What is live and what is inert.** Live: the eval invokes the real agent, and the deploy gate
+> refuses a run that does not record having invoked it (including every pre-D1 run, which fails
+> closed). Inert: the labelling loop. `alembic_tenant` 0016 has been applied to no database, so every
+> label attempt returns 503, and per `2.28` the miner that was to fill the queue has never produced a
+> row and cannot. Both behind `0.2`.
+>
+> **Next, in order:** `0.6` (one `count(*)` — sizes the whole loop and decides whether `2.28` and P4
+> are worth building), `0.2` (a local PostgreSQL — unblocks the migration roundtrips, the calibration,
+> and the metric ever being observed to move), then `0.4` before anything runs nightly.
+
 > **STATE AS OF 2026-08-08, end of the D1 workflow.** All 14 agents completed. P1, P1b, P2, P3, their
 > tier-1 reviews and bounded fixes, and — for the first time on this branch — **the tier-2 judge**.
 > Verdict: **`mergeable: true`**, extracted to `.dev/reference/tier2-judge-d1.md`. Its one-line read:
