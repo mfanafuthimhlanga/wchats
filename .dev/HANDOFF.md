@@ -20,6 +20,27 @@
 > `…-p2-review-fixes.md`, `…-p3-review-fixes.md`) and earlier BACKLOG text call them "tier-2". They
 > are not. Tier-2 is the Fable judge, it ran once, and its output is the reference file above.
 
+> **STATE AS OF 2026-08-09 — D6, `feat/d6-labelling-loop`, STACKED ON THE UNMERGED
+> `feat/d1-agent-invocation` (`4179a5c`), not on `main`.** Merge only the top of the stack, and only
+> once D1 lands. Nothing below has been rebased.
+>
+> - **P1 landed** (`alembic_tenant` 0016 + `app/services/label_service.py`): the `human_authored`
+>   tier that `LABEL_TRUST_TIERS` had declared since D5 and nothing could produce, behind four
+>   restrictions. **P2 landed** (`4962ff5`, review fixes `17a5774`): `GET .../eval-scenarios/unlabelled`
+>   and `POST .../eval-scenarios/{id}/label`. **P3 and P4 are unstarted.**
+> - **`BACKLOG 2.4`'s "mined scenarios are inert by construction" is now narrowed but NOT closed.**
+>   The tier exists, the routes exist, and **0016 has been applied to no database**, so every label
+>   attempt on every tenant today returns a 503 naming the migration. No row has ever left the
+>   unlabelled state. Behind `0.2` (no PostgreSQL here) like everything else.
+> - The P2 adversarial review found **18 items, including four behaviour mutations that survived the
+>   54 tests P2 shipped with** — the queue's sort direction, its `LIMIT`/`OFFSET` binding, the counts
+>   identity, and three of four spellings of a forged write. All fixed at `17a5774`; the write is now
+>   scoped so it cannot overwrite a golden-set answer, and **only a Clerk JWT may stamp a human tier**
+>   (an API key is a machine credential and `label_service`'s guards are all in-process).
+>   Long form: `.dev/reference/d6-p2-labelling-queue.md` §7.6, and
+>   `.dev/reference/d6-p2-review-fixes.md`.
+> - Branch suite at `17a5774`: **2077 passed, 12 skipped**. Ignored-new-files control: **1994/12**.
+
 **In flight (2026-08-08): `feat/d1-agent-invocation`, unmerged.** P1 (the options seam, `ec5f445` +
 `d15be3a`), P1b (recorded mode + the canary write order, `487ebbe` + `117de05`), **P2 — the eval
 invokes the agent** (`d127b4d`) and the P2 review fixes (`b62186f` + `075550d`).

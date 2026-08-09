@@ -8,7 +8,22 @@ journal that did not survive the session.
 
 ---
 
+> **CORRECTED 2026-08-09** after the adversarial review of this phase. The changes are marked
+> **[CORRECTED]** in place; the mutation ledger in §7.4 gains fourteen more rows in §7.6. The
+> corrections are substantive, not cosmetic — four behaviour mutations survived the 54 tests this
+> document reported as proof, and §7.4's "fourteen of fourteen" was a statement about the mutations
+> that were CHOSEN, never about coverage.
+>
+> The review itself is `.dev/reference/d6-p2-adversarial-review.md`; what was done about each of its
+> 18 findings, with the deviations, is `.dev/reference/d6-p2-review-fixes.md`. Fixes commit `17a5774`.
+
 ## 1. THE HEADLINE FINDING: judge confidence is not joinable to a scenario
+
+**[CORRECTED]** The heading overstates its own evidence, and the correction matters because a later
+reader could take "not implementable" as closing the question. What the three legs below establish is
+**not implementable without a tenant migration and a change to the miner** — which is exactly what
+the re-scoped `BACKLOG 6.4` then says, and P1 of this same plan did write a tenant migration. The
+distinction is between *impossible* and *not P2's to spend*, and only the second is proven.
 
 The plan (§P2) and the task brief both ask for **uncertainty ordering**, citing `BACKLOG 6.4`:
 `validators.py` emits judge `confidence` into `job_events` and it is discarded for ranking. The
@@ -19,9 +34,13 @@ scenario, say so plainly and order by something you CAN defend."*
 
 ### 1.1 It is in a different database
 
-`validators.py` builds its session with `get_sync_db()` (`app/worker/tasks/runtime/validators.py:37`,
-used at `:154`) and passes that session to `emit(job_id, "gatekeeper.complete", {...}, db, _redis)`
-(`:203-209`). `emit` (`app/services/events.py:36`) inserts one `job_events` row through that session.
+**[CORRECTED]** — the module path was written as bare `validators.py` and three of the four line
+numbers were off by one or two. The substance of all three legs is unchanged; the citations now
+resolve. There is no `app/services/validators.py`.
+
+`app/worker/tasks/runtime/validators.py` builds its session with `get_sync_db()` (imported at `:37`,
+used at `:155`) and passes that session to `emit(job_id, "gatekeeper.complete", {...}, db, _redis)`
+(`:207-213`). `emit` (`app/services/events.py:36`) inserts one `job_events` row through that session.
 `get_sync_db` is the **control DB**.
 
 `eval_scenarios` is a **tenant** table — `alembic_tenant/versions/0005_verified_qa_eval_scenarios.py`
@@ -33,7 +52,7 @@ SQL statement can join across them. This alone rules out an `ORDER BY confidence
 
 ### 1.2 There is no join key, so application-side correlation does not rescue it
 
-`scenario_service.store_scenarios` (`app/services/scenario_service.py:151-167`) inserts exactly:
+`scenario_service.store_scenarios` (`app/services/scenario_service.py:153-166`) inserts exactly:
 
 ```
 (id, source, question, reference_answer, retrieved_contexts, scenario_category, created_at)
@@ -59,7 +78,8 @@ recovers the question from tenant `messages` via `jobs.conversation_id`).
 `verified_qa_candidates.auditor_confidence` (`alembic_tenant/0004`, `FLOAT NOT NULL`) is the only
 confidence value persisted in a tenant DB. `run_auditor` writes it only under
 `if verdict.verdict == "grounded" and verdict.confidence >= threshold`
-(`validators.py:368-376`) — i.e. only for **grounded** turns above threshold. The queue's population
+(`app/worker/tasks/runtime/validators.py:368-377`) — i.e. only for **grounded** turns above
+threshold. The queue's population
 is the complement: `mine_production_scenarios` filters
 `payload->>'verdict' IN ('fail','ungrounded','partial')`. **The confidence attached to a failed
 judgement is never persisted tenant-side at all.**
@@ -101,15 +121,36 @@ ORDER BY array_position(%(source_priority)s::text[], source) ASC NULLS LAST,
 "ordering": {"by_uncertainty": false, "keys": [...], "reason": "..."}
 ```
 
-so a console cannot render this as "the rows the judges were least sure about". `QUEUE_ORDERING` is
-copied at the use site (`dict(QUEUE_ORDERING)`), matching `eval_service.VERIFIED_QA_PROMOTION_DECISION`.
+so a console cannot render this as "the rows the judges were least sure about".
+
+**[CORRECTED]** Two things this section claimed were not true:
+
+- **The key list described a query that does not exist.** It was hand-written as
+  `["origin_trust_tier DESC", "created_at ASC", "id ASC"]` — naming a column that is not in
+  `eval_scenarios` and a direction the statement does not use. And the statement's own direction was
+  pinned by nothing: reversing `array_position(...) ASC NULLS LAST` to `DESC NULLS LAST`, which puts
+  `generated` first and `mined` last, passed all 54 tests while the payload went on claiming `DESC`.
+  `keys` is now **parsed out of `_UNLABELLED_QUEUE_SQL`** by `_order_by_keys()`, so the payload cannot
+  describe an ordering the database is not performing, and a test comparing the parsed list pins every
+  key's direction at once. Proof: `M15`.
+- **`dict(QUEUE_ORDERING)` is a shallow copy and `keys` is a list**, so the "copy" shared the
+  constant's list and `body["ordering"]["keys"].append(...)` mutated it for every later request in the
+  process. Not reachable over HTTP, where FastAPI serialises the dict — but the comparison drawn to
+  `eval_service.VERIFIED_QA_PROMOTION_DECISION` did not hold: that constant is all scalars and has no
+  nested mutable to share. Now `copy.deepcopy`, asserted behaviourally rather than by checking the
+  handler's source for a substring. Proof: `M26`.
 
 ---
 
 ## 3. THE SELECTOR IS UNTOUCHED, AND THE PIN IS CROSS-MODULE
 
-`SELECTOR_ELIGIBILITY_PREDICATE = "reference_answer != ''"` is spelled once in `evals.py`. All three
-queue statements use `NOT (...)` or `(...)` of that constant, and
+`SELECTOR_ELIGIBILITY_PREDICATE = "reference_answer != ''"` is spelled once. **[CORRECTED]** — it now
+lives in `app/services/eval_service.py`, not in `evals.py`: `label_service`'s UPDATE needs the same
+string to scope itself (see below) and a service may not import `app.api` (R2), so the one module both
+sides already import is where it has to be. `evals.py` re-exports the name, so the pin below still
+reads it through `evals_module`.
+
+All three queue statements use `NOT (...)` or `(...)` of that constant, and
 `test_the_queue_selects_exactly_what_the_eval_selector_excludes` reads the constant back out of
 `inspect.getsource(run_eval_suite)`. If the task ever stops filtering on it, this queue's
 "unlabelled" silently stops meaning "will never be scored" — and that test is what makes it audible.
@@ -118,9 +159,17 @@ untouched and still green.
 
 `counts.eligible == counts.labelled`, and that identity **is** the P2 claim rather than a redundancy:
 writing an answer is the whole of what makes a row eligible, so the selector needs no change.
-Reporting both names lets a reader check it from the payload instead of taking it on trust.
 `eligible` is *"the selector will consider it"*, not *"it will be scored tonight"* — the exploratory
 half of a run is a sample of at most `EXPLORATORY_SAMPLE_SIZE` rows.
+
+**[CORRECTED] "Reporting both names lets a reader check it from the payload instead of taking it on
+trust" was false, and it is the more dangerous kind of false: it invites a reader to verify something
+by looking at a tautology.** `_queue_counts_sync` binds the SAME Python variable to `labelled` and to
+`eligible`, so they are equal unconditionally and whatever `run_eval_suite` filters on. There is
+nothing in the payload to check. What holds the identity is the cross-module pin — `M9`, a real proof:
+replacing `!=` with the semantically identical `<>` still turns it red, because the test is reading
+`run_eval_suite`'s literal text. `eligible` is reported so a console has the number under the name the
+eval uses; the docstring now says so.
 
 ---
 
@@ -136,6 +185,13 @@ half of a run is a sample of at most `EXPLORATORY_SAMPLE_SIZE` rows.
   the selector's own predicate**, not a separately hand-written `= ''`. So `unlabelled + labelled ==
   total` is an identity of the SQL rather than two hand-written conditions agreeing by luck.
   (`reference_answer` has been `NOT NULL` since 0005, so no row falls into a third bucket.)
+  **[CORRECTED] — true by reading the source, and until 2026-08-09 guarded by nothing.** Replacing the
+  `labelled` FILTER with `WHERE question != ''`, which makes the identity FALSE in Postgres, passed all
+  54 tests: `test_every_count_travels_with_its_denominator` asserts the arithmetic over
+  `counts_row=(10, 4, 6, 2)`, numbers the test itself supplies. The two FILTERs are now **counted**
+  in both counts statements — exactly one `FILTER (WHERE NOT (<p>))` and exactly one
+  `FILTER (WHERE <p>)` — because a presence check for the un-negated form is satisfied by the negated
+  form as a substring. Proof: `M17`.
 - **`human_labelled` is `null`, never `0`, when the column does not exist.** Migration 0016 has been
   applied to **no** database, so `label_trust_tier` exists nowhere yet; the counts query raises
   `UndefinedColumn`, falls back, and reports `null` beside `label_provenance_available: false`. Zero
@@ -160,16 +216,38 @@ because the route did not exist. It exists now:
   absent tier parameter, one level up the stack.
 - `_label_principal(tenant)` returns `f"tenant:{tenant.id}"`.
 
-**`labelled_by` names an ACCOUNT, not a person, and the prefix says so.** `get_current_tenant`
-resolves to a `Tenant` by either a Clerk JWT (behind which there is one specific human) or an
-`X-API-Key` (a machine credential with no human behind it at all), and **it does not report which
-path ran**. Reading `tenant.clerk_user_id` would therefore attribute an API-key write to a Clerk user
-who may not have made it — a false authorship claim stamped beside `human_authored`, in the one place
-in the system where authorship claims are the entire point. Recording the account is the strongest
-claim this auth layer supports. `deployment.py:449` already uses `str(tenant.id)` for
-`run.approved_by`; the `tenant:` prefix is added here because a bare UUID beside a human trust tier
-reads as a user id. Narrowing it to a person needs a principal-aware dependency in
-`app/api/deps.py`. `BACKLOG 4.7` narrowed to exactly that residue.
+**`labelled_by` names an ACCOUNT, not a person, and the prefix says so.** `deployment.py:449` already
+uses `str(tenant.id)` for `run.approved_by`; the `tenant:` prefix is added here because a bare UUID
+beside a human trust tier reads as a user id.
+
+**[CORRECTED] — THE STANDING TRAP THIS SECTION UNDERSTATED, AND IT IS NOW CLOSED.** The original text
+framed the gap as identity granularity: "an account, not a person", with the remedy being a
+principal-aware dependency. That framing would have let a later reader close `BACKLOG 4.7` by adding
+`clerk_user_id` without touching the real problem, which is different in kind:
+
+> `get_current_tenant` accepts `X-API-Key`, **a machine credential**. Any script, scheduler or
+> model-driven pipeline holding a tenant key could POST model prose to this route and have it stored
+> as `label_trust_tier='human_authored'` — the tier `VERIFIED_QA_MIN_TRUST_TIER` is defined over. So
+> the value of the whole hierarchy was bounded by the secrecy of an API key rather than by any
+> human-in-the-loop property. `label_service`'s R1–R4 cannot see it: they read a parameter list, an
+> import graph, Celery's thread-local task stack and an `agent_tools` ContextVar, and **all four are
+> in-process facts** that an out-of-process caller trips none of.
+
+The credential is the only evidence about the caller that survives a process boundary, so the check
+had to go at the auth layer. `get_current_tenant` now records which path resolved on
+`request.state.credential_kind`; `get_credential_kind` is a dependency that reports it; and
+`label_eval_scenario` refuses anything but `CREDENTIAL_CLERK_JWT` with a **403** — including
+`CREDENTIAL_UNKNOWN`, because "cannot tell" must never resolve to "human". The GET is deliberately
+**not** gated: reading the queue asserts nothing about who is reading. Proof: `M21`.
+
+Two facts that narrowed the original exposure and are worth keeping on the record: `tenant.api_key_hash`
+is argon2, so nothing in `app/worker` or `app/services` can recover a usable key from the control DB;
+and R2 pins that no worker or service module imports `app.api`.
+
+What remains of `BACKLOG 4.7` is now genuinely the person, not the machine: knowing a JWT
+authenticated the request is not knowing which human sent it, because the tenant is looked up BY that
+claim and nothing in the schema forbids a second user against one tenant. That needs the principal
+carried out of the dependency, not re-derived from the tenant row.
 
 **The row's `source` is not touched.** `test_a_label_is_recorded_at_the_human_authored_tier` parses
 the emitted SET clause and asserts it assigns exactly
@@ -186,10 +264,53 @@ hop. The refusal is a 500 with a fixed detail; the internal reason goes to the l
 
 | condition | status | why |
 |---|---|---|
-| `rows_updated == 0` | 404 | no such row **in this tenant's DB** — also the cross-tenant outcome, and the two must be indistinguishable |
-| `LabelRejected` (empty/whitespace answer) | 422 | Pydantic `min_length=1` catches `""`; the service catches `"   "` |
+| `rows_updated == 0`, row absent | 404 | no such row **in this tenant's DB** — also the cross-tenant outcome, and the two must be indistinguishable |
+| `rows_updated == 0`, row present | **409** | **[CORRECTED]** already answered; the scoped UPDATE skipped it. See below |
+| visibly-empty answer | 422 | **[CORRECTED]** a `field_validator` on the request model, so no connection is opened |
+| over `MAX_REFERENCE_ANSWER_CHARS` | 422 | **[CORRECTED]** 8000 chars; the stored value is fed to a paid judge every night |
+| credential is not a Clerk JWT | **403** | **[CORRECTED]** an API key authenticates an account, not a person |
 | `HumanLabelRefused` | 500 | the API process believes a model is driving it; a server fault, not the caller's |
 | `psycopg2.errors.UndefinedColumn` | 503 | **the state of every tenant DB today** — the detail names migration 0016 rather than surfacing a traceback |
+
+**[CORRECTED] THE WRITE'S REACH WAS WIDER THAN THE FEATURE IT SERVES, AND THIS DOCUMENT DID NOT
+MENTION IT.** `_LABEL_SQL`'s WHERE was `id = %(scenario_id)s::uuid` alone. The GET only ever returns
+unlabelled rows, but the POST reached **any** scenario in the agent's database: one request silently
+replaced an existing `reference_answer` and re-stamped `labelled_by` / `labelled_at`, with no record
+of what had been there and no test covering it. On a `dataset='golden'` row that is worse than losing
+an answer — `eval.py` runs the golden half in full every night precisely so consecutive runs are a
+**paired per-item comparison**, and moving one item's reference answer breaks the comparison while the
+run report has no way to say so. On a `generated` row it restamps model output as `human_authored`.
+
+The UPDATE is now scoped by `AND NOT (<selector predicate>)`, so its reach is exactly the queue's own
+population and the two are defined by the same string. Zero rows then has two causes, and
+`record_human_label` runs a `SELECT 1` probe **only on that path** to tell them apart, returning
+`already_labelled`. Relabelling is refused rather than silently performed: if a correction path is
+wanted it is an explicit second act — which answer is superseded, by whom, and whether a golden row may
+move at all — not a side effect of the queue's write. Proofs: `M20`, `M27`.
+
+**[CORRECTED] The empty-answer guard was `str.strip()`, which does not remove Cf.** A zero-width
+answer (`U+200B`, `U+FEFF`, `U+200C`) was accepted, stamped `human_authored`, and satisfied both
+`run_eval_suite`'s `reference_answer != ''` and 0016's `COALESCE(reference_answer,'') <> ''` CHECK —
+re-inerting the row while marking it labelled, which is the exact state the guard exists to prevent.
+The realistic origin is a stray character from a rich-text paste, not an attacker. Emptiness is now
+decided on Unicode general category in `label_service.visible_answer`, used by both the request model
+and the writer. Proof: `M22`.
+
+**[CORRECTED] And that check now runs at the boundary.** `test_an_empty_answer_is_rejected_without_
+touching_the_database` was false for `"   "` and `"\n\t "`: Pydantic's `min_length=1` passed them, so
+`_resolve_agent_tenant_db` decrypted and `psycopg2.connect` ran before `record_human_label` rejected
+them. The test held only because it asserted "no write statement executed", and `record_human_label`
+raises before opening a cursor. The check is a `field_validator` now, the recording connection counts
+`connects`, and the property the route advertises for a refused CONTEXT is finally the property it has
+for refused CONTENT. Proof: `M23`.
+
+**[CORRECTED] A soft-deleted agent was still labellable.** `_resolve_agent_tenant_db` used
+`db.get(Agent, agent_id)`, which cannot express a filter, so `DELETE /agents/{id}` followed by a label
+POST decrypted a deleted agent's connection string and wrote into its tenant database — contradicting
+the invariant `agents.py:226` states for the whole API surface. It now issues
+`select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))`. The three older read routes
+in this module share the gap; fixing them is a separate decision, deliberately not taken here. Proof:
+`M24`.
 
 ---
 
@@ -360,6 +481,22 @@ replaces `!=` with `<>`, which is the *same operator in SQL* — the test still 
 proves the cross-module pin is reading `run_eval_suite`'s actual text and not merely satisfying
 itself.
 
+**[CORRECTED] — and "fourteen of fourteen" is a statement about the mutations that were CHOSEN, not
+about coverage.** Each of the fourteen is honest; the review reproduced them and found no fabricated
+red and no missing restore. But four mutations it chose instead survived the whole suite — the
+`array_position` sort direction, the `LIMIT`/`OFFSET` binding, the `labelled` FILTER predicate, and
+three of four spellings of a forged write — and those cover the three properties this document's prose
+leans on hardest. They are `M15`, `M16`, `M17`, `M18` and `M19` in §7.6.
+
+**[CORRECTED] M8 could not be replayed as recorded.** `except psycopg2.errors.UndefinedColumn` occurs
+three times in `evals.py` — in `list_eval_runs`, in `_queue_counts_sync` and in `label_eval_scenario` —
+and the row recorded only `1 failed`, so a reader could not tell which guard had been demonstrated.
+Mutating `_queue_counts_sync` reds
+`test_human_labelled_is_unknown_not_zero_before_migration_0016`; mutating `label_eval_scenario` reds
+`test_a_tenant_database_without_0016_says_which_migration_is_missing`; both produce exactly `1 failed`.
+The `label_eval_scenario` occurrence — the one the row's title is about — was re-run on 2026-08-09 with
+the failing identity captured, as `M8b` in §7.6.
+
 M1, M2 and M3 were re-run capturing failing test identities rather than counts, because they are the
 three the task named as critical:
 
@@ -386,6 +523,142 @@ three the task named as critical:
 
 ---
 
+### 7.6 Mutation proofs for the review fixes (2026-08-09)
+
+Same discipline: mutate, RUN, observe red, restore **from `HEAD` unconditionally**
+(`git checkout HEAD -- <path>`, in a `finally:`), RUN again, observe green. Verbatim final pytest
+lines and the FAILED identities of every red run. The harness is
+`scratchpad/mutate.py`; it refuses an anchor that matches other than exactly once, and it refuses a
+mutation that changes nothing, so a silently-no-op "proof" cannot be recorded.
+
+Selectors, run from `apps/api`:
+
+```
+A: .venv/Scripts/python.exe -m pytest tests/unit/test_eval_label_queue.py -q
+B: .venv/Scripts/python.exe -m pytest tests/unit/test_eval_label_queue.py tests/unit/test_label_provenance.py -q
+```
+
+Baseline for A is `83 passed`; for B, `170 passed`.
+
+| # | guard | mutation | sel | RED | GREEN |
+|---|---|---|---|---|---|
+| M15 | the priority key sorts the best origin FIRST | `array_position(...) ASC NULLS LAST,` → `DESC NULLS LAST,` | A | `3 failed, 80 passed in 30.31s` | `83 passed in 24.84s` |
+| M16 | limit binds to LIMIT and offset to OFFSET | `LIMIT %(limit)s OFFSET %(offset)s` → `LIMIT %(offset)s OFFSET %(limit)s` | A | `1 failed, 82 passed in 26.87s` | `83 passed in 25.01s` |
+| M17 | the `labelled` FILTER is the selector predicate | `FILTER (WHERE {SELECTOR_ELIGIBILITY_PREDICATE}) AS labelled,` → `FILTER (WHERE question != '') AS labelled,` | A | `1 failed, 82 passed in 26.58s` | `83 passed in 24.17s` |
+| M18 | no second write path — **composed** spelling | append `_ADV_TBL = "eval_" + "scenarios"` / `_ADVERSARIAL = f"UPDATE {_ADV_TBL} SET reference_answer = %(a)s"` | B | `1 failed, 169 passed in 32.30s` | `170 passed in 29.83s` |
+| M19 | no second write path — **schema-qualified** spelling | append `_ADVERSARIAL = "UPDATE public.eval_scenarios SET reference_answer = %(a)s"` | B | `2 failed, 168 passed in 34.69s` | `170 passed in 30.57s` |
+| M20 | the label UPDATE is scoped to an unlabelled row | delete `AND NOT ({SELECTOR_ELIGIBILITY_PREDICATE})` from `_LABEL_SQL` | B | `2 failed, 168 passed in 32.91s` | `170 passed in 29.93s` |
+| M21 | only a Clerk JWT may stamp a human tier | `if credential_kind != CREDENTIAL_CLERK_JWT:` → `if credential_kind == 'never-this':` | A | `3 failed, 80 passed in 26.67s` | `83 passed in 25.81s` |
+| M22 | emptiness is decided on Unicode category | drop `"Cf"` from `_INVISIBLE_CATEGORIES` | B | `4 failed, 166 passed in 33.15s` | `170 passed in 30.93s` |
+| M23 | the emptiness check is at the BOUNDARY | `answer = visible_answer(value)` → `answer = value` in the field validator | A | `7 failed, 76 passed in 27.21s` | `83 passed in 24.20s` |
+| M24 | a soft-deleted agent is not resolvable | delete `Agent.deleted_at.is_(None)` from the agent SELECT | A | `2 failed, 81 passed in 27.21s` | `83 passed in 26.94s` |
+| M25 | the reference answer is bounded | delete `max_length=MAX_REFERENCE_ANSWER_CHARS,` | A | `1 failed, 82 passed in 30.12s` | `83 passed in 25.59s` |
+| M26 | QUEUE_ORDERING is deep-copied | `copy.deepcopy(QUEUE_ORDERING)` → `dict(QUEUE_ORDERING)` | A | `1 failed, 82 passed in 28.03s` | `83 passed in 24.82s` |
+| M27 | the probe distinguishes a relabel from a missing row | `already_labelled = bool(cur.fetchall())` → `= False` | A | `1 failed, 82 passed in 27.30s` | `83 passed in 25.16s` |
+| M8b | the 503 naming 0016, **`label_eval_scenario` occurrence** | that occurrence's `except psycopg2.errors.UndefinedColumn:` → `UndefinedTable:` | A | `1 failed, 82 passed in 27.88s` | `83 passed in 24.83s` |
+
+**Fourteen more, fourteen red.** The FAILED identities, so each row can be replayed against a named
+guard rather than a count:
+
+```
+### M15   3 failed
+    FAILED ...::TestQueueOrdering::test_the_ordering_is_exactly_these_keys_in_this_direction
+    FAILED ...::TestQueueOrdering::test_the_priority_key_sorts_the_best_origin_first_not_last
+    FAILED ...::TestQueueOrdering::test_the_response_states_that_this_is_not_an_uncertainty_ordering
+
+### M16   1 failed
+    FAILED ...::TestQueueOrdering::test_the_page_takes_its_limit_and_offset_in_that_order
+
+### M17   1 failed
+    FAILED ...::TestTheSelectorIsUntouched::test_the_two_count_filters_are_the_predicate_and_its_exact_negation
+
+### M18   1 failed          <- THE ONE THAT MATTERS MOST
+    FAILED ...::TestTheSelectorIsUntouched::test_this_module_issues_no_write_statement_of_any_kind
+
+### M19   2 failed
+    FAILED ...::TestTheSelectorIsUntouched::test_this_module_issues_no_write_of_its_own_to_eval_scenarios
+    FAILED ...::TestTheSelectorIsUntouched::test_this_module_issues_no_write_statement_of_any_kind
+
+### M20   2 failed
+    FAILED ...::TestTheLabelWrite::test_a_scenario_that_already_has_an_answer_is_a_409_not_an_overwrite
+    FAILED ...::TestTheLabelWrite::test_the_label_write_is_scoped_to_an_unlabelled_row
+
+### M21   3 failed
+    FAILED ...::TestOnlyAHumansCredentialMayStampAHumanTier::test_an_api_key_may_not_record_a_human_label
+    FAILED ...::TestOnlyAHumansCredentialMayStampAHumanTier::test_an_unrecorded_credential_is_refused_too
+    FAILED ...::TestOnlyAHumansCredentialMayStampAHumanTier::test_the_route_declares_the_credential_dependency
+
+### M22   4 failed
+    FAILED ...::TestTheLabelWrite::test_an_empty_answer_is_rejected_without_touching_the_database[\u200b]
+    FAILED ...::TestTheLabelWrite::test_an_empty_answer_is_rejected_without_touching_the_database[\ufeff]
+    FAILED ...::TestTheLabelWrite::test_an_empty_answer_is_rejected_without_touching_the_database[\u200c]
+    FAILED ...::TestTheLabelWrite::test_an_empty_answer_is_rejected_without_touching_the_database[\u200b\u200c\ufeff]
+
+### M23   7 failed   (all eight parametrisations except `""`, which min_length=1 still catches)
+    FAILED ...::TestTheLabelWrite::test_an_empty_answer_is_rejected_without_touching_the_database[   ]
+    FAILED ...::TestTheLabelWrite::test_an_empty_answer_is_rejected_without_touching_the_database[\n\t ]
+    FAILED ...::TestTheLabelWrite::test_an_empty_answer_is_rejected_without_touching_the_database[\xa0]
+    FAILED ...::TestTheLabelWrite::test_an_empty_answer_is_rejected_without_touching_the_database[\u200b]
+    FAILED ...::TestTheLabelWrite::test_an_empty_answer_is_rejected_without_touching_the_database[\ufeff]
+    FAILED ...::TestTheLabelWrite::test_an_empty_answer_is_rejected_without_touching_the_database[\u200c]
+    FAILED ...::TestTheLabelWrite::test_an_empty_answer_is_rejected_without_touching_the_database[\u200b\u200c\ufeff]
+
+### M24   2 failed
+    FAILED ...::TestTenantIsolation::test_a_soft_deleted_agent_is_gone_from_both_routes[GET]
+    FAILED ...::TestTenantIsolation::test_a_soft_deleted_agent_is_gone_from_both_routes[POST]
+
+### M25   1 failed
+    FAILED ...::TestTheLabelWrite::test_an_oversized_answer_is_rejected_at_the_boundary
+
+### M26   1 failed
+    FAILED ...::TestQueueOrdering::test_the_ordering_record_cannot_be_mutated_through_the_response
+
+### M27   1 failed
+    FAILED ...::TestTheLabelWrite::test_a_scenario_that_already_has_an_answer_is_a_409_not_an_overwrite
+
+### M8b   1 failed          <- the identity the original M8 row could not supply
+    FAILED ...::TestTheLabelWrite::test_a_tenant_database_without_0016_says_which_migration_is_missing
+```
+
+**M18 and M19 are the pair worth reading together.** M19 (schema-qualified) reds BOTH scans; M18
+(table name composed from fragments) reds only the verb scan, because the statement scan still has to
+recognise the table and reassembles that forgery as `UPDATE  SET ...`. That division of labour is
+itself pinned — `test_the_table_aware_scan_has_this_exact_blind_spot` asserts the first scan finds
+nothing there and the second does — so nobody deletes the verb scan as redundant. Neither scan claims
+forgery is impossible; between them, no spelling anyone has yet devised passes unnoticed.
+
+After every mutation the tree was verified clean: `git status --short` shows only untracked review
+notes and `git diff --stat HEAD` is empty.
+
+### 7.7 Gates after the review fixes
+
+```
+.venv/Scripts/python.exe -m pytest tests/unit -q \
+  --ignore=tests/unit/test_chunking_service.py \
+  --ignore=tests/unit/test_docling_service.py
+
+2077 passed, 12 skipped, 28 warnings in 369.61s (0:06:09)
+```
+
+`1994 + 83 = 2077`, and `test_eval_label_queue.py` collects exactly 83 (was 54). Skips unchanged at
+12 — no `-m integration` harness became runnable and none could: there is still no PostgreSQL server
+on this machine.
+
+The ignored-new-files control (`BACKLOG 2.26`), with `test_eval_label_queue.py` also ignored:
+
+```
+1994 passed, 12 skipped, 28 warnings in 387.82s (0:06:27)
+```
+
+**Identical to the control observed at `44f0ad5`**, pass for pass and skip for skip — under changes to
+`app/api/deps.py` (which every authenticated route in the application resolves),
+`app/api/v1/evals.py`, `app/services/eval_service.py`, `app/services/label_service.py` and
+`tests/unit/test_label_provenance.py`. `test_label_provenance.py` was modified but not extended: its
+recording cursor gained a `fetchall`, and two assertions were updated for the writer's new
+`already_labelled` outcome, so its count is unchanged at 87 and the control's 1994 is comparable.
+
+---
+
 ## 8. WHAT IS NOT PROVEN, PLAINLY
 
 - **No query in this phase has been executed by a database.** There is no PostgreSQL server on this
@@ -407,3 +680,26 @@ three the task named as critical:
   is filed as `BACKLOG 4.10` — a finding about the miner, not about the queue, and the reason P4 (the
   console) stays unstarted.
 - **No migration was written by P2, and none could have been applied if it had been.**
+
+**[ADDED 2026-08-09] What the review fixes did NOT prove:**
+
+- **The scoped UPDATE has never been planned or executed.** `AND NOT (reference_answer != '')` is
+  asserted at the SQL-string level and against a recording cursor. Whether Postgres would use an
+  index for it, and whether the row-level race between two concurrent labellers resolves the way the
+  409 implies, are both unobserved. The existence probe is a SECOND statement in the same transaction
+  and is not `FOR UPDATE`, so two simultaneous POSTs against the same unlabelled row could in
+  principle both see rows_updated == 1 or both report 409 depending on isolation level — with the
+  default READ COMMITTED, the loser's UPDATE re-evaluates the predicate against the committed row and
+  matches nothing, which gives the intended 409, but that is reasoning about the manual, not an
+  observation.
+- **`request.state.credential_kind` has never been read in a real ASGI process.** It is exercised
+  through `get_current_tenant` called directly with a hand-built `Request`, and through dependency
+  overrides in the route tests. The one thing not covered end to end is a genuine Clerk JWT arriving
+  over HTTP and the label route seeing `clerk_jwt` — that needs a live JWKS.
+- **The 403 changes the contract for any existing API-key caller of this route.** There is none today
+  (the route is four days old and P4, the console, is unstarted), so no caller was broken. If an
+  automation is later wanted here, the answer is a new tier and a new writer — `human_verified`
+  already exists in 0016's CHECK for exactly that reason — not widening this gate.
+- **`MAX_REFERENCE_ANSWER_CHARS = 8000` is a judgement, not a measurement.** Nothing measured what a
+  real reference answer costs in a Ragas prompt. The bound is generous enough that the guess being
+  wrong is visible as a 422 rather than as silent truncation.

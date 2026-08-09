@@ -10,8 +10,13 @@ mutation proofs verbatim, and what is unproven)
 | path | |
 |---|---|
 | `apps/api/app/api/v1/evals.py` | `GET /agents/{id}/eval-scenarios/unlabelled`, `POST /agents/{id}/eval-scenarios/{sid}/label`, `QUEUE_ORDERING`, `SELECTOR_ELIGIBILITY_PREDICATE`, `_source_priority_order`, `_resolve_agent_tenant_db`, `ScenarioLabelRequest`, `_label_principal`, `_record_label_sync` |
-| `apps/api/tests/unit/test_eval_label_queue.py` | new — 55 tests |
+| `apps/api/tests/unit/test_eval_label_queue.py` | new — **54 tests** (83 after the review fixes below) |
 | `.dev/BACKLOG.md` | `2.4` and `4.7` narrowed, `6.4` re-scoped, `4.9` and `4.10` added |
+
+> The count read **55** here until 2026-08-09. It was the `55 passed` from §7.1b of the reference
+> doc — 54 tests plus the one-test polluting module used for the minimum-size reproduction of
+> `BACKLOG 4.6`. 54 is the number that satisfies `1994 + N = 2048`; 55 does not, and a reader
+> checking the arithmetic would have been the one to discover it.
 
 **No migration.** P2 adds none and needs none: the queue reads columns 0011 already provides, and the
 write goes through P1's `label_service` into 0016's columns.
@@ -67,6 +72,37 @@ fixed with the same autouse fixture `test_label_provenance.py` already needed. T
 fixture suppresses is pinned separately by
 `test_a_REAL_agent_context_refuses_the_label_and_opens_nothing`, which drives the genuine guard
 rather than a patched one. `4.6` updated with the evidence — second module, second identical fixture.
+
+## The adversarial review, and what it changed (2026-08-09)
+
+18 findings, in `.dev/reference/d6-p2-adversarial-review.md`. Fixed on the same branch, commit
+`17a5774`; what was done about each, with the deviations, is `.dev/reference/d6-p2-review-fixes.md`,
+and the 14 new mutation proofs are in the reference doc §7.6.
+
+- **Four behaviour mutations survived the 54 tests this trace reported as proof.** The
+  `array_position` sort DIRECTION (reversing it inverts the queue), the `LIMIT`/`OFFSET` binding, the
+  `labelled` count FILTER (breaking `unlabelled + labelled == total` in Postgres), and three of four
+  spellings of a forged `eval_scenarios` write appended to `evals.py`. All four are pinned now.
+- **The write reached any scenario in the agent's DB, not only an unlabelled one.** One POST could
+  overwrite a curated golden-set reference answer with no record of what had been there. The UPDATE
+  is scoped by the negation of the selector predicate; an already-answered row is a 409 told apart
+  from the 404 by an existence probe run only on the zero-row path.
+- **A machine credential could stamp `human_authored`.** `get_current_tenant` accepts `X-API-Key` and
+  `label_service`'s R1-R4 are all in-process facts. `get_credential_kind` now reports which credential
+  resolved and the route refuses anything but a Clerk JWT. This is the phase's central claim finally
+  being enforced rather than asserted; `4.7` rewritten accordingly.
+- **`str.strip()` does not remove zero-width characters**, so a `"\u200b"` answer was accepted, stamped
+  human, and satisfied both the selector and 0016's CHECK. Emptiness is now decided on Unicode
+  category — and the check moved onto the request model, so the test named "without touching the
+  database" is true for the first time.
+- **A soft-deleted agent was still labellable** (`db.get()` cannot filter `deleted_at`).
+- `QUEUE_ORDERING["keys"]` described a query that does not exist and is now parsed out of the
+  statement; `dict()` was a shallow copy over a nested list; `counts.eligible` is `labelled` by Python
+  assignment and the docs claimed a reader could check the identity from the payload.
+
+Gate after the fixes: **2077 passed, 12 skipped** (`1994 + 83`). Ignored-new-files control:
+**1994 passed, 12 skipped** — identical to the pre-fix control, so nothing outside the queue module
+changed status despite `deps.py` being touched.
 
 ## Not proven
 
