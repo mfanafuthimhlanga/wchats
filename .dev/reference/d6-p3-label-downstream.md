@@ -277,9 +277,18 @@ Command, from `apps/api`:
 | **After** (first, pre-correction) | `2101 passed, 12 skipped, 30 warnings in 377.32s (0:06:17)` |
 | **After** (final tree) | `2101 passed, 12 skipped, 30 warnings in 370.48s (0:06:10)` |
 | **Ignored-new-files control** (final tree) | `2077 passed, 12 skipped, 2 deselected, 28 warnings in 365.63s (0:06:05)` |
+| **After the review fixes** (`f78524e`) | `2112 passed, 12 skipped, 30 warnings in 360.40s (0:06:00)` |
+| **Ignored-new-files control** (after the fixes) | `2077 passed, 12 skipped, 2 deselected, 28 warnings in 363.04s (0:06:03)` |
 
 Delta = **+24 = 22 (new file) + 2 (`test_label_provenance.py`)**. The control reproduces the observed
 baseline exactly, so **no pre-existing test changed status**.
+
+After the review fixes: **+35 = 33 (new file, up from 22) + 1 (`test_label_provenance.py`, down from
+2 — the duplicate is deleted) + 1 (`test_eval_service.py`)**, and the control reads the same
+`2077 / 12 / 2` it read before. Six pre-existing tests changed content in that run — four `setitem`
+call sites became `setattr`, one assertion became a reason rather than a count, one stopped pinning
+`measured` — and all six are inside the control's population, so their staying green is observed
+rather than assumed. Full detail: `.dev/reference/d6-p3-review-fixes.md`.
 
 > **The brief's stated baseline of 1873 passed / 11 skipped is the branch point `4179a5c`, not
 > `HEAD`.** P1 and P2 added ~204 tests to this branch after that point. The 2077/12 above was
