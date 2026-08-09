@@ -46,6 +46,13 @@
 >   a string constant, once on the new test module importing it. Two tests consequently live in
 >   `test_label_provenance.py`; the new module reaches the tier through
 >   `VERIFIED_QA_PROMOTION_DECISION["producible_label_tier"]`, pinned equal there.
+> - **Branch suite OBSERVED at the D6 tip (`6dc4990`), 2026-08-09: 2112 passed, 12 skipped, 0 failed,
+>   28 warnings, 493.34s.** Zero `FAILED`/`ERROR` lines. Detached run (`Start-Process`), not relayed.
+>   This is the figure to merge on; the `edb4fbb` reading below predates four later commits.
+> - **`feat/d6-labelling-loop` contains ALL of `feat/d1-agent-invocation`** — verified by
+>   `git merge-base --is-ancestor`. `main..d6` is 42 commits, of which 22 are D1's. Merging D6 merges
+>   D1 with it, so `0.4` and `0.5` sit in that path whichever branch is named. Rebasing D6 onto `main`
+>   to separate them is not viable: D6's P3 builds on the eval structures D1 rewrote.
 > - Branch suite at `edb4fbb`+: **2101 passed, 12 skipped**. Ignored-new-files control: **2077/12**,
 >   which is the *measured* baseline at `1c2b471` — so no pre-existing test changed status. Note the
 >   D6 workflow brief's "1873/11" is the branch point `4179a5c`, before P1 and P2 landed; it is not a
