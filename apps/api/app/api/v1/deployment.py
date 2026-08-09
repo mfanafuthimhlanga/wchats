@@ -38,7 +38,11 @@ from app.schemas.deployment import (
     ApproveDeploymentRequest,
 )
 from app.services.capability_service import canonical_envelope_hash, envelope_drift
-from app.services.deployment_service import _make_iframe_snippet
+from app.services.deployment_service import (
+    STORED_RUN_NOT_INVOKED_DETAIL,
+    _make_iframe_snippet,
+    stored_run_records_agent_invocation,
+)
 from app.worker.tasks.runtime.deployment import run_deployment_checklist
 
 router = APIRouter(tags=["deployment"])
@@ -358,10 +362,16 @@ async def approve_deployment(
         T-08-04-02: Server-side validation before any mutation —
         blocked or incomplete runs are rejected (422).
 
-    Validation sequence (CONTEXT.md §Approval Validation; Phase 18 BLR-02 adds #4):
+    Validation sequence (CONTEXT.md §Approval Validation; Phase 18 BLR-02 adds
+    #4; audit D1 / P3 review adds #3b):
         1. run.status != "complete"     → 422 "Checklist is still running"
         2. recommendation == "block"    → 422 "Cannot approve a blocked deployment..."
         3. ship_with_warnings + not all acknowledged → 422 "Acknowledge all warnings..."
+        3b. the run's own report does not record eval_summary.agent_invoked is
+           True → 422. `recommendation` is frozen at checklist time, so a run
+           completed before the D1 gate landed still says 'ship' over an eval
+           that scored the dataset's own reference answers. Absence, falsehood
+           and an unreadable report shape all fail identically.
         4. live envelope hash drifted from the run's recorded hash (or the
            recorded hash is NULL — an absent acknowledgement is drift, never
            a match) → 422 "Capability envelope changed..."
@@ -403,6 +413,23 @@ async def approve_deployment(
             status_code=422,
             detail="Acknowledge all warnings before approving",
         )
+    # 3b. Audit D1 / P3 review: the stored run's own eval evidence must claim
+    #     the agent was invoked. `recommendation` is FROZEN at checklist time by
+    #     whatever gate was running that day, so refusing an uninvoked run in
+    #     apply_signal_evidence_gate closes nothing for a run that already
+    #     completed — and every run completed before this release carries a
+    #     'ship' computed over the tautology at eval.py:374-375. This is the
+    #     same read the gate makes, made again here against the artifact the
+    #     approve decision is actually taken from. Fail-closed on any shape it
+    #     cannot read, exactly as the NULL envelope hash below does.
+    #
+    #     Placed AHEAD of the envelope check and BEHIND the three shipped
+    #     validations: a blocked or incomplete run still reports its own, more
+    #     severe 422, but an owner whose run measured nothing needs to know
+    #     they must run a fresh eval FIRST, which is a step the envelope-drift
+    #     message ("re-run the checklist") does not mention.
+    if not stored_run_records_agent_invocation(run.report):
+        raise HTTPException(status_code=422, detail=STORED_RUN_NOT_INVOKED_DETAIL)
     # 4b. BLR-02: the live capability envelope must still match what this
     #     checklist run recorded. envelope_drift returns True for a NULL
     #     recorded hash too — a pre-0019 historical run or a run whose hash

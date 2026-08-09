@@ -46,11 +46,44 @@ import os
 import re
 import uuid
 from contextlib import contextmanager
+from types import MappingProxyType
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import psycopg2
 import pytest
+
+
+def _with_source_tier(monkeypatch, source: str, tier: str) -> None:
+    """Register a hypothetical scenario source at *tier* for one test.
+
+    `SCENARIO_SOURCE_TRUST_TIER` is a `MappingProxyType` since the D6 P3 review
+    (finding 4) — it is one of the locks on the customer-facing verified_qa
+    write, and as a plain dict any module in the process could open it with a
+    single subscript assignment. `setitem` therefore raises, and a test that
+    needs a promotable tier rebinds the whole mapping instead.
+    """
+    from app.services import eval_service
+
+    monkeypatch.setattr(
+        eval_service,
+        "SCENARIO_SOURCE_TRUST_TIER",
+        MappingProxyType({**eval_service.SCENARIO_SOURCE_TRUST_TIER, source: tier}),
+    )
+
+
+def _with_promotion_enabled(monkeypatch) -> None:
+    """Flip the decision flag for one test, the same way and for the same
+    reason as `_with_source_tier` above."""
+    from app.services import eval_service
+
+    monkeypatch.setattr(
+        eval_service,
+        "VERIFIED_QA_PROMOTION_DECISION",
+        MappingProxyType(
+            {**eval_service.VERIFIED_QA_PROMOTION_DECISION, "enabled": True}
+        ),
+    )
 
 # ---------------------------------------------------------------------------
 # The scenario sources the SCHEMA allows, parsed from migration 0011 itself.
@@ -353,8 +386,16 @@ class TestConnectTimeouts:
             lambda svc: svc.insert_eval_run(
                 "run-1", "m6:a", None, None, "postgresql://production"
             ),
+            lambda svc: svc.update_eval_run_config(
+                "run-1", {"agent_invoked": True}, "postgresql://production"
+            ),
         ],
-        ids=["write_eval_results", "update_eval_run_status", "insert_eval_run"],
+        ids=[
+            "write_eval_results",
+            "update_eval_run_status",
+            "insert_eval_run",
+            "update_eval_run_config",
+        ],
     )
     def test_production_writers_bound_the_connect(self, monkeypatch, call):
         from app.services import eval_service
@@ -622,12 +663,17 @@ class TestPromoteToVerifiedQA:
         from "the promotion path is dead", and re-enabling it later would be a
         rewrite rather than a policy change. Registers a hypothetical
         human-authored source and asserts the D-22/D-23 machinery runs.
+
+        BOTH LOCKS ARE LIFTED HERE, and that is the change D6 P3 made: a
+        promotable source is no longer sufficient, because
+        VERIFIED_QA_PROMOTION_DECISION["enabled"] is now consulted as the last
+        gate. Lifting only one of the two would make this test assert that the
+        machinery is dead, which is the opposite of what it is for.
         """
         from app.services import eval_service
 
-        monkeypatch.setitem(
-            eval_service.SCENARIO_SOURCE_TRUST_TIER, "owner_written", "human_authored"
-        )
+        _with_source_tier(monkeypatch, "owner_written", "human_authored")
+        _with_promotion_enabled(monkeypatch)
 
         cursor = _RecordingCursor(fetchone_result=None)
         conn_strings: list[str] = []
@@ -656,9 +702,7 @@ class TestPromoteToVerifiedQA:
         """D-21's 0.90/0.90 bar still applies once the tier gate is cleared."""
         from app.services import eval_service
 
-        monkeypatch.setitem(
-            eval_service.SCENARIO_SOURCE_TRUST_TIER, "owner_written", "human_authored"
-        )
+        _with_source_tier(monkeypatch, "owner_written", "human_authored")
 
         scenario, score = _scored("owner_written", 0.85, 0.95)
         candidates, refusals = eval_service.select_promotion_candidates(
@@ -666,6 +710,147 @@ class TestPromoteToVerifiedQA:
         )
         assert candidates == []
         assert refusals == {"below_score_threshold": 1}
+
+    def test_the_promoted_answer_is_the_label_not_the_agents_own_text(
+        self, monkeypatch
+    ):
+        """THE GATE AND THE PAYLOAD MUST DESCRIBE THE SAME ARTIFACT (P2 review).
+
+        `select_promotion_candidates` refuses on `scenario["source"]` — the
+        provenance of the REFERENCE answer. `promote_to_verified_qa` wrote
+        `scenario["agent_response"]`. Before D1/P2 those were the same string,
+        because eval.py set agent_response = reference_answer, so gating on the
+        source was correct by accident. After P2 agent_response is model-
+        generated output whose tier is `model_generated` regardless of what the
+        scenario's source says — so on the day a human_authored source exists and
+        the gate opens, the row retrieval_service.verified_qa_lookup serves to a
+        real customer ahead of hybrid search would be the agent's own answer.
+
+        Which is exactly the state this test creates: a promotable tier, the
+        decision flipped on (D6 P3's third gate, or nothing would be promoted at
+        all and the assertion below would be vacuous), and an agent_response that
+        differs from the label.
+        """
+        from app.services import eval_service
+
+        _with_source_tier(monkeypatch, "owner_written", "human_authored")
+        _with_promotion_enabled(monkeypatch)
+
+        cursor = _RecordingCursor(fetchone_result=None)
+        connect, _conn = _recording_connect(cursor, [])
+        monkeypatch.setattr(eval_service.psycopg2, "connect", connect)
+
+        vo = MagicMock()
+        embed_result = MagicMock()
+        embed_result.embeddings = [[0.1] * 1024]
+        vo.embed.return_value = embed_result
+        monkeypatch.setattr(eval_service, "_get_vo", lambda: vo)
+
+        scenario, score = _scored("owner_written", 0.95, 0.92)
+        scenario["reference_answer"] = "THE HUMAN-AUTHORED ANSWER"
+        scenario["agent_response"] = "WHAT THE MODEL SAID INSTEAD"
+
+        result = eval_service.promote_to_verified_qa(
+            [scenario], [score], "postgresql://production"
+        )
+
+        assert result["promoted"] == 1
+        inserts = [
+            params
+            for sql, params in cursor.executed
+            if "INSERT INTO verified_qa" in sql
+        ]
+        assert len(inserts) == 1
+        assert inserts[0]["answer"] == "THE HUMAN-AUTHORED ANSWER", (
+            f"verified_qa was given {inserts[0]['answer']!r} as the answer a "
+            "customer will be served. The trust tier that admitted this row is "
+            "a claim about the LABEL, not about the agent's turn."
+        )
+        assert inserts[0]["answer"] != scenario["agent_response"]
+
+    def test_a_row_with_no_label_is_refused_rather_than_promoted_blank(
+        self, monkeypatch
+    ):
+        """The tier cleared describes a string the row does not have.
+
+        Writing `reference_answer` instead of `agent_response` closes the
+        provenance hole and opens a smaller one: a promotable source whose label
+        is empty would serve a blank answer. Refused with its own reason so the
+        denominator still accounts for it.
+        """
+        from app.services import eval_service
+
+        _with_source_tier(monkeypatch, "owner_written", "human_authored")
+
+        scenario, score = _scored("owner_written", 0.95, 0.95)
+        scenario["reference_answer"] = ""
+
+        candidates, refusals = eval_service.select_promotion_candidates(
+            [scenario], [score]
+        )
+        assert candidates == []
+        assert refusals == {"no_promotable_answer": 1}
+
+
+class TestTheSecondOrchestrator:
+    """run_eval_for_agent is a second door to run_ragas_eval, and P2's guards
+    all read eval.py."""
+
+    def test_it_refuses_a_prediction_that_is_its_own_label(self):
+        """D1, reinstated through the door nothing was watching.
+
+        Every guard P2 built either reads eval.py's AST or drives eval.py's
+        loop. This function takes caller-supplied scenario dicts, invokes no
+        agent and hands them straight to the scorer — so a future synchronous
+        "score these rows" route could pass agent_response = reference_answer
+        and reproduce the tautology with the whole D1 suite still green.
+        """
+        from app.services import eval_service
+
+        with pytest.raises(ValueError, match="their own label"):
+            eval_service.run_eval_for_agent(
+                "run-1",
+                [{"id": "s1", "question": "q", "reference_answer": "a",
+                  "agent_response": "a"}],
+                "postgresql://production",
+            )
+
+    def test_it_refuses_a_row_with_no_prediction_at_all(self):
+        """`run_ragas_eval` reads `s.get("agent_response", "")` and would score
+        an empty string against the label rather than raise."""
+        from app.services import eval_service
+
+        with pytest.raises(ValueError, match="their own label"):
+            eval_service.run_eval_for_agent(
+                "run-1",
+                [{"id": "s1", "question": "q", "reference_answer": "a"}],
+                "postgresql://production",
+            )
+
+    def test_the_refusal_happens_before_a_single_judge_call_is_billed(
+        self, monkeypatch
+    ):
+        """A refusal after scoring would cost the money it exists to protect."""
+        from app.services import eval_service
+
+        monkeypatch.setattr(
+            eval_service,
+            "run_ragas_eval",
+            lambda *a, **kw: pytest.fail("the judge was called for a tautology"),
+        )
+        monkeypatch.setattr(
+            eval_service,
+            "update_eval_run_status",
+            lambda *a, **kw: pytest.fail("the run was marked running for a tautology"),
+        )
+
+        with pytest.raises(ValueError):
+            eval_service.run_eval_for_agent(
+                "run-1",
+                [{"id": "s1", "question": "q", "reference_answer": "a",
+                  "agent_response": "a"}],
+                "postgresql://production",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -764,7 +949,17 @@ class TestPersistenceSplit:
 
         result = eval_service.run_eval_for_agent(
             "run-1",
-            [{"id": "s1", "question": "q", "reference_answer": "a"}],
+            [
+                {
+                    "id": "s1",
+                    "question": "q",
+                    "reference_answer": "a",
+                    # Distinct from the label, because this door refuses a
+                    # tautology — see
+                    # test_the_second_orchestrator_refuses_a_prediction_that_is_its_own_label.
+                    "agent_response": "what the agent actually said",
+                }
+            ],
             "postgresql://production",
         )
 
@@ -1095,16 +1290,25 @@ class TestBuildEvalRunConfig:
 
         assert hashes[0] == hashes[1]
 
-    def test_config_says_the_agent_was_not_invoked(self, config_env):
+    def test_config_at_insert_says_the_agent_has_not_been_invoked_yet(
+        self, config_env
+    ):
         """The tuple certifies a configuration; this key says whether the run
         exercised it. Without it the tuple makes an uncomparable measurement
-        look comparable."""
+        look comparable.
+
+        At INSERT the honest answer is always "not yet": the eval_runs row is
+        also the per-agent idempotency key, so it has to exist before the first
+        of sixty SDK turns. A run that dies in between keeps this False and is
+        refused by the deploy gate — the fail-closed direction.
+        """
         from app.services import eval_service
 
         config = eval_service.build_eval_run_config("a", "postgresql://p")["config"]
 
         assert config["agent_invoked"] is False
-        assert config["scored_response_source"] == "reference_answer"
+        assert config["scored_response_source"] == "pending_invocation"
+        assert config["agent_invocation"]["status"] == "not_started"
 
     def test_config_names_every_dimension_the_score_cannot_see(self, config_env):
         """The failing input: change AGENT_TURN_MODEL and run two nightly evals.
@@ -1143,45 +1347,95 @@ class TestBuildEvalRunConfig:
         config = eval_service.build_eval_run_config("a", "postgresql://p")["config"]
         assert "judge_model_id" not in config["dimensions_not_exercised"]
 
-    def test_nothing_is_excluded_once_the_agent_is_invoked(
-        self, monkeypatch, config_env
+    def test_nothing_is_excluded_once_a_run_measured_an_invoked_agent(
+        self, config_env
     ):
-        """The key is derived from EVAL_INVOKES_AGENT, not hardcoded — so
-        fixing D1 clears the exclusion instead of leaving a stale disclaimer
-        that a reader would learn to ignore."""
+        """The exclusion is derived from the RUN's observation, not from a
+        module constant — so a run that measured the agent clears it, and a run
+        that did not keeps it, without anyone editing a disclaimer."""
         from app.services import eval_service
 
-        monkeypatch.setattr(eval_service, "EVAL_INVOKES_AGENT", True)
-        config = eval_service.build_eval_run_config("a", "postgresql://p")["config"]
+        config = eval_service.build_eval_run_config(
+            "a",
+            "postgresql://p",
+            agent_invocation={
+                "status": eval_service.AGENT_INVOCATION_MEASURED,
+                "attempted": 10,
+                "responded": 10,
+                "scorable": 10,
+            },
+        )["config"]
 
         assert config["agent_invoked"] is True
+        assert config["scored_response_source"] == "agent_response"
         assert config["dimensions_not_exercised"] == []
 
-    def test_the_task_still_scores_the_reference_answer_against_itself(self):
-        """Pins EVAL_INVOKES_AGENT to what the task actually builds (D1).
+    def test_a_run_below_the_floor_is_not_certified_even_though_it_invoked(
+        self, config_env
+    ):
+        """THE CONJUNCTION. `agent_invoked` is the gate-facing claim and it
+        means BOTH "the agent produced the scored responses" and "enough of
+        them did to be a measurement".
 
-        A constant that says "the agent was not invoked" is only worth having
-        if it cannot drift from the code it describes. eval.py builds each
-        sample's agent_response from the same row column as its
-        reference_answer; while that holds, EVAL_INVOKES_AGENT must be False,
-        and the day it stops holding this test forces the constant to move.
+        The failing input it exists for: sixty scenarios, six responses, the
+        rest timing out on a degraded Agent SDK. Every score in that run is
+        real, and six of sixty is not a measurement of the agent's quality. A
+        gate reading a bare "we called it" would ship on it — missing data
+        treated as passing data, which is the rule this repo wrote down after
+        the last time.
         """
         from app.services import eval_service
-        from app.worker.tasks.runtime import eval as eval_task
 
-        source = inspect.getsource(eval_task)
-        reference_column = re.search(r'"reference_answer": (row\[\d+\])', source)
-        response_column = re.search(r'"agent_response": (row\[\d+\])', source)
-        assert reference_column and response_column, (
-            "could not find the scenario dict in eval.py — this test reads the "
-            "task rather than restating it, so a parse failure is a real failure"
+        config = eval_service.build_eval_run_config(
+            "a",
+            "postgresql://p",
+            agent_invocation={
+                "status": eval_service.AGENT_INVOCATION_UNKNOWN,
+                "attempted": 60,
+                "responded": 6,
+                "scorable": 6,
+            },
+        )["config"]
+
+        assert config["agent_invoked"] is False, (
+            "a run where 6 of 60 scenarios answered certified itself as having "
+            "measured the agent"
         )
+        # …and it still says the scored rows came from the agent, because they
+        # did. The two claims are separable and stay separate.
+        assert config["scored_response_source"] == "agent_response"
+        assert config["agent_invocation"]["responded"] == 6
 
-        scores_itself = reference_column.group(1) == response_column.group(1)
-        assert scores_itself is not eval_service.EVAL_INVOKES_AGENT, (
-            "eval.py and EVAL_INVOKES_AGENT disagree about whether the agent "
-            "produces the scored response — every eval_runs.config row is "
-            "certifying dimensions on the strength of that constant"
+    def test_the_provenance_is_derived_once_not_twice(self):
+        """build_eval_run_config and the task's post-run patch must not each
+        decide what `agent_invoked` means.
+
+        Two derivations are two chances to disagree, and the one that disagreed
+        would be the one the deploy gate reads. Both go through
+        invocation_provenance, and this asserts the config keys are exactly its
+        output rather than a re-spelling of it.
+        """
+        from app.services import eval_service
+
+        observation = {
+            "status": eval_service.AGENT_INVOCATION_MEASURED,
+            "attempted": 4,
+            "responded": 4,
+            "scorable": 4,
+        }
+        provenance = eval_service.invocation_provenance(observation)
+
+        assert set(provenance) == {
+            "agent_invoked",
+            "scored_response_source",
+            "dimensions_not_exercised",
+            "agent_invocation",
+        }
+        assert provenance["agent_invoked"] is True
+        assert provenance["agent_invocation"] == observation
+        assert provenance["agent_invocation"] is not observation, (
+            "the provenance hands out the caller's own dict — a later mutation "
+            "of the summary would silently rewrite what the run recorded"
         )
 
     def test_promotion_decision_is_copied_not_shared(self, config_env):
@@ -1192,6 +1446,48 @@ class TestBuildEvalRunConfig:
         out["config"]["verified_qa_promotion"]["enabled"] = True
 
         assert eval_service.VERIFIED_QA_PROMOTION_DECISION["enabled"] is False
+
+    def test_the_whole_decision_reaches_the_run_record_not_just_the_flag(
+        self, config_env
+    ):
+        """D6 P3 review, finding 10 — half of "the disablement is recorded WITH
+        ITS REASON" was unpinned.
+
+        Three tests touched this and none of them covered it: this class's
+        sibling above exercises the real `build_eval_run_config` but asserts only
+        `enabled`; D6 P3's flatness test asserts the CONSTANT's key set, not the
+        config's; and test_label_downstream.py monkeypatches
+        `build_eval_run_config` wholesale, so it proves nothing about what a run
+        records. A future edit narrowing the recorded dict to
+        `{"enabled": ...}` — a plausible way to shrink the config payload —
+        would leave every test in the tree green while runs stamped the flag with
+        no reason, no scope and no decision date. Which is exactly the absence
+        P3 was written to replace, restored silently.
+
+        Set EQUALITY, not "the keys I remembered": a key added to the constant
+        and dropped on the way to the record fails here too.
+        """
+        from app.services import eval_service
+
+        out = eval_service.build_eval_run_config("a", "postgresql://p")
+        recorded = out["config"]["verified_qa_promotion"]
+
+        assert set(recorded) == set(eval_service.VERIFIED_QA_PROMOTION_DECISION), (
+            "the run record no longer carries the whole promotion decision: "
+            f"recorded {sorted(recorded)}, constant "
+            f"{sorted(eval_service.VERIFIED_QA_PROMOTION_DECISION)}"
+        )
+        for key, value in eval_service.VERIFIED_QA_PROMOTION_DECISION.items():
+            assert recorded[key] == value, (
+                f"{key} was altered between the constant and the run record"
+            )
+        # The two that carry the meaning, named so a narrowing edit that keeps
+        # the key but empties the value is also caught.
+        assert recorded["reason"] == eval_service.VERIFIED_QA_PROMOTION_DECISION["reason"]
+        assert "2026-08-08" in recorded["reason"]
+        assert recorded["scope"] == "eval_only"
+        assert recorded["decided_on"] == "2026-08-08"
+        assert recorded["refusal_reason"] == eval_service.PROMOTION_DISABLED_REFUSAL
 
 
 class TestInsertEvalRun:
@@ -1274,6 +1570,92 @@ class TestInsertEvalRun:
             "write failure would be reported as a successfully started run"
         )
         assert conn.close.called, "the connection must be closed on every path"
+
+
+class TestUpdateEvalRunConfig:
+    """The write that turns `agent_invoked` from a hope into an observation.
+
+    The eval_runs row has to exist before the first of sixty SDK turns — it is
+    the per-agent idempotency key — so it is inserted claiming agent_invoked
+    false and corrected here. Every failure mode of this function therefore
+    leaves the run claiming LESS than it did, never more, and the tests below
+    are about proving that direction rather than the happy path.
+    """
+
+    def _connect(self, monkeypatch, cursor):
+        from app.services import eval_service
+
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        monkeypatch.setattr(eval_service.psycopg2, "connect", lambda *a, **kw: conn)
+        return conn
+
+    def test_the_patch_is_a_shallow_jsonb_merge_on_production(self, monkeypatch):
+        from app.services.eval_service import update_eval_run_config
+
+        cursor = _RecordingCursor()
+        self._connect(monkeypatch, cursor)
+
+        assert (
+            update_eval_run_config(
+                "run-1", {"agent_invoked": True}, "postgresql://production"
+            )
+            is True
+        )
+        sql, params = cursor.executed[0]
+        assert "UPDATE eval_runs" in sql
+        assert "||" in sql, (
+            "the patch replaces the whole config instead of merging into it — "
+            "the dataset composition and the configuration tuple written at "
+            "INSERT would be destroyed by the correction"
+        )
+        assert json.loads(params["patch"]) == {"agent_invoked": True}
+        assert params["id"] == "run-1"
+
+    def test_a_tenant_without_the_config_column_reports_false_not_raises(
+        self, monkeypatch
+    ):
+        """Migration 0013 added `config`; tenants are migrated at provision time
+        only. A run on an older tenant cannot record that it invoked the agent,
+        so it must say it could not — and the deploy gate then refuses it."""
+        from app.services.eval_service import update_eval_run_config
+
+        cursor = _RecordingCursor(
+            raise_on="UPDATE eval_runs",
+            exc=psycopg2.errors.UndefinedColumn("column config does not exist"),
+        )
+        conn = self._connect(monkeypatch, cursor)
+
+        assert (
+            update_eval_run_config("run-1", {"agent_invoked": True}, "postgresql://p")
+            is False
+        )
+        assert conn.rollback.called
+        assert conn.close.called
+
+    def test_a_write_failure_never_fails_an_already_scored_run(self, monkeypatch):
+        """Fail-closed, not fail-loud. The invocation already happened and cost
+        real money; raising here would turn a lost provenance write into a lost
+        run AND a Celery retry that re-invokes sixty scenarios."""
+        from app.services import eval_service
+
+        monkeypatch.setattr(
+            eval_service.psycopg2,
+            "connect",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("production down")),
+        )
+
+        assert (
+            eval_service.update_eval_run_config(
+                "run-1", {"agent_invoked": True}, "postgresql://p"
+            )
+            is False
+        ), (
+            "a failed provenance write reported success — the run would read as "
+            "certified while eval_runs still says agent_invoked=false"
+        )
+
+
 from app.services import eval_service  # noqa: E402  (P2 — module-level access)
 
 # ---------------------------------------------------------------------------

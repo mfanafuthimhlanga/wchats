@@ -55,9 +55,11 @@ from app.services.deployment_service import (
     COVERAGE_SOURCE_RUN,
     DENOMINATOR_SOURCE_EVAL_RESULTS,
     DENOMINATOR_SOURCE_RUN_CONFIG,
+    EVAL_SIGNAL_AGENT_NOT_INVOKED,
     EVAL_SIGNAL_MEASURED,
     EVAL_SIGNAL_NO_RUNS,
     EVAL_SIGNAL_NO_VALID_SCORES,
+    EVAL_SIGNAL_RUN_FAILED,
     EVAL_SIGNAL_UNAVAILABLE,
     EVAL_SUMMARY_UNAVAILABLE_SIGNAL,
     RED_TEAM_SIGNAL_MEASURED,
@@ -73,6 +75,7 @@ from app.services.deployment_service import (
     apply_signal_evidence_gate,
     derive_blast_radius_warnings,
     run_orchestrator,
+    stored_run_records_agent_invocation,
 )
 
 # ---------------------------------------------------------------------------
@@ -452,9 +455,24 @@ def _make_eval_conn(run_row, metric_rows=None, count_row=(0, 0), raise_on=None):
     raise_on: substring of the SQL that should raise UndefinedColumn, which is
     how audit D3 presented itself in production (`metric_name` / `run_id`
     against a table whose columns are `metric` / `eval_run_id`).
+
+    THE PAD IS STILL NULL AFTER D1/P3, deliberately. A NULL config is a run
+    that recorded no invocation claim, which the collector now reports as
+    EVAL_SIGNAL_AGENT_NOT_INVOKED — so a test that wants any other state has to
+    say so with `_invoked_config()`. Defaulting the pad to an invoking config
+    would have made this phase's central refusal invisible to every existing
+    test and to every test written after it.
+
+    THE ROW IS AS WIDE AS THE STATEMENT THAT ASKED FOR IT (P3 review). The pad
+    used to run once, before the double was built, so the pre-0013 test — whose
+    whole point is that the WIDE select raises and the NARROW three-column one
+    answers — got a four-element row back from `SELECT id, finished_at, status`.
+    No production database can do that. It changed no outcome, because the
+    collector only indexes [0..2] on that path, but a double asserting a shape
+    the database cannot produce is a test that would stay green while a future
+    read of run_row[3] on the fallback path failed in production. The row is
+    sliced at fetch time against the SQL that was actually executed instead.
     """
-    if run_row is not None and len(run_row) == 3:
-        run_row = (*run_row, None)
     conn = MagicMock()
     cursor = MagicMock()
     cursor.__enter__ = MagicMock(return_value=cursor)
@@ -462,6 +480,7 @@ def _make_eval_conn(run_row, metric_rows=None, count_row=(0, 0), raise_on=None):
 
     state = {"fetchone": [run_row, count_row], "fetchall": metric_rows or []}
     executed: list[str] = []
+    calls = {"fetchone": 0}
 
     def _execute(sql, params=None):
         executed.append(sql)
@@ -469,7 +488,18 @@ def _make_eval_conn(run_row, metric_rows=None, count_row=(0, 0), raise_on=None):
             raise psycopg2.errors.UndefinedColumn(f"column does not exist: {raise_on}")
 
     def _fetchone():
-        return state["fetchone"].pop(0) if state["fetchone"] else None
+        if not state["fetchone"]:
+            return None
+        row = state["fetchone"].pop(0)
+        calls["fetchone"] += 1
+        if calls["fetchone"] != 1 or row is None:
+            return row
+        # The run SELECT. Four columns when `config` was asked for, three when
+        # the pre-0013 fallback asked without it — never a width the executed
+        # statement did not select.
+        if "config FROM eval_runs" in (executed[-1] if executed else ""):
+            return row if len(row) == 4 else (*row, None)
+        return tuple(row[:3])
 
     cursor.execute.side_effect = _execute
     cursor.fetchone.side_effect = _fetchone
@@ -477,6 +507,17 @@ def _make_eval_conn(run_row, metric_rows=None, count_row=(0, 0), raise_on=None):
     conn.cursor.return_value = cursor
     conn.executed = executed
     return conn
+
+
+def _invoked_config(**extra) -> dict:
+    """An `eval_runs.config` written by a run that actually invoked the agent.
+
+    Audit D1 / P3: `config["agent_invoked"]` is now a precondition of every eval
+    state other than the refusal, so a test about denominators or column names
+    or in-flight shadowing has to supply one or it is testing the D1 refusal
+    under another name.
+    """
+    return {"agent_invoked": True, **extra}
 
 
 class TestSignalCollectionFunctions:
@@ -488,7 +529,7 @@ class TestSignalCollectionFunctions:
         run_ts = datetime(2026, 5, 23, 2, 0, 0)
 
         mock_conn = _make_eval_conn(
-            (run_id, run_ts, "complete"),
+            (run_id, run_ts, "complete", _invoked_config()),
             metric_rows=[
                 ("faithfulness", Decimal("0.92"), 30),
                 ("answer_relevance", Decimal("0.88"), 30),
@@ -509,6 +550,47 @@ class TestSignalCollectionFunctions:
         assert result["scored_scenario_count"] == 30, "valid"
         assert result["last_run_at"] == run_ts.isoformat()
         assert result["last_run_status"] == "complete"
+
+    def test_an_in_flight_run_does_not_shadow_the_last_finished_one(self):
+        """A run in progress must not block the deploy it is measuring for.
+
+        The selector took the newest eval_runs row with NO status filter, so for
+        the whole duration of a run the gate read a 'running' row that has no
+        eval_results yet, returned EVAL_SIGNAL_NO_VALID_SCORES, and refused the
+        deploy with "this agent's answer quality has not been measured" — while
+        a perfectly good completed run sat one row below it. That window was
+        minutes before D1/P2 and is up to ninety per agent per night after it:
+        the nightly beat fires at 02:00 UTC and drives up to sixty live SDK turns
+        at 90 s each.
+
+        Asserted on the SQL, because the double cannot express "there is also an
+        older row": the filter is the whole behaviour.
+        """
+        run_id = uuid.uuid4()
+        mock_conn = _make_eval_conn(
+            (run_id, datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            metric_rows=[("faithfulness", Decimal("0.92"), 30)],
+            count_row=(30, 30),
+        )
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        assert result["eval_signal"] == EVAL_SIGNAL_MEASURED
+        run_selects = [
+            sql for sql in mock_conn.executed if "FROM eval_runs" in sql
+        ]
+        assert run_selects, "no eval_runs SELECT was issued"
+        for sql in run_selects:
+            assert "status <> 'running'" in sql, (
+                "the deploy gate selects the newest eval_runs row without "
+                f"excluding in-flight ones: {sql!r}. For the duration of every "
+                "nightly run the owner is told their agent has not been "
+                "measured, because its own eval is in progress."
+            )
 
     def test_fetch_eval_summary_sync_no_runs(self):
         """No eval run at all is 'no_runs' with a NULL pass_rates, not an empty dict."""
@@ -616,7 +698,7 @@ class TestEvalSummaryD3:
         eval metrics >= 0.85" vacuously.
         """
         mock_conn = _make_eval_conn(
-            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete"),
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
             metric_rows=[("faithfulness", None, 0), ("answer_relevancy", None, 0)],
             count_row=(30, 0),
         )
@@ -654,9 +736,15 @@ class TestEvalSummaryD3:
     def test_a_failed_run_is_reported_as_failed(self):
         """Since the P1 persistence split a FAILED run lands a terminal status
         on production, so `last_run_at` alone can describe a run that produced
-        nothing. The status travels with it."""
+        nothing. The status travels with it.
+
+        The signal assertion changed in the P3 review: this used to read
+        EVAL_SIGNAL_NO_VALID_SCORES, which it reached only because the fixture
+        passes no metric rows. The status is now admissibility in its own right
+        — see TestFailedRunIsNotEvidence for the case that could not reach it.
+        """
         mock_conn = _make_eval_conn(
-            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "failed"),
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "failed", _invoked_config()),
             metric_rows=[],
             count_row=(0, 0),
         )
@@ -668,7 +756,7 @@ class TestEvalSummaryD3:
             result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
 
         assert result["last_run_status"] == "failed"
-        assert result["eval_signal"] == EVAL_SIGNAL_NO_VALID_SCORES
+        assert result["eval_signal"] == EVAL_SIGNAL_RUN_FAILED
 
 
 class TestEvalAttemptedCount:
@@ -691,7 +779,7 @@ class TestEvalAttemptedCount:
         scenario_count=5, scored=5, faithfulness=0.95 — a clean measurement of
         an agent whose other 35 scenarios were never scored at all.
         """
-        run_config = {"dataset": {"attempted": 40, "valid": 40}}
+        run_config = _invoked_config(dataset={"attempted": 40, "valid": 40})
         mock_conn = _make_eval_conn(
             (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", run_config),
             metric_rows=[("faithfulness", Decimal("0.95"), 5)],
@@ -745,7 +833,7 @@ class TestEvalAttemptedCount:
     def test_a_run_that_scored_nothing_still_reports_what_it_attempted(self):
         """40 attempted, every score NULL. 'No valid scores' and 'nothing was
         attempted' are different events and used to report identical zeros."""
-        run_config = {"dataset": {"attempted": 40, "valid": 40}}
+        run_config = _invoked_config(dataset={"attempted": 40, "valid": 40})
         mock_conn = _make_eval_conn(
             (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", run_config),
             metric_rows=[("faithfulness", None, 0)],
@@ -779,6 +867,13 @@ def _measured_eval(pass_rates=None) -> dict:
     return {
         "eval_signal": EVAL_SIGNAL_MEASURED,
         "signal_detail": None,
+        # D1/P3. These tests are about the other refusals, so they must supply a
+        # run that invoked the agent or the gate blocks every one of them and
+        # they stop testing what their names say — the same reason
+        # `eval_signal` itself is here. Before P2 this key did not exist and
+        # this fixture WAS the shape of a tautological run: measured, clean,
+        # 0.92 faithfulness, and no agent anywhere near it.
+        "agent_invoked": True,
         "last_run_at": "2026-05-23T02:00:00",
         "last_run_status": "complete",
         "scenario_count": 30,
@@ -1030,6 +1125,706 @@ class TestEvidenceGate:
         assert "eval_signal" in _DEPLOYMENT_SYSTEM_PROMPT
         assert "'measured'" in _DEPLOYMENT_SYSTEM_PROMPT
         assert "scored_scenario_count" in _DEPLOYMENT_SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# TestAgentInvokedGate (audit D1, P3) — the gate learns to refuse a tautology
+# ---------------------------------------------------------------------------
+
+
+class TestAgentInvokedGate:
+    """`agent_invoked is not True` refuses the deploy. BACKLOG 2.2.
+
+    The defect these close: `eval.py:374-375` set
+
+        "agent_response": row[3],   # row[3] IS reference_answer
+
+    so Ragas scored each scenario's own reference answer against the contexts
+    that answer was written from. Faithfulness and AnswerRelevancy approached
+    1.0 by construction, the agent was never invoked, and this gate read the
+    result as a measured signal with excellent pass rates and shipped on it.
+    The signal was PRESENT and it measured nothing — which is why the four
+    pre-existing absent-signal states could not catch it.
+
+    THE THREE CASES ARE FALSE, ABSENT AND TRUE, and absent is the one that
+    decides whether this is worth anything. Every eval run persisted before
+    this branch was produced by the tautology and carries no such key, so a
+    gate refusing only an explicit `false` would keep shipping on the whole of
+    history — the exact shape of BACKLOG 3.1, where pre-P4 red-team runs still
+    read signal='measured' with clean findings because nobody had recorded the
+    absence. Settled by the owner 2026-08-07; the accepted consequence is that
+    every pre-D1 run fails closed until a fresh eval runs.
+    """
+
+    def test_the_gate_refuses_a_run_that_recorded_no_invocation(self):
+        """`agent_invoked: False` — a run that looked and said no.
+
+        P2 inserts every eval_runs row with this value and patches the observed
+        one in afterwards, so False is also what a run that died between its
+        row and its first turn leaves behind, and what a run below
+        MIN_RESPONSE_RATE records on purpose.
+        """
+        summary = _measured_eval()
+        summary["agent_invoked"] = False
+
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", summary, _measured_red_team()
+        )
+
+        assert recommendation == "block", (
+            "the gate shipped on an eval run that recorded it never invoked the "
+            "agent — the scores are about the dataset, not about the agent"
+        )
+        assert [w.warning_id for w in warnings] == ["eval_agent_not_invoked"]
+
+    def test_the_gate_refuses_a_run_that_records_nothing_about_invocation(self):
+        """THE ONE THAT MATTERS: the key is absent, which is all of history.
+
+        Not a hypothetical. Every eval_runs row written before this branch has
+        a config with no `agent_invoked` in it — 0013 added the column, and
+        nothing wrote this key into it until P2. A gate that treated absence as
+        assent would refuse nothing that exists.
+        """
+        summary = _measured_eval()
+        summary.pop("agent_invoked")
+        assert "agent_invoked" not in summary
+
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", summary, _measured_red_team()
+        )
+
+        assert recommendation == "block", (
+            "the gate shipped on a 'measured' signal that makes no claim to "
+            "have invoked the agent — i.e. on every run stored before D1"
+        )
+        assert [w.warning_id for w in warnings] == ["eval_agent_not_invoked"]
+
+    def test_the_gate_accepts_a_run_that_recorded_the_agent_was_invoked(self):
+        """The refusal has to be able to NOT fire, or it is a permanent block
+        wearing a gate's name.
+
+        `agent_invoked: True` is written by eval_service.invocation_provenance
+        only when the run both invoked the agent AND enough scenarios answered
+        to constitute a measurement — the conjunction lives on the writing
+        side, and the gate must not try to second-guess either half.
+        """
+        summary = _measured_eval()
+        assert summary["agent_invoked"] is True
+
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", summary, _measured_red_team()
+        )
+
+        assert recommendation == "ship", (
+            "a run that invoked the agent and measured it cannot ship — the "
+            "gate is refusing everything, which is not a gate"
+        )
+        assert warnings == []
+
+    def test_a_non_boolean_claim_is_not_a_claim(self):
+        """`bool("false")` is True. A config patched by hand or by an external
+        tool is the plausible route in, and coercing would turn the string
+        "false" into a shipping signal."""
+        for value in ("true", "false", 1, [], {"invoked": True}):
+            summary = _measured_eval()
+            summary["agent_invoked"] = value
+
+            recommendation, warnings = apply_signal_evidence_gate(
+                "ship", summary, _measured_red_team()
+            )
+
+            assert recommendation == "block", (
+                f"agent_invoked={value!r} was accepted as an invocation claim"
+            )
+            assert [w.warning_id for w in warnings] == ["eval_agent_not_invoked"]
+
+    def test_the_refusal_survives_a_block_and_never_upgrades_one(self):
+        """One-way, like every other arm of this gate."""
+        summary = _measured_eval()
+        summary["agent_invoked"] = False
+        assert (
+            apply_signal_evidence_gate("block", summary, _measured_red_team())[0]
+            == "block"
+        )
+        assert (
+            apply_signal_evidence_gate(
+                "ship_with_warnings", summary, _measured_red_team()
+            )[0]
+            == "block"
+        ), (
+            "ship_with_warnings is a SHIPPABLE state — the approve route lets it "
+            "through once the owner acknowledges — so it is not a safe landing "
+            "place for a run that measured nothing"
+        )
+
+    def test_the_collector_state_and_the_gate_arm_reach_the_same_warning(self):
+        """Two routes into the refusal, one remedy.
+
+        In production the collector has already turned this run into
+        EVAL_SIGNAL_AGENT_NOT_INVOKED; the bare-`measured` arm exists for a
+        payload assembled somewhere else. A reader of the warnings must not be
+        able to tell which fired, because the owner's next action is identical.
+
+        THIS USED TO BE TRUE BY CONSTRUCTION (P3 review) and is now an
+        observation. `_agent_not_invoked_warning` ignored its argument and
+        returned a literal, so any two call sites of it produced identical
+        payloads for every possible pair of inputs — including inputs that
+        SHOULD differ. The message now branches on `agent_invoked` and
+        `eval_dispatched`, so this assertion fails if either route stops
+        handing the payload through, which is the property the name claims.
+        """
+        by_state = _measured_eval()
+        by_state["eval_signal"] = EVAL_SIGNAL_AGENT_NOT_INVOKED
+        by_state["pass_rates"] = None
+        by_state["agent_invoked"] = False
+
+        by_field = _measured_eval()
+        by_field["agent_invoked"] = False
+
+        _, state_warnings = apply_signal_evidence_gate(
+            "ship", by_state, _measured_red_team()
+        )
+        _, field_warnings = apply_signal_evidence_gate(
+            "ship", by_field, _measured_red_team()
+        )
+
+        assert [w.warning_id for w in state_warnings] == ["eval_agent_not_invoked"]
+        assert [w.model_dump() for w in state_warnings] == [
+            w.model_dump() for w in field_warnings
+        ]
+
+    def test_the_warning_does_not_promise_the_new_numbers_will_look_better(self):
+        """The scores WILL fall — from ~1.0 by construction to whatever is true
+        — and an owner who reads the drop as a regression will be wrong. The
+        message says so, because nothing else in the product will.
+
+        Driven from the ABSENT payload since the P3 review. It used to be
+        driven from `agent_invoked=False`, where there are no old numbers to
+        fall from: the below-floor run writes no eval_results at all. The
+        sentence belongs to the historical population, which is the one that
+        has a 0.99 on the record.
+        """
+        summary = _measured_eval()
+        summary.pop("agent_invoked")
+        _, warnings = apply_signal_evidence_gate(
+            "ship", summary, _measured_red_team()
+        )
+        message = warnings[0].message.lower()
+        assert "lower" in message, (
+            "the owner is about to watch faithfulness fall from 0.99 to "
+            "something real and be told nothing about why"
+        )
+        assert "eval" not in message.replace("evaluation", ""), (
+            "'eval' is jargon for the non-technical owner this message is for"
+        )
+
+    def test_the_false_case_is_not_narrated_as_the_tautology(self):
+        """THE MESSAGE MAY NOT NARRATE A CAUSE IT DID NOT OBSERVE (P3 review).
+
+        One warning_id is not one sentence. A below-floor P2 run DID invoke the
+        agent, scored nothing at all (run_eval_suite skips the scorer entirely
+        below the floor, so zero eval_results rows exist), and involved no
+        pre-written answers anywhere — yet every owner in that state was told
+        their check "scored a set of pre-written model answers" and that the
+        new numbers would be "lower than the old ones", of which there are
+        none. Four false claims in one sentence, in the phase whose subject is
+        exactly that failure, and the console renders nothing else: a grep of
+        apps/admin for `agent_invoked` returns nothing, so this IS the
+        owner-visible account.
+        """
+        summary = _measured_eval()
+        summary["agent_invoked"] = False
+        _, warnings = apply_signal_evidence_gate(
+            "ship", summary, _measured_red_team()
+        )
+        message = warnings[0].message.lower()
+
+        assert "pre-written" not in message, (
+            "a run that scored nothing was described as having scored "
+            "pre-written answers"
+        )
+        assert "lower" not in message, (
+            "there are no old numbers for the new ones to be lower than — the "
+            "below-floor run wrote no eval_results at all"
+        )
+        assert "replies" in message, (
+            "the message must still say what was missing: the agent's own "
+            "replies"
+        )
+        assert "eval" not in message.replace("evaluation", "")
+
+    def test_the_absent_case_does_not_assert_the_tautology_as_fact(self):
+        """Absence is not only the pre-D1 tautology. It is also a pre-0013
+        tenant DB with no `config` column, and a P2 run whose config patch
+        failed. The message may name the historical cause and must not claim
+        it happened here."""
+        summary = _measured_eval()
+        summary.pop("agent_invoked")
+        _, warnings = apply_signal_evidence_gate(
+            "ship", summary, _measured_red_team()
+        )
+        message = warnings[0].message.lower()
+
+        assert "does not record" in message, (
+            "the observed fact is that the run recorded nothing; that is what "
+            "the first sentence has to say"
+        )
+        assert "if this was one of those" in message, (
+            "the tautology is offered as an explanation for the coming drop, "
+            "not asserted as this run's history"
+        )
+
+    def test_a_dispatched_rerun_tells_the_owner_to_wait(self):
+        """Same wait-vs-find-a-page split the eval_never_run warning makes. The
+        checklist starts a fresh run for the historical population (task step
+        4b), and a message that then names a page the onboarding flow never
+        routes to is the wall that step exists to remove."""
+        summary = _measured_eval()
+        summary.pop("agent_invoked")
+        summary["eval_dispatched"] = True
+        _, warnings = apply_signal_evidence_gate(
+            "ship", summary, _measured_red_team()
+        )
+
+        assert "started" in warnings[0].message.lower()
+        assert "Evaluation page" not in warnings[0].message
+
+    def test_the_unavailable_substitute_carries_the_field(self):
+        """Key-for-key parity with the collector's payload.
+
+        The substitute is a hand-written literal rather than a call to
+        _eval_summary, so a field added to one and not the other drifts
+        silently — and the field that drifts is the one the gate reads.
+        """
+        assert "agent_invoked" in EVAL_SUMMARY_UNAVAILABLE_SIGNAL
+        assert EVAL_SUMMARY_UNAVAILABLE_SIGNAL["agent_invoked"] is None, (
+            "None, not False: the collector raised, so no run was asked"
+        )
+
+    def test_the_prompt_states_the_condition_the_platform_enforces(self):
+        """DRIFT PROTECTION OVER A STRING, AND NOT A CONTROL (P3 review
+        downgrades what this test is cited for).
+
+        It asserts two substrings are present in a module-level constant.
+        Nothing in this repo executes `run_orchestrator` — BACKLOG 3.10 records
+        `_run_orchestrator_loop` reporting "was never awaited" — so no test
+        anywhere observes the model obeying any prose blocking condition, and
+        this one cannot support a claim that the narration is prevented from
+        contradicting the verdict. deployment_service.py's own comment makes
+        the argument: a gate that depends on an LLM correctly reading a state
+        field fails open the first time the model is confident and wrong.
+
+        What actually constrains the narration is the SUPPRESSION — _eval_summary
+        puts no pass_rates on the payload outside EVAL_SIGNAL_MEASURED, so the
+        model cannot narrate a number it was never given. Keep this pin, cheap
+        as it is, and read it as consistency.
+        """
+        assert "agent_invoked" in _DEPLOYMENT_SYSTEM_PROMPT
+        assert "agent_not_invoked" in _DEPLOYMENT_SYSTEM_PROMPT
+        assert "run_failed" in _DEPLOYMENT_SYSTEM_PROMPT
+
+
+class TestAgentInvokedCollector:
+    """_fetch_eval_summary_sync derives the state from `eval_runs.config`.
+
+    THIS IS THE ENFORCEMENT (P3 review corrects the original claim, which said
+    the collector and the gate arm were two live layers). Neuter the gate arm
+    alone and every test in this class stays green, because the collector is
+    the only producer of a 'measured' payload in the tree and it has already
+    downgraded the run. The arm guards a payload shape that does not exist yet
+    — a hand-built summary, a second collector added later — which is worth
+    keeping and is not a second layer under today's code.
+    """
+
+    def _conn(self, config, **kw):
+        return _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", config),
+            metric_rows=kw.get(
+                "metric_rows", [("faithfulness", Decimal("0.99"), 30)]
+            ),
+            count_row=kw.get("count_row", (30, 30)),
+        )
+
+    def _collect(self, mock_conn):
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            return _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+    def test_a_run_that_invoked_the_agent_is_measured(self):
+        result = self._collect(self._conn(_invoked_config()))
+
+        assert result["eval_signal"] == EVAL_SIGNAL_MEASURED
+        assert result["agent_invoked"] is True
+        assert result["pass_rates"] == {"faithfulness": pytest.approx(0.99)}
+
+    def test_the_historical_tautology_shape_is_refused(self):
+        """A config with a dataset composition and no invocation claim, and a
+        near-perfect score over thirty scenarios. This is what every eval run
+        on the platform looks like today, and it used to be indistinguishable
+        from a measurement."""
+        result = self._collect(
+            self._conn({"dataset": {"attempted": 30, "valid": 30}})
+        )
+
+        assert result["eval_signal"] == EVAL_SIGNAL_AGENT_NOT_INVOKED
+        assert result["agent_invoked"] is None
+        assert apply_signal_evidence_gate("ship", result, _measured_red_team())[0] == (
+            "block"
+        )
+
+    def test_a_recorded_false_is_refused_and_says_which_it_was(self):
+        result = self._collect(self._conn({"agent_invoked": False}))
+
+        assert result["eval_signal"] == EVAL_SIGNAL_AGENT_NOT_INVOKED
+        assert result["agent_invoked"] is False
+        assert "was not invoked" in result["signal_detail"]
+
+    def test_absence_and_falsehood_are_distinguishable_on_the_payload(self):
+        """They block identically and they are not the same event. 'The run
+        said no' and 'no run said anything' have the same remedy and different
+        diagnoses, and the diagnosis is what a trace is read for.
+
+        THE REFUSAL IS ASSERTED HERE TOO, since the P3 review (BACKLOG 3.3's
+        pattern). As first written this test survived the collector mutation it
+        appears to guard: under `if agent_invoked is False`, the absent case
+        fell through to the EVAL_SIGNAL_MEASURED return, which still passes
+        agent_invoked=None onto the payload — so all three assertions held
+        while absence had quietly become shippable, and a test named
+        'distinguishable' stayed green through absence becoming
+        indistinguishable at the gate.
+        """
+        said_no = self._collect(self._conn({"agent_invoked": False}))
+        said_nothing = self._collect(self._conn({}))
+
+        assert said_no["agent_invoked"] is False
+        assert said_nothing["agent_invoked"] is None
+        assert said_no["signal_detail"] != said_nothing["signal_detail"]
+
+        for payload in (said_no, said_nothing):
+            assert payload["eval_signal"] == EVAL_SIGNAL_AGENT_NOT_INVOKED
+            assert (
+                apply_signal_evidence_gate("ship", payload, _measured_red_team())[0]
+                == "block"
+            )
+
+    def test_the_scores_of_a_tautology_do_not_travel(self):
+        """The refusal suppresses pass_rates for the same reason the other four
+        states do — and this is the only state where suppression discards a
+        number that EXISTS.
+
+        Letting 0.99 through while the recommendation blocks would put "answer
+        quality is excellent" in the orchestrator's owner-facing summary above
+        a refusal, which is BACKLOG 5.4 one layer down: the gate closes and the
+        prose stays open.
+        """
+        result = self._collect(self._conn({}))
+
+        assert result["pass_rates"] is None, (
+            "a tautology's scores reached the orchestrator, which will narrate "
+            "them"
+        )
+        assert result["failing_scenarios"] is None
+
+    def test_the_denominators_still_travel_on_the_refusal(self):
+        """A blocked run the owner cannot see the size of is a dead end. The
+        counts are how anyone works out what happened."""
+        result = self._collect(
+            self._conn(
+                {"dataset": {"attempted": 40, "valid": 38}},
+                metric_rows=[("faithfulness", Decimal("0.99"), 5)],
+                count_row=(5, 5),
+            )
+        )
+
+        assert result["eval_signal"] == EVAL_SIGNAL_AGENT_NOT_INVOKED
+        assert result["scenario_count"] == 40
+        assert result["valid_scenario_count"] == 38
+        assert result["scored_scenario_count"] == 5
+        assert result["denominator_source"] == DENOMINATOR_SOURCE_RUN_CONFIG
+        assert result["last_run_status"] == "complete"
+
+    def test_a_pre_0013_tenant_has_no_config_column_and_so_fails_closed(self):
+        """The sharpest edge of the settled decision, stated where it bites.
+
+        Tenant DBs are migrated at PROVISION time only, so a tenant older than
+        alembic_tenant 0013 has no `config` column at all: the wide SELECT
+        raises UndefinedColumn, the narrow fallback answers, and no invocation
+        claim can exist for any run on that database. Such a tenant cannot
+        deploy until its DB is re-migrated AND a fresh eval runs. That is the
+        accepted cost of refusing an absent claim.
+        """
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete"),
+            metric_rows=[("faithfulness", Decimal("0.99"), 30)],
+            count_row=(30, 30),
+            raise_on="config FROM eval_runs",
+        )
+        result = self._collect(mock_conn)
+
+        assert result["eval_signal"] == EVAL_SIGNAL_AGENT_NOT_INVOKED
+        assert result["agent_invoked"] is None
+        assert apply_signal_evidence_gate("ship", result, _measured_red_team())[0] == (
+            "block"
+        )
+
+    def test_the_root_cause_is_reported_ahead_of_the_symptom(self):
+        """A below-floor P2 run is in two absent states at once: it records
+        agent_invoked=false AND (because run_eval_suite skips the scorer) it
+        has written no eval_results. 'no_valid_scores' would send the owner
+        after a judge that was never the problem."""
+        result = self._collect(
+            self._conn({"agent_invoked": False}, metric_rows=[], count_row=(0, 0))
+        )
+
+        assert result["eval_signal"] == EVAL_SIGNAL_AGENT_NOT_INVOKED, (
+            "reported as a judge failure when the agent was the thing that "
+            "did not run"
+        )
+
+    def test_an_invoking_run_that_scored_nothing_is_still_a_judge_failure(self):
+        """The converse, so the ordering above is not just always-D1."""
+        result = self._collect(
+            self._conn(_invoked_config(), metric_rows=[], count_row=(30, 0))
+        )
+
+        assert result["eval_signal"] == EVAL_SIGNAL_NO_VALID_SCORES
+        assert result["agent_invoked"] is True
+
+
+class TestNarrowRowWidth:
+    """The double must not hand back a row the SQL did not select (P3 review).
+
+    `_make_eval_conn` padded a three-tuple to four elements before the double
+    was built, so the pre-0013 test — whose whole subject is that the WIDE
+    select raises and the NARROW three-column one answers — got a four-element
+    row back from `SELECT id, finished_at, status`. No database can do that.
+    It changed no outcome, because the collector indexes only [0..2] on that
+    path, and that is precisely the problem: a future read of run_row[3] on the
+    fallback would be green here and IndexError in production.
+    """
+
+    def _rows_seen(self, raise_on):
+        seen = []
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete"),
+            metric_rows=[("faithfulness", Decimal("0.99"), 30)],
+            count_row=(30, 30),
+            raise_on=raise_on,
+        )
+        real_cursor = mock_conn.cursor.return_value
+        real_fetchone = real_cursor.fetchone.side_effect
+
+        def _spy():
+            row = real_fetchone()
+            seen.append(row)
+            return row
+
+        real_cursor.fetchone.side_effect = _spy
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+        return seen
+
+    def test_the_pre_0013_fallback_receives_exactly_three_columns(self):
+        seen = self._rows_seen(raise_on="config FROM eval_runs")
+
+        assert len(seen[0]) == 3, (
+            f"the narrow 'SELECT id, finished_at, status' was answered with "
+            f"{len(seen[0])} columns: {seen[0]!r}"
+        )
+
+    def test_the_wide_select_still_receives_four(self):
+        seen = self._rows_seen(raise_on=None)
+
+        assert len(seen[0]) == 4
+
+
+class TestFailedRunIsNotEvidence:
+    """A run whose own terminal status is not 'complete' cannot ship (P3
+    review). `last_run_status` has travelled on this payload since P1 and
+    nothing anywhere gated on it.
+
+    THE REACHABLE SHAPE IS ORDINARY, NOT EXOTIC, AND P2 IS WHAT MADE IT SO.
+    run_eval_suite patches the invocation claim into eval_runs.config BEFORE
+    scoring (eval.py:1082-1083, deliberately — the invocation is the expensive,
+    unrepeatable half), scores, writes eval_results, and marks the run
+    'complete' at :1146. `summarise_run_validity` then runs at :1155, one line
+    AFTER that write, and anything raising from there to the end of the body
+    lands in the except at :1222, whose `_mark_failed_on_production`
+    unconditionally writes status='failed' over the row.
+
+    The result is a run carrying agent_invoked=true, a full set of high
+    pass_rates, and status='failed' — which reached the collector as
+    EVAL_SIGNAL_MEASURED and shipped. The one pre-existing failed-run test
+    could not catch it: it passes no metric rows, so it landed in
+    no_valid_scores before the question was ever asked.
+    """
+
+    def _collect(self, status, config=None, metric_rows=None, count_row=(30, 30)):
+        mock_conn = _make_eval_conn(
+            (
+                uuid.uuid4(),
+                datetime(2026, 5, 23, 2, 0, 0),
+                status,
+                config if config is not None else _invoked_config(),
+            ),
+            metric_rows=(
+                metric_rows
+                if metric_rows is not None
+                else [("faithfulness", Decimal("0.90"), 30)]
+            ),
+            count_row=count_row,
+        )
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            return _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+    def test_a_failed_run_with_a_full_set_of_scores_does_not_ship(self):
+        """The exact shape: status='failed', agent_invoked=true, real scores.
+
+        Metric rows AND a failed status, which is what the pre-existing test
+        could not express. Without the admissibility check this returns
+        EVAL_SIGNAL_MEASURED and apply_signal_evidence_gate answers 'ship'.
+        """
+        result = self._collect("failed")
+
+        assert result["eval_signal"] == EVAL_SIGNAL_RUN_FAILED, (
+            "a run recorded as FAILED reported itself as a measurement because "
+            "some of its scores survived"
+        )
+        assert result["last_run_status"] == "failed"
+        assert apply_signal_evidence_gate("ship", result, _measured_red_team())[0] == (
+            "block"
+        )
+
+    def test_the_failed_run_s_scores_do_not_travel(self):
+        """Same suppression as every other absent state. A 0.90 beside a
+        refusal is what the orchestrator narrates.
+
+        A PROPERTY PIN, AND NEITHER LAYER ALONE CAN FALSIFY IT — stated here
+        because P3 drew a stronger conclusion from the same shape and the
+        tier-2 read was right to reject it. The suppression happens twice: this
+        state's return omits the `pass_rates=` argument, and _eval_summary nulls
+        `rates` outside EVAL_SIGNAL_MEASURED. Adding `pass_rates=pass_rates` to
+        the call leaves this green, because the second layer nulls it; removing
+        the second layer leaves it green too, because the first passes nothing
+        and the default is already None. Both were RUN separately and observed
+        green, and only the pair turns it red. Recorded as one mutation in
+        `.dev/reference/p3-review-mutation-proofs.md` rather than dressed up as
+        two independent defences.
+        """
+        result = self._collect("failed")
+
+        assert result["pass_rates"] is None
+        assert result["failing_scenarios"] is None
+
+    def test_the_denominators_still_travel(self):
+        """A blocked run whose size the owner cannot see is a dead end."""
+        result = self._collect(
+            "failed",
+            config=_invoked_config(dataset={"attempted": 40, "valid": 38}),
+            count_row=(30, 30),
+        )
+
+        assert result["scenario_count"] == 40
+        assert result["valid_scenario_count"] == 38
+        assert result["scored_scenario_count"] == 30
+        assert result["denominator_source"] == DENOMINATOR_SOURCE_RUN_CONFIG
+
+    def test_an_unrecognised_terminal_status_also_fails_closed(self):
+        """An allow-list of one, not a deny-list containing 'failed'. The
+        selector already argues that a status this code has not heard of is
+        still terminal; the same unknown must not be read as a completion."""
+        result = self._collect("cancelled")
+
+        assert result["eval_signal"] == EVAL_SIGNAL_RUN_FAILED
+        assert result["last_run_status"] == "cancelled"
+
+    def test_a_complete_run_is_unaffected(self):
+        """The refusal has to be able to NOT fire, or it is a permanent block
+        wearing a gate's name."""
+        result = self._collect("complete")
+
+        assert result["eval_signal"] == EVAL_SIGNAL_MEASURED
+        assert result["pass_rates"] == {"faithfulness": pytest.approx(0.90)}
+
+    def test_the_status_is_asked_before_the_invocation_claim(self):
+        """Ordering, stated where it bites. A pre-D1 run that also failed is in
+        two absent states at once; the coarser question — did this run reach
+        the end of its own body — is answered first, because a run that did not
+        has no reliable account of ANY of its claims, the invocation one
+        included."""
+        result = self._collect("failed", config={})
+
+        assert result["eval_signal"] == EVAL_SIGNAL_RUN_FAILED
+        assert result["agent_invoked"] is None, (
+            "the claim still travels on the payload for whoever reads the trace"
+        )
+
+
+class TestStoredRunEvidence:
+    """POST /approve-deployment reads a FROZEN recommendation, so the gate does
+    not reach a checklist run that already completed (P3 review).
+
+    apply_signal_evidence_gate has exactly one caller — run_deployment_checklist
+    — and `agent.is_deployed` has exactly one writer: the approve route, which
+    validates status, recommendation, warning acknowledgement and envelope
+    drift, none of which moves when the gate's rules change. Every readiness
+    check completed before this release therefore carries a 'ship' computed by
+    the pre-P3 gate over a tautological eval and stays approvable indefinitely:
+    checklist_runs has no TTL and no gate-version column.
+
+    That is BACKLOG 3.1's shape applied to the artifact the approve decision is
+    actually taken from — and 3.1 is the argument P3's own commit message used
+    to justify refusing an absent claim.
+    """
+
+    def test_a_report_that_records_the_invocation_is_admissible(self):
+        assert stored_run_records_agent_invocation(
+            {"eval_summary": {"agent_invoked": True}}
+        )
+
+    def test_the_historical_report_shape_is_refused(self):
+        """No `agent_invoked` key at all: every checklist run written before
+        this branch, because nothing produced the key until P2."""
+        assert not stored_run_records_agent_invocation(
+            {
+                "eval_summary": {
+                    "eval_signal": "measured",
+                    "pass_rates": {"faithfulness": 0.99},
+                    "scenario_count": 30,
+                },
+                "recommendation": "ship",
+            }
+        )
+
+    def test_a_recorded_false_is_refused(self):
+        assert not stored_run_records_agent_invocation(
+            {"eval_summary": {"agent_invoked": False}}
+        )
+
+    def test_a_non_boolean_claim_is_refused(self):
+        """`bool("false")` is True, and a JSONB payload is exactly where a
+        string arrives from."""
+        for value in ("true", "false", 1, 0, [], {}, None):
+            assert not stored_run_records_agent_invocation(
+                {"eval_summary": {"agent_invoked": value}}
+            ), f"agent_invoked={value!r} was accepted as an invocation claim"
+
+    def test_an_unreadable_report_is_refused(self):
+        """A run that never reached step 6 has report NULL; a payload of some
+        other shape is a caller this function has not met. A gate that cannot
+        read its evidence has not been satisfied."""
+        for report in (None, {}, {"eval_summary": None}, {"eval_summary": []}, "ship", 3):
+            assert not stored_run_records_agent_invocation(report), (
+                f"an unreadable report shape was treated as evidence: {report!r}"
+            )
 
 
 # ---------------------------------------------------------------------------

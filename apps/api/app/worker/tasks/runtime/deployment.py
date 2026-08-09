@@ -27,11 +27,15 @@ Flow (run_deployment_checklist):
        signals via psycopg2 against the tenant DB, the 5th signal —
        blast_radius — and the envelope hash both via get_sync_db() against
        the control DB)
-    4b. If the agent has never been evaluated, start its first eval suite
-       (_dispatch_first_eval_run) and record that on the eval signal. The
-       verdict is unaffected — an eval that is running is not evidence — but the
-       block becomes one the owner can wait out rather than a dead end no route
-       in the primary journey can clear.
+    4b. If the agent has never been evaluated, OR its last run recorded nothing
+       about whether the agent was invoked (audit D1 — every run stored before
+       that release), start an eval suite (_dispatch_eval_run) and record that
+       on the eval signal. The verdict is unaffected — an eval that is running
+       is not evidence — but the block becomes one the owner can wait out
+       rather than a dead end no route in the primary journey can clear. Not
+       dispatched for a run that recorded an explicit `false` or a failed run:
+       those states recur, so firing on them is a spend loop rather than
+       convergence.
     5. Call run_orchestrator(signals_json, result_container) via asyncio.run bridge
     6. Parse result, apply the deterministic evidence gate (P2 — an eval or
        red-team signal that is not 'measured' forces recommendation='block'
@@ -57,6 +61,7 @@ from app.models.agent import Agent
 from app.models.checklist_run import ChecklistRun
 from app.services.deployment_service import (
     BLAST_RADIUS_DEFAULT_SIGNAL,
+    EVAL_SIGNAL_AGENT_NOT_INVOKED,
     EVAL_SIGNAL_NO_RUNS,
     EVAL_SUMMARY_UNAVAILABLE_SIGNAL,
     RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL,
@@ -75,8 +80,8 @@ from app.worker.celery_app import celery_app
 log = structlog.get_logger(__name__)
 
 
-def _dispatch_first_eval_run(agent_id: str) -> bool:
-    """Start this agent's first eval suite. Returns True iff it was dispatched.
+def _dispatch_eval_run(agent_id: str) -> bool:
+    """Start an eval suite for this agent. Returns True iff it was dispatched.
 
     THE DAY-1 PATH HAD NO WAY TO PRODUCE AN EVAL RUN (P2 review). Making
     EVAL_SIGNAL_NO_RUNS hard-block is right — an agent with no measurement has
@@ -92,6 +97,15 @@ def _dispatch_first_eval_run(agent_id: str) -> bool:
     apply_signal_evidence_gate emits says so. The recommendation is still
     `block` — this run has no evidence and must not ship on the promise of some
     — but the block now converges instead of being terminal.
+
+    NO LONGER ONLY THE FIRST (P3 review), hence the rename from
+    `_dispatch_first_eval_run`. P3 made every EXISTING tenant block too, and
+    those agents are not in `no_runs` — they have runs, produced by the
+    tautology, which now report EVAL_SIGNAL_AGENT_NOT_INVOKED. The wall the
+    paragraph above describes had simply moved to the far larger population,
+    with the warning routing them to the same page the onboarding flow does not
+    reach. See the caller for which half of that state dispatches and why the
+    other half must not.
 
     `generate_eval_suite` runs first because a tenant whose scenario generation
     has never run has nothing to evaluate against; both tasks carry their own
@@ -119,11 +133,11 @@ def _dispatch_first_eval_run(agent_id: str) -> bool:
             generate_eval_suite.si(agent_id),
             run_eval_suite.si(agent_id),
         ).apply_async(queue="runtime")
-        log.info("run_deployment_checklist.first_eval_dispatched", agent_id=agent_id)
+        log.info("run_deployment_checklist.eval_dispatched", agent_id=agent_id)
         return True
     except Exception as exc:
         log.warning(
-            "run_deployment_checklist.first_eval_dispatch_failed",
+            "run_deployment_checklist.eval_dispatch_failed",
             agent_id=agent_id,
             error=str(exc),
         )
@@ -241,8 +255,37 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
     # page the onboarding flow does not route to. It does not soften the
     # verdict: apply_signal_evidence_gate still blocks on the signal, because a
     # measurement that has been STARTED is not a measurement.
-    if eval_summary.get("eval_signal") == EVAL_SIGNAL_NO_RUNS:
-        eval_summary["first_eval_dispatched"] = _dispatch_first_eval_run(agent_id)
+    #
+    # TWO STATES REACH IT NOW, AND ONLY ONE HALF OF THE SECOND (P3 review).
+    # P3 blocks every existing tenant, and none of them is in `no_runs` — they
+    # have runs, produced by the tautology, which report AGENT_NOT_INVOKED. So
+    # the convergence mechanism built for day 1 did not fire for the population
+    # P3 actually creates, and the warning routed them to the same unreachable
+    # page.
+    #
+    # But it fires only where it CONVERGES. `agent_invoked is None` is the
+    # historical population: a fresh run on a 0013+ tenant writes the key
+    # either way, so the state cannot recur and the dispatch is one-shot per
+    # agent, exactly like the day-1 case. `agent_invoked is False` is a run
+    # that looked and said no — a broken or unreachable agent produces it again
+    # every night — so dispatching on it would buy a fresh set of up to
+    # AGENT_INVOCATION_MAX_CALLS_PER_RUN live SDK turns on every readiness
+    # check the owner runs, and the state would still be False afterwards. That
+    # is not convergence, it is a spend loop with a button on it; the warning
+    # names the page instead. Same for `run_failed`, which repeats for the same
+    # reason. BACKLOG 2.18 carries the one residual: a pre-0013 tenant DB
+    # cannot record the key at all, so absence recurs there and the dispatch
+    # repeats.
+    #
+    # run_eval_suite's own idempotency guard (a 'running' run inside a window
+    # covering a full run) absorbs repeated readiness checks while one is in
+    # flight, so the bound here is one live run per agent, not one per click.
+    eval_signal = eval_summary.get("eval_signal")
+    if eval_signal == EVAL_SIGNAL_NO_RUNS or (
+        eval_signal == EVAL_SIGNAL_AGENT_NOT_INVOKED
+        and eval_summary.get("agent_invoked") is None
+    ):
+        eval_summary["eval_dispatched"] = _dispatch_eval_run(agent_id)
 
     try:
         red_team_summary = _fetch_red_team_summary_sync(agent_id, conn_str)

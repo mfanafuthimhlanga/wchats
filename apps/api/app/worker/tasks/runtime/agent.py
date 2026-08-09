@@ -29,6 +29,7 @@ SSE event sequence:
 Queue: runtime (CLAUDE.md non-negotiable: both Celery queues always present)
 """
 
+import ast
 import asyncio
 import json
 import os
@@ -61,7 +62,16 @@ from app.models.agent import Agent
 from app.models.job import Job
 from app.models.prompt_version import PromptVersion
 from app.services.agent_prompt import build_system_prompt
-from app.services.agent_tools import RetrievalStrategy, build_tool_server
+from app.services.agent_tools import (
+    RETRIEVED_CONTEXT_FOOTER,
+    RETRIEVED_CONTEXT_HEADER,
+    SIDE_EFFECT_MODES,
+    RetrievalStrategy,
+    SideEffectMode,
+    build_tool_server,
+    record_suppressed_side_effect,
+    reset_side_effect_context,
+)
 from app.services.escalation import send_escalation_email
 from app.services.events import emit
 from app.services.prompt_version_service import resolve_prompt_version
@@ -98,6 +108,138 @@ except Exception:
 # ---------------------------------------------------------------------------
 CITATIONS_REGEX = re.compile(r"CITATIONS:\n((?:- Document: .+ \| Section: .+\n?)+)")
 _CITATION_ENTRY = re.compile(r"- Document: (.+) \| Section: (.+)")
+
+# ---------------------------------------------------------------------------
+# Two bounds on a turn that were literals inside the functions below and are now
+# named, because a SECOND caller reads them (D1/P2, .dev/plans/260807-d1-agent-
+# invocation.md). Neither value changes; this is extraction, not tuning.
+#
+# The eval task drives the same `_run_sdk_turn` with the same wall-clock ceiling,
+# and it stamps the retrieve cap on the run's provenance. A second copy of either
+# number in eval.py would be the audit's D3 defect wearing new clothes: the
+# deploy gate's eval query fails open to this day because one call site kept its
+# own copy of a column name. So there is one copy, here, and the other reader
+# imports it.
+# ---------------------------------------------------------------------------
+
+#: How much of a `retrieve` tool result is captured onto `tool_calls_log`.
+#: The Auditor reads it (further trimmed to 600 chars per context in the
+#: validator dispatch below) and, from P2, the eval scores Faithfulness against
+#: it. That is why the number has to travel: a claim whose support was CUT at
+#: this boundary is marked unsupported by the judge, and a run that does not
+#: record the cap cannot tell that apart from a genuinely ungrounded claim.
+RETRIEVE_RESULT_CAPTURE_CHARS = 1800
+
+#: The key on a `tool_calls_log` retrieve entry that carries the retrieved
+#: chunks as ONE STRING PER CHUNK, untruncated. Beside it, `result` keeps the
+#: audit capture unchanged — `str(block.content)[:RETRIEVE_RESULT_CAPTURE_CHARS]`,
+#: which is a Python repr of the SDK content block cut mid-structure.
+#:
+#: WHY BOTH. The eval scores Faithfulness / ContextPrecision / ContextRecall
+#: against what this turn retrieved. Handing it `result` handed the judge (a) a
+#: repr — `[{'type': 'text', 'text': "<<<HEADER>>>\n[{'chunk_id': ...` — whose
+#: dict-syntax noise is most of the token budget, (b) cut at 1800 chars, which is
+#: below ONE full chunk on any realistic corpus, so essentially every retrieving
+#: turn was at the cap and `retrieved_context_at_cap` was a constant rather than
+#: an observation, and (c) as a SINGLE element, which collapses ContextPrecision's
+#: ranking semantics to a coin flip over one blob. Three ways for the capture
+#: format to dominate the score of the thing being measured.
+#:
+#: `result` is deliberately NOT changed: the Auditor and the retrieval-faithfulness
+#: sampler read it and the chat path stays byte-for-byte.
+RETRIEVE_CHUNKS_KEY = "retrieved_chunks"
+
+#: Companion to the key above: 'chunks' when the framed payload was split back
+#: into per-chunk strings, 'unparsed' when it could not be. Never absent, so the
+#: eval reports a turn whose contexts could not be read as an unparsed
+#: observation instead of as a turn that retrieved nothing.
+RETRIEVE_CHUNKS_SOURCE_KEY = "retrieved_chunks_source"
+RETRIEVE_CHUNKS_PARSED = "chunks"
+RETRIEVE_CHUNKS_UNPARSED = "unparsed"
+
+#: Wall-clock ceiling on one SDK turn, enforced by asyncio.wait_for.
+#: D-11 raised it from 30s to 90s — a warm-but-not-hot Agent SDK subprocess needs
+#: up to 90s on slower ARM VMs; the SSE layer retains 120s (30s headroom). The
+#: eval's per-run cost ceiling is derived from this value rather than from a
+#: guess about it.
+AGENT_TURN_TIMEOUT_S = 90
+
+
+# ---------------------------------------------------------------------------
+# Reading a retrieve tool result back out of the SDK stream (D1/P2 review)
+# ---------------------------------------------------------------------------
+
+
+def _tool_result_text(content: object) -> str:
+    """The TEXT of a ToolResultBlock, whatever shape the SDK handed it in.
+
+    `str(block.content)` — what the audit capture below still does — is a Python
+    repr when the block carries the MCP list-of-blocks shape our tools return
+    (`[{'type': 'text', 'text': '...'}]`). Reprs are fine for an audit column and
+    ruinous for a judge: the dict syntax is noise the metric cannot distinguish
+    from evidence.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(str(block.get("text", "")))
+            else:
+                text = getattr(block, "text", None)
+                if text is not None:
+                    parts.append(str(text))
+        if parts:
+            return "\n".join(parts)
+    return str(content)
+
+
+def _retrieved_chunk_texts(result_text: str) -> list[str] | None:
+    """Split a framed retrieve result back into ONE STRING PER CHUNK.
+
+    `agent_tools.retrieve_tool` returns
+    `_frame_retrieved_context(str(chunks))` — the header, then the repr of a
+    list of chunk dicts, then the footer. This undoes exactly that, so what the
+    eval scores is the chunk text the agent was shown rather than the transport
+    encoding around it.
+
+    Returns None — never `[]` — when the payload cannot be read, because "this
+    turn retrieved nothing" and "this turn retrieved something this function
+    could not parse" are different observations and the second must not be
+    reported as the first. `ast.literal_eval` (never `eval`) is the parser: the
+    payload originates from a tool result and is therefore attacker-influenced
+    text, so it may only ever become data.
+    """
+    text = result_text
+    header_at = text.find(RETRIEVED_CONTEXT_HEADER)
+    if header_at == -1:
+        return None
+    payload = text[header_at + len(RETRIEVED_CONTEXT_HEADER):]
+    footer_at = payload.rfind(RETRIEVED_CONTEXT_FOOTER)
+    if footer_at != -1:
+        payload = payload[:footer_at]
+
+    try:
+        chunks = ast.literal_eval(payload.strip())
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        return None
+    if not isinstance(chunks, list):
+        return None
+
+    texts: list[str] = []
+    for chunk in chunks:
+        if isinstance(chunk, dict):
+            content = chunk.get("content", "")
+        else:
+            content = chunk
+        rendered = str(content) if content is not None else ""
+        if rendered:
+            texts.append(rendered)
+    return texts
 
 
 # ---------------------------------------------------------------------------
@@ -217,22 +359,31 @@ def _set_prompt_version_id(conn, conv_id: str, prompt_version_id: str) -> None:
 
 def _resolve_turn_prompt_version(
     db,
-    tenant_conn,
     *,
     agent_id: str,
     local_conversation_id: str,
     existing_prompt_version_id: str | None,
-) -> tuple[str | None, dict | None]:
+) -> tuple[str | None, dict | None, bool]:
     """Resolve the prompt version to serve this turn, sticky per conversation (OPS-16).
 
+    READ ONLY — control DB. This function used to also WRITE the resolved id to
+    conversations.metadata, and P1 moved the whole thing ahead of the seam
+    because the soul fields it returns are an input to the system prompt. The
+    write came along for the ride, so a turn that then died in
+    build_agent_options left the conversation permanently sticky to a version
+    that never served it, where the Celery retry previously re-rolled (BACKLOG
+    2.6). Settled 2026-08-07: resolve before, commit after. The read stays here;
+    the write is the caller's, behind a successful options build.
+
     First turn of a conversation (existing_prompt_version_id is None): calls
-    resolve_prompt_version (weighted pick, control DB) and — if a version was
-    found — persists the choice on conversations.metadata (tenant DB) so every
-    subsequent turn on this conversation reuses it (A-CANARY: no mid-
-    conversation persona flip; the version is never re-rolled).
+    resolve_prompt_version (weighted pick, control DB) and reports back that the
+    caller must persist the choice, so every subsequent turn on this
+    conversation reuses it (A-CANARY: no mid-conversation persona flip; the
+    version is never re-rolled).
 
     Subsequent turns (existing_prompt_version_id provided): re-fetches that
-    EXACT version's soul fields by id — never re-rolls, never re-picks.
+    EXACT version's soul fields by id — never re-rolls, never re-picks, and
+    nothing to persist because the id is already stored.
 
     T-21-09-05 (never fails a turn): any exception here is caught and treated
     as "no version resolved" — the caller falls back to the agent's live
@@ -242,27 +393,32 @@ def _resolve_turn_prompt_version(
     blocks or fails the served turn.
 
     Returns:
-        (prompt_version_id, soul_override) — both None on no-version-exists,
-        resolution failure, or a stale/deleted stored version id.
+        (prompt_version_id, soul_override, needs_persist).
+
+        needs_persist is True only for a first turn that actually resolved a
+        version — the one case where conversations.metadata does not yet hold
+        the id. It is returned rather than re-derived by the caller from
+        `existing_prompt_version_id is None` so that a future change to the
+        resolution rules (a stale id that re-rolls, say) cannot leave the
+        caller's copy of the logic silently disagreeing with this one.
     """
     try:
         if existing_prompt_version_id:
             pv = db.get(PromptVersion, existing_prompt_version_id)
             if pv is None:
-                return None, None
+                return None, None, False
             return str(pv.id), {
                 "soul_role": pv.soul_role,
                 "soul_voice": pv.soul_voice,
                 "soul_do_list": pv.soul_do_list,
                 "soul_donot_list": pv.soul_donot_list,
-            }
+            }, False
 
         resolved_id, soul_override = resolve_prompt_version(db, agent_id)
         if resolved_id is None:
-            return None, None
+            return None, None, False
 
-        _set_prompt_version_id(tenant_conn, local_conversation_id, resolved_id)
-        return resolved_id, soul_override
+        return resolved_id, soul_override, True
     except Exception as exc:
         log.warning(
             "run_agent_turn.prompt_version_resolve_failed",
@@ -270,7 +426,7 @@ def _resolve_turn_prompt_version(
             conversation_id=local_conversation_id,
             error=str(exc),
         )
-        return None, None
+        return None, None, False
 
 
 def _persist_messages(
@@ -497,6 +653,218 @@ def _extract_citations(text: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# THE SEAM — the one place ClaudeAgentOptions is constructed
+#
+# D1 (.dev/plans/260807-d1-agent-invocation.md, P1). The nightly eval scored
+# reference answers against the contexts those answers were written from and
+# never invoked the agent at all. The fix is to make the eval invoke it — and
+# the only version of that fix worth having is one where the eval and the
+# customer are served by the SAME agent. "Same agent" is not the same model id;
+# it is the system prompt, the tool server (which is where the capability
+# envelope is enforced), the allowed-tool list, the turn and budget ceilings and
+# the model, together. Assemble any of those twice and the eval measures
+# something adjacent to the product, which the measurement-layer audit records
+# as this repo's recurring defect.
+#
+# So they are assembled exactly once, here, and both callers go through it.
+# tests/unit/test_agent_options_seam.py fails if run_agent_turn constructs
+# options — or a tool server, or a system prompt — by any other route. That test
+# is the mechanism; this comment is only its explanation.
+#
+# SETTLED, AND IT IS WHY P2 CAN NOW PROCEED (BACKLOG 2.5, owner, 2026-08-07).
+# The options this returns carry a LIVE tool server bound to the tenant's real
+# connection string. Every caller of this seam therefore reaches, by default:
+#   * retrieve            -> write_retrieval_metrics(conn_str, …) into the tenant DB
+#   * escalate_to_human   -> _mark_conversation_escalated(…) + send_escalation_email
+#   * the 6 mutating transactional skills -> a tool_calls_audit row AND the real
+#     ProviderAdapter: place_order, cancel_order, issue_refund,
+#     update_subscription, book_slot, update_customer_record.
+# The plan chose approach (b) over (a) precisely to keep eval traffic out of
+# tenant data; (b) as built still wrote to tenant tables and could move money —
+# one eval scenario in which the agent decides to refund executed a refund.
+#
+# The answer is `side_effects`, below: MANDATORY, no default. A default is
+# exactly the mechanism by which the eval path silently ends up live, so a caller
+# that does not state which it wants raises TypeError at the call site rather
+# than discovering the question against a real tenant at 3am.
+#
+# The alternative — a read-only allowed_tools subset for the eval — was rejected,
+# and the reason is worth keeping here because it constrains every future change
+# to this function: removing the mutating skills would make the eval measure an
+# agent with fewer capabilities than production serves, and a scenario testing
+# "the agent should refuse to refund here" could no longer FAIL, because the
+# agent could not even try. An agent that cannot attempt the wrong thing cannot
+# be measured on refusing it. So allowed_tools is identical in both modes, and
+# the capability envelope, IDV gate and Actor seam all still run; what changes is
+# only the outer edge, where a call would leave this process. notify_fn is now a
+# parameter of that edge (it was deliberately hardcoded in P1 — "an unused escape
+# hatch added before the caller that needs it exists is how a seam starts
+# drifting"; P2 is that caller, so the hatch is no longer unused).
+# ---------------------------------------------------------------------------
+
+def build_agent_options(
+    *,
+    agent,
+    conn_str: str,
+    conversation_id: str,
+    job_id: str,
+    side_effects: SideEffectMode,
+    verified_session_token: str = "",
+    soul_override: dict | None = None,
+    resume: str | None = None,
+) -> "ClaudeAgentOptions":
+    """Build the ClaudeAgentOptions for one turn of `agent`.
+
+    Side effect, and it is the point: build_tool_server sets the per-task
+    ContextVars (conn_str, agent_id, tenant_id, strategy, conversation_id,
+    notify_fn, job_id, verified session token, retrieve counter) that every tool
+    handler reads. Calling this twice for one turn would leave the second call's
+    context in force — hence the "exactly once" pin in the seam test.
+
+    Args:
+        agent:                  Control-DB Agent row. Supplies id, tenant_id,
+                                name, retrieval_strategy and the soul fields
+                                build_system_prompt reads.
+        conn_str:               Decrypted tenant DB connection string. Never
+                                logged, never a task arg (CTL-08).
+        conversation_id:        Conversation UUID string — escalation writes and
+                                tool-side conversation scoping.
+        job_id:                 Celery job id (OPS-05/06 retrieval metrics).
+        side_effects:           MANDATORY, no default (BACKLOG 2.5). "live" is
+                                production, byte for byte what the chat path has
+                                always done. "recorded" is the eval path: the
+                                escalation notification, the retrieval_metrics
+                                write and the transactional ProviderAdapter are
+                                suppressed and recorded instead. Everything the
+                                agent can see or choose is identical.
+        verified_session_token: IDV-05 token, "" when there is no verified
+                                session. NEVER logged (T-04-03-05).
+        soul_override:          Prompt-version soul fields (OPS-16) or None to
+                                serve the agent's live soul_* columns.
+        resume:                 SDK session id to continue, or None to start one.
+
+    Raises:
+        ValueError: side_effects is neither "live" nor "recorded". Literal is a
+            type-checker annotation and enforces nothing at run time, so an
+            unrecognised value would compare unequal to "recorded" and be served
+            as live — a real refund on the eval path.
+    """
+    # The mode is process-context sticky and the Celery prefork pool does not
+    # isolate contextvars per task, so a previous turn's value is still in force
+    # on entry. Today build_tool_server below always republishes it — but only
+    # if we REACH it, and three things above it raise: this validation, the
+    # RetrievalStrategy parse, and build_tool_server's own. A turn that dies in
+    # any of them would leave a stale "recorded" behind for whatever ran next in
+    # this context. Resetting FIRST, before anything that can throw, makes that
+    # a property of this function rather than of the call graph's current shape.
+    reset_side_effect_context()
+
+    if side_effects not in SIDE_EFFECT_MODES:
+        raise ValueError(
+            f"build_agent_options: side_effects must be one of {SIDE_EFFECT_MODES}, "
+            f"got {side_effects!r}. There is no third mode and no fallback: an "
+            f"unrecognised value read as live is how an eval scenario issues a real "
+            f"refund against the tenant's provider (BACKLOG 2.5)."
+        )
+
+    strategy = RetrievalStrategy.model_validate(agent.retrieval_strategy or {})
+
+    # The escalation edge. On the eval path the mail is recorded rather than
+    # sent — a scenario that drives the agent to escalate would otherwise page
+    # the owner about a customer who does not exist, and would do it nightly.
+    # A conditional expression rather than two `def`s: nested function
+    # definitions in this module are banned by the seam suite, which attributes
+    # every call to the module-scope function containing it.
+    notify_fn = (
+        (lambda reason, context: send_escalation_email(agent, reason, context))
+        if side_effects == "live"
+        else (
+            lambda reason, context: record_suppressed_side_effect(
+                "escalation.notify",
+                {
+                    "agent_id": str(agent.id),
+                    "conversation_id": str(conversation_id),
+                    "reason": reason,
+                    "context": context,
+                },
+            )
+        )
+    )
+
+    tool_server = build_tool_server(
+        conn_str=conn_str,
+        agent_id=str(agent.id),
+        agent_name=agent.name,
+        strategy=strategy,
+        conversation_id=str(conversation_id),
+        notify_fn=notify_fn,
+        tenant_id=str(agent.tenant_id),
+        verified_session_token=verified_session_token,
+        job_id=job_id,
+        side_effects=side_effects,
+    )
+
+    system_prompt = build_system_prompt(agent, soul_override=soul_override)
+
+    # D-10 note (13-07): The Voyage 3 RPM free-tier prompt-level retrieve-cap
+    # instruction was removed now that embeddings move to Bedrock (PROD-06).
+    # Bedrock has no comparable RPM constraint; the per-turn retrieve counter in
+    # agent_tools.retrieve_tool remains active as a DoS guard (ceiling raised to 8).
+
+    # R-05: allowed_tools use full MCP namespace mcp__customer-tools__*
+    # D-10 fix phase 1 (2026-06-01): max_turns raised from 3 to 6.
+    #   Root cause: max_turns=3 cut the agent off after the retrieve tool
+    #   round-trip (tool_use + tool_result = 2 turns), leaving no turn to
+    #   compose the final text answer → empty response_text.
+    #   The Voyage RPM guard is now enforced solely by the tool-level counter
+    #   in agent_tools.retrieve_tool (blocks the 3rd call per turn), making
+    #   max_turns free to cover the full retrieve → synthesis cycle.
+    #   6 turns is sufficient for: thinking + retrieve + synthesis + any
+    #   clarify/escalate follow-ups while still bounding DoS risk (T-04-03-06).
+    # D-10 fix phase 2 (2026-06-01): max_budget_usd raised from 0.05 to
+    #   settings.AGENT_MAX_BUDGET_USD (default 0.50).
+    #   Root cause (additional): the 0.05 USD cap was too tight for a
+    #   turn that uses extended thinking (~38s) + retrieved context + synthesis.
+    #   A Haiku extended-thinking + retrieve + synthesis turn can exceed $0.05.
+    #   When the budget is exceeded the CLI emits result{subtype:error_max_budget,
+    #   is_error:true} → receive_response() terminates → response_text stays ""
+    #   with no exception raised (identical empty-text signature to max_turns).
+    #   0.50 USD gives headroom while still serving as a DoS guardrail.
+    #   Configure via AGENT_MAX_BUDGET_USD env var for tighter prod limits.
+    # R-05: allowed_tools suppresses SDK permission prompts only.
+    # The capability envelope check inside each transactional tool handler
+    # is the real access gate (fail-closed) — T-14-04-03.
+    return ClaudeAgentOptions(
+        # AGENT_TURN_MODEL, not a literal — eval_runs.config.model_id
+        # reads the same constant, so a score can never be attributed
+        # to a model that did not serve the turn (migration 0013).
+        model=AGENT_TURN_MODEL,
+        system_prompt=system_prompt,
+        mcp_servers={"customer-tools": tool_server},  # type: ignore[dict-item]  # agent-sdk/anthropic stubs are narrower than the runtime contract
+        allowed_tools=[
+            # Original 4 tools — retained (TXN-04 requirement)
+            "mcp__customer-tools__retrieve",
+            "mcp__customer-tools__lookup_structured",
+            "mcp__customer-tools__escalate_to_human",
+            "mcp__customer-tools__clarify",
+            # Phase 14 Plan 04 — 7 transactional tools
+            # Listing here suppresses SDK permission prompts only;
+            # the capability envelope in each handler is the real gate.
+            "mcp__customer-tools__place_order",
+            "mcp__customer-tools__cancel_order",
+            "mcp__customer-tools__issue_refund",
+            "mcp__customer-tools__update_subscription",
+            "mcp__customer-tools__book_slot",
+            "mcp__customer-tools__update_customer_record",
+            "mcp__customer-tools__confirm_action",
+        ],
+        resume=resume,
+        max_turns=6,   # D-10 fix: was 3 (too low — cut off synthesis after retrieve)
+        max_budget_usd=settings.AGENT_MAX_BUDGET_USD,  # D-10 fix phase 2: was 0.05 (too low for thinking+retrieve+synthesis)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Async SDK turn helper — bridged into sync Celery task via asyncio.run()
 # ---------------------------------------------------------------------------
 
@@ -582,10 +950,31 @@ async def _run_sdk_turn(
                             db,
                             redis,
                         )
-                        # Capture retrieve result for Auditor (M5 — plan 05-04)
+                        # TWO captures of one retrieve result, for two readers.
+                        #
+                        # `result` — unchanged, byte-for-byte: the Auditor's
+                        # retrieved_context_json and the retrieval-faithfulness
+                        # sampler read it, and RETRIEVE_RESULT_CAPTURE_CHARS
+                        # bounds it because it also reaches a jsonb column.
+                        #
+                        # RETRIEVE_CHUNKS_KEY — the same result decoded into one
+                        # string per CHUNK, untruncated, for the eval (D1/P2
+                        # review). Handing Ragas `result` handed it a repr, cut
+                        # below one full chunk, in a single-element list; the
+                        # capture format then dominated Faithfulness and
+                        # ContextPrecision. Not persisted: _persist_messages
+                        # writes tool_name / input / result only.
                         for tc in reversed(tool_calls_log):
                             if tc.get("tool_name") == "retrieve" and "result" not in tc:
-                                tc["result"] = str(getattr(block, "content", ""))[:1800]
+                                raw = getattr(block, "content", "")
+                                tc["result"] = str(raw)[:RETRIEVE_RESULT_CAPTURE_CHARS]
+                                chunks = _retrieved_chunk_texts(_tool_result_text(raw))
+                                tc[RETRIEVE_CHUNKS_KEY] = chunks or []
+                                tc[RETRIEVE_CHUNKS_SOURCE_KEY] = (
+                                    RETRIEVE_CHUNKS_PARSED
+                                    if chunks is not None
+                                    else RETRIEVE_CHUNKS_UNPARSED
+                                )
                                 break
 
             elif isinstance(msg, ResultMessage):
@@ -780,94 +1169,83 @@ def run_agent_turn(
                 sdk_resume = conv_row["metadata"].get("sdk_session_id")
                 existing_prompt_version_id = conv_row["metadata"].get("prompt_version_id")
 
-            # --------------------------------------------------------------
-            # Build retrieval strategy, tool server, system prompt, options
-            # --------------------------------------------------------------
-            strategy = RetrievalStrategy.model_validate(agent.retrieval_strategy or {})
-
-            tool_server = build_tool_server(
-                conn_str=conn_str,
-                agent_id=str(agent.id),
-                agent_name=agent.name,
-                strategy=strategy,
-                conversation_id=str(local_conversation_id),
-                notify_fn=lambda r, c: send_escalation_email(agent, r, c),
-                tenant_id=str(agent.tenant_id),
-                verified_session_token=verified_session_token,
-                job_id=job_id,
-            )
-
             # ----------------------------------------------------------------
             # OPS-16: canary prompt-version resolution — sticky per conversation,
             # never fails a turn (T-21-09-05). See _resolve_turn_prompt_version's
             # own docstring for the first-turn-vs-subsequent-turn distinction.
+            #
+            # This RESOLUTION runs BEFORE the tool server is built rather than
+            # after. The soul fields it returns are an input to the system
+            # prompt, and the system prompt is built inside build_agent_options
+            # together with the tool server, so the resolution has to precede the
+            # one call that consumes both. That part of P1's move stands.
+            #
+            # The WRITE does not: it now happens after build_agent_options
+            # returns (BACKLOG 2.6, settled 2026-08-07 — "resolve before, commit
+            # after"). _resolve_turn_prompt_version used to call
+            # _set_prompt_version_id itself, so P1's move carried the commit
+            # forward with the read, and a turn that then died in
+            # RetrievalStrategy.model_validate or build_tool_server left the
+            # conversation permanently sticky to a version that never served it
+            # — where before P1 the Celery retry re-rolled. Pinned in both
+            # directions by test_the_canary_choice_is_not_committed_when_the_
+            # options_build_fails and ..._is_committed_once_the_options_exist.
             # ----------------------------------------------------------------
-            prompt_version_id, soul_override = _resolve_turn_prompt_version(
+            prompt_version_id, soul_override, canary_needs_persist = _resolve_turn_prompt_version(
                 db,
-                tenant_conn,
                 agent_id=agent_id,
                 local_conversation_id=str(local_conversation_id),
                 existing_prompt_version_id=existing_prompt_version_id,
             )
 
-            system_prompt = build_system_prompt(agent, soul_override=soul_override)
-
-            # D-10 note (13-07): The Voyage 3 RPM free-tier prompt-level retrieve-cap
-            # instruction was removed now that embeddings move to Bedrock (PROD-06).
-            # Bedrock has no comparable RPM constraint; the per-turn retrieve counter in
-            # agent_tools.retrieve_tool remains active as a DoS guard (ceiling raised to 8).
-
-            # R-05: allowed_tools use full MCP namespace mcp__customer-tools__*
-            # D-10 fix phase 1 (2026-06-01): max_turns raised from 3 to 6.
-            #   Root cause: max_turns=3 cut the agent off after the retrieve tool
-            #   round-trip (tool_use + tool_result = 2 turns), leaving no turn to
-            #   compose the final text answer → empty response_text.
-            #   The Voyage RPM guard is now enforced solely by the tool-level counter
-            #   in agent_tools.retrieve_tool (blocks the 3rd call per turn), making
-            #   max_turns free to cover the full retrieve → synthesis cycle.
-            #   6 turns is sufficient for: thinking + retrieve + synthesis + any
-            #   clarify/escalate follow-ups while still bounding DoS risk (T-04-03-06).
-            # D-10 fix phase 2 (2026-06-01): max_budget_usd raised from 0.05 to
-            #   settings.AGENT_MAX_BUDGET_USD (default 0.50).
-            #   Root cause (additional): the 0.05 USD cap was too tight for a
-            #   turn that uses extended thinking (~38s) + retrieved context + synthesis.
-            #   A Haiku extended-thinking + retrieve + synthesis turn can exceed $0.05.
-            #   When the budget is exceeded the CLI emits result{subtype:error_max_budget,
-            #   is_error:true} → receive_response() terminates → response_text stays ""
-            #   with no exception raised (identical empty-text signature to max_turns).
-            #   0.50 USD gives headroom while still serving as a DoS guardrail.
-            #   Configure via AGENT_MAX_BUDGET_USD env var for tighter prod limits.
-            # R-05: allowed_tools suppresses SDK permission prompts only.
-            # The capability envelope check inside each transactional tool handler
-            # is the real access gate (fail-closed) — T-14-04-03.
-            options = ClaudeAgentOptions(
-                # AGENT_TURN_MODEL, not a literal — eval_runs.config.model_id
-                # reads the same constant, so a score can never be attributed
-                # to a model that did not serve the turn (migration 0013).
-                model=AGENT_TURN_MODEL,
-                system_prompt=system_prompt,
-                mcp_servers={"customer-tools": tool_server},  # type: ignore[dict-item]  # agent-sdk/anthropic stubs are narrower than the runtime contract
-                allowed_tools=[
-                    # Original 4 tools — retained (TXN-04 requirement)
-                    "mcp__customer-tools__retrieve",
-                    "mcp__customer-tools__lookup_structured",
-                    "mcp__customer-tools__escalate_to_human",
-                    "mcp__customer-tools__clarify",
-                    # Phase 14 Plan 04 — 7 transactional tools
-                    # Listing here suppresses SDK permission prompts only;
-                    # the capability envelope in each handler is the real gate.
-                    "mcp__customer-tools__place_order",
-                    "mcp__customer-tools__cancel_order",
-                    "mcp__customer-tools__issue_refund",
-                    "mcp__customer-tools__update_subscription",
-                    "mcp__customer-tools__book_slot",
-                    "mcp__customer-tools__update_customer_record",
-                    "mcp__customer-tools__confirm_action",
-                ],
+            # --------------------------------------------------------------
+            # THE SEAM (D1/P1). Retrieval strategy, tool server, system prompt,
+            # model, allowed tools and the turn/budget ceilings are assembled in
+            # build_agent_options above — the same callable the eval task goes
+            # through — so the agent measured is the agent served. Constructing
+            # any of them here instead is what test_agent_options_seam.py fails on.
+            #
+            # side_effects="live" is the chat path, stated rather than defaulted
+            # (BACKLOG 2.5). This is the turn a customer is waiting on: its
+            # refunds are real, its escalation mail must arrive, and its
+            # retrieval_metrics row is what the ops room reads.
+            # --------------------------------------------------------------
+            options = build_agent_options(
+                agent=agent,
+                conn_str=conn_str,
+                conversation_id=str(local_conversation_id),
+                job_id=job_id,
+                side_effects="live",
+                verified_session_token=verified_session_token,
+                soul_override=soul_override,
                 resume=sdk_resume,
-                max_turns=6,   # D-10 fix: was 3 (too low — cut off synthesis after retrieve)
-                max_budget_usd=settings.AGENT_MAX_BUDGET_USD,  # D-10 fix phase 2: was 0.05 (too low for thinking+retrieve+synthesis)
             )
+
+            # --------------------------------------------------------------
+            # BACKLOG 2.6: the canary choice becomes sticky only now that there
+            # is an agent for it to be sticky to. A turn that died above
+            # re-rolls on retry, as it did before P1.
+            #
+            # Wrapped, and never fatal (T-21-09-05): a tenant-DB failure here
+            # must not fail a turn whose options are already built. The
+            # consequence of that failure is narrower than it was — the version
+            # still served this turn and turn_metrics still attributes the turn
+            # to it, which is the honest record; only the stickiness is lost, so
+            # the next turn of this conversation re-rolls.
+            # --------------------------------------------------------------
+            if canary_needs_persist and prompt_version_id:
+                try:
+                    _set_prompt_version_id(
+                        tenant_conn, str(local_conversation_id), prompt_version_id
+                    )
+                except Exception as canary_exc:
+                    log.warning(
+                        "run_agent_turn.prompt_version_persist_failed",
+                        job_id=job_id,
+                        agent_id=agent_id,
+                        conversation_id=str(local_conversation_id),
+                        error=str(canary_exc),
+                    )
 
             # --------------------------------------------------------------
             # Bridge async SDK into sync Celery worker.
@@ -892,7 +1270,7 @@ def run_agent_turn(
                         db=db,
                         redis=_redis,
                     ),
-                    timeout=90,
+                    timeout=AGENT_TURN_TIMEOUT_S,
                 )
             )
             latency_ms = int((time.monotonic() - _turn_start_monotonic) * 1000)

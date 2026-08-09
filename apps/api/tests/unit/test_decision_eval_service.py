@@ -274,7 +274,7 @@ class TestFixtureDerivation:
 
     def test_no_label_in_the_set_is_model_generated(self, fixtures):
         """A model-generated label may never gate a deploy or reach a customer."""
-        assert {f.label_trust_tier for f in fixtures} == {des.FIXTURE_LABEL_TRUST_TIER}
+        assert {f.label_provenance for f in fixtures} == {des.FIXTURE_LABEL_PROVENANCE}
 
     def test_the_trust_tier_is_one_eval_service_defines(self):
         """The vocabulary is shared, so `human_authored` cannot mean two things.
@@ -285,7 +285,33 @@ class TestFixtureDerivation:
         """
         from app.services.eval_service import LABEL_TRUST_TIERS
 
-        assert des.FIXTURE_LABEL_TRUST_TIER in LABEL_TRUST_TIERS
+        assert des.FIXTURE_LABEL_PROVENANCE in LABEL_TRUST_TIERS
+
+    def test_a_decision_fixture_does_not_read_as_a_labelled_eval_scenario(
+        self, fixtures
+    ):
+        """The namespace collision this constant was renamed to end.
+
+        `eval_service.label_trust_tier(mapping)` reads its key off ANY mapping.
+        While this module spelled its constant `label_trust_tier`, every
+        `DecisionFixture` dict and the `score_decision_run` report resolved to
+        `is_human_labelled() is True` — asserting a human authored a
+        `reference_answer` that these objects do not have. Pinned from this side
+        as well as from `test_label_provenance.py`, because either module could
+        reintroduce the spelling.
+        """
+        import dataclasses
+
+        from app.services.eval_service import is_human_labelled
+
+        report = score(fixtures, [], RUN_ID)
+        assert "label_trust_tier" not in report
+        assert is_human_labelled(report) is False
+
+        for fixture in fixtures:
+            row = dataclasses.asdict(fixture)
+            assert "label_trust_tier" not in row
+            assert is_human_labelled(row) is False
 
 
 class TestFixtureDrift:
@@ -579,8 +605,30 @@ def _audit_error_literals() -> set[str]:
     keyword arguments of calls to `write_audit_row` are collected, and only where
     the value is a string literal or an f-string with a literal prefix (the prefix
     is what `_ERROR_DISPOSITIONS` matches on).
+
+    D1/P1b: under recorded mode the dispatcher stamps a marker onto the front of
+    every row it writes, so the call sites now read
+    `error=_recorded_error(recorded, "actor_block")`. The literal is still the
+    vocabulary — it just sits one call deep. The walk unwraps that ONE named
+    wrapper rather than giving up on it, because giving up is what silently
+    emptied this set and made `test_every_dispatcher_error_string_is_classified`
+    vacuous. It also contributes the marker itself, so the recorded prefix has
+    to be classified deliberately like every other string here.
     """
     literals: set[str] = set()
+
+    def _collect(value) -> None:
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            literals.add(value.value)
+        elif isinstance(value, ast.JoinedStr) and value.values:
+            head = value.values[0]
+            if isinstance(head, ast.Constant) and isinstance(head.value, str):
+                literals.add(head.value)
+        elif isinstance(value, ast.Call) and getattr(value.func, "id", None) == "_recorded_error":
+            literals.add(tools.RECORDED_NOT_EXECUTED)
+            for arg in value.args:
+                _collect(arg)
+
     for module in (tools, confirmation_resolution):
         tree = ast.parse(Path(inspect.getfile(module)).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -590,15 +638,8 @@ def _audit_error_literals() -> set[str]:
             if name != "write_audit_row":
                 continue
             for keyword in node.keywords:
-                if keyword.arg != "error":
-                    continue
-                value = keyword.value
-                if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                    literals.add(value.value)
-                elif isinstance(value, ast.JoinedStr) and value.values:
-                    head = value.values[0]
-                    if isinstance(head, ast.Constant) and isinstance(head.value, str):
-                        literals.add(head.value)
+                if keyword.arg == "error":
+                    _collect(keyword.value)
     return literals
 
 
@@ -683,6 +724,44 @@ class TestDispositionDerivation:
         disposition, reason = des.observed_disposition(row)
         assert disposition is None
         assert reason == "unrecognised_error"
+
+    @pytest.mark.parametrize(
+        "underlying",
+        ["actor_block", "actor_require_human", "capability.denial:disabled"],
+    )
+    def test_a_recorded_row_is_never_scored_as_a_decision(self, fixtures, underlying):
+        """An eval's own rows must not become the eval's evidence.
+
+        Recorded mode writes into the same `tool_calls_audit` this scorer reads —
+        deliberately, because a durable record of what the agent tried is the
+        point. Unclassified, the marker's prefix would fall through to whatever
+        entry matched next, and a nightly eval would post `refuse` rows for
+        refusals that refused nothing: a supervised set for the Actor gate half
+        made of requests that never happened, scoring itself.
+
+        `None`, not `refuse`: the Actor DID decide, so the row is not noise —
+        but it decided about a scenario, and nothing was suppressed on the
+        production side of that decision because there was no production side.
+        """
+        from app.services.transactional.tools import RECORDED_NOT_EXECUTED
+
+        row = audit_row(
+            fixtures[0],
+            des.DISPOSITION_REFUSE,
+            error=f"{RECORDED_NOT_EXECUTED}|{underlying}",
+            actor_decision="block",
+        )
+        assert des.observed_disposition(row) == (None, "recorded_not_executed"), (
+            f"a recorded {underlying!r} row was scored as a real decision."
+        )
+
+        bare = audit_row(
+            fixtures[0],
+            des.DISPOSITION_REFUSE,
+            error=RECORDED_NOT_EXECUTED,
+            actor_decision="approve",
+        )
+        assert des.observed_disposition(bare) == (None, "recorded_not_executed")
 
     def test_an_identity_check_that_could_not_run_is_invalid_not_a_refusal(
         self, fixtures
@@ -1877,7 +1956,7 @@ class TestUnknownIsNotAPass:
         from "has never been executed by anything"."""
         report = score(fixtures, [], RUN_ID)
         assert report["has_driver"] is des.DECISION_EVAL_HAS_A_DRIVER is False
-        assert report["label_trust_tier"] == des.FIXTURE_LABEL_TRUST_TIER
+        assert report["fixture_label_provenance"] == des.FIXTURE_LABEL_PROVENANCE
         assert report["fixture_drift"] == []
 
 

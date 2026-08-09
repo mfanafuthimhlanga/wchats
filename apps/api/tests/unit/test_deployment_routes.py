@@ -113,14 +113,31 @@ def _make_complete_checklist_run(
     all_warnings_acknowledged: bool = False,
     envelope_hash: str | None = None,
     envelope_acknowledged_at=None,
+    eval_summary: dict | None = None,
 ) -> MagicMock:
-    """Return a mock ChecklistRun with status='complete'."""
+    """Return a mock ChecklistRun with status='complete'.
+
+    `eval_summary` DEFAULTS TO A RUN THAT INVOKED THE AGENT (audit D1, P3
+    review). The approve route now refuses a stored run whose own report does
+    not record `agent_invoked is True`, because `recommendation` is frozen at
+    checklist time and a run completed before the D1 gate landed still says
+    'ship' over an eval that scored the dataset's own reference answers. The
+    old default here was `{}` — which is exactly the historical shape — so
+    every approve test in this module would otherwise be asserting the refusal
+    rather than what its name says. Pass `{}` deliberately to test the refusal.
+    """
     run = MagicMock(spec=ChecklistRun)
     run.id = run_id or uuid4()
     run.agent_id = agent_id
     run.status = "complete"
     run.recommendation = recommendation
-    run.report = {"eval_summary": {}, "summary": "Good.", "recommendation": recommendation}
+    run.report = {
+        "eval_summary": (
+            {"agent_invoked": True} if eval_summary is None else eval_summary
+        ),
+        "summary": "Good.",
+        "recommendation": recommendation,
+    }
     run.warnings = warnings if warnings is not None else []
     run.warning_acknowledgments = {}
     run.all_warnings_acknowledged = all_warnings_acknowledged
@@ -576,6 +593,174 @@ class TestApproveDeployment:
             f"Expected the blocked-deployment detail, not the envelope "
             f"drift detail, got: {detail!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestApproveRefusesAnUninvokedRun (audit D1, P3 review)
+# ---------------------------------------------------------------------------
+
+
+class TestApproveRefusesAnUninvokedRun:
+    """The gate does not reach a checklist run that already completed.
+
+    `apply_signal_evidence_gate` has exactly one caller — the checklist Celery
+    task — and `agent.is_deployed` has exactly one writer: this route, which
+    validates against `run.recommendation`, a value FROZEN by whatever gate was
+    running the day the row was written. So P3 refusing an uninvoked eval at
+    checklist time closes nothing for the runs that already exist: every
+    readiness check completed before this release carries a 'ship' computed
+    over the tautology at eval.py:374-375, its status is 'complete', its
+    recommendation is not 'block', its warnings do not apply and its envelope
+    hash has not moved. `{"deployed": true}`, and the agent this phase exists
+    to refuse goes live.
+
+    checklist_runs has no TTL and no gate-version column
+    (app/models/checklist_run.py), so the run's own evidence has to be re-read
+    at approve time rather than aged out.
+    """
+
+    async def _post(self, run):
+        fake_tenant = _make_fake_tenant()
+        agent_id = run.agent_id
+        mock_agent = _make_ready_agent(fake_tenant, agent_id=agent_id)
+        mock_agent.is_deployed = False
+        mock_db = _make_mock_db(mock_agent, run)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    f"/api/v1/agents/{agent_id}/approve-deployment",
+                    json={"checklist_run_id": str(run.id)},
+                    headers={"X-API-Key": "vrd_live_test"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+        return response, mock_agent
+
+    def _historical_run(self, **kw):
+        """A checklist run exactly as one written before this branch looks:
+        complete, 'ship', warnings acknowledged, envelope hash matching the
+        live (empty) envelope, and an eval_summary with excellent scores and
+        no invocation claim anywhere in it."""
+        return _make_complete_checklist_run(
+            agent_id=kw.pop("agent_id", uuid4()),
+            recommendation="ship",
+            warnings=[],
+            all_warnings_acknowledged=True,
+            envelope_hash=canonical_envelope_hash([]),
+            eval_summary=kw.pop(
+                "eval_summary",
+                {
+                    "eval_signal": "measured",
+                    "pass_rates": {"faithfulness": 0.99},
+                    "scenario_count": 30,
+                },
+            ),
+            **kw,
+        )
+
+    async def test_a_pre_d1_checklist_run_is_no_longer_approvable(self):
+        """THE ONE THAT MATTERS: every run stored before this release."""
+        run = self._historical_run()
+
+        response, mock_agent = await self._post(run)
+
+        assert response.status_code == 422, (
+            "a readiness check decided over the tautology was approved because "
+            "its recommendation was frozen at 'ship' before the gate existed"
+        )
+        assert mock_agent.is_deployed is False, (
+            "the 422 must precede the mutation — asserting the status code "
+            "alone would not catch a route that flipped the flag and raised"
+        )
+
+    async def test_a_run_that_recorded_false_is_refused_too(self):
+        run = self._historical_run(eval_summary={"agent_invoked": False})
+
+        response, mock_agent = await self._post(run)
+
+        assert response.status_code == 422
+        assert mock_agent.is_deployed is False
+
+    async def test_a_run_with_no_report_at_all_is_refused(self):
+        """A run that never reached step 6 of the checklist task has report
+        NULL. A gate that cannot read its evidence has not been satisfied."""
+        run = self._historical_run()
+        run.report = None
+
+        response, mock_agent = await self._post(run)
+
+        assert response.status_code == 422
+        assert mock_agent.is_deployed is False
+
+    async def test_the_detail_names_the_step_the_owner_has_to_take_first(self):
+        """"Re-run the checklist" is not enough: the checklist would reach the
+        same verdict over the same stale eval. A fresh eval comes first."""
+        run = self._historical_run()
+
+        response, _ = await self._post(run)
+
+        detail = response.json().get("detail", "")
+        assert "Evaluation page" in detail, f"got: {detail!r}"
+        assert "readiness check" in detail, f"got: {detail!r}"
+
+    async def test_a_run_that_records_the_invocation_still_approves(self):
+        """The refusal has to be able to NOT fire."""
+        run = self._historical_run(eval_summary={"agent_invoked": True})
+
+        response, mock_agent = await self._post(run)
+
+        assert response.status_code == 200
+        assert response.json()["deployed"] is True
+        assert mock_agent.is_deployed is True
+
+    async def test_a_blocked_run_still_reports_the_blocked_detail(self):
+        """Ordering, upward: the new check sits behind the three shipped
+        validations so it cannot mask a more severe pre-existing gate."""
+        run = self._historical_run()
+        run.recommendation = "block"
+        run.all_warnings_acknowledged = False
+
+        response, _ = await self._post(run)
+
+        assert response.status_code == 422
+        assert "blocked" in response.json().get("detail", "").lower()
+
+    async def test_it_is_reported_ahead_of_envelope_drift(self):
+        """Ordering, downward. Both are wrong; only one of them tells the owner
+        they must run a fresh eval before the checklist can reach any other
+        verdict, and "Capability envelope changed — re-run the checklist" does
+        not mention it."""
+        run = self._historical_run()
+        run.envelope_hash = canonical_envelope_hash(ENVELOPE_ROW_SET_A)
+
+        fake_tenant = _make_fake_tenant()
+        mock_agent = _make_ready_agent(fake_tenant, agent_id=run.agent_id)
+        mock_agent.is_deployed = False
+        mock_db = _make_mock_db(mock_agent, run, envelope_rows=ENVELOPE_ROW_SET_B)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    f"/api/v1/agents/{run.agent_id}/approve-deployment",
+                    json={"checklist_run_id": str(run.id)},
+                    headers={"X-API-Key": "vrd_live_test"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 422
+        detail = response.json().get("detail", "")
+        assert "Capability envelope" not in detail, f"got: {detail!r}"
+        assert "Evaluation page" in detail, f"got: {detail!r}"
 
 
 # ---------------------------------------------------------------------------

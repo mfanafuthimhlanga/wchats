@@ -28,7 +28,9 @@ AUD-01 symmetry:
 
 confirm_action_tool (mutating=False, WR-05 closed):
   Gated behind check_capability_access + IN-03 agent_id guard before writing a
-  pending_confirmations row. Takes NO idempotency key, calls NO provider adapter.
+  pending_confirmations row. Under side_effects='recorded' it writes no row at
+  all and records the attempt instead — it does not use the dispatcher, so it
+  would otherwise pollute the owner's triage queue on every eval scenario. Takes NO idempotency key, calls NO provider adapter.
   Minimal dedup (T-14-08-05): the partial unique index
   uq_pending_confirmations_unresolved (migration 0016) bounds OUTSTANDING
   confirmations to one per (agent_id, skill, action_reference). A duplicate
@@ -102,6 +104,111 @@ log = structlog.get_logger(__name__)
 
 # Default TTL for pending_confirmations rows (Phase 18 will extend/configure this).
 _CONFIRM_TTL_HOURS: int = 24
+
+#: tool_calls_audit.error marker for a call recorded-mode declined to execute
+#: (D1/P1b, BACKLOG 2.5). A constant rather than a literal because the eval and
+#: any future Actor-labelling pass have to filter on the same string: an
+#: unmarked recorded row and a real execution tell the same story in that table.
+#:
+#: EVERY audit row written under recorded mode carries it, not only the
+#: adapter-suppression row. A recorded `actor_block` row that was byte-identical
+#: to a production `actor_block` row is exactly the contamination this constant
+#: exists to prevent, and the *refused* column of the audit's confusion matrix
+#: is entirely made of those rows. `startswith(RECORDED_NOT_EXECUTED)` is the
+#: filter; the suppression row is the bare marker, every other recorded row is
+#: `f"{RECORDED_NOT_EXECUTED}|{the real reason}"`.
+RECORDED_NOT_EXECUTED: str = "side_effects.recorded:not_executed"
+
+#: In-process sink `kind` for a call that steps 1-5 stopped under recorded mode.
+#: Distinct from "transactional.adapter" (which recorded mode suppressed at the
+#: outer edge) because the two are opposite cells of the confusion matrix: one
+#: is "would have executed", the other is "the envelope refused". An eval that
+#: recorded only the first cannot tell "the agent never tried" from "the agent
+#: tried and was stopped".
+RECORDED_DECLINED: str = "transactional.declined"
+
+
+def _recorded_error(recorded: bool, error: str) -> str:
+    """Stamp an audit row's `error` with the recorded marker, in recorded mode only.
+
+    Live rows are returned byte-unchanged — every pre-existing assertion about
+    `capability.denial:disabled`, `actor_block`, `idempotency.args_mismatch`
+    and friends still reads exactly what it read before.
+    """
+    return f"{RECORDED_NOT_EXECUTED}|{error}" if recorded else error
+
+
+def _not_executed_result(skill: str, detail: str = "") -> dict:
+    """The tool result recorded mode hands the agent in place of a real execution.
+
+    Two requirements pull in opposite directions here and both are met.
+
+    **Unmissable, never a silent success** (the owner, 2026-08-07). A recorded
+    `issue_refund` that returned a cheerful confirmation would teach the agent
+    the money moved, and every sentence it produced afterwards would reason from
+    a false premise. So: `is_error`, and text that says in words that nothing
+    happened, carrying none of the adapter's artefacts.
+
+    **No evaluation frame in the model's context.** The first version of this
+    text told the agent "this agent is running in evaluation mode
+    (side_effects='recorded')" and instructed it not to tell the customer the
+    action completed. Every token after that was produced by an
+    evaluation-AWARE agent — and those are the tokens Faithfulness and
+    AnswerRelevancy then score. That is a production-fidelity divergence of
+    exactly the class approach (b) and the seam exist to close: measure the
+    agent production serves, not one that knows it is being watched. Production
+    never emits either sentence, so neither does this. What a real provider
+    outage produces — a failed tool call whose text says the action did not
+    happen — is what the agent sees.
+
+    The eval-only marker did not disappear; it moved to where the readers who
+    need it actually read. `tool_calls_audit.error` carries
+    `RECORDED_NOT_EXECUTED` for the human grader and the labelled Actor set, and
+    `get_recorded_side_effects()` carries the full attempt for P2.
+    """
+    tail = f" {detail}" if detail else ""
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    f"NOT EXECUTED: the {skill} request did not reach the provider "
+                    f"and nothing was changed. No money moved and no record was "
+                    f"updated.{tail}"
+                ),
+            }
+        ],
+        "is_error": True,
+    }
+
+
+def _declined_detail(
+    *,
+    skill: str,
+    raw_args: dict,
+    agent_id: str,
+    conversation_id: str | None,
+    reason: str,
+    snapshot: dict | None = None,
+    actor_decision: str = "",
+    actor_rationale: str = "",
+) -> dict:
+    """The in-process record of an attempt steps 1-5 declined under recorded mode.
+
+    `reason` is the same string the audit row carries, so the durable and the
+    in-process halves of the recording join on one value rather than on two
+    vocabularies that drift.
+    """
+    return {
+        "skill": skill,
+        "arguments": raw_args,
+        "agent_id": agent_id,
+        "conversation_id": conversation_id,
+        "reason": reason,
+        "capability_snapshot": snapshot,
+        "actor_decision": actor_decision,
+        "actor_rationale": actor_rationale,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +391,23 @@ async def _execute_transactional_tool(
                            ONLY for the fresh reserved winner — never for replays
                            denial → release + audit + is_error
       5. Actor seam      — call_actor_gate: block → release + audit + is_error
+      5.5 Recorded mode  — D1/P1b: on the eval path (side_effects='recorded') the
+                           ProviderAdapter is suppressed. Records the attempt,
+                           releases, writes the audit row marked
+                           RECORDED_NOT_EXECUTED, returns is_error. Steps 1-5 all
+                           ran; only the money did not move.
+                           This is the APPROVE path's branch. Every other
+                           non-executing outcome above has its own — the two that
+                           matter are the step-3 replay (returns a stored REAL
+                           provider result) and the step-5 require_human verdict
+                           (writes a pending_confirmations row the owner's
+                           approval queue dispatches into a live adapter). Both
+                           return BEFORE 5.5, so 5.5 alone was not a money guard.
+                           Under recorded mode every audit row this function
+                           writes carries the RECORDED_NOT_EXECUTED prefix, and
+                           every declined attempt is recorded in the in-process
+                           sink — the *refused* column of the audit's confusion
+                           matrix is made entirely of those.
       6. Adapter execute — try/except; error → release + audit + is_error
       7. Audit + finalize— success path: audit row (no error) + finalize_idempotency + return
 
@@ -304,7 +428,9 @@ async def _execute_transactional_tool(
         _agent_id_var,
         _conn_str_var,
         _conversation_id_var,
+        _side_effects_var,
         _verified_session_token_var,
+        record_suppressed_side_effect,
     )
 
     agent_id = _agent_id_var.get()
@@ -312,7 +438,33 @@ async def _execute_transactional_tool(
     conversation_id_str = _conversation_id_var.get()
     conversation_id: str | None = conversation_id_str if conversation_id_str else None
 
+    # D1/P1b: read ONCE, at the top. The mode is consulted by every
+    # decline-to-execute branch below, not only by step 5.5 — reading it at each
+    # branch would be nine chances to forget one, and the one forgotten is the
+    # one that moves money.
+    recorded: bool = _side_effects_var.get() == "recorded"
+
+    # The idempotency key is MODEL-SUPPLIED (every mutating Input model in
+    # schemas.py declares it) and models produce deterministic ones —
+    # "refund-ORD-9001", "order-12345-refund". Two consequences, both real, both
+    # closed by giving recorded mode its own keyspace:
+    #   * an eval scenario mined from a production conversation can hit the key a
+    #     real completed call used, and step 3 would hand the agent that call's
+    #     stored REAL provider result;
+    #   * an eval that reserves a key first makes the real customer's later call
+    #     with the same key read as a replay or a stranded reservation.
+    # A recorded execution never finalizes (it releases), so nothing is ever
+    # stored under a "recorded:" key and a recorded replay cannot occur at all.
+    # The step-3 mode check below is kept anyway: this namespace is one edit away
+    # from being lost, and the check fails loudly if it ever is.
+    idem_key: str = (
+        f"recorded:{validated.idempotency_key}" if recorded else validated.idempotency_key
+    )
+
     # -------------------------------------------------------- 1. IN-03 agent_id precondition
+    # No recorded-mode branch: this is the harness failing to set context, not
+    # the agent choosing anything, and there is no agent_id to attribute a
+    # recording to. Nothing durable is written here either.
     if not agent_id:
         return {
             "content": [
@@ -332,6 +484,18 @@ async def _execute_transactional_tool(
     # Runs on EVERY call including replays — fail-closed for existence + enabled (T-14-04-03).
     snapshot, denial = await check_capability_access(agent_id, skill)
     if denial is not None:
+        if recorded:
+            record_suppressed_side_effect(
+                RECORDED_DECLINED,
+                _declined_detail(
+                    skill=skill,
+                    raw_args=raw_args,
+                    agent_id=agent_id,
+                    conversation_id=conversation_id,
+                    reason=f"capability.denial:{denial}",
+                    snapshot=snapshot,
+                ),
+            )
         # AUD-01 symmetry: capability denial writes one audit row (matching actor_block).
         await write_audit_row(
             agent_id=agent_id,
@@ -343,7 +507,7 @@ async def _execute_transactional_tool(
             actor_rationale="",
             capability_snapshot=snapshot,
             latency_ms=None,
-            error=f"capability.denial:{denial}",
+            error=_recorded_error(recorded, f"capability.denial:{denial}"),
         )
         return {
             "content": [
@@ -368,6 +532,18 @@ async def _execute_transactional_tool(
         vst = _verified_session_token_var.get()
         if not vst:
             # No verified session token present — block before reservation.
+            if recorded:
+                record_suppressed_side_effect(
+                    RECORDED_DECLINED,
+                    _declined_detail(
+                        skill=skill,
+                        raw_args=raw_args,
+                        agent_id=agent_id,
+                        conversation_id=conversation_id,
+                        reason="identity_verification.required",
+                        snapshot=snapshot,
+                    ),
+                )
             await write_audit_row(
                 agent_id=agent_id,
                 conversation_id=conversation_id,
@@ -378,7 +554,7 @@ async def _execute_transactional_tool(
                 actor_rationale="",
                 capability_snapshot=snapshot,
                 latency_ms=None,
-                error="identity_verification.required",
+                error=_recorded_error(recorded, "identity_verification.required"),
             )
             return {
                 "content": [
@@ -405,6 +581,18 @@ async def _execute_transactional_tool(
                 skill=skill,
                 error=str(exc),
             )
+            if recorded:
+                record_suppressed_side_effect(
+                    RECORDED_DECLINED,
+                    _declined_detail(
+                        skill=skill,
+                        raw_args=raw_args,
+                        agent_id=agent_id,
+                        conversation_id=conversation_id,
+                        reason="identity_verification.check_failed",
+                        snapshot=snapshot,
+                    ),
+                )
             await write_audit_row(
                 agent_id=agent_id,
                 conversation_id=conversation_id,
@@ -415,7 +603,7 @@ async def _execute_transactional_tool(
                 actor_rationale="",
                 capability_snapshot=snapshot,
                 latency_ms=None,
-                error="identity_verification.check_failed",
+                error=_recorded_error(recorded, "identity_verification.check_failed"),
             )
             return {
                 "content": [
@@ -428,6 +616,18 @@ async def _execute_transactional_tool(
             }
         if not session_valid:
             # Token present but expired or not found in tenant DB — block before reservation.
+            if recorded:
+                record_suppressed_side_effect(
+                    RECORDED_DECLINED,
+                    _declined_detail(
+                        skill=skill,
+                        raw_args=raw_args,
+                        agent_id=agent_id,
+                        conversation_id=conversation_id,
+                        reason="identity_verification.invalid_or_expired",
+                        snapshot=snapshot,
+                    ),
+                )
             await write_audit_row(
                 agent_id=agent_id,
                 conversation_id=conversation_id,
@@ -438,7 +638,7 @@ async def _execute_transactional_tool(
                 actor_rationale="",
                 capability_snapshot=snapshot,
                 latency_ms=None,
-                error="identity_verification.invalid_or_expired",
+                error=_recorded_error(recorded, "identity_verification.invalid_or_expired"),
             )
             return {
                 "content": [
@@ -456,9 +656,7 @@ async def _execute_transactional_tool(
     # -------------------------------------------------------- 3. Reserve idempotency (atomic)
     # compute_args_hash excludes idempotency_key internally — used to detect WR-02 key reuse.
     args_hash = compute_args_hash(raw_args)
-    reservation = await reserve_idempotency(
-        agent_id, skill, validated.idempotency_key, args_hash
-    )
+    reservation = await reserve_idempotency(agent_id, skill, idem_key, args_hash)
 
     if reservation.state == "replay":
         # WR-01 closed: replay short-circuits BEFORE apply_rate_and_constraint_checks.
@@ -468,6 +666,28 @@ async def _execute_transactional_tool(
             agent_id=agent_id,
             skill=skill,
         )
+        if recorded:
+            # The stored result is a REAL provider result from a REAL earlier
+            # call. Returning it here would hand the eval agent "Refund of
+            # R45.00 issued" and every sentence after it would reason from money
+            # having moved — the silent success the owner ruled out, arriving
+            # through the one door step 5.5 sits behind rather than in front of.
+            # The "recorded:" keyspace above should make this unreachable; if it
+            # is ever reached, this is the guard that keeps it harmless.
+            record_suppressed_side_effect(
+                RECORDED_DECLINED,
+                _declined_detail(
+                    skill=skill,
+                    raw_args=raw_args,
+                    agent_id=agent_id,
+                    conversation_id=conversation_id,
+                    reason="idempotency.replay",
+                    snapshot=snapshot,
+                ),
+            )
+            # No audit row: AUD-01 exempts replays in both modes, because the
+            # call that stored the result already wrote one.
+            return _not_executed_result(skill)
         return reservation.result  # type: ignore[return-value]
 
     if reservation.state == "args_mismatch":
@@ -476,6 +696,18 @@ async def _execute_transactional_tool(
         # AUD-01: this is a security-relevant rejection (suspicious key reuse) — audit it,
         # matching the capability.denial / actor_block paths. (in_progress is NOT audited
         # here: it is a concurrent-duplicate no-op; the reserved winner audits the real call.)
+        if recorded:
+            record_suppressed_side_effect(
+                RECORDED_DECLINED,
+                _declined_detail(
+                    skill=skill,
+                    raw_args=raw_args,
+                    agent_id=agent_id,
+                    conversation_id=conversation_id,
+                    reason="idempotency.args_mismatch",
+                    snapshot=snapshot,
+                ),
+            )
         await write_audit_row(
             agent_id=agent_id,
             conversation_id=conversation_id,
@@ -486,7 +718,7 @@ async def _execute_transactional_tool(
             actor_rationale="",
             capability_snapshot=snapshot,
             latency_ms=None,
-            error="idempotency.args_mismatch",
+            error=_recorded_error(recorded, "idempotency.args_mismatch"),
         )
         return {
             "content": [
@@ -504,6 +736,22 @@ async def _execute_transactional_tool(
     if reservation.state == "in_progress":
         # Concurrent duplicate delivery — another worker is executing the same key.
         # Return a benign is_error without executing (caller should retry later).
+        if recorded:
+            # No audit row here in either mode (AUD-01: the reserved winner
+            # audits the real call), so the in-process sink is the ONLY record
+            # that the agent tried. Without it, P2 reads this turn as one where
+            # no mutating call was attempted at all.
+            record_suppressed_side_effect(
+                RECORDED_DECLINED,
+                _declined_detail(
+                    skill=skill,
+                    raw_args=raw_args,
+                    agent_id=agent_id,
+                    conversation_id=conversation_id,
+                    reason="idempotency.in_progress",
+                    snapshot=snapshot,
+                ),
+            )
         return {
             "content": [
                 {
@@ -528,6 +776,18 @@ async def _execute_transactional_tool(
             agent_id=agent_id,
             skill=skill,
         )
+        if recorded:
+            record_suppressed_side_effect(
+                RECORDED_DECLINED,
+                _declined_detail(
+                    skill=skill,
+                    raw_args=raw_args,
+                    agent_id=agent_id,
+                    conversation_id=conversation_id,
+                    reason="idempotency.stranded_reservation",
+                    snapshot=snapshot,
+                ),
+            )
         await write_audit_row(
             agent_id=agent_id,
             conversation_id=conversation_id,
@@ -538,7 +798,7 @@ async def _execute_transactional_tool(
             actor_rationale="",
             capability_snapshot=snapshot,
             latency_ms=None,
-            error="idempotency.stranded_reservation",
+            error=_recorded_error(recorded, "idempotency.stranded_reservation"),
         )
         return {
             "content": [
@@ -563,7 +823,19 @@ async def _execute_transactional_tool(
     rate_denial = await apply_rate_and_constraint_checks(agent_id, skill, snapshot, raw_args)
     if rate_denial is not None:
         # Release the reservation so a later retry can attempt the key again.
-        await release_idempotency(agent_id, skill, validated.idempotency_key)
+        await release_idempotency(agent_id, skill, idem_key)
+        if recorded:
+            record_suppressed_side_effect(
+                RECORDED_DECLINED,
+                _declined_detail(
+                    skill=skill,
+                    raw_args=raw_args,
+                    agent_id=agent_id,
+                    conversation_id=conversation_id,
+                    reason=f"capability.denial:{rate_denial}",
+                    snapshot=snapshot,
+                ),
+            )
         await write_audit_row(
             agent_id=agent_id,
             conversation_id=conversation_id,
@@ -574,7 +846,7 @@ async def _execute_transactional_tool(
             actor_rationale="",
             capability_snapshot=snapshot,
             latency_ms=None,
-            error=f"capability.denial:{rate_denial}",
+            error=_recorded_error(recorded, f"capability.denial:{rate_denial}"),
         )
         return {
             "content": [
@@ -594,7 +866,21 @@ async def _execute_transactional_tool(
         skill, raw_args, snapshot, conversation_id or "", agent_id, conn_str
     )
     if decision == "block":
-        await release_idempotency(agent_id, skill, validated.idempotency_key)
+        await release_idempotency(agent_id, skill, idem_key)
+        if recorded:
+            record_suppressed_side_effect(
+                RECORDED_DECLINED,
+                _declined_detail(
+                    skill=skill,
+                    raw_args=raw_args,
+                    agent_id=agent_id,
+                    conversation_id=conversation_id,
+                    reason="actor_block",
+                    snapshot=snapshot,
+                    actor_decision=decision,
+                    actor_rationale=rationale,
+                ),
+            )
         await write_audit_row(
             agent_id=agent_id,
             conversation_id=conversation_id,
@@ -605,7 +891,7 @@ async def _execute_transactional_tool(
             actor_rationale=rationale,
             capability_snapshot=snapshot,
             latency_ms=None,
-            error="actor_block",
+            error=_recorded_error(recorded, "actor_block"),
         )
         return {
             "content": [
@@ -620,7 +906,76 @@ async def _execute_transactional_tool(
     elif decision == "require_human":
         # Pitfall 4 (15-RESEARCH.md): release reservation FIRST — the action will NOT
         # proceed. Free the reservation so a later retry (after approval) can re-enter.
-        await release_idempotency(agent_id, skill, validated.idempotency_key)
+        await release_idempotency(agent_id, skill, idem_key)
+
+        # ---------------------------------------------------------------
+        # D1/P1b: THE SECOND DOOR TO A LIVE ADAPTER, and the one step 5.5
+        # cannot see because this arm returns before it.
+        #
+        # A require_human verdict writes a durable `pending_confirmations`
+        # row. That row is not inert: it appears in
+        # GET /agents/{agent_id}/pending-confirmations, it carries no marker
+        # distinguishing it from a customer's, and `_is_confirm_action_shaped`
+        # does NOT filter it (it holds `idempotency_key`, never
+        # `action_reference`). Approving it dispatches
+        # resolve_confirmation_task -> execute_approved_confirmation ->
+        # _execute_adapter_and_audit -> get_adapter_for_skill -> a real
+        # Stripe/Shopify/Woo/Calendly call. So a nightly eval scenario that
+        # provokes a large refund silently queues a real refund for the owner
+        # to approve, hours later, with nothing in the queue saying it came
+        # from an eval. Recorded mode that stops at step 5.5 stops the fast
+        # path to the adapter and leaves the slow one open.
+        #
+        # Stamping the row instead of skipping it was the alternative. It was
+        # rejected: it needs the approval route and the resolver to fail
+        # closed on the stamp, which spreads the eval's concern into the
+        # human-approval path — the same coupling
+        # test_the_shared_adapter_helper_stays_free_of_the_mode exists to
+        # prevent. Not writing a row nobody should ever act on is the smaller,
+        # more local change.
+        #
+        # The Actor's verdict is not lost: the recording carries decision and
+        # rationale, and the audit row is written and marked. That verdict IS
+        # the eval signal — "the agent tried and the gate escalated it" is a
+        # cell of the confusion matrix, and the pending row was never the
+        # thing that carried it.
+        # ---------------------------------------------------------------
+        if recorded:
+            record_suppressed_side_effect(
+                RECORDED_DECLINED,
+                _declined_detail(
+                    skill=skill,
+                    raw_args=raw_args,
+                    agent_id=agent_id,
+                    conversation_id=conversation_id,
+                    reason="actor_require_human",
+                    snapshot=snapshot,
+                    actor_decision=decision,
+                    actor_rationale=rationale,
+                ),
+            )
+            await write_audit_row(
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+                skill=skill,
+                arguments=raw_args,
+                result=None,
+                actor_decision=decision,
+                actor_rationale=rationale,
+                capability_snapshot=snapshot,
+                latency_ms=None,
+                error=_recorded_error(recorded, "actor_require_human"),
+            )
+            log.info(
+                "transactional_tool.require_human_not_queued",
+                agent_id=agent_id,
+                skill=skill,
+            )
+            return _not_executed_result(
+                skill,
+                "It requires human approval and no approval request was created.",
+            )
+
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(hours=_CONFIRM_TTL_HOURS)
 
@@ -721,6 +1076,75 @@ async def _execute_transactional_tool(
                 }
             ]
         }
+
+    # ---------------------------------------------- 5.5 Recorded mode (D1/P1b, BACKLOG 2.5)
+    # The eval invokes this agent through the same seam production uses, which is
+    # the whole point of approach (b) — and which means an eval scenario in which
+    # the agent decides to refund would execute a real refund. On the eval path
+    # the ProviderAdapter is suppressed and the attempt is recorded instead.
+    #
+    # Placed HERE, after step 5, and not inside _execute_adapter_and_audit. Two
+    # reasons, both load-bearing:
+    #
+    #   * Everything above still runs. The capability envelope, the IDV gate, the
+    #     idempotency reservation, the rate ceiling and the Actor seam are what
+    #     the eval is measuring. Short-circuiting ahead of them would hand the
+    #     recorded agent "not executed" where production hands it "access
+    #     denied", and the remainder of the turn would diverge from the product —
+    #     the exact drift the seam exists to close.
+    #   * _execute_adapter_and_audit is shared with
+    #     confirmation_resolution.execute_approved_confirmation, the human-approval
+    #     resolver. That resolver runs hours later, in another task, with no
+    #     per-turn context, and is forbidden from reading dispatcher ContextVars
+    #     (OD-5, test_resolver_reads_no_dispatcher_contextvar). Putting the check
+    #     in the shared helper would make an approved refund's fate depend on
+    #     ambient state nobody in that call stack set.
+    #
+    # AUD-01 symmetry is preserved: this is a non-replay entry, so it writes
+    # exactly one tool_calls_audit row, marked as recorded so the labelled Actor
+    # set is never contaminated by an action that did not run. The reservation is
+    # released like every other decline-to-execute path, because a key held by an
+    # action that never happened makes the next caller's "unknown" a lie.
+    #
+    # This branch is no longer the ONLY one. Two arms above return before it —
+    # the step-3 idempotency replay and the step-5 require_human verdict — and
+    # both reached durable, real effects (a stored provider result, and a
+    # `pending_confirmations` row the owner's approval queue dispatches into a
+    # live adapter). Each now has its own recorded branch. `recorded` is read
+    # once at the top of this function for that reason.
+    if recorded:
+        record_suppressed_side_effect(
+            "transactional.adapter",
+            {
+                "skill": skill,
+                "adapter_method": adapter_method,
+                "arguments": raw_args,
+                "agent_id": agent_id,
+                "conversation_id": conversation_id,
+                "actor_decision": decision,
+                "actor_rationale": rationale,
+                "capability_snapshot": snapshot,
+            },
+        )
+        await release_idempotency(agent_id, skill, idem_key)
+        await write_audit_row(
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            skill=skill,
+            arguments=raw_args,
+            result=None,
+            actor_decision=decision,
+            actor_rationale=rationale,
+            capability_snapshot=snapshot,
+            latency_ms=None,
+            error=RECORDED_NOT_EXECUTED,
+        )
+        log.info(
+            "transactional_tool.side_effect_recorded",
+            agent_id=agent_id,
+            skill=skill,
+        )
+        return _not_executed_result(skill)
 
     # -------------------------------------------------------- 6-7. Adapter + audit
     # Delegated to the shared helper (T-22-ACT-15) — see _execute_adapter_and_audit
@@ -944,10 +1368,16 @@ async def confirm_action_tool(args: dict) -> dict:
             "is_error": True,
         }
 
-    # Lazy import to access the ContextVar set by build_tool_server.
-    from app.services.agent_tools import _agent_id_var  # noqa: PLC0415
+    # Lazy import to access the ContextVars set by build_tool_server.
+    from app.services.agent_tools import (  # noqa: PLC0415
+        _agent_id_var,
+        _conversation_id_var,
+        _side_effects_var,
+        record_suppressed_side_effect,
+    )
 
     agent_id = _agent_id_var.get()
+    recorded: bool = _side_effects_var.get() == "recorded"
 
     # IN-03: agent_id guard — fail before any DB write
     if not agent_id:
@@ -981,6 +1411,41 @@ async def confirm_action_tool(args: dict) -> dict:
             ],
             "is_error": True,
         }
+
+    # -------------------------------------------------------------------
+    # D1/P1b: confirm_action does NOT route through _execute_transactional_tool,
+    # so step 5.5 never sees it — and it is in `allowed_tools` in both modes, by
+    # design (an eval agent that cannot request approval cannot be scored on
+    # choosing to). Left ungated it writes a durable row into the owner's triage
+    # queue on every eval scenario where the agent decides to ask, nightly.
+    #
+    # Less dangerous than the require_human row above — `_is_confirm_action_shaped`
+    # DOES filter this shape, so approving one never reaches an adapter — so this
+    # is queue pollution rather than money. It is still lost eval signal: nothing
+    # recorded that the agent chose to ask for approval, which is a decision worth
+    # scoring. Both halves are fixed here: no row, and a recording.
+    # -------------------------------------------------------------------
+    if recorded:
+        record_suppressed_side_effect(
+            "transactional.confirm_action",
+            {
+                "skill": validated.skill,
+                "action_reference": validated.action_reference,
+                "agent_id": agent_id,
+                "conversation_id": _conversation_id_var.get() or None,
+                "reason": "confirm_action.not_queued",
+            },
+        )
+        log.info(
+            "confirm_action.not_queued",
+            agent_id=agent_id,
+            skill=validated.skill,
+        )
+        return _not_executed_result(
+            "confirm_action",
+            f"No approval request was created for the '{validated.skill}' action "
+            f"(reference: {validated.action_reference}).",
+        )
 
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(hours=_CONFIRM_TTL_HOURS)

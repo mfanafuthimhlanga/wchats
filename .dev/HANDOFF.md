@@ -3,6 +3,123 @@
 > **`.dev/BACKLOG.md` is the single ordered list of open work.** Read it before starting anything.
 > This file is the current-state snapshot; that one is the queue.
 
+> **STATE AS OF 2026-08-08, end of the D1 workflow.** All 14 agents completed. P1, P1b, P2, P3, their
+> tier-1 reviews and bounded fixes, and — for the first time on this branch — **the tier-2 judge**.
+> Verdict: **`mergeable: true`**, extracted to `.dev/reference/tier2-judge-d1.md`. Its one-line read:
+> *"a correctly-shaped, fail-closed measurement pipeline that has never measured anything — which is
+> a large improvement over a pipeline that confidently measured its own label, and is honestly
+> labelled as such."*
+>
+> **Two owner decisions block the merge**, filed as `BACKLOG 0.4` and `0.5`: production customer rows
+> can reach the Ragas judge API with the PII firewall off (an *egress* question `2.11` frames only as
+> scoring fidelity), and the `alembic_tenant` migration the plan required does not exist — argued
+> away coherently, but a written-contract deviation only you can accept.
+>
+> **Naming caveat for anything below and in `.dev/traces/`:** every in-phase reviewer on this branch
+> was **tier-1**. Several commit messages, three trace filenames (`…-p1b-tier2-fixes.md`,
+> `…-p2-review-fixes.md`, `…-p3-review-fixes.md`) and earlier BACKLOG text call them "tier-2". They
+> are not. Tier-2 is the Fable judge, it ran once, and its output is the reference file above.
+
+> **STATE AS OF 2026-08-09 — D6, `feat/d6-labelling-loop`, STACKED ON THE UNMERGED
+> `feat/d1-agent-invocation` (`4179a5c`), not on `main`.** Merge only the top of the stack, and only
+> once D1 lands. Nothing below has been rebased.
+>
+> - **P1 landed** (`alembic_tenant` 0016 + `app/services/label_service.py`): the `human_authored`
+>   tier that `LABEL_TRUST_TIERS` had declared since D5 and nothing could produce, behind four
+>   restrictions. **P2 landed** (`4962ff5`, review fixes `17a5774`): `GET .../eval-scenarios/unlabelled`
+>   and `POST .../eval-scenarios/{id}/label`. **P3 landed** (`edb4fbb`). **P4 is unstarted**, by the
+>   owner's "backend only this run".
+> - **P3's finding is that the run record had gone stale, not that plumbing was missing.**
+>   `VERIFIED_QA_PROMOTION_DECISION["reason"]` — stamped into `eval_runs.config` on every run — said
+>   "no row is promotable until a correction UI produces human-verified answers". **P1 and P2 built
+>   that correction UI**, and `human_authored` (rank 3) clears `VERIFIED_QA_MIN_TRUST_TIER` (rank 2),
+>   so the pre-D6 guarantee — "unreachable by construction, no flag needed, and it becomes reachable
+>   the moment a human tier exists" — had inverted from a feature into a hazard against the owner's
+>   eval-only decision. Promotion is now held by **two independent locks**: the gate reads
+>   `eval_scenarios.source` (which labelling never touches) and `enabled: False` refuses last, so a
+>   row it refuses is *counted* under `promotion_disabled:eval_only` — which is the measurement of
+>   what flipping the decision would actually promote. Downstream, a labelled row enters the eval,
+>   joins **no** golden set (the label UPDATE assigns four columns and `dataset` is not one), and
+>   raises the **denominator** without raising `scored` when the agent cannot answer it.
+>   Long form and all 12 mutation proofs: `.dev/reference/d6-p3-label-downstream.md`.
+> - **R2 fired twice on P3's own work and was not weakened** — once on prose naming the writer inside
+>   a string constant, once on the new test module importing it. Two tests consequently live in
+>   `test_label_provenance.py`; the new module reaches the tier through
+>   `VERIFIED_QA_PROMOTION_DECISION["producible_label_tier"]`, pinned equal there.
+> - **Branch suite OBSERVED at the D6 tip (`6dc4990`), 2026-08-09: 2112 passed, 12 skipped, 0 failed,
+>   28 warnings, 493.34s.** Zero `FAILED`/`ERROR` lines. Detached run (`Start-Process`), not relayed.
+>   This is the figure to merge on; the `edb4fbb` reading below predates four later commits.
+> - **`feat/d6-labelling-loop` contains ALL of `feat/d1-agent-invocation`** — verified by
+>   `git merge-base --is-ancestor`. `main..d6` is 42 commits, of which 22 are D1's. Merging D6 merges
+>   D1 with it, so `0.4` and `0.5` sit in that path whichever branch is named. Rebasing D6 onto `main`
+>   to separate them is not viable: D6's P3 builds on the eval structures D1 rewrote.
+> - Branch suite at `edb4fbb`+: **2101 passed, 12 skipped**. Ignored-new-files control: **2077/12**,
+>   which is the *measured* baseline at `1c2b471` — so no pre-existing test changed status. Note the
+>   D6 workflow brief's "1873/11" is the branch point `4179a5c`, before P1 and P2 landed; it is not a
+>   baseline for anything on this branch.
+> - **`BACKLOG 2.4`'s "mined scenarios are inert by construction" is now narrowed but NOT closed.**
+>   The tier exists, the routes exist, and **0016 has been applied to no database**, so every label
+>   attempt on every tenant today returns a 503 naming the migration. No row has ever left the
+>   unlabelled state. Behind `0.2` (no PostgreSQL here) like everything else.
+> - The P2 adversarial review found **18 items, including four behaviour mutations that survived the
+>   54 tests P2 shipped with** — the queue's sort direction, its `LIMIT`/`OFFSET` binding, the counts
+>   identity, and three of four spellings of a forged write. All fixed at `17a5774`; the write is now
+>   scoped so it cannot overwrite a golden-set answer, and **only a Clerk JWT may stamp a human tier**
+>   (an API key is a machine credential and `label_service`'s guards are all in-process).
+>   Long form: `.dev/reference/d6-p2-labelling-queue.md` §7.6, and
+>   `.dev/reference/d6-p2-review-fixes.md`.
+> - Branch suite at `17a5774`: **2077 passed, 12 skipped**. Ignored-new-files control: **1994/12**.
+
+**In flight (2026-08-08): `feat/d1-agent-invocation`, unmerged.** P1 (the options seam, `ec5f445` +
+`d15be3a`), P1b (recorded mode + the canary write order, `487ebbe` + `117de05`), **P2 — the eval
+invokes the agent** (`d127b4d`) and the P2 review fixes (`b62186f` + `075550d`).
+`eval.py` no longer sets `agent_response = reference_answer`: each scenario's question goes to the
+customer agent through the seam with `side_effects="recorded"`, the agent's own text and its own
+retrieved contexts are what get scored, failed scenarios are excluded and counted, a run below
+`MIN_RESPONSE_RATE` reports `unknown`, and `config.agent_invoked` is written as an observation.
+**P3 has not started** (BACKLOG 2.2) — but the ship-on-nothing window it was going to leave open is
+closed in the interim: a run below the floor now writes **no `eval_results` at all**, so the gate
+reads `EVAL_SIGNAL_NO_VALID_SCORES` and refuses. A run produced by the pre-P2 tautology still carries
+scores and no `agent_invoked`, which is still P3's job.
+
+**The tier-2 judge HAS now read P2** (at `7a7486e`): 17 findings, 7 unsupported claims, all
+addressed in `b62186f`. Four changed what a run means — the below-floor fail-closed above; the
+contexts handed to Ragas are now one untruncated string per chunk rather than a truncated repr of the
+SDK block as a single element; the broker's `visibility_timeout` (3600) was below the worst case a run
+stamps on itself (5400) and the idempotency window was 1/9 of it; and a responded turn with no
+retrieve call is excluded and counted rather than scored 0 on three context metrics. Three of P2's
+own guards were proved not to be guards — most sharply, a one-token fallback to the stored context
+column passed all 163 eval tests.
+
+**Branch suite OBSERVED at the tip (`1d85789`), 2026-08-08: 1873 passed, 11 skipped, 0 failed,
+30 warnings, 366.48s.** 1884 collected. Zero `FAILED`/`ERROR` lines. This supersedes the 1821 below,
+which was recorded at the P2 review fixes — P3 and its review fixes added tests after it.
+
+Two notes for whoever runs it next, both learned the hard way here:
+
+- **The gate takes ~6 minutes and fits the tooling fine.** Three consecutive backgrounded attempts
+  were killed at ~3-4% and it was briefly written up as a wall-clock regression. That was wrong:
+  a detached run (`Start-Process`, output redirected to a file) completed in 366s, faster than
+  `main`'s 451s with 178 more tests. Cause of the kills unknown; if it recurs, detach rather than
+  concluding anything about the suite.
+- **~15 tests cost 14-16s each**, all in `test_agent_task.py`, `test_agent_turn_metrics.py`,
+  `test_agent_turn_connection_batch.py` and `test_agent_options_seam.py` — about 225s of the 366s.
+  A characteristic of the turn-path tests, not a regression. Isolated-module timings mislead here:
+  `test_agent_task.py` alone reads 142s for 13 tests, which invites exactly the wrong conclusion.
+
+Superseded figure: 1821 passed / 11 skipped / 0 failed (was 1795 at `7a7486e`, 1766 at `1d3a7bd`).
+`mypy app` clean; `ruff check app tests` clean via `uvx ruff@latest` — ruff is **not** installed
+in `apps/api/.venv`.
+(`main`'s 1675/11/0 below is the pre-branch number and is not the figure to measure a delta against.)
+
+Traces: `.dev/traces/260808-d1-p2-review-fixes.md` (latest), `.dev/traces/260808-d1-p2-invoke.md`.
+Mutation proofs: `.dev/reference/p2-review-mutation-proofs.md` (23, red then green; **one did not go
+red first time** and the fixture gap is recorded), `.dev/reference/p2-mutation-proofs.md` (19).
+Earlier: `.dev/traces/260807-d1-p1b-recorded-mode.md`, `.dev/reference/p1b-mutation-proofs.md`.
+
+**Unprovable here, and stated as such:** no end-to-end eval run, no live SDK turn, and
+`update_eval_run_config`'s jsonb merge has never executed against a database. All behind BACKLOG `0.2`.
+
 **All three PRs are merged. `main` is at `fd47133`** — the `.dev` convention (#1), the eval foundation
 (#2) and the CI repair (#3). Suite 1199 → **1675 passed / 11 skipped / 0 failed**; ruff 461 → 0;
 mypy 75 → 0. Trace: `.dev/traces/260805-eval-foundation.md`.
@@ -97,18 +214,25 @@ inversion in the same change activates a path that serves a human-flagged failur
 
 ## Toolchain state
 
-- `apps/api/.venv` exists but is a **shell** — 34 packages, no pytest. Restore:
-  `cd apps/api && uv sync --extra dev`. (A restore was in progress at handoff; two concurrent `uv`
-  runs deadlock on the wheel cache lock — run one at a time.)
+- `apps/api/.venv` is **restored** (2026-08-07): pytest 9.1.1, 396 packages. The earlier "shell, 34
+  packages, no pytest" reading is superseded. If it is disk-cleaned again: `cd apps/api && uv sync
+  --extra dev`, and run one `uv` at a time — two concurrent runs deadlock on the wheel cache lock.
 - `apps/admin/node_modules` and `apps/widget/node_modules` are present.
-- Backend suite baseline **OBSERVED 2026-08-05 at `fd8fa20`: 1199 passed, 8 skipped, 0 failed,
-  33 warnings, 202s.** Matches the figure `23-09` recorded from its executor's output. Any phase
-  claiming a delta measures against this.
+- Backend suite baseline **OBSERVED 2026-08-07 at `af0f601` (main): 1675 passed, 11 skipped,
+  0 failed, 30 warnings, 451s.** Supersedes the 2026-08-05 `fd8fa20` reading of 1199/8/0/202s, which
+  predates the eval-foundation merge. Any phase claiming a delta measures against 1675/11.
+  (Wall clock roughly doubled with the test count; 451s is the number to expect, not a warning sign.)
 
 ## Next move
 
-1. Finish the toolchain restore, observe the real baseline.
-2. Run `.dev/workflows/eval-foundation.workflow.js` on `feat/eval-foundation`.
-3. Step 0 of the ladder is **owner work, not agent work**: score
+1. ~~Finish the toolchain restore, observe the real baseline.~~ **Done 2026-08-07** — see above.
+2. ~~Run `.dev/workflows/eval-foundation.workflow.js` on `feat/eval-foundation`.~~ **Superseded** —
+   that branch merged at `fd47133`; the workflow is archived in `.dev/workflows/` as the reference
+   implementation of the tier-2 pattern, not as pending work.
+3. **CI (§1) is paused by the owner, 2026-08-07** — blocked on the Actions billing cap (`0.3`), which
+   is not a code problem. `1.3` and `1.4` remain available as local work.
+4. Step 0 of the ladder is **owner work, not agent work**: score
    `apps/api/tests/evals/calibration/human_scores.csv`. Nothing above it can be trusted until judges
    are calibrated. The workflow prepares the inputs; it cannot supply the judgement.
+5. The unblocked headline is **D1** (`BACKLOG` §2) — `app/worker/tasks/runtime/eval.py:374-375`
+   still sets `"agent_response": row[3]`, where `row[3]` is `reference_answer`.

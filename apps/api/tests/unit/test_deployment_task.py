@@ -387,6 +387,13 @@ def _measured_eval_signal():
     return {
         "eval_signal": "measured",
         "signal_detail": None,
+        # D1/P3, and the same argument as `eval_signal` above one release later:
+        # from this release the gate refuses a 'measured' signal that does not
+        # record having invoked the agent, because until P2 the eval scored each
+        # scenario's own reference answer and every stored run is silent on the
+        # question. Omitting it here would downgrade every wiring test to
+        # 'block' and they would stop testing what their names say.
+        "agent_invoked": True,
         "last_run_at": "2026-05-23T02:00:00",
         "last_run_status": "complete",
         "scenario_count": 30,
@@ -751,7 +758,7 @@ class TestEvidenceGateWiring:
             "app.worker.tasks.runtime.deployment._compute_envelope_hash_sync",
             return_value="test-envelope-hash",
         ), patch(
-            "app.worker.tasks.runtime.deployment._dispatch_first_eval_run",
+            "app.worker.tasks.runtime.deployment._dispatch_eval_run",
             side_effect=(dispatch if dispatch is not None else (lambda _a: True)),
         ) as dispatch_mock, patch(
             "app.worker.tasks.runtime.deployment._call_orchestrator_async",
@@ -972,6 +979,114 @@ class TestDayOneEvalPath(TestEvidenceGateWiring):
         )
         self.dispatch_mock.assert_not_called()
 
+
+class TestExistingTenantEvalPath(TestEvidenceGateWiring):
+    """The population P3 actually creates, and the convergence it did not get.
+
+    Step 4b was written for EVAL_SIGNAL_NO_RUNS, which is day 1. P3 then made
+    every EXISTING tenant block too — and none of them is in `no_runs`: they
+    have runs, produced by the tautology, which now report
+    EVAL_SIGNAL_AGENT_NOT_INVOKED. So the convergence mechanism fired for
+    nobody, and the warning routed the whole population to "the Evaluation
+    page", which _dispatch_eval_run's own docstring says the onboarding flow
+    reaches from nowhere. The wall had moved, not gone.
+
+    IT FIRES FOR THE ABSENT HALF ONLY, and that asymmetry is the design rather
+    than an oversight. `agent_invoked is None` is the historical population and
+    it converges: a fresh run on a 0013+ tenant writes the key either way, so
+    the state cannot recur and the dispatch is one-shot per agent, exactly like
+    day 1. `agent_invoked is False` is a run that looked and said no — a broken
+    or unreachable agent produces it again every night — so dispatching on it
+    would buy up to AGENT_INVOCATION_MAX_CALLS_PER_RUN live SDK turns on every
+    readiness check and leave the state unchanged. BACKLOG 2.18 carries the one
+    residual: a pre-0013 tenant DB cannot record the key, so absence recurs
+    there.
+    """
+
+    def _tautological(self, **over):
+        """What every stored eval run on the platform looks like today."""
+        payload = dict(
+            _measured_eval_signal(),
+            eval_signal="agent_not_invoked",
+            agent_invoked=None,
+            signal_detail=(
+                "the most recent eval run does not record whether the agent "
+                "was invoked at all"
+            ),
+            pass_rates=None,
+            failing_scenarios=None,
+        )
+        payload.update(over)
+        return payload
+
+    def test_an_existing_tenant_still_cannot_ship(self):
+        result, mock_run = self._drive(
+            self._tautological(), _measured_red_team_signal()
+        )
+
+        assert result["recommendation"] == "block"
+        assert mock_run.recommendation == "block"
+
+    def test_a_fresh_run_is_started_for_the_historical_population(self):
+        self._drive(self._tautological(), _measured_red_team_signal())
+
+        self.dispatch_mock.assert_called_once_with(self.agent_id)
+
+    def test_the_warning_tells_them_to_wait_rather_than_naming_a_page(self):
+        _, mock_run = self._drive(
+            self._tautological(), _measured_red_team_signal()
+        )
+
+        matching = [
+            w for w in mock_run.warnings
+            if w["warning_id"] == "eval_agent_not_invoked"
+        ]
+        assert len(matching) == 1, (
+            f"expected one eval_agent_not_invoked warning, got {mock_run.warnings}"
+        )
+        assert "started" in matching[0]["message"].lower()
+        assert "Evaluation page" not in matching[0]["message"]
+
+    def test_a_failed_dispatch_falls_back_to_naming_the_page(self):
+        """Broker down. The checklist still owes the owner a verdict, and the
+        message must not promise a run that was never queued."""
+        _, mock_run = self._drive(
+            self._tautological(),
+            _measured_red_team_signal(),
+            dispatch=lambda _a: False,
+        )
+
+        matching = [
+            w for w in mock_run.warnings
+            if w["warning_id"] == "eval_agent_not_invoked"
+        ]
+        assert len(matching) == 1
+        assert "started" not in matching[0]["message"].lower()
+        assert "Evaluation page" in matching[0]["message"]
+
+    def test_a_run_that_recorded_false_does_not_re_dispatch(self):
+        """The spend bound. This state repeats — a broken agent produces it
+        every night — so firing on it would buy a fresh set of up to sixty live
+        SDK turns on every readiness check and leave the state unchanged. That
+        is not convergence."""
+        self._drive(
+            self._tautological(agent_invoked=False),
+            _measured_red_team_signal(),
+        )
+
+        self.dispatch_mock.assert_not_called()
+
+    def test_a_failed_run_does_not_re_dispatch_either(self):
+        """Same argument: 'run_failed' recurs for whatever reason produced it,
+        and the owner is the one who decides to spend another run."""
+        self._drive(
+            dict(_measured_eval_signal(), eval_signal="run_failed",
+                 last_run_status="failed", pass_rates=None),
+            _measured_red_team_signal(),
+        )
+
+        self.dispatch_mock.assert_not_called()
+
     def test_the_dispatch_helper_passes_only_the_agent_id(self):
         """CLAUDE.md rule 4: no connection string in a Celery task argument.
 
@@ -991,7 +1106,7 @@ class TestDayOneEvalPath(TestEvidenceGateWiring):
                 captured["options"] = kwargs
 
         with patch("celery.chain", _FakeChain):
-            assert deployment_task._dispatch_first_eval_run(agent_id) is True
+            assert deployment_task._dispatch_eval_run(agent_id) is True
 
         assert captured["options"] == {"queue": "runtime"}
         assert len(captured["signatures"]) == 2, (
@@ -1017,4 +1132,4 @@ class TestDayOneEvalPath(TestEvidenceGateWiring):
             raise RuntimeError("broker unreachable")
 
         with patch("celery.chain", _boom):
-            assert deployment_task._dispatch_first_eval_run("agent-1") is False
+            assert deployment_task._dispatch_eval_run("agent-1") is False
