@@ -40,8 +40,16 @@ row whose answer is the one a human FLAGGED AS FAILING. Only the branch write
 Promotion is therefore gated on the label trust hierarchy below and is
 UNREACHABLE for every scenario source the shipped schema allows. That is a
 deliberate disablement recorded on each run in `eval_runs.config`, not an
-oversight: re-enabling it is a decision that needs human-verified labels behind
-it, not a side effect of repairing persistence.
+oversight.
+
+THE SECOND HALF OF THAT PARAGRAPH USED TO SAY "re-enabling it is a decision that
+needs human-verified labels behind it", AND D6 MADE IT STALE. The system can now
+produce a `human_authored` label — rank 3, which clears the minimum — through
+one Clerk-authenticated labelling route. What holds promotion shut is no longer
+an absent producer: it is three things, named strongest first above
+LABEL_TRUST_TIERS (no caller, the resolver, the decision flag). A reader who
+takes the old sentence at face value will conclude the door is held by an
+absence and that opening it is safe once labels exist.
 
 Design notes:
 - All Ragas imports use the 0.4.x path (ragas.metrics.collections) — CLAUDE.md constraint.
@@ -58,6 +66,8 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections.abc import Mapping
+from types import MappingProxyType
 
 import anthropic
 import instructor
@@ -220,14 +230,34 @@ CONNECT_TIMEOUT_S = 5
 # paragraph was proud of not having is VERIFIED_QA_PROMOTION_DECISION["enabled"]
 # below, and select_promotion_candidates consults it.
 #
-# TWO INDEPENDENT LOCKS, because either alone is one edit away from being wrong:
+# THREE INDEPENDENT LOCKS, because any one alone is one edit away from being
+# wrong. Listed strongest first, which is NOT the order they were written in —
+# the D6 P3 review's finding 4 is that the narrative named two of them and
+# omitted the one actually carrying the load today:
+#   LOCK ZERO, NO CALLER — `promote_to_verified_qa` is invoked from nowhere in
+#       `app/`. `run_eval_suite` returns a hardcoded `promoted: 0` and never
+#       calls it. This is the load-bearing lock today: with it in place the
+#       other two are defence in depth. Two absence pins cover the two doors
+#       that ever held the call —
+#       test_eval_task.py::TestPromotionIsUnreachableFromTheTask::
+#       test_module_does_not_import_or_call_promote_to_verified_qa and
+#       test_eval_service.py::test_run_eval_for_agent_does_not_promote — and
+#       BOTH ARE MODULE-SCOPED, not tree-wide: a THIRD module introducing the
+#       call would trip neither. Say that rather than claim a pin that does not
+#       exist.
 #   the RESOLVER — the promotion gate reads `source`, the QUESTION's origin,
-#       which labelling never changes (record_human_label does not touch it), so
-#       no labelled row clears it. One "obvious fix" swapping that to
-#       label_trust_tier() would open the door, which is why it is not the only
-#       lock; and
+#       which labelling never changes (the label write does not touch it), so no
+#       labelled row clears it. NOTE the hazard here is LATENT, not live: see
+#       select_promotion_candidates' gate 1, where the swap the comment warns
+#       about is inert today because no selector projects `label_trust_tier`.
 #   the DECISION — `enabled: False`, consulted LAST, so a row that cleared every
 #       other gate is refused and COUNTED rather than promoted.
+#
+# All three are process-local: none is recorded in any database, and a second
+# process running a different build carries its own copy. The two constants
+# below are `MappingProxyType` so that `X["enabled"] = True` raises rather than
+# lifting a lock for the life of a process; rebinding the module attribute still
+# works, and is pinned absent by test_label_downstream.py's mutation scan.
 LABEL_TRUST_TIERS: dict[str, int] = {
     "unknown": -1,
     "model_generated": 0,
@@ -240,7 +270,14 @@ LABEL_TRUST_TIERS: dict[str, int] = {
 # widened CHECK constraint in alembic_tenant 0011
 # (source IN ('generated', 'mined', 'production', 'red_team')); a new source
 # value that lands without a tier here resolves to 'unknown' and is refused.
-SCENARIO_SOURCE_TRUST_TIER: dict[str, str] = {
+#
+# READ-ONLY AT RUNTIME (D6 P3 review, finding 4). This mapping is one of the two
+# things holding the customer-facing promotion write shut, and until this commit
+# it was a plain dict that any module in the process could open with a single
+# `SCENARIO_SOURCE_TRUST_TIER["mined"] = "human_authored"` — a strictly more
+# dangerous surface than the label writer, which carries four independent
+# restrictions. `MappingProxyType` makes that assignment raise `TypeError`.
+SCENARIO_SOURCE_TRUST_TIER: Mapping[str, str] = MappingProxyType({
     # scenario_service.generate_eval_suite_for_agent — Haiku wrote the answer.
     "generated": "model_generated",
     # scenario_service.mine_production_scenarios — a production failure, stored
@@ -251,7 +288,7 @@ SCENARIO_SOURCE_TRUST_TIER: dict[str, str] = {
     "production": "customer_negative",
     # red_team.py finding containment — an attack that succeeded.
     "red_team": "customer_negative",
-}
+})
 
 # The minimum tier a scenario must carry before its answer may be written into
 # verified_qa, which retrieval_service serves to customers ahead of retrieval.
@@ -260,11 +297,32 @@ VERIFIED_QA_MIN_TRUST_TIER = "human_verified"
 # The refusal string `select_promotion_candidates` counts a row under when the
 # DECISION, rather than any property of the row, is what held it back. Named
 # separately from the reason prose because it is the key a reader greps for in a
-# refusals dict, and because it carries a measurement: while promotion is off,
-# `refusals[PROMOTION_DISABLED_REFUSAL]` is exactly "how many rows would have
-# been written into verified_qa if the owner flipped the decision" — the number
-# the owner needs in hand to make that call later, and a number that does not
-# exist if the disablement is implemented as an early `return []`.
+# refusals dict.
+#
+# IT IS NOT THE MEASUREMENT THIS COMMENT USED TO CLAIM (D6 P3 review, finding
+# 1). The claim was that `refusals[PROMOTION_DISABLED_REFUSAL]` is "how many rows
+# would have been written into verified_qa if the owner flipped the decision".
+# Probed against the shipped configuration — all four schema sources, every row
+# carrying a human-authored label tier, a non-empty answer and 1.0/1.0 scores —
+# that count is 0, and it is structurally 0, for three separate reasons:
+#
+#   1. Gate 1 (the trust tier, on `source`) runs FIRST and refuses every source
+#      the shipped schema allows, so no row reaches gate 3 to be counted by it.
+#      What the number really answers is "what would flipping the decision
+#      promote GIVEN the resolver gate is lifted too" — two edits, not one.
+#   2. Nothing under `app/` calls select_promotion_candidates or
+#      promote_to_verified_qa, so the number is never computed at all.
+#   3. `run_eval_suite`'s return dict does not carry `refusals`, so even once
+#      computed there is nowhere an owner could read it from.
+#
+# An owner shown 0 would conclude that flipping the decision promotes nothing,
+# when 0 means "the resolver gate refused them all first". THE GATE ORDERING IS
+# KEPT ANYWAY, on the merit it actually has: a refused row keeps its MOST
+# SPECIFIC reason. A row held by its origin reports `trust_tier:customer_negative`
+# — which names what would have to change — instead of the decision's reason,
+# which names something that was never reached. The `promoted + refused ==
+# scored` invariant holds under either ordering, so a promotion rate still
+# cannot be constructed without its denominator.
 PROMOTION_DISABLED_REFUSAL = "promotion_disabled:eval_only"
 
 # Recorded verbatim on every run in eval_runs.config so the disablement is a
@@ -283,7 +341,14 @@ PROMOTION_DISABLED_REFUSAL = "promotion_disabled:eval_only"
 # reader that the door is held by an absent producer, when the producer now
 # exists and the door is held by a decision and a resolver choice. An absence a
 # reader has to infer is bad; a stale statement a reader will believe is worse.
-VERIFIED_QA_PROMOTION_DECISION: dict = {
+#
+# READ-ONLY AT RUNTIME, for the same reason SCENARIO_SOURCE_TRUST_TIER is: this
+# was a plain dict, so `VERIFIED_QA_PROMOTION_DECISION["enabled"] = True` from
+# any module in the process opened the customer-facing write for the life of
+# that process, with no pin anywhere watching for it. `dict(...)` on a
+# MappingProxyType still yields a fresh plain dict, so build_eval_run_config's
+# copy semantics are unchanged.
+VERIFIED_QA_PROMOTION_DECISION: Mapping[str, object] = MappingProxyType({
     "enabled": False,
     "min_trust_tier": VERIFIED_QA_MIN_TRUST_TIER,
     # Eval-only: a label improves what the eval can measure and reaches no
@@ -312,13 +377,15 @@ VERIFIED_QA_PROMOTION_DECISION: dict = {
         "one labelling route a Clerk session may drive, and that tier outranks "
         "min_trust_tier — so the disablement is no longer the absence of a "
         "producer, it is the owner's settled decision of 2026-08-08 that the "
-        "labelling loop is eval-only. Two things hold it shut: "
-        "select_promotion_candidates gates on eval_scenarios.source, which "
-        "labelling never changes, and it refuses outright while enabled is "
-        "false. Turning promotion on is a decision plus a code change, and "
+        "labelling loop is eval-only. THREE things hold it shut, strongest "
+        "first: promote_to_verified_qa has no caller anywhere under app/, so "
+        "the gates below are defence in depth rather than the thing doing the "
+        "work; select_promotion_candidates gates on eval_scenarios.source, "
+        "which labelling never changes; and it refuses outright while enabled "
+        "is false. Turning promotion on is a decision plus a code change, and "
         "never a migration."
     ),
-}
+})
 
 
 def scenario_trust_tier(source: str | None) -> str:
@@ -1870,19 +1937,34 @@ def select_promotion_candidates(
        IT READS `source`, THE QUESTION'S ORIGIN, AND THAT IS DELIBERATE RATHER
        THAN LEFT OVER. `label_trust_tier(scenario)` is the resolver that answers
        "who wrote this ANSWER", and since D6 it can return `human_authored` for
-       an owner-labelled row. Swapping this gate to it would be a one-line
-       change that turns customer-facing promotion on for every owner label —
-       against the settled decision — so the swap is not made here, and gate 3
-       exists so that making it anyway still does not open the door.
+       an owner-labelled row, so swapping this gate to it reads like a bug fix.
+
+       THE HAZARD IS LATENT, NOT LIVE, AND THE EARLIER WORDING OVERSTATED IT
+       (D6 P3 review, finding 13). The swap would change nothing today: none of
+       `run_eval_suite`'s three selectors projects `label_trust_tier`, and
+       `label_trust_tier()` / `is_human_labelled()` have no production caller,
+       so every production scenario dict reaching this function falls through to
+       the source-based tier regardless of which resolver is named here. Only a
+       hand-built dict (a unit test's) carries the column at all. `BACKLOG 4.12`
+       — projecting `label_trust_tier` into the selectors — is the change that
+       ACTIVATES this hazard, so 4.12 and this gate must be re-argued together.
     2. SCORE THRESHOLD — D-21's 0.90/0.90 quality bar, applied only to answers
        that cleared the tier gate.
     3. THE DECISION — VERIFIED_QA_PROMOTION_DECISION["enabled"]. Not a property
-       of the row: a policy the owner set. LAST on purpose, so the refusals dict
-       keeps saying WHY each row was held back. A row refused here cleared every
-       property gate and was stopped only by the decision, which makes
-       `refusals[PROMOTION_DISABLED_REFUSAL]` the measurement of what turning
-       promotion on would actually promote. An early `return []` would report
-       the same zero and destroy that number.
+       of the row: a policy the owner set. LAST so that a refused row keeps its
+       MOST SPECIFIC reason: a row held by its origin reports
+       `trust_tier:customer_negative`, which names what would have to change,
+       rather than the decision's reason, which names a gate it never reached.
+
+       IT IS NOT A MEASUREMENT, WHICH IS WHAT THIS PARAGRAPH USED TO SAY (D6 P3
+       review, finding 1). `refusals[PROMOTION_DISABLED_REFUSAL]` was described
+       as "what turning promotion on would actually promote". Gate 1 refuses
+       every source the shipped schema allows before gate 3 is ever reached, so
+       that count is 0 and structurally always 0; nothing under `app/` calls
+       this function; and `run_eval_suite` does not return `refusals`. See
+       PROMOTION_DISABLED_REFUSAL's own comment for the full statement. An early
+       `return []` would report the same zero — the argument against it is the
+       specificity of the reasons above, not a number nobody can read.
 
     A score whose scenario cannot be found is refused ('scenario_not_found'),
     not skipped silently: promoting an answer we cannot attribute to a question
@@ -1929,9 +2011,11 @@ def select_promotion_candidates(
         # THE LAST GATE IS A DECISION, NOT A PROPERTY OF THE ROW. Everything
         # above asked something about this scenario; this asks whether the owner
         # has turned the customer-facing write on at all, and the answer is no
-        # (eval-only, 2026-08-08). Last, so the count above stays diagnostic:
-        # this refusal means "would have been promoted", which is the only place
-        # in the system that number can be read.
+        # (eval-only, 2026-08-08). Last so that the refusals above keep their
+        # more specific reasons — NOT, as this comment used to say, because the
+        # count here is readable as "would have been promoted". It is not: gate
+        # 1 refuses every schema-allowed source first, so this count is 0 and
+        # structurally always 0. See PROMOTION_DISABLED_REFUSAL's comment.
         if not VERIFIED_QA_PROMOTION_DECISION["enabled"]:
             _refuse(PROMOTION_DISABLED_REFUSAL)
             continue
@@ -1958,12 +2042,24 @@ def promote_to_verified_qa(
     ANSWER. It used to be "no scenario source the shipped schema allows clears
     the trust gate", full stop. That is still true — labelling does not touch
     `source` — but D6 gave the system a producer of `human_authored` labels, so
-    "unreachable" now rests on TWO things and a reader must be told both: the
-    gate reads the question's origin rather than the label's tier, AND
-    VERIFIED_QA_PROMOTION_DECISION["enabled"] is False by the owner's settled
-    eval-only decision of 2026-08-08. Either one alone would be a single edit
-    from wrong. This function still performs zero writes and does not open a
-    connection at all.
+    "unreachable" rests on THREE things and a reader must be told all of them,
+    STRONGEST FIRST (D6 P3 review, finding 4 — the earlier text said two and
+    omitted the one carrying the load):
+
+      0. NO CALLER. This function is invoked from nowhere under `app/`.
+         `run_eval_suite` returns a hardcoded `promoted: 0`. While that holds,
+         locks 1 and 2 are defence in depth and this is the whole of the
+         guarantee. It is pinned in the two modules that ever held the call —
+         and in only those two, so a third module adding it trips nothing.
+      1. THE RESOLVER. The gate reads the question's origin rather than the
+         label's tier. Latent rather than live: see select_promotion_candidates,
+         gate 1 — the "obvious fix" swap is inert until `BACKLOG 4.12` projects
+         `label_trust_tier` into the selectors.
+      2. THE DECISION. VERIFIED_QA_PROMOTION_DECISION["enabled"] is False by the
+         owner's settled eval-only decision of 2026-08-08.
+
+    This function still performs zero writes and does not open a connection at
+    all.
 
     It is retained rather than deleted for two reasons: the promotion machinery
     (D-22 provenance, D-23 question_vector, the SELECT-first idempotency check)

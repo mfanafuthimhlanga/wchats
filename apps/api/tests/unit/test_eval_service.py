@@ -46,11 +46,44 @@ import os
 import re
 import uuid
 from contextlib import contextmanager
+from types import MappingProxyType
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import psycopg2
 import pytest
+
+
+def _with_source_tier(monkeypatch, source: str, tier: str) -> None:
+    """Register a hypothetical scenario source at *tier* for one test.
+
+    `SCENARIO_SOURCE_TRUST_TIER` is a `MappingProxyType` since the D6 P3 review
+    (finding 4) — it is one of the locks on the customer-facing verified_qa
+    write, and as a plain dict any module in the process could open it with a
+    single subscript assignment. `setitem` therefore raises, and a test that
+    needs a promotable tier rebinds the whole mapping instead.
+    """
+    from app.services import eval_service
+
+    monkeypatch.setattr(
+        eval_service,
+        "SCENARIO_SOURCE_TRUST_TIER",
+        MappingProxyType({**eval_service.SCENARIO_SOURCE_TRUST_TIER, source: tier}),
+    )
+
+
+def _with_promotion_enabled(monkeypatch) -> None:
+    """Flip the decision flag for one test, the same way and for the same
+    reason as `_with_source_tier` above."""
+    from app.services import eval_service
+
+    monkeypatch.setattr(
+        eval_service,
+        "VERIFIED_QA_PROMOTION_DECISION",
+        MappingProxyType(
+            {**eval_service.VERIFIED_QA_PROMOTION_DECISION, "enabled": True}
+        ),
+    )
 
 # ---------------------------------------------------------------------------
 # The scenario sources the SCHEMA allows, parsed from migration 0011 itself.
@@ -639,12 +672,8 @@ class TestPromoteToVerifiedQA:
         """
         from app.services import eval_service
 
-        monkeypatch.setitem(
-            eval_service.SCENARIO_SOURCE_TRUST_TIER, "owner_written", "human_authored"
-        )
-        monkeypatch.setitem(
-            eval_service.VERIFIED_QA_PROMOTION_DECISION, "enabled", True
-        )
+        _with_source_tier(monkeypatch, "owner_written", "human_authored")
+        _with_promotion_enabled(monkeypatch)
 
         cursor = _RecordingCursor(fetchone_result=None)
         conn_strings: list[str] = []
@@ -673,9 +702,7 @@ class TestPromoteToVerifiedQA:
         """D-21's 0.90/0.90 bar still applies once the tier gate is cleared."""
         from app.services import eval_service
 
-        monkeypatch.setitem(
-            eval_service.SCENARIO_SOURCE_TRUST_TIER, "owner_written", "human_authored"
-        )
+        _with_source_tier(monkeypatch, "owner_written", "human_authored")
 
         scenario, score = _scored("owner_written", 0.85, 0.95)
         candidates, refusals = eval_service.select_promotion_candidates(
@@ -706,12 +733,8 @@ class TestPromoteToVerifiedQA:
         """
         from app.services import eval_service
 
-        monkeypatch.setitem(
-            eval_service.SCENARIO_SOURCE_TRUST_TIER, "owner_written", "human_authored"
-        )
-        monkeypatch.setitem(
-            eval_service.VERIFIED_QA_PROMOTION_DECISION, "enabled", True
-        )
+        _with_source_tier(monkeypatch, "owner_written", "human_authored")
+        _with_promotion_enabled(monkeypatch)
 
         cursor = _RecordingCursor(fetchone_result=None)
         connect, _conn = _recording_connect(cursor, [])
@@ -757,9 +780,7 @@ class TestPromoteToVerifiedQA:
         """
         from app.services import eval_service
 
-        monkeypatch.setitem(
-            eval_service.SCENARIO_SOURCE_TRUST_TIER, "owner_written", "human_authored"
-        )
+        _with_source_tier(monkeypatch, "owner_written", "human_authored")
 
         scenario, score = _scored("owner_written", 0.95, 0.95)
         scenario["reference_answer"] = ""
@@ -1425,6 +1446,48 @@ class TestBuildEvalRunConfig:
         out["config"]["verified_qa_promotion"]["enabled"] = True
 
         assert eval_service.VERIFIED_QA_PROMOTION_DECISION["enabled"] is False
+
+    def test_the_whole_decision_reaches_the_run_record_not_just_the_flag(
+        self, config_env
+    ):
+        """D6 P3 review, finding 10 — half of "the disablement is recorded WITH
+        ITS REASON" was unpinned.
+
+        Three tests touched this and none of them covered it: this class's
+        sibling above exercises the real `build_eval_run_config` but asserts only
+        `enabled`; D6 P3's flatness test asserts the CONSTANT's key set, not the
+        config's; and test_label_downstream.py monkeypatches
+        `build_eval_run_config` wholesale, so it proves nothing about what a run
+        records. A future edit narrowing the recorded dict to
+        `{"enabled": ...}` — a plausible way to shrink the config payload —
+        would leave every test in the tree green while runs stamped the flag with
+        no reason, no scope and no decision date. Which is exactly the absence
+        P3 was written to replace, restored silently.
+
+        Set EQUALITY, not "the keys I remembered": a key added to the constant
+        and dropped on the way to the record fails here too.
+        """
+        from app.services import eval_service
+
+        out = eval_service.build_eval_run_config("a", "postgresql://p")
+        recorded = out["config"]["verified_qa_promotion"]
+
+        assert set(recorded) == set(eval_service.VERIFIED_QA_PROMOTION_DECISION), (
+            "the run record no longer carries the whole promotion decision: "
+            f"recorded {sorted(recorded)}, constant "
+            f"{sorted(eval_service.VERIFIED_QA_PROMOTION_DECISION)}"
+        )
+        for key, value in eval_service.VERIFIED_QA_PROMOTION_DECISION.items():
+            assert recorded[key] == value, (
+                f"{key} was altered between the constant and the run record"
+            )
+        # The two that carry the meaning, named so a narrowing edit that keeps
+        # the key but empties the value is also caught.
+        assert recorded["reason"] == eval_service.VERIFIED_QA_PROMOTION_DECISION["reason"]
+        assert "2026-08-08" in recorded["reason"]
+        assert recorded["scope"] == "eval_only"
+        assert recorded["decided_on"] == "2026-08-08"
+        assert recorded["refusal_reason"] == eval_service.PROMOTION_DISABLED_REFUSAL
 
 
 class TestInsertEvalRun:

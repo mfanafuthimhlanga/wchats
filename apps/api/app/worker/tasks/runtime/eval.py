@@ -32,10 +32,26 @@ tenant data. What changed is that its ABSENCE is no longer fatal while
 eval_service.EVAL_SCORING_REQUIRES_BRANCH is False: a degraded Neon endpoint
 used to abandon a whole night's measurement over a resource nothing reads.
 
-verified_qa promotion is not performed by this task at all. It is disabled
-behind eval_service's label trust hierarchy, and the decision — with its reason
-— is recorded on the run in `eval_runs.config` so the disablement is a statement
-in the record rather than an absence a later reader has to infer.
+verified_qa promotion is not performed by this task at all.
+
+WHAT HOLDS IT SHUT IS THREE THINGS, AND THIS PARAGRAPH USED TO NAME ONE (D6 P3
+review, finding 6). It said "disabled behind eval_service's label trust
+hierarchy", which was the whole answer before D6 and is now the weakest third of
+it: D6 gave the system a producer of `human_authored` labels, rank 3, which
+CLEARS `VERIFIED_QA_MIN_TRUST_TIER`. Strongest first —
+
+    0. NO CALLER. `promote_to_verified_qa` is invoked from nowhere under `app/`;
+       the `promoted: 0` this task returns is a literal, not a result. Pinned by
+       TestPromotionIsUnreachableFromTheTask below.
+    1. THE RESOLVER. `select_promotion_candidates` gates on `eval_scenarios.
+       source` — where the QUESTION came from — which labelling never writes.
+    2. THE DECISION. `VERIFIED_QA_PROMOTION_DECISION["enabled"]` is False, the
+       owner's settled eval-only decision of 2026-08-08.
+
+The decision — with its reason — is recorded on the run in `eval_runs.config`
+and returned as `promotion_enabled` / `promotion_disabled_reason`, so the
+disablement is a statement in the record rather than an absence a later reader
+has to infer.
 
 Which rows a run covers
 -----------------------
@@ -645,19 +661,57 @@ def run_eval_suite(self, agent_id: str) -> dict:
            finally: delete the Neon branch if one was created (D-10 — always
                 runs, even on exception).
 
-    No verified_qa promotion happens here. See the module docstring and
-    eval_service.VERIFIED_QA_PROMOTION_DECISION: promotion is gated on the label
-    trust hierarchy and unreachable for every scenario source the schema allows,
-    and the decision is recorded on the run in eval_runs.config.
+    No verified_qa promotion happens here. See the module docstring for the
+    three locks and eval_service.VERIFIED_QA_PROMOTION_DECISION for the
+    recorded reason.
 
     A HUMAN-LABELLED ROW CHANGES NOTHING ABOUT THAT (D6 P3). Labelling makes a
-    row eligible to the SELECTOR above — it acquires a reference_answer, so it
-    is fetched, counted in `valid`, put to the agent and scored — and it changes
-    nothing downstream of the score. It does not touch `dataset`, so it joins the
-    exploratory half and never the golden one (membership of the golden set is
-    asserted, never inherited); and it does not touch `source`, so it stays
-    unpromotable, on top of the decision flag now returned as
-    `promotion_enabled`.
+    row ELIGIBLE TO THE SELECTOR above — it acquires a reference_answer, which
+    is the one thing `WHERE reference_answer != ''` was excluding it for. It
+    does not touch `dataset`, so it joins the exploratory half and never the
+    golden one (membership of the golden set is asserted, never inherited); and
+    it does not touch `source`, so it stays unpromotable, on top of the decision
+    flag now returned as `promotion_enabled`.
+
+    ELIGIBLE IS NOT PRESENT, AND THE FIRST VERSION OF THIS PARAGRAPH CONFLATED
+    THE TWO (D6 P3 review, finding 3). It said a labelled row "is fetched,
+    counted in `valid`, put to the agent and scored", unconditionally. That holds
+    only while the eligible exploratory pool is SMALLER than
+    EXPLORATORY_SAMPLE_SIZE. `_EXPLORATORY_SQL` is `ORDER BY RANDOM() LIMIT 30`:
+    at 200 eligible rows a new label does not raise `attempted` at all — it
+    changes WHICH rows are drawn, and the labelled row has a 30/200 chance of
+    being drawn on any given night. Nothing in the run report tells the owner
+    their label was not exercised, and no run preferentially draws a fresh label
+    (`BACKLOG 4.14`), so the feedback latency of the labelling loop is unbounded
+    above the sample size. The golden half is unsampled, but labelling cannot
+    reach it.
+
+    A LABEL CHANGES WHAT THE DEPLOY GATE READS (D6 P3 review, finding 5). This
+    is the live downstream consumer, and the earlier analysis stopped at
+    verified_qa, which has no caller. The chain:
+
+        this task -> write_eval_results -> eval_results on PRODUCTION
+        deployment_service._fetch_eval_summary_sync: AVG(score) GROUP BY metric,
+            filtered on eval_run_id and NOTHING else -> `pass_rates`
+        run_deployment_checklist puts eval_summary on the orchestrator payload
+        the orchestrator applies "all eval metrics >= 0.85" (ship) and
+            "[0.70, 0.85)" (warn) — prose in _DEPLOYMENT_SYSTEM_PROMPT
+
+    `apply_signal_evidence_gate` does NOT read the rates: it is a one-way floor
+    on the signal's PRESENCE (measured, agent_invoked) and on red-team severity,
+    so it can only make a recommendation more conservative and can never rescue
+    a rate that labelling depressed.
+
+    And labelling depresses rates by design: the queue is populated with mined
+    production FAILURES, so answering them adds hard negatives to the scored
+    population — an owner can lower their own pass rates by doing the work, with
+    nothing connecting the refused deploy back to their labelling. The inverse is
+    equally live: an owner who pastes the agent's own answer back in as the
+    reference inflates faithfulness. And an owner-authored answer is not grounded
+    in the retrieved corpus by construction, so context_recall over labelled rows
+    measures something different from context_recall over Haiku-written
+    references — averaged into one dataset mean, because no selector projects
+    `label_trust_tier` (`BACKLOG 4.12`).
 
     Args:
         agent_id: UUID string of the agent to evaluate.
@@ -1205,9 +1259,12 @@ def run_eval_suite(self, agent_id: str) -> dict:
             # predates migration 0014 — not that it has no golden rows.
             "dataset_column_available": dataset_column_available,
             "golden_set_present": composition["golden_set_present"],
-            # Always 0 — promotion is disabled behind the trust gate, and the
-            # key is kept so a caller reading it sees the zero rather than a
-            # missing key it might treat as "not measured".
+            # Always 0 — a literal, not a result: this task never calls
+            # promote_to_verified_qa (lock zero), and behind that the resolver
+            # gate and the decision flag. The key is kept so a caller reading it
+            # sees the zero rather than a missing key it might treat as "not
+            # measured". `promotion_enabled` below is what distinguishes this
+            # zero from an ENABLED run that promoted nothing.
             "promoted": 0,
             "config_recorded": config_recorded,
             # THE FLAG TRAVELS WITH THE PROSE. `promoted: 0` and a reason string

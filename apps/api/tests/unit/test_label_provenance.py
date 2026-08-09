@@ -1608,6 +1608,15 @@ class TestP1OpenedNoCustomerFacingDoor:
         real customer with no eval between the typo and them. This pins that
         adding the human tier did not, by itself, open that write — a top-scoring
         human-labelled row is still refused.
+
+        THE ASSERTION IS THE REFUSAL REASON, NOT THE COUNT (D6 P3 review,
+        finding 6). It used to read `sum(refusals.values()) == 1`, which after
+        P3 added the decision gate was satisfied by EITHER lock. The review
+        deleted the resolver gate outright and this test stayed green with the
+        exact lock its docstring claims to pin entirely removed. `customer_negative`
+        is `source='mined'` resolved — the QUESTION's origin — so the assertion
+        now fails if the gate is swapped to the label's tier, which is the
+        one-line change it exists to catch.
         """
         from app.services.eval_service import select_promotion_candidates
 
@@ -1626,7 +1635,10 @@ class TestP1OpenedNoCustomerFacingDoor:
 
         candidates, refusals = select_promotion_candidates([scenario], [score])
         assert candidates == []
-        assert sum(refusals.values()) == 1
+        assert refusals == {"trust_tier:customer_negative": 1}, (
+            "a top-scoring human-labelled row was not refused on the tier of "
+            f"its QUESTION's origin: {refusals}"
+        )
 
     def test_the_promotion_decision_is_still_recorded_as_disabled(self):
         from app.services.eval_service import VERIFIED_QA_PROMOTION_DECISION
@@ -1656,45 +1668,30 @@ class TestP1OpenedNoCustomerFacingDoor:
 
 
 class TestTheWriteChangesNothingElse:
-    """D6 P3 — the downstream half, for the two facts only this module may read.
+    """D6 P3 — the downstream half, for the one fact only this module may read.
 
     Everything else P3 asserts lives in tests/unit/test_label_downstream.py.
-    These two cannot: R2 above forbids every test module but this one from so
-    much as naming the writer, and both of these are statements ABOUT the
-    writer. The rest of P3 reaches the same tier through
+    This one cannot: R2 above forbids every test module but this one from so
+    much as naming the writer, and this is a statement ABOUT the writer. The
+    rest of P3 reaches the same tier through
     `eval_service.VERIFIED_QA_PROMOTION_DECISION["producible_label_tier"]`,
-    which the second test below pins equal to the writer's own constant — so the
+    which the test below pins equal to the writer's own constant — so the
     indirection is a pin rather than a hope.
+
+    THIS CLASS HELD A SECOND TEST AND IT WAS A DUPLICATE (D6 P3 review, finding
+    2). `test_the_label_write_assigns_exactly_four_columns_and_never_dataset`
+    parsed the SET clause off the writer's SQL constant and asserted the
+    four-column set by equality. P2 already asserts exactly that, by equality,
+    with a more robust regex parse, driven through the real route and the real
+    writer rather than off a module constant:
+    `test_eval_label_queue.py::TestTheLabelWrite::
+    test_a_label_is_recorded_at_the_human_authored_tier`. The review's mutation
+    (adding `dataset = COALESCE(dataset, 'golden')` to the UPDATE) turned that
+    P2 test red along with it. Deleted, so the ignored-new-files control carries
+    one `--deselect` instead of two — and the control is the one instrument that
+    can see a pre-existing test silently changing status, so every hand-
+    maintained node id in it is a cost.
     """
-
-    def test_the_label_write_assigns_exactly_four_columns_and_never_dataset(self):
-        """Labelling a row must not change which dataset it belongs to.
-
-        `dataset='golden'` designates the FIXED half that runs unsampled every
-        night so consecutive runs are a paired per-item comparison. A row that
-        joined or left that half as a side effect of being labelled would change
-        the population the comparison is over, and the run report has no field
-        that could say so.
-
-        Parsed from the statement and compared by EQUALITY, not by "is `dataset`
-        absent": a banned-substring check is just as happy with a statement that
-        assigns six columns as with one that assigns four, so it cannot notice a
-        column arriving under a name nobody thought to ban.
-        """
-        from app.services import label_service
-
-        body = label_service._LABEL_SQL.split("SET", 1)[1].split("WHERE", 1)[0]
-        assigned = {part.split("=", 1)[0].strip() for part in body.split(",")}
-
-        assert assigned == {
-            "reference_answer",
-            "label_trust_tier",
-            "labelled_by",
-            "labelled_at",
-        }, (
-            f"the label UPDATE assigns {sorted(assigned)}, which is not the "
-            "column list D6 reasoned about"
-        )
 
     def test_the_tier_the_writer_stamps_is_the_tier_the_run_record_names(self):
         """One spelling, pinned across the boundary the import wall creates.

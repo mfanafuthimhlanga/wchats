@@ -20,11 +20,22 @@
    argued *against* `if False`, on the grounds that promotion was unreachable by construction and
    would open itself the moment a human tier existed. D6 produced that tier. The property inverted;
    the flag is now required, and the comment saying otherwise is corrected rather than left.
-2. **The decision gate goes LAST, not first.** Refusing early would report the same zero promotions
+2. ~~**The decision gate goes LAST, not first.** Refusing early would report the same zero promotions
    and destroy `refusals["promotion_disabled:eval_only"]` — the count of rows that cleared every
-   property gate, which is the only measurement of what flipping the decision would promote.
+   property gate, which is the only measurement of what flipping the decision would promote.~~
+   **FALSE, disproved by the adversarial review of 2026-08-09 (finding 1, the branch's only high).**
+   The trust-tier gate runs first and refuses every schema-allowed source, so that count is `0` and
+   structurally always `0`; nothing under `app/` calls the function; and `run_eval_suite` does not
+   return `refusals`. The ordering is kept on its real merit — a refused row keeps its **most
+   specific** reason — and the false justification is removed from all four places it was stamped.
+   Struck rather than deleted, because P3 replaced a stale justification with a new one that was never
+   true, and that is the failure mode worth being able to recognise. See
+   `.dev/traces/260809-d6-p3-review-fixes.md`.
 3. **The old source gate was kept, not replaced.** Two locks, so the plausible one-line "fix"
    (`label_trust_tier` instead of `source`) turns a test red *and* still does not open the door.
+   **Amended by the review (findings 4 and 12): there are THREE locks, not two** — the strongest is
+   that `promote_to_verified_qa` has no caller at all — **and the one-line "fix" is inert today**,
+   because no selector projects `label_trust_tier`, so no production scenario dict carries it.
 4. **`promotion_enabled` beside `promoted: 0`**, because 0 is also what an enabled run that promoted
    nothing reports, and since D6 those are different states.
 5. **The counts were already correct** — a labelled row needed no arithmetic change. The work was
@@ -35,7 +46,10 @@
 - **Two tests could not go in the new file.** R2 forbids any test module but
   `test_label_provenance.py` from naming the writer, in string constants included. It fired on the
   first draft twice. Both were moved rather than the guard relaxed, which forces the
-  ignored-new-files control to carry two `--deselect` flags.
+  ignored-new-files control to carry two `--deselect` flags. **Half of this was self-inflicted
+  (review, finding 2):** one of the two duplicated a P2 test that already asserts the same four-column
+  set equality *through the route*, which names no writer and trips no R2. That copy is deleted and
+  the control carries one `--deselect`.
 - **The brief's baseline was wrong for this branch.** 1873/11 is the branch point `4179a5c`; HEAD
   (`1c2b471`) is 2077/12, measured by stashing the work rather than computed. `.dev/HANDOFF.md`
   independently records 2077/12 at `17a5774`, which corroborates it.
@@ -66,3 +80,9 @@ machine. Every `-m integration` harness skips (the 12 skips above), and a skip i
 
 `BACKLOG 4.12` (a run cannot report label provenance — needs a third selector fallback rung),
 `4.13` (`promotion_enabled` is returned and unread by the deploy gate).
+
+**Superseded in part.** This trace's claims were audited by
+`.dev/reference/d6-p3-adversarial-review.md` (13 findings, 1 high, 7 unsupported claims) and the
+fixes are recorded in `.dev/traces/260809-d6-p3-review-fixes.md`. The review also opened
+`BACKLOG 4.14`. Read the fixes trace beside this one; this document is left as written, with the two
+false decisions struck in place.
