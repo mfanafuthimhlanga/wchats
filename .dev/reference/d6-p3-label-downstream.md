@@ -366,7 +366,7 @@ re-run against the corrected tree; the numbers in the table above are the correc
 
 ## Follow-ups this phase found and did not close
 
-0. **Everything in `.dev/reference/d6-p3-adversarial-review.md`.** 13 findings, 1 high, 7 claims
+0. **Everything in `.dev/reference/d6-p3-adversarial-review.md`.** 14 findings, 1 high, 7 claims
    marked unsupported. The fixes are in `.dev/traces/260809-d6-p3-review-fixes.md`; nothing from that
    list is left open except what is explicitly recorded there as `not_done`.
 1. **The eval cannot report label provenance.** `run_eval_suite`'s selectors do not project

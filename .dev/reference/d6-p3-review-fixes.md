@@ -3,8 +3,10 @@
 **Branch:** `feat/d6-labelling-loop` (off `feat/d1-agent-invocation` `4179a5c`, **not `main`**).
 **Commit:** `f78524e`, on top of `fb065a2`.
 **Date:** 2026-08-09.
-**Findings:** `.dev/reference/d6-p3-adversarial-review.md` — 13 findings (1 high, 4 medium, 6 low,
-3 nit) and 7 claims marked unsupported.
+**Findings:** `.dev/reference/d6-p3-adversarial-review.md` — **14** findings (1 high, 4 medium,
+6 low, 3 nit) and 7 claims marked unsupported. *(`f78524e`'s commit message says 13. It miscounted;
+the list below is the whole of it, and finding 14 — `BACKLOG` section 4's row order — is the one
+that message dropped.)*
 **Trace:** `.dev/traces/260809-d6-p3-review-fixes.md`. **Corrected phase doc:**
 `.dev/reference/d6-p3-label-downstream.md`.
 
@@ -21,7 +23,7 @@ That is a worse failure than the one it fixed. A stale statement was true once a
 freshly written false one carries the authority of the commit that introduced it, and every reader
 after it will believe it because it is new.
 
-The other twelve findings are variations on the same theme: a claim that reads as verified —
+The other thirteen findings are variations on the same theme: a claim that reads as verified —
 "asserted by set equality", "a labelled row enters the eval", "two independent locks", "downstream,
 asserted rather than assumed" — where the assertion is narrower than the sentence.
 

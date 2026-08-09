@@ -1,7 +1,8 @@
 # Trace — D6 P3 adversarial-review fixes
 
 **Date:** 2026-08-09 · **Branch:** `feat/d6-labelling-loop` · **Commit:** `f78524e` on `fb065a2`.
-**Findings:** `.dev/reference/d6-p3-adversarial-review.md` (13, one high) ·
+**Findings:** `.dev/reference/d6-p3-adversarial-review.md` (**14**, one high — `f78524e`'s message
+says 13 and miscounted) ·
 **Full report:** `.dev/reference/d6-p3-review-fixes.md` ·
 **Corrected phase doc:** `.dev/reference/d6-p3-label-downstream.md`
 
