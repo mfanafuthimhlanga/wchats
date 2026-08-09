@@ -2,6 +2,7 @@
 FastAPI dependency functions for W Chats API authentication.
 
 get_current_tenant  — validates Clerk JWT (Bearer) first, falls back to X-API-Key; returns authenticated Tenant
+get_credential_kind — WHICH of those two paths authenticated this request
 get_admin           — validates X-Admin-Key header against settings.ADMIN_KEY
 get_async_redis     — yields an async Redis client for SSE pub/sub and health checks
 
@@ -19,7 +20,7 @@ import ssl
 
 import redis.asyncio as aioredis
 import structlog
-from fastapi import Depends, HTTPException, Security
+from fastapi import Depends, HTTPException, Request, Security
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from jwt import InvalidTokenError, PyJWKClientConnectionError, PyJWKClientError
 from sqlalchemy import select
@@ -42,11 +43,38 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 
 
 # ---------------------------------------------------------------------------
+# Which credential authenticated the request
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS. `get_current_tenant` resolves BOTH a Clerk JWT — behind which
+# there is one specific signed-in human — and an `X-API-Key`, which is a machine
+# credential a script, a scheduler or a model-driven pipeline can hold. It
+# returns the same `Tenant` either way and used to report nothing about which
+# path ran, so a route could not tell a person from an automation.
+#
+# For almost every route that is fine: they authorise an ACCOUNT to act on its
+# own data. It is not fine for exactly one route. `POST .../label` stamps
+# `eval_scenarios.label_trust_tier = 'human_authored'`, a claim about WHO WROTE a
+# string, and `VERIFIED_QA_MIN_TRUST_TIER` is defined over that hierarchy. If a
+# machine credential can produce that tier, then `human_authored` means "whoever
+# holds an API key said so", and label_service's four restrictions — which bind
+# in-process Celery and ContextVar state — cannot see an out-of-process caller at
+# all. The credential is the only evidence about the caller that survives the
+# process boundary, so it is the only place that check can live.
+CREDENTIAL_CLERK_JWT = "clerk_jwt"
+CREDENTIAL_API_KEY = "api_key"
+# Nothing recorded a credential. Reached only when `get_current_tenant` is
+# overridden (a test) or replaced; a route that cares must treat it as "cannot
+# tell" and fail CLOSED, never as "probably a human".
+CREDENTIAL_UNKNOWN = "unknown"
+
+
+# ---------------------------------------------------------------------------
 # get_current_tenant
 # ---------------------------------------------------------------------------
 
 
 async def get_current_tenant(
+    request: Request,
     bearer: HTTPAuthorizationCredentials | None = Security(_bearer_scheme),
     api_key: str | None = Security(_api_key_header),
     db: AsyncSession = Depends(get_async_db),
@@ -64,6 +92,12 @@ async def get_current_tenant(
     Raises HTTP 401 if neither credential is present or valid.
     Raises HTTP 503 if the JWKS endpoint is unreachable (network error, not an auth failure).
     Never logs credentials (T-04-02).
+
+    Records WHICH path succeeded on `request.state.credential_kind` before every
+    successful return, for `get_credential_kind` below. It is set on the way out
+    rather than returned, so no existing caller's type changes; the kind itself
+    is never logged and never leaves the process — it is a fact about the
+    credential's SHAPE, not the credential.
     """
     # --- Path 1: Clerk JWT ---
     if bearer is not None:
@@ -78,6 +112,7 @@ async def get_current_tenant(
             )
             tenant = result.scalars().first()
             if tenant:
+                request.state.credential_kind = CREDENTIAL_CLERK_JWT
                 return tenant
             # JWT valid but no tenant provisioned yet (webhook may not have fired)
             raise HTTPException(
@@ -140,6 +175,7 @@ async def get_current_tenant(
         )
         tenant = result.scalars().first()
         if tenant and verify_api_key(tenant.api_key_hash, api_key):
+            request.state.credential_kind = CREDENTIAL_API_KEY
             return tenant
 
         # Fallback path: scan rows where prefix is NULL (legacy rows without prefix)
@@ -152,10 +188,31 @@ async def get_current_tenant(
         for tenant in result.scalars():
             # verify_api_key always returns bool; never raises on mismatch (01-02 decision)
             if verify_api_key(tenant.api_key_hash, api_key):
+                request.state.credential_kind = CREDENTIAL_API_KEY
                 return tenant
 
     # T-04-03: detail string contains no key fragment or DB error
     raise HTTPException(status_code=401, detail="Authentication required")
+
+
+async def get_credential_kind(
+    request: Request,
+    tenant: Tenant = Depends(get_current_tenant),
+) -> str:
+    """CREDENTIAL_CLERK_JWT, CREDENTIAL_API_KEY or CREDENTIAL_UNKNOWN.
+
+    Depends on `get_current_tenant` rather than merely running beside it, so the
+    ordering is a property of the dependency graph and not of the parameter order
+    in whichever handler declares both. FastAPI caches the sub-dependency, so the
+    tenant is still resolved exactly once per request.
+
+    Returns CREDENTIAL_UNKNOWN rather than raising when nothing was recorded: the
+    honest answer to "which credential was this?" when no credential resolver ran
+    is "cannot tell", and the decision about what to do with that belongs to the
+    route that cares. The only route that cares — the human-label write — treats
+    it as a refusal.
+    """
+    return getattr(request.state, "credential_kind", CREDENTIAL_UNKNOWN)
 
 
 # ---------------------------------------------------------------------------

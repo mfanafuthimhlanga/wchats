@@ -73,15 +73,25 @@ which a row LEAVES that state. These two routes are that path:
 
 A labelled row becomes eligible to the existing selector with NO change to the
 selector: the write sets `reference_answer`, and `reference_answer != ''` is the
-selector's only label predicate. `counts.eligible` is reported precisely so that
-identity is readable rather than asserted.
+selector's only label predicate. `counts.eligible` reports that number under the
+name the eval uses; what HOLDS the identity is the cross-module test that reads
+the predicate out of `run_eval_suite`'s source, not the payload — see
+`_queue_counts_sync`.
 
-THE AUTHOR IS DERIVED, NEVER SUBMITTED. `labelled_by` is computed from the
-authenticated principal inside the handler and the request model forbids extra
-fields, so a body naming an author is a 422 and not a field quietly ignored.
-That is P1's settled decision, and it is the same argument as
-`label_service`'s absent tier parameter one level up: a caller able to name the
-human is a caller able to name any human.
+THE WRITE REACHES ONLY WHAT THE QUEUE OFFERED. `label_service._LABEL_SQL` is
+scoped by the negation of that same predicate, so an already-answered scenario is
+a 409 rather than a silent overwrite of somebody's — possibly the golden set's —
+existing reference answer.
+
+THE AUTHOR IS DERIVED, NEVER SUBMITTED, AND ONLY A HUMAN'S CREDENTIAL MAY WRITE.
+`labelled_by` is computed from the authenticated principal inside the handler and
+the request model forbids extra fields, so a body naming an author is a 422 and
+not a field quietly ignored. That is P1's settled decision, and it is the same
+argument as `label_service`'s absent tier parameter one level up: a caller able
+to name the human is a caller able to name any human. Beyond that, the route
+refuses any credential but a Clerk JWT: `X-API-Key` authenticates an account, not
+a person, and `label_service`'s in-process guards cannot see an out-of-process
+automation holding one.
 
 THIS ORDERING IS NOT AN UNCERTAINTY ORDERING. See QUEUE_ORDERING below — the
 judge-confidence signal is not joinable to a scenario, and the response says so
@@ -92,15 +102,21 @@ it is.
 from __future__ import annotations
 
 import asyncio
+import copy
 from uuid import UUID
 
 import psycopg2
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_tenant
+from app.api.deps import (
+    CREDENTIAL_CLERK_JWT,
+    get_credential_kind,
+    get_current_tenant,
+)
 from app.core.config import settings
 from app.core.database import get_async_db
 from app.core.security import fernet_decrypt
@@ -113,6 +129,7 @@ from app.services.eval_service import (
     HUMAN_LABEL_TIERS,
     LABEL_TIER_COLUMN,
     SCENARIO_SOURCE_TRUST_TIER,
+    SELECTOR_ELIGIBILITY_PREDICATE,
     scenario_trust_tier,
     trust_tier_rank,
 )
@@ -122,6 +139,7 @@ from app.services.label_service import (
     LabelRejected,
     assert_human_context,
     record_human_label,
+    visible_answer,
 )
 from app.worker.tasks.runtime.eval import run_eval_suite
 
@@ -716,13 +734,20 @@ async def trigger_eval_run(
 #
 # WHAT THE ORDERING ACTUALLY IS, and why each key earns its place:
 #
-#   origin trust tier, descending — a mined production failure, an owner-filed
+#   origin trust tier, best first — a mined production failure, an owner-filed
 #       failing trace and a contained red-team finding are all
 #       `customer_negative`: a question a real customer asked that the agent got
 #       wrong. A `generated` row with an empty answer is `model_generated`: an
 #       artefact of a generation that came out without an answer. The first is
 #       worth more of the owner's time than the second. The rank comes from
 #       `eval_service`'s own tables, never restated here.
+#       IN SQL THIS IS `array_position(<priority array>, source) ASC`, not a
+#       `DESC` on a tier column: there is no tier column on eval_scenarios, so
+#       the ranking is carried in as a bound array whose ORDER already runs
+#       best-first, and ASC follows that array. Saying "tier DESC" — which
+#       QUEUE_ORDERING's key list used to claim — describes a query that does
+#       not exist. NULLS LAST because array_position returns NULL for a source
+#       missing from the array, and an unclassified origin must sort last.
 #   created_at, ASCENDING — oldest first, which is the opposite of recency, not
 #       a dressed-up version of it. The oldest unlabelled row is the one that
 #       has been unmeasurable the longest, and newest-first starves the tail of
@@ -730,29 +755,6 @@ async def trigger_eval_run(
 #   id — the tiebreak that makes this a TOTAL order. Without it two rows sharing
 #       a source and a created_at have no defined relative position, and
 #       LIMIT/OFFSET pagination can then show one row twice and skip another.
-
-# Reported verbatim on every queue response, so a console cannot mistake this
-# for an uncertainty ranking and neither can a reader of the payload. Copied at
-# each use site rather than handed out by reference, matching
-# eval_service.VERIFIED_QA_PROMOTION_DECISION.
-QUEUE_ORDERING: dict = {
-    "by_uncertainty": False,
-    "keys": ["origin_trust_tier DESC", "created_at ASC", "id ASC"],
-    "reason": (
-        "Judge confidence is emitted onto job_events, which is a control-DB "
-        "table, while eval_scenarios lives in the tenant's own Neon project — "
-        "no SQL join spans them. Application-side correlation has no key "
-        "either: store_scenarios writes no job_id, conversation_id or "
-        "origin_trace_id for a mined row, and mine_production_scenarios "
-        "discards payload->>'confidence' at the point it reads the event. The "
-        "one tenant-side confidence column, verified_qa_candidates."
-        "auditor_confidence, is written only for grounded turns above "
-        "threshold — the complement of the failed turns this queue is built "
-        "from. So this ordering is origin trust tier first, then oldest first; "
-        "it is not an uncertainty ordering and is not offered as a proxy for "
-        "one. BACKLOG 6.4."
-    ),
-}
 
 
 def _source_priority_order() -> list[str]:
@@ -776,14 +778,17 @@ def _source_priority_order() -> list[str]:
     )
 
 
-# The nightly selector's label predicate, spelled once. `run_eval_suite` filters
-# on exactly this text in all three of its scenario queries, and
-# test_the_queue_is_the_exact_complement_of_the_eval_selector reads it back out
-# of that task's source — so `unlabelled` here and "will never be scored" there
-# cannot drift apart without a test going red. THIS MODULE DOES NOT CHANGE THE
-# SELECTOR; the whole point of P2 is that a labelled row becomes eligible
+# The nightly selector's label predicate. IMPORTED, not spelled here: it now
+# lives in `eval_service` because `label_service`'s UPDATE needs the same string
+# and a service may not import `app.api` (R2). `run_eval_suite` filters on
+# exactly this text in all three of its scenario queries and
+# test_the_queue_selects_exactly_what_the_eval_selector_excludes reads it back
+# out of that task's source, so `unlabelled` here and "will never be scored"
+# there cannot drift apart without a test going red. THIS MODULE DOES NOT CHANGE
+# THE SELECTOR; the whole point of P2 is that a labelled row becomes eligible
 # without the selector being touched.
-SELECTOR_ELIGIBILITY_PREDICATE = "reference_answer != ''"
+#
+# The name is re-exported at module scope by the import above.
 
 # The queue itself. `dataset` (0014) and the label columns (0016) are
 # deliberately NOT selected: this route needs neither, and every column it does
@@ -807,6 +812,56 @@ _UNLABELLED_QUEUE_SQL = f"""
         id ASC
     LIMIT %(limit)s OFFSET %(offset)s
 """
+
+
+def _order_by_keys(sql: str) -> list[str]:
+    """The ORDER BY keys of *sql*, verbatim and in order, one per line.
+
+    ONE PARSE, USED BOTH BY THE PAYLOAD AND BY THE TESTS. `QUEUE_ORDERING["keys"]`
+    used to be a hand-written list — `["origin_trust_tier DESC", ...]` — naming a
+    column that is not in the schema and a direction the statement does not use,
+    and nothing connected it to the query. The 2026-08-09 adversarial review
+    reversed the statement's own sort direction (`ASC NULLS LAST` ->
+    `DESC NULLS LAST`), which inverts the queue so `generated` is offered first
+    and `mined` last — the exact opposite of everything this module claims — and
+    all 54 tests passed while the payload went on reporting the old list.
+
+    Deriving the list from the statement closes both halves at once: the response
+    can no longer describe an ordering the database is not performing, and a test
+    asserting the expected key list is now asserting the SQL.
+    """
+    clause = sql.split("ORDER BY", 1)[1].split("LIMIT", 1)[0]
+    return [
+        line.strip().rstrip(",") for line in clause.strip().splitlines() if line.strip()
+    ]
+
+
+# Reported verbatim on every queue response, so a console cannot mistake this
+# for an uncertainty ranking and neither can a reader of the payload.
+# DEEP-copied at each use site: `dict(QUEUE_ORDERING)` is shallow and "keys" is a
+# list, so the copy shared the constant's list and a caller appending to the
+# returned dict poisoned it for every later request in the process. (Not
+# reachable over HTTP, where FastAPI serialises the dict — but the comparison
+# this used to draw to eval_service.VERIFIED_QA_PROMOTION_DECISION did not hold:
+# that constant is all scalars and has no nested mutable to share.)
+QUEUE_ORDERING: dict = {
+    "by_uncertainty": False,
+    "keys": _order_by_keys(_UNLABELLED_QUEUE_SQL),
+    "reason": (
+        "Judge confidence is emitted onto job_events, which is a control-DB "
+        "table, while eval_scenarios lives in the tenant's own Neon project — "
+        "no SQL join spans them. Application-side correlation has no key "
+        "either: store_scenarios writes no job_id, conversation_id or "
+        "origin_trace_id for a mined row, and mine_production_scenarios "
+        "discards payload->>'confidence' at the point it reads the event. The "
+        "one tenant-side confidence column, verified_qa_candidates."
+        "auditor_confidence, is written only for grounded turns above "
+        "threshold — the complement of the failed turns this queue is built "
+        "from. So this ordering is origin trust tier first, then oldest first; "
+        "it is not an uncertainty ordering and is not offered as a proxy for "
+        "one. BACKLOG 6.4."
+    ),
+}
 
 # The counts, in one round trip, every one of them a count out of `total`.
 # `total` is not decoration: a rate must not be constructible from this
@@ -850,11 +905,23 @@ def _queue_counts_sync(conn_str: str) -> dict:
     Blocking psycopg2; called through asyncio.to_thread like every other tenant
     query in this module.
 
-    `eligible` is `labelled`, and that identity IS the P2 claim rather than a
-    redundancy: the nightly selector's only label-related predicate is
-    SELECTOR_ELIGIBILITY_PREDICATE, so writing an answer is the whole of what
-    makes a row eligible and the selector needs no change. Reporting both names
-    lets a reader check that from the payload instead of taking it on trust.
+    `eligible` is `labelled` — the SAME PYTHON VALUE, bound to two keys — and
+    that identity IS the P2 claim: the nightly selector's only label-related
+    predicate is SELECTOR_ELIGIBILITY_PREDICATE, so writing an answer is the
+    whole of what makes a row eligible and the selector needs no change.
+
+    WHAT THE PAYLOAD THEREFORE DOES NOT DO, corrected 2026-08-09. This used to
+    say that reporting both names "lets a reader check that from the payload
+    instead of taking it on trust". It does not: `eligible == labelled`
+    unconditionally, whatever `run_eval_suite` filters on, so a reader who
+    checked it from the payload would be reassured by a tautology. What actually
+    holds the identity is the cross-module pin,
+    test_the_queue_selects_exactly_what_the_eval_selector_excludes, which reads
+    the predicate back out of `inspect.getsource(run_eval_suite)` — a real proof
+    (replacing `!=` with the semantically identical `<>` still turns it red).
+    `eligible` is reported because a console needs the number under the name the
+    eval uses, not because it is independent evidence.
+
     Eligible is not "will be scored tonight" — the exploratory half of the run
     is a sample of at most EXPLORATORY_SAMPLE_SIZE rows — it is "the selector
     will consider it".
@@ -919,8 +986,20 @@ async def _resolve_agent_tenant_db(
 
     404 rather than 403 on the ownership mismatch, matching the routes above:
     403 would confirm the agent exists.
+
+    A SOFT-DELETED AGENT IS NOT AN AGENT HERE. `agents.py:226` states the
+    invariant — "all read routes already filter on deleted_at IS NULL, so a
+    soft-deleted agent disappears from the API surface" — and a `db.get()` does
+    not filter, so DELETE /agents/{id} followed by a label POST would have
+    decrypted a deleted agent's connection string and written a `human_authored`
+    row into its tenant database. The three older routes in this module share the
+    read-side gap and fixing them is a separate decision; extending it to a WRITE
+    is not one worth taking. Matches documents.py:122 and query.py:80.
     """
-    agent = await db.get(Agent, agent_id)
+    result = await db.execute(
+        select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
+    )
+    agent = result.scalar_one_or_none()
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
 
@@ -1007,9 +1086,22 @@ async def list_unlabelled_scenarios(
     return {
         "scenarios": scenarios,
         "counts": counts,
-        "ordering": dict(QUEUE_ORDERING),
+        "ordering": copy.deepcopy(QUEUE_ORDERING),
         "page": {"limit": limit, "offset": offset, "returned": len(scenarios)},
     }
+
+
+# An upper bound on a stored reference answer.
+#
+# NOT ordinary input hygiene, which is why it is here and not left to the default
+# of "unbounded TEXT column". This is the one field in app/api/v1 whose stored
+# value is interpolated into a PAID MODEL'S PROMPT REPEATEDLY: run_eval_suite
+# feeds `reference_answer` to Ragas' judge on every nightly run for as long as
+# the row lives, so an oversized label costs per token per night, not once at
+# write time. 8000 characters is several pages of prose — generous for an answer
+# a support agent is meant to give — and the refusal is a 422 the caller sees
+# rather than a bill nobody attributes.
+MAX_REFERENCE_ANSWER_CHARS = 8000
 
 
 class ScenarioLabelRequest(BaseModel):
@@ -1032,8 +1124,36 @@ class ScenarioLabelRequest(BaseModel):
 
     reference_answer: str = Field(
         min_length=1,
+        max_length=MAX_REFERENCE_ANSWER_CHARS,
         description="The answer the authenticated human wrote for this question.",
     )
+
+    @field_validator("reference_answer")
+    @classmethod
+    def _must_carry_something_visible(cls, value: str) -> str:
+        """Strip, and refuse an answer with nothing a reader could see.
+
+        THIS BELONGS AT THE BOUNDARY, not only in the writer. `record_human_label`
+        has always refused a visibly-empty answer, but by the time it ran,
+        `_record_label_sync` had already opened a tenant connection — so the
+        property the route advertises for a refused CONTEXT ("never reaches the
+        database") was not the property it had for refused CONTENT. A whitespace
+        body decrypted a connection string and connected to Postgres before being
+        rejected. Validating here makes the refusal a 422 from Pydantic with no
+        tenant work at all, which is what the test of that name always claimed.
+
+        `min_length=1` above does not cover this: it passes `"   "`, and it
+        passes `"\\u200b"`, which no amount of `str.strip()` removes either. See
+        `label_service.visible_answer` — this calls it rather than reimplementing
+        it, so the boundary and the writer cannot disagree about the same string.
+        """
+        answer = visible_answer(value)
+        if not answer:
+            raise ValueError(
+                "reference_answer carries no visible character — an unlabelled "
+                "row is already the state this write exists to leave"
+            )
+        return answer
 
 
 def _label_principal(tenant: Tenant) -> str:
@@ -1043,14 +1163,21 @@ def _label_principal(tenant: Tenant) -> str:
     `get_current_tenant` resolves to a `Tenant`, by either of two credential
     paths: a Clerk JWT, behind which there is one specific human, or an
     `X-API-Key`, which is a machine credential with no human behind it at all.
-    The dependency does not report which path was taken, so reading
-    `tenant.clerk_user_id` would attribute an API-key write to a Clerk user who
-    may not have made it — a false claim about authorship stamped beside a human
-    trust tier, which is the one place in the system where authorship claims are
-    the entire point. Recording the account is the strongest claim this auth
-    layer actually supports, so it is the claim made. Narrowing it to a person
-    is a change to `app/api/deps.py` (a principal-aware dependency), not to this
-    route.
+
+    THE CREDENTIAL PATH IS NOW KNOWN — `get_credential_kind` reports it, and
+    `label_eval_scenario` refuses anything that is not a Clerk JWT — SO THE
+    REASON THIS STILL NAMES AN ACCOUNT HAS CHANGED, and it is worth stating
+    rather than leaving the reader to assume the old one still applies. Knowing
+    that a JWT authenticated the request is not the same as knowing the tenant
+    row's `clerk_user_id` is the person who sent it: the tenant is looked up BY
+    that claim on the JWT path, so today they coincide, but nothing in the schema
+    forbids a second user against one tenant and the moment one exists
+    `tenant.clerk_user_id` would name the wrong human. Attributing a write to a
+    specific person needs the principal carried out of the dependency, not
+    re-derived from the tenant row. Recording the account remains the strongest
+    claim this function can make on its own; the credential gate is what makes it
+    a claim about a human at all. `BACKLOG 4.7`'s residue is the person, not the
+    machine.
 
     Matches `deployment.py`'s `run.approved_by = str(tenant.id)` in substance;
     the `tenant:` prefix is added because this value is stored next to a human
@@ -1096,6 +1223,7 @@ async def label_eval_scenario(
     body: ScenarioLabelRequest,
     db: AsyncSession = Depends(get_async_db),
     tenant: Tenant = Depends(get_current_tenant),
+    credential_kind: str = Depends(get_credential_kind),
 ) -> dict:
     """Record one human-authored reference answer on one unlabelled scenario.
 
@@ -1103,6 +1231,20 @@ async def label_eval_scenario(
         Ownership check per `_resolve_agent_tenant_db`. The write lands in the
         tenant's own database and nowhere else, so a `scenario_id` from another
         tenant matches no row and returns 404.
+
+        A CLERK JWT IS THE ONLY CREDENTIAL THAT MAY PRODUCE THIS TIER, and that
+        is the phase's central claim finally being enforced rather than assumed.
+        `label_service`'s R1-R4 bind the call SITE — no tier parameter, one
+        importing module, no model-driven writer, and a runtime guard over
+        in-process Celery and ContextVar state. None of the four can see a caller
+        in a DIFFERENT PROCESS, so before 2026-08-09 any script, scheduler or
+        model-driven pipeline holding a tenant `X-API-Key` could POST model prose
+        here and have it land as `label_trust_tier='human_authored'` — the tier
+        `VERIFIED_QA_MIN_TRUST_TIER` is defined over. The hierarchy was then worth
+        the secrecy of an API key rather than any human-in-the-loop property.
+        `get_credential_kind` is the only evidence about the caller that survives
+        the process boundary, and anything that is not a Clerk JWT is refused with
+        a 403. CREDENTIAL_UNKNOWN refuses too: "cannot tell" is not "human".
 
     The tier is not a parameter of this route and there is no field for it:
     `record_human_label` stamps `human_authored` and the caller cannot ask for
@@ -1116,7 +1258,8 @@ async def label_eval_scenario(
 
     Returns 200 with the recorded provenance and the queue's counts recomputed
     AFTER the write, so the labelled -> eligible transition is observable in the
-    same response that caused it.
+    same response that caused it. An already-answered scenario is a 409, not a
+    silent overwrite — see `label_service._LABEL_SQL`.
     """
     # The runtime context guard, before any tenant work and before a connection
     # could be opened. `record_human_label` re-asserts this as its own first
@@ -1136,6 +1279,27 @@ async def label_eval_scenario(
         raise HTTPException(
             status_code=500,
             detail="A human trust tier cannot be recorded from this context.",
+        )
+
+    # The credential guard, in the same place and for the same reason: it must
+    # refuse before anything is decrypted. A machine credential is not a fault of
+    # the server, so this is a 403 and not the 500 above — and the detail says
+    # which credential is required, because an operator hitting this with a
+    # service-account key needs to know the route is not simply broken.
+    if credential_kind != CREDENTIAL_CLERK_JWT:
+        log.warning(
+            "label_eval_scenario.refused_credential",
+            agent_id=str(agent_id),
+            tenant_id=str(tenant.id),
+            credential_kind=credential_kind,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "A human-authored label requires a signed-in user session. "
+                "An API key authenticates an account, not a person, so it "
+                "cannot record a human trust tier."
+            ),
         )
 
     conn_str = await _resolve_agent_tenant_db(agent_id, db, tenant)
@@ -1175,6 +1339,27 @@ async def label_eval_scenario(
             detail=(
                 "This tenant database has no label provenance columns — "
                 "alembic_tenant migration 0016 has not been applied to it."
+            ),
+        )
+
+    if result["rows_updated"] == 0 and result["already_labelled"]:
+        # The row is here and already carries an answer. The UPDATE is scoped to
+        # the queue's own population, so this is a refusal rather than the silent
+        # overwrite it used to be — which could replace a curated GOLDEN-set
+        # reference answer and break the paired per-item comparison the golden
+        # set exists to make, with no record of what had been there.
+        log.info(
+            "label_eval_scenario.already_labelled",
+            agent_id=str(agent_id),
+            scenario_id=str(scenario_id),
+            tenant_id=str(tenant.id),
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This scenario already has a reference answer. Relabelling is "
+                "not part of the labelling queue: it would replace an existing "
+                "answer with no record of what it was."
             ),
         )
 

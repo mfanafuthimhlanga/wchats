@@ -190,11 +190,18 @@ def _docstring_constant_ids(tree: ast.AST) -> set[int]:
 
 
 class _RecordingCursor:
-    """Minimal psycopg2 cursor stand-in that records what was executed."""
+    """Minimal psycopg2 cursor stand-in that records what was executed.
 
-    def __init__(self, rowcount: int = 1):
+    `scenario_exists` answers the existence probe `record_human_label` runs when
+    the scoped UPDATE matches nothing — the probe that tells "no such row" apart
+    from "already answered". It is consulted only on that path.
+    """
+
+    def __init__(self, rowcount: int = 1, scenario_exists: bool = False):
         self.executed: list[tuple[str, dict]] = []
         self.rowcount = rowcount
+        self.scenario_exists = scenario_exists
+        self._rows: list[tuple] = []
 
     def __enter__(self):
         return self
@@ -204,11 +211,18 @@ class _RecordingCursor:
 
     def execute(self, sql, params=None):
         self.executed.append((sql, params or {}))
+        if "SELECT 1" in sql:
+            self._rows = [(1,)] if self.scenario_exists else []
+
+    def fetchall(self):
+        return self._rows
 
 
 class _RecordingConn:
-    def __init__(self, rowcount: int = 1):
-        self.cursor_obj = _RecordingCursor(rowcount=rowcount)
+    def __init__(self, rowcount: int = 1, scenario_exists: bool = False):
+        self.cursor_obj = _RecordingCursor(
+            rowcount=rowcount, scenario_exists=scenario_exists
+        )
         self.cursor_calls = 0
 
     def cursor(self):
@@ -1477,6 +1491,9 @@ class TestRecordHumanLabel:
             "label_trust_tier": "human_authored",
             "labelled_by": "owner@example.com",
             "rows_updated": 1,
+            # False on every successful write: the existence probe is an
+            # error-path question and is not asked when a row was labelled.
+            "already_labelled": False,
         }
 
     def test_the_answer_is_stripped_before_it_is_stored(self):
@@ -1491,10 +1508,24 @@ class TestRecordHumanLabel:
     def test_the_row_that_does_not_exist_is_reported_not_raised(self):
         """rowcount 0 is an outcome the caller counts, not an exception it
         catches — the same shape as select_promotion_candidates' refusals, so a
-        labelling rate can never be built without its denominator."""
-        conn = _RecordingConn(rowcount=0)
+        labelling rate can never be built without its denominator.
+
+        And zero rows now has TWO causes, because the UPDATE is scoped to an
+        unlabelled row: the id is absent from this database, or it is present and
+        already answered. Both are reported; neither is raised.
+        """
+        conn = _RecordingConn(rowcount=0, scenario_exists=False)
         result = self._call(conn)
         assert result["rows_updated"] == 0
+        assert result["already_labelled"] is False
+
+        relabel = _RecordingConn(rowcount=0, scenario_exists=True)
+        result = self._call(relabel)
+        assert result["rows_updated"] == 0
+        assert result["already_labelled"] is True, (
+            "a POST against an already-answered scenario is indistinguishable "
+            "from one against a row that does not exist"
+        )
 
     @pytest.mark.parametrize("answer", ["", "   ", "\n\t ", None])
     def test_an_empty_answer_is_rejected_without_touching_the_database(self, answer):

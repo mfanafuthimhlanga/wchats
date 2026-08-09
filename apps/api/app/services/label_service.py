@@ -113,6 +113,20 @@ WHAT THE FOUR RESTRICTIONS DO NOT COVER, AND WHAT P2 OWES
     asserting a property of a module that has not been written is a test that
     passes vacuously. It is written down, and it is a BACKLOG row against P2.
 
+    AND ONE MORE THING THE FOUR DO NOT COVER, WHICH P2 CLOSED ON 2026-08-09.
+    R1-R4 are all IN-PROCESS facts: a parameter list, an import graph, a Celery
+    thread-local, a ContextVar. An automation in a DIFFERENT process trips none
+    of them. `app/api/deps.get_current_tenant` accepts `X-API-Key`, a machine
+    credential, so any script or scheduler holding a tenant key could POST model
+    prose to the labelling route and have it stored as `human_authored` — making
+    the hierarchy worth the secrecy of an API key rather than any
+    human-in-the-loop property. The credential is the only evidence about the
+    caller that survives a process boundary, so the check has to live at the auth
+    layer: `get_credential_kind` reports which credential resolved, and
+    `label_eval_scenario` refuses anything but a Clerk JWT with a 403. That is a
+    restriction on the ROUTE, not on this module, and it is recorded here because
+    this is where a reader comes to find out what "human_authored" is worth.
+
 WHAT THIS MODULE DOES NOT DO
     It does not promote anything into `verified_qa`. A human label improves what
     the eval can measure; it reaches no customer. That is the owner's settled
@@ -131,9 +145,15 @@ WHAT THIS MODULE DOES NOT DO
 
 from __future__ import annotations
 
+import unicodedata
+
 import structlog
 
-from app.services.eval_service import HUMAN_LABEL_TIERS, is_human_label_tier
+from app.services.eval_service import (
+    HUMAN_LABEL_TIERS,
+    SELECTOR_ELIGIBILITY_PREDICATE,
+    is_human_label_tier,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -216,6 +236,43 @@ def _current_agent_id() -> str:
         ) from exc
 
 
+# Unicode general categories that render as nothing a reader can see:
+#   Cc  control characters (\n, \t, \r)
+#   Cf  format characters — U+200B ZERO WIDTH SPACE, U+FEFF BOM,
+#       U+200C/U+200D zero-width non-joiner/joiner, the bidi overrides
+#   Zs  space separators, including U+00A0 NBSP and U+2007 FIGURE SPACE
+#   Zl / Zp  line and paragraph separators
+#
+# WHY THIS EXISTS RATHER THAN str.strip() ALONE. `str.strip()` removes Cc and Zs
+# but NOT Cf, so `reference_answer = "\u200b"` survived it, was stamped
+# `human_authored`, and satisfied BOTH `run_eval_suite`'s
+# `WHERE reference_answer != ''` and 0016's `COALESCE(reference_answer,'') <> ''`
+# CHECK. The row was then simultaneously marked "a human wrote this" and
+# effectively still unlabelled — the exact state the emptiness guard exists to
+# prevent, reached by a stray zero-width space from a rich-text paste rather than
+# by an attacker. Observed through the real route on 2026-08-09: U+200B, U+FEFF
+# and U+200C each returned 200 and bound tier='human_authored'.
+_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Zs"})
+
+
+def visible_answer(reference_answer: str | None) -> str:
+    """*reference_answer* stripped, or `''` when it carries nothing visible.
+
+    The single definition of "this answer is empty", used by `record_human_label`
+    below AND by the route's request model, so the boundary rejection and the
+    writer's own guard cannot come to different conclusions about the same
+    string. Returns the stripped text unchanged when it holds at least one
+    character a reader could see — normalising the CONTENT is not this
+    function's business, only deciding whether there is any.
+    """
+    answer = (reference_answer or "").strip()
+    if not any(
+        unicodedata.category(char) not in _INVISIBLE_CATEGORIES for char in answer
+    ):
+        return ""
+    return answer
+
+
 def assert_human_context() -> None:
     """Refuse if a model is driving this call stack.
 
@@ -241,16 +298,53 @@ def assert_human_context() -> None:
         )
 
 
-# The UPDATE. Idempotent by construction: applying it twice with the same
-# arguments leaves the same row state, so a retried request cannot produce a
-# second label or a duplicated row. `labelled_at` moves on a genuine relabel,
-# which is correct — it records when the answer now stored was written.
-_LABEL_SQL = """
+# The UPDATE.
+#
+# THE SECOND PREDICATE IS THE POINT, AND IT WAS MISSING UNTIL 2026-08-09. The
+# WHERE was `id = %(scenario_id)s::uuid` alone, which meant this write reached
+# ANY row in the agent's database rather than only a row the labelling queue had
+# offered. One POST with the id of an already-answered scenario silently replaced
+# its `reference_answer` and re-stamped its provenance, with no record of what
+# had been there. The blast radius was worst on a `dataset='golden'` row:
+# `eval.py`'s golden half runs in full every night precisely so consecutive runs
+# are a PAIRED per-item comparison, and changing one item's reference answer
+# breaks that comparison while the run report has no way to say so.
+#
+# `NOT (SELECTOR_ELIGIBILITY_PREDICATE)` is the queue's own population, spelled
+# with the queue's own constant rather than a hand-written `= ''`. So the write's
+# reach is now exactly the set of rows the GET can return, and the two cannot
+# drift: the same string defines both.
+#
+# RELABELLING IS THEREFORE REFUSED, NOT SILENTLY PERFORMED — see
+# `record_human_label`'s `already_labelled`. If a correction path is wanted later
+# it is an explicit second act (which answer is being superseded, by whom, and
+# whether a golden row may move at all), not a side effect of the queue's write.
+#
+# Idempotent by construction in the direction that matters for a retry: the first
+# application labels the row, and a retry of the same request now matches zero
+# rows and reports `already_labelled` instead of moving `labelled_at` again.
+_LABEL_SQL = f"""
     UPDATE eval_scenarios
     SET reference_answer = %(reference_answer)s,
         label_trust_tier = %(tier)s,
         labelled_by = %(labelled_by)s,
         labelled_at = NOW()
+    WHERE id = %(scenario_id)s::uuid
+      AND NOT ({SELECTOR_ELIGIBILITY_PREDICATE})
+"""
+
+# Run ONLY when the UPDATE matched nothing, to tell the two reasons apart: the
+# row is not in this database at all (404 — also the cross-tenant outcome, and
+# the two must stay indistinguishable), or it is here and already carries an
+# answer (409). Without it both collapse into 404 and a caller told "not found"
+# about a row it can see in its own queue history has been told something false.
+#
+# Deliberately projects no column: existence is the whole question, and `SELECT
+# 1` needs neither 0016's columns nor 0011's, so this probe cannot itself become
+# a migration-state failure on the error path.
+_SCENARIO_EXISTS_SQL = """
+    SELECT 1
+    FROM eval_scenarios
     WHERE id = %(scenario_id)s::uuid
 """
 
@@ -281,11 +375,13 @@ def record_human_label(
             close it — the caller owns the transaction, matching
             scenario_service.insert_provenance_scenario.
         scenario_id: UUID string of the eval_scenarios row to label.
-        reference_answer: The answer the human wrote. Must be non-empty: an
-            empty label is what the row already has, and writing a human tier
-            over an empty string would claim a human authored nothing while
-            making the row eligible to a selector that filters on
-            `reference_answer != ''`.
+        reference_answer: The answer the human wrote. Must carry at least one
+            VISIBLE character — see `visible_answer`. An empty label is what the
+            row already has, and writing a human tier over one would claim a
+            human authored nothing while making the row eligible to a selector
+            that filters on `reference_answer != ''`. A zero-width string
+            satisfies that selector and every CHECK the schema has, so
+            "non-empty" is decided on Unicode category, not on `str.strip()`.
         labelled_by: Identifier of the human. Must be non-empty — a label with
             no author is a tier with nothing behind it. NON-EMPTY IS ALL THIS
             FUNCTION CAN CHECK: it is caller-asserted free text, and nothing
@@ -296,23 +392,29 @@ def record_human_label(
 
     Returns:
         {"scenario_id": str, "label_trust_tier": str, "labelled_by": str,
-         "rows_updated": int}. `rows_updated` is 0 when no row has that id;
-        that is reported, never raised, so the caller counts outcomes rather
-        than catching them.
+         "rows_updated": int, "already_labelled": bool}. `rows_updated` is 0
+        when the UPDATE matched nothing, and `already_labelled` says WHICH of
+        the two reasons applies: the row is absent from this database
+        (False — the caller's 404) or it is present and already answered
+        (True — the caller's 409). Both are reported, never raised, so the
+        caller counts outcomes rather than catching them. `already_labelled` is
+        False whenever `rows_updated` is 1: the probe is not run on a successful
+        write.
 
     Raises:
         HumanLabelRefused: called from inside a Celery task or an agent tool.
-        LabelRejected: empty reference_answer or empty labelled_by.
+        LabelRejected: visibly-empty reference_answer, or empty labelled_by.
     """
     # First statement in the body, before validation and before a cursor is
     # opened: a refused context must not be able to reach the database at all.
     assert_human_context()
 
-    answer = (reference_answer or "").strip()
+    answer = visible_answer(reference_answer)
     if not answer:
         raise LabelRejected(
-            "reference_answer is empty — an unlabelled row is already the "
-            "state this write exists to leave"
+            "reference_answer carries no visible character — an unlabelled row "
+            "is already the state this write exists to leave, and a zero-width "
+            "answer would leave it there while claiming a human wrote it"
         )
 
     author = (labelled_by or "").strip()
@@ -331,6 +433,7 @@ def record_human_label(
             f"{HUMAN_AUTHORED_TIER!r} is not one of {HUMAN_LABEL_TIERS!r}"
         )
 
+    already_labelled = False
     with conn.cursor() as cur:
         cur.execute(
             _LABEL_SQL,
@@ -343,12 +446,18 @@ def record_human_label(
         )
         rows_updated = cur.rowcount
 
+        if rows_updated == 0:
+            # The UPDATE's two predicates failed as one. Ask which.
+            cur.execute(_SCENARIO_EXISTS_SQL, {"scenario_id": str(scenario_id)})
+            already_labelled = bool(cur.fetchall())
+
     log.info(
         "label_service.human_label_recorded",
         scenario_id=str(scenario_id),
         label_trust_tier=HUMAN_AUTHORED_TIER,
         labelled_by=author,
         rows_updated=rows_updated,
+        already_labelled=already_labelled,
         # The answer text itself is never logged — it is customer-domain
         # content, and the log line's job is provenance, not content.
     )
@@ -358,4 +467,5 @@ def record_human_label(
         "label_trust_tier": HUMAN_AUTHORED_TIER,
         "labelled_by": author,
         "rows_updated": rows_updated,
+        "already_labelled": already_labelled,
     }

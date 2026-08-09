@@ -321,6 +321,25 @@ HUMAN_LABEL_TIERS: tuple[str, ...] = ("human_verified", "human_authored")
 # path (label_service) agree on one spelling.
 LABEL_TIER_COLUMN = "label_trust_tier"
 
+# The nightly selector's ONLY label predicate, spelled once for the whole system.
+# `run_eval_suite` filters on exactly this text in all three of its scenario
+# queries; `evals.py`'s labelling queue is its negation; and `label_service`'s
+# UPDATE is scoped by that same negation so the write cannot reach a row the
+# queue never offered.
+#
+# It lives HERE rather than in either consumer because the two consumers are on
+# opposite sides of an import wall: `label_service` may not import `app.api`
+# (R2), and `app/api/v1/evals.py` is not something a service may depend on. This
+# module is the one both already import, so one spelling can serve all three
+# without inverting a dependency.
+#
+# Kept honest across the module boundary by
+# test_the_queue_selects_exactly_what_the_eval_selector_excludes, which reads
+# this constant back out of `inspect.getsource(run_eval_suite)`: if the task ever
+# stops filtering on it, "unlabelled" and "will never be scored" have come apart
+# and that test is what makes it audible.
+SELECTOR_ELIGIBILITY_PREDICATE = "reference_answer != ''"
+
 # Sentinel distinguishing "the row has no reference_answer key" (a narrow
 # projection) from "the row has an empty one" (a human claim about a string that
 # is not there). `None` cannot do that job: it is a legitimate column value.
