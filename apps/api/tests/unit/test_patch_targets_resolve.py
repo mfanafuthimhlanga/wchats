@@ -61,17 +61,18 @@ _KNOWN_BROKEN: dict[tuple[str, str], tuple[int, str]] = {
         "`get_adapter` is the older name and was never re-pointed. The test would "
         "raise AttributeError at patch time; it has never run.",
     ),
-    (
-        "tests/integration/test_ingestion_chain.py",
-        "app.services.chunking_service.HybridChunker",
-    ): (
-        4,
-        "Identical to the defect fixed in tests/unit/test_chunking_service.py: "
-        "chunking_service.py imports HybridChunker inside the function body, so the "
-        "module has no such attribute. The unit copy was corrected; this integration "
-        "copy was not, and integration has never reached a test.",
-    ),
 }
+# FIXED 2026-08-10 (chore/local-postgres): the 4-site
+# ("tests/integration/test_ingestion_chain.py",
+#  "app.services.chunking_service.HybridChunker") pin is gone because the sites are
+# gone, not because the pin was dropped. All four now patch
+# `docling.chunking.HybridChunker` — the module chunk_document imports the name FROM
+# at call time — and the module is gated by pytest.importorskip("docling.chunking"),
+# matching tests/unit/test_chunking_service.py. Re-measured with this module's
+# __main__ in the same commit: targets_scanned 1283, unresolvable_sites 1,
+# pinned_targets 1. The scanner only inspects `app.*` targets, so the repointed sites
+# leave its field of view entirely; tests/unit/test_pipeline_patch_targets.py is what
+# keeps `docling.chunking.HybridChunker` honest from here on.
 
 
 @lru_cache(maxsize=None)

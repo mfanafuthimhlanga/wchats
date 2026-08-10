@@ -3,7 +3,14 @@ Integration tests: Full M2 ingestion chain — parse → chunk → metadata → 
 
 These tests exercise the complete chain against a REAL local Postgres tenant DB
 with external services (Voyage AI, Anthropic, Docling) fully mocked so they run
-offline without API keys.
+offline without API keys — but "mocked" is not the same as "absent". The chunk
+task reaches chunking_service.chunk_document(), which does
+`from docling.chunking import HybridChunker` and
+`from docling_core.types.doc import TableItem` at call time; those two imports
+must succeed for the mocks below to have anything to attach to. docling ships
+only in the optional `pipeline` extra, so this module is guarded by
+pytest.importorskip in the same shape as tests/unit/test_chunking_service.py.
+Read the skip line literally: it means UNEXECUTED, never "would pass".
 
 Test strategy:
   - CELERY_TASK_ALWAYS_EAGER=True: Tasks run synchronously in this process.
@@ -47,6 +54,29 @@ import pytest
 from sqlalchemy import text
 
 import app.worker.tasks.pipeline.embed as _embed_module
+
+# ---------------------------------------------------------------------------
+# docling gate — same convention as tests/unit/test_chunking_service.py
+# ---------------------------------------------------------------------------
+# chunking_service.chunk_document() imports HybridChunker and TableItem inside the
+# function body (chunking_service.py:64-65) because docling ships only in the
+# pipeline worker image. Patching `docling.chunking.HybridChunker` is what the
+# call-time import actually picks up — but the module still has to BE there to be
+# patched, and `TableItem` is used in a bare isinstance() the mocks never reach.
+# Without this gate all four tests FAIL with AttributeError instead of skipping,
+# and four red lines that ought to be four skips is noise that hides real failures.
+#
+# This must not become a permanent skip. Two checks keep it falsifiable:
+#   - tests/unit/test_pipeline_patch_targets.py resolves `docling.chunking.HybridChunker`
+#     against the imports app/ actually performs, on every run, with no docling installed.
+#   - tests/unit/test_ingestion_chain_docling_gate.py asserts the skip condition is
+#     FALSE when docling is importable, so the gate cannot be a tautology.
+pytest.importorskip(
+    "docling.chunking", reason="docling is in the optional `pipeline` extra"
+)
+pytest.importorskip(
+    "docling_core", reason="docling is in the optional `pipeline` extra"
+)
 
 pytestmark = pytest.mark.integration
 
@@ -575,9 +605,11 @@ def test_full_chain_runs_in_eager_mode_with_mocks(
         patch("app.worker.tasks.pipeline.parse.parse_document_from_bytes", return_value=mock_doc),
         patch("app.worker.tasks.pipeline.chunk.parse_document", return_value=mock_doc),
         patch("app.worker.tasks.pipeline.chunk.parse_document_from_bytes", return_value=mock_doc),
-        # Patch HybridChunker via chunking_service (chunk task calls chunk_document
-        # which calls HybridChunker internally — patch at the service level)
-        patch("app.services.chunking_service.HybridChunker") as mock_chunker_cls,
+        # Patch HybridChunker on the module it is imported FROM. chunk_document does
+        # `from docling.chunking import HybridChunker` inside the function body, so
+        # `app.services.chunking_service.HybridChunker` names nothing and patching it
+        # raises AttributeError before the chain ever runs.
+        patch("docling.chunking.HybridChunker") as mock_chunker_cls,
         # Patch external API clients at service module level
         patch("app.services.metadata_service._anthropic") as mock_anthropic,
         patch("app.services.embedding_service._vo") as mock_vo,
@@ -715,9 +747,11 @@ def test_idempotent_chain(
         patch("app.worker.tasks.pipeline.parse.parse_document_from_bytes", return_value=mock_doc),
         patch("app.worker.tasks.pipeline.chunk.parse_document", return_value=mock_doc),
         patch("app.worker.tasks.pipeline.chunk.parse_document_from_bytes", return_value=mock_doc),
-        # Patch HybridChunker via chunking_service (chunk task calls chunk_document
-        # which calls HybridChunker internally — patch at the service level)
-        patch("app.services.chunking_service.HybridChunker") as mock_chunker_cls,
+        # Patch HybridChunker on the module it is imported FROM. chunk_document does
+        # `from docling.chunking import HybridChunker` inside the function body, so
+        # `app.services.chunking_service.HybridChunker` names nothing and patching it
+        # raises AttributeError before the chain ever runs.
+        patch("docling.chunking.HybridChunker") as mock_chunker_cls,
         # Patch external API clients at service module level
         patch("app.services.metadata_service._anthropic") as mock_anthropic,
         patch("app.services.embedding_service._vo") as mock_vo,
@@ -860,9 +894,11 @@ def test_chain_emits_all_11_m2_event_types(
         patch("app.worker.tasks.pipeline.parse.parse_document_from_bytes", return_value=mock_doc),
         patch("app.worker.tasks.pipeline.chunk.parse_document", return_value=mock_doc),
         patch("app.worker.tasks.pipeline.chunk.parse_document_from_bytes", return_value=mock_doc),
-        # Patch HybridChunker via chunking_service (chunk task calls chunk_document
-        # which calls HybridChunker internally — patch at the service level)
-        patch("app.services.chunking_service.HybridChunker") as mock_chunker_cls,
+        # Patch HybridChunker on the module it is imported FROM. chunk_document does
+        # `from docling.chunking import HybridChunker` inside the function body, so
+        # `app.services.chunking_service.HybridChunker` names nothing and patching it
+        # raises AttributeError before the chain ever runs.
+        patch("docling.chunking.HybridChunker") as mock_chunker_cls,
         # Patch external API clients at service module level
         patch("app.services.metadata_service._anthropic") as mock_anthropic,
         patch("app.services.embedding_service._vo") as mock_vo,
@@ -952,7 +988,9 @@ def test_chain_no_conn_strings_logged(
     with (
         patch("app.services.docling_service.parse_document", return_value=mock_doc),
         patch("app.services.docling_service.parse_document_from_bytes", return_value=mock_doc),
-        patch("app.services.chunking_service.HybridChunker") as mock_chunker_cls,
+        # See the note at the other three sites: the name lives on docling.chunking,
+        # not on the service module that imports it at call time.
+        patch("docling.chunking.HybridChunker") as mock_chunker_cls,
         patch("app.services.metadata_service._anthropic") as mock_anthropic,
         patch("app.services.embedding_service._vo") as mock_vo,
         patch("psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT", 0),
