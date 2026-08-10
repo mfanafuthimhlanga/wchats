@@ -94,3 +94,90 @@ database".
 - Everything tenant-DB: `3.5`, `0016`, and therefore the labelling loop's 503.
 - `0.1` — `capture_responses.py` needs a live *ingested* agent, which needs a tenant DB.
 - The metric being observed to move — same reason.
+
+---
+
+# ADDENDUM — pgvector built without admin, and both chains proven
+
+The Windows SDK blocker dissolved. `vswhere -products *` returns **nothing**: the Build Tools
+install is orphaned — `VC\Tools\MSVC\14.44.35207` exists on disk but no VS product is registered, so
+there is no "Modify" UI to add an SDK through. That ruled out the installer route entirely.
+
+**Microsoft ships the Windows SDK as NuGet packages**, which are plain zips needing no admin:
+
+```
+Microsoft.Windows.SDK.CPP      10.0.28000.2526   153 MB   headers (ucrt, um, shared)
+Microsoft.Windows.SDK.CPP.x64  10.0.28000.2526    50 MB   x64 libs
+```
+
+Extracted to `C:\Users\Bantu\pg-setup\sdk`, then `INCLUDE`/`LIB` pointed at them alongside the MSVC
+toolset. pgvector **v0.8.1** cloned from the official repo and built with `nmake /F Makefile.win` —
+no third-party binary was downloaded, which matters for a shared library loaded into a database
+server. The toolset is the same one that compiled these PostgreSQL binaries (msvc-19.44).
+
+```
+vector.dll                274,944 bytes -> C:\Users\Bantu\pgsql\lib
+vector.control                149 bytes -> C:\Users\Bantu\pgsql\share\extension
+CREATE EXTENSION vector   -> extversion 0.8.1
+```
+
+## Both chains, against a real database
+
+| chain | driver | result |
+|---|---|---|
+| control (`alembic/`) | `alembic upgrade head` | `0001` → **`0019 (head)`**, 13 tables |
+| tenant (`alembic_tenant/`) | **`run_tenant_migrations` — the production path**, not the CLI | **`0016 (head)`**, 24 tables |
+
+Driven through `run_tenant_migrations` deliberately: it is what `apply_migrations` calls in
+production, so what is proven is the real path rather than an adjacent one — the lesson D1 paid for
+with its seam.
+
+Verified on the tenant DB:
+
+- `embeddings_vector_hnsw_idx` exists — **only a real pgvector can create it**, so `0001` is
+  genuinely satisfied rather than skipped.
+- `eval_runs.config` is `jsonb` (`0013` — the column D1's `agent_invoked` lives in).
+- `eval_scenarios` carries `dataset` (`0014`) and `label_trust_tier`/`labelled_by`/`labelled_at`
+  (D6's `0016`).
+
+## The 0016 roundtrip
+
+`3.5` asked for roundtrips, not just upgrades. `alembic_tenant`'s `env.py` requires an injected
+connection, so `-x url=` fails with `KeyError: 'url'`; the downgrade was driven through the same
+injected-connection pattern `run_tenant_migrations` uses.
+
+```
+downgrade -1  -> head 0015, label columns 0, eval_scenarios_label_trust_tier_check_v1 gone
+upgrade head  -> head 0016, label columns 3, constraint restored
+```
+
+**A false alarm worth recording.** A first check reported "3 CHECK constraints left behind" after the
+downgrade. They were `pg_enum_typid_label_index`, `pg_seclabel_object_index` and
+`pg_shseclabel_object_index` — PostgreSQL's own system catalogs, swept up by a `conname LIKE
+'%label%'` pattern. The downgrade is clean. Recorded because a too-broad verification query that
+*looks* like it found a defect is its own hazard.
+
+## Integration suite
+
+| run | result |
+|---|---|
+| first contact | 13F / 2P / 21S / **4E** |
+| after the api_key + celery fixes | 12F / 3P / 21S / 4E |
+| after the cast + port fixes | 16F / 3P / 21S / 0E |
+| **after pgvector** | **14F / 5P / 21S / 0E** |
+
+`test_apply_migrations_creates_v1_schema` and `test_apply_migrations_idempotent` now pass —
+they were failing only for want of the extension. **14 failures remain, undiagnosed**, and they are
+`1.1`'s real body of work.
+
+## Server lifetime — a trap for the next session
+
+The cluster died once mid-session: it was started by a backgrounded shell command, and when the
+harness reaped that task it took the postgres process tree with it. Start it detached (`nohup`, or
+`Start-Process`), or better, register it as a service with admin:
+
+```
+pg_ctl register -N postgresql-17-local -D "C:/Users/Bantu/pgdata" -S auto
+```
+
+Disk: ~1.6 GB total (binaries, cluster, SDK, pgvector source). Both installer zips deleted.
