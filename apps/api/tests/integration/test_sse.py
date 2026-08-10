@@ -16,12 +16,21 @@ Tests:
         — Pre-populate job_events; connect; assert all 4 events received; stream closes.
 
     test_sse_receives_live_events_after_replay
-        — Pre-populate job.started; connect; emit live event after 0.5s;
-          assert both DB replay event and live Redis event are received.
+        — Pre-populate job.started; connect; emit live events only once the replay
+          event has been observed on the wire; assert the replay event arrives
+          first, the live events after it, and that an event which was published
+          but never persisted never arrives at all.
 
     test_sse_closes_on_completed_job
         — Pre-populate all 6 events (including job.complete); connect;
           assert stream closes within 2 seconds (terminal event detected in replay).
+
+An event is a DB row plus a pub/sub message, never one without the other:
+app/services/sse.py reads event data from job_events and uses the pub/sub message
+only as a signal to re-query early.  Emit through _emit_live, which does both, the
+way app/services/events.py:emit does.  A bare publish is not an event and will not
+be delivered — a fact test_sse_receives_live_events_after_replay now asserts
+directly rather than assuming.
 """
 
 import asyncio
@@ -39,9 +48,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 pytestmark = pytest.mark.integration
 
 #: Wall-clock ceiling on any SSE stream consume loop in this module.
-#: Generous relative to what these tests need (the publisher sleeps total 1s, and
-#: the close test asserts closure "within 2 seconds"), so a breach means the stream
-#: genuinely never delivered — never that the bound was too tight.
+#: Generous relative to what these tests need — the live-event test runs in ~0.7s
+#: end to end once connected, and the close test asserts closure "within 2 seconds"
+#: — so a breach means the stream genuinely never delivered, never that the bound
+#: was too tight.
 SSE_STREAM_TIMEOUT_S = 30
 
 #: An event type published to Redis but deliberately NOT written to job_events.
