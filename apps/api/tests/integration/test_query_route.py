@@ -75,13 +75,13 @@ def _create_ready_agent(tenant_id: uuid.UUID) -> tuple[uuid.UUID, str]:
         with engine.begin() as conn:
             conn.execute(
                 text(
-                    "INSERT INTO tenants (id, name, api_key, created_at) "
-                    "VALUES (:id, :name, :api_key, now())"
+                    "INSERT INTO tenants (id, name, api_key_hash, created_at) "
+                    "VALUES (:id, :name, :api_key_hash, now())"
                 ),
                 {
                     "id": str(tenant_id),
                     "name": f"qtest-tenant-{tenant_id}",
-                    "api_key": api_key_hash,
+                    "api_key_hash": api_key_hash,
                 },
             )
             conn.execute(
@@ -264,13 +264,13 @@ async def test_post_query_agent_not_found():
         with engine.begin() as conn:
             conn.execute(
                 text(
-                    "INSERT INTO tenants (id, name, api_key, created_at) "
-                    "VALUES (:id, :name, :api_key, now())"
+                    "INSERT INTO tenants (id, name, api_key_hash, created_at) "
+                    "VALUES (:id, :name, :api_key_hash, now())"
                 ),
                 {
                     "id": str(tenant_id),
                     "name": f"qtest404-tenant-{tenant_id}",
-                    "api_key": api_key_hash,
+                    "api_key_hash": api_key_hash,
                 },
             )
     finally:

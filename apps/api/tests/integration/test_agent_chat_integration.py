@@ -99,7 +99,7 @@ def seed_tenant_agent():
             # Insert tenant
             cur.execute(
                 """
-                INSERT INTO tenants (id, name, api_key, deleted_at)
+                INSERT INTO tenants (id, name, api_key_hash, deleted_at)
                 VALUES (%s, %s, %s, NULL)
                 ON CONFLICT (id) DO NOTHING
                 """,

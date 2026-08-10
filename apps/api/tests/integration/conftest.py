@@ -19,6 +19,7 @@ Redis URL: redis://localhost:6379/0 (default from env)
 import base64
 import os
 import subprocess
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -155,7 +156,7 @@ def test_agent_and_job(db_session: Session, test_tenant):
         text(
             """
             INSERT INTO agents (id, tenant_id, name, soul, role, status, created_at)
-            VALUES (:id, :tenant_id, :name, :soul::jsonb, :role, 'pending', now())
+            VALUES (:id, :tenant_id, :name, CAST(:soul AS jsonb), :role, 'pending', now())
             """
         ),
         {
@@ -210,6 +211,15 @@ def celery_worker():
 
     proc = subprocess.Popen(
         [
+            # `sys.executable -m celery`, not a bare "celery". The console script
+            # lives in .venv/Scripts/ and is only on PATH when the venv is
+            # activated, so the bare name raised FileNotFoundError on every
+            # unactivated run — which is every run, since the repo's own gate
+            # invokes .venv/Scripts/python.exe directly. Same defect class as the
+            # hardcoded cwd below: one layer was fixed, the next was never seen
+            # because this fixture had never reached a live database.
+            sys.executable,
+            "-m",
             "celery",
             "-A",
             "app.worker.celery_app",

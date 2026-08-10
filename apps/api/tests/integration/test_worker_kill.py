@@ -94,19 +94,19 @@ def _setup_test_rows(tenant_id: uuid.UUID, agent_id: uuid.UUID, job_id: uuid.UUI
         with engine.begin() as conn:
             conn.execute(
                 text(
-                    "INSERT INTO tenants (id, name, api_key, created_at) "
-                    "VALUES (:id, :name, :api_key, now())"
+                    "INSERT INTO tenants (id, name, api_key_hash, created_at) "
+                    "VALUES (:id, :name, :api_key_hash, now())"
                 ),
                 {
                     "id": str(tenant_id),
                     "name": f"kill9-tenant-{tenant_id}",
-                    "api_key": api_key_hash,
+                    "api_key_hash": api_key_hash,
                 },
             )
             conn.execute(
                 text(
                     "INSERT INTO agents (id, tenant_id, name, soul, role, status, created_at) "
-                    "VALUES (:id, :tenant_id, :name, :soul::jsonb, :role, 'pending', now())"
+                    "VALUES (:id, :tenant_id, :name, CAST(:soul AS jsonb), :role, 'pending', now())"
                 ),
                 {
                     "id": str(agent_id),

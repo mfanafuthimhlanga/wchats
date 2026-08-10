@@ -71,7 +71,7 @@ def _insert_events(tenant_id: uuid.UUID, job_id: uuid.UUID, events: list[dict]) 
                     text(
                         """
                         INSERT INTO job_events (job_id, event_type, payload, created_at)
-                        VALUES (:job_id, :event_type, :payload::jsonb, now())
+                        VALUES (:job_id, :event_type, CAST(:payload AS jsonb), now())
                         """
                     ),
                     {
@@ -125,19 +125,19 @@ def _setup_test_job(tenant_id: uuid.UUID, job_id: uuid.UUID) -> None:
         with engine.begin() as conn:
             conn.execute(
                 text(
-                    "INSERT INTO tenants (id, name, api_key, created_at) "
-                    "VALUES (:id, :name, :api_key, now())"
+                    "INSERT INTO tenants (id, name, api_key_hash, created_at) "
+                    "VALUES (:id, :name, :api_key_hash, now())"
                 ),
                 {
                     "id": str(tenant_id),
                     "name": f"sse-test-tenant-{tenant_id}",
-                    "api_key": api_key_hash,
+                    "api_key_hash": api_key_hash,
                 },
             )
             conn.execute(
                 text(
                     "INSERT INTO agents (id, tenant_id, name, soul, role, status, created_at) "
-                    "VALUES (:id, :tenant_id, :name, :soul::jsonb, :role, 'pending', now())"
+                    "VALUES (:id, :tenant_id, :name, CAST(:soul AS jsonb), :role, 'pending', now())"
                 ),
                 {
                     "id": str(agent_id),

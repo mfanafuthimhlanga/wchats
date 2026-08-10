@@ -112,7 +112,7 @@ def test_create_agent_real_neon() -> None:
             db.execute(
                 text(
                     """
-                    INSERT INTO tenants (id, name, api_key, created_at)
+                    INSERT INTO tenants (id, name, api_key_hash, created_at)
                     VALUES (:id, :name, :api_key, now())
                     """
                 ),
@@ -126,7 +126,7 @@ def test_create_agent_real_neon() -> None:
                 text(
                     """
                     INSERT INTO agents (id, tenant_id, name, soul, role, status, created_at)
-                    VALUES (:id, :tenant_id, :name, :soul::jsonb, :role, 'pending', now())
+                    VALUES (:id, :tenant_id, :name, CAST(:soul AS jsonb), :role, 'pending', now())
                     """
                 ),
                 {
