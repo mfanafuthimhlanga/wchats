@@ -268,6 +268,14 @@ def _stop_worker(proc: subprocess.Popen) -> None:
 # Celery worker with the Neon API stubbed *inside the worker process*
 # ---------------------------------------------------------------------------
 
+# How long to wait for a freshly spawned worker to import the app and start
+# consuming. Generous on purpose: worker start-up was observed to overrun a 60s
+# budget mid-suite on this 4 GB machine while passing in seconds standalone, and
+# the cost of being wrong is an error attributed to the wrong defect. Waiting
+# longer never weakens the guarantee — the fixture still refuses to yield
+# without proof that the stub is installed in the worker's own process.
+_WORKER_START_TIMEOUT = 180.0
+
 
 class NeonStubWorker:
     """Handle onto a worker whose Neon transport is stubbed.
@@ -278,10 +286,13 @@ class NeonStubWorker:
     process and patched the wrong HTTP library.
     """
 
-    def __init__(self, proc: subprocess.Popen, log_path: str, tenant_db_url: str):
+    def __init__(
+        self, proc: subprocess.Popen, log_path: str, tenant_db_url: str, hostname: str
+    ):
         self.proc = proc
         self.log_path = log_path
         self.tenant_db_url = tenant_db_url
+        self.hostname = hostname
 
     def records(self) -> list[dict]:
         """Every record the stub has written so far, oldest first."""
@@ -299,7 +310,7 @@ class NeonStubWorker:
         """Neon calls recorded after *mark* (excludes the install record)."""
         return [r for r in self.records()[mark:] if r.get("event") == "call"]
 
-    def wait_until_installed(self, timeout: float = 60.0) -> None:
+    def wait_until_installed(self, timeout: float = _WORKER_START_TIMEOUT) -> None:
         """Block until the stub reports itself installed in the worker process.
 
         This is the assertion that makes the stubbed tests honest. If the
@@ -307,47 +318,69 @@ class NeonStubWorker:
         without the stub and every Neon call would go to the real API. Here
         that is a hard failure with the worker's exit status attached, never a
         silent live call.
+
+        The timeout is patience, not policy: it never lets an unproven worker
+        through, it only decides how long to wait for proof. Worker start-up
+        imports the whole app (langfuse, boto3, ragas, celery) and is slow on a
+        4 GB box under a full suite run — which is where a 60s budget was seen
+        to expire mid-suite while the same fixture passed standalone.
         """
-        deadline = time.time() + timeout
+        started = time.time()
+        deadline = started + timeout
         while time.time() < deadline:
             if any(r.get("event") == "installed" for r in self.records()):
                 return
             if self.proc.poll() is not None:
                 pytest.fail(
-                    f"Neon stub worker exited with code {self.proc.returncode} before "
-                    f"the stub reported installed. tests.integration._neon_stub did "
-                    f"not load; no test may run against the real Neon API."
+                    f"Neon stub worker exited with code {self.proc.returncode} after "
+                    f"{time.time() - started:.1f}s, before the stub reported installed. "
+                    f"tests.integration._neon_stub did not load; no test may run "
+                    f"against the real Neon API."
                 )
             time.sleep(0.25)
         pytest.fail(
             f"tests.integration._neon_stub never reported installed within {timeout}s "
-            f"(journal: {self.log_path}). Refusing to run — an un-stubbed worker "
-            f"would call the real Neon API."
+            f"(worker still alive, journal {self.log_path} holds {self.records()!r}). "
+            f"Refusing to run — an un-stubbed worker would call the real Neon API."
         )
 
-    def wait_until_accepting_tasks(self, timeout: float = 60.0) -> None:
-        """Block until the worker answers a Celery control ping.
+    def wait_until_accepting_tasks(self, timeout: float = _WORKER_START_TIMEOUT) -> None:
+        """Block until *this* worker answers a Celery control ping.
 
         Replaces the fixed sleep used by the plain `celery_worker` fixture:
         a dispatch sent before the consumer is up sits in the queue and burns
         the test's polling budget instead of failing for a real reason.
+
+        The reply must come from this fixture's own worker. `control.ping()`
+        broadcasts to every consumer on the broker, so a worker from another
+        module's fixture that has not finished shutting down would otherwise
+        answer for us and let the wait return before our own consumer exists —
+        the readiness check would then be measuring somebody else's process.
+        That is what `--hostname` is for.
         """
         from app.worker.celery_app import celery_app
 
-        deadline = time.time() + timeout
+        started = time.time()
+        deadline = started + timeout
+        seen: list = []
         while time.time() < deadline:
             try:
-                if celery_app.control.ping(timeout=1.0):
+                replies = celery_app.control.ping(timeout=1.0) or []
+                seen = [name for reply in replies for name in reply]
+                if any(name.startswith(f"{self.hostname}@") for name in seen):
                     return
             except Exception:
                 pass
             if self.proc.poll() is not None:
                 pytest.fail(
-                    f"Neon stub worker exited with code {self.proc.returncode} "
-                    f"before accepting tasks."
+                    f"Neon stub worker exited with code {self.proc.returncode} after "
+                    f"{time.time() - started:.1f}s, before accepting tasks."
                 )
             time.sleep(0.5)
-        pytest.fail(f"Neon stub worker did not accept tasks within {timeout}s")
+        pytest.fail(
+            f"Neon stub worker {self.hostname} did not accept tasks within {timeout}s "
+            f"(workers that did answer: {seen})"
+        )
 
 
 @pytest.fixture(scope="module")
@@ -369,19 +402,25 @@ def neon_stub_worker(tmp_path_factory):
     worker holds no credential capable of creating a real Neon project.
     """
     db_name = f"wchats_stub_tenant_{uuid.uuid4().hex[:12]}"
+    hostname = f"neonstub-{uuid.uuid4().hex[:8]}"
     log_path = str(tmp_path_factory.mktemp("neon_stub") / "neon_calls.jsonl")
     tenant_db_url = create_tenant_database(db_name)
     proc = None
     try:
         proc = _spawn_pipeline_worker(
-            extra_args=["--include=tests.integration._neon_stub"],
+            extra_args=[
+                "--include=tests.integration._neon_stub",
+                # Unique per fixture so the readiness ping can tell this
+                # worker's reply from a neighbouring module's.
+                f"--hostname={hostname}@%h",
+            ],
             extra_env={
                 "WCHATS_NEON_STUB_URI": tenant_db_url,
                 "WCHATS_NEON_STUB_LOG": log_path,
                 "NEON_API_KEY": "stub-key-never-valid-never-sent",
             },
         )
-        handle = NeonStubWorker(proc, log_path, tenant_db_url)
+        handle = NeonStubWorker(proc, log_path, tenant_db_url, hostname)
         handle.wait_until_installed()
         handle.wait_until_accepting_tasks()
         yield handle

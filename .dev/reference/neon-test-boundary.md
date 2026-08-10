@@ -174,14 +174,44 @@ run where the suite was doing its job.
 
 ## Results (observed, this machine)
 
-```
-Integration: 2 failed, 13 passed, 22 skipped, 24 deselected in 157.03s
-             (baseline 10F/9P/21S; four closed here, four in fe45291)
-Unit gate:   2120 passed, 12 skipped in 426.20s
-```
+Five full-suite runs, because the first number was not stable and reporting one run as the result
+would have been a guess:
 
-Remaining integration failures are `1.8` (`test_query_route`) and `1.9` (`test_sse`) — not this
-work.
+| run | result | notes |
+|---|---|---|
+| 1 | `2 failed, 13 passed, 22 skipped, 24 deselected in 157.03s` | before the e2e/unit additions |
+| 2 | `2 failed, 11 passed, 22 skipped, 2 errors in 246.74s` | **both `test_provision` tests errored at fixture setup** |
+| 3 | `3 failed, 12 passed, 22 skipped in 251.07s` | |
+| 4 | `3 failed, 12 passed, 22 skipped in 248.02s` | |
+| 5 | `3 failed, 12 passed, 22 skipped, 24 deselected in 364.04s` | after the hardening below |
+
+The four target tests pass in every run except 2. Final unit gate: `2127 passed, 12 skipped in
+417.19s` (2120 + the 7 new teardown tests).
+
+### Run 2: the fixture-setup error, and what was done about it
+
+Two errors, both tests of one module, at setup — the signature of a `pytest.fail` inside
+`neon_stub_worker`. Only two paths there can do that, and both are readiness waits that were
+budgeted at 60s. Worker start-up imports the whole app and is fast standalone but slow under a
+loaded full-suite run on 4 GB. Two changes, neither of which weakens the guarantee:
+
+- **Budget raised to 180s.** Patience, not policy: the fixture still refuses to yield without
+  proof the stub is installed in the worker's own pid. Failure messages now carry elapsed time,
+  worker return code and the journal contents, so the next occurrence names itself instead of
+  needing this paragraph.
+- **`--hostname=neonstub-<hex>@%h`, and the ping must match it.** `control.ping()` broadcasts to
+  every consumer on the broker, so a neighbouring module's worker still shutting down could answer
+  on our behalf and let the readiness wait return before our own consumer existed. The wait was
+  measuring somebody else's process.
+
+### The third failure is not this work, and was checked rather than assumed
+
+`test_sse.py::test_sse_closes_on_completed_job` failed in runs 3–5 and passed in run 1. Run alone:
+`1 failed, 2 passed` — only the known `1.9` failure, this one green. It is a timing flake under
+full-suite load, and `neon_stub_worker` is never instantiated in that module. Worth a row of its
+own; it is not caused by this change and it is not fixed by it.
+
+The other two are `1.8` (`test_query_route`) and `1.9` (`test_sse_receives_live_events_after_replay`).
 
 ## Neon account
 
