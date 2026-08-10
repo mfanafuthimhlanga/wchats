@@ -181,3 +181,54 @@ pg_ctl register -N postgresql-17-local -D "C:/Users/Bantu/pgdata" -S auto
 ```
 
 Disk: ~1.6 GB total (binaries, cluster, SDK, pgvector source). Both installer zips deleted.
+
+---
+
+# ADDENDUM 2 — the suite terminates, and what the last ten are
+
+| run | result |
+|---|---|
+| first contact | 13F / 2P / 21S / **4E** |
+| after `api_key` + `celery` | 12F / 3P / 4E |
+| after casts + port | 16F / 3P / 0E |
+| after pgvector | 14F / 5P / 0E |
+| **after prefix + revisions + stream bounds** | **10F / 9P / 21S / 0E, 3m43s** |
+
+Passes went 2 → 9, errors 4 → 0, and — the part that matters most — **the suite finishes.**
+
+## The hang, which my own fix exposed
+
+Correcting the `/api/v1` prefix made the SSE tests connect for the first time, and
+`test_sse_receives_live_events_after_replay` then hung indefinitely. Two runs sat on it, 10 minutes
+and 40 minutes, both stopping at exactly test 34 of 40.
+
+`AsyncClient(timeout=10.0)` is a **per-request** timeout. It does not bound `aiter_lines()` on a
+stream the server holds open by design; the loop exits only on its own break condition, so a stream
+delivering fewer events than expected waits forever. All three loops in the module are now inside
+`asyncio.timeout(SSE_STREAM_TIMEOUT_S = 30)`.
+
+**This is worth more than the one test.** A hanging test burns a whole CI job budget and reports
+nothing — and `0.3` records CI dying at a hard 15-minute wall clock with every job cancelled. These
+tests have never run on a runner. Switched on before this fix, they would have produced exactly that
+signature, and the cause would have been read as the billing cap.
+
+## The last ten, grouped
+
+Filed as `BACKLOG 1.6`–`1.9` so they are tracked rather than living in this trace.
+
+| class | count | state |
+|---|---|---|
+| `HybridChunker` lazy import + docling absent | 4 | environmental; should **skip**, not fail (`4.1`, `4.4`) |
+| Neon API with a placeholder key | 4 | needs an owner decision: real scoped key, or mock at the boundary |
+| Celery task args empty on dispatch | 1 | undiagnosed |
+| SSE live events never reach the stream | 1 | narrowed, cause unknown |
+
+## Nine defects, and what they have in common
+
+5 × `tenants(api_key)` · 1 × `celery` not on PATH · 5 × `:name::jsonb` · 8 × missing `/api/v1` ·
+2 × hardcoded alembic revision · 3 × unbounded stream loop.
+
+Three of these were recorded somewhere as *already fixed*. Every one was invisible for the same
+reason: **the suite had never executed.** The repo already writes this down for metrics — a metric
+over zero observations is `unknown`, never `pass`. It holds identically for a test suite, and this
+session is the evidence.
