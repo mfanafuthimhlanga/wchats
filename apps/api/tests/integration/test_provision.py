@@ -1,67 +1,51 @@
 """
-Integration tests: provision_neon task with mocked Neon API.
+Integration tests: provision_neon against a stubbed Neon API boundary.
 
-Uses respx 0.23.1 to intercept all Neon API HTTP calls.
-Uses a REAL local Postgres DB for agent row persistence.
-Uses a real Celery worker subprocess (NOT CELERY_TASK_ALWAYS_EAGER).
+The Neon transport is stubbed **inside the Celery worker subprocess** by
+``tests/integration/_neon_stub.py`` (loaded via ``celery worker --include``);
+everything else is real — real local Postgres for the control DB, a real
+throwaway tenant database, a real Celery worker, real ``requests`` machinery up
+to the socket.
+
+Why not respx (what these tests used to do)
+-------------------------------------------
+The previous version wrapped each dispatch in ``respx.mock(...)``. That mock
+never intercepted anything: respx patches ``httpx`` while ``app/services/neon.py``
+uses ``requests``, and the mock lived in the pytest process while the task runs
+in the worker subprocess. Both tests were making real, unauthenticated calls to
+console.neon.tech and failing on the resulting 401. Exporting a working key
+would not have fixed them — it would have made every run create real, billable
+Neon projects with no teardown anywhere in the file.
+
+Why stub rather than provision for real
+---------------------------------------
+Neither of these tests asserts a property of Neon. They assert properties of
+*our* code: that the idempotency guard creates exactly one project, and that the
+connection string is encrypted at rest as BYTEA. Running them against the live
+API would create one project per test — and ``test_provision_neon_idempotency``
+dispatches twice on purpose, so the exact failure it exists to catch (a broken
+guard) is the run that leaks a second real project. Real-Neon coverage lives in
+``tests/e2e/test_neon_e2e.py`` behind ``-m e2e``, which is deselected here.
 
 Tests:
     test_provision_neon_idempotency
-        — Neon API called exactly once even if provision_neon is dispatched twice
-          for the same agent_id. Verifies respx call count.
+        — Neon POST /projects is called exactly once even when provision_neon is
+          dispatched twice for the same agent. Asserted against the stub's call
+          journal, which is the check the old docstring promised and the old
+          code never performed.
 
     test_provision_neon_stores_encrypted_connection_string
-        — After dispatch, agent.neon_connection_string is bytes (not str, not None)
-          and decrypts to a valid connection string.
+        — agent.neon_connection_string is BYTEA that decrypts to the URI the
+          Neon boundary returned.
 """
 
 import time
 import uuid
 
 import pytest
-import respx
-from httpx import Response
 from sqlalchemy import text
 
 pytestmark = pytest.mark.integration
-
-_EXPECTED_LOCAL_DB = "postgresql://wchats:wchats@localhost:5432/wchats_control"
-
-
-def _register_neon_routes(project_id: str, local_db_url: str, respx_mock):
-    """Register respx routes for Neon API calls during provision_neon."""
-    respx_mock.post("https://console.neon.tech/api/v2/projects").mock(
-        return_value=Response(
-            200,
-            json={
-                "project": {
-                    "id": project_id,
-                    "name": "vrd-test",
-                    "region_id": "aws-us-east-1",
-                }
-            },
-        )
-    )
-    respx_mock.get(
-        url=f"https://console.neon.tech/api/v2/projects/{project_id}/operations"
-    ).mock(
-        return_value=Response(
-            200,
-            json={"operations": [{"id": "op-1", "status": "finished"}]},
-        )
-    )
-    # pooled=true
-    respx_mock.get(
-        url__regex=rf"https://console\.neon\.tech/api/v2/projects/{project_id}/connection_uri.*pooled=true.*"
-    ).mock(
-        return_value=Response(200, json={"uri": local_db_url})
-    )
-    # pooled=false
-    respx_mock.get(
-        url__regex=rf"https://console\.neon\.tech/api/v2/projects/{project_id}/connection_uri.*pooled=false.*"
-    ).mock(
-        return_value=Response(200, json={"uri": local_db_url})
-    )
 
 
 def _poll_for_neon_project_id(db_session, agent_id: uuid.UUID, timeout: int = 30):
@@ -102,131 +86,81 @@ def _poll_for_connection_string(db_session, agent_id: uuid.UUID, timeout: int = 
     pytest.fail(f"agent.neon_connection_string was not set within {timeout}s")
 
 
+def _project_creates(calls: list[dict]) -> list[dict]:
+    """Only the project-creation calls out of a stub call journal slice."""
+    return [c for c in calls if c["method"] == "POST" and c["path"] == "/api/v2/projects"]
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-def test_provision_neon_idempotency(celery_worker, test_agent_and_job, db_session):
-    """Verify Neon API is called exactly once even if provision_neon is dispatched twice.
+def test_provision_neon_idempotency(neon_stub_worker, test_agent_and_job, db_session):
+    """Verify Neon is asked to create a project exactly once across two dispatches.
 
-    Idempotency guard in provision_neon: if agent.neon_project_id is already set,
-    the task returns early without calling the Neon API again (RESEARCH.md Pitfall 2).
+    Idempotency contract in provision_neon: if agent.neon_project_id and
+    agent.neon_connection_string are already set, the task returns early without
+    touching the Neon API (RESEARCH.md Pitfall 2).
 
     Asserts:
-    - POST /projects called exactly once (respx call count == 1)
-    - agent.neon_project_id is set to the same value after both dispatches
+    - exactly one POST /api/v2/projects reaches the Neon boundary
+    - agent.neon_project_id equals the id that single create returned
     """
     from app.worker.tasks.pipeline.provision import provision_neon
 
     tenant_id, agent_id, job_id = test_agent_and_job
-    fake_project_id = f"test-idem-{uuid.uuid4().hex[:8]}"
+    mark = neon_stub_worker.mark()
 
-    import os
-    local_db_url = os.environ.get("INTEGRATION_DB_URL", _EXPECTED_LOCAL_DB)
+    # First dispatch
+    provision_neon.apply_async(args=(str(tenant_id), str(agent_id)), queue="pipeline")
+    _poll_for_neon_project_id(db_session, agent_id, timeout=30)
+    # The guard only short-circuits once BOTH project_id and connection string
+    # are stored, so wait for the second write before re-dispatching.
+    _poll_for_connection_string(db_session, agent_id, timeout=30)
 
-    with respx.mock(assert_all_called=False) as rmock:
-        _register_neon_routes(fake_project_id, local_db_url, rmock)
+    # Second dispatch — must hit the idempotency guard and call nothing
+    provision_neon.apply_async(args=(str(tenant_id), str(agent_id)), queue="pipeline")
+    time.sleep(5)
 
-        # First dispatch
-        provision_neon.apply_async(
-            args=(str(tenant_id), str(agent_id)),
-            queue="pipeline",
-        )
+    creates = _project_creates(neon_stub_worker.calls_since(mark))
+    assert len(creates) == 1, (
+        f"Neon project creation must happen exactly once across both dispatches; "
+        f"the stub recorded {len(creates)}: {[c['project_id'] for c in creates]}"
+    )
 
-        # Wait for neon_project_id to be written
-        _poll_for_neon_project_id(db_session, agent_id, timeout=30)
-
-        # Second dispatch — should hit idempotency guard (neon_project_id already set)
-        provision_neon.apply_async(
-            args=(str(tenant_id), str(agent_id)),
-            queue="pipeline",
-        )
-        # Brief wait for second task to be processed
-        time.sleep(5)
-
-    # The POST /projects route should have been called exactly once across both dispatches
-    # After second call, total calls should not have increased by another POST /projects
-    # (The idempotency guard returns before calling the Neon API on the second attempt)
-    # Note: exact call count depends on which respx routes matched; check neon_project_id consistency
     row = db_session.execute(
         text("SELECT neon_project_id FROM agents WHERE id = :id"),
         {"id": str(agent_id)},
     ).fetchone()
     assert row is not None
-    assert row[0] is not None, "neon_project_id should be set"
-    # The project_id should be the fake one we provided (only one project was created)
-    assert row[0] == fake_project_id, (
-        f"Expected project_id={fake_project_id}, got {row[0]}"
+    assert row[0] == creates[0]["project_id"], (
+        f"Stored project_id {row[0]} is not the one the single create returned "
+        f"({creates[0]['project_id']})"
     )
 
 
 @pytest.mark.integration
 def test_provision_neon_stores_encrypted_connection_string(
-    celery_worker, test_agent_and_job, db_session
+    neon_stub_worker, test_agent_and_job, db_session
 ):
-    """Verify provision_neon stores an encrypted connection string as bytes.
+    """Verify provision_neon stores the connection string encrypted, as bytes.
 
     After provision_neon completes:
-    - agent.neon_connection_string is bytes (not str, not None)
-    - fernet_decrypt(agent.neon_connection_string) returns a valid connection string
-
-    Uses respx.mock to simulate Neon API returning a local Postgres URL as the
-    connection URI (so the bytes stored are an encrypted local Postgres URL).
+    - agent.neon_connection_string is BYTEA (not str, not None)
+    - fernet_decrypt(...) returns exactly the URI the Neon boundary handed back,
+      proving the value was encrypted in transit to the DB and not mangled.
     """
     from app.core.security import fernet_decrypt
     from app.worker.tasks.pipeline.provision import provision_neon
 
     tenant_id, agent_id, job_id = test_agent_and_job
-    fake_project_id = f"test-enc-{uuid.uuid4().hex[:8]}"
+    mark = neon_stub_worker.mark()
 
-    import os
-    local_db_url = os.environ.get("INTEGRATION_DB_URL", _EXPECTED_LOCAL_DB)
-
-    with respx.mock(assert_all_called=False):
-        respx.post("https://console.neon.tech/api/v2/projects").mock(
-            return_value=Response(
-                200,
-                json={
-                    "project": {
-                        "id": fake_project_id,
-                        "name": "vrd-test-enc",
-                        "region_id": "aws-us-east-1",
-                    }
-                },
-            )
-        )
-        respx.get(
-            url=f"https://console.neon.tech/api/v2/projects/{fake_project_id}/operations"
-        ).mock(
-            return_value=Response(
-                200,
-                json={"operations": [{"id": "op-1", "status": "finished"}]},
-            )
-        )
-        respx.get(
-            url__regex=(
-                rf"https://console\.neon\.tech/api/v2/projects/{fake_project_id}"
-                r"/connection_uri.*pooled=true.*"
-            )
-        ).mock(return_value=Response(200, json={"uri": local_db_url}))
-        respx.get(
-            url__regex=(
-                rf"https://console\.neon\.tech/api/v2/projects/{fake_project_id}"
-                r"/connection_uri.*pooled=false.*"
-            )
-        ).mock(return_value=Response(200, json={"uri": local_db_url}))
-
-        provision_neon.apply_async(
-            args=(str(tenant_id), str(agent_id)),
-            queue="pipeline",
-        )
-
-    # Poll DB for agent.neon_connection_string to be set (30s timeout)
+    provision_neon.apply_async(args=(str(tenant_id), str(agent_id)), queue="pipeline")
     _poll_for_connection_string(db_session, agent_id, timeout=30)
 
-    # Fetch raw bytes from DB
     row = db_session.execute(
         text("SELECT neon_connection_string FROM agents WHERE id = :id"),
         {"id": str(agent_id)},
@@ -238,16 +172,26 @@ def test_provision_neon_stores_encrypted_connection_string(
     assert isinstance(stored, (bytes, memoryview)), (
         f"neon_connection_string should be bytes, got {type(stored)}"
     )
-
-    # Convert memoryview to bytes if needed
     if isinstance(stored, memoryview):
         stored = bytes(stored)
 
-    # Must decrypt to a valid connection string
+    # Ciphertext, not the plaintext URI sitting in a BYTEA column.
+    assert neon_stub_worker.tenant_db_url.encode() not in stored, (
+        "connection string was stored verbatim — it is not encrypted at rest"
+    )
+
     decrypted = fernet_decrypt(stored)
-    assert isinstance(decrypted, str), "Decrypted value should be a str"
-    assert len(decrypted) > 0, "Decrypted connection string should not be empty"
-    # The decrypted value should be the local DB URL we returned from the mock
-    assert "postgresql" in decrypted.lower(), (
-        f"Decrypted value doesn't look like a connection string: {decrypted[:50]}..."
+    assert decrypted == neon_stub_worker.tenant_db_url, (
+        "decrypted connection string does not match the URI Neon returned"
+    )
+
+    # Both URIs must be fetched: pooled for app traffic, direct for Alembic
+    # (RESEARCH.md Pitfall 1). Asserted at the boundary, not inferred.
+    pooled_flags = {
+        c.get("pooled")
+        for c in neon_stub_worker.calls_since(mark)
+        if c["path"].endswith("/connection_uri")
+    }
+    assert pooled_flags == {"true", "false"}, (
+        f"expected both pooled and direct connection_uri fetches, got {pooled_flags}"
     )

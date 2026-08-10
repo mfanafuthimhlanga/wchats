@@ -17,6 +17,7 @@ Do NOT run in CI without the NEON_API_KEY_TEST secret configured.
 
 import os
 import subprocess
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -25,6 +26,8 @@ from typing import Generator
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
+
+from tests.e2e._neon_teardown import delete_project, resolve_project_id
 
 # ---------------------------------------------------------------------------
 # E2E-specific constants
@@ -163,6 +166,14 @@ def test_create_agent_real_neon() -> None:
 
         worker_proc = subprocess.Popen(
             [
+                # `sys.executable -m celery`, not a bare "celery" — the console
+                # script only exists on PATH inside an activated venv, so this
+                # raised FileNotFoundError on every unactivated run and the test
+                # never reached Neon at all. Fixed in the integration conftest
+                # in an earlier pass; this sibling was one of the five the trace
+                # records as never having been touched.
+                sys.executable,
+                "-m",
                 "celery",
                 "-A",
                 "app.worker.celery_app",
@@ -303,18 +314,31 @@ def test_create_agent_real_neon() -> None:
     finally:
         # ------------------------------------------------------------------
         # 9. Teardown: always delete the real Neon project (T-08-02 mitigation)
+        #
+        # The project id is re-read from the control DB rather than taken from
+        # the local variable. On every failing run — a provisioning timeout, a
+        # bad assertion, a migration error — control never reached the step
+        # that assigns it, so the old code deleted nothing and leaked a real
+        # project exactly when the test was most likely to be red.
+        # provision_neon commits neon_project_id the moment the Neon API
+        # returns, so the DB knows even when the test does not.
         # ------------------------------------------------------------------
+        try:
+            with e2e_db_session() as db:
+                neon_project_id = resolve_project_id(db, agent_id, neon_project_id)
+        except Exception as lookup_exc:
+            print(f"WARNING: could not resolve Neon project id for teardown: {lookup_exc}")
+
         if neon_project_id:
             try:
-                from neon_api import NeonAPI
-
-                client = NeonAPI(api_key=os.environ["NEON_API_KEY"])
-                client.project_delete(neon_project_id)
+                delete_project(neon_project_id, os.environ["NEON_API_KEY"])
             except Exception as exc:
-                # Log but do not fail — the nightly workflow has a second
-                # teardown step via the workflow's "if: always()" step.
+                # A leak is money and a consumed quota slot. Say so loudly and
+                # name the id so it can be removed by hand; never let it pass
+                # as a quiet warning line.
                 print(
-                    f"WARNING: Could not delete Neon project {neon_project_id}: {exc}"
+                    "!!! NEON PROJECT LEAKED — delete it manually: "
+                    f"project_id={neon_project_id} ({exc})"
                 )
 
         # Clean up control DB rows

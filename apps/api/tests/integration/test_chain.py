@@ -2,15 +2,30 @@
 Integration tests: provision_neon → apply_migrations end-to-end flow.
 
 These tests use:
-- A REAL local Postgres DB (not mocked).
-- respx 0.23.1 to mock all Neon API HTTP calls.
-- A real Celery worker subprocess started by the celery_worker fixture.
+- A REAL local Postgres control DB and a REAL throwaway tenant database.
+- The Neon API stubbed inside the worker process (tests/integration/_neon_stub.py),
+  loaded via `celery worker --include` by the `neon_stub_worker` fixture.
+- A real Celery worker subprocess.
 - .apply_async() dispatch (NEVER CELERY_TASK_ALWAYS_EAGER).
-- DB polling with a 30s timeout to detect completion.
+- DB polling with a timeout to detect completion.
 
 Note: apply_migrations is dispatched by provision_neon directly inside the task
 body (not via Celery chain). This avoids the Windows billiard issue #299 where
 the chain callback mechanism triggers select.select() on a stale broker connection.
+
+What is real here and what is not
+---------------------------------
+Only Neon's HTTP transport is stubbed. The connection URI it returns points at a
+real, empty Postgres database created for the module, so apply_migrations runs
+the *real* tenant Alembic chain to head against real Postgres with pgvector, and
+"ready" means the schema genuinely landed.
+
+The previous version handed back `INTEGRATION_DB_URL` — the control DB — as the
+tenant URI. That could never have worked: both chains use Alembic's default
+`alembic_version` table, and the control DB already holds the control head
+there. It was never noticed because provisioning died at a Neon 401 (the respx
+mock patched httpx, while the Neon client uses requests, in another process
+entirely) long before migrations ran.
 
 Acceptance criteria:
 - test_full_chain_completes: agent.status == "ready", job.status == "complete"
@@ -21,78 +36,9 @@ import time
 import uuid
 
 import pytest
-import respx
-from httpx import Response
-from sqlalchemy import text
+from sqlalchemy import create_engine, pool, text
 
 pytestmark = pytest.mark.integration
-
-
-# ---------------------------------------------------------------------------
-# Neon API mock helpers
-# ---------------------------------------------------------------------------
-
-
-def _neon_mock_routes(project_id: str, local_db_url: str):
-    """Register respx routes that simulate all Neon API calls in provision_neon.
-
-    The mock Neon project returns the local Postgres URL as both pooled and
-    direct URIs so that apply_migrations can actually run Alembic against the
-    local test DB (which already has the control schema from startup migrations).
-
-    Args:
-        project_id: Fake Neon project ID to return.
-        local_db_url: Local Postgres URL to return as the "connection URI".
-                      apply_migrations will run Alembic against this DB.
-    """
-    # POST /projects — create project
-    respx.post("https://console.neon.tech/api/v2/projects").mock(
-        return_value=Response(
-            200,
-            json={
-                "project": {
-                    "id": project_id,
-                    "name": "vrd-test",
-                    "region_id": "aws-us-east-1",
-                }
-            },
-        )
-    )
-
-    # GET /projects/{id}/operations — all finished
-    respx.get(
-        url=f"https://console.neon.tech/api/v2/projects/{project_id}/operations"
-    ).mock(
-        return_value=Response(
-            200,
-            json={
-                "operations": [
-                    {"id": "op-1", "status": "finished"},
-                    {"id": "op-2", "status": "finished"},
-                ]
-            },
-        )
-    )
-
-    # GET /projects/{id}/connection_uri?pooled=true — pooled endpoint
-    respx.get(
-        url__regex=rf"https://console\.neon\.tech/api/v2/projects/{project_id}/connection_uri.*pooled=true.*"
-    ).mock(
-        return_value=Response(
-            200,
-            json={"uri": local_db_url},
-        )
-    )
-
-    # GET /projects/{id}/connection_uri?pooled=false — direct endpoint
-    respx.get(
-        url__regex=rf"https://console\.neon\.tech/api/v2/projects/{project_id}/connection_uri.*pooled=false.*"
-    ).mock(
-        return_value=Response(
-            200,
-            json={"uri": local_db_url},
-        )
-    )
 
 
 def _poll_for_agent_status(db_session, agent_id: uuid.UUID, expected_status: str, timeout: int = 60):
@@ -136,13 +82,21 @@ def _poll_for_agent_status(db_session, agent_id: uuid.UUID, expected_status: str
     )
 
 
+def _job_error(db_session, job_id: uuid.UUID) -> str | None:
+    """The job's recorded error, so a red run says why rather than just 'failed'."""
+    row = db_session.execute(
+        text("SELECT error FROM jobs WHERE id = :id"), {"id": str(job_id)}
+    ).fetchone()
+    return row[0] if row else None
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-def test_full_chain_completes(celery_worker, test_agent_and_job, db_session):
+def test_full_chain_completes(neon_stub_worker, test_agent_and_job, db_session):
     """Full chain integration test: dispatches via .apply_async(), polls DB for
     agent.status='ready'.
 
@@ -150,33 +104,23 @@ def test_full_chain_completes(celery_worker, test_agent_and_job, db_session):
     - agent.status == "ready" after chain
     - job.status == "complete" after chain
     - 6 events in job_events table for this job_id
+    - the tenant schema actually exists in the tenant DB (a "ready" agent whose
+      migrations did nothing is the failure this assertion closes off)
     """
     from app.worker.tasks.pipeline.provision import provision_neon
 
     tenant_id, agent_id, job_id = test_agent_and_job
 
-    # Local Postgres URL used as the fake Neon connection URI
-    # The Alembic migration will run against a test-specific schema
-    import os
-    local_db_url = os.environ.get(
-        "INTEGRATION_DB_URL",
-        "postgresql://wchats:wchats@localhost:5432/wchats_control",
+    provision_neon.apply_async(
+        args=[str(tenant_id), str(agent_id)],
+        queue="pipeline",
     )
 
-    fake_project_id = f"test-project-{uuid.uuid4().hex[:8]}"
-
-    with respx.mock(assert_all_called=False):
-        _neon_mock_routes(fake_project_id, local_db_url)
-
-        # provision_neon dispatches apply_migrations internally — just dispatch provision_neon.
-        provision_neon.apply_async(
-            args=[str(tenant_id), str(agent_id)],
-            queue="pipeline",
-        )
-
-    # Poll DB for agent.status == "ready" (30s timeout)
-    final_status = _poll_for_agent_status(db_session, agent_id, "ready", timeout=60)
-    assert final_status == "ready", f"agent.status should be 'ready', got '{final_status}'"
+    final_status = _poll_for_agent_status(db_session, agent_id, "ready", timeout=120)
+    assert final_status == "ready", (
+        f"agent.status should be 'ready', got '{final_status}' "
+        f"(job.error={_job_error(db_session, job_id)!r})"
+    )
 
     # Verify job.status == "complete"
     job_row = db_session.execute(
@@ -197,9 +141,41 @@ def test_full_chain_completes(celery_worker, test_agent_and_job, db_session):
         f"Expected 6 job_events, got {len(events_result)}: {[r[0] for r in events_result]}"
     )
 
+    # schema_version is the head revision apply_migrations recorded; the tenant
+    # DB must actually carry it.
+    schema_version = db_session.execute(
+        text("SELECT schema_version FROM agents WHERE id = :id"),
+        {"id": str(agent_id)},
+    ).scalar()
+    assert schema_version, "schema_version must be recorded once migrations complete"
+
+    engine = create_engine(neon_stub_worker.tenant_db_url, poolclass=pool.NullPool)
+    try:
+        with engine.connect() as conn:
+            applied = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+            tables = {
+                r[0]
+                for r in conn.execute(
+                    text(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_schema = 'public'"
+                    )
+                ).fetchall()
+            }
+    finally:
+        engine.dispose()
+
+    assert applied == schema_version, (
+        f"tenant DB is at revision {applied!r} but the agent row records {schema_version!r}"
+    )
+    for expected_table in ("documents", "chunks", "embeddings", "conversations", "messages"):
+        assert expected_table in tables, (
+            f"tenant table '{expected_table}' missing after a 'ready' agent"
+        )
+
 
 @pytest.mark.integration
-def test_event_sequence_in_order(celery_worker, test_agent_and_job, db_session):
+def test_event_sequence_in_order(neon_stub_worker, test_agent_and_job, db_session):
     """Verify all 6 SSE events are emitted in the exact required order.
 
     Expected order (CONTEXT.md §Event Emission Pattern):
@@ -210,24 +186,12 @@ def test_event_sequence_in_order(celery_worker, test_agent_and_job, db_session):
 
     tenant_id, agent_id, job_id = test_agent_and_job
 
-    import os
-    local_db_url = os.environ.get(
-        "INTEGRATION_DB_URL",
-        "postgresql://wchats:wchats@localhost:5432/wchats_control",
+    provision_neon.apply_async(
+        args=[str(tenant_id), str(agent_id)],
+        queue="pipeline",
     )
-    fake_project_id = f"test-project-{uuid.uuid4().hex[:8]}"
 
-    with respx.mock(assert_all_called=False):
-        _neon_mock_routes(fake_project_id, local_db_url)
-
-        # provision_neon dispatches apply_migrations internally — just dispatch provision_neon.
-        provision_neon.apply_async(
-            args=[str(tenant_id), str(agent_id)],
-            queue="pipeline",
-        )
-
-    # Poll for completion
-    _poll_for_agent_status(db_session, agent_id, "ready", timeout=60)
+    _poll_for_agent_status(db_session, agent_id, "ready", timeout=120)
 
     # Verify event sequence in exact order
     events_result = db_session.execute(
@@ -249,5 +213,6 @@ def test_event_sequence_in_order(celery_worker, test_agent_and_job, db_session):
     assert event_types == expected, (
         f"Event sequence mismatch.\n"
         f"Expected: {expected}\n"
-        f"Got:      {event_types}"
+        f"Got:      {event_types}\n"
+        f"job.error: {_job_error(db_session, job_id)!r}"
     )
