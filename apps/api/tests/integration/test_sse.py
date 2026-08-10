@@ -44,6 +44,12 @@ pytestmark = pytest.mark.integration
 #: genuinely never delivered — never that the bound was too tight.
 SSE_STREAM_TIMEOUT_S = 30
 
+#: An event type published to Redis but deliberately NOT written to job_events.
+#: sse.py treats a pub/sub message as a wake-up only and reads the event data from
+#: the DB, so this must never reach a client.  Named so a grep for it lands on the
+#: assertion that pins that contract.
+DECOY_UNPERSISTED_EVENT = "decoy.published.but.never.persisted"
+
 # ---------------------------------------------------------------------------
 # DB URL helpers — mirrors integration conftest.py
 # ---------------------------------------------------------------------------
@@ -119,8 +125,23 @@ def _delete_test_rows(tenant_id: uuid.UUID) -> None:
 
 
 def _setup_test_job(tenant_id: uuid.UUID, job_id: uuid.UUID) -> None:
-    """Insert minimal tenant, agent, and job rows for the test."""
-    from app.core.security import generate_api_key, hash_api_key
+    """Insert minimal tenant, agent, and job rows for the test.
+
+    ``api_key_prefix`` is populated because every production writer of a tenant row
+    populates it — ``app/api/v1/tenants.py:40`` and both branches of
+    ``app/api/v1/webhooks.py`` (:102, :191) call ``hmac_key_prefix(raw_key)``.  A
+    tenant row without it is not a realistic row, and the difference is not
+    cosmetic: ``get_current_tenant`` (app/api/deps.py:170-190) looks the prefix up
+    on an index and runs ONE argon2 verify, but a NULL prefix drops the request
+    into the legacy fallback that scans every prefix-less tenant and runs argon2
+    against each.  argon2 is deliberately expensive and entirely synchronous, so
+    that scan blocks the event loop: measured at 7.6s against the 13 tenant rows
+    in the local control DB on 2026-08-10, all of it before the SSE generator ever
+    reached its Redis subscribe.  In a module whose whole subject is *when* events
+    arrive relative to *when* they were emitted, several seconds of unannounced
+    loop-blocking inside the request under test is a defect in the fixture.
+    """
+    from app.core.security import generate_api_key, hash_api_key, hmac_key_prefix
 
     raw_key = generate_api_key()
     api_key_hash = hash_api_key(raw_key)
@@ -131,13 +152,14 @@ def _setup_test_job(tenant_id: uuid.UUID, job_id: uuid.UUID) -> None:
         with engine.begin() as conn:
             conn.execute(
                 text(
-                    "INSERT INTO tenants (id, name, api_key_hash, created_at) "
-                    "VALUES (:id, :name, :api_key_hash, now())"
+                    "INSERT INTO tenants (id, name, api_key_hash, api_key_prefix, created_at) "
+                    "VALUES (:id, :name, :api_key_hash, :api_key_prefix, now())"
                 ),
                 {
                     "id": str(tenant_id),
                     "name": f"sse-test-tenant-{tenant_id}",
                     "api_key_hash": api_key_hash,
+                    "api_key_prefix": hmac_key_prefix(raw_key),
                 },
             )
             conn.execute(
@@ -210,6 +232,143 @@ def _make_app_with_real_deps():
     app.dependency_overrides[get_async_redis] = override_get_async_redis
 
     return app
+
+
+# ---------------------------------------------------------------------------
+# Helper: emit a live event the way production emits one
+# ---------------------------------------------------------------------------
+
+
+async def _emit_live(
+    redis_client,
+    tenant_id: uuid.UUID,
+    job_id: uuid.UUID,
+    event_type: str,
+    payload: dict | None = None,
+) -> None:
+    """Emit a live job event exactly as ``app/services/events.py:emit`` does.
+
+    emit() does TWO things per event (events.py:80-92): it publishes a JSON message
+    to ``job_events:{job_id}`` AND it inserts a durable ``job_events`` row.  Both are
+    load-bearing, because ``app/services/sse.py`` deliberately reads the event DATA
+    from the DB only and treats the pub/sub message purely as a wake-up signal to
+    re-query early — its module docstring (sse.py:16-24) states this and gives the
+    reason: Redis pub/sub is fire-and-forget, so any message published while the
+    listener is between ``listen()`` calls is gone forever, and the DB is the only
+    durable record.
+
+    A test that publishes WITHOUT inserting is therefore not emitting an event at
+    all; it is ringing a doorbell at an empty house.  That is the shape this test
+    had until 2026-08-10, and it is why the stream never terminated.
+    """
+    body = {"event_type": event_type, "payload": payload or {}}
+    _insert_events(tenant_id, job_id, [{"event_type": event_type, "payload": payload or {}}])
+    await redis_client.publish(f"job_events:{job_id}", json.dumps(body))
+
+
+# ---------------------------------------------------------------------------
+# Helper: an SSE reader that actually streams
+# ---------------------------------------------------------------------------
+
+
+class _SSEStream:
+    """Drive the ASGI app directly and expose each SSE chunk as the server writes it.
+
+    WHY NOT httpx.  ``httpx.ASGITransport`` (0.28.1,
+    ``httpx/_transports/asgi.py:128-187``) accumulates every ``http.response.body``
+    message into ``body_parts`` and only constructs the ``Response`` *after*
+    ``await self.app(scope, receive, send)`` has returned.  For an ordinary JSON
+    route that is invisible.  For an SSE route the server holds open on purpose it
+    means the client sees NOTHING until the generator finishes: measured on
+    2026-08-10, every line of a three-event stream arrived at the same instant,
+    0.27s after the terminal event was emitted, including the replay event the
+    server had written 5 seconds earlier.
+
+    That is not merely slow, it removes the only signal a test could synchronise
+    on.  With a buffered transport the publisher has no way to learn that the
+    stream has connected, subscribed and finished its replay, so its only option is
+    to guess with ``sleep()`` — and a guess is a race.  The original form of this
+    test guessed 0.5s while the request was still 7.6s deep in argon2 (see
+    ``_setup_test_job``), so it published into a channel that had no subscriber yet
+    and the message was discarded by Redis.
+
+    Calling the app directly costs one dict of ASGI scope and gains per-chunk
+    arrival times.  Nothing is stubbed: routing, auth, ``EventSourceResponse`` and
+    ``event_generator`` all run exactly as they do under uvicorn — ASGITransport
+    itself does no more than this, minus the buffering.
+    """
+
+    def __init__(self, app, path: str, headers: dict[str, str]):
+        self._app = app
+        self._path = path
+        self._headers = headers
+        self.status: int | None = None
+        self.lines: list[str] = []
+        self.events: list[str] = []
+        self._buf = ""
+        self._request_sent = False
+        self._disconnect = asyncio.Event()
+        self._progress = asyncio.Condition()
+
+    def _scope(self) -> dict:
+        return {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": self._path,
+            "raw_path": self._path.encode(),
+            "query_string": b"",
+            "root_path": "",
+            "headers": [
+                (k.lower().encode(), v.encode()) for k, v in self._headers.items()
+            ],
+            "client": ("127.0.0.1", 51234),
+            "server": ("testserver", 80),
+        }
+
+    async def _receive(self) -> dict:
+        # One request message, then block.  Blocking (rather than returning
+        # http.disconnect) matters: event_generator polls request.is_disconnected()
+        # on every loop iteration and must keep seeing False, and
+        # EventSourceResponse parks its own listener task on this same channel.
+        if not self._request_sent:
+            self._request_sent = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await self._disconnect.wait()
+        return {"type": "http.disconnect"}
+
+    async def _send(self, message: dict) -> None:
+        if message["type"] == "http.response.start":
+            self.status = message["status"]
+        elif message["type"] == "http.response.body":
+            self._buf += message.get("body", b"").decode()
+            while "\n" in self._buf:
+                raw, self._buf = self._buf.split("\n", 1)
+                line = raw.strip()
+                if not line:
+                    continue
+                self.lines.append(line)
+                if line.startswith("event:"):
+                    self.events.append(line.split(":", 1)[1].strip())
+            async with self._progress:
+                self._progress.notify_all()
+
+    async def run(self) -> None:
+        """Run the request to completion.  Returns when the server closes the stream."""
+        await self._app(self._scope(), self._receive, self._send)
+        async with self._progress:
+            self._progress.notify_all()
+
+    async def wait_for_events(self, n: int) -> None:
+        """Block until the server has WRITTEN at least *n* ``event:`` lines.
+
+        This is the synchronisation primitive that replaces sleeping.  It is a fact
+        about the server's actual progress, not a hope about its speed.
+        """
+        async with self._progress:
+            await self._progress.wait_for(lambda: len(self.events) >= n)
 
 
 # ---------------------------------------------------------------------------
@@ -302,19 +461,47 @@ async def test_sse_replays_prior_events():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_sse_receives_live_events_after_replay():
-    """SSE endpoint receives DB-replay events first, then live Redis events.
+async def test_sse_receives_live_events_after_replay(monkeypatch):
+    """Events emitted AFTER the client connects reach it live, via the pub/sub wake-up.
 
     Setup:
         - Pre-populate job_events with job.started (only)
-        - After 0.5s, publish a live event to Redis channel job_events:{job_id}
-        - After 1.5s more, publish job.complete to terminate the stream
+        - Connect, and wait for the server to WRITE that replay event — not for a
+          duration.  Only then emit anything else, so every later event is
+          unambiguously live: the Phase-1 replay SELECT has already run against a
+          snapshot that cannot contain a row committed after it.
+        - Emit a decoy that is published but never persisted.
+        - Emit neon.project.creating, then job.complete, each via _emit_live
+          (persist + publish, exactly as app/services/events.py:emit does).
 
     Asserts:
-        - job.started received (from DB replay)
-        - Live events received after the replay event
-        - DB replay event comes before Redis live events
+        - job.started arrives first, from the DB replay.
+        - neon.project.creating arrives after it, live.
+        - job.complete arrives and the server closes the stream by itself.
+        - The decoy NEVER arrives — pub/sub carries a wake-up, never event data.
+
+    WHAT MAKES THIS TEST NON-VACUOUS.  event_generator has two ways to notice a new
+    row: the pub/sub wake-up, and a fallback DB poll every POLL_INTERVAL_S.  If the
+    wake-up were dead the poll would still deliver every event here and the test
+    would pass while proving nothing about the mechanism the architecture is built
+    on.  So POLL_INTERVAL_S is raised far above this module's own stream bound: the
+    poll cannot fire inside the window the test is willing to wait, and the ONLY
+    remaining path to a terminating stream is the pub/sub wake-up.  Break the
+    wake-up and this test does not slow down, it fails.
     """
+    # 300s poll vs a 30s ceiling on the stream — the fallback is now unreachable
+    # inside the test's own window, so a pass isolates the pub/sub wake-up path.
+    # Read as a module global on every loop iteration (sse.py:110), so patching the
+    # attribute takes effect for the request this test is about to make.
+    import app.services.sse as sse_module
+
+    assert sse_module.POLL_INTERVAL_S < SSE_STREAM_TIMEOUT_S, (
+        "Precondition for this test's isolation argument: the real poll interval "
+        "must be below the stream bound, so that raising it is what removes the "
+        "fallback rather than the bound already having done so."
+    )
+    monkeypatch.setattr(sse_module, "POLL_INTERVAL_S", 10 * SSE_STREAM_TIMEOUT_S)
+
     tenant_id = uuid.uuid4()
     job_id = uuid.uuid4()
 
@@ -329,73 +516,74 @@ async def test_sse_receives_live_events_after_replay():
 
     app = _make_app_with_real_deps()
 
-    received_events = []
+    stream = _SSEStream(
+        app, f"/api/v1/jobs/{job_id}/events", {"x-api-key": raw_key}
+    )
 
-    async def publish_live_events():
-        """Background task: publish live events to Redis after a short delay."""
-        await asyncio.sleep(0.5)
+    async def emit_live_events():
+        """Emit live events, each gated on the stream's OBSERVED progress."""
         r = aioredis.Redis.from_url(_REDIS_URL, decode_responses=True)
         try:
-            # Publish a live "neon.project.creating" event
+            # Gate 1: the replay event is on the wire.  Everything after this point
+            # is provably post-replay, with no sleep and no assumption about speed.
+            await stream.wait_for_events(1)
+
+            # A wake-up with no durable row behind it.  Delivering this would mean
+            # the generator had started trusting pub/sub payloads as event data,
+            # which is exactly the misconception that broke this test before.
             await r.publish(
                 f"job_events:{job_id}",
                 json.dumps({
-                    "event_type": "neon.project.creating",
-                    "payload": {"job_id": str(job_id), "at": "2026-05-13T00:00:00Z"},
+                    "event_type": DECOY_UNPERSISTED_EVENT,
+                    "payload": {"job_id": str(job_id)},
                 }),
             )
-            await asyncio.sleep(0.5)
-            # Publish job.complete to close the stream
-            await r.publish(
-                f"job_events:{job_id}",
-                json.dumps({
-                    "event_type": "job.complete",
-                    "payload": {"job_id": str(job_id), "at": "2026-05-13T00:00:01Z"},
-                }),
+
+            await _emit_live(
+                r, tenant_id, job_id, "neon.project.creating", {"job_id": str(job_id)}
+            )
+
+            # Gate 2: the live event is on the wire.  Emitting the terminal event
+            # only now keeps the two deliveries separately observable.
+            await stream.wait_for_events(2)
+
+            await _emit_live(
+                r, tenant_id, job_id, "job.complete", {"job_id": str(job_id)}
             )
         finally:
             await r.aclose()
 
     try:
-        # Start the publisher task concurrently
-        publisher_task = asyncio.create_task(publish_live_events())
+        emitter_task = asyncio.create_task(emit_live_events())
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://testserver",
-            headers={"X-API-Key": raw_key},
-            timeout=10.0,
-        ) as client:
-            # BOUNDED. `timeout=10.0` on AsyncClient is a per-request timeout and
-            # does NOT bound aiter_lines() on an SSE stream the server holds open by
-            # design: the loop below exits only on its own break condition, so a
-            # stream that delivers too few events waits forever. Observed 2026-08-10
-            # once the /api/v1 prefix was corrected and these tests connected for the
-            # first time — the run sat on this line indefinitely rather than failing.
-            # A hanging test is strictly worse than a failing one: it burns the whole
-            # CI job budget and reports nothing.
-            async with asyncio.timeout(SSE_STREAM_TIMEOUT_S):
-              async with client.stream("GET", f"/api/v1/jobs/{job_id}/events") as response:
-                assert response.status_code == 200
-                async for line in response.aiter_lines():
-                    line = line.strip()
-                    if line.startswith("event:"):
-                        received_events.append(line.replace("event:", "").strip())
-                    if len(received_events) >= 3:
-                        break
+        # BOUNDED.  Before this bound existed, two runs sat on this stream for 10
+        # and 40 minutes: the live events were published but never persisted, so
+        # the generator's DB re-query found nothing, the terminal event never
+        # arrived and the loop emitted keepalives forever.  A hanging test is
+        # strictly worse than a failing one — it burns the whole job budget and
+        # reports nothing.  30s is ~40x the ~0.7s this test needs when healthy
+        # (measured 2026-08-10), so a breach means the stream genuinely never
+        # delivered, never that the bound was tight.
+        async with asyncio.timeout(SSE_STREAM_TIMEOUT_S):
+            await stream.run()
 
-        await publisher_task
+        await emitter_task
 
-        # job.started must be first (from DB replay)
-        assert len(received_events) >= 2, (
-            f"Expected at least 2 events, got {received_events}"
-        )
-        assert received_events[0] == "job.started", (
-            f"First event must be 'job.started' (DB replay), got {received_events[0]}"
-        )
-        # Subsequent events should include the live events
-        assert "neon.project.creating" in received_events[1:], (
-            f"Live event 'neon.project.creating' not found after DB replay. Got: {received_events}"
+        assert stream.status == 200, f"Expected HTTP 200, got {stream.status}"
+
+        # The server ended the stream on its own — run() returned rather than the
+        # timeout firing — which is the terminal-event contract.
+        assert stream.events == [
+            "job.started",
+            "neon.project.creating",
+            "job.complete",
+        ], f"Unexpected event sequence: {stream.events}"
+
+        # Pub/sub is a wake-up signal, never a data channel (sse.py:16-24).
+        assert DECOY_UNPERSISTED_EVENT not in stream.events, (
+            f"An event that was published but never persisted was delivered to the "
+            f"client. The DB is the only source of event data; a pub/sub payload "
+            f"must never reach the stream. Got: {stream.events}"
         )
 
     finally:
