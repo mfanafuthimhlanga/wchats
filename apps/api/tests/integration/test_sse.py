@@ -38,6 +38,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 pytestmark = pytest.mark.integration
 
+#: Wall-clock ceiling on any SSE stream consume loop in this module.
+#: Generous relative to what these tests need (the publisher sleeps total 1s, and
+#: the close test asserts closure "within 2 seconds"), so a breach means the stream
+#: genuinely never delivered — never that the bound was too tight.
+SSE_STREAM_TIMEOUT_S = 30
+
 # ---------------------------------------------------------------------------
 # DB URL helpers — mirrors integration conftest.py
 # ---------------------------------------------------------------------------
@@ -257,7 +263,16 @@ async def test_sse_replays_prior_events():
             headers={"X-API-Key": raw_key},
             timeout=10.0,
         ) as client:
-            async with client.stream("GET", f"/jobs/{job_id}/events") as response:
+            # BOUNDED. `timeout=10.0` on AsyncClient is a per-request timeout and
+            # does NOT bound aiter_lines() on an SSE stream the server holds open by
+            # design: the loop below exits only on its own break condition, so a
+            # stream that delivers too few events waits forever. Observed 2026-08-10
+            # once the /api/v1 prefix was corrected and these tests connected for the
+            # first time — the run sat on this line indefinitely rather than failing.
+            # A hanging test is strictly worse than a failing one: it burns the whole
+            # CI job budget and reports nothing.
+            async with asyncio.timeout(SSE_STREAM_TIMEOUT_S):
+              async with client.stream("GET", f"/api/v1/jobs/{job_id}/events") as response:
                 assert response.status_code == 200
                 async for line in response.aiter_lines():
                     line = line.strip()
@@ -351,7 +366,16 @@ async def test_sse_receives_live_events_after_replay():
             headers={"X-API-Key": raw_key},
             timeout=10.0,
         ) as client:
-            async with client.stream("GET", f"/jobs/{job_id}/events") as response:
+            # BOUNDED. `timeout=10.0` on AsyncClient is a per-request timeout and
+            # does NOT bound aiter_lines() on an SSE stream the server holds open by
+            # design: the loop below exits only on its own break condition, so a
+            # stream that delivers too few events waits forever. Observed 2026-08-10
+            # once the /api/v1 prefix was corrected and these tests connected for the
+            # first time — the run sat on this line indefinitely rather than failing.
+            # A hanging test is strictly worse than a failing one: it burns the whole
+            # CI job budget and reports nothing.
+            async with asyncio.timeout(SSE_STREAM_TIMEOUT_S):
+              async with client.stream("GET", f"/api/v1/jobs/{job_id}/events") as response:
                 assert response.status_code == 200
                 async for line in response.aiter_lines():
                     line = line.strip()
@@ -429,7 +453,16 @@ async def test_sse_closes_on_completed_job():
             headers={"X-API-Key": raw_key},
             timeout=10.0,
         ) as client:
-            async with client.stream("GET", f"/jobs/{job_id}/events") as response:
+            # BOUNDED. `timeout=10.0` on AsyncClient is a per-request timeout and
+            # does NOT bound aiter_lines() on an SSE stream the server holds open by
+            # design: the loop below exits only on its own break condition, so a
+            # stream that delivers too few events waits forever. Observed 2026-08-10
+            # once the /api/v1 prefix was corrected and these tests connected for the
+            # first time — the run sat on this line indefinitely rather than failing.
+            # A hanging test is strictly worse than a failing one: it burns the whole
+            # CI job budget and reports nothing.
+            async with asyncio.timeout(SSE_STREAM_TIMEOUT_S):
+              async with client.stream("GET", f"/api/v1/jobs/{job_id}/events") as response:
                 assert response.status_code == 200
                 async for line in response.aiter_lines():
                     line = line.strip()

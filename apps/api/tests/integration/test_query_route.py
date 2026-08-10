@@ -207,7 +207,7 @@ async def test_post_query_returns_202():
                 base_url="http://testserver",
             ) as client:
                 resp = await client.post(
-                    f"/agents/{agent_id}/query",
+                    f"/api/v1/agents/{agent_id}/query",
                     headers={"X-API-Key": raw_key},
                     json={"query": "What is the refund policy?"},
                 )
@@ -328,7 +328,7 @@ async def test_get_queries_returns_list():
                 base_url="http://testserver",
             ) as client:
                 post_resp = await client.post(
-                    f"/agents/{agent_id}/query",
+                    f"/api/v1/agents/{agent_id}/query",
                     headers={"X-API-Key": raw_key},
                     json={"query": "How do I get a refund?"},
                 )
@@ -342,7 +342,7 @@ async def test_get_queries_returns_list():
             base_url="http://testserver",
         ) as client:
             get_resp = await client.get(
-                f"/agents/{agent_id}/queries",
+                f"/api/v1/agents/{agent_id}/queries",
                 headers={"X-API-Key": raw_key},
             )
 

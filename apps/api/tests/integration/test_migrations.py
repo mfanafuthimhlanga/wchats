@@ -19,7 +19,7 @@ Tests:
         — 0008 migration roundtrip: creates customer_identities table with UNIQUE(external_id)
           and both ix_customer_identities_token_hash / ix_customer_identities_expires_at indexes
           in a fresh live local Postgres tenant DB; second run_tenant_migrations call is a safe
-          no-op (revision stays "0008"). Satisfies IDV-01 substrate requirement.
+          no-op (revision stays at head). Satisfies IDV-01 substrate requirement.
 """
 
 import os
@@ -253,13 +253,13 @@ def test_migration_0008_creates_customer_identities():
     Steps:
     1. Create a unique test database.
     2. Call run_tenant_migrations(conn_url) — alembic upgrade head (includes 0008).
-    3. Assert get_current_alembic_revision(conn_url) == "0008" (head).
+    3. Assert get_current_alembic_revision(conn_url) == the chain's current head.
     4. Assert customer_identities exists in information_schema.tables.
     5. Assert uq_customer_identities_external_id UNIQUE constraint is present.
     6. Assert ix_customer_identities_token_hash and ix_customer_identities_expires_at
        indexes are present in pg_indexes.
     7. Assert no otp_pending table exists (OD-3 guard).
-    8. Re-run run_tenant_migrations — revision still "0008", table count unchanged (idempotent).
+    8. Re-run run_tenant_migrations — revision unchanged, table count unchanged (idempotent).
     9. Teardown: drop the test database.
 
     Operators apply 0008 to real tenant DBs via:
@@ -280,10 +280,27 @@ def test_migration_0008_creates_customer_identities():
         # --- Step 2: Apply migrations (upgrade head = 0008) ---
         run_tenant_migrations(conn_url)
 
-        # --- Step 3: Assert revision is "0008" ---
+        # --- Step 3: Assert the chain reached ITS OWN head, whatever that is ---
+        # This asserted `revision == "0008"` because 0008 was head when the test
+        # was written. `upgrade head` follows the chain, so the assertion broke
+        # the moment 0009 landed and stayed broken through 0016 — invisibly, because
+        # this suite had never executed against a database. Pinning a literal
+        # revision here makes every future migration fail a test about
+        # customer_identities, which is not what this test is for: the substrate
+        # claim is steps 4-8 below. Head is read from the script directory so the
+        # assertion still means "the chain ran to completion".
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        from app.services.migrations import _ALEMBIC_TENANT_DIR
+
+        _cfg = Config()
+        _cfg.set_main_option("script_location", str(_ALEMBIC_TENANT_DIR))
+        expected_head = ScriptDirectory.from_config(_cfg).get_current_head()
+
         revision = get_current_alembic_revision(conn_url)
-        assert revision == "0008", (
-            f"Expected alembic revision '0008' after upgrade head, got {revision!r}"
+        assert revision == expected_head, (
+            f"Expected alembic head {expected_head!r} after upgrade head, got {revision!r}"
         )
 
         engine = create_engine(conn_url, poolclass=pool.NullPool)
@@ -368,9 +385,13 @@ def test_migration_0008_creates_customer_identities():
         # --- Step 8: Second run is a safe no-op ---
         run_tenant_migrations(conn_url)  # must not raise
 
+        # Same stale literal as step 3 — see the comment there. Idempotency means
+        # "the second run did not move the revision", so compare against what the
+        # FIRST run produced rather than against a revision that was head in 2026.
         revision_after_rerun = get_current_alembic_revision(conn_url)
-        assert revision_after_rerun == "0008", (
-            f"Revision changed after second run_tenant_migrations call: {revision_after_rerun!r}"
+        assert revision_after_rerun == revision, (
+            f"Revision changed after second run_tenant_migrations call: "
+            f"{revision!r} -> {revision_after_rerun!r}"
         )
 
         tables_after_rerun = _get_tables_in_db(conn_url)
