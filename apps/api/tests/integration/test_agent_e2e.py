@@ -33,7 +33,10 @@ async def test_agent_responds_with_citation_against_real_corpus():
     async with httpx.AsyncClient(base_url=api_base, timeout=35) as client:
         # POST /agents/{id}/chat → 202 + job_id
         resp = await client.post(
-            f"/agents/{agent_id}/chat",
+            # /api/v1 — main.py:175 mounts agent_chat.router under that prefix.
+            # The SSE read below stays unprefixed on purpose: widget.router is
+            # mounted at the root (main.py:169), so /widget/jobs/... is correct.
+            f"/api/v1/agents/{agent_id}/chat",
             headers={"X-API-Key": api_key, "Content-Type": "application/json"},
             json={"message": "What are your business hours?", "conversation_id": None},
         )

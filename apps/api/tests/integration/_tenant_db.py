@@ -23,6 +23,7 @@ Nothing here touches the environment or the network at import time.
 from __future__ import annotations
 
 import os
+import re
 
 from sqlalchemy import create_engine, pool, text
 
@@ -34,8 +35,42 @@ ADMIN_DB_URL = os.getenv(
 LOCAL_BASE = os.getenv("TEST_LOCAL_BASE", "postgresql://wchats:wchats@localhost:5432")
 
 
+# A database name is an IDENTIFIER, and identifiers cannot be bound as
+# parameters — `CREATE DATABASE :name` is not valid SQL, so the name is
+# interpolated. That makes the safety a property of the caller unless it is
+# checked here. Today the only caller passes `wchats_stub_tenant_<hex>`, but
+# these are public helpers in a shared test-support module and the next caller
+# may pass a fixture parameter or an env var. Postgres also truncates
+# identifiers at 63 bytes, which would silently split a long name into a
+# different database from the one dropped in teardown.
+_SAFE_DB_NAME = re.compile(r"^[a-z_][a-z0-9_]*$")
+_MAX_IDENTIFIER_BYTES = 63
+
+
+def _checked(db_name: str) -> str:
+    """Return *db_name* if it is a plain lowercase identifier, else raise.
+
+    Raises before any connection is opened, so a rejected name never reaches a
+    server at all.
+    """
+    if not _SAFE_DB_NAME.match(db_name):
+        raise ValueError(
+            f"unsafe database name {db_name!r}: only lowercase letters, digits "
+            "and underscores are accepted, and it may not start with a digit. "
+            "The name is interpolated into DDL because identifiers cannot be "
+            "bound as parameters."
+        )
+    if len(db_name.encode("utf-8")) > _MAX_IDENTIFIER_BYTES:
+        raise ValueError(
+            f"database name {db_name!r} exceeds PostgreSQL's {_MAX_IDENTIFIER_BYTES}-byte "
+            "identifier limit and would be silently truncated to a different name"
+        )
+    return db_name
+
+
 def create_tenant_database(db_name: str) -> str:
     """CREATE DATABASE *db_name* and return its connection URL."""
+    db_name = _checked(db_name)
     engine = create_engine(
         ADMIN_DB_URL, isolation_level="AUTOCOMMIT", poolclass=pool.NullPool
     )
@@ -54,6 +89,7 @@ def drop_tenant_database(db_name: str) -> None:
     the backends are terminated before the drop; otherwise Postgres refuses
     with "database is being accessed by other users".
     """
+    db_name = _checked(db_name)
     engine = create_engine(
         ADMIN_DB_URL, isolation_level="AUTOCOMMIT", poolclass=pool.NullPool
     )

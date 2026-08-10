@@ -23,7 +23,21 @@ def _find_env_file() -> str | None:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=_find_env_file(), extra="ignore")
+    # hide_input_in_errors: T-01-01/T-01-02 again, on the path __repr__ does not
+    # cover. `__repr__` below suppresses field values, but a pydantic
+    # ValidationError is raised BEFORE any instance exists, and its default
+    # rendering includes `input_value=` — for BaseSettings that input is the
+    # whole assembled settings dict, so one missing or malformed field prints
+    # truncated fragments of every real secret beside it. Observed 2026-08-11
+    # while probing env precedence: omitting PLATFORM_CREDENTIAL_KEY produced
+    #   PLATFORM_CREDENTIAL_KEY
+    #     Field required [type=missing, input_value={'NEON_API_KEY': 'stub-ke...<tail of a real key>'}]
+    # A misconfigured worker, a CI job with an absent secret, or any Celery task
+    # traceback would write that to stderr and into the job log. Pinned by
+    # tests/unit/test_config_error_redaction.py.
+    model_config = SettingsConfigDict(
+        env_file=_find_env_file(), extra="ignore", hide_input_in_errors=True
+    )
 
     # Neon
     NEON_API_KEY: str

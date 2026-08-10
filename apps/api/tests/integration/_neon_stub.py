@@ -56,6 +56,29 @@ Configuration (environment, set by the ``neon_stub_worker`` fixture):
                            the real tenant Alembic chain against real Postgres.
     WCHATS_NEON_STUB_LOG   Path to a JSONL call journal the test process reads
                            back to assert on what the worker actually sent.
+    WCHATS_NEON_STUB_WORKER_ID
+                           Opaque token identifying WHICH worker installed the
+                           stub. Stamped on the ``installed`` record so a fixture
+                           sharing one journal across several workers can tell
+                           its own worker's proof from a neighbour's — or from a
+                           dead predecessor's. See the note on pids below.
+
+Why the ``installed`` record carries a token and not just a pid
+--------------------------------------------------------------
+``os.getpid()`` inside this module is NOT the pid the fixture's ``Popen`` handle
+holds. On Windows, ``apps/api/.venv/Scripts/python.exe`` is a launcher shim: it
+spawns the real uv-managed interpreter with the same argv and waits on it, so
+the process that imports this module is the *child* of the process the fixture
+started. Observed 2026-08-11::
+
+    ProcessId ParentProcessId cmd
+          248           11920 ...\\.venv\\Scripts\\python.exe -m celery -A app.worker...
+         8568             248 ...\\uv\\python\\cpython-3.12...\\python.exe -m celery -A app.worker...
+
+with the ``installed`` record reading ``pid: 8568`` against ``Popen.pid == 248``.
+A literal ``pid == proc.pid`` comparison is therefore always false here. The pid
+stays in the record because it is useful when reading a journal by hand; the
+token is what the fixture actually matches on.
 """
 
 from __future__ import annotations
@@ -75,6 +98,7 @@ NEON_HOST = "console.neon.tech"
 
 _ENV_URI = "WCHATS_NEON_STUB_URI"
 _ENV_LOG = "WCHATS_NEON_STUB_LOG"
+_ENV_WORKER_ID = "WCHATS_NEON_STUB_WORKER_ID"
 
 _log_lock = threading.Lock()
 
@@ -192,13 +216,19 @@ def install() -> None:
         return real_send(self, request, **kwargs)
 
     requests.adapters.HTTPAdapter.send = send
-    _record({"event": "installed", "pid": os.getpid()})
+    _record(
+        {
+            "event": "installed",
+            "worker_id": os.environ[_ENV_WORKER_ID],
+            "pid": os.getpid(),
+        }
+    )
 
 
 # Import-time configuration check. Raising here aborts worker start-up, which
 # the fixture detects as a missing 'installed' record — far better than a
 # worker that comes up without the stub and reaches the live API.
-for _var in (_ENV_URI, _ENV_LOG):
+for _var in (_ENV_URI, _ENV_LOG, _ENV_WORKER_ID):
     if not os.environ.get(_var):
         raise RuntimeError(
             f"{__name__} requires {_var}. It is only ever loaded via "

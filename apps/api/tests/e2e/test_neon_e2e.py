@@ -27,7 +27,12 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from tests.e2e._neon_teardown import delete_project, resolve_project_id
+from tests.e2e._neon_teardown import (
+    delete_project,
+    forget_project,
+    record_created_project,
+    resolve_project_id,
+)
 
 # ---------------------------------------------------------------------------
 # E2E-specific constants
@@ -100,8 +105,10 @@ def test_create_agent_real_neon() -> None:
     agent_id = uuid.uuid4()
     job_id = uuid.uuid4()
 
-    # Label the project name with 'e2e' so the nightly teardown script in
-    # the workflow can identify and delete orphaned projects.
+    # The agent name is NOT how orphans are reclaimed, and never was: the
+    # nightly job's old sweep matched `vrd-*e2e*`, while `_project_slug` turns
+    # this name into `e2e-agent-…`, so it matched nothing it was written for.
+    # Reclamation is by id, through the ledger written below.
     agent_name = f"e2e-agent-{agent_id}"
 
     try:
@@ -220,6 +227,13 @@ def test_create_agent_real_neon() -> None:
                     ).fetchone()
                 if row:
                     agent_status = row[0]
+                    # Record the id the instant the control DB has it — seconds
+                    # after the Neon API returned, and before any assertion below
+                    # can fail. A run killed by a CI timeout never reaches its
+                    # `finally`, so an id first written there is an id nothing
+                    # can reclaim.
+                    if row[1]:
+                        record_created_project(row[1])
                     if agent_status in ("ready", "failed"):
                         break
 
@@ -323,23 +337,38 @@ def test_create_agent_real_neon() -> None:
         # provision_neon commits neon_project_id the moment the Neon API
         # returns, so the DB knows even when the test does not.
         # ------------------------------------------------------------------
+        #
+        # Every failure below is a FAILED TEST, not a printed warning. pytest
+        # captures per-test stdout and surfaces it only when the test is already
+        # red, so a `print` here is invisible in exactly the case it was written
+        # for: an otherwise-green run that leaked a real project. Raising from a
+        # `finally` can mask an in-flight assertion error, and that trade is
+        # deliberate — the masked exception is still chained onto the traceback,
+        # while a silent leak leaves no record anywhere.
         try:
             with e2e_db_session() as db:
                 neon_project_id = resolve_project_id(db, agent_id, neon_project_id)
         except Exception as lookup_exc:
-            print(f"WARNING: could not resolve Neon project id for teardown: {lookup_exc}")
+            pytest.fail(
+                "Could not resolve the Neon project id for teardown, so nothing "
+                "was deleted and a real project may be live. Check the console "
+                f"for agent {agent_id}: {lookup_exc}",
+                pytrace=False,
+            )
 
         if neon_project_id:
             try:
                 delete_project(neon_project_id, os.environ["NEON_API_KEY"])
             except Exception as exc:
-                # A leak is money and a consumed quota slot. Say so loudly and
-                # name the id so it can be removed by hand; never let it pass
-                # as a quiet warning line.
-                print(
+                # A leak is money and a consumed quota slot. The id stays in the
+                # ledger so the nightly teardown step retries it by id.
+                pytest.fail(
                     "!!! NEON PROJECT LEAKED — delete it manually: "
-                    f"project_id={neon_project_id} ({exc})"
+                    f"project_id={neon_project_id} ({exc})",
+                    pytrace=False,
                 )
+            else:
+                forget_project(neon_project_id)
 
         # Clean up control DB rows
         try:

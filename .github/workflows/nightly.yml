@@ -40,6 +40,11 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
       NEON_REGION: aws-us-east-1
+      # Run-scoped ledger of Neon project ids this job created. The E2E test
+      # appends an id the moment the control DB records it and removes it again
+      # once deletion is verified, so whatever survives here is exactly what
+      # leaked. See tests/e2e/_neon_teardown.py.
+      WCHATS_NEON_PROJECT_LEDGER: ${{ github.workspace }}/neon-e2e-projects.txt
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -60,24 +65,22 @@ jobs:
         working-directory: apps/api
         run: python -m pytest tests/e2e/test_neon_e2e.py -x --tb=short -m e2e
 
-      - name: Teardown — delete orphaned Neon test projects
+      # Reclaims ONLY the project ids this job's own test recorded in the
+      # ledger. It never lists the account and never matches a project by name.
+      #
+      # The step this replaces did exactly that: it listed every project the key
+      # could see and deleted each one whose name matched
+      # `startswith('vrd-') and 'e2e' in name`. Deleting somebody else's data
+      # because its name looks like a test is irreversible, and the pattern was
+      # dead anyway — `_project_slug` names the E2E agent's project
+      # `e2e-agent-…`, never `vrd-…`, so the sweep reclaimed nothing while
+      # remaining able to destroy anything.
+      #
+      # No `|| echo`: a leak must fail the job, not scroll past it.
+      - name: Teardown — delete Neon projects THIS run created (by id)
         if: always()
         working-directory: apps/api
-        run: |
-          python -c "
-          import os
-          from neon_api import NeonAPI
-          client = NeonAPI(api_key=os.environ['NEON_API_KEY'])
-          projects = client.projects()
-          for p in projects.projects:
-              if p.name.startswith('vrd-') and 'e2e' in p.name.lower():
-                  print(f'Deleting orphaned test project: {p.name} ({p.id})')
-                  try:
-                      client.project_delete(p.id)
-                  except Exception as exc:
-                      print(f'  Warning: could not delete {p.id}: {exc}')
-          print('Teardown complete')
-          " || echo "Teardown script failed — check Neon console for orphaned projects"
+        run: python -m tests.e2e._neon_teardown
 
   eval-full:
     name: Eval Full — LLM-judged D1/D2/D3/D4/D8

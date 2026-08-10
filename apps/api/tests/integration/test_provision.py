@@ -120,9 +120,31 @@ def test_provision_neon_idempotency(neon_stub_worker, test_agent_and_job, db_ses
     # are stored, so wait for the second write before re-dispatching.
     _poll_for_connection_string(db_session, agent_id, timeout=30)
 
-    # Second dispatch — must hit the idempotency guard and call nothing
-    provision_neon.apply_async(args=(str(tenant_id), str(agent_id)), queue="pipeline")
-    time.sleep(5)
+    # Second dispatch — must hit the idempotency guard and call nothing.
+    #
+    # WAITED FOR, NOT SLEPT THROUGH. This used to be `time.sleep(5)` and then
+    # the create-count assertion, which is satisfied identically by an
+    # idempotency guard that held and by a second task that never ran at all —
+    # a dispatch routed to a queue with no consumer passed it. On a loaded 4 GB
+    # box the second execution overrunning five seconds produces the same green.
+    # AsyncResult.get() is positive evidence: it returns the task's own return
+    # value, so the assertion below is made about an execution that provably
+    # finished. The Redis result backend is configured
+    # (celery_app.py:94), so this is not an extra dependency.
+    second = provision_neon.apply_async(
+        args=(str(tenant_id), str(agent_id)), queue="pipeline"
+    )
+    second_result = second.get(timeout=120)
+
+    # The guard's own contract: it returns the ALREADY-STORED project id rather
+    # than a new one. A second create would show up here as a different id even
+    # before the journal is consulted.
+    assert second_result["project_id"] == _poll_for_neon_project_id(
+        db_session, agent_id, timeout=5
+    ), (
+        "the second dispatch returned a project id that is not the stored one — "
+        f"got {second_result['project_id']}"
+    )
 
     creates = _project_creates(neon_stub_worker.calls_since(mark))
     assert len(creates) == 1, (

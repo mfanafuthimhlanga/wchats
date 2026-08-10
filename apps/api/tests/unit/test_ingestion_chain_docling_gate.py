@@ -110,6 +110,20 @@ def _collect(*plugins: str) -> subprocess.CompletedProcess:
     )
 
 
+def _summary_line(stdout: str) -> str:
+    """pytest's final summary line — the last non-empty line of stdout.
+
+    Read instead of scanning the whole stream, because ``--collect-only -q``
+    prints every collected test id and a substring check for "error" over all of
+    it fires on any test whose NAME contains those letters. A future
+    ``test_chain_error_path`` in the gated file would make this guard go red
+    with a message about collection erroring, which is not what happened — a
+    false red that reads as a real one is worse than no guard.
+    """
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+
 def _module_level_importorskip_args(source: str) -> list[str]:
     """The module named by each MODULE-LEVEL `pytest.importorskip("...")` call.
 
@@ -232,8 +246,14 @@ def test_the_gate_skips_when_docling_is_absent():
     """Direction 1: no docling, no collection — and no failures either."""
     result = _collect(_ABSENT_PLUGIN)
 
-    assert "error" not in result.stdout.lower(), (
-        "collection errored rather than skipping under a blocked docling:\n"
+    # Exit 2 is pytest's "collection/internal error"; 5 is "no tests collected",
+    # which is the correct outcome of a module-level skip under --collect-only.
+    assert result.returncode != 2, (
+        "collection errored rather than skipping under a blocked docling "
+        f"(exit {result.returncode}):\n{result.stdout}\n{result.stderr}"
+    )
+    assert "error" not in _summary_line(result.stdout).lower(), (
+        "pytest's summary line reports an error rather than a clean skip:\n"
         f"{result.stdout}\n{result.stderr}"
     )
     for name in _GATED_TESTS:

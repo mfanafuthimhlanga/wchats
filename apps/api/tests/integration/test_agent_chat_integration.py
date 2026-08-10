@@ -173,7 +173,11 @@ async def test_post_agent_chat_emits_thinking_then_response_via_eager_task(seed_
             base_url="http://testserver",
         ) as client:
             response = await client.post(
-                f"/agents/{agent_id}/chat",
+                # /api/v1 — main.py:175 mounts agent_chat.router under that
+                # prefix. Unprefixed this is a 404, and the 202 asserted below
+                # can never arrive; it stayed invisible because this module is
+                # behind INTEGRATION_TESTS_ENABLED=1 and has never run.
+                f"/api/v1/agents/{agent_id}/chat",
                 json={"message": "What are your hours?", "conversation_id": None},
                 headers={"X-API-Key": api_key_plaintext},
             )

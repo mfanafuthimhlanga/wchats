@@ -22,8 +22,9 @@ Tests:
           but never persisted never arrives at all.
 
     test_sse_closes_on_completed_job
-        — Pre-populate all 6 events (including job.complete); connect;
-          assert stream closes within 2 seconds (terminal event detected in replay).
+        — Pre-populate all 6 events (including job.complete); connect; assert the
+          server closes the stream itself, within SSE_CLOSE_BUDGET_S, having
+          found the terminal event in the replay without ever waiting on Redis.
 
 An event is a DB row plus a pub/sub message, never one without the other:
 app/services/sse.py reads event data from job_events and uses the pub/sub message
@@ -34,6 +35,7 @@ directly rather than assuming.
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import time
@@ -47,12 +49,30 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 pytestmark = pytest.mark.integration
 
-#: Wall-clock ceiling on any SSE stream consume loop in this module.
-#: Generous relative to what these tests need — the live-event test runs in ~0.7s
-#: end to end once connected, and the close test asserts closure "within 2 seconds"
-#: — so a breach means the stream genuinely never delivered, never that the bound
-#: was too tight.
+#: Wall-clock ceiling on any SSE stream consume loop in this module — and on the
+#: emitter task that feeds one.  Generous relative to what these tests need: the
+#: stream half of the live-event test and the whole of the close test both run in
+#: well under a second (see SSE_CLOSE_BUDGET_S), so a breach means the stream
+#: genuinely never delivered, never that the bound was too tight.
 SSE_STREAM_TIMEOUT_S = 30
+
+#: Ceiling on how long the server may take to CLOSE a stream whose terminal
+#: event is already in job_events.  Distinct from the bound above: that one asks
+#: "did the stream terminate at all", this one asks "did it terminate without
+#: waiting on anything it did not need to".  Nothing here should block —
+#: `event_generator` finds job.complete in its Phase-1 replay SELECT and returns
+#: before its first Redis `listen()`.
+#:
+#: MEASURED, not guessed, and measured against `_SSEStream` so the number is the
+#: server's close latency rather than httpx's response buffering (see the test's
+#: docstring).  On this 4 GB machine, 2026-08-11: **0.546s standalone** and
+#: **0.422s under the full integration suite** — the loaded run is the FASTER of
+#: the two, which is the tell that the old 2.85s/5.5s/6.8s spread was transport
+#: and client teardown rather than the generator.  5.0s is ~12x the loaded
+#: measurement, so a breach is a finding about `event_generator`, not a report on
+#: how busy the box was.  Recorded in
+#: `.dev/reference/260811-review-fix-mutation-proofs.md`.
+SSE_CLOSE_BUDGET_S = 5.0
 
 #: An event type published to Redis but deliberately NOT written to job_events.
 #: sse.py treats a pub/sub message as a wake-up only and reads the event data from
@@ -563,21 +583,36 @@ async def test_sse_receives_live_events_after_replay(monkeypatch):
         finally:
             await r.aclose()
 
+    emitter_task = None
     try:
         emitter_task = asyncio.create_task(emit_live_events())
 
-        # BOUNDED.  Before this bound existed, two runs sat on this stream for 10
-        # and 40 minutes: the live events were published but never persisted, so
-        # the generator's DB re-query found nothing, the terminal event never
-        # arrived and the loop emitted keepalives forever.  A hanging test is
-        # strictly worse than a failing one — it burns the whole job budget and
-        # reports nothing.  30s is ~40x the ~0.7s this test needs when healthy
-        # (measured 2026-08-10), so a breach means the stream genuinely never
-        # delivered, never that the bound was tight.
+        # BOUNDED, AND THE EMITTER IS INSIDE THE BOUND.  Before this bound
+        # existed, two runs sat on this stream for 10 and 40 minutes: the live
+        # events were published but never persisted, so the generator's DB
+        # re-query found nothing, the terminal event never arrived and the loop
+        # emitted keepalives forever.  A hanging test is strictly worse than a
+        # failing one — it burns the whole job budget and reports nothing.
+        #
+        # `await emitter_task` sat OUTSIDE this block until 2026-08-11, which
+        # reopened the hang through the other door.  emit_live_events parks on
+        # `stream.wait_for_events(n)`, an asyncio.Condition predicate over the
+        # count of `event:` lines the server has written.  Any early close —
+        # a 401, a renamed auth header, a missing tenant row, an unexpected
+        # terminal event — makes `run()` return having written fewer lines than
+        # the emitter is waiting for; `run()` fires a final `notify_all()`, the
+        # predicate re-evaluates false, and the emitter waits on a Condition
+        # that nothing will ever notify again.  Nothing bounded that wait, so
+        # the test hung forever while the stream itself had finished in
+        # milliseconds.  Measured: with the api-key header mutated to a bogus
+        # value, the run survived an external SIGKILL at 150s, 5x this bound.
+        #
+        # 30s is ~40x the stream time this test needs when healthy, so a breach
+        # means the stream genuinely never delivered, never that the bound was
+        # tight.
         async with asyncio.timeout(SSE_STREAM_TIMEOUT_S):
             await stream.run()
-
-        await emitter_task
+            await emitter_task
 
         assert stream.status == 200, f"Expected HTTP 200, got {stream.status}"
 
@@ -597,6 +632,16 @@ async def test_sse_receives_live_events_after_replay(monkeypatch):
         )
 
     finally:
+        # The emitter must not outlive the bound either.  If the timeout above
+        # fired, this task is still parked on the Condition; leaving it there
+        # leaks a pending task into the event loop and produces a "Task was
+        # destroyed but it is pending" warning attached to whichever test runs
+        # next — a failure reported against the wrong subject.
+        if emitter_task is not None and not emitter_task.done():
+            emitter_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await emitter_task
+
         from app.main import app as main_app
         main_app.dependency_overrides.clear()
         _delete_test_rows(tenant_id)
@@ -605,14 +650,30 @@ async def test_sse_receives_live_events_after_replay(monkeypatch):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_sse_closes_on_completed_job():
-    """SSE endpoint closes within 2 seconds when terminal event is already in DB.
+    """SSE endpoint closes promptly when the terminal event is already in the DB.
 
     Setup:
         - Pre-populate all 6 events (including job.complete)
 
     Asserts:
-        - Connection closes (stream ends) — no hang
-        - All 6 events received before stream closes
+        - The server ends the stream itself — no hang
+        - All 6 events are received before it does
+        - It does so within SSE_CLOSE_BUDGET_S of the request starting
+
+    WHAT `elapsed` MEASURES, AND WHY IT CHANGED.  This test used to read through
+    ``httpx.ASGITransport``, which buffers the entire response and constructs it
+    only after the ASGI app returns (see ``_SSEStream``'s docstring for the
+    measurement).  ``elapsed`` therefore included transport buffering and the
+    client's own teardown rather than the stream's close latency, and it was
+    recorded failing at 5.5s and 6.8s under full-suite load against a 5.0s
+    assertion — a 1.75x margin over the 2.85s it typically took.  A timing
+    assertion whose subject is partly the test harness is not a measurement of
+    the server.
+
+    Driving the app directly removes the buffering, so ``elapsed`` is now the
+    time from the first ASGI call to the generator returning: the quantity the
+    assertion is actually about.  Measured on this machine 2026-08-11, standalone
+    and under the full integration suite — see SSE_CLOSE_BUDGET_S.
     """
     tenant_id = uuid.uuid4()
     job_id = uuid.uuid4()
@@ -641,37 +702,23 @@ async def test_sse_closes_on_completed_job():
 
     app = _make_app_with_real_deps()
 
-    received_events = []
-    start_time = time.monotonic()
+    stream = _SSEStream(app, f"/api/v1/jobs/{job_id}/events", {"x-api-key": raw_key})
 
     try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://testserver",
-            headers={"X-API-Key": raw_key},
-            timeout=10.0,
-        ) as client:
-            # BOUNDED. `timeout=10.0` on AsyncClient is a per-request timeout and
-            # does NOT bound aiter_lines() on an SSE stream the server holds open by
-            # design: the loop below exits only on its own break condition, so a
-            # stream that delivers too few events waits forever. Observed 2026-08-10
-            # once the /api/v1 prefix was corrected and these tests connected for the
-            # first time — the run sat on this line indefinitely rather than failing.
-            # A hanging test is strictly worse than a failing one: it burns the whole
-            # CI job budget and reports nothing.
-            async with asyncio.timeout(SSE_STREAM_TIMEOUT_S):
-              async with client.stream("GET", f"/api/v1/jobs/{job_id}/events") as response:
-                assert response.status_code == 200
-                async for line in response.aiter_lines():
-                    line = line.strip()
-                    if line.startswith("event:"):
-                        received_events.append(line.replace("event:", "").strip())
-
+        # BOUNDED for the same reason as every other consume in this module: a
+        # stream that never terminates must fail, not hang.
+        start_time = time.monotonic()
+        async with asyncio.timeout(SSE_STREAM_TIMEOUT_S):
+            await stream.run()
         elapsed = time.monotonic() - start_time
 
-        # Stream should close quickly (terminal event in DB replay — no Redis subscribe wait)
-        assert elapsed < 5.0, (
-            f"SSE stream took {elapsed:.1f}s to close — expected < 5s (terminal event in DB)"
+        assert stream.status == 200, f"Expected HTTP 200, got {stream.status}"
+
+        # The terminal event is already in the DB, so the generator finds it in
+        # the Phase-1 replay and returns without ever waiting on Redis.
+        assert elapsed < SSE_CLOSE_BUDGET_S, (
+            f"SSE stream took {elapsed:.2f}s to close — expected < "
+            f"{SSE_CLOSE_BUDGET_S}s with the terminal event already in the DB"
         )
 
         # All 6 events should be received
@@ -683,8 +730,8 @@ async def test_sse_closes_on_completed_job():
             "migrations.complete",
             "job.complete",
         ]
-        assert received_events == expected, (
-            f"Expected {expected}, got {received_events}"
+        assert stream.events == expected, (
+            f"Expected {expected}, got {stream.events}"
         )
 
     finally:

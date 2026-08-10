@@ -292,6 +292,8 @@ class NeonStubWorker:
         self.proc = proc
         self.log_path = log_path
         self.tenant_db_url = tenant_db_url
+        # Doubles as the stub's worker id — unique per spawn, and the only
+        # thing that ties an `installed` record to *this* worker.
         self.hostname = hostname
 
     def records(self) -> list[dict]:
@@ -309,6 +311,32 @@ class NeonStubWorker:
     def calls_since(self, mark: int) -> list[dict]:
         """Neon calls recorded after *mark* (excludes the install record)."""
         return [r for r in self.records()[mark:] if r.get("event") == "call"]
+
+    def installed_in_this_worker(self) -> bool:
+        """True once the stub has reported itself installed in **this** worker.
+
+        The identity comparison is the whole guarantee, not decoration. The
+        check used to be `any(event == "installed")` over the journal, which is
+        only sound while every worker owns a private journal — an accident of
+        `tmp_path_factory.mktemp`, not a property of this class. The kill-9
+        test deliberately shares one journal between a killed worker and its
+        replacement, so a stale record from the dead process would otherwise
+        satisfy the replacement's wait and let an unstubbed worker through to
+        the real Neon API.
+
+        Matched on the worker id rather than the pid: on Windows the process
+        that imports the stub is a CHILD of the one `Popen` returned, because
+        `.venv/Scripts/python.exe` is a launcher shim that re-spawns the real
+        uv-managed interpreter. `Popen.pid == 248` against an `installed`
+        record reading `pid: 8568` was measured on 2026-08-11, so `pid ==
+        self.proc.pid` is unconditionally false here — a "guard" that would
+        have failed closed on every run, which is a different bug, not a fix.
+        The id survives that indirection and any future one.
+        """
+        return any(
+            r.get("event") == "installed" and r.get("worker_id") == self.hostname
+            for r in self.records()
+        )
 
     def wait_until_installed(self, timeout: float = _WORKER_START_TIMEOUT) -> None:
         """Block until the stub reports itself installed in the worker process.
@@ -328,7 +356,7 @@ class NeonStubWorker:
         started = time.time()
         deadline = started + timeout
         while time.time() < deadline:
-            if any(r.get("event") == "installed" for r in self.records()):
+            if self.installed_in_this_worker():
                 return
             if self.proc.poll() is not None:
                 pytest.fail(
@@ -339,9 +367,10 @@ class NeonStubWorker:
                 )
             time.sleep(0.25)
         pytest.fail(
-            f"tests.integration._neon_stub never reported installed within {timeout}s "
-            f"(worker still alive, journal {self.log_path} holds {self.records()!r}). "
-            f"Refusing to run — an un-stubbed worker would call the real Neon API."
+            f"tests.integration._neon_stub never reported installed for worker "
+            f"{self.hostname} within {timeout}s (worker still alive, journal "
+            f"{self.log_path} holds {self.records()!r}). Refusing to run — an "
+            f"un-stubbed worker would call the real Neon API."
         )
 
     def wait_until_accepting_tasks(self, timeout: float = _WORKER_START_TIMEOUT) -> None:
@@ -384,6 +413,60 @@ class NeonStubWorker:
 
 
 @pytest.fixture(scope="module")
+def neon_stub_worker_factory(tmp_path_factory):
+    """Spawn stub-Neon workers on demand, against one throwaway tenant database.
+
+    `neon_stub_worker` yields a single worker and owns its lifetime, which suits
+    every provisioning test except the kill-9 one: that test's entire subject is
+    a worker dying mid-chain and a *second* worker picking the chain up. It
+    needs to spawn two, and the second must inherit the same stub configuration
+    and the same tenant database so `apply_migrations` resumes rather than
+    starting somewhere new.
+
+    The two workers share one call journal on purpose — the assertions are about
+    what reached the Neon boundary across the whole chain, not per process. That
+    sharing is exactly the condition under which an `installed` record from the
+    dead worker could satisfy the replacement's readiness wait, which is why
+    `wait_until_installed` compares the pid.
+
+    Yields:
+        Callable[[], NeonStubWorker]: spawns a worker and blocks until it has
+        proved the stub is installed in its own pid and it is accepting tasks.
+    """
+    db_name = f"wchats_stub_tenant_{uuid.uuid4().hex[:12]}"
+    log_path = str(tmp_path_factory.mktemp("neon_stub") / "neon_calls.jsonl")
+    tenant_db_url = create_tenant_database(db_name)
+    spawned: list[subprocess.Popen] = []
+
+    def spawn() -> NeonStubWorker:
+        hostname = f"neonstub-{uuid.uuid4().hex[:8]}"
+        proc = _spawn_pipeline_worker(
+            extra_args=[
+                "--include=tests.integration._neon_stub",
+                f"--hostname={hostname}@%h",
+            ],
+            extra_env={
+                "WCHATS_NEON_STUB_URI": tenant_db_url,
+                "WCHATS_NEON_STUB_LOG": log_path,
+                "WCHATS_NEON_STUB_WORKER_ID": hostname,
+                "NEON_API_KEY": "stub-key-never-valid-never-sent",
+            },
+        )
+        spawned.append(proc)
+        handle = NeonStubWorker(proc, log_path, tenant_db_url, hostname)
+        handle.wait_until_installed()
+        handle.wait_until_accepting_tasks()
+        return handle
+
+    try:
+        yield spawn
+    finally:
+        for proc in spawned:
+            _stop_worker(proc)
+        drop_tenant_database(db_name)
+
+
+@pytest.fixture(scope="module")
 def neon_stub_worker(tmp_path_factory):
     """Celery worker whose Neon API transport is stubbed in-process.
 
@@ -417,6 +500,7 @@ def neon_stub_worker(tmp_path_factory):
             extra_env={
                 "WCHATS_NEON_STUB_URI": tenant_db_url,
                 "WCHATS_NEON_STUB_LOG": log_path,
+                "WCHATS_NEON_STUB_WORKER_ID": hostname,
                 "NEON_API_KEY": "stub-key-never-valid-never-sent",
             },
         )
