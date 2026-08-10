@@ -138,6 +138,46 @@ def _delete_test_rows(tenant_id: uuid.UUID) -> None:
         engine.dispose()
 
 
+def _celery_task_args(mock_apply_async) -> list:
+    """Return the positional task-arg list a mocked ``apply_async`` was given.
+
+    Celery accepts the task arg list two ways::
+
+        task.apply_async(args=[...], queue="runtime")   # keyword  -> call_args.kwargs
+        task.apply_async([...], queue="runtime")        # positional -> call_args.args[0]
+
+    ``app.api.v1.query`` uses the keyword form, so ``call_args.args`` is ``()``.
+    An earlier version of this helper was inlined as::
+
+        task_args = call_kwargs[1].get("args") or call_kwargs[0][0] if call_kwargs[0] else []
+
+    which Python parses as ``(... or ...) if call_kwargs[0] else []`` — the
+    conditional binds looser than ``or``.  With no positional args that is
+    ``(...) if () else []``, so it silently evaluated to ``[]`` and every
+    membership assertion below it failed regardless of what was dispatched.
+
+    This raises on an unreadable call instead of degrading to an empty list, so
+    the failure names the real cause rather than reporting a missing agent_id.
+    """
+    mock_apply_async.assert_called_once()
+    call = mock_apply_async.call_args
+
+    if "args" in call.kwargs:
+        task_args = call.kwargs["args"]
+    elif call.args:
+        task_args = call.args[0]
+    else:
+        raise AssertionError(
+            "apply_async was called with no task args in either position: "
+            f"args={call.args!r} kwargs={call.kwargs!r}"
+        )
+
+    assert isinstance(task_args, (list, tuple)), (
+        f"Celery task args should be a list/tuple, got {type(task_args)}: {task_args!r}"
+    )
+    return list(task_args)
+
+
 # ---------------------------------------------------------------------------
 # App factory with real local deps (mirrors test_sse.py pattern)
 # ---------------------------------------------------------------------------
@@ -227,17 +267,42 @@ async def test_post_query_returns_202():
             f"events_url should end with /events, got: {body['events_url']}"
         )
 
-        # Verify apply_async was called once with the dispatched job args
-        mock_dispatch.assert_called_once()
-        call_kwargs = mock_dispatch.call_args
-        # args list should contain [job_id_str, agent_id_str, query_str]
-        task_args = call_kwargs[1].get("args") or call_kwargs[0][0] if call_kwargs[0] else []
-        assert str(agent_id) in task_args, (
-            f"agent_id not found in task args: {task_args}"
+        # ------------------------------------------------------------------
+        # Verify the dispatch actually carries the job's identity.
+        #
+        # Asserted POSITIONALLY against the retrieve_and_rank signature
+        # — retrieve_and_rank(self, job_id, agent_id, query) — not by
+        # membership.  job_id and agent_id are both UUID strings, so an
+        # `in task_args` check passes even if the two are transposed and the
+        # worker looks up the wrong row.
+        # ------------------------------------------------------------------
+        task_args = _celery_task_args(mock_dispatch)
+        assert len(task_args) == 3, (
+            "retrieve_and_rank takes (job_id, agent_id, query); "
+            f"dispatch carried {len(task_args)} args: {task_args}"
         )
-        assert "What is the refund policy?" in task_args, (
-            f"query text not found in task args: {task_args}"
+        assert task_args[0] == body["job_id"], (
+            f"task arg 0 should be the response job_id {body['job_id']}, got {task_args[0]!r}"
         )
+        assert task_args[1] == str(agent_id), (
+            f"task arg 1 should be agent_id {agent_id}, got {task_args[1]!r}"
+        )
+        assert task_args[2] == "What is the refund policy?", (
+            f"task arg 2 should be the query text, got {task_args[2]!r}"
+        )
+
+        # Routed to the runtime queue (CLAUDE.md: pipeline + runtime, always both)
+        assert mock_dispatch.call_args.kwargs.get("queue") == "runtime", (
+            f"query dispatch must target the runtime queue, got "
+            f"{mock_dispatch.call_args.kwargs.get('queue')!r}"
+        )
+
+        # Connection strings NEVER in Celery task args (CLAUDE.md rule 1) —
+        # the worker fetches and decrypts from the control DB at runtime.
+        for i, arg in enumerate(task_args):
+            assert "postgresql://" not in str(arg), (
+                f"task arg {i} carries a connection string: {arg!r}"
+            )
 
     finally:
         from app.main import app as main_app
@@ -284,13 +349,21 @@ async def test_post_query_agent_not_found():
             base_url="http://testserver",
         ) as client:
             resp = await client.post(
-                f"/agents/{uuid.uuid4()}/query",
+                f"/api/v1/agents/{uuid.uuid4()}/query",
                 headers={"X-API-Key": raw_key},
                 json={"query": "test query"},
             )
 
         assert resp.status_code == 404, (
             f"Expected 404, got {resp.status_code}: {resp.text}"
+        )
+        # The path must be the mounted one (/api/v1/...) and the 404 must come
+        # from the agent-ownership check, not from an unmatched route.  Without
+        # the detail assertion this test passes on a routing 404 even if the
+        # ownership filter were deleted from post_agent_query entirely.
+        assert resp.json().get("detail") == "Agent not found", (
+            "404 must originate from the agent-ownership check, not a routing "
+            f"miss; got body: {resp.text}"
         )
 
     finally:
