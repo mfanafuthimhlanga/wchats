@@ -37,7 +37,19 @@ target_metadata = Base.metadata
 # Wire CONTROL_DB_SYNC_URL into alembic config for CLI mode.
 # alembic.ini intentionally has no sqlalchemy.url; the URL comes from
 # the environment so the same ini works across local, Docker, and CI.
-if "CONTROL_DB_SYNC_URL" in os.environ:
+#
+# ONLY when the caller has not already set one. A programmatic caller
+# (`cfg.set_main_option("sqlalchemy.url", ...)` before `command.upgrade`) is
+# naming the database explicitly, and an ambient env var must not silently
+# retarget it -- which is what this did until 2026-08-11. Every integration
+# fixture that builds an ephemeral control DB and migrates it through the
+# Alembic Python API was migrating whatever CONTROL_DB_SYNC_URL happened to
+# name instead, then inserting into an unmigrated ephemeral database:
+# `relation "tenants" does not exist`, with alembic reporting success.
+# Because alembic.ini carries no sqlalchemy.url, CLI mode still reads the
+# env var exactly as before -- this narrows the override to the CLI mode the
+# comment above always claimed it was for.
+if "CONTROL_DB_SYNC_URL" in os.environ and not config.get_main_option("sqlalchemy.url", None):
     config.set_main_option("sqlalchemy.url", os.environ["CONTROL_DB_SYNC_URL"])
 
 # Wire up Python logging from alembic.ini
