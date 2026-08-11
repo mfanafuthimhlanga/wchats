@@ -33,6 +33,16 @@ Unit:
 `_NOT_APP_ROUTES` pin, empty by design). 2127 + 14 + 18 + 3 + 2 = **2164**;
 12 + 1 = **13**.
 
+**Both re-run once more on the committed tree (`d2515c4`), to confirm they reproduce:**
+
+```
+15 passed, 22 skipped, 24 deselected in 115.23s (0:01:55)
+2164 passed, 13 skipped, 30 warnings in 386.49s (0:06:26)
+```
+
+Identical counts; wall clock varies by ±6s and ±11s respectively, which is the noise floor on
+this box and is why the counts, not the durations, are what any claim rests on.
+
 Additionally, and for the first time in repo history, the kill-9 test RUNS:
 
 ```
