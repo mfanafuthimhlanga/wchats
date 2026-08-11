@@ -20,12 +20,26 @@ Guards:
     - INTEGRATION_TESTS_ENABLED=1 gates the whole module (skip otherwise).
     - test_value_bound_evasion additionally requires a reachable local Redis
       (the rate layer is Redis INCR+EXPIRE) — skips with a clear reason when
-      unreachable.
+      unreachable — AND a real ANTHROPIC_API_KEY: it establishes a verified
+      session to reach the rate layer, and everything past step 2.5 runs the
+      Actor gate (one live Haiku call per chained refund). Measured, not
+      assumed: it 401'd the first time it ever ran, 2026-08-11.
     - test_confused_deputy additionally requires a real, non-placeholder
       ANTHROPIC_API_KEY (drives a real ClaudeSDKClient victim turn) — skips
       with a clear reason otherwise.
-    - test_identity_bypass runs first among the three — it needs neither
-      Redis nor the Anthropic API.
+    - test_identity_bypass needs no Redis. Its first two attempts (the ones
+      RTX-03 is actually about) need no Anthropic API either and always run.
+      Its THIRD attempt does: a genuinely verified session is supposed to
+      proceed PAST step 2.5, and what sits immediately past step 2.5 is the
+      Actor gate — a synchronous Haiku call. That attempt is skipped without a
+      real key rather than dying on `401 invalid x-api-key`.
+
+      This docstring previously claimed the whole test "needs neither Redis nor
+      the Anthropic API". That was not an observation — the test had never run
+      (its clean_tenant fixture died in setup on the get_sync_db binding bug).
+      When it first ran, 2026-08-11, attempt 3 raised AuthenticationError. Same
+      shape as VER-01's "every mutating call dies at the IDV gate" claim: a
+      confident statement from a method that could not have checked it.
 
 Deferred to plan 18-11 (autonomous:false): the RTX-04 clean-tenant
 zero-high-severity full-suite live gate. Not built here.
@@ -290,12 +304,24 @@ def clean_tenant(control_db_url, tenant_db_url):
     finally:
         tenant_engine.dispose()
 
-    from app.core.database import get_sync_db
     from app.models.agent import Agent
 
     with _control_db_redirected(control_db_url):
+        # Bind get_sync_db INSIDE the patch context. `from X import Y` binds Y into
+        # this frame at the moment it runs, so importing it above the `with` captured
+        # the UNPATCHED function -- this fixture then seeded the ephemeral control DB
+        # and read back through the real session, which the integration conftest
+        # points at the shared wchats_control. `db.get` returned None and
+        # `db.expunge(None)` raised UnmappedInstanceError before a single probe ran.
+        # Identical to the hazard fixed in test_ver01_adversarial_harness.py:960.
+        from app.core.database import get_sync_db  # noqa: PLC0415
+
         with get_sync_db() as db:
             agent = db.get(Agent, agent_id)
+            assert agent is not None, (
+                "clean_tenant seeded the ephemeral control DB but read back None -- "
+                "get_sync_db was not redirected, so this is reading the wrong database"
+            )
             db.expunge(agent)  # detach so it stays usable after the session closes
 
         from app.services.agent_tools import RetrievalStrategy, build_tool_server
@@ -415,6 +441,49 @@ def test_identity_bypass(clean_tenant):
         result2 = ProbeToolResult.from_dispatcher_response("issue_refund", response2)
         assert result2.verdict_tag == "identity_required"
 
+
+# ---------------------------------------------------------------------------
+# test_identity_bypass_verified_session_proceeds — attempt 3, split out of
+# test_identity_bypass 2026-08-11.
+#
+# It is split because it is the ONLY part of RTX-03 that costs a model call,
+# and leaving it inline made the whole test skip without a key — converting two
+# real, observed assertions into "1 skipped". A skip is unobserved; that is
+# this repo's own rule about its metrics and it holds for its test suite.
+# ---------------------------------------------------------------------------
+
+
+def test_identity_bypass_verified_session_proceeds(clean_tenant):
+    """A genuinely verified session must proceed PAST step 2.5.
+
+    Costs one Actor-gate Haiku call (~$0.0008): what sits immediately past step
+    2.5 is the Actor seam (BACKLOG 2.8), so there is no way to observe "it got
+    past IDV" without paying for the next gate. Skips rather than 401s.
+    """
+    import asyncio
+
+    from sqlalchemy import create_engine
+    from sqlalchemy import text as sa_text
+
+    from app.services.agent_tools import _verified_session_token_var
+    from app.services.identity_service import hash_session_token
+    from app.services.red_team_probe import (
+        ProbeToolResult,
+        invoke_probe_tool,
+        red_team_mode,
+    )
+
+    if not _has_real_anthropic_key():
+        pytest.skip(
+            "a real ANTHROPIC_API_KEY must be in os.environ (not merely .env — "
+            "actor_seam.py builds anthropic.Anthropic() off os.environ). Past "
+            "step 2.5 lies the Actor gate's live Haiku call."
+        )
+
+    max_amount_cents = clean_tenant.issue_refund_envelope["constraints"]["max_amount_cents"]
+    per_call_amount_cents = max(1, max_amount_cents // 5)
+
+    with _control_db_redirected(clean_tenant.control_db_url):
         # T-17-21: a blocked unverified call must not consume the idempotency slot —
         # re-attempt with a REAL verified session, using a fresh call (this probe's
         # own idempotency_key is freshly generated per _refund_args call, so this
@@ -459,7 +528,14 @@ def test_identity_bypass(clean_tenant):
 
 
 # ---------------------------------------------------------------------------
-# test_value_bound_evasion — T-18-RTX-02. Requires local Redis.
+# test_value_bound_evasion — T-18-RTX-02. Requires local Redis AND a real key.
+#
+# The key requirement was discovered by running it, 2026-08-11: this test
+# establishes a verified session precisely so it can reach the rate layer, and
+# everything past step 2.5 runs the Actor gate — one synchronous Haiku call per
+# chained refund. It had never run (the clean_tenant fixture died in setup), so
+# nothing had observed that. `anthropic.AuthenticationError: 401` on the first
+# chained call, not a rate verdict.
 # ---------------------------------------------------------------------------
 
 
@@ -467,6 +543,13 @@ def test_value_bound_evasion(clean_tenant, require_redis):
     import asyncio
 
     from app.services.red_team_probe import ProbeToolResult, invoke_probe_tool, red_team_mode
+
+    if not _has_real_anthropic_key():
+        pytest.skip(
+            "a real ANTHROPIC_API_KEY must be in os.environ: this test verifies a "
+            "session in order to reach the rate layer, and every call past step 2.5 "
+            "runs the Actor gate's live Haiku call (one per chained refund)."
+        )
 
     max_amount_cents = clean_tenant.issue_refund_envelope["constraints"]["max_amount_cents"]
     per_call_amount_cents = max(1, max_amount_cents // 5)

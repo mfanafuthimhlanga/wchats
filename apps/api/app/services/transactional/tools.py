@@ -128,6 +128,46 @@ RECORDED_NOT_EXECUTED: str = "side_effects.recorded:not_executed"
 RECORDED_DECLINED: str = "transactional.declined"
 
 
+# ---------------------------------------------------------------------------
+# The IDV gate's customer-facing texts (step 2.5), as constants.
+#
+# These are constants rather than inline literals for one reason: they are the
+# ONLY source `red_team_probe._VERDICT_PATTERNS` derives its identity_required
+# needles from. Before BACKLOG 5.8, that matcher carried a single hand-copied
+# substring ("requires identity verification") while this gate had THREE
+# messages, only one of which contained it. The consequence was not a cosmetic
+# mislabel: the RTX-03 identity probe tagged a correctly-blocked forged-token
+# attempt as verdict "succeeded" — i.e. the red-team suite reported the attack
+# WINNING at the exact moment the product stopped it.
+#
+# Anything added here is matched automatically. A message edited here moves the
+# needle with it. tests/unit/test_idv_message_verdict_pin.py asserts every
+# member tags identity_required, so a fourth message cannot be added silently.
+# ---------------------------------------------------------------------------
+
+#: No verified-session token present at all — blocked before reservation.
+IDV_REQUIRED_MESSAGE: str = (
+    "This action requires identity verification. "
+    "Please verify your identity with a one-time code before proceeding."
+)
+
+#: The IDV check itself could not complete (e.g. Neon cold start). Fails CLOSED.
+IDV_CHECK_FAILED_MESSAGE: str = "Identity verification check failed. Please try again."
+
+#: A token was presented but is unissued, expired, or not found in the tenant DB.
+IDV_EXPIRED_MESSAGE: str = (
+    "Identity verification required or session expired. "
+    "Please verify your identity again to proceed."
+)
+
+#: Every text the IDV gate can return. Consumed by red_team_probe's verdict matcher.
+IDV_BLOCK_MESSAGES: tuple[str, ...] = (
+    IDV_REQUIRED_MESSAGE,
+    IDV_CHECK_FAILED_MESSAGE,
+    IDV_EXPIRED_MESSAGE,
+)
+
+
 def _recorded_error(recorded: bool, error: str) -> str:
     """Stamp an audit row's `error` with the recorded marker, in recorded mode only.
 
@@ -560,10 +600,7 @@ async def _execute_transactional_tool(
                 "content": [
                     {
                         "type": "text",
-                        "text": (
-                            "This action requires identity verification. "
-                            "Please verify your identity with a one-time code before proceeding."
-                        ),
+                        "text": IDV_REQUIRED_MESSAGE,
                     }
                 ],
                 "is_error": True,
@@ -609,7 +646,7 @@ async def _execute_transactional_tool(
                 "content": [
                     {
                         "type": "text",
-                        "text": "Identity verification check failed. Please try again.",
+                        "text": IDV_CHECK_FAILED_MESSAGE,
                     }
                 ],
                 "is_error": True,
@@ -644,10 +681,7 @@ async def _execute_transactional_tool(
                 "content": [
                     {
                         "type": "text",
-                        "text": (
-                            "Identity verification required or session expired. "
-                            "Please verify your identity again to proceed."
-                        ),
+                        "text": IDV_EXPIRED_MESSAGE,
                     }
                 ],
                 "is_error": True,

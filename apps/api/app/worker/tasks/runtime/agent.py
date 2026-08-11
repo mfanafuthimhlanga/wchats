@@ -51,6 +51,7 @@ from claude_agent_sdk import (
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
+    UserMessage,
 )
 from langfuse import Langfuse
 from sqlalchemy import text as sa_text
@@ -901,6 +902,12 @@ async def _run_sdk_turn(
     """
     response_text = ""
     tool_calls_log: list[dict] = []
+    # tool_use_id -> short tool name. ToolResultBlock carries ONLY tool_use_id,
+    # content and is_error (claude_agent_sdk types.py:944-949) — it has no `name`
+    # field, so the result's tool can be known only by joining back to the
+    # ToolUseBlock that produced it. See the block comment at the UserMessage
+    # branch below for why this replaced `getattr(block, "name", "unknown")`.
+    tool_names_by_use_id: dict[str, str] = {}
     escalated = False
     escalation_reason: str | None = None
     escalation_context: str | None = None
@@ -908,6 +915,75 @@ async def _run_sdk_turn(
     total_cost_usd_out: float | None = None
     num_turns_out: int | None = None
     stop_reason_out: str | None = None
+
+    def _handle_tool_result(block: ToolResultBlock) -> None:
+        """Record one MCP tool result: the SSE event plus the two retrieve captures.
+
+        Extracted from the AssistantMessage branch (BACKLOG 5.9, 2026-08-11)
+        because it must be reachable from the UserMessage branch, which is where
+        the CLI actually delivers tool results.
+
+        The tool NAME comes from tool_names_by_use_id, never from the block: a
+        ToolResultBlock has no `name` attribute at all, so the previous
+        `getattr(block, "name", "unknown")` could only ever produce "unknown" —
+        and retrieval_eval.py:194 selects job_events on
+        `payload["tool_name"] == "retrieve"`, which "unknown" never matches.
+        Two stacked defects; fixing the message type alone would have emitted
+        events that still joined to nothing.
+        """
+        use_id = getattr(block, "tool_use_id", "")
+        tool_name_short = tool_names_by_use_id.get(use_id, "unknown")
+        if tool_name_short == "unknown":
+            # Should be unreachable: a result always follows the ToolUseBlock that
+            # produced it, and every one of those is recorded above. Logged rather
+            # than silently tolerated, because "unknown" is exactly the value the
+            # old defect produced for EVERY result, and it joins to nothing
+            # downstream. If this line ever appears, the retrieve capture below
+            # was skipped and the Auditor's context for this turn is short.
+            log.warning(
+                "_run_sdk_turn.tool_result_unresolved",
+                job_id=job_id,
+                tool_use_id=use_id,
+                known_ids=len(tool_names_by_use_id),
+            )
+        raw = getattr(block, "content", "")
+        emit(
+            job_id,
+            "agent.tool_result",
+            {
+                "tool_name": tool_name_short,
+                "summary": str(raw)[:200],
+            },
+            db,
+            redis,
+        )
+        # TWO captures of one retrieve result, for two readers.
+        #
+        # `result` — unchanged, byte-for-byte: the Auditor's
+        # retrieved_context_json and the retrieval-faithfulness
+        # sampler read it, and RETRIEVE_RESULT_CAPTURE_CHARS
+        # bounds it because it also reaches a jsonb column.
+        #
+        # RETRIEVE_CHUNKS_KEY — the same result decoded into one
+        # string per CHUNK, untruncated, for the eval (D1/P2
+        # review). Handing Ragas `result` handed it a repr, cut
+        # below one full chunk, in a single-element list; the
+        # capture format then dominated Faithfulness and
+        # ContextPrecision. Not persisted: _persist_messages
+        # writes tool_name / input / result only.
+        if tool_name_short != "retrieve":
+            return
+        for tc in reversed(tool_calls_log):
+            if tc.get("tool_name") == "retrieve" and "result" not in tc:
+                tc["result"] = str(raw)[:RETRIEVE_RESULT_CAPTURE_CHARS]
+                chunks = _retrieved_chunk_texts(_tool_result_text(raw))
+                tc[RETRIEVE_CHUNKS_KEY] = chunks or []
+                tc[RETRIEVE_CHUNKS_SOURCE_KEY] = (
+                    RETRIEVE_CHUNKS_PARSED
+                    if chunks is not None
+                    else RETRIEVE_CHUNKS_UNPARSED
+                )
+                break
 
     async with ClaudeSDKClient(options=options) as client:
         await client.query(message)
@@ -919,6 +995,7 @@ async def _run_sdk_turn(
 
                     elif isinstance(block, ToolUseBlock):
                         tool_name_short = block.name.removeprefix("mcp__customer-tools__")
+                        tool_names_by_use_id[block.id] = tool_name_short
                         emit(
                             job_id,
                             "agent.tool_call",
@@ -937,45 +1014,37 @@ async def _run_sdk_turn(
                             escalation_context = block.input.get("context")
 
                     elif isinstance(block, ToolResultBlock):
-                        tool_name_short = getattr(block, "name", "unknown").removeprefix(
-                            "mcp__customer-tools__"
-                        )
-                        emit(
-                            job_id,
-                            "agent.tool_result",
-                            {
-                                "tool_name": tool_name_short,
-                                "summary": str(getattr(block, "content", ""))[:200],
-                            },
-                            db,
-                            redis,
-                        )
-                        # TWO captures of one retrieve result, for two readers.
-                        #
-                        # `result` — unchanged, byte-for-byte: the Auditor's
-                        # retrieved_context_json and the retrieval-faithfulness
-                        # sampler read it, and RETRIEVE_RESULT_CAPTURE_CHARS
-                        # bounds it because it also reaches a jsonb column.
-                        #
-                        # RETRIEVE_CHUNKS_KEY — the same result decoded into one
-                        # string per CHUNK, untruncated, for the eval (D1/P2
-                        # review). Handing Ragas `result` handed it a repr, cut
-                        # below one full chunk, in a single-element list; the
-                        # capture format then dominated Faithfulness and
-                        # ContextPrecision. Not persisted: _persist_messages
-                        # writes tool_name / input / result only.
-                        for tc in reversed(tool_calls_log):
-                            if tc.get("tool_name") == "retrieve" and "result" not in tc:
-                                raw = getattr(block, "content", "")
-                                tc["result"] = str(raw)[:RETRIEVE_RESULT_CAPTURE_CHARS]
-                                chunks = _retrieved_chunk_texts(_tool_result_text(raw))
-                                tc[RETRIEVE_CHUNKS_KEY] = chunks or []
-                                tc[RETRIEVE_CHUNKS_SOURCE_KEY] = (
-                                    RETRIEVE_CHUNKS_PARSED
-                                    if chunks is not None
-                                    else RETRIEVE_CHUNKS_UNPARSED
-                                )
-                                break
+                        # Kept for tolerance, not relied upon: message_parser.py:148
+                        # can build one here, but no observed CLI output ever has.
+                        _handle_tool_result(block)
+
+            elif isinstance(msg, UserMessage):
+                # WHERE TOOL RESULTS ACTUALLY ARRIVE (BACKLOG 5.9).
+                #
+                # This branch did not exist. The loop read ToolResultBlock only
+                # inside AssistantMessage, and the CLI emits tool results as
+                # `{"type":"user", "message":{"role":"user","content":[{"type":
+                # "tool_result",...}]}}` — so the branch was unreachable and every
+                # downstream reader of a tool result was reading a channel nothing
+                # ever wrote:
+                #   - `agent.tool_result` job_events: never emitted, so
+                #     retrieval_eval._fetch_turn_context always built [].
+                #   - tc["result"]: never set, so the Auditor — the GROUNDING
+                #     judge — was handed retrieved_context_json == "[]" on every
+                #     single turn (agent.py's dispatch below).
+                #   - RETRIEVE_CHUNKS_KEY: never set, so eval.py:495 always saw
+                #     zero chunks and excluded the row as `no_retrieval`.
+                #
+                # Evidence for the message type, gathered before the change: the
+                # SDK's own transcript readers treat tool_result as a user-entry
+                # phenomenon (_internal/sessions.py:277-280 and
+                # _internal/session_summary.py:81-92), and 42,334 tool_result
+                # entries across 782 real CLI session transcripts are ALL
+                # type:"user" — assistant-carried count zero.
+                if isinstance(msg.content, list):
+                    for block in msg.content:
+                        if isinstance(block, ToolResultBlock):
+                            _handle_tool_result(block)
 
             elif isinstance(msg, ResultMessage):
                 sdk_session_id_out = msg.session_id
