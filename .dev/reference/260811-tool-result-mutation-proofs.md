@@ -148,6 +148,32 @@ where the original failure was an opaque
 
 ---
 
+## M1′ / M2′ — re-proved after the module-scope lift (`5102ddf`)
+
+The full unit gate failed `test_agent_options_seam::test_agent_py_has_no_nested_function_definitions`:
+`agent.py` forbids nested `def`s, because the static seam guards attribute calls to the module-scope
+function containing them and a nested def can hide a second `ClaudeAgentOptions` construction from
+that attribution. The handler was lifted to module scope. **Both proofs re-run against the new
+shape**, because a proof of the old shape says nothing about the shipped one:
+
+```
+###### M1' — UserMessage branch disabled (post-lift) ######
+7 failed, 5 passed in 28.00s
+--- restored ---
+12 passed in 41.10s
+
+###### M2' — name read off the result block again (post-lift) ######
+5 failed, 7 passed in 42.49s
+--- restored ---
+12 passed in 31.95s
+```
+
+Worth recording separately: **the gate caught this, not review and not the targeted runs.** Every
+module touched by the change was green before the full suite ran — the violated guard lives in
+`test_agent_options_seam.py`, which the change does not touch and which no reasonable "related
+modules" selection would have included. It is an argument for running the whole gate rather than the
+neighbourhood.
+
 ## One harness defect found by a proof failing for the wrong reason
 
 The five new `test_red_team_probe.py` tests failed on first run **after** the fix, with an empty

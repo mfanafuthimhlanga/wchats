@@ -7,24 +7,80 @@
 >
 > ## Where the code is
 >
-> **`chore/local-postgres`, tip `b020b91`, clean tree, UNMERGED.** 30 commits ahead of `main`
+> **`chore/local-postgres`, tip `5102ddf`, clean tree, UNMERGED.** 32 commits ahead of `main`
 > (`main` is at `57be16b` and already carries D1 + D6). **All three gates run by the session and
 > observed, not relayed from an agent:**
 >
 > ```
-> unit                          2167 passed, 13 skipped, 0 failed    584s
-> integration (flag OFF, gate)    15 passed, 22 skipped, 0 failed    ~250s
-> integration (flag ON)           28 passed,  5 skipped, 1 failed    490s
+> unit                          2193 passed, 13 skipped, 0 failed    717s
+> integration (flag OFF, gate)    15 passed, 47 skipped, 0 failed    281s
+> integration (flag ON)           NOT RE-RUN AFTER dc67d37 — see below
 > ```
 >
-> The single flag-ON failure is **`BACKLOG 5.6`** — an audit-provenance decision for the owner, not a
-> regression. See the `1.13` section below for what flag-ON means and how to run it.
+> **Flag-ON has not been re-run on this tip and no figure is claimed for it.** The morning's reading
+> was `28 passed / 5 skipped / 1 failed`, and the one failure is `5.6`. What this change adds to that
+> run is `red_team_rtx`: `1 passed, 3 skipped` observed on its own. Whoever runs it next should
+> expect roughly `29 passed / 8 skipped / 1 failed` and should treat that as a prediction, not a
+> measurement.
+>
+> Unit is +26 on the morning's 2167/13, all of them new tests in this change; zero `FAILED`/`ERROR`
+> lines (`grep -cE "^(FAILED|ERROR)"` → 0). Flag-OFF's skip count moved 22 → 47 because
+> `red_team_rtx` is no longer deselected — those tests now *skip* under the OFF flag instead of being
+> excluded from collection, which is a more honest reading of the same state.
+>
+> The flag-ON failure to expect is **`BACKLOG 5.6`** — an audit-provenance decision for the owner,
+> not a regression. See the `1.13` section below for what flag-ON means and how to run it.
 >
 > **The "not one defect was in the product" line that stood here all morning is no longer true, and
-> that is the day's headline.** `git diff --stat 3e7fb8e..HEAD -- apps/api/app/` is now three files:
-> `config.py` (`hide_input_in_errors`), plus `transactional/tools.py` and
-> `transactional/confirmation_resolution.py` — **a live security defect found only once the skipped
-> suite was opened.**
+> that is the day's headline.** `git diff --stat 3e7fb8e..HEAD -- apps/api/app/` is now **five**
+> files: `config.py` (`hide_input_in_errors`), `transactional/tools.py`,
+> `transactional/confirmation_resolution.py`, `worker/tasks/runtime/agent.py` and
+> `services/red_team_probe.py` — **two live product defects, both found only by running things that
+> had never run.** One moves money (`a180624`); the other means the grounding judge has never seen
+> its evidence (`dc67d37`), and it has been that way since 2026-05-16.
+>
+> ## The measurement defect (`dc67d37`) — the day's second, and the larger of the two
+>
+> **Tool results arrive on `UserMessage`. Both consumers read them only from `AssistantMessage`.**
+> `_run_sdk_turn` (`agent.py`) and `_build_transactional_probe_fn` (`red_team_probe.py`) each had a
+> `ToolResultBlock` branch nested under `isinstance(msg, AssistantMessage)`. The CLI emits tool
+> results as `type:"user"`, so **both branches were unreachable** and three downstream readers were
+> consuming a channel nothing ever wrote:
+>
+> - `agent.tool_result` job_events — never emitted, so `retrieval_eval._fetch_turn_context` always
+>   built `[]`, `citation_coverage` was always `None`, and `run_retrieval_faithfulness` returned
+>   `no_signal` on every turn (`5.13`).
+> - `tc["result"]` — never set, so **the Auditor, the grounding judge, received
+>   `retrieved_context_json == "[]"` on every turn the platform has ever run** (`5.11`).
+> - `RETRIEVE_CHUNKS_KEY` — never set, so `eval.py` saw zero chunks and excluded every row as
+>   `no_retrieval`. D1/P2's untruncated-chunk capture, closed as `2.13` on a code reading, was inert
+>   from the day it landed.
+>
+> **Age: `git log -S` returns ONE commit — `2b38648`, 2026-05-16, the original `run_agent_turn`.**
+> Born dead, never executed once, through ~3 months, 23 phases, a seven-defect measurement audit and
+> two tier-2 judgements. Live on `main` (`57be16b`) right now.
+>
+> **A second defect was stacked underneath, and fixing the message type alone would NOT have fixed
+> it.** The handler read `getattr(block, "name", "unknown")`, but `ToolResultBlock` declares only
+> `tool_use_id` / `content` / `is_error`. `"unknown"` was the only value it could produce, and
+> `retrieval_eval.py:194` joins on `tool_name == "retrieve"`. Both consumers now resolve the name by
+> joining `tool_use_id` back to the `ToolUseBlock` — which also fixes mis-attribution under parallel
+> tool calls, which `red_team_probe`'s single `pending_skill` variable got wrong by construction.
+>
+> **Settled for free, before touching code**, as `5.9` asked: (a) the SDK's own transcript readers
+> treat `tool_result` as a user-entry phenomenon (`_internal/sessions.py:277-280`,
+> `_internal/session_summary.py:81-92`); (b) **42,334** `tool_result` entries across **782** real CLI
+> session transcripts on this machine are all `type:"user"`, **zero** assistant-carried; (c) the
+> Messages API shape. Six mutation proofs, all red first time —
+> `.dev/reference/260811-tool-result-mutation-proofs.md`.
+>
+> **Why nothing caught it:** every unit test of that loop installs a fake `claude_agent_sdk` and
+> hand-builds the message stream, so the stream's shape was whatever the test assumed — the same
+> assumption the code made. That is a new retro family (**Family I**, "the code was correct; the
+> shape it was handed was never checked") and `a180624` below is its first member.
+>
+> **What is still unproven:** no test observes the stdout stream-json the SDK actually parses. Filed
+> as `5.10`, ~$0.12, and now worth buying.
 >
 > ## The security defect (`a180624`) — read this before touching enforcement
 >
@@ -120,16 +176,23 @@
 >    verdict in (`fail`,`ungrounded`,`partial`). Owner-run, against production. Decides whether the
 >    labelling loop is waiting on code or on traffic, and therefore whether `2.28` (the miner repair)
 >    and P4 (the console queue) are worth building at all. Cheapest high-leverage item in the queue.
-> 2. **`0.1`** — now genuinely unblocked: a tenant DB exists, so `capture_responses.py` can finally
+>    **Read `5.11` first:** every `auditor.complete` verdict in that table was produced against an
+>    empty retrieved context, so the counts describe a judge that could not see its evidence.
+> 2. **`5.10` — the ~$0.12 that is now worth spending, and was not this morning.** One live
+>    `test_confused_deputy` turn. Everything in `dc67d37` is verified against the message shape
+>    observed in 42,334 real CLI transcript entries, but **no test observes the stdout stream-json
+>    the SDK actually parses** — every one constructs SDK dataclasses directly. That is the single
+>    gap the static evidence cannot close. Before the fix the same $0.12 could only have bought a
+>    vacuous pass.
+> 3. **`0.1`** — now genuinely unblocked: a tenant DB exists, so `capture_responses.py` can finally
 >    produce the transcripts the owner would score. Judge calibration is downstream of it.
-> 3. **`0.4`** — before anything runs nightly. `eval-nightly` fires at 02:00 UTC and full Neon quota
+> 4. **`0.4`** — before anything runs nightly. `eval-nightly` fires at 02:00 UTC and full Neon quota
 >    is free, so the first beat worker against production sends customer rows to the Ragas judge with
 >    `pii_firewall_applied=False`.
-> 4. **`5.9`, and do it before spending anything.** `test_confused_deputy` costs ~$0.12 and may be
->    buying a vacuous pass: `red_team_probe.py:349` collects `ToolResultBlock` only inside
->    `AssistantMessage`, but the CLI emits tool results as `type:"user"`. Dead branch ⇒ empty
->    transcript ⇒ every assertion passes over zero lines. Settle it statically, then decide on the
->    spend. `5.8` is adjacent and **free** to confirm.
+>
+> ~~`5.9` / `5.8`~~ — **both closed 2026-08-11** (`dc67d37`, `5102ddf`). `5.9` was settled
+> statically and for free exactly as the row asked, and it was **larger than filed**: the same dead
+> branch is on the production customer turn path. See the section below.
 >
 > ## `1.13` — LARGELY CLOSED 2026-08-11. How to run the opened suite
 >
@@ -145,7 +208,16 @@
 >
 > **The 5 remaining skips are a hard floor, not neglect:** `stripe_live` ×2 (Stripe test credentials),
 > `ingestion_e2e` ×2 (live ingestion APIs), `test_ingestion_chain` ×1 (docling `pipeline` extra).
-> `red_team_rtx` ×3 is deselected pending `5.8`/`5.9`.
+> ~~`red_team_rtx` ×3 is deselected pending `5.8`/`5.9`.~~ **`red_team_rtx` RUNS as of 2026-08-11:
+> `1 passed, 3 skipped, 0 failed`** (`1.13c`). Getting there needed the module's `clean_tenant` to be
+> fixed — it had the *identical* `get_sync_db`-bound-above-`_control_db_redirected` bug fixed in
+> `ver01`, which `1.13b` predicted here and marked unverified. Now verified, fixed, and it was the
+> **last** instance. Its 3 remaining skips are all "needs a real key in `os.environ`", and two of
+> them are newly-discovered facts rather than known ones: **`test_identity_bypass` and
+> `test_value_bound_evasion` both make live model calls**, because everything past the IDV gate hits
+> the Actor gate. The module docstring claimed the former needed no Anthropic API; it 401'd the first
+> time it ever ran. Same shape as `ver01`'s "every mutating call dies at the IDV gate" — a confident
+> claim from a method that could not have checked it, on a test that had never executed.
 >
 > **What opening them found is the point, not the count:** the `a180624` security defect above; two
 > live model-call paths open in the chat tests (unpatched Haiku judges at `agent.py:1428`, and a real
@@ -164,9 +236,23 @@
 >
 > ## Two things worth carrying forward about how this went
 >
+> - **A mock is a claim about a boundary, and nothing required anyone to evidence it.** That is the
+>   whole of `dc67d37` and of `a180624`, and it is now `retro.md` **Family I**. Reviews checked the
+>   code against its tests and the tests against the code; the loop closes without either being
+>   checked against the boundary. New rule: a fixture standing in for a third-party boundary must be
+>   built by the real producer or from a real captured sample. The new stream tests build their
+>   retrieve payload with the production framer for exactly this reason.
+> - **`getattr(x, "name", default)` is how that family hides.** A default that is silently plausible
+>   for the wrong input type converts a boundary mismatch into a value instead of an exception —
+>   `"unknown"` here, `None` in the `max_amount_cents` case. Both defects were one raised
+>   `AttributeError` away from being found in May.
+> - **The full gate earned its runtime.** `test_agent_options_seam`'s nested-def guard caught the
+>   first shape of this fix. Every module the change touched was green; the guard that failed lives
+>   in a module the change does not touch, so no "related modules" selection would have run it.
 > - **Three of the thirteen defects were recorded somewhere as already fixed.** Unobserved is not
 >   passing — the principle this repo writes down for metrics, holding identically for its own test
->   suite.
+>   suite. **`2.13` is now a fourth**: closed 2026-08-08 on a code reading, and the code it described
+>   was correct and unreachable.
 > - **The session made three errors worth knowing about**, all corrected in the record: tier-1
 >   reviews were labelled tier-2 twice; a suite figure was reported as "still running" when the run
 >   had been killed; and a wall-clock regression was diagnosed from two data points and did not

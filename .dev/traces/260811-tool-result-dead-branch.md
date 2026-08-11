@@ -91,6 +91,8 @@ repo's own rule about its metrics and holds for its test suite.
 
 ## Observed
 
+Targeted:
+
 ```
 tests/unit/test_agent_tool_result_stream.py     12 passed          (new)
 tests/unit/test_idv_message_verdict_pin.py       9 passed          (new)
@@ -98,6 +100,22 @@ tests/unit/test_red_team_probe.py               23 passed          (18 pre-exist
 directly-related modules (5 files)             172 passed
 integration test_red_team_rtx.py    1 passed, 3 skipped, 0 failed  (was: 1 error at setup)
 ```
+
+Gates, run by the session at tip `5102ddf` and observed, not relayed:
+
+```
+unit                        2193 passed, 13 skipped, 0 failed   716.68s
+                            grep -cE "^(FAILED|ERROR)" -> 0
+integration (flag OFF)        15 passed, 47 skipped, 0 failed   281.05s
+```
+
+Unit is +26 on the 2167/13 baseline, every one a test added here. Flag-OFF's skips moved 22 → 47
+because `red_team_rtx` is no longer deselected: those tests now skip under the OFF flag rather than
+being excluded from collection. Same state, more honestly counted.
+
+**The first full-gate run failed** — `test_agent_options_seam::test_agent_py_has_no_nested_function_definitions`,
+1 failed / 2192 passed. Real, and fixed in `5102ddf` (see Deviations). The figures above are the
+second run, on the shipped tree.
 
 Six mutation proofs, all red first time, all restored green — full verbatim output in the reference
 file.
@@ -112,6 +130,17 @@ file.
 - A harness defect cost one debugging cycle: `_sdk_blocks()` re-imported per call, so tests compared
   instances of one class object against `isinstance` of another and collected nothing — manufacturing
   the exact symptom under test. Now cached, with the reason written at the definition.
+- **The handler was written nested inside `_run_sdk_turn` and had to be lifted** (`5102ddf`).
+  `agent.py` forbids nested `def`s — the static seam guards attribute calls to the module-scope
+  function containing them, so a nested def can hide a second `ClaudeAgentOptions` construction.
+  Caught by the full gate, not by review and not by the touched modules: the guard lives in
+  `test_agent_options_seam.py`, which this change does not touch and which no "related modules"
+  selection would have picked up. M1 and M2 were re-proved against the lifted shape rather than
+  carried over.
+- While lifting, the `getattr(..., default)` reads became direct attribute access. `ToolResultBlock`
+  declares `tool_use_id` and `content`, so a shape mismatch should raise rather than quietly produce
+  a plausible value — which is the second standing rule of the retro family this change adds, applied
+  to itself.
 
 ## What is still unproven, and what it would cost
 
@@ -119,6 +148,14 @@ Every test here constructs SDK dataclasses directly, so they verify the **loop**
 shape — never that the CLI emits that shape. The three evidence lines carry that claim. One live turn
 (`test_confused_deputy`, ~$0.12) closes it, and it is **now worth spending**, which it was not before:
 before the fix it could only have bought a vacuous pass.
+
+## How long it has been true
+
+`git log -S "elif isinstance(block, ToolResultBlock):" -- .../agent.py` returns **one** commit:
+`2b38648`, **2026-05-16** — "feat(04-03): add run_agent_turn Celery task". The branch was born dead
+and has never executed once, across ~3 months, 23 phases, a seven-defect measurement audit and two
+tier-2 judgements. It is live on `main` (`57be16b`) as of this writing, which is what makes it a
+regression-policy case rather than a branch-local slip — hence the `retro.md` entry (Family I).
 
 ## Consequence the owner should know about
 
