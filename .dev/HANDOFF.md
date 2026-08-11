@@ -3,23 +3,49 @@
 > **`.dev/BACKLOG.md` is the single ordered list of open work.** Read it before starting anything.
 > This file is the current-state snapshot; that one is the queue.
 
-> # START HERE — session boundary, 2026-08-11
+> # START HERE — session boundary, 2026-08-11 (end of day)
 >
 > ## Where the code is
 >
-> **`chore/local-postgres`, tip `9249b8b`, clean tree, UNMERGED.** 15 commits ahead of `main`
-> (`main` is at `57be16b` and already carries D1 + D6). **Both gates verified by the session, not
-> relayed from an agent:**
+> **`chore/local-postgres`, tip `b020b91`, clean tree, UNMERGED.** 30 commits ahead of `main`
+> (`main` is at `57be16b` and already carries D1 + D6). **All three gates run by the session and
+> observed, not relayed from an agent:**
 >
 > ```
-> integration    15 passed, 22 skipped, 24 deselected, 0 failed    119s
-> unit         2164 passed, 13 skipped, 0 failed                   394s
+> unit                          2167 passed, 13 skipped, 0 failed    584s
+> integration (flag OFF, gate)    15 passed, 22 skipped, 0 failed    ~250s
+> integration (flag ON)           28 passed,  5 skipped, 1 failed    490s
 > ```
 >
-> Thirteen defects fixed on this branch and **not one was in the product** — `git diff --stat
-> 3e7fb8e..HEAD -- apps/api/app/` is a single line (`hide_input_in_errors=True` on `Settings`).
-> Everything else was the test suite lying about itself. Full story:
-> `.dev/traces/260810-local-postgres.md` + `260811-review-fixes.md`.
+> The single flag-ON failure is **`BACKLOG 5.6`** — an audit-provenance decision for the owner, not a
+> regression. See the `1.13` section below for what flag-ON means and how to run it.
+>
+> **The "not one defect was in the product" line that stood here all morning is no longer true, and
+> that is the day's headline.** `git diff --stat 3e7fb8e..HEAD -- apps/api/app/` is now three files:
+> `config.py` (`hide_input_in_errors`), plus `transactional/tools.py` and
+> `transactional/confirmation_resolution.py` — **a live security defect found only once the skipped
+> suite was opened.**
+>
+> ## The security defect (`a180624`) — read this before touching enforcement
+>
+> **`max_amount_cents` was enforced nowhere.** `apply_rate_and_constraint_checks` reads the amount via
+> `getattr(args, "amount_cents", None)` and its docstring says *"args: Validated Pydantic input
+> model"* — but **both** production call sites passed a plain dict (`tools.py` step 4 passed
+> `raw_args`, typed `raw_args: dict`; `confirmation_resolution.py` step 4 passed the stored JSONB).
+> `getattr` on a dict returns the default, so `amount` was unconditionally `None` and the comparison
+> at `enforcement.py:370` could never be true. **A refund of any size cleared its envelope's value
+> bound** and went on to the Actor gate and the adapter. Both sites now pass `validated`.
+>
+> Mutation-proved: reverting `tools.py` alone turns
+> `TestMaxAmountCentsIsEnforcedByTheDispatcher::test_over_ceiling_amount_is_denied_before_the_adapter`
+> red with `transactional_tool.success` in the log; restored, 95 pass.
+>
+> Why nothing caught it: `test_capability_enforcement.py` drives that function with a `MagicMock`,
+> whose attribute access succeeds. The dict shape production actually passes was never tested.
+>
+> **This also corrected `5.6`'s diagnosis.** The earlier claim — "the execution path never re-reads
+> the envelope, it trusts the frozen approval" — was **wrong**. It re-reads the live snapshot
+> correctly, exactly as its comment says, then compared it against a dict.
 >
 > ## The environment is real now — do not re-derive this
 >
@@ -99,20 +125,42 @@
 > 3. **`0.4`** — before anything runs nightly. `eval-nightly` fires at 02:00 UTC and full Neon quota
 >    is free, so the first beat worker against production sends customer rows to the Ragas judge with
 >    `pii_firewall_applied=False`.
-> 4. **`1.13` — STARTED 2026-08-11, inventory done and the first module opened.** All 22 skips are now
->    classified by what they actually need: **14 of 22 are one env var away** from the machine that
->    exists. Enabling the safest 3 (`act07`) failed all three instantly and exposed a real defect —
->    `alembic/env.py` let an ambient `CONTROL_DB_SYNC_URL` overwrite a URL an explicit programmatic
->    caller had set, so every fixture that migrates an ephemeral control DB through the Alembic Python
->    API was migrating the shared DB and then inserting into an unmigrated one. **Fixed** (`0887130`,
->    3 failed → 2 passed, observed both ways; standard gate unchanged at 15/22/24). The one surviving
->    failure is a **product** defect on the money path, filed as `5.6`. **`ver01` and `red_team_rtx`
->    are deliberately still off:** `.env` holds a real 108-char `ANTHROPIC_API_KEY` and `ver01` drives
->    100 messages through the dispatcher whose Actor gate is a synchronous Haiku call per mutating
->    attempt (`2.8`); the module argues they die earlier at the IDV gate, but that is a docstring, not
->    an observation. Settle by measurement before enabling. Next: the remaining 11 locally-runnable
->    skips, which the `env.py` fix plausibly unblocks — unverified.
->    Trace: `.dev/traces/260811-integration-skip-inventory.md`.
+> 4. **`5.9`, and do it before spending anything.** `test_confused_deputy` costs ~$0.12 and may be
+>    buying a vacuous pass: `red_team_probe.py:349` collects `ToolResultBlock` only inside
+>    `AssistantMessage`, but the CLI emits tool results as `type:"user"`. Dead branch ⇒ empty
+>    transcript ⇒ every assertion passes over zero lines. Settle it statically, then decide on the
+>    spend. `5.8` is adjacent and **free** to confirm.
+>
+> ## `1.13` — LARGELY CLOSED 2026-08-11. How to run the opened suite
+>
+> Integration went **`15 passed / 22 skipped` → `28 passed / 5 skipped / 1 failed`**. Six modules
+> opened, every one of which had never executed: `act07` (2/3), `ver01` (1), `prompt_versions` (6),
+> `integration_e2e` (2), `aud03` (1), `agent_chat` (2).
+>
+> **To run flag-ON**, set `INTEGRATION_TESTS_ENABLED=1` alongside the two URLs above **and export
+> `ANTHROPIC_API_KEY` into `os.environ`** — `.env` is not enough. Pydantic loads `.env` into
+> `Settings`; `actor_seam.py:38` builds `anthropic.Anthropic()` off `os.environ`, so `ver01` fails
+> `401 invalid x-api-key` rather than skipping. Cost of a full flag-ON pass is ~$0.024 (30 Actor-gate
+> calls in `ver01`; everything else stubs or patches its model calls).
+>
+> **The 5 remaining skips are a hard floor, not neglect:** `stripe_live` ×2 (Stripe test credentials),
+> `ingestion_e2e` ×2 (live ingestion APIs), `test_ingestion_chain` ×1 (docling `pipeline` extra).
+> `red_team_rtx` ×3 is deselected pending `5.8`/`5.9`.
+>
+> **What opening them found is the point, not the count:** the `a180624` security defect above; two
+> live model-call paths open in the chat tests (unpatched Haiku judges at `agent.py:1428`, and a real
+> `run_agent_turn` parked on the Redis `runtime` queue for whatever worker drained it next — that bill
+> lands detached from the test run); two outright tautologies, one of which closes `4.2`; a third
+> instance of `4.6`'s ContextVar bleed; and rows `5.7`/`5.8`/`5.9`.
+>
+> **Two method lessons worth carrying**, both the same shape — a confident claim from a method that
+> could not have detected what it ruled out. (a) `ver01`'s docstring argued every mutating call dies
+> at the IDV gate; the gate is conditional on a per-envelope flag set only on `issue_refund`, so it
+> covered 20 of 104. (b) An agent reported "the control chain has zero foreign keys — checked by
+> compiling the statement, no DB"; `agents.tenant_id` carries a FK and every insert raised
+> `ForeignKeyViolation`. Statement compilation cannot see a constraint.
+>
+> Trace: `.dev/traces/260811-integration-skip-inventory.md`.
 >
 > ## Two things worth carrying forward about how this went
 >
@@ -125,37 +173,12 @@
 >   exist. The pattern is inference stated at the confidence of observation — the same weakness the
 >   D1 tier-2 judge named in the branch it was reviewing.
 
-> # 2026-08-11, later — the skipped suite was opened, and it was hiding a security defect
+> # SUPERSEDED — historical, kept for the Neon-boundary detail. Was "IN FLIGHT", tip `d4f65e2`
 >
-> **Gates now, measured on this tree:**
->
-> ```
-> unit                          2167 passed, 13 skipped, 0 failed        584s
-> integration (flag ON)           28 passed,  5 skipped, 1 failed        490s
-> integration (flag OFF, gate)    15 passed, 22 skipped, 0 failed        ~250s
-> ```
->
-> The one integration failure is `5.6`, an audit-provenance decision for the owner, not a regression.
-> Run the flag-ON suite through `.dev/`-documented env plus `ANTHROPIC_API_KEY` exported into
-> `os.environ` — `ver01` 401s without it, because pydantic loads `.env` into `Settings` only.
->
-> **The headline is not the count. `max_amount_cents` was enforced nowhere** (`a180624`).
-> `apply_rate_and_constraint_checks` reads the amount via `getattr(args, "amount_cents", None)`; both
-> production call sites passed a plain dict, so `amount` was always `None` and the ceiling never
-> denied. A refund of any size cleared its envelope. Mutation-proved red/green. **This also corrected
-> `5.6`'s diagnosis** — the execution path does re-read the live snapshot, exactly as its comment
-> claims; it then compared it against a dict.
->
-> **Also found behind the skips:** two live model-call paths open in the chat tests (unpatched Haiku
-> judges, plus a real `run_agent_turn` parked on the Redis `runtime` queue for a later worker to bill);
-> two tautological tests; a third instance of `4.6`'s ContextVar bleed; and `5.7`/`5.8`/`5.9`.
-> `4.2` is closed — T-16-01's credential scan now carries a positive control.
->
-> **Next:** `5.9` first — decide whether `test_confused_deputy` is real before spending its ~$0.12,
-> since `red_team_probe.py:349` may collect nothing. `5.8` is free to confirm. Then `5.6`.
-> Trace: `.dev/traces/260811-integration-skip-inventory.md`.
->
-> # IN FLIGHT — `chore/local-postgres`, unmerged, tip `d4f65e2`
+> **Its gate figures and tip are stale** — see START HERE above for current. Its "the branch changed
+> only tests, docs and one config line" claim is also no longer true: `a180624` changed enforcement.
+> Still load-bearing below: the Neon-account history and the `nightly.yml` / `test_worker_kill`
+> destroying-or-leaking analysis, neither of which anything later revisited.
 >
 > **The environment is real now, and both gates are green on it.** PostgreSQL 17.6 with pgvector
 > 0.8.1 on `localhost:5432`, Redis on `:6379`, control DB at `0019`, a tenant probe DB at `0016`.
