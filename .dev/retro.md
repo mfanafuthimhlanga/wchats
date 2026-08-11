@@ -248,3 +248,56 @@ entry on ack, so this discriminates") is not evidence about the configuration un
 the assertion ships. An assertion that survives its own mutation gets **deleted**, and the gap gets a
 BACKLOG row (here, `1.12`), because a guard that has never been seen to fail is indistinguishable
 from a comment.
+
+## Family I — "the code was correct; the shape it was handed was never checked"
+
+**Recurrences: 3** (2026-08-11 — `max_amount_cents`, the `ToolResultBlock` branch, and the
+`tool_name` join underneath it).
+
+Family A is about measurements that cannot fail. This is its neighbour and it is *not* the same
+thing: here the logic is right, the tests are real, they exercise the logic, and they pass — but the
+**data shape** flowing in from a boundary was decided by the test author rather than observed from
+the boundary. Every test then agrees with the code because both were written from the same
+assumption, and the assumption is the defect.
+
+1. **`max_amount_cents` enforced nowhere** (`a180624`, earlier the same day).
+   `apply_rate_and_constraint_checks` reads the amount with `getattr(args, "amount_cents", None)`.
+   Its logic is correct. Both production call sites passed a plain `dict`, on which `getattr`
+   returns the default, so the ceiling compared `None` and a refund of any size cleared its
+   envelope. `test_capability_enforcement.py` drives the function with a `MagicMock`, whose
+   attribute access always succeeds — so the one shape production actually passes was the one shape
+   never tested.
+2. **Tool results collected from the wrong message type** (`dc67d37`). `_run_sdk_turn` and
+   `_build_transactional_probe_fn` read `ToolResultBlock` only inside `AssistantMessage`; the CLI
+   emits tool results as `type:"user"`. Every unit test of that loop installs a fake
+   `claude_agent_sdk` and hand-builds the stream, so the stream's shape was whatever the test
+   assumed. Three downstream readers consumed a channel nothing ever wrote — including the Auditor,
+   which judged **grounding** against an empty context on every turn the platform has ever run.
+3. **The `tool_name` that could only ever be `"unknown"`** (same commit, stacked underneath #2).
+   `getattr(block, "name", "unknown")` reads a field `ToolResultBlock` does not declare. Reachable
+   or not, it could never produce a name, and `retrieval_eval` joins on `tool_name == "retrieve"`.
+   **Fixing #2 alone would have emitted events that still joined to nothing** — which is why the two
+   were mutation-proved separately rather than as one change.
+
+**What the plans failed to anticipate:** a mock is a claim about a boundary, and nobody was required
+to evidence that claim. Reviews checked the code against its tests and the tests against the code;
+the loop closes without either being checked against the boundary. `2.13` was even *closed* on a
+code reading in the P2 review — the capture it describes was correct and sat in an unreachable
+branch, so the eval scored nothing rather than scoring a repr. Note that all three defects were
+found by **running something that had never run**, not by reading: #1 by opening a skipped
+integration test, #2 and #3 by settling a backlog row that asked for a static check.
+
+**Standing rule:** when a test fabricates data that a third-party boundary produces at runtime, the
+fixture must be built by the real producer or from a real captured sample — never hand-written from
+what the code expects. Where the producer cannot be run (an external CLI), the shape must be
+evidenced from real artifacts and the evidence recorded next to the code, with the residual gap
+named. Here: the SDK's own transcript readers, plus 42,334 `tool_result` entries across 782 real CLI
+session transcripts, all `type:"user"`, zero assistant-carried — and the residual gap (session JSONL
+is not literally the stdout stream-json the SDK parses) is written down as `5.10` rather than
+rounded off.
+
+**Second standing rule:** `getattr(x, "name", default)` and `dict.get` with a default are how this
+family hides. A default that is silently correct for the wrong input type turns a boundary mismatch
+into a plausible value instead of an exception. Where a field is required, read it as an attribute
+or a subscript and let it raise; where a default is genuinely wanted, log when it fires — the
+`_run_sdk_turn.tool_result_unresolved` warning added in `dc67d37` exists for exactly this reason.

@@ -243,6 +243,85 @@ def _retrieved_chunk_texts(result_text: str) -> list[str] | None:
     return texts
 
 
+def _record_tool_result(
+    block: "ToolResultBlock",
+    *,
+    tool_names_by_use_id: dict[str, str],
+    tool_calls_log: list[dict],
+    job_id: str,
+    db,
+    redis,
+) -> None:
+    """Record one MCP tool result: the SSE event plus the two retrieve captures.
+
+    Module scope, not nested inside `_run_sdk_turn`, because
+    `test_agent_options_seam.test_agent_py_has_no_nested_function_definitions`
+    forbids nested defs in this file — the static seam guards attribute calls to
+    the module-scope function containing them, and a nested def can hide a second
+    `ClaudeAgentOptions` construction from that attribution.
+
+    The tool NAME comes from `tool_names_by_use_id`, never from the block: a
+    `ToolResultBlock` declares only `tool_use_id` / `content` / `is_error`
+    (claude_agent_sdk types.py:944-949) and has no `name` at all. The previous
+    `getattr(block, "name", "unknown")` could therefore only ever produce
+    "unknown", and `retrieval_eval.py:194` selects job_events on
+    `payload["tool_name"] == "retrieve"` — which "unknown" never matches. That
+    was a second defect stacked under the dead-branch one (BACKLOG 5.9): fixing
+    the message type alone would have emitted events that still joined to
+    nothing. Fields are read as attributes rather than via `getattr` defaults so
+    a shape mismatch raises instead of quietly becoming a plausible value.
+    """
+    use_id = block.tool_use_id
+    tool_name_short = tool_names_by_use_id.get(use_id, "unknown")
+    if tool_name_short == "unknown":
+        # Should be unreachable: a result always follows the ToolUseBlock that
+        # produced it, and every one of those is recorded by the caller. Logged
+        # rather than silently tolerated, because "unknown" is exactly the value
+        # the old defect produced for EVERY result and it joins to nothing
+        # downstream. If this line ever appears, the retrieve capture below was
+        # skipped and the Auditor's context for that turn is short.
+        log.warning(
+            "_run_sdk_turn.tool_result_unresolved",
+            job_id=job_id,
+            tool_use_id=use_id,
+            known_ids=len(tool_names_by_use_id),
+        )
+    raw = block.content
+    emit(
+        job_id,
+        "agent.tool_result",
+        {
+            "tool_name": tool_name_short,
+            "summary": str(raw)[:200],
+        },
+        db,
+        redis,
+    )
+    # TWO captures of one retrieve result, for two readers.
+    #
+    # `result` — unchanged, byte-for-byte: the Auditor's retrieved_context_json
+    # and the retrieval-faithfulness sampler read it, and
+    # RETRIEVE_RESULT_CAPTURE_CHARS bounds it because it also reaches a jsonb
+    # column.
+    #
+    # RETRIEVE_CHUNKS_KEY — the same result decoded into one string per CHUNK,
+    # untruncated, for the eval (D1/P2 review). Handing Ragas `result` handed it
+    # a repr, cut below one full chunk, in a single-element list; the capture
+    # format then dominated Faithfulness and ContextPrecision. Not persisted:
+    # _persist_messages writes tool_name / input / result only.
+    if tool_name_short != "retrieve":
+        return
+    for tc in reversed(tool_calls_log):
+        if tc.get("tool_name") == "retrieve" and "result" not in tc:
+            tc["result"] = str(raw)[:RETRIEVE_RESULT_CAPTURE_CHARS]
+            chunks = _retrieved_chunk_texts(_tool_result_text(raw))
+            tc[RETRIEVE_CHUNKS_KEY] = chunks or []
+            tc[RETRIEVE_CHUNKS_SOURCE_KEY] = (
+                RETRIEVE_CHUNKS_PARSED if chunks is not None else RETRIEVE_CHUNKS_UNPARSED
+            )
+            break
+
+
 # ---------------------------------------------------------------------------
 # Module-level helpers — tenant DB writes via psycopg2 (parameterised only)
 # ---------------------------------------------------------------------------
@@ -916,75 +995,6 @@ async def _run_sdk_turn(
     num_turns_out: int | None = None
     stop_reason_out: str | None = None
 
-    def _handle_tool_result(block: ToolResultBlock) -> None:
-        """Record one MCP tool result: the SSE event plus the two retrieve captures.
-
-        Extracted from the AssistantMessage branch (BACKLOG 5.9, 2026-08-11)
-        because it must be reachable from the UserMessage branch, which is where
-        the CLI actually delivers tool results.
-
-        The tool NAME comes from tool_names_by_use_id, never from the block: a
-        ToolResultBlock has no `name` attribute at all, so the previous
-        `getattr(block, "name", "unknown")` could only ever produce "unknown" —
-        and retrieval_eval.py:194 selects job_events on
-        `payload["tool_name"] == "retrieve"`, which "unknown" never matches.
-        Two stacked defects; fixing the message type alone would have emitted
-        events that still joined to nothing.
-        """
-        use_id = getattr(block, "tool_use_id", "")
-        tool_name_short = tool_names_by_use_id.get(use_id, "unknown")
-        if tool_name_short == "unknown":
-            # Should be unreachable: a result always follows the ToolUseBlock that
-            # produced it, and every one of those is recorded above. Logged rather
-            # than silently tolerated, because "unknown" is exactly the value the
-            # old defect produced for EVERY result, and it joins to nothing
-            # downstream. If this line ever appears, the retrieve capture below
-            # was skipped and the Auditor's context for this turn is short.
-            log.warning(
-                "_run_sdk_turn.tool_result_unresolved",
-                job_id=job_id,
-                tool_use_id=use_id,
-                known_ids=len(tool_names_by_use_id),
-            )
-        raw = getattr(block, "content", "")
-        emit(
-            job_id,
-            "agent.tool_result",
-            {
-                "tool_name": tool_name_short,
-                "summary": str(raw)[:200],
-            },
-            db,
-            redis,
-        )
-        # TWO captures of one retrieve result, for two readers.
-        #
-        # `result` — unchanged, byte-for-byte: the Auditor's
-        # retrieved_context_json and the retrieval-faithfulness
-        # sampler read it, and RETRIEVE_RESULT_CAPTURE_CHARS
-        # bounds it because it also reaches a jsonb column.
-        #
-        # RETRIEVE_CHUNKS_KEY — the same result decoded into one
-        # string per CHUNK, untruncated, for the eval (D1/P2
-        # review). Handing Ragas `result` handed it a repr, cut
-        # below one full chunk, in a single-element list; the
-        # capture format then dominated Faithfulness and
-        # ContextPrecision. Not persisted: _persist_messages
-        # writes tool_name / input / result only.
-        if tool_name_short != "retrieve":
-            return
-        for tc in reversed(tool_calls_log):
-            if tc.get("tool_name") == "retrieve" and "result" not in tc:
-                tc["result"] = str(raw)[:RETRIEVE_RESULT_CAPTURE_CHARS]
-                chunks = _retrieved_chunk_texts(_tool_result_text(raw))
-                tc[RETRIEVE_CHUNKS_KEY] = chunks or []
-                tc[RETRIEVE_CHUNKS_SOURCE_KEY] = (
-                    RETRIEVE_CHUNKS_PARSED
-                    if chunks is not None
-                    else RETRIEVE_CHUNKS_UNPARSED
-                )
-                break
-
     async with ClaudeSDKClient(options=options) as client:
         await client.query(message)
         async for msg in client.receive_response():
@@ -1016,7 +1026,14 @@ async def _run_sdk_turn(
                     elif isinstance(block, ToolResultBlock):
                         # Kept for tolerance, not relied upon: message_parser.py:148
                         # can build one here, but no observed CLI output ever has.
-                        _handle_tool_result(block)
+                        _record_tool_result(
+                            block,
+                            tool_names_by_use_id=tool_names_by_use_id,
+                            tool_calls_log=tool_calls_log,
+                            job_id=job_id,
+                            db=db,
+                            redis=redis,
+                        )
 
             elif isinstance(msg, UserMessage):
                 # WHERE TOOL RESULTS ACTUALLY ARRIVE (BACKLOG 5.9).
@@ -1044,7 +1061,14 @@ async def _run_sdk_turn(
                 if isinstance(msg.content, list):
                     for block in msg.content:
                         if isinstance(block, ToolResultBlock):
-                            _handle_tool_result(block)
+                            _record_tool_result(
+                                block,
+                                tool_names_by_use_id=tool_names_by_use_id,
+                                tool_calls_log=tool_calls_log,
+                                job_id=job_id,
+                                db=db,
+                                redis=redis,
+                            )
 
             elif isinstance(msg, ResultMessage):
                 sdk_session_id_out = msg.session_id
