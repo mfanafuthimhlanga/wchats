@@ -99,11 +99,20 @@
 > 3. **`0.4`** — before anything runs nightly. `eval-nightly` fires at 02:00 UTC and full Neon quota
 >    is free, so the first beat worker against production sends customer rows to the Ragas judge with
 >    `pii_firewall_applied=False`.
-> 4. **`1.13`** — `INTEGRATION_TESTS_ENABLED=1` unlocks ~29 tests across both suites, including the
->    migration roundtrips for `0013`–`0016`. Their skip messages describe exactly the machine that
->    now exists. Not switched on casually: `test_ver01_adversarial_harness` runs a 100-message
->    adversarial gate, `test_worker_kill` does a kill-9, `test_red_team_rtx` wants a real
->    `ANTHROPIC_API_KEY`.
+> 4. **`1.13` — STARTED 2026-08-11, inventory done and the first module opened.** All 22 skips are now
+>    classified by what they actually need: **14 of 22 are one env var away** from the machine that
+>    exists. Enabling the safest 3 (`act07`) failed all three instantly and exposed a real defect —
+>    `alembic/env.py` let an ambient `CONTROL_DB_SYNC_URL` overwrite a URL an explicit programmatic
+>    caller had set, so every fixture that migrates an ephemeral control DB through the Alembic Python
+>    API was migrating the shared DB and then inserting into an unmigrated one. **Fixed** (`0887130`,
+>    3 failed → 2 passed, observed both ways; standard gate unchanged at 15/22/24). The one surviving
+>    failure is a **product** defect on the money path, filed as `5.6`. **`ver01` and `red_team_rtx`
+>    are deliberately still off:** `.env` holds a real 108-char `ANTHROPIC_API_KEY` and `ver01` drives
+>    100 messages through the dispatcher whose Actor gate is a synchronous Haiku call per mutating
+>    attempt (`2.8`); the module argues they die earlier at the IDV gate, but that is a docstring, not
+>    an observation. Settle by measurement before enabling. Next: the remaining 11 locally-runnable
+>    skips, which the `env.py` fix plausibly unblocks — unverified.
+>    Trace: `.dev/traces/260811-integration-skip-inventory.md`.
 >
 > ## Two things worth carrying forward about how this went
 >
