@@ -955,12 +955,25 @@ def clean_tenant(control_db_url, tenant_db_url):
     finally:
         tenant_engine.dispose()
 
-    from app.core.database import get_sync_db
     from app.models.agent import Agent
 
     with _control_db_redirected(control_db_url):
+        # Bind get_sync_db INSIDE the patch context. `from X import Y` binds Y
+        # into this frame at the moment it runs, so importing it above the
+        # `with` captured the UNPATCHED function -- this fixture then seeded the
+        # ephemeral control DB and read back through the real session, which the
+        # integration conftest points at the shared wchats_control. `db.get`
+        # returned None and `db.expunge(None)` raised UnmappedInstanceError
+        # before a single corpus message ran. Exactly the binding hazard this
+        # module's own docstring documents for invoke_probe_tool / red_team_mode.
+        from app.core.database import get_sync_db  # noqa: PLC0415
+
         with get_sync_db() as db:
             agent = db.get(Agent, agent_id)
+            assert agent is not None, (
+                "clean_tenant seeded the ephemeral control DB but read back None -- "
+                "get_sync_db was not redirected, so this is reading the wrong database"
+            )
             db.expunge(agent)  # detach so it stays usable after the session closes
 
         tenant = _CleanTenant(

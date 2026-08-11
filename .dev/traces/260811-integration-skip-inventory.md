@@ -68,6 +68,54 @@ a zero-balance key the calls fail auth rather than billing silently, which the t
 `claude-sonnet-4-6` ($3/$15, 3× Haiku both ways) with multi-turn probes rather than one forced tool
 call. Plausibly dollars, not cents. No call count measured.
 
+### RUN 2026-08-11, owner-authorised — VER-01 SC3 PASSES, first time in repo history
+
+Owner authorised the spend (~$1 budget). Key lives in `apps/api/.env` and is **not** in `os.environ`;
+`actor_seam.py:38` builds `anthropic.Anthropic()` straight off `os.environ`, and pydantic loads `.env`
+into `Settings` only — so the runner exports it explicitly. Key never printed, never on a command line.
+
+```
+VER-01 SC3 attempted=104
+VER-01 SC3 by_verdict={'capability_denied': 15, 'identity_required': 20,
+                       'actor_blocked': 30, 'rate_denied': 19, 'awaiting_approval': 20}
+1 passed in 220.33s
+```
+
+**The costing analysis is confirmed against the run.** `identity_required: 20` is exactly the
+`issue_refund` IDV short-circuit predicted above, and `15 + 30 + 19 + 20 = 84` is exactly the set that
+proceeds past it. **30 attempts reached the Actor gate** (`actor_blocked`), so actual spend was
+~11,640 input + ~2,400 output tokens ≈ **$0.024**, *under* the $0.039–$0.082 range estimated. Ceiling
+for 30 calls would have been $0.088.
+
+`langfuse` / `opentelemetry` export errors in the log are environmental (no collector on this box), not
+test failures.
+
+### Defect 3 (FIXED): the fixture read the wrong database, and never ran a single message
+
+First attempt errored in `clean_tenant` before any corpus message ran — **zero Actor calls, zero spend**:
+
+```
+sqlalchemy.orm.exc.UnmappedInstanceError: Class 'builtins.NoneType' is not mapped
+  tests/integration/test_ver01_adversarial_harness.py:964  db.expunge(agent)
+```
+
+`db.get(Agent, agent_id)` returned `None` immediately after the agent rows were committed
+(`control_engine.begin()`, so the seed was durable). Cause: line 958 ran
+`from app.core.database import get_sync_db` **above** the `with _control_db_redirected(...)` block.
+A direct `from X import Y` binds the object into the frame at that moment, so
+`patch("app.core.database.get_sync_db", ...)` never reached the local name — the fixture seeded the
+ephemeral control DB and then read back through the **real** session, which the integration conftest
+points at the shared `wchats_control`.
+
+This is precisely the binding hazard the module's own docstring documents at length for
+`invoke_probe_tool` / `red_team_mode` (lines 36-61) — the fixture below it did the one thing that
+docstring says not to. Fixed by binding inside the patch context, plus an explicit
+`assert agent is not None` naming the failure mode so the next occurrence reads as a wrong-database
+error instead of an `UnmappedInstanceError` on `None`.
+
+Two defects therefore stood between this gate and its first green: the `env.py` migration retarget
+(Defect 1) and this. Neither was visible while the module skipped.
+
 Note the run that *was* made logged `provider.red_team_mode_stub`, confirming the provider is stubbed on
 the act07 path.
 
