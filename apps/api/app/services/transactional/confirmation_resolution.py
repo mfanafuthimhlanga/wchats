@@ -348,7 +348,14 @@ async def execute_approved_confirmation(
     # SC3, rate/ceiling half: this reads the SAME live snapshot fetched in
     # step 3 above, never a stored one — a ceiling tightened after the
     # confirmation was created denies execution here.
-    rate_denial = await apply_rate_and_constraint_checks(agent_id, skill, snapshot, arguments)
+    #
+    # `validated`, NOT `arguments`. Same defect as the live-turn dispatcher's
+    # own call site (tools.py step 4): apply_rate_and_constraint_checks reads
+    # the amount with getattr, and getattr on the stored JSONB dict returns the
+    # default rather than the key — so the ceiling half of "SC3, rate/ceiling"
+    # above was silently unenforced and only the rate half ever ran. `validated`
+    # is the re-validated typed model built in step 2.
+    rate_denial = await apply_rate_and_constraint_checks(agent_id, skill, snapshot, validated)
     if rate_denial is not None:
         await release_idempotency(agent_id, skill, validated.idempotency_key)  # type: ignore[attr-defined]  # every SKILL_INPUT_MODELS member declares idempotency_key
         await write_audit_row(

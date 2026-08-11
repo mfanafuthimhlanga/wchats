@@ -1027,6 +1027,90 @@ class TestRateDenialAfterReserve:
 
 
 # ===========================================================================
+# IN-02 max_amount_cents — end to end through the REAL enforcement function
+# ===========================================================================
+
+
+class TestMaxAmountCentsIsEnforcedByTheDispatcher:
+    """The value ceiling, asserted against the real
+    ``enforcement.apply_rate_and_constraint_checks`` rather than a mock of it.
+
+    Every other rate/constraint test in this file patches that function out, so
+    the only thing they can prove is that the dispatcher honours whatever it
+    returns. That left the argument the dispatcher actually *passes* it
+    unasserted, and it was wrong: step 4 handed it ``raw_args`` (a plain dict)
+    while the function reads the amount with ``getattr``, which on a dict
+    returns the default. ``amount`` was therefore unconditionally None and the
+    ``max_amount_cents`` ceiling never fired anywhere in production — the live
+    turn or the human-approval resolver. ``test_capability_enforcement.py``
+    could not see it: its ``_make_args`` builds a ``MagicMock`` with real
+    attributes, the one arg shape production never passes.
+
+    ``rate_limit`` is None in the snapshot below on purpose, so
+    ``_parse_rate_limit`` returns None, the Redis branch is skipped entirely,
+    and the only thing that can produce a denial here is the constraint check
+    under test. ``call_actor_gate`` is patched despite being unreachable on the
+    denial path: if this test ever regresses, the unpatched seam would make a
+    live Anthropic call from a unit test.
+    """
+
+    _CEILING_SNAPSHOT: dict = {
+        "enabled": True,
+        "skill": "place_order",
+        "rate_limit": None,
+        "constraints": {"max_amount_cents": 5000},
+        "requires_confirmation": True,
+        "requires_identity_verification": False,
+    }
+
+    def _run(self, amount_cents: int) -> tuple[dict, AsyncMock, AsyncMock]:
+        _set_context()
+        audit_mock = AsyncMock()
+        get_adapter_mock = AsyncMock(return_value=_mock_adapter())
+
+        args = _valid_place_order_args()
+        args["amount_cents"] = amount_cents
+
+        with (
+            _p("check_capability_access", _mock_access_pass(dict(self._CEILING_SNAPSHOT))),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
+            _p("release_idempotency", _mock_release()),
+            _p("finalize_idempotency", _mock_finalize()),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", _mock_gate_approve()),
+            patch(f"{_T}.write_audit_row", audit_mock),
+            patch(f"{_T}.get_adapter_for_skill", get_adapter_mock),
+        ):
+            from app.services.transactional.tools import place_order_tool
+
+            result = asyncio.run(place_order_tool.handler(args))
+
+        return result, audit_mock, get_adapter_mock
+
+    def test_over_ceiling_amount_is_denied_before_the_adapter(self):
+        result, audit_mock, get_adapter_mock = self._run(9000)
+
+        assert result.get("is_error") is True, (
+            "amount_cents=9000 against a max_amount_cents=5000 envelope must be "
+            "denied at step 4. A pass here means the dispatcher is handing "
+            "apply_rate_and_constraint_checks an argument it cannot read the "
+            "amount off — the IN-02 ceiling is then dead in production."
+        )
+        assert "max_amount_cents" in result["content"][0]["text"]
+        get_adapter_mock.assert_not_called()
+        assert audit_mock.call_args.kwargs["error"] == "capability.denial:max_amount_cents"
+
+    def test_at_ceiling_amount_still_executes(self):
+        """The bound is `>`, not `>=` — exactly-at-ceiling must still pass, or
+        the fix above would have traded a dead check for an over-tight one."""
+        result, _audit_mock, get_adapter_mock = self._run(5000)
+
+        assert result.get("is_error") is None
+        get_adapter_mock.assert_called_once()
+
+
+# ===========================================================================
 # Actor block after reservation → must release
 # ===========================================================================
 

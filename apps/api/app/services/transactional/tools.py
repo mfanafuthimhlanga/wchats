@@ -820,7 +820,20 @@ async def _execute_transactional_tool(
     # -------------------------------------------------------- 4. Rate + constraint checks
     # apply_rate_and_constraint_checks is side-effecting (Redis INCR+EXPIRE).
     # Runs ONLY for the fresh reserved winner — never for replays (WR-01).
-    rate_denial = await apply_rate_and_constraint_checks(agent_id, skill, snapshot, raw_args)
+    #
+    # `validated`, NOT `raw_args`. enforcement.apply_rate_and_constraint_checks
+    # reads the amount with `getattr(args, "amount_cents", None)` /
+    # `getattr(args, "refund_amount_cents", None)` — and `getattr` on a plain
+    # dict returns the default, never the key. Passing raw_args therefore made
+    # `amount` unconditionally None here, so the IN-02 max_amount_cents ceiling
+    # never fired on the live dispatcher path: a refund of any size cleared the
+    # envelope's value bound and went on to the Actor gate and the adapter. The
+    # unit coverage missed it because test_capability_enforcement.py exercises
+    # the function with a MagicMock (attributes, not keys), which is the one
+    # arg shape production never passes. The Pydantic model is what this
+    # function's own docstring has always specified, and its amount fields are
+    # int-typed, so the comparison below is total.
+    rate_denial = await apply_rate_and_constraint_checks(agent_id, skill, snapshot, validated)
     if rate_denial is not None:
         # Release the reservation so a later retry can attempt the key again.
         await release_idempotency(agent_id, skill, idem_key)

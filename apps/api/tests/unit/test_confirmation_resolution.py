@@ -330,6 +330,39 @@ class TestLiveEnvelope:
         mocks["rate"].assert_awaited_once()
         assert mocks["rate"].await_args.args[2] == dict(LIVE_SNAPSHOT)
 
+    async def test_ceiling_check_receives_the_validated_model_not_the_stored_dict(self):
+        """The ceiling half of "SC3, rate/ceiling" only exists if the amount is
+        readable by the function that enforces it.
+
+        ``enforcement.apply_rate_and_constraint_checks`` reads the amount with
+        ``getattr(args, "refund_amount_cents", None)``, and ``getattr`` on a
+        plain dict returns the default, never the key. This resolver used to
+        pass the stored JSONB ``arguments`` dict, so ``amount`` was always None
+        and no stored amount, however large, could ever trip the live ceiling —
+        only the rate half of step 6 ever ran. Every other test in this class
+        mocks the function out, so none of them could see it; this one asserts
+        the argument itself. The same defect and the same fix apply to the
+        live-turn dispatcher (tools.py step 4).
+        """
+        with _patch_resolver_boundary() as mocks:
+            outcome = await _resolve()
+
+        assert outcome.outcome == "executed"
+        passed_args = mocks["rate"].await_args.args[3]
+        assert not isinstance(passed_args, dict), (
+            "the resolver passed a raw dict to apply_rate_and_constraint_checks; "
+            "getattr cannot read an amount off a dict, so the max_amount_cents "
+            f"ceiling is silently unenforced. Got {passed_args!r}."
+        )
+        assert (
+            getattr(passed_args, "refund_amount_cents", None)
+            == VALID_REFUND_ARGS["refund_amount_cents"]
+        ), (
+            "the object handed to apply_rate_and_constraint_checks must expose "
+            "refund_amount_cents as an attribute carrying the stored amount — "
+            "that attribute IS the ceiling check's only input."
+        )
+
     async def test_disabled_skill_denies_execution(self):
         """The live capability check denies (owner disabled the skill after
         the confirmation was created) — no adapter await."""
