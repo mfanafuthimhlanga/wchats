@@ -199,6 +199,54 @@ regression from two data points that did not exist, and the `env.py` change cann
 than the large shared one on the enabled path, which does not even run in this gate). Most likely an
 environmental difference not captured here. Written down so the next reading has four points, not two.
 
+## RESULT 2026-08-11 — `15 passed / 22 skipped` → `28 passed / 5 skipped / 1 failed`
+
+Six modules opened with `INTEGRATION_TESTS_ENABLED=1`, every one of which had never executed. Each was
+fixed by a subagent doing static analysis only (no pytest — 4 GB box), then verified serially here.
+
+| module | result |
+|---|---|
+| `test_act07_resolve_live` | 2 pass, 1 = `5.6` |
+| `test_ver01_adversarial_harness` | 1 pass |
+| `test_prompt_versions_e2e` | 6 pass |
+| `test_integration_e2e` | 2 pass |
+| `test_aud03_audit_gap` | 1 pass |
+| `test_agent_chat_integration` | 2 pass |
+
+**The 5 remaining skips are a genuine hard floor**, not neglect: `stripe_live` ×2 (Stripe test
+credentials), `ingestion_e2e` ×2 (live ingestion APIs), `test_ingestion_chain` ×1 (the docling
+`pipeline` extra). `red_team_rtx` ×3 deselected pending `5.8`/`5.9`.
+
+**`ver01` needs `ANTHROPIC_API_KEY` in `os.environ`, not just `.env`.** Pydantic loads `.env` into
+`Settings`; `actor_seam.py:38` builds `anthropic.Anthropic()` off `os.environ`. A run without it fails
+`401 invalid x-api-key` rather than skipping — which is exactly what the first full-suite pass did, and
+it was my invocation at fault, not a regression.
+
+### What opening them actually bought
+
+The green count is the least interesting output. What had been hiding behind those skips:
+
+1. **A live security defect** (`a180624`): `max_amount_cents` was enforced *nowhere*. Both production
+   call sites passed a dict to a function reading `getattr(args, "amount_cents", None)`. Any-size refund
+   cleared its envelope's value bound. Mutation-proved.
+2. **Two live model-call paths open in the chat tests** — unpatched Haiku judges at `agent.py:1428`,
+   and a real `run_agent_turn` parked on the Redis `runtime` queue for whatever worker drained it next.
+   The second is the nastier shape: the bill lands later, detached from the test run.
+3. **Two outright tautologies.** `agent_chat` test 2 asserted a row-count that agent-not-found also
+   satisfies, so it could not fail. T-16-01's credential scan was a pure absence assertion — now carries
+   a positive control (closes `4.2`).
+4. **A third instance of `4.6`'s ContextVar bleed** — `_side_effects_var` left as `"recorded"` by a unit
+   module, routing both INT-02 tests down the wrong branch.
+5. `5.7` (`CELERY_TASK_ALWAYS_EAGER` wired to nothing), `5.8`, `5.9`.
+
+### One agent claim that did not survive contact
+
+The `prompt_versions` agent reported "the control chain has zero foreign keys, so `tenant_id=uuid4()`
+inserts cleanly — checked by compiling the statement, no DB." `agents.tenant_id` carries
+`agents_tenant_id_fkey`; every insert raised `ForeignKeyViolation`. Statement compilation structurally
+cannot see a constraint. Same failure shape as the `ver01` docstring earlier in this file: a confident
+claim from a method incapable of detecting the thing it ruled out. Fixed by seeding the tenant.
+
 ## Left undone, deliberately
 
 - The other 11 locally-runnable skips (`agent_chat`, `aud03`, `integration_e2e`, `worker_kill`,

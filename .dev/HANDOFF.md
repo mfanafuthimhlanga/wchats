@@ -125,6 +125,36 @@
 >   exist. The pattern is inference stated at the confidence of observation — the same weakness the
 >   D1 tier-2 judge named in the branch it was reviewing.
 
+> # 2026-08-11, later — the skipped suite was opened, and it was hiding a security defect
+>
+> **Gates now, measured on this tree:**
+>
+> ```
+> unit                          2167 passed, 13 skipped, 0 failed        584s
+> integration (flag ON)           28 passed,  5 skipped, 1 failed        490s
+> integration (flag OFF, gate)    15 passed, 22 skipped, 0 failed        ~250s
+> ```
+>
+> The one integration failure is `5.6`, an audit-provenance decision for the owner, not a regression.
+> Run the flag-ON suite through `.dev/`-documented env plus `ANTHROPIC_API_KEY` exported into
+> `os.environ` — `ver01` 401s without it, because pydantic loads `.env` into `Settings` only.
+>
+> **The headline is not the count. `max_amount_cents` was enforced nowhere** (`a180624`).
+> `apply_rate_and_constraint_checks` reads the amount via `getattr(args, "amount_cents", None)`; both
+> production call sites passed a plain dict, so `amount` was always `None` and the ceiling never
+> denied. A refund of any size cleared its envelope. Mutation-proved red/green. **This also corrected
+> `5.6`'s diagnosis** — the execution path does re-read the live snapshot, exactly as its comment
+> claims; it then compared it against a dict.
+>
+> **Also found behind the skips:** two live model-call paths open in the chat tests (unpatched Haiku
+> judges, plus a real `run_agent_turn` parked on the Redis `runtime` queue for a later worker to bill);
+> two tautological tests; a third instance of `4.6`'s ContextVar bleed; and `5.7`/`5.8`/`5.9`.
+> `4.2` is closed — T-16-01's credential scan now carries a positive control.
+>
+> **Next:** `5.9` first — decide whether `test_confused_deputy` is real before spending its ~$0.12,
+> since `red_team_probe.py:349` may collect nothing. `5.8` is free to confirm. Then `5.6`.
+> Trace: `.dev/traces/260811-integration-skip-inventory.md`.
+>
 > # IN FLIGHT — `chore/local-postgres`, unmerged, tip `d4f65e2`
 >
 > **The environment is real now, and both gates are green on it.** PostgreSQL 17.6 with pgvector
