@@ -3,6 +3,98 @@
 > **`.dev/BACKLOG.md` is the single ordered list of open work.** Read it before starting anything.
 > This file is the current-state snapshot; that one is the queue.
 
+> # START HERE — session boundary, 2026-08-11
+>
+> ## Where the code is
+>
+> **`chore/local-postgres`, tip `9249b8b`, clean tree, UNMERGED.** 15 commits ahead of `main`
+> (`main` is at `57be16b` and already carries D1 + D6). **Both gates verified by the session, not
+> relayed from an agent:**
+>
+> ```
+> integration    15 passed, 22 skipped, 24 deselected, 0 failed    119s
+> unit         2164 passed, 13 skipped, 0 failed                   394s
+> ```
+>
+> Thirteen defects fixed on this branch and **not one was in the product** — `git diff --stat
+> 3e7fb8e..HEAD -- apps/api/app/` is a single line (`hide_input_in_errors=True` on `Settings`).
+> Everything else was the test suite lying about itself. Full story:
+> `.dev/traces/260810-local-postgres.md` + `260811-review-fixes.md`.
+>
+> ## The environment is real now — do not re-derive this
+>
+> - **PostgreSQL 17.6 as a Windows service** `postgresql-17-local`, `localhost:5432`, survives reboot.
+>   Binaries `C:\Users\Bantu\pgsql`, cluster `C:\Users\Bantu\pgdata`. **`fsync=off` — disposable test
+>   infrastructure, never real data.**
+> - **pgvector 0.8.1**, built from official source with the MSVC toolset already on the box. The
+>   Windows SDK came from NuGet (`Microsoft.Windows.SDK.CPP` + `.x64`, plain zips, no admin) —
+>   the VS Installer route is dead here because the Build Tools install is orphaned (`vswhere
+>   -products *` returns nothing).
+> - **Redis** already installed, `PONG` on 6379.
+> - **Both migration chains applied:** control `0019 (head)`, tenant probe `0016 (head)`, `0016`
+>   roundtrip exercised both ways. `BACKLOG 0.2` and `3.5` are closed.
+> - **The Neon account is EMPTY** — the owner authorised deleting all 8 projects (each ~30 MB,
+>   schema-only). `neon-baseline.txt` is deliberately empty; full quota free. `NEON_API_KEY` in
+>   `.env` is real and works.
+> - **Run integration with** `INTEGRATION_DB_URL=postgresql://wchats:wchats@localhost:5432/wchats_control`
+>   and `REDIS_URL=redis://localhost:6379/0`.
+> - **Never run the two suites concurrently** — 4 GB box; contention manufactured 2 phantom errors
+>   and tripled the unit suite's wall clock (977s vs 394s).
+>
+> ## The open discussion: DeepSeek / OpenAI-compatible models
+>
+> The owner has DeepSeek credits and no Claude credits, and asked what it would take to run on
+> DeepSeek. **Investigated, not decided.** What was established:
+>
+> - **Two integration surfaces, counted:** `claude_agent_sdk` in **7** source files (`agent.py`,
+>   `agent_tools.py`, `transactional/tools.py`, `red_team_probe.py`, `red_team_service.py`,
+>   `deployment_service.py`, `eval.py`); the direct `anthropic` SDK in **11** (judges, Actor seam,
+>   eval, scenario, strategy, metadata, retrieval, validation).
+> - **`claude_agent_sdk` ships a bundled `_bundled/claude.exe`.** The only hits for
+>   `ANTHROPIC_BASE_URL` / `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX` are *inside that
+>   binary*, which was not readable. The knobs exist; their semantics were **not** verified.
+> - **The load-bearing distinction: base URL is not wire format.** Bedrock and Vertex work because
+>   they serve the Anthropic Messages API shape. DeepSeek is OpenAI-compatible — a different schema.
+>   So the Agent SDK needs a **translating proxy** (Messages API in, Chat Completions out), and the
+>   hard part is tool-use translation, because the entire capability envelope rides on
+>   `mcp__customer-tools__*` tool calls.
+> - **The 11 direct-API files are the tractable half** — DeepSeek has an OpenAI-compatible endpoint,
+>   so they are a provider-adapter swap. That is also where most call volume lives (judges,
+>   `classify_severity`, scenario generation, the Actor gate). **Ragas is easiest** — takes any
+>   LangChain-wrapped LLM.
+>
+> **NOT VERIFIED, and the first thing to check next session:** the proxy conclusion, against the
+> Agent SDK's own docs at `code.claude.com/docs/en/agent-sdk`. The bundled `claude-api` skill
+> explicitly does **not** cover the Agent SDK, so it cannot settle this.
+>
+> ## Next moves, in order
+>
+> 1. **`0.6`** — one `count(*)` on the control DB over `gatekeeper.complete`/`auditor.complete` with
+>    verdict in (`fail`,`ungrounded`,`partial`). Owner-run, against production. Decides whether the
+>    labelling loop is waiting on code or on traffic, and therefore whether `2.28` (the miner repair)
+>    and P4 (the console queue) are worth building at all. Cheapest high-leverage item in the queue.
+> 2. **`0.1`** — now genuinely unblocked: a tenant DB exists, so `capture_responses.py` can finally
+>    produce the transcripts the owner would score. Judge calibration is downstream of it.
+> 3. **`0.4`** — before anything runs nightly. `eval-nightly` fires at 02:00 UTC and full Neon quota
+>    is free, so the first beat worker against production sends customer rows to the Ragas judge with
+>    `pii_firewall_applied=False`.
+> 4. **`1.13`** — `INTEGRATION_TESTS_ENABLED=1` unlocks ~29 tests across both suites, including the
+>    migration roundtrips for `0013`–`0016`. Their skip messages describe exactly the machine that
+>    now exists. Not switched on casually: `test_ver01_adversarial_harness` runs a 100-message
+>    adversarial gate, `test_worker_kill` does a kill-9, `test_red_team_rtx` wants a real
+>    `ANTHROPIC_API_KEY`.
+>
+> ## Two things worth carrying forward about how this went
+>
+> - **Three of the thirteen defects were recorded somewhere as already fixed.** Unobserved is not
+>   passing — the principle this repo writes down for metrics, holding identically for its own test
+>   suite.
+> - **The session made three errors worth knowing about**, all corrected in the record: tier-1
+>   reviews were labelled tier-2 twice; a suite figure was reported as "still running" when the run
+>   had been killed; and a wall-clock regression was diagnosed from two data points and did not
+>   exist. The pattern is inference stated at the confidence of observation — the same weakness the
+>   D1 tier-2 judge named in the branch it was reviewing.
+
 > # IN FLIGHT — `chore/local-postgres`, unmerged, tip `d4f65e2`
 >
 > **The environment is real now, and both gates are green on it.** PostgreSQL 17.6 with pgvector
