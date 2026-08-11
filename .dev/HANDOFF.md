@@ -31,8 +31,14 @@
 >   `NEON_API_KEY` away from creating real billable projects with no teardown. Ported onto the
 >   in-worker Neon stub, and it **runs green for the first time in repo history** (62s).
 >
-> **Neon account: 8 baseline projects, verified present before and after all work. Nothing created,
-> nothing deleted.** `C:/Users/Bantu/pg-setup/neon-baseline.txt` is the pin.
+> **Neon account: EMPTY as of 2026-08-11.** During the work it held 8 baseline projects, verified
+> present before and after every phase — nothing created, nothing leaked, nothing destroyed by any
+> agent. **The owner then authorised deleting all 8** ("earlier test work, not important"); evidence
+> supported it, every one was ~30 MB, Neon's floor for a schema with no meaningful data. All 8
+> deleted by id (never by name pattern), `Veridian` / `dark-snow-18891572` included.
+> `C:/Users/Bantu/pg-setup/neon-baseline.txt` is **now empty**, deliberately: left naming 8 dead
+> projects it would report 8 destructions on every future check — a guard inverted into a permanent
+> false positive. Full quota is free, which matters for `1.7`'s live-Neon path.
 >
 > **Read next:** `.dev/reference/260811-review-fix-mutation-proofs.md` — 13 mutation proofs with
 > verbatim red and green, both gate runs, both baseline checks, and a section on the one guard that
