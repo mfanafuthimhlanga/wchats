@@ -63,9 +63,30 @@
 >   `classify_severity`, scenario generation, the Actor gate). **Ragas is easiest** — takes any
 >   LangChain-wrapped LLM.
 >
-> **NOT VERIFIED, and the first thing to check next session:** the proxy conclusion, against the
-> Agent SDK's own docs at `code.claude.com/docs/en/agent-sdk`. The bundled `claude-api` skill
-> explicitly does **not** cover the Agent SDK, so it cannot settle this.
+> **VERIFIED 2026-08-11 — the proxy conclusion holds, and the cost is higher than recorded.** Full
+> writeup: `.dev/reference/260811-agent-sdk-provider-surface.md`. What settled it:
+>
+> - **The env knobs are real and the SDK honours them.** Not inferred — `subprocess_cli.py:430`
+>   inherits the whole process env into `_bundled/claude.exe` and merges `options.env` over it, so
+>   every provider variable documented for the Claude Code CLI applies to `claude_agent_sdk`.
+> - **Exactly three wire formats exist**, all Anthropic-shaped: Anthropic Messages
+>   (`ANTHROPIC_BASE_URL`), Bedrock InvokeModel, Vertex rawPredict. Foundry and Claude Platform on
+>   AWS implement the Messages format. **OpenAI Chat Completions is not among them**, so the "base
+>   URL is not wire format" distinction was right.
+> - **The new fact the last session did not have: Anthropic states it "doesn't support routing Claude
+>   Code to non-Claude models through any gateway."** That turns "hard to build" into "unsupported
+>   even if built" — a different decision.
+> - **Tool-use translation is one of six hard requirements, not the only one.** The forwarding
+>   contract is *deliberately open-ended* ("treat the headers and body fields as open lists"), so the
+>   proxy must track Claude Code releases forever; beta-header/body pairs must travel together or
+>   400; streaming is mandatory with a 300s byte watchdog that counts SSE pings; errors must pass
+>   through unmodified or the client's retry path breaks; and unknown model aliases still get
+>   `thinking: {"type": "adaptive"}` posted to them.
+>
+> **Net:** the 7/11 file counts stand, but the scoring changes. The 11 direct-`anthropic` files are
+> still an ordinary provider-adapter swap and still hold most of the call volume. The 7 Agent-SDK
+> files are a standing maintenance commitment against a configuration Anthropic does not support.
+> Filed as `BACKLOG 0.7` — owner decision, not agent work.
 >
 > ## Next moves, in order
 >
