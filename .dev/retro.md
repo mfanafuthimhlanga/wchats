@@ -195,3 +195,56 @@ recurring.
 
 **Standing rule:** scope a diff-content gate to code lines, or accept that the gate's own
 documentation is part of its input and write the needle to be unique to the mechanism.
+
+## Family G — "the guard was placed on one exit and the code found another"
+
+**Recurrences: 2** (`a95b581`, `79601cd`), both on `chore/local-postgres`, 2026-08-10/11.
+
+`a95b581` fixed three unbounded SSE consume loops by wrapping each in
+`asyncio.timeout(SSE_STREAM_TIMEOUT_S)`, and its commit message names "a test that hung forever" as
+the defect. Nine commits later, `79601cd` — the commit that rewrote the live-event test — introduced
+`await emitter_task` **immediately after** that `async with` block, outside the bound. The emitter
+parks on an `asyncio.Condition` predicate over the count of `event:` lines the server has written.
+Any early close (a 401, a renamed auth header, a missing tenant row) makes `run()` return having
+written too few lines; `run()` fires its final `notify_all()`, the predicate re-evaluates false, and
+nothing will ever notify that Condition again. Measured: with the api key mutated to a bogus value
+the test survived an external SIGKILL at 150s, five times the 30s bound it appeared to have.
+
+The same shape had already appeared once in this family's ancestor: the bound was added to the
+`aiter_lines()` loop because *that* was where the previous hang was observed, not because anyone had
+enumerated the ways the test could block.
+
+**What the plan failed to anticipate:** a timeout is not a property of a test, it is a property of
+one `await`. Adding a second concurrent await to a bounded test silently creates a second, unbounded
+exit — and it does so in the file whose docstring now says, in prose, that hanging is impossible
+here. The prose is what the next reader checks.
+
+**Standing rule:** a test that creates a task must bound *the task*, not only the thing the task
+feeds. Every `create_task` gets an `await` inside the same `asyncio.timeout` and a `cancel()` in the
+`finally`. And the proof that a bound exists is a mutation that forces the failure path and observes
+the run terminate with a summary line — an external `timeout --signal=KILL` around the run, so a
+hang reports as a distinguishable exit code rather than as patience.
+
+## Family H — "the guard that cannot fail, written while fixing guards that cannot fail"
+
+**Recurrences: 1** (2026-08-11, `test_worker_kill.py`).
+
+While fixing a finding that `test_provision_neon_idempotency` was conditionally vacuous, I wrote an
+assertion that the kill-9'd Celery message is still in kombu's `unacked` hash and described it, in
+the test's own docstring, as "the direct observation of `acks_late=True`". It is a tautology. Flipping
+`task_acks_late` to `False` in `celery_app.py` left it green (`1 passed in 63.89s`): on the `solo`
+pool the ack — early or late — is flushed by a consumer loop that a SIGKILL'd worker never returns
+to, so the Redis-side entry survives under both settings.
+
+It was caught only because the repo's mutation rule was actually executed. Had the proof been
+skipped, a false claim about the most safety-relevant setting in the worker would have shipped
+inside a commit whose subject was honesty about test vacuity.
+
+**What the plan failed to anticipate:** writing the guard and reasoning about the guard are the same
+act, so the reasoning inherits the guard's blind spot. Confidence in a mechanism ("kombu removes the
+entry on ack, so this discriminates") is not evidence about the configuration under test.
+
+**Standing rule:** the mutation proof is not paperwork after the fact — it is what decides whether
+the assertion ships. An assertion that survives its own mutation gets **deleted**, and the gap gets a
+BACKLOG row (here, `1.12`), because a guard that has never been seen to fail is indistinguishable
+from a comment.

@@ -41,9 +41,10 @@ Together those made this the last un-stubbed provisioning dispatch in the tree,
 one exported ``NEON_API_KEY`` away from creating real cloud databases with no
 cleanup — behind an env flag another module's docstring tells people to set.
 It now runs through ``neon_stub_worker_factory``, which fails closed: the worker
-refuses to start unless the stub reports itself installed *in its own pid*, and
-its ``NEON_API_KEY`` is overwritten with a placeholder that cannot authenticate.
-Nothing here can reach console.neon.tech, so there is nothing to tear down.
+refuses to start unless the stub reports itself installed under *its own worker
+id*, and its ``NEON_API_KEY`` is overwritten with a placeholder that cannot
+authenticate. Nothing here can reach console.neon.tech, so there is nothing to
+tear down.
 
 Skip guard:
     - Skipped by default unless INTEGRATION_TESTS_ENABLED=1 is set.
@@ -227,17 +228,18 @@ def _project_creates(calls: list[dict]) -> list[dict]:
     return [c for c in calls if c["method"] == "POST" and c["path"] == "/api/v2/projects"]
 
 
-def _unacked_messages_mentioning(agent_id: uuid.UUID) -> list[str]:
-    """Raw kombu ``unacked`` entries whose payload names *agent_id*.
+def _purge_unacked_messages_mentioning(agent_id: uuid.UUID) -> int:
+    """Delete this run's orphaned broker message. Returns how many were removed.
 
-    This is how ``acks_late=True`` is OBSERVED rather than asserted from the
-    decorator. kombu's Redis transport keeps every delivered-but-unacknowledged
-    message in the ``unacked`` hash and removes it on ack. With ``acks_late``
-    the ack happens after the task body returns, so a worker killed mid-task
-    leaves its message there; with ``acks_late=False`` the ack lands at delivery
-    and the entry is already gone before the task starts. Reading this hash
-    after the kill therefore distinguishes the two settings — the decorator's
-    presence in the source does not.
+    A kill -9 with ``acks_late=True`` leaves the message in kombu's ``unacked``
+    hash by design — that is the state redelivery acts on. Nothing in this test
+    ever acks it, because the resumption is dispatched explicitly rather than
+    waited for (see the test docstring), so without this the entry survives the
+    run. It is not inert: kombu restores unacked messages once
+    ``visibility_timeout`` expires, which this app sets to 7200s, so each run
+    would arm a stray ``provision_neon`` two hours later against a tenant whose
+    rows the teardown has already deleted. Four such entries had accumulated
+    while this fix was being developed, and were purged by hand.
     """
     import redis as redis_lib
 
@@ -245,12 +247,14 @@ def _unacked_messages_mentioning(agent_id: uuid.UUID) -> list[str]:
         os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
         decode_responses=True,
     )
+    removed = 0
     try:
-        return [
-            raw
-            for raw in client.hvals("unacked")
-            if str(agent_id) in raw
-        ]
+        for tag, raw in (client.hgetall("unacked") or {}).items():
+            if str(agent_id) in raw:
+                client.hdel("unacked", tag)
+                client.zrem("unacked_index", tag)
+                removed += 1
+        return removed
     finally:
         client.close()
 
@@ -280,11 +284,9 @@ def test_worker_kill_9_chain_completes(neon_stub_worker_factory):
     5. Assert the premise: the chain had NOT already finished. A run where the
        kill lands after completion proves nothing, and must say so rather than
        report a pass.
-    6. Assert the message is still UNACKED in the broker — this is the direct
-       observation of acks_late=True (see _unacked_messages_mentioning).
-    7. Start a second worker on the same broker, journal and tenant database,
+    6. Start a second worker on the same broker, journal and tenant database,
        redeliver the task, and wait for agent.status == 'ready'.
-    8. Assert Neon was asked to create a project EXACTLY ONCE across both
+    7. Assert Neon was asked to create a project EXACTLY ONCE across both
        workers — the idempotency claim, read off the stub's call journal rather
        than inferred from the agent row.
 
@@ -299,11 +301,19 @@ def test_worker_kill_9_chain_completes(neon_stub_worker_factory):
     run can legitimately hold a task for 90 minutes. Waiting for the real
     redelivery therefore means waiting two hours, so the original form of this
     test — poll 60s for job.complete after the restart — could never have passed
-    on any broker this application configures. Step 6 observes the unacked state
-    that redelivery would act on; step 7 then performs the redelivery the broker
-    would eventually perform. What is proven is the resumption and the
-    idempotency guard, plus that the message was still owed an ack. What is NOT
-    proven here is kombu's own re-queue timer.
+    on any broker this application configures. Step 6 performs the redelivery the
+    broker would eventually perform.
+
+    WHAT THIS TEST DOES NOT PROVE, stated because the file header used to claim
+    it. It does not observe `acks_late=True`. The obvious observation — assert
+    the killed message is still in kombu's `unacked` hash — was written, and then
+    MEASURED NOT TO DISCRIMINATE: with `task_acks_late` flipped to False in
+    `celery_app.py` the assertion still passed (`1 passed in 63.89s`, 2026-08-11),
+    because on the `solo` pool the ack is flushed by the consumer loop the worker
+    never returns to. A tautology is worse than a gap, so it was removed rather
+    than kept for the shape of it. What is proven here is the resumption after an
+    unrecoverable death and the idempotency guard holding across it. Filed as
+    BACKLOG 1.12.
     """
     tenant_id = uuid.uuid4()
     agent_id = uuid.uuid4()
@@ -352,14 +362,6 @@ def test_worker_kill_9_chain_completes(neon_stub_worker_factory):
             "the window has closed."
         )
 
-        # acks_late, observed at the broker rather than read off the decorator.
-        assert _unacked_messages_mentioning(agent_id), (
-            "no unacknowledged broker message names this agent after kill -9. "
-            "With acks_late=False the ack lands at delivery, so the entry would "
-            "already be gone — which is exactly the configuration this test "
-            "exists to refuse."
-        )
-
         # A second worker, sharing the broker, the stub journal and the tenant
         # database. wait_until_installed compares the pid, so the dead worker's
         # own 'installed' record cannot satisfy this one's readiness wait.
@@ -401,5 +403,6 @@ def test_worker_kill_9_chain_completes(neon_stub_worker_factory):
 
     finally:
         # The factory owns worker lifetimes and the tenant database; this test
-        # owns only its control-DB rows.
+        # owns its control-DB rows and the broker message its kill orphaned.
         _teardown_test_rows(tenant_id)
+        _purge_unacked_messages_mentioning(agent_id)

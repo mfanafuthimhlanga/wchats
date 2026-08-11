@@ -1,7 +1,47 @@
-# HANDOFF — 2026-08-06
+# HANDOFF — 2026-08-11
 
 > **`.dev/BACKLOG.md` is the single ordered list of open work.** Read it before starting anything.
 > This file is the current-state snapshot; that one is the queue.
+
+> # IN FLIGHT — `chore/local-postgres`, unmerged, tip `d4f65e2`
+>
+> **The environment is real now, and both gates are green on it.** PostgreSQL 17.6 with pgvector
+> 0.8.1 on `localhost:5432`, Redis on `:6379`, control DB at `0019`, a tenant probe DB at `0016`.
+> `BACKLOG 0.2` is closed and `3.5` with it.
+>
+> **Measured 2026-08-11, on this tree, by running them:**
+>
+> ```
+> integration  15 passed, 22 skipped, 24 deselected in 109.31s   (0 failed, 0 errors)
+> unit       2164 passed, 13 skipped, 30 warnings in 397.83s     (0 failed)
+> ```
+>
+> Run integration with `INTEGRATION_DB_URL=postgresql://wchats:wchats@localhost:5432/wchats_control`
+> and `REDIS_URL=redis://localhost:6379/0`. The unit command is the one in CLAUDE.md, unchanged.
+>
+> **The branch changed only tests, docs and one config line.** `git diff --stat 3e7fb8e..d4f65e2 --
+> apps/api/app/` is a single line: `hide_input_in_errors=True` on `Settings`. Every one of the
+> thirteen defects fixed here was in the test suite, not the product.
+>
+> **Two things were destroying-or-leaking shaped, and both are closed:**
+> - `nightly.yml` reclaimed Neon projects by **listing the account and matching names**
+>   (`vrd-*` + `e2e`). It was simultaneously dead — `_project_slug` never emits that prefix — and
+>   able to delete anything. Now an id-scoped ledger; nothing is listed, nothing matched by name.
+> - `test_worker_kill.py` was the last un-stubbed provisioning dispatch, one exported
+>   `NEON_API_KEY` away from creating real billable projects with no teardown. Ported onto the
+>   in-worker Neon stub, and it **runs green for the first time in repo history** (62s).
+>
+> **Neon account: 8 baseline projects, verified present before and after all work. Nothing created,
+> nothing deleted.** `C:/Users/Bantu/pg-setup/neon-baseline.txt` is the pin.
+>
+> **Read next:** `.dev/reference/260811-review-fix-mutation-proofs.md` — 13 mutation proofs with
+> verbatim red and green, both gate runs, both baseline checks, and a section on the one guard that
+> was measured to be a tautology and deleted. Traces: `260811-review-fixes.md`,
+> `260810-neon-boundary.md`, `260810-query-dispatch.md`, `260810-sse-live-events.md`,
+> `260810-local-postgres.md`, `260810-docling-gate.md`.
+>
+> **Next move:** `0.6` (one `count(*)`, sizes the labelling loop), then `0.1`/`0.4`. `BACKLOG 1.13`
+> is newly named and cheap to start: 22 integration tests still skip, and a skip is unobserved.
 
 > # MERGED — 2026-08-09, `main` is at `57be16b`
 >
