@@ -117,6 +117,36 @@ being excluded from collection. Same state, more honestly counted.
 1 failed / 2192 passed. Real, and fixed in `5102ddf` (see Deviations). The figures above are the
 second run, on the shipped tree.
 
+Integration flag-ON, whole directory, nothing deselected:
+
+```
+33 passed, 24 skipped, 5 failed in 572.21s
+```
+
+**5 failed, none of them this change.** Not comparable to the morning's `28/5/1` either — that run
+collected 34 tests, this one 62. Attribution: `5.6` (owner decision, known), `ver01` (needs
+`ANTHROPIC_API_KEY` in `os.environ`), and three that had **never executed before** — filed as `1.15`
+(a test stale against D1/P3's evidence gate) and `1.16` ×2 (a fixture inserting `NULL` into a
+`NOT NULL` column). The bottom three were **proved** pre-existing, not assumed:
+
+```
+git checkout 4621cdd -- apps/api/app/   # product code only, tests unchanged
+3 failed in 36.58s                       # identical set
+git checkout HEAD -- apps/api/app/       # clean restore, git status empty
+```
+
+**That run also found a live product defect unrelated to this work — `1.14`.** Every
+`run_deployment_checklist` logs `blast_radius_fetch_failed … syntax error at or near ":"`:
+`deployment_service.py:1237`/`:1253` write `(:window_days::text || ' days')::interval`, SQLAlchemy
+leaves the bindparam unbound where `::` abuts it (the error's `[parameters: …]` shows `window_days`
+absent), and the caller catches and falls back. Every `configured_max_*` / `observed_max_*` in the
+blast-radius payload is `None` on every run while the thresholds beside them populate from settings.
+Sixth instance of the `:name::type` class `1.1` records, and the first in production code. **Filed,
+not fixed** — it is outside this change's scope, it needs its own test against a real DB (the
+existing ones mock the session, which is why five phases missed it), and it sits on the deploy gate's
+threat surface. Same family as `5.13`: a fail-soft `except` turning a permanently broken statement
+into a plausible empty state.
+
 Six mutation proofs, all red first time, all restored green — full verbatim output in the reference
 file.
 

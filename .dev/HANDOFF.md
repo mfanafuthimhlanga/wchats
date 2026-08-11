@@ -14,14 +14,34 @@
 > ```
 > unit                          2193 passed, 13 skipped, 0 failed    717s
 > integration (flag OFF, gate)    15 passed, 47 skipped, 0 failed    281s
-> integration (flag ON)           NOT RE-RUN AFTER dc67d37 — see below
+> integration (flag ON)           33 passed, 24 skipped, 5 failed    572s
 > ```
 >
-> **Flag-ON has not been re-run on this tip and no figure is claimed for it.** The morning's reading
-> was `28 passed / 5 skipped / 1 failed`, and the one failure is `5.6`. What this change adds to that
-> run is `red_team_rtx`: `1 passed, 3 skipped` observed on its own. Whoever runs it next should
-> expect roughly `29 passed / 8 skipped / 1 failed` and should treat that as a prediction, not a
-> measurement.
+> **Read the flag-ON line carefully — 5 failed, and NONE of them are this change.** It is also not
+> comparable to the morning's `28 passed / 5 skipped / 1 failed`: that run collected 34 tests, this
+> one collects 62 (the whole of `tests/integration`, nothing deselected). Three of the five had
+> **never executed before**, which is the entire reason they now show. Attribution, each verified:
+>
+> | Failure | What it is |
+> |---|---|
+> | `test_act07_resolve_live::test_tightened_ceiling…` | **`5.6`** — the owner's audit-provenance decision. Known, expected. |
+> | `test_ver01_adversarial_harness::test_100_adversarial…` | needs `ANTHROPIC_API_KEY` in `os.environ`. Environmental, documented below. |
+> | `test_deploy_gate_redteam::test_deploy_gate_blocks_then_unblocks_on_contain` | **`1.15`** — stale against D1/P3's evidence gate; `eval_signal=no_runs` downgrades to `block`, so its second assertion cannot hold. Gate behaving as designed. |
+> | `test_transactional_idempotency_e2e` ×2 | **`1.16`** — fixture inserts `NULL` into `capability_envelopes.constraints`, a `NOT NULL` column. |
+>
+> **The bottom three were proved pre-existing rather than assumed so**: `git checkout 4621cdd --
+> apps/api/app/`, re-run, `3 failed in 36.58s` — identical — then `git checkout HEAD -- apps/api/app/`
+> and a clean `git status`.
+>
+> **And that run found a live product defect nobody had seen: `1.14`.** Every
+> `run_deployment_checklist` logs `blast_radius_fetch_failed … syntax error at or near ":"`.
+> `deployment_service.py:1237`/`:1253` write `(:window_days::text || ' days')::interval` — SQLAlchemy
+> leaves the bindparam unbound where `::` abuts it (`window_days` is absent from the bound parameters
+> in the error), Postgres rejects it, the caller catches and falls back. **So every `configured_max_*`
+> and `observed_max_*` in the blast-radius payload is `None` on every run, while the thresholds
+> beside them populate from settings and look healthy.** The Phase 18 blast-radius warnings have
+> never evaluated real exposure. Sixth instance of the `:name::type` class `1.1` records — the first
+> in production code rather than a test.
 >
 > Unit is +26 on the morning's 2167/13, all of them new tests in this change; zero `FAILED`/`ERROR`
 > lines (`grep -cE "^(FAILED|ERROR)"` → 0). Flag-OFF's skip count moved 22 → 47 because
