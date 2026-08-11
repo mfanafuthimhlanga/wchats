@@ -72,6 +72,24 @@ Guards:
       False) — no live ANTHROPIC_API_KEY is required for this gate, matching
       the skip reason below, which names only Postgres and Redis.
 
+      That no-model-call property covers all THREE calls per batch, and it
+      only holds because each one returns before step 5:
+        * place_order   — reaches step 5 but the ACT-03 skip fires
+                          (max_env 499 < ACTOR_SKIP_MAX_AMOUNT_CENTS 500).
+        * book_slot     — capability denial at step 2 (enabled=False).
+        * issue_refund  — max_amount_cents denial at step 4 (6000 > the
+                          CLEAN_TENANT_ENVELOPES ceiling of 5000). Its
+                          envelope ceiling is 5000, which is NOT below the
+                          ACT-03 threshold, so if step 4 ever stopped denying
+                          it this call would fall through to a live Haiku
+                          judge — thirty of them per run. It did exactly that
+                          until 2026-08-11: the dispatcher passed raw_args (a
+                          dict) to apply_rate_and_constraint_checks, which
+                          reads the amount with getattr, so the ceiling never
+                          fired at all. Fixed in tools.py step 4; pinned by
+                          tests/unit/test_transactional_tools.py::
+                          TestMaxAmountCentsIsEnforcedByTheDispatcher.
+
 Deferred to plan 19-05 (autonomous:false): the operator's live run of this
 gate, transcribed into 19-UAT.md per the verification:backstop truth this
 plan's frontmatter records.
@@ -554,12 +572,25 @@ def aud03_tenant(control_db_url, tenant_db_url):
     finally:
         tenant_engine.dispose()
 
-    from app.core.database import get_sync_db
     from app.models.agent import Agent
 
     with _control_db_redirected(control_db_url):
+        # Bind get_sync_db INSIDE the patch context. `from X import Y` binds Y
+        # into this frame at the moment it runs, so importing it above the
+        # `with` captured the UNPATCHED function -- this fixture then seeded the
+        # ephemeral control DB and read back through the real session, which the
+        # integration conftest points at the shared wchats_control. `db.get`
+        # returned None and `db.expunge(None)` raised UnmappedInstanceError
+        # before a single batch ran. Identical defect (and fix) to
+        # test_ver01_adversarial_harness.py's clean_tenant fixture.
+        from app.core.database import get_sync_db  # noqa: PLC0415
+
         with get_sync_db() as db:
             agent = db.get(Agent, agent_id)
+            assert agent is not None, (
+                "aud03_tenant seeded the ephemeral control DB but read back None -- "
+                "get_sync_db was not redirected, so this is reading the wrong database"
+            )
             db.expunge(agent)  # detach so it stays usable after the session closes
 
         from app.services.agent_tools import RetrievalStrategy, build_tool_server
@@ -676,6 +707,13 @@ def test_zero_audit_gaps_across_synthetic_30_day_window(aud03_tenant, require_re
                 # instance, this same-clock assumption would need revisiting
                 # (e.g. a negative skew tolerance on :since) before the
                 # per-day backdating below can be trusted.
+                #
+                # Residual, accepted: every batch's UTC calendar day is read
+                # off the wall clock, so a run that STARTS within its own
+                # runtime (~1-2 min) of UTC midnight straddles two dates and
+                # lands two batches on one day, leaving another empty --
+                # days_with_traffic < 30, with max_abs_delta still 0. That is
+                # a scheduling artifact, not an audit gap; re-run it.
                 batch_started_at = datetime.now(timezone.utc)
                 batch_attempts = asyncio.run(_run_batch())
 
@@ -690,13 +728,28 @@ def test_zero_audit_gaps_across_synthetic_30_day_window(aud03_tenant, require_re
                     ).fetchall()
                     written_ids = [row[0] for row in written_rows]
                     if written_ids and offset_days > 0:
+                        # `hours`, not `days`. Postgres interval arithmetic on a
+                        # timestamptz is calendar-aware for day/month/year units
+                        # (it converts to the SESSION TimeZone, subtracts calendar
+                        # days, converts back) and exact for hour/minute/second
+                        # units. The Python side below shifts by
+                        # timedelta(days=offset_days), which is always exactly
+                        # 24*offset_days hours. Across a DST transition inside the
+                        # 30-day window those two rules differ by an hour, and an
+                        # audit row within an hour of UTC midnight would then
+                        # bucket one day away from the invocation that produced it
+                        # -- a fabricated +1/-1 delta pair on two days, reported as
+                        # an audit gap. Africa/Johannesburg (this server's
+                        # TimeZone, verified 2026-08-11) has no DST, so the two
+                        # forms are equal here; expressing it in exact-duration
+                        # units means the gate does not silently depend on that.
                         conn.execute(
                             sa_text(
                                 "UPDATE tool_calls_audit "
-                                "SET created_at = created_at - make_interval(days => :d) "
+                                "SET created_at = created_at - make_interval(hours => :h) "
                                 "WHERE id = ANY(:ids)"
                             ),
-                            {"d": offset_days, "ids": written_ids},
+                            {"h": offset_days * 24, "ids": written_ids},
                         )
 
                 shift = timedelta(days=offset_days)
@@ -720,7 +773,19 @@ def test_zero_audit_gaps_across_synthetic_30_day_window(aud03_tenant, require_re
         invocation_records, audit_row_records, window_start=window_start
     )
 
-    if result["vacuous"] or result["max_abs_delta"] != 0:
+    # The print condition must cover EVERY assertion below, not just two of
+    # them. It previously named `vacuous` and `max_abs_delta` only, so a
+    # days_with_traffic or out_of_window failure -- the two most likely, since
+    # both are sensitive to when the run starts relative to UTC midnight --
+    # printed nothing at all and left the operator a bare assertion error on a
+    # gate that runs once and is transcribed by hand.
+    if (
+        result["vacuous"]
+        or result["days_with_traffic"] != AUDIT_WINDOW_DAYS
+        or result["out_of_window"]["invocations"]
+        or result["out_of_window"]["audit_rows"]
+        or result["max_abs_delta"] != 0
+    ):
         print("\nAUD-03 per-day coverage table (transcribe into 19-UAT.md):")
         for day, counts in result["per_day"].items():
             print(
