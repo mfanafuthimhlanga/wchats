@@ -96,6 +96,26 @@ JWT_SECRET  CLERK_WEBHOOK_SIGNING_SECRET
 `CLERK_WEBHOOK_SIGNING_SECRET`.** A new environment configured from the example **fails to start**,
 and nothing in the repo lists the full required set in one place.
 
+**CLOSED 2026-08-12 (E2E-0). The paragraph above is right about the root file and wrong about the
+repo, and the correction is the finding.** `OBSERVED` by a test that derives the required set from
+`Settings.model_fields` rather than from a copied list:
+
+- **There are TWO tracked examples, not one.** The 5-missing count describes the **repo-root**
+  `.env.example`. **`apps/api/.env.example` was missing 3** — `PLATFORM_CREDENTIAL_KEY`,
+  `JWT_SECRET`, `CLERK_WEBHOOK_SIGNING_SECRET` — and two of those three were **present but commented
+  out**, which is worse than absent: it names a key the reader can see in the file while dotenv
+  ignores it, so the ValidationError looks like a bug rather than a missing line.
+- **Which file loads depends on which files exist.** `_find_env_file()` walks up from
+  `app/core/config.py` and stops at the first `.env`, so on a fresh clone the **root** file is what
+  `Settings` reads, and once `apps/api/.env` exists it wins permanently. Both examples therefore had
+  to be complete; both now are.
+- Both regenerated, all 10 required keys uncommented, with generation commands for the four that are
+  generated rather than fetched. `apps/api/.env.example` carries the full 63-field operational
+  surface with its real defaults; the root file carries the 10 plus a pointer.
+- Pinned by `apps/api/tests/unit/test_env_example_covers_required_settings.py`, which fails when a
+  no-default field is added to `Settings` without landing in both examples, and treats a
+  commented-out key as absent. Four mutation proofs, `.dev/reference/260812-e2e0-mutation-proofs.md`.
+
 ### 3.3 Authentication — running on Clerk development keys
 
 `OBSERVED` in the e2e run's browser console:
@@ -210,9 +230,12 @@ Record the observed output for each step, not the intention.
 
 ### Phase A — make the local chain real (no cloud, no spend beyond model calls)
 
-- **E2E-0 · fix the boot contract.** Regenerate `.env.example` from `Settings`, covering all 10
-  mandatory fields, and add a test that fails when a field with no default is missing from the
-  example. Closes §3.2 and is the precondition for anyone else ever running this.
+- ~~**E2E-0 · fix the boot contract.**~~ **DONE 2026-08-12.** Both examples (root and `apps/api/`,
+  and there being two is itself the finding) now carry all 10 mandatory fields, pinned by a test
+  that derives the set from `Settings.model_fields`. See §3.2 for what the closure corrected.
+  **Not yet proven: that a fresh environment built from the example actually boots** — the test
+  asserts the keys are named, not that filling them in starts the app. E2E-1 is the first step that
+  would show that, and it is the next move.
 - **E2E-1 · signup → agent.** `POST /tenants` (needs `X-Admin-Key`), then `POST /agents`. Confirm a
   **real Neon project is provisioned** and its connection string is encrypted at rest. Neon quota is
   free (all 8 old projects deleted 2026-08-11). Assert the tenant migration chain reaches head
