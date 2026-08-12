@@ -12,10 +12,20 @@
 > observed, not relayed from an agent:**
 >
 > ```
-> unit                          2193 passed, 13 skipped, 0 failed    717s
-> integration (flag OFF, gate)    15 passed, 47 skipped, 0 failed    281s
-> integration (flag ON)           33 passed, 24 skipped, 5 failed    572s
+> unit                          2202 passed, 13 skipped, 0 failed    550s   (2026-08-12, tip a5e4101)
+> integration (flag OFF, gate)    15 passed, 47 skipped, 0 failed    281s   (2026-08-11)
+> integration (flag ON)           39 passed, 24 skipped, 3 failed    502s   (2026-08-12, tip a5e4101)
 > ```
+>
+> **Flag-ON went `33/24/5` → `39/24/3`** across 2026-08-12: `1.14` and `1.16` closed (which is +2
+> passing idempotency tests and +4 new paramstyle tests). **All three remaining failures are
+> accounted for and none is a code defect:**
+>
+> | Failure | What it is |
+> |---|---|
+> | `test_act07_resolve_live::test_tightened_ceiling…` | **`5.6`** — the owner's audit-provenance decision. |
+> | `test_deploy_gate_redteam::test_deploy_gate_blocks_then_unblocks_on_contain` | **`1.15`** — the test predates D1/P3's evidence gate. Remedy is documented *in the gate itself* (`deployment_service.py:1481`: "The remedy is one eval run") and the row now spells it out. |
+> | `test_ver01_adversarial_harness::test_100_adversarial…` | needs `ANTHROPIC_API_KEY` in `os.environ`. |
 >
 > **Read the flag-ON line carefully — 5 failed, and NONE of them are this change.** It is also not
 > comparable to the morning's `28 passed / 5 skipped / 1 failed`: that run collected 34 tests, this

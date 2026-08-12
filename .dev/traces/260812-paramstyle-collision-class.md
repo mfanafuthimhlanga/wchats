@@ -78,14 +78,55 @@ the statements from their real source and makes a real server run them. One of i
 past "does not raise" — it seeds audit rows inside and outside the trailing window and pins that the
 window bound, the very parameter that was never bound, actually discriminates.
 
+## `1.16` closed alongside, and it was two blockers stacked
+
+Not in the original plan — picked up because it was cheap and it was dirtying the flag-ON run. It
+turned out to have the same layered shape as everything else this week:
+
+1. The fixture wrote an explicit `NULL` into `capability_envelopes.constraints`, which is
+   `JSONB NOT NULL DEFAULT '{}'::jsonb`. Fixed to `CAST('{}' AS jsonb)` — what the `NULL` was
+   reaching for.
+2. **Underneath it, a defect that made the test's stated purpose unreachable.** Its docstring says it
+   "spies on `StubProviderAdapter.place_order`", but the only path returning `_STUB_ADAPTER` is
+   `get_adapter_for_skill`'s `red_team_mode` short-circuit — and the test opens no such window and
+   seeds no `integration_credentials` row. Step 6 aborted with `provider.not_configured`, so the spy
+   could never have been reached and the exactly-once assertion had nothing to assert against.
+
+Fixed by patching `tools.get_adapter_for_skill` at the boundary — the same class of stub the
+docstring already declares for `call_actor_gate`. Deliberately not `red_team_mode()`, which would
+overload a red-team-only flag, and not a seeded credential, which would point "exactly once" at a
+real provider over the network. The patch target matters: `tools.py` binds `get_adapter_for_skill`,
+and patching `get_adapter` instead is `4.1`'s still-live defect.
+
+**Observed red twice, for two different reasons, before green** — `NotNullViolation`, then
+`provider.not_configured`, then `6 passed`. Worth stating plainly: had the first fix been shipped on
+its own, the test would have gone from "errors in setup" to "fails on an assertion it can never
+satisfy", and the second layer would have been read as a regression introduced by the first fix.
+
+## The digest success path is now covered end to end
+
+`test_run_weekly_digest_reaches_the_send` drives the whole task against a real control DB and asserts
+the *sequence* the defect broke: the WR-02 anchor commits, and `send_digest_email` is then reached.
+`get_sync_db` is **not** mocked there — it yields a real session — because a `MagicMock` session is
+precisely what hid this for months. `_collect_digest_stats` and `fernet_decrypt` are patched, since
+they reach the per-tenant Neon DB and are not what is under test.
+
 ## Observed
 
 ```
 tests/unit/test_sql_paramstyle_collisions.py            9 passed   (new)
-tests/integration/test_paramstyle_real_db.py            3 passed   (new)
-tests/unit/test_digest_service.py + the above          13 passed
+tests/integration/test_paramstyle_real_db.py            4 passed   (new, incl. the send path)
+tests/integration/test_transactional_idempotency_e2e.py 2 passed   (1.16, never run before)
+tests/unit/test_digest_service.py + paramstyle unit    13 passed
 deployment/confirmation/task/migration_0019 modules    161 passed, 1 skipped
+unit gate                        2202 passed, 13 skipped, 0 failed   550.04s
+                                 grep -cE "^(FAILED|ERROR)" -> 0
+integration flag-ON                39 passed, 24 skipped, 3 failed   502.48s
 ```
+
+Flag-ON moved `33 passed / 24 skipped / 5 failed` → `39 / 24 / 3` over the day. The three that
+remain are `5.6` (owner decision), `1.15` (test predates the evidence gate; remedy documented at
+`deployment_service.py:1481`) and `ver01` (needs a real key in `os.environ`). None is a code defect.
 
 Four mutation proofs — M7, M8, M9, M10 — each red then green, verbatim in the reference file. M10
 reproduces the exact production error, `psycopg2.errors.SyntaxError: syntax error at or near ":"`.
