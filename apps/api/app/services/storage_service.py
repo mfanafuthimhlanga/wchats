@@ -45,17 +45,67 @@ log = structlog.get_logger(__name__)
 _s3 = None
 
 
+class StorageNotConfigured(RuntimeError):
+    """S3_UPLOADS_BUCKET is unset, so there is nowhere to put document bytes.
+
+    Raised instead of letting the empty string reach botocore, which reports it
+    as ``Invalid bucket name ""`` from inside a 500 — indistinguishable from a
+    code defect. A missing configuration is an unavailable service, and callers
+    translate this to 503 (BACKLOG 1.24).
+    """
+
+
+def _bucket() -> str:
+    """The uploads bucket name, or raise if storage was never configured.
+
+    S3_UPLOADS_BUCKET defaults to "" so that local-dev imports work without
+    real S3 (config.py:166). That default must not be allowed to travel as far
+    as an API call.
+    """
+    bucket = settings.S3_UPLOADS_BUCKET
+    if not bucket:
+        raise StorageNotConfigured(
+            "S3_UPLOADS_BUCKET is not set, so uploaded documents have nowhere "
+            "to go. Set it in the environment (and S3_ENDPOINT_URL too if you "
+            "are pointing at a local S3-compatible store)."
+        )
+    return bucket
+
+
 def _get_s3():
     """Return the module-level boto3 S3 client, initializing on first call.
 
     Lazy init keeps this module importable in unit tests without real AWS
     credentials (boto3 is only imported when the first S3 call is made, not
     at module load time).  Mirrors _get_bedrock() in bedrock_embedding_service.py.
+
+    S3_ENDPOINT_URL (BACKLOG 1.24) redirects every read and write of customer
+    document bytes, so it is REFUSED in production rather than honoured or
+    ignored. Silently ignoring it would be worse than raising: the operator who
+    set it believes documents are going somewhere they are not.
     """
     global _s3
     if _s3 is None:
         import boto3  # noqa: PLC0415  — intentional lazy import
-        _s3 = boto3.client("s3", region_name=settings.AWS_REGION)
+
+        endpoint = settings.S3_ENDPOINT_URL
+        if endpoint and settings.ENVIRONMENT == "production":
+            raise StorageNotConfigured(
+                "S3_ENDPOINT_URL is set while ENVIRONMENT=production. That "
+                "would redirect every customer document read and write away "
+                "from AWS. It is a local-development affordance only; unset it "
+                "or do not run this process as production."
+            )
+
+        kwargs: dict = {"region_name": settings.AWS_REGION}
+        if endpoint:
+            kwargs["endpoint_url"] = endpoint
+            log.warning(
+                "storage_service.endpoint_override_active",
+                endpoint_url=endpoint,
+                environment=settings.ENVIRONMENT,
+            )
+        _s3 = boto3.client("s3", **kwargs)
     return _s3
 
 
@@ -97,7 +147,7 @@ def put_bytes(key: str, data: bytes) -> None:
         critical to the transaction.
     """
     _get_s3().put_object(
-        Bucket=settings.S3_UPLOADS_BUCKET,
+        Bucket=_bucket(),
         Key=key,
         Body=data,
     )
@@ -122,7 +172,7 @@ def get_bytes(key: str) -> bytes:
         is unreachable.
     """
     response = _get_s3().get_object(
-        Bucket=settings.S3_UPLOADS_BUCKET,
+        Bucket=_bucket(),
         Key=key,
     )
     data: bytes = response["Body"].read()
@@ -146,7 +196,7 @@ def delete_object(key: str) -> None:
     """
     try:
         _get_s3().delete_object(
-            Bucket=settings.S3_UPLOADS_BUCKET,
+            Bucket=_bucket(),
             Key=key,
         )
         log.debug("storage_service.delete_object", key=key)

@@ -180,6 +180,11 @@ async def upload_documents(
 
     tenant_conn = psycopg2.connect(tenant_conn_str, connect_timeout=5)
     try:
+        # BACKLOG 1.24: an unset S3_UPLOADS_BUCKET used to reach botocore and
+        # surface as `Invalid bucket name ""` inside a 500 — indistinguishable
+        # from a code defect. Storage that was never configured is an
+        # unavailable service, so it is a 503 that names the setting. Raised
+        # before any document row is written, so nothing is left half-created.
         with tenant_conn.cursor() as cur:
             for idx, f in enumerate(files):
                 doc_id = str(uuid.uuid4())
@@ -225,6 +230,10 @@ async def upload_documents(
                 )
 
         tenant_conn.commit()
+    except storage_service.StorageNotConfigured as exc:
+        # No commit has run, so the tenant DB is untouched; psycopg2 rolls the
+        # transaction back on close.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     finally:
         tenant_conn.close()
 

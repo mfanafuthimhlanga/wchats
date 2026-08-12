@@ -165,6 +165,21 @@ class Settings(BaseSettings):
     # the upload/parse hot path after the S3 migration.
     S3_UPLOADS_BUCKET: str = ""
 
+    # Local-development override for the S3 endpoint (E2E-2, BACKLOG 1.24).
+    # None (default) => boto3 resolves real AWS exactly as it always has; no
+    # deployed environment changes behaviour by this field existing.
+    # Set to e.g. http://127.0.0.1:9000 to point document storage at a local
+    # S3-compatible process (MinIO) so the ingestion chain can be exercised
+    # without an AWS account.
+    #
+    # THIS IS A REDIRECT PRIMITIVE ON THE BOUNDARY THAT DECIDES WHERE CUSTOMER
+    # DOCUMENTS ARE WRITTEN AND READ. It is therefore refused outright when
+    # ENVIRONMENT == "production" — see storage_service._get_s3(), which raises
+    # rather than warning or silently ignoring it. A production process
+    # configured to send customer documents to a non-AWS endpoint must fail to
+    # serve that path, not serve it quietly.
+    S3_ENDPOINT_URL: str | None = None
+
     # M4 Runtime agent budget — per-turn USD ceiling for ClaudeAgentOptions.
     # D-10 fix phase 2: raised from 0.05 (too low for thinking+retrieve+synthesis).
     # 0.50 gives headroom for a Haiku extended-thinking+retrieve+synthesis turn
