@@ -192,6 +192,65 @@ def test_fetch_red_team_summary_unblocks_after_containment(tenant_db_url):
 # ---------------------------------------------------------------------------
 
 
+def _seed_measured_eval_run(conn_url: str, agent_id: str) -> str:
+    """Seed a complete, agent-invoked eval run so the EVAL half of the gate passes.
+
+    BACKLOG 1.15. Without this the test cannot observe what it was written to
+    observe. D1/P3 added `apply_signal_evidence_gate`, which downgrades `ship` to
+    `block` whenever the eval signal is absent — and it is deliberate:
+
+        "no_runs blocks as firmly as unavailable ... an agent that has never been
+         evaluated has no evidence of quality ... The remedy is one eval run."
+        (deployment_service.py:1481)
+
+    This agent is created fresh per run, so its eval signal was `no_runs` and the
+    recommendation was `block` BOTH before and after containment. That is the
+    gate working, but it leaves no red-team transition to assert — the test's
+    actual subject (OPS-15) became unobservable. Seeding the remedy the gate
+    itself names restores it.
+
+    Three things are load-bearing and each maps to a state
+    `_fetch_eval_summary_sync` can report:
+      - status='complete'      — anything else is `run_failed`
+      - config.agent_invoked   — absent or false is `agent_not_invoked` (audit D1)
+      - a non-NULL score       — all-NULL is `no_valid_scores`
+    """
+    import json
+
+    from sqlalchemy import create_engine, pool
+    from sqlalchemy import text as sa_text
+
+    engine = create_engine(conn_url, poolclass=pool.NullPool)
+    run_id = str(uuid.uuid4())
+    config = {
+        "agent_invoked": True,
+        "dataset": {"attempted": 3, "valid": 3, "scored": 3},
+    }
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                sa_text(
+                    "INSERT INTO eval_runs (id, kind, started_at, finished_at, status, config) "
+                    "VALUES (:id, :kind, now(), now(), 'complete', CAST(:cfg AS jsonb))"
+                ),
+                # The gate looks the run up by this exact kind (deployment_service.py:585).
+                {"id": run_id, "kind": f"m6:{agent_id}", "cfg": json.dumps(config)},
+            )
+            for i, metric in enumerate(("faithfulness", "answer_relevancy", "context_precision")):
+                conn.execute(
+                    sa_text(
+                        "INSERT INTO eval_results (eval_run_id, scenario_id, metric, score) "
+                        "VALUES (:rid, :sid, :m, :s)"
+                    ),
+                    # Comfortably above the 0.85 ship bar so the EVAL half cannot be
+                    # what blocks — this test is about the RED-TEAM half.
+                    {"rid": run_id, "sid": f"scenario-{i}", "m": metric, "s": 0.95},
+                )
+    finally:
+        engine.dispose()
+    return run_id
+
+
 def _run_checklist_against_real_findings(agent_id: str, conn_url: str) -> dict:
     """Run run_deployment_checklist with the control DB / Sonnet call mocked at
     the boundary tests/unit/test_deployment_task.py already uses, but with
@@ -278,12 +337,32 @@ async def _post_approve_deployment(agent_id: str, run_id: str, recommendation: s
     agent.tenant_id = tenant.id
     agent.is_deployed = False
 
+    from app.services.capability_service import canonical_envelope_hash
+
     run = MagicMock(spec=ChecklistRun)
     run.id = uuid.UUID(run_id)
     run.agent_id = agent.id
     run.status = "complete"
     run.recommendation = recommendation
     run.all_warnings_acknowledged = True
+    # BACKLOG 1.15, second layer. Everything below this line is guard 3b and 4b
+    # of the approve route, and NO run of this test had ever reached them: the
+    # recommendation was always 'block', which 422s at guard 2. Once the eval
+    # signal was seeded and containment produced a real 'ship', the request
+    # arrived at two guards whose inputs were bare MagicMocks and got 422 for
+    # reasons that have nothing to do with OPS-15.
+    #
+    # 3b — stored_run_records_agent_invocation(run.report) requires
+    #      report["eval_summary"]["agent_invoked"] is exactly True (audit D1/P3).
+    #      A MagicMock is not a dict, so it fails closed, which is correct.
+    run.report = {"eval_summary": {"agent_invoked": True}}
+    # 4b — envelope_drift(live, run.envelope_hash). The mock DB returns no
+    #      envelope rows, so the live hash is the hash of an empty projection;
+    #      recording that same value is what "this run acknowledged the live
+    #      configuration" means. Deliberately NOT stubbing envelope_drift: the
+    #      fail-closed direction it enforces (a NULL recorded hash is drift) is
+    #      real, and CAP-03 owns testing it.
+    run.envelope_hash = canonical_envelope_hash([])
 
     mock_db = AsyncMock()
 
@@ -296,6 +375,9 @@ async def _post_approve_deployment(agent_id: str, run_id: str, recommendation: s
 
     mock_db.get.side_effect = _fake_get
     mock_db.commit = AsyncMock()
+    # _fetch_envelope_rows does `(await db.execute(...)).all()` — an empty live
+    # envelope, matching the hash recorded on the run above.
+    mock_db.execute.return_value = MagicMock(all=MagicMock(return_value=[]))
 
     app.dependency_overrides[get_current_tenant] = lambda: tenant
     app.dependency_overrides[get_async_db] = lambda: mock_db
@@ -321,6 +403,9 @@ def test_deploy_gate_blocks_then_unblocks_on_contain(tenant_db_url):
     approve succeeds (200)."""
     agent_id = str(uuid4())
     finding_id = _seed_open_critical_finding(tenant_db_url)
+    # BACKLOG 1.15: satisfy the EVAL half of the evidence gate so the RED-TEAM
+    # half — this test's actual subject — is observable. See the helper.
+    _seed_measured_eval_run(tenant_db_url, agent_id)
 
     # --- open critical finding -> block ---
     result = _run_checklist_against_real_findings(agent_id, tenant_db_url)
