@@ -12,20 +12,31 @@
 > observed, not relayed from an agent:**
 >
 > ```
-> unit                          2202 passed, 13 skipped, 0 failed    550s   (2026-08-12, tip a5e4101)
+> unit                          2202 passed, 13 skipped, 0 failed    545s   (2026-08-12, tip d839100)
 > integration (flag OFF, gate)    15 passed, 47 skipped, 0 failed    281s   (2026-08-11)
-> integration (flag ON)           39 passed, 24 skipped, 3 failed    502s   (2026-08-12, tip a5e4101)
+> integration (flag ON)           40 passed, 24 skipped, 2 failed    473s   (2026-08-12, tip d839100)
 > ```
 >
-> **Flag-ON went `33/24/5` → `39/24/3`** across 2026-08-12: `1.14` and `1.16` closed (which is +2
-> passing idempotency tests and +4 new paramstyle tests). **All three remaining failures are
-> accounted for and none is a code defect:**
+> **Flag-ON went `33/24/5` → `40/24/2` across 2026-08-12** as `1.14`, `1.15` and `1.16` closed.
+> **Both remaining failures are external to the code and neither is fixable by an agent:**
+>
+> | Failure | What it is |
+> |---|---|
+> | `test_act07_resolve_live::test_tightened_ceiling…` | **`5.6`** — an audit-provenance **owner decision**. Writing `actor_decision='approved_by_human'` on a denial row would make `pending_confirmations.py:172`'s query start matching denied actions, so it is not free. |
+> | `test_ver01_adversarial_harness::test_100_adversarial…` | needs a real `ANTHROPIC_API_KEY` **in `os.environ`**, not merely in `.env`. Passed on 2026-08-11 when one was exported (~$0.024). |
+>
+> That is the floor for this machine without an owner decision and a credential. The intermediate
+> reading below is kept because it names what each failure was:
 >
 > | Failure | What it is |
 > |---|---|
 > | `test_act07_resolve_live::test_tightened_ceiling…` | **`5.6`** — the owner's audit-provenance decision. |
-> | `test_deploy_gate_redteam::test_deploy_gate_blocks_then_unblocks_on_contain` | **`1.15`** — the test predates D1/P3's evidence gate. Remedy is documented *in the gate itself* (`deployment_service.py:1481`: "The remedy is one eval run") and the row now spells it out. |
+> | ~~`test_deploy_gate_redteam::…`~~ | **`1.15` — CLOSED later the same day** (`d839100`). |
 > | `test_ver01_adversarial_harness::test_100_adversarial…` | needs `ANTHROPIC_API_KEY` in `os.environ`. |
+>
+> **After `1.15` closed, the expected flag-ON state is 2 failures, both external to the code:** `5.6`
+> (an owner decision) and `ver01` (a credential). The final gate run is recorded at the bottom of
+> this block.
 >
 > **Read the flag-ON line carefully — 5 failed, and NONE of them are this change.** It is also not
 > comparable to the morning's `28 passed / 5 skipped / 1 failed`: that run collected 34 tests, this
@@ -59,7 +70,24 @@
 > digest task will now send real email from a scheduled beat, the same dormant-path-becomes-live shape
 > as `0.4` — and **`1.18`**, blast-radius warnings firing for the first time.
 >
-> Trace: `.dev/traces/260812-paramstyle-collision-class.md`. Original entry below.
+> **`1.15` and `1.16` also closed on 2026-08-12** (`a5e4101`, `d839100`), and both were two-layered
+> in the same way. `1.16`'s `NULL`-into-`NOT NULL` fixture fix exposed a second blocker: the test's
+> docstring says it spies on `StubProviderAdapter`, but the only path returning the stub is a
+> `red_team_mode` short-circuit the test never opens, so the spy was unreachable and the exactly-once
+> assertion had nothing to assert against. `1.15`'s eval-run seed exposed approve-route guards `3b`
+> and `4b`, which no run of that test had ever reached because the recommendation was always `block`.
+> **OPS-15's end-to-end claim — open critical → `block` → 422, contain → `ship` → 200 — is now
+> observed for the first time.**
+>
+> **The day's shape, and it is the practical lesson: four rows (`5.9`, `1.14`, `1.16`, `1.15`) were
+> each filed as one narrow thing and each was at least two.** In three of the four, fixing the first
+> layer is what exposed the second — because the first layer was the reason nothing had ever executed
+> far enough to meet it. So: **after fixing anything in code with no execution history, re-run before
+> reporting done, and expect a different error rather than a pass.** Filed as retro **Family J**.
+>
+> Traces: `.dev/traces/260812-paramstyle-collision-class.md`. Proofs:
+> `.dev/reference/260812-paramstyle-mutation-proofs.md` (M7-M13, including two invalid proofs
+> recorded rather than quietly redone). Original entry below.
 >
 > **And that run found a live product defect nobody had seen: `1.14`.** Every
 > `run_deployment_checklist` logs `blast_radius_fetch_failed … syntax error at or near ":"`.

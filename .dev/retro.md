@@ -351,3 +351,44 @@ Redis key builders in `widget.py` on its first run, because dropping f-string `{
 fused `f"rate:config:{ip}:{bucket}"` into `rate:config::`. That is Family F arriving inside the fix
 for Family I, and the proof that the repair is load-bearing (M9) is what distinguishes a gate from a
 guess.
+
+## Family J — "the second layer is only visible from on top of the first"
+
+**Recurrences: 4 in one day** (2026-08-12: `5.9`, `1.14`, `1.16`, `1.15`).
+
+Not a defect family — a *diagnosis* family, and it changes how a fix should be reported. Every one of
+these was filed as one narrow thing from reading the code, and every one was at least two things. In
+three of the four, **fixing the first layer is what exposed the second**, because the first layer was
+the reason nothing had ever executed far enough to meet it:
+
+- `1.16` — the fixture wrote `NULL` into a `NOT NULL` column. Fixed, and the test then died on
+  `provider.not_configured`: its docstring says it spies on `StubProviderAdapter`, but the only path
+  returning the stub is a `red_team_mode` short-circuit the test never opens. The spy was
+  unreachable, so the exactly-once assertion had nothing to assert against.
+- `1.15` — the test predated the evidence gate, so the recommendation was `block` before *and* after
+  containment. Seeded an eval run, and the approve call then reached guards `3b`/`4b` for the first
+  time in the test's life, both being handed bare `MagicMock`s.
+- `1.14` — filed as one call site in `deployment_service`; scanning for the *shape* found three, and
+  the third (`digest.py`) meant OPS-04 has never sent a digest.
+- `5.9` — filed against `red_team_probe`; the same dead branch was on the production turn path, with
+  a second defect stacked under it (`getattr(block, "name", ...)`) that fixing the first would not
+  have fixed.
+
+**What the plans failed to anticipate:** a first green is not a finish when the code under repair had
+never run. Each fix moved the failure rather than removing it, and each intermediate state was a
+*new* error message that could easily be read as a regression the fix had introduced. Had `1.16`'s
+NULL fix been committed and reported on its own, the next reader would have seen a test that used to
+error in setup now failing an assertion — which looks exactly like a broken fix.
+
+**Standing rule:** after fixing anything in code with no execution history, **re-run before reporting
+done**, and expect a different error rather than a pass. Report the count of layers found, not the
+count filed. When a row names one call site, grep for its shape before believing the number — the
+scan is what turned `1.14` from one site into three, and a line-oriented grep was not enough (the AST
+scan is what would have caught a literal split across concatenated fragments).
+
+**Second standing rule, from two invalid proofs in two days:** write the expected direction of a
+mutation down *before* running it. Both failures — the `\x00` heredoc escape, and `replace(..., 1)`
+hitting the first of two identical lines in a different test — produced a green that was
+indistinguishable from "the guard is a tautology". They were caught only because a red had been
+predicted and the green demanded an explanation. A mutation that does not modify what it claims to
+modify is not weak evidence; it is none.

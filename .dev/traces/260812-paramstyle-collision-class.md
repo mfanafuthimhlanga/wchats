@@ -121,15 +121,53 @@ tests/unit/test_digest_service.py + paramstyle unit    13 passed
 deployment/confirmation/task/migration_0019 modules    161 passed, 1 skipped
 unit gate                        2202 passed, 13 skipped, 0 failed   550.04s
                                  grep -cE "^(FAILED|ERROR)" -> 0
-integration flag-ON                39 passed, 24 skipped, 3 failed   502.48s
+integration flag-ON                40 passed, 24 skipped, 2 failed   473.10s
 ```
 
-Flag-ON moved `33 passed / 24 skipped / 5 failed` → `39 / 24 / 3` over the day. The three that
-remain are `5.6` (owner decision), `1.15` (test predates the evidence gate; remedy documented at
-`deployment_service.py:1481`) and `ver01` (needs a real key in `os.environ`). None is a code defect.
+Final gates re-run at tip `d839100` after `1.15` closed: unit `2202 passed, 13 skipped, 0 failed`
+(544.57s), flag-ON `40 passed, 24 skipped, 2 failed` (473.10s).
+
+Flag-ON moved `33 passed / 24 skipped / 5 failed` → `40 / 24 / 2` over the day as `1.14`, `1.15` and
+`1.16` closed. **The two that remain are both external to the code**: `5.6` (an owner decision, and
+not a free one — writing `approved_by_human` on a denial row would make
+`pending_confirmations.py:172`'s query start matching denied actions) and `ver01` (needs a real
+`ANTHROPIC_API_KEY` in `os.environ`). That is the floor for this machine.
 
 Four mutation proofs — M7, M8, M9, M10 — each red then green, verbatim in the reference file. M10
 reproduces the exact production error, `psycopg2.errors.SyntaxError: syntax error at or near ":"`.
+
+## `1.15` closed too, and it was the third two-layer item of the day
+
+Not in the plan either. `test_deploy_gate_blocks_then_unblocks_on_contain`:
+
+1. The test predates D1/P3's evidence gate. Its agent is fresh per run, so `eval_signal` was
+   `no_runs` and `ship` was downgraded to `block` *both* before and after containment — no transition
+   left to assert. The remedy is named by the gate itself (`deployment_service.py:1481`, "The remedy
+   is one eval run"), so `_seed_measured_eval_run` inserts one.
+2. **Underneath it, guards `3b` and `4b` of the approve route — which no run had ever reached**,
+   because the recommendation was always `block` and that 422s at guard 2. Both were being handed
+   bare `MagicMock`s. Fixed by giving the run a real `report` dict and a real
+   `canonical_envelope_hash([])` against an empty live projection. `envelope_drift` is deliberately
+   not stubbed: its fail-closed direction is real, and CAP-03 owns testing it.
+
+So OPS-15's own docstring claim — open critical → `block` → 422, contain → `ship` → 200 — is observed
+end to end for the first time. **M11/M12/M13 prove the test still discriminates**: remove containment
+and it goes red while the eval half still reads `measured`; remove `agent_invoked` or the scores and
+the gate refuses via `agent_not_invoked` / `no_valid_scores`.
+
+**Incidental confirmation of `1.14` from an unrelated test:** M11's failure dump carries
+`blast_radius: {..., configured_max_hourly_aggregate_cents: 0, ...}`. Before `c65137e` every key
+there was `None`.
+
+## The day's shape, stated because it recurred four times
+
+`5.9`, `1.14`, `1.16` and `1.15` were each filed as one narrow thing and each was at least two.
+In every case the filed row came from *reading*, and the real extent appeared only when something
+*ran* — and in three of the four, fixing the first layer is what exposed the second. Practical
+consequence: **after fixing a defect in code that has never executed, re-run before believing it is
+done**, and do not report the first green as the finish. Had `1.16`'s NULL fix shipped alone, the
+test would have moved from "errors in setup" to "fails an assertion it cannot satisfy", and the
+second layer would have read as a regression caused by the fix.
 
 ## Deviations from the plan
 
