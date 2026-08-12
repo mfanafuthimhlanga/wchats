@@ -90,7 +90,13 @@ def _seed_capability_envelope(db_session, agent_id_str: str, skill: str = "place
                 (id, agent_id, skill, enabled, rate_limit, constraints,
                  requires_confirmation, requires_identity_verification, updated_at)
             VALUES
-                (:id, :a, :s, True, NULL, NULL::jsonb, False, False, now())
+                -- constraints is JSONB NOT NULL DEFAULT '{}'::jsonb (alembic 0014).
+                -- This wrote an explicit NULL and died in setup with NotNullViolation
+                -- on every run (BACKLOG 1.16) -- invisible until the whole flag-ON
+                -- suite ran for the first time on 2026-08-11, because these two tests
+                -- had never executed. '{}' is what NULL was reaching for: an envelope
+                -- with no constraint keys, so no max_amount_cents ceiling applies.
+                (:id, :a, :s, True, NULL, CAST('{}' AS jsonb), False, False, now())
             ON CONFLICT (agent_id, skill) DO UPDATE SET enabled = True
             """
         ),
@@ -156,6 +162,30 @@ def test_place_order_exactly_once_replay_e2e(db_session):
                 "app.services.transactional.tools.write_audit_row",
                 AsyncMock(),
             ),
+            # Step 6's adapter resolution, stubbed at the boundary (BACKLOG 1.16).
+            # The module docstring says this test "spies on
+            # StubProviderAdapter.place_order", but the ONLY path returning
+            # _STUB_ADAPTER is get_adapter_for_skill's red_team_mode
+            # short-circuit, and this test opens no such window and seeds no
+            # integration_credentials row. So credential resolution raised
+            # ProviderNotConfiguredError and step 6 aborted with
+            # provider.not_configured -- the spy could never have been reached.
+            # Observed once the NOT NULL fixture bug above was fixed and these
+            # two tests ran for the first time: "No integration credential
+            # configured for skill 'place_order'".
+            #
+            # Patched here rather than opening red_team_mode(), which would
+            # overload a red-team-only flag, and rather than seeding a
+            # credential, which would send the "exactly once" assertion at a
+            # real provider over the network. Same class of boundary stub as
+            # call_actor_gate above, for the same reason the docstring gives:
+            # the invariant under test is the idempotency key lifecycle.
+            # NOTE the name: tools.py binds get_adapter_for_skill, not
+            # get_adapter -- patching the latter is BACKLOG 4.1's live defect.
+            patch(
+                "app.services.transactional.tools.get_adapter_for_skill",
+                AsyncMock(return_value=StubProviderAdapter()),
+            ),
         ):
             from app.services.transactional.tools import place_order_tool
 
@@ -214,6 +244,7 @@ def test_place_order_exactly_once_replay_e2e(db_session):
 
 def test_replay_returns_original_result_e2e(db_session):
     """The replay response content must match the original call's response content."""
+    from app.services.transactional.provider_adapter import StubProviderAdapter
 
     agent_id_str = str(uuid4())
     idem_key = f"e2e-result-{uuid4()}"
@@ -231,6 +262,30 @@ def test_replay_returns_original_result_e2e(db_session):
             patch(
                 "app.services.transactional.tools.write_audit_row",
                 AsyncMock(),
+            ),
+            # Step 6's adapter resolution, stubbed at the boundary (BACKLOG 1.16).
+            # The module docstring says this test "spies on
+            # StubProviderAdapter.place_order", but the ONLY path returning
+            # _STUB_ADAPTER is get_adapter_for_skill's red_team_mode
+            # short-circuit, and this test opens no such window and seeds no
+            # integration_credentials row. So credential resolution raised
+            # ProviderNotConfiguredError and step 6 aborted with
+            # provider.not_configured -- the spy could never have been reached.
+            # Observed once the NOT NULL fixture bug above was fixed and these
+            # two tests ran for the first time: "No integration credential
+            # configured for skill 'place_order'".
+            #
+            # Patched here rather than opening red_team_mode(), which would
+            # overload a red-team-only flag, and rather than seeding a
+            # credential, which would send the "exactly once" assertion at a
+            # real provider over the network. Same class of boundary stub as
+            # call_actor_gate above, for the same reason the docstring gives:
+            # the invariant under test is the idempotency key lifecycle.
+            # NOTE the name: tools.py binds get_adapter_for_skill, not
+            # get_adapter -- patching the latter is BACKLOG 4.1's live defect.
+            patch(
+                "app.services.transactional.tools.get_adapter_for_skill",
+                AsyncMock(return_value=StubProviderAdapter()),
             ),
         ):
             from app.services.transactional.tools import place_order_tool

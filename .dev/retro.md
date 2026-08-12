@@ -301,3 +301,53 @@ family hides. A default that is silently correct for the wrong input type turns 
 into a plausible value instead of an exception. Where a field is required, read it as an attribute
 or a subscript and let it raise; where a default is genuinely wanted, log when it fires — the
 `_run_sdk_turn.tool_result_unresolved` warning added in `dc67d37` exists for exactly this reason.
+
+## Family I, recurrences 4-6 — `:param::type`, and a defect that looks correct on the page
+
+**2026-08-12** (`deployment_service.py` ×2, `digest.py` ×1). Same family as the three from
+2026-08-11: the logic is right, the tests are real, and the **shape handed to a boundary** was never
+checked by that boundary. What these three add is a sharper version of *why* review does not catch
+it.
+
+SQLAlchemy's bindparam regex is `(?<![:\w\x5c]):(\w+)(?!:)`. The trailing lookahead exists to avoid
+reading PostgreSQL's `::` cast as a parameter, and it makes `:window_days::text` bind a parameter
+named **`window_day`** — greedy `\w+` backtracks one character to satisfy the lookahead. Not
+unbound: *misnamed*. The value the call site passes matches nothing, the literal `:` reaches
+Postgres, and the statement raises.
+
+**So the defect is invisible to reading.** `":window_days::text"` with `{"window_days": 7}` beside
+it is what a correct statement looks like. There is no missing argument, no typo, no shadowed name —
+the only way to see it is to run the string through the parser that will actually consume it. Eight
+instances across this repo's history (five in tests per `1.1`, three in production) is what that
+invisibility costs.
+
+The two failure directions are worth separating, because the quiet one is the expensive one:
+
+- `deployment_service` failed **soft**. Caught, logged, fallback substituted — every
+  `configured_max_*` / `observed_max_*` `None` while the thresholds beside them populated from
+  settings. Phase 18's blast-radius warnings never evaluated real exposure, and the payload read
+  like a tenant with no history. (`5.13` and `2.28` are the same shape; that is now three separate
+  mechanisms whose broken state is spelled identically to their honest empty state.)
+- `digest.py` failed **loud** and was still missed for months, because the raise happened inside a
+  Celery task that retried and re-raised into a log nobody was reading. It was the WR-02 idempotency
+  anchor, committed before the send, so `send_digest_email` was never reached: **OPS-04 has never
+  sent a digest**, while `REQUIREMENTS.md` ticks it Complete.
+
+**What the plans failed to anticipate:** "the tests pass" and "a database has ever parsed this
+string" are independent facts, and only the second one is about the query. `test_digest_service.py`
+has four tests; the one reaching the INSERT region seeds `fetchone` to return a row so the function
+returns *early*, and `MagicMock.execute` accepts anything. The suite was green over a statement
+Postgres rejects outright.
+
+**Standing rule:** every raw SQL string in `app/` must be executed by a real server in at least one
+test, or be covered by a static gate that parses it the way the driver will. Mocking the session is
+fine for logic; it is not evidence about SQL. Where a real DB is unavailable, assert the *parsed*
+form — `text(sql)._bindparams` against the parameter names the call site passes — which needs no
+database and would have caught all eight of these.
+
+**Second standing rule, from the gate rather than the defect:** a mechanical gate over source text
+gets mutation-proved against its own false positives, not only its true ones. This one reported four
+Redis key builders in `widget.py` on its first run, because dropping f-string `{interpolations}`
+fused `f"rate:config:{ip}:{bucket}"` into `rate:config::`. That is Family F arriving inside the fix
+for Family I, and the proof that the repair is load-bearing (M9) is what distinguishes a gate from a
+guess.

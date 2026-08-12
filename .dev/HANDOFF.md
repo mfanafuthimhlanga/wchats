@@ -33,6 +33,24 @@
 > apps/api/app/`, re-run, `3 failed in 36.58s` — identical — then `git checkout HEAD -- apps/api/app/`
 > and a clean `git status`.
 >
+> **`1.14` is now CLOSED (`c65137e`, 2026-08-12) and it was three sites, not one.** Scanning for the
+> *class* rather than the instance found `digest.py:87` carrying the same defect, and that one is the
+> bigger find: the INSERT is the WR-02 idempotency anchor committed *before* the send, so it raised,
+> retried 3×, re-raised, and **`send_digest_email` has never been reached — OPS-04 has never sent a
+> digest**, while `REQUIREMENTS.md` ticks it Phase 21 Complete.
+>
+> The row's diagnosis was also corrected in the fixing: SQLAlchemy does not leave the parameter
+> unbound, it **silently binds a truncated name** (`:window_days::text` → `window_day`,
+> `:payload::jsonb` → `payloa`). A misnamed-but-present parameter is precisely why five phases of
+> review read past it — the string looks correct on the page. The durable half of the fix is a gate:
+> `tests/unit/test_sql_paramstyle_collisions.py` (AST scan of every string literal under `app/`, plus
+> characterization tests pinning the truncation) and `tests/integration/test_paramstyle_real_db.py`
+> (a real server parses the statements). **Two consequences are filed as owner-facing: `1.17`** — the
+> digest task will now send real email from a scheduled beat, the same dormant-path-becomes-live shape
+> as `0.4` — and **`1.18`**, blast-radius warnings firing for the first time.
+>
+> Trace: `.dev/traces/260812-paramstyle-collision-class.md`. Original entry below.
+>
 > **And that run found a live product defect nobody had seen: `1.14`.** Every
 > `run_deployment_checklist` logs `blast_radius_fetch_failed … syntax error at or near ":"`.
 > `deployment_service.py:1237`/`:1253` write `(:window_days::text || ' days')::interval` — SQLAlchemy
@@ -213,6 +231,17 @@
 > ~~`5.9` / `5.8`~~ — **both closed 2026-08-11** (`dc67d37`, `5102ddf`). `5.9` was settled
 > statically and for free exactly as the row asked, and it was **larger than filed**: the same dead
 > branch is on the production customer turn path. See the section below.
+>
+> ~~`1.14`~~ — **closed 2026-08-12** (`c65137e`). Also larger than filed: three sites, not one, and
+> the third means the weekly digest has never sent. **Its two consequences, `1.17` and `1.18`, are
+> owner-facing and should be read before any beat worker runs this code** — `1.17` in particular is
+> the same shape as `0.4`.
+>
+> **A pattern worth naming, because it has now happened three times in two days.** `5.9`, `1.14` and
+> `2.13` were each filed as one narrow thing and each turned out to be a class. In all three the
+> filed row was written from *reading* the code and the real extent only appeared when something
+> *ran* — a skipped test, a deselected suite, a scan for the shape rather than the instance. The
+> practical form: when a row names one call site, grep for its shape before believing the count.
 >
 > ## `1.13` — LARGELY CLOSED 2026-08-11. How to run the opened suite
 >

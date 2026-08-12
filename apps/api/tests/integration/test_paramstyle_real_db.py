@@ -149,6 +149,88 @@ def test_the_blast_radius_query_returns_a_real_maximum(control_engine) -> None:
             )
 
 
+def test_run_weekly_digest_reaches_the_send(control_engine) -> None:
+    """The whole task, against a real control DB — not just its INSERT.
+
+    This is the assertion BACKLOG 1.17 is about. The statement-level test below
+    proves the SQL parses; this proves the *sequence* the defect broke: the
+    WR-02 anchor commits and `send_digest_email` is then reached. Before
+    `c65137e` the INSERT raised, the outer `except` retried 3x and re-raised, so
+    the send was never called on any run in OPS-04's history.
+
+    `_collect_digest_stats` and `fernet_decrypt` are patched because they reach
+    the per-tenant Neon DB, which is not what is under test here. `get_sync_db`
+    is NOT patched to a mock — it yields a real session against real PostgreSQL,
+    which is the entire point: a MagicMock session is what hid this for months.
+    """
+    from contextlib import contextmanager
+    from unittest.mock import patch
+
+    from sqlalchemy.orm import sessionmaker
+
+    from app.worker.tasks.runtime.digest import run_weekly_digest
+
+    tenant_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    stats = {"conversations": 7, "escalations": 2, "evals": 1, "red_team": 0}
+
+    with control_engine.begin() as conn:
+        conn.execute(
+            sa_text(
+                "INSERT INTO tenants (id, name, api_key_hash) VALUES (:id, 'digest send tenant', :h)"
+            ),
+            {"id": tenant_id, "h": f"digest-send-{tenant_id}"},
+        )
+        conn.execute(
+            sa_text(
+                "INSERT INTO agents (id, tenant_id, name, soul, role, neon_connection_string) "
+                "VALUES (:id, :tid, 'digest send agent', CAST('{}' AS JSONB), "
+                "'customer_service', 'encrypted-placeholder')"
+            ),
+            {"id": agent_id, "tid": tenant_id},
+        )
+
+    Session = sessionmaker(bind=control_engine)
+
+    @contextmanager
+    def _real_sync_db():
+        session = Session()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    mod = "app.worker.tasks.runtime.digest"
+    try:
+        with (
+            patch(f"{mod}.get_sync_db", _real_sync_db),
+            patch(f"{mod}.fernet_decrypt", return_value="postgresql://unused/tenant"),
+            patch(f"{mod}._collect_digest_stats", return_value=stats),
+            patch(f"{mod}.send_digest_email") as mock_send,
+        ):
+            result = run_weekly_digest.run(agent_id=agent_id)
+
+        assert result == {"agent_id": agent_id, "status": "sent"}, (
+            f"run_weekly_digest returned {result!r}. Before the paramstyle fix the "
+            "INSERT raised and the task retried then re-raised, so it never got here."
+        )
+        mock_send.assert_called_once()
+        assert mock_send.call_args.args[1] == agent_id
+
+        with control_engine.connect() as conn:
+            row = conn.execute(
+                sa_text("SELECT payload FROM digest_runs WHERE agent_id = :aid"),
+                {"aid": agent_id},
+            ).fetchone()
+        assert row is not None, "the WR-02 idempotency anchor was not committed"
+        assert row[0] == stats
+    finally:
+        with control_engine.begin() as conn:
+            conn.execute(sa_text("DELETE FROM digest_runs WHERE agent_id = :aid"), {"aid": agent_id})
+            conn.execute(sa_text("DELETE FROM agents WHERE id = :aid"), {"aid": agent_id})
+            conn.execute(sa_text("DELETE FROM tenants WHERE id = :tid"), {"tid": tenant_id})
+
+
 def test_the_digest_insert_executes_against_postgres(control_engine) -> None:
     """The WR-02 idempotency anchor, actually inserted.
 
