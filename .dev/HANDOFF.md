@@ -1,5 +1,73 @@
 # HANDOFF — 2026-08-12
 
+> # START HERE — 2026-08-12, later session. E2E-0 IS DONE. NEXT IS E2E-1.
+>
+> ## The one instruction
+>
+> **Continue `.dev/PRODUCTION-READINESS.md` §4 at E2E-1.** E2E-0 closed this session; everything the
+> block below says about the plan still holds, including "do Phase A before anything cloud".
+>
+> ## What E2E-0 did, and the correction it carries
+>
+> `1.21` said "`.env.example` omits 5 of the 10 required settings". **It was counting one of two
+> tracked example files**, and the other failed differently:
+>
+> ```
+> root      .env.example   missing 5
+> apps/api/ .env.example   missing 3 -- and TWO of the three were COMMENTED OUT, not absent
+> ```
+>
+> **A commented key is worse than an absent one**: the reader sees `# JWT_SECRET=` in the file while
+> dotenv ignores it, so the `ValidationError` looks like an application bug. **Which file loads is
+> positional** — `_find_env_file()` walks up from `app/core/config.py` and stops at the first `.env`,
+> so a fresh clone reads the **root** file and `apps/api/.env` wins permanently once it exists. Both
+> examples therefore had to be complete; both now are.
+>
+> Pinned by `apps/api/tests/unit/test_env_example_covers_required_settings.py`, which derives the
+> required set from `Settings.model_fields` rather than a copied list — a copied list is `1.14`'s
+> failure mode exactly. **Four mutation proofs, red then green, restore from `HEAD`:**
+> `.dev/reference/260812-e2e0-mutation-proofs.md`. M4 is the one to read — with the required set
+> forced empty, both coverage tests **passed vacuously**, which is what the guard-of-guard is for.
+>
+> Commit `2482283`. Trace `.dev/traces/260812-e2e0-boot-contract.md`. Plan
+> `.dev/plans/260812-e2e0-boot-contract.md`. `1.21` struck through; `PRODUCTION-READINESS` §3.2 and
+> the §4 E2E-0 line both updated.
+>
+> ## What E2E-0 does NOT establish — do not read the closure as more than it is
+>
+> **Nothing has booted the app.** The test asserts key *names* are present and uncommented. No API
+> process, no worker, no alembic command has been started from an example-derived environment, and
+> the four secret-generation commands printed in the examples were never run. **E2E-1 is the first
+> step that would show any of that.**
+>
+> ## Environment change made this session, because it will otherwise confuse the next one
+>
+> The owner's **global** `~/.claude/settings.json` denied `Read(.env.*)`, which also blocked the
+> committed, secret-free `.env.example` files. The owner confirmed the rule targets real secrets, so
+> **the deny was narrowed** to `.env`, `.env.local`, `.env.*.local`, and
+> `.env.{dev,development,prod,production,staging,test}`. `.env.example` / `.env.sample` /
+> `.env.template` / `apps/admin/.env.local.example` are now readable; real env files still are not.
+>
+> ## Gates
+>
+> Backend unit gate re-run at `2482283`, **observed, not relayed**:
+>
+> ```
+> 2206 passed, 13 skipped, 0 failed, 28 warnings in 409.27s   exit 0
+> grep -cE "^(FAILED|ERROR)"  ->  0
+> ```
+>
+> **The arithmetic is exact: 2202 → 2206 is the 4 new tests and nothing else**, so no pre-existing
+> test changed status. Skips unchanged at 13.
+>
+> **Do not read 409s against the previous 545s as a speed-up.** Two data points, different machine
+> load; this file already records one wall-clock "regression" that was diagnosed from two points and
+> did not exist.
+>
+> Nothing else was touched — no frontend file changed, so the admin and widget gates are unaffected
+> and were **not** re-run (`test:e2e` is still 7 failed / 128 passed per `1.19`, unchanged and
+> untouched). The two integration failures below (`5.6`, `ver01`) are unchanged and still external.
+
 > **`.dev/BACKLOG.md` is the single ordered list of open work.** Read it before starting anything.
 > This file is the current-state snapshot; that one is the queue.
 >
