@@ -236,10 +236,18 @@ Record the observed output for each step, not the intention.
   **Not yet proven: that a fresh environment built from the example actually boots** — the test
   asserts the keys are named, not that filling them in starts the app. E2E-1 is the first step that
   would show that, and it is the next move.
-- **E2E-1 · signup → agent.** `POST /tenants` (needs `X-Admin-Key`), then `POST /agents`. Confirm a
-  **real Neon project is provisioned** and its connection string is encrypted at rest. Neon quota is
-  free (all 8 old projects deleted 2026-08-11). Assert the tenant migration chain reaches head
-  `0016` on the new project.
+- ~~**E2E-1 · signup → agent.**~~ **DONE 2026-08-12 — 12/12 assertions passed, first run ever.**
+  `POST /tenants` (201) → `POST /agents` (202) → `provision_neon` → `apply_migrations`, 46 seconds
+  end to end. Real Neon project **`mute-dream-53534177`** (`aws-us-east-1`), pooled and direct
+  connection strings both stored as Fernet ciphertext and both observed to decrypt to real, *distinct*
+  endpoints (the pooler/direct split RESEARCH.md Pitfall 1 requires); tenant chain at head **`0016`**,
+  24 tables, `embeddings_vector_hnsw_idx` present; all 6 lifecycle events in order.
+  **The project is deliberately left running for E2E-2/3/4 — delete by id only.**
+  Trace: `.dev/traces/260812-e2e1-signup-to-agent.md`. **Three findings, all filed:** the app does
+  not boot here at all (`1.22`, `PLATFORM_CREDENTIAL_KEY` absent from both real env files); the unit
+  suite structurally cannot see that because conftest manufactures the key (`1.23`); and `.env`
+  points at the **production** control DB and Redis, so every process ran under a localhost overlay
+  with a pre-flight abort. `1.20` also confirmed from the backend side.
 - **E2E-2 · ingest.** `POST /agents/{id}/documents` with a real PDF, follow `GET /jobs/{id}/events`
   to completion, assert chunks and embeddings land in the tenant DB and the HNSW index is used.
   **Note:** `docling` is not installed here (`1.10`, `4.4`), so this is the first step that may need

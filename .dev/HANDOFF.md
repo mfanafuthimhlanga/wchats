@@ -1,11 +1,67 @@
 # HANDOFF — 2026-08-12
 
-> # START HERE — 2026-08-12, later session. E2E-0 IS DONE. NEXT IS E2E-1.
+> # START HERE — 2026-08-12, later session. E2E-0 AND E2E-1 ARE DONE. NEXT IS E2E-2.
 >
 > ## The one instruction
 >
-> **Continue `.dev/PRODUCTION-READINESS.md` §4 at E2E-1.** E2E-0 closed this session; everything the
-> block below says about the plan still holds, including "do Phase A before anything cloud".
+> **Continue `.dev/PRODUCTION-READINESS.md` §4 at E2E-2 (ingest).** E2E-0 and E2E-1 closed this
+> session; everything the block below says about the plan still holds.
+>
+> ## E2E-1 — 12/12, and it is the first time signup → agent has ever run
+>
+> `POST /tenants` (201) → `POST /agents` (202) → `provision_neon` → `apply_migrations`, **46 seconds**.
+>
+> **A REAL NEON PROJECT IS NOW LIVE AND IS DELIBERATELY LEFT RUNNING** — E2E-2/3/4 need it:
+>
+> ```
+> neon_project_id  mute-dream-53534177   (name e2e1-probe-agent-e2e1-pro-87783405, aws-us-east-1)
+> tenant_id        32b3715c-36c6-46b3-859c-d6ec2e20c464     (LOCAL control DB)
+> agent_id         c14d13a1-7401-4ff2-b563-c9c0a72e3fcb
+> job_id           a3b11977-fb21-4607-97da-cde556d36d80
+> ```
+>
+> **Delete by id only, never by name pattern** — the `nightly.yml` lesson. It is the only project in
+> the account. Observed: both connection strings stored as Fernet ciphertext (`gAAAAABqfOt2…`,
+> 292/268 bytes) that **decrypt to real and distinct endpoints** (pooler vs direct — RESEARCH.md
+> Pitfall 1 holding in practice); tenant chain at head **`0016`**, 24 tables, `embeddings_vector_hnsw_idx`
+> present; all 6 lifecycle events in order. Trace: `.dev/traces/260812-e2e1-signup-to-agent.md`.
+>
+> ## THREE THINGS E2E-1 FOUND — read these before running anything else
+>
+> 1. **`1.22` — the app does not boot on this machine.** `PLATFORM_CREDENTIAL_KEY` is absent from
+>    **both** real env files (`apps/api/.env`, root `.env`, 17 keys each). `Settings()` raises. This
+>    is E2E-0's sibling: E2E-0 fixed the *examples*, this is the real environment. **Owner work — it
+>    is HKDF master key material (INT-01)**, and whatever is chosen becomes the key every
+>    `integration_credentials` row derives from. E2E-1 used a run-scoped generated key that was
+>    deliberately **not** written to `.env`.
+> 2. **`1.23` — the unit suite cannot see that, because it manufactures the key.**
+>    `tests/conftest.py:33-65` `setdefault`s all 10 required fields at module scope. **2206 tests pass
+>    on a machine where the app cannot start.** Family I again.
+> 3. **`.env` points at PRODUCTION for both the control DB and Redis** — `ep-falling-glade-…sa-east-1`
+>    and `singular-ocelot-125167.upstash.io`. CLAUDE.md says so; it is now *observed*. **Every E2E
+>    process must run under a localhost overlay with a pre-flight abort if the resolved host is not
+>    local.** Without it, E2E-1 would have written a test tenant into the production control DB.
+>
+> Also: **`1.20` confirmed from the backend side** — the API's startup JWKS probe resolved
+> `bright-puma-63.clerk.accounts.dev`, a development instance. Not just a front-end issue.
+>
+> ## How to re-run the E2E processes
+>
+> ```
+> # overlay -- NOT written to .env
+> CONTROL_DB_URL=postgresql+asyncpg://wchats:wchats@localhost:5432/wchats_control
+> CONTROL_DB_SYNC_URL=postgresql://wchats:wchats@localhost:5432/wchats_control
+> REDIS_URL=redis://localhost:6379/0
+> PLATFORM_CREDENTIAL_KEY=<generate: python -c "import os,base64;print(base64.urlsafe_b64encode(os.urandom(32)).decode())">
+>
+> .venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+> .venv/Scripts/python.exe -m celery -A app.worker.celery_app worker -Q pipeline -P solo -l info
+> ```
+>
+> `-P solo` is required on Windows (`provision.py:307-322`). Use `python -m celery` — the `celery`
+> console script is not on PATH (`1.1`). **A fresh `PLATFORM_CREDENTIAL_KEY` per run means any
+> `integration_credentials` written under a previous key are unreadable** — irrelevant today (none
+> exist), and the reason `1.22` is the owner's call rather than something to paper over.
 >
 > ## What E2E-0 did, and the correction it carries
 >
