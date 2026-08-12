@@ -222,8 +222,16 @@ Stated as unknowns rather than guessed:
 
 ## 4. THE END-TO-END VALIDATION PLAN
 
-Ordered so each step's precondition is the previous step's output. **Nothing here needs AWS**;
-E2E-1 to E2E-5 run against the local PostgreSQL + Redis that already exist.
+Ordered so each step's precondition is the previous step's output. ~~**Nothing here needs AWS**;
+E2E-1 to E2E-5 run against the local PostgreSQL + Redis that already exist.~~
+
+> **CORRECTED 2026-08-13 by running it. That premise is false from E2E-2 onward.** E2E-1 needed no
+> AWS and passed 12/12. **E2E-2 cannot start**: the upload route calls `storage_service.put_bytes`
+> inline (`documents.py:189`), `S3_UPLOADS_BUCKET` defaults to `""`, and there is no `~/.aws` — so
+> `POST /agents/{id}/documents` returns **500** `ParamValidationError: Invalid bucket name ""`.
+> Ingestion depends on S3 on both the write and read sides, and `EMBEDDING_PROVIDER` defaults to
+> `bedrock`. See `1.24` and `.dev/traces/260813-e2e2-ingest-blocked.md`. This is the same failure
+> mode as the two claims in §5: a confident sentence that one command disproved.
 
 **Standing rule for the whole plan:** a skip is not a pass and an unread log is not a green.
 Record the observed output for each step, not the intention.
@@ -248,10 +256,13 @@ Record the observed output for each step, not the intention.
   suite structurally cannot see that because conftest manufactures the key (`1.23`); and `.env`
   points at the **production** control DB and Redis, so every process ran under a localhost overlay
   with a pre-flight abort. `1.20` also confirmed from the backend side.
-- **E2E-2 · ingest.** `POST /agents/{id}/documents` with a real PDF, follow `GET /jobs/{id}/events`
-  to completion, assert chunks and embeddings land in the tenant DB and the HNSW index is used.
-  **Note:** `docling` is not installed here (`1.10`, `4.4`), so this is the first step that may need
-  the `pipeline` extra.
+- **E2E-2 · ingest. ATTEMPTED 2026-08-13 → BLOCKED at the first call.** `POST /agents/{id}/documents`
+  with a real PDF returns **500** (`Invalid bucket name ""`) from the **upload route**, so the Celery
+  chain is never reached and the `docling` question is not even the binding one yet. **Needs an owner
+  decision — `1.24`:** add an `S3_ENDPOINT_URL` seam plus a local S3-compatible store (a plain
+  process, so rule 6 holds), or supply real AWS. Then still the `pipeline` extra. Original goal
+  unchanged: follow `GET /jobs/{id}/events` to completion, assert chunks and embeddings land in the
+  tenant DB and the HNSW index is used. Trace: `.dev/traces/260813-e2e2-ingest-blocked.md`.
 - **E2E-3 · one real customer turn.** Drive the widget path end to end. **This is also `5.10`** —
   it is the run that confirms the `ToolResultBlock` fix against the real stdout stream, so do it
   with the SDK turn and capture the raw message types. Assert: `agent.tool_result` events exist,

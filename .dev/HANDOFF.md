@@ -1,11 +1,39 @@
 # HANDOFF — 2026-08-12
 
-> # START HERE — 2026-08-12, later session. E2E-0 AND E2E-1 ARE DONE. NEXT IS E2E-2.
+> # START HERE — 2026-08-13. E2E-0 AND E2E-1 DONE. **E2E-2 IS BLOCKED ON AN OWNER DECISION.**
 >
 > ## The one instruction
 >
-> **Continue `.dev/PRODUCTION-READINESS.md` §4 at E2E-2 (ingest).** E2E-0 and E2E-1 closed this
-> session; everything the block below says about the plan still holds.
+> **Settle `1.24 · ingest-requires-s3`, then resume `PRODUCTION-READINESS.md` §4 at E2E-2.**
+>
+> **E2E-2 was attempted and returns 500 at the first call.** `POST /agents/{id}/documents` with a
+> real 8,459-byte PDF dies in the **upload route** (`documents.py:189` → `storage_service.py:99`):
+> `ParamValidationError: Invalid bucket name ""`. `S3_UPLOADS_BUCKET` is `""`, there is no `~/.aws`,
+> and **there is no `endpoint_url` seam anywhere in `app/` or `infra/`**. The Celery chain is never
+> dispatched, so the `docling` question is not yet the binding one.
+>
+> **This corrected the plan's own premise.** §4 said "Nothing here needs AWS; E2E-1 to E2E-5 run
+> against the local PostgreSQL + Redis that already exist." **False from E2E-2 on** — ingestion needs
+> S3 on both the write and read sides and `EMBEDDING_PROVIDER` defaults to `bedrock`. E2E-1 needed no
+> AWS and passed 12/12; E2E-2 cannot start. Same failure mode as the two claims in §5.
+>
+> **The decision, and neither option is free:**
+> 1. Add an `S3_ENDPOINT_URL` setting and run a local S3-compatible store as a plain process (MinIO
+>    ships a standalone Windows binary — no Docker, rule 6 holds). **A security-relevant change to
+>    the boundary that decides where customer documents are written; wants a plan, not a patch.**
+> 2. Supply real AWS credentials + a bucket, and accept that Phase A now touches the cloud — which is
+>    what §4's own sequencing note argues against.
+>
+> Either way the **`pipeline` extra** is still required (`docling==2.93.0` + `transformers>=4.47.0`,
+> pulls torch, multi-GB on a 4 GB box) and has never been installed (`4.4`). `EMBEDDING_PROVIDER=voyage`
+> is a one-line env flip and needs no AWS.
+>
+> Also filed: **`1.25`** — CLAUDE.md's stack claims Chonkie ≥1.6.5 and `chonkie` is not in
+> `pyproject.toml` at all.
+>
+> **Nothing was left behind by the attempt:** `documents 0 / chunks 0 / embeddings 0`; the S3 put
+> precedes the DB write, so a storage failure orphans nothing. Trace:
+> `.dev/traces/260813-e2e2-ingest-blocked.md`.
 >
 > ## E2E-1 — 12/12, and it is the first time signup → agent has ever run
 >
