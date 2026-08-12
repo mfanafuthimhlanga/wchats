@@ -83,8 +83,16 @@ def run_weekly_digest(self, agent_id: str) -> dict:
             # Email is fire-and-forget; the row ensures at-most-once delivery.
             db.execute(
                 text(
+                    # CAST(:payload AS jsonb), never :payload::jsonb — SQLAlchemy's
+                    # bindparam regex backtracks one character off `:payload::jsonb`
+                    # and silently binds `payloa`, so the literal `:` reached
+                    # Postgres and this INSERT raised on EVERY run. Because it is
+                    # the WR-02 idempotency anchor committed before the send, the
+                    # outer except retried 3x and re-raised: no digest_runs row was
+                    # ever written and send_digest_email was never reached.
+                    # tests/unit/test_sql_paramstyle_collisions.py gates the class.
                     "INSERT INTO digest_runs (agent_id, payload) "
-                    "VALUES (:agent_id, :payload::jsonb)"
+                    "VALUES (:agent_id, CAST(:payload AS jsonb))"
                 ),
                 {"agent_id": agent_id, "payload": json.dumps(stats)},
             )

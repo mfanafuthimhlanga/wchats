@@ -1234,7 +1234,15 @@ def _fetch_blast_radius_sync(agent_id: str) -> dict:
                 "(arguments->>'refund_amount_cents')::int)) "
                 "FROM tool_calls_audit "
                 "WHERE agent_id = :agent_id AND error IS NULL "
-                "AND created_at > now() - (:window_days::text || ' days')::interval"
+                # CAST(:p AS text), never :p::text — SQLAlchemy's bindparam regex
+                # is (?<![:\w\x5c]):(\w+)(?!:), whose trailing (?!:) exists to avoid
+                # matching PostgreSQL's :: cast. Against `:window_days::text` it
+                # backtracks one character and silently binds `window_day`, so the
+                # value this call site passes matches nothing, the literal `:`
+                # reaches Postgres, and the statement raises. It did, on every
+                # checklist run, since Phase 18. See tests/unit/
+                # test_sql_paramstyle_collisions.py, which gates the whole class.
+                "AND created_at > now() - (CAST(:window_days AS text) || ' days')::interval"
             ),
             {"agent_id": agent_id, "window_days": observed_window_days},
         ).scalar()
@@ -1250,7 +1258,8 @@ def _fetch_blast_radius_sync(agent_id: str) -> dict:
                 "  (arguments->>'refund_amount_cents')::int, 0)) AS hourly_total "
                 "  FROM tool_calls_audit "
                 "  WHERE agent_id = :agent_id AND error IS NULL "
-                "  AND created_at > now() - (:window_days::text || ' days')::interval "
+                # CAST(:p AS text), never :p::text — see the note on the query above.
+                "  AND created_at > now() - (CAST(:window_days AS text) || ' days')::interval "
                 "  GROUP BY date_trunc('hour', created_at)"
                 ") hourly_buckets"
             ),
