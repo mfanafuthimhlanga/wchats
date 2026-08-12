@@ -1,9 +1,102 @@
-# HANDOFF — 2026-08-11
+# HANDOFF — 2026-08-12
 
 > **`.dev/BACKLOG.md` is the single ordered list of open work.** Read it before starting anything.
 > This file is the current-state snapshot; that one is the queue.
+>
+> **Backlog numbers are addresses, not priorities.** Every row now carries a slug —
+> `5.1 · ops15-server-gap`. Use slugs in conversation; the numbers exist only because source comments
+> cite them (`# BACKLOG 2.1`) and cannot be renumbered. `.dev/BACKLOG.md`'s "How to read the numbers"
+> block says where the sections mislead.
 
-> # START HERE — session boundary, 2026-08-11 (end of day)
+> # START HERE — 2026-08-12. NEXT SESSION RUNS END-TO-END VALIDATION.
+>
+> ## The one instruction
+>
+> **Read `.dev/PRODUCTION-READINESS.md` and execute its §4 plan, starting at E2E-0.** It is the gap
+> register and the ordered validation plan, and every claim in it is marked `OBSERVED` / `READ` /
+> `RECORD` so you know what has actually been run versus what is inherited from these notes.
+>
+> **Do Phase A (E2E-0 … E2E-5) before anything cloud.** It runs entirely against the local
+> PostgreSQL and Redis that already exist. The reasoning is in the plan and it is the lesson of this
+> whole week: every defect found was found by running something that had never run, and Phase A is
+> the first time this system would be exercised *as a system*. Standing the AWS stack up first moves
+> that discovery into an environment that bills by the hour.
+>
+> ## The state in one paragraph
+>
+> The platform is substantially built and **has never been run against reality** — no deployed
+> environment, no customer turn, no calibrated judge, no completed eval, no real red-team run, zero
+> production traffic. The engineering gap is small. **The evidence gap is the entire product**,
+> because "defensible" is what is being sold. Terraform for a full AWS Fargate stack exists and has
+> **never been applied** (no state file, no `~/.aws`). `.env.example` omits 5 of the 10 mandatory
+> settings, so a fresh environment cannot boot. Clerk is on development keys.
+>
+> ## Gates, all run by this session and observed
+>
+> ```
+> backend unit                  2202 passed,  13 skipped, 0 failed   545s
+> backend integration flag-OFF    15 passed,  47 skipped, 0 failed   281s
+> backend integration flag-ON     40 passed,  24 skipped, 2 failed   473s
+> admin tsc                      1 error — the ONE CLAUDE.md documents; zero new
+> admin check:no-dusk-tokens     PASS
+> admin check:ops-room-wiring    PASS
+> admin test:unit                45 passed
+> widget build + size            PASS — 8968 bytes gzipped (ceiling 20480)
+> admin test:e2e                 7 FAILED, 128 passed — 35.9 min.  NOT GREEN.
+> ```
+>
+> Both integration failures are external, not code: `5.6 · tightened-ceiling-audit-row` (owner
+> decision) and `ver01` (needs a real `ANTHROPIC_API_KEY` in `os.environ`, not merely `.env`).
+>
+> **The e2e line is new information and CLAUDE.md is wrong about it.** CLAUDE.md documents this gate
+> as "113 across three viewports"; Playwright reports **135 tests**, and 7 fail. All 7 are
+> **timeouts** (`90000ms exceeded` on `page.goto` / `waitForLoadState('networkidle')`), not assertion
+> failures — the pages never finish loading, so nothing is actually asserted. The same log is full of
+> Clerk development-instance errors (`Failed to load Clerk JS`, renderer not mounting, strict usage
+> limits). **Cause is NOT established and there is no prior local baseline** — the gate has never run
+> in CI either. Treat 128/7 as the first measurement, not a regression, and **settle the Clerk keys
+> before debugging the seven** — this is the likeliest way to burn a day on an environment artifact
+> that looks like a product bug. Detail: `PRODUCTION-READINESS.md` §3.8.
+>
+> ## What this session changed
+>
+> Four defects fixed, all found by running things that had never run, all mutation-proved:
+>
+> - **`5.9`** — tool results arrive on `UserMessage`, not `AssistantMessage`. Both consumers read the
+>   wrong one, so **the grounding judge received an empty context on every turn since 2026-05-16**
+>   and the eval excluded every row as `no_retrieval`. Also `5.8`, the RTX identity probe reporting a
+>   blocked attack as SUCCEEDED.
+> - **`1.14 · paramstyle-collision`** — `:param::type` silently binds a *truncated* name. Three live
+>   sites; the third means **OPS-04 has never sent a digest**. Now gated by an AST scan of `app/`.
+> - **`1.15`, `1.16`** — two integration tests that had never executed, each with a second blocker
+>   underneath the first. OPS-15's end-to-end claim is observed for the first time.
+>
+> **Retro families `I` and `J` were added and they are the transferable part.** `I`: a mock is a
+> claim about a boundary that nobody was required to evidence. `J`: the second layer is only visible
+> from on top of the first — four rows in one day were each filed as one thing and were each at
+> least two, so **after fixing anything in code with no execution history, re-run before reporting
+> done, and expect a different error rather than a pass.**
+>
+> ## Two corrections this session made to its own claims
+>
+> Recorded because the pattern matters more than the instances: both were notes-quoted-as-observation.
+>
+> 1. "Nothing is deployed and there is no deploy path" — **a full Terraform stack exists**; it has
+>    never been *applied*.
+> 2. "The digest will send real email to real recipients from a scheduled beat" — **no beat worker
+>    exists**, the recipient is a single `OWNER_EMAIL`, and SMTP is unset. Comparing it to `0.4`
+>    (customer data egressing to a judge API) was wrong.
+>
+> ## What is genuinely waiting on the owner
+>
+> `0.1 · score-judge-calibration` (nothing in §3.4 of the readiness doc moves without it),
+> `0.3 · actions-billing-cap`, `0.4 · eval-pii-egress`, `0.6 · size-labelling-loop`,
+> `0.7 · model-provider-decision`, `5.6 · tightened-ceiling-audit-row`. Plus, for Phase C: an AWS
+> account with billing, a domain, two ACM certs, and Bedrock access.
+
+> # SUPERSEDED — 2026-08-11 session boundary. Kept for the defect detail it carries.
+
+> ## The 2026-08-11 session boundary (was START HERE; superseded by the block above)
 >
 > ## Where the code is
 >

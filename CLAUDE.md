@@ -36,7 +36,12 @@ npx tsc --noEmit          # ONE known pre-existing error: tests/reduced-motion.s
 npm run check:no-dusk-tokens      # exit 0
 npm run check:ops-room-wiring     # exit 0  (11/11)
 npm run test:unit                 # 45, browserless
-npm run test:e2e                  # 113 across three viewports
+npm run test:e2e                  # 135 tests (NOT 113 — corrected 2026-08-12 by running it).
+                                  # First observed result: 7 failed / 128 passed / 35.9 min.
+                                  # All 7 are 90s TIMEOUTS on networkidle, not assertion failures,
+                                  # alongside Clerk dev-instance load errors. Cause unestablished,
+                                  # no prior baseline. See .dev/PRODUCTION-READINESS.md §3.8 before
+                                  # treating a failure here as a product defect.
 
 # widget   (apps/widget)
 npm run build && node scripts/check-size.mjs           # ≤ 20480 bytes gzipped
@@ -69,7 +74,13 @@ trivial tasks still run solo. Regardless of engine, artifacts persist in `.dev/`
 ```
 .dev/
   BACKLOG.md                         ← THE single ordered list of open work. Read first.
+                                       Rows carry slugs (`5.1 · ops15-server-gap`); the NUMBER is an
+                                       address, not a priority. Use slugs in conversation.
   HANDOFF.md                         ← current-state snapshot; read at session start
+  PRODUCTION-READINESS.md            ← every gap between here and production, plus the ordered
+                                       end-to-end validation plan. Claims are marked
+                                       OBSERVED / READ / RECORD — never promote a RECORD line to a
+                                       decision without re-checking it.
   plans/     YYMMDD-<slug>.md        ← BEFORE execution: goal, approach, phases, files, risks, tests
   traces/    YYMMDD-<slug>.md        ← AFTER execution: what actually changed, decisions, deviations
   workflows/ <name>.workflow.js      ← the orchestration itself, versioned and re-runnable
