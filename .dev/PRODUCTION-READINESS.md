@@ -256,13 +256,20 @@ Record the observed output for each step, not the intention.
   suite structurally cannot see that because conftest manufactures the key (`1.23`); and `.env`
   points at the **production** control DB and Redis, so every process ran under a localhost overlay
   with a pre-flight abort. `1.20` also confirmed from the backend side.
-- **E2E-2 · ingest. ATTEMPTED 2026-08-13 → BLOCKED at the first call.** `POST /agents/{id}/documents`
-  with a real PDF returns **500** (`Invalid bucket name ""`) from the **upload route**, so the Celery
-  chain is never reached and the `docling` question is not even the binding one yet. **Needs an owner
-  decision — `1.24`:** add an `S3_ENDPOINT_URL` seam plus a local S3-compatible store (a plain
-  process, so rule 6 holds), or supply real AWS. Then still the `pipeline` extra. Original goal
-  unchanged: follow `GET /jobs/{id}/events` to completion, assert chunks and embeddings land in the
-  tenant DB and the HNSW index is used. Trace: `.dev/traces/260813-e2e2-ingest-blocked.md`.
+- ~~**E2E-2 · ingest.**~~ **DONE 2026-08-13 — 8/8 assertions, and it found a production-blocking
+  defect.** Took three things: the `pipeline` extra installed (docling 2.93.0 / torch 2.13.0+cpu,
+  never installed before); the `S3_ENDPOINT_URL` seam + MinIO (`1.24`, owner decision, `c5c40b2`);
+  and **`1.26` fixed — `chunk_documents` read `UPLOADS_DIR/...`, a local-disk path nothing writes,
+  so ingestion has been broken for every uploaded file since PROD-13, in every environment.** Only
+  URL sources could complete. The four ingestion-chain tests would have *passed* over it, because
+  their fixture manufactures the local file production stopped creating (retro Family I, rec. 7).
+  Observed after the fix: `parse → chunk(16) → metadata(16, 54 entities) → embed(16) → strategy`,
+  `job.status=complete`, embeddings dim 1024, and `EXPLAIN` showing
+  `Index Scan using embeddings_vector_hnsw_idx`. Also found `1.27` (S3 key case mismatch, latent) and
+  `1.28` (the strategist fails and the task reports success anyway).
+  **Caveat stated rather than buried: MinIO is not S3.** This proves the ingestion chain, not AWS
+  compatibility, and the seam that enabled it is refused in production by design.
+  Traces: `.dev/traces/260813-e2e2-ingest.md`, and `260813-e2e2-ingest-blocked.md` for the block.
 - **E2E-3 · one real customer turn.** Drive the widget path end to end. **This is also `5.10`** —
   it is the run that confirms the `ToolResultBlock` fix against the real stdout stream, so do it
   with the SDK turn and capture the raw message types. Assert: `agent.tool_result` events exist,

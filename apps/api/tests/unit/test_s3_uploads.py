@@ -85,8 +85,14 @@ def test_put_bytes_calls_put_object():
     Patch target: app.services.storage_service._s3 (module-level lazy client)
     so no real boto3 network call is made (mirrors bedrock test pattern).
     """
-    with patch("app.services.storage_service._s3") as mock_s3:
-        from app.core.config import settings
+    # BACKLOG 1.29: the module-scope os.environ.setdefault("S3_UPLOADS_BUCKET")
+    # at line 39 lands AFTER app.core.config has already built its Settings
+    # singleton in a full-suite run, so settings.S3_UPLOADS_BUCKET was "" here
+    # and the assertion below compared "" to "" -- vacuously true. Pin it on
+    # the settings object instead, which does not depend on import order.
+    from app.core.config import settings
+
+    with patch("app.services.storage_service._s3") as mock_s3,             patch.object(settings, "S3_UPLOADS_BUCKET", "test-uploads-bucket"):
         from app.services.storage_service import put_bytes
 
         test_key = "agent-abc/doc-xyz.pdf"
@@ -113,8 +119,10 @@ def test_get_bytes_calls_get_object():
     No presigned URL is generated — server-side IAM-authenticated fetch only
     (T-13-06-02: no public/presigned exposure of uploads).
     """
-    with patch("app.services.storage_service._s3") as mock_s3:
-        from app.core.config import settings
+    # BACKLOG 1.29 -- see test_put_bytes_calls_put_object.
+    from app.core.config import settings
+
+    with patch("app.services.storage_service._s3") as mock_s3,             patch.object(settings, "S3_UPLOADS_BUCKET", "test-uploads-bucket"):
         from app.services.storage_service import get_bytes
 
         test_key = "agent-abc/doc-xyz.pdf"

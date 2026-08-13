@@ -25,11 +25,11 @@ work   ← short-lived branches off main:  feat/<scope> · fix/<scope> · chore/
 A merge into `main` must have all gates green, run for real and observed — never asserted:
 
 ```bash
-# backend  (apps/api)  — docling/chunking modules are excluded: docling is not installed here
-uv sync --extra dev                                    # restores .venv if it was disk-cleaned
-.venv/Scripts/python.exe -m pytest tests/unit -q \
-  --ignore=tests/unit/test_chunking_service.py \
-  --ignore=tests/unit/test_docling_service.py
+# backend  (apps/api)
+# CHANGED 2026-08-13: docling IS installed now, so nothing is excluded any more.
+# `uv sync --extra dev` alone would UNINSTALL it — pass both extras.
+uv sync --extra dev --extra pipeline                    # restores .venv if it was disk-cleaned
+.venv/Scripts/python.exe -m pytest tests/unit -q
 
 # admin    (apps/admin)
 npx tsc --noEmit          # ONE known pre-existing error: tests/reduced-motion.spec.ts:18. Zero new.
@@ -166,8 +166,21 @@ threat registers.
   and `.next` have been removed by cleanup passes before. Restore: `uv sync --extra dev` in
   `apps/api`; `pnpm install` for the front ends (the pnpm store survives). Verify a gate can actually
   run before reporting it green.
-- `docling` / `docling_core` are not installed — `test_chunking_service.py` and
-  `test_docling_service.py` cannot collect. Excluded from the gate command above by design.
+- ~~`docling` / `docling_core` are not installed~~ **INSTALLED 2026-08-13** via
+  `uv sync --extra dev --extra pipeline` (docling 2.93.0, transformers 5.13.1, torch 2.13.0+cpu,
+  ~3 GB). `test_chunking_service.py` + `test_docling_service.py` now collect and pass — **10 passed
+  in 33.16s, the first time in repo history** — and `tests/integration/test_ingestion_chain.py`
+  collects its 4 (still never *run*: they need `INTEGRATION_TESTS_ENABLED`, and `1.10` records a
+  second fixture defect in them). Re-run `uv sync` with **both** extras or docling is removed again.
+- **Ingestion needs S3, and Phase A's "no cloud" premise did not survive contact** (`1.24`). Document
+  bytes go to S3 on upload and are read back from S3 by `parse` and `chunk`. For local work set
+  `S3_ENDPOINT_URL` (a local-dev seam, **refused when `ENVIRONMENT=production`**) plus
+  `S3_UPLOADS_BUCKET` and AWS credential env vars, and run MinIO's standalone Windows binary as a
+  plain process — no Docker, so rule 6 holds. Also set `EMBEDDING_PROVIDER=voyage`; the default is
+  `bedrock`, which needs real AWS.
+- **`ANTHROPIC_API_KEY` must be EXPORTED into `os.environ`, not merely present in `.env`.** Pydantic
+  loads `.env` into `Settings`; the Anthropic client reads `os.environ`. A worker started without it
+  loses every direct-API call — and at least one task reports success anyway (`1.28`).
 
 ## Stack
 
