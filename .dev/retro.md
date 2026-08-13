@@ -432,3 +432,44 @@ and they did not agree — the writer lowercases it, `parse.py` did not (`1.27`)
 because the `1.26` fix forced a comparison of all three. A key assembled independently at each end is
 the same shape of defect as `1.14`'s misnamed bindparam: correct-looking at every individual site,
 wrong only in the relationship between them.
+
+## Family J, recurrence 5 — the fix that gave the judge evidence broke the judge's budget
+
+**Instance: `5.14` (2026-08-13), found by E2E-3, the first customer turn ever run against a corpus.**
+
+`dc67d37` fixed the dead `ToolResultBlock` branch, so for the first time since 2026-05-16 the Auditor
+received a **non-empty** `retrieved_context`. It immediately failed all three attempts with
+`AuditorVerdict / citation_spans Field required`. `max_tokens` was 512, and the Auditor's verdict is
+the one judge output that must **echo evidence** — one `{claim, source_chunk, supported}` per claim.
+An empty `citation_spans` costs nothing, which is precisely why 512 sufficed for three months of
+audits over `"[]"`.
+
+**The first layer was hiding the second by making the second unreachable.** This is Family J's
+canonical shape, and the fourth time in two days that a fix moved the failure rather than removing
+it. The standing rule held: re-run after fixing anything with no execution history, and expect a
+different error rather than a pass.
+
+**What is new here, and worth more than the fix:** the second layer *misidentified itself*. A tool
+call truncated at `max_tokens` arrives as a partial dict, so pydantic reports "Field required" — which
+reads exactly like a model ignoring its schema. The budget failure and the prompt failure are
+different defects with different remedies, and they were sharing one error message. `call_auditor`
+now raises `AuditorVerdictTruncated` **before** validating, and the exception's docstring carries the
+sentence that matters: *a truncated verdict is not an `ungrounded` verdict.*
+
+**Standing rule added:** when a structured-output call can be cut off by a token ceiling, check
+`stop_reason` before validating. Otherwise every budget failure is reported in the vocabulary of a
+model-quality failure, and the fix goes to the prompt.
+
+**And the third layer, found by reading the verdict rather than the log** (`5.16`): the verdict came
+back `partial` with the reason *"Retrieved context only confirms VAT exclusion…"*, on an answer that
+quoted the corpus correctly. `agent.py:1515` shows the judge `[:3]` results at `[:600]` chars — about
+half of what the agent actually retrieved. **The judge is asked whether claims are supported while
+being shown less evidence than the answer was built from.** A green "the judge works now" would have
+been wrong: it works, and it is systematically biased. Reading the *content* of the first successful
+measurement, not just its status, is what caught it.
+
+**Process failure worth recording, mine:** I ran the mutation proofs for `5.14` before committing the
+fix, so `git checkout HEAD -- <file>` — the restore step the proof protocol mandates — restored a
+version that *predated the fix* and silently deleted it. Caught immediately, re-applied, and the
+proofs were re-run against a committed HEAD. The protocol says "restore from `HEAD` unconditionally";
+it only works if `HEAD` already contains what you are proving. **Commit the fix, then mutate.**

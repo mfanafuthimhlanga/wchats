@@ -270,10 +270,22 @@ Record the observed output for each step, not the intention.
   **Caveat stated rather than buried: MinIO is not S3.** This proves the ingestion chain, not AWS
   compatibility, and the seam that enabled it is refused in production by design.
   Traces: `.dev/traces/260813-e2e2-ingest.md`, and `260813-e2e2-ingest-blocked.md` for the block.
-- **E2E-3 · one real customer turn.** Drive the widget path end to end. **This is also `5.10`** —
-  it is the run that confirms the `ToolResultBlock` fix against the real stdout stream, so do it
-  with the SDK turn and capture the raw message types. Assert: `agent.tool_result` events exist,
-  `retrieved_context_json` is non-empty, `retrieval_metrics` gets a row.
+- ~~**E2E-3 · one real customer turn.**~~ **DONE 2026-08-13 — `5.10` IS ANSWERED, and the answer is
+  yes.** Two live turns via `POST /agents/{id}/chat`. **`agent.tool_result` events exist on the real
+  stdout stream** (2 per turn), and `tool_name` resolves to `'ToolSearch'` / `'retrieve'` — never
+  `'unknown'`, which is the only value the pre-`dc67d37` code could produce. Both halves of that fix
+  are confirmed against the protocol the SDK actually parses, which is the one gap the 42,334
+  transcript entries could not close. The agent answered **from the corpus** ("R 480/kg, excluding
+  VAT"). `retrieval_metrics` got a row (`retrieved_tokens=962`).
+  **It found two more defects, and the second is the important one:** `5.14` — the Auditor failed all
+  three attempts (`max_tokens=512` truncating a verdict that must echo evidence), **fixed**, and the
+  re-run produced `run_auditor.complete citation_spans=7 verdict=partial`, **the first valid grounding
+  verdict in the platform's history**; then `5.16` — reading that verdict's reason showed the judge is
+  handed `[:3]` results × `[:600]` chars ≈ 1800 chars against 962 retrieved tokens, so **it marked
+  price claims unsupported because it was never shown the prices.** Every stored verdict is biased the
+  same way. Not fixed in place: "the judge sees what the agent saw" is a measurement-layer decision.
+  **`citation_coverage` is still NULL** — both turns drew `skipped_not_sampled` at the 0.1 sample
+  rate (`5.15`), so **`5.13` is not closed.** Trace: `.dev/traces/260813-e2e3-live-turn.md`.
 - **E2E-4 · the checklist and the gate.** `POST /checklist-runs` on that agent. Assert the eval
   actually invokes the agent, red-team runs 7/7 with tools, and the gate's verdict is derived from
   real signals. Then `POST /approve-deployment`.

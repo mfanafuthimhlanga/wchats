@@ -1,12 +1,42 @@
 # HANDOFF — 2026-08-12
 
-> # START HERE — 2026-08-13. E2E-0, E2E-1, E2E-2 ALL DONE. NEXT IS E2E-3.
+> # START HERE — 2026-08-13. E2E-0 → E2E-3 ALL DONE. NEXT IS E2E-4 (checklist + deploy gate).
 >
 > ## The one instruction
 >
-> **Continue `PRODUCTION-READINESS.md` §4 at E2E-3 (one real customer turn).** The owner has already
-> authorised its ~$0.12 spend (`5.10`). It needs `ANTHROPIC_API_KEY` **exported into `os.environ`** —
-> see the warning below, which has now cost three debugging cycles.
+> **Continue `PRODUCTION-READINESS.md` §4 at E2E-4.** Phase A is now four steps in and every one of
+> them found a defect by running something that had never run.
+>
+> ## E2E-3: `5.10` IS ANSWERED — the `dc67d37` fix is confirmed on the real wire
+>
+> Two live turns. **`agent.tool_result` events exist on the real stdout stream** (2 per turn) and
+> `tool_name` resolves to `'ToolSearch'` / `'retrieve'` — never `'unknown'`, the only value the old
+> code could produce. That was the single gap 42,334 transcript entries could not close. The agent
+> answered **from the corpus** ("R 480/kg, excluding VAT").
+>
+> **`5.14` — the Auditor could not return a verdict at all, and is now fixed.** `max_tokens=512`
+> truncated a verdict that must echo one `{claim, source_chunk, supported}` per claim; 512 only ever
+> sufficed because `5.11` meant the judge was auditing an EMPTY context. Re-run after the fix:
+> **`run_auditor.complete citation_spans=7 confidence=0.65 verdict=partial` — the first valid
+> grounding verdict in the platform's history.** The chain now completes
+> `gatekeeper → auditor → strategist`.
+>
+> **`5.16` — READ THIS BEFORE TRUSTING ANY VERDICT.** That first verdict's own reason says the context
+> *"only confirms VAT exclusion"* — on an answer that quoted the corpus prices correctly.
+> `agent.py:1515` hands the judge `[:3]` results × `[:600]` chars ≈ **1800 chars against 962 retrieved
+> tokens (~3,800)**. The judge marks claims unsupported because it is shown roughly **half** the
+> evidence the agent used. So every stored `auditor.complete` is biased toward `partial`/`ungrounded`,
+> `verified_qa_candidates` (needs confidence ≥ 0.90) is starved, and **`0.6`'s `count(*)` would count
+> this artefact as signal.** Not fixed in place on purpose: the rule should be "the judge sees exactly
+> what the agent saw", which is a measurement decision, not a bigger arbitrary number.
+>
+> **`citation_coverage` is still NULL** — both turns drew `skipped_not_sampled` at the 0.1 rate
+> (`5.15`), so **`5.13` remains open.** To observe it, raise `RETRIEVAL_FAITHFULNESS_SAMPLE_RATE` to
+> 1.0 for one run.
+>
+> **Drain the Redis `runtime` queue before any costed run.** The worker drained a stale
+> `run_eval_suite` for an unrelated agent the moment it started — the `1.13` hazard, harmless this
+> time.
 >
 > ## E2E-2 found the biggest defect of the week: `1.26`
 >
@@ -32,6 +62,22 @@
 >
 > **Caveat, stated not buried: MinIO is not S3.** E2E-2 proves the ingestion chain, not AWS
 > compatibility, and the seam that enabled it is refused in production by design.
+>
+> ## Gate, observed at the session tip
+>
+> ```
+> backend unit (NO exclusions)   2243 passed, 13 skipped, 0 failed, 475.52s   exit 0
+> grep -cE "^(FAILED|ERROR)"     0
+> ```
+>
+> **Arithmetic is exact across the whole session** — 2206 (pre-session, with the two docling modules
+> excluded) + 10 those modules + 7 storage seam + 13 ingestion guard + 7 auditor = **2243**. No
+> pre-existing test changed status at any point.
+>
+> **Run the gate DETACHED.** `Start-Process ... -RedirectStandardOutput` survives; ordinary
+> backgrounded runs were killed mid-suite twice this session (at ~5% and ~31%), which is the
+> phenomenon the superseded block below already records. The detached process outlives the shell that
+> launched it, so a killed wrapper no longer takes the run with it.
 >
 > ## Toolchain and gate changes — CLAUDE.md is updated, re-read it
 >
