@@ -79,6 +79,18 @@ from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
 
+#: Wall-clock ceiling for the deployment orchestrator's SDK turn (BACKLOG 1.30).
+#:
+#: Was an inline `120.0`. The first checklist run ever executed (E2E-4,
+#: 2026-08-13) blew straight through it: the orchestrator is a multi-turn
+#: claude-sonnet-4-6 agent reasoning over five signal blocks, and 120s is not a
+#: budget it was ever measured against — nothing had run it (`3.10`).
+#:
+#: Named rather than inline so the timeout can be logged when it fires. A
+#: ceiling that appears only in the traceback of an exception whose `str()` is
+#: empty is a ceiling nobody can see.
+ORCHESTRATOR_TIMEOUT_S = 300.0
+
 
 def _dispatch_eval_run(agent_id: str) -> bool:
     """Start an eval suite for this agent. Returns True iff it was dispatched.
@@ -370,15 +382,25 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
         asyncio.run(
             asyncio.wait_for(
                 _call_orchestrator_async(signals_json, result_container),
-                timeout=120.0,
+                timeout=ORCHESTRATOR_TIMEOUT_S,
             )
         )
     except Exception as exc:
+        # BACKLOG 1.30. `error=str(exc)` alone logged an EMPTY STRING for the
+        # failure that actually happens: `str(asyncio.TimeoutError())` is `""`,
+        # and the timeout is the orchestrator's most likely failure by far. The
+        # first real checklist run ever executed (E2E-4, 2026-08-13) therefore
+        # reported `orchestrator_failed error=` followed by "Orchestrator did
+        # not produce a report" — two lines that name no cause between them.
+        # Same shape as the `getattr(x, "name", "unknown")` family: a default
+        # that is silently plausible converts a diagnosis into a blank.
         log.error(
             "run_deployment_checklist.orchestrator_failed",
             agent_id=agent_id,
             run_id=run_id,
-            error=str(exc),
+            error_type=type(exc).__name__,
+            error=str(exc) or repr(exc),
+            timeout_s=ORCHESTRATOR_TIMEOUT_S,
         )
         # Fall through to Step 7 (status='failed')
 
