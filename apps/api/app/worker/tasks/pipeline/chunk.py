@@ -55,7 +55,8 @@ from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.services.chunking_service import chunk_document
-from app.services.docling_service import parse_document, parse_document_from_bytes
+from app.services import storage_service
+from app.services.docling_service import parse_document_from_bytes
 from app.services.events import emit
 from app.worker.celery_app import celery_app
 
@@ -67,22 +68,14 @@ _ssl_opts: dict = {"ssl_cert_reqs": ssl.CERT_NONE} if _url_clean.startswith("red
 _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
 
 
-def _resolve_local_path(agent_id: str, doc_id: str, source_uri: str) -> Path:
-    """Mirror of parse_documents path-resolution. Returns the local temp file path.
-
-    Constructs the same path that parse_documents used when saving the uploaded file,
-    so that chunk_documents can re-read the file for Docling re-parsing.
-
-    Args:
-        agent_id:   String agent UUID (used as directory name under vrd-uploads).
-        doc_id:     String document UUID (used as filename stem).
-        source_uri: Original source URI — used to extract the file extension.
-
-    Returns:
-        Path: absolute path at /vrd-uploads/{agent_id}/{doc_id}{ext} (Docker volume mount)
-    """
-    ext = Path(source_uri).suffix or ".bin"
-    return Path(settings.UPLOADS_DIR) / agent_id / f"{doc_id}{ext}"
+# _resolve_local_path() was deleted on 2026-08-13 (BACKLOG 1.26) rather than
+# left unused. Its docstring called it "Mirror of parse_documents
+# path-resolution" — and it was, until PROD-13 moved parse_documents to S3 and
+# left this behind pointing at /vrd-uploads, a path nothing writes. A dead
+# helper that names a plausible contract is how the next reader re-adopts it,
+# so it is gone, and tests/unit/test_ingestion_reads_from_s3.py pins its
+# absence at the level that matters: no pipeline task may reference
+# settings.UPLOADS_DIR.
 
 
 @celery_app.task(
@@ -212,8 +205,24 @@ def chunk_documents(self, result: dict) -> dict:
                 # --------------------------------------------------------------
                 try:
                     if source_type in ("pdf", "png", "jpg", "jpeg", "md"):
-                        local_path = _resolve_local_path(agent_id, doc_id, source_uri)
-                        doc = parse_document(local_path)
+                        # BACKLOG 1.26. This read local disk until 2026-08-13,
+                        # via a _resolve_local_path() that mirrored a contract
+                        # parse_documents abandoned at PROD-13. Nothing in app/
+                        # writes any file to disk any more, so EVERY file-source
+                        # document failed here with FileNotFoundError and
+                        # retried to exhaustion — in every environment, not just
+                        # locally. Only URL sources (the else branch) ever
+                        # completed. Read the bytes from S3, exactly as
+                        # parse_documents does.
+                        #
+                        # .lower() matches the WRITER (documents.py:191), which
+                        # is the authority on the key. See 1.27: parse.py omits
+                        # it, so an uppercase extension 404s there.
+                        ext = (Path(source_uri).suffix or f".{source_type}").lower()
+                        content = storage_service.get_bytes(
+                            storage_service.upload_key(agent_id, doc_id, ext)
+                        )
+                        doc = parse_document_from_bytes(content, source_uri)
                     else:
                         # URL source — re-fetch bytes and parse
                         resp = httpx.get(source_uri, timeout=30, follow_redirects=True)

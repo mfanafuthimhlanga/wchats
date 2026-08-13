@@ -392,3 +392,43 @@ hitting the first of two identical lines in a different test — produced a gree
 indistinguishable from "the guard is a tautology". They were caught only because a red had been
 predicted and the green demanded an explanation. A mutation that does not modify what it claims to
 modify is not weak evidence; it is none.
+
+## Family I, recurrence 7 — the fixture recreated a contract the product had abandoned
+
+**Instance: `1.26` (2026-08-13), found by E2E-2 — the first time the ingestion chain was ever run.**
+
+PROD-13 moved document bytes from local disk to S3. It migrated `parse_documents`. It did **not**
+migrate `chunk_documents`, which kept a helper named — in its own docstring — *"Mirror of
+parse_documents path-resolution"*, returning `UPLOADS_DIR/{agent_id}/{doc_id}{ext}`. It had been an
+accurate mirror right up until the thing it mirrored moved.
+
+**Consequence: ingestion has been broken for every uploaded file since PROD-13, in every
+environment.** Not a local artefact — on Fargate `/vrd-uploads` is an empty container path. Only URL
+sources, which re-fetch over HTTP in the `else` branch, could ever complete. Nothing in `app/` writes
+a file to disk at all: zero `write_bytes`, zero `open(..., "wb")`, zero `shutil.copy`.
+
+**Why this is Family I and not merely a missed call site.** The four tests in
+`test_ingestion_chain.py` write their fixture to `gettempdir()/vrd-uploads/{agent_id}/{doc_id}{ext}`.
+They do not mock the storage boundary — **they manufacture the local file that production stopped
+creating**. Had those tests ever run (they never have, `4.4`), they would have gone green over a
+product that could not ingest a single PDF. Family I has been "the code was correct; the shape it was
+handed was never checked". This instance is one turn worse: *the code was wrong, and the fixture was
+carefully maintaining the illusion that it was right.*
+
+**What the plan failed to anticipate.** PROD-13 was scoped as "move upload and parse to S3", and both
+were done well — `parse.py` even carries a comment explaining why bytes must come from S3 rather than
+disk. What no phase asked was: **who else reads these bytes?** The migration was verified per-call-site
+by the person who wrote it, and `chunk_documents` was not on that person's list. A grep for
+`UPLOADS_DIR` at the end of PROD-13 would have returned exactly one live consumer and taken a minute.
+
+**Standing rule added:** when a storage or transport boundary moves, the change is not complete until
+a scan for the *old* accessor returns zero live consumers, and that scan lands as a test. Pinning the
+new call site proves the site; pinning the absence of the old one proves the migration. That is why
+`test_ingestion_reads_from_s3.py` is an AST scan over every pipeline module rather than an assertion
+about `chunk.py`.
+
+**Second observation, worth more than the fix:** three separate places derive the S3 key's extension,
+and they did not agree — the writer lowercases it, `parse.py` did not (`1.27`). That was found only
+because the `1.26` fix forced a comparison of all three. A key assembled independently at each end is
+the same shape of defect as `1.14`'s misnamed bindparam: correct-looking at every individual site,
+wrong only in the relationship between them.

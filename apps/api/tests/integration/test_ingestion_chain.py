@@ -603,7 +603,9 @@ def test_full_chain_runs_in_eager_mode_with_mocks(
         # so patching the service module would not intercept already-resolved references)
         patch("app.worker.tasks.pipeline.parse.parse_document", return_value=mock_doc),
         patch("app.worker.tasks.pipeline.parse.parse_document_from_bytes", return_value=mock_doc),
-        patch("app.worker.tasks.pipeline.chunk.parse_document", return_value=mock_doc),
+        # BACKLOG 1.26: chunk_documents fetches bytes from S3, not disk.
+        patch("app.worker.tasks.pipeline.chunk.parse_document_from_bytes", return_value=mock_doc),
+        patch("app.worker.tasks.pipeline.chunk.storage_service.get_bytes", return_value=b"%PDF-1.4 stub"),
         patch("app.worker.tasks.pipeline.chunk.parse_document_from_bytes", return_value=mock_doc),
         # Patch HybridChunker on the module it is imported FROM. chunk_document does
         # `from docling.chunking import HybridChunker` inside the function body, so
@@ -745,7 +747,9 @@ def test_idempotent_chain(
         # so patching the service module would not intercept already-resolved references)
         patch("app.worker.tasks.pipeline.parse.parse_document", return_value=mock_doc),
         patch("app.worker.tasks.pipeline.parse.parse_document_from_bytes", return_value=mock_doc),
-        patch("app.worker.tasks.pipeline.chunk.parse_document", return_value=mock_doc),
+        # BACKLOG 1.26: chunk_documents fetches bytes from S3, not disk.
+        patch("app.worker.tasks.pipeline.chunk.parse_document_from_bytes", return_value=mock_doc),
+        patch("app.worker.tasks.pipeline.chunk.storage_service.get_bytes", return_value=b"%PDF-1.4 stub"),
         patch("app.worker.tasks.pipeline.chunk.parse_document_from_bytes", return_value=mock_doc),
         # Patch HybridChunker on the module it is imported FROM. chunk_document does
         # `from docling.chunking import HybridChunker` inside the function body, so
@@ -892,7 +896,9 @@ def test_chain_emits_all_11_m2_event_types(
         # so patching the service module would not intercept already-resolved references)
         patch("app.worker.tasks.pipeline.parse.parse_document", return_value=mock_doc),
         patch("app.worker.tasks.pipeline.parse.parse_document_from_bytes", return_value=mock_doc),
-        patch("app.worker.tasks.pipeline.chunk.parse_document", return_value=mock_doc),
+        # BACKLOG 1.26: chunk_documents fetches bytes from S3, not disk.
+        patch("app.worker.tasks.pipeline.chunk.parse_document_from_bytes", return_value=mock_doc),
+        patch("app.worker.tasks.pipeline.chunk.storage_service.get_bytes", return_value=b"%PDF-1.4 stub"),
         patch("app.worker.tasks.pipeline.chunk.parse_document_from_bytes", return_value=mock_doc),
         # Patch HybridChunker on the module it is imported FROM. chunk_document does
         # `from docling.chunking import HybridChunker` inside the function body, so

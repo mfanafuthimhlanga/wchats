@@ -260,7 +260,12 @@ def parse_documents(
                         # File source (pdf, png, jpg, jpeg) — read bytes from S3
                         # (PROD-13: no local-disk dependency; bytes survive worker restarts
                         # and are reachable from any Fargate task).
-                        ext = Path(source_uri).suffix or f".{source_type}"
+                        # BACKLOG 1.27: .lower() matches the writer
+                        # (documents.py:191, which stores the key lowercased).
+                        # Without it "Policy.PDF" is written to ".pdf" and read
+                        # back as ".PDF" — a NoSuchKey that only ever fires for
+                        # an uppercase extension, which no fixture in the repo has.
+                        ext = (Path(source_uri).suffix or f".{source_type}").lower()
                         content = storage_service.get_bytes(
                             storage_service.upload_key(agent_id, doc_id, ext)
                         )

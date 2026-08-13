@@ -165,9 +165,17 @@ def test_chunk_documents_upserts_with_on_conflict(monkeypatch):
 
     # Mock parse_document to return a sentinel doc
     mock_doc = MagicMock()
+    # BACKLOG 1.26: chunk_documents reads document bytes from S3, not from
+    # disk. Patching a local-path reader is exactly what let the real defect
+    # survive the whole life of PROD-13, so these stubs stand at the storage
+    # boundary instead.
     monkeypatch.setattr(
-        "app.worker.tasks.pipeline.chunk.parse_document",
-        lambda path: mock_doc,
+        "app.worker.tasks.pipeline.chunk.storage_service.get_bytes",
+        lambda key: b"%PDF-1.4 stub bytes",
+    )
+    monkeypatch.setattr(
+        "app.worker.tasks.pipeline.chunk.parse_document_from_bytes",
+        lambda content, source_uri: mock_doc,
     )
 
     # Mock chunk_document to return one chunk dict
@@ -249,9 +257,17 @@ def test_chunk_documents_emits_event_sequence(monkeypatch):
     )
 
     mock_doc = MagicMock()
+    # BACKLOG 1.26: chunk_documents reads document bytes from S3, not from
+    # disk. Patching a local-path reader is exactly what let the real defect
+    # survive the whole life of PROD-13, so these stubs stand at the storage
+    # boundary instead.
     monkeypatch.setattr(
-        "app.worker.tasks.pipeline.chunk.parse_document",
-        lambda path: mock_doc,
+        "app.worker.tasks.pipeline.chunk.storage_service.get_bytes",
+        lambda key: b"%PDF-1.4 stub bytes",
+    )
+    monkeypatch.setattr(
+        "app.worker.tasks.pipeline.chunk.parse_document_from_bytes",
+        lambda content, source_uri: mock_doc,
     )
 
     mock_chunks = [
@@ -319,9 +335,17 @@ def test_chunk_documents_returns_chain_dict_unmodified(monkeypatch):
     )
 
     mock_doc = MagicMock()
+    # BACKLOG 1.26: chunk_documents reads document bytes from S3, not from
+    # disk. Patching a local-path reader is exactly what let the real defect
+    # survive the whole life of PROD-13, so these stubs stand at the storage
+    # boundary instead.
     monkeypatch.setattr(
-        "app.worker.tasks.pipeline.chunk.parse_document",
-        lambda path: mock_doc,
+        "app.worker.tasks.pipeline.chunk.storage_service.get_bytes",
+        lambda key: b"%PDF-1.4 stub bytes",
+    )
+    monkeypatch.setattr(
+        "app.worker.tasks.pipeline.chunk.parse_document_from_bytes",
+        lambda content, source_uri: mock_doc,
     )
     monkeypatch.setattr(
         "app.worker.tasks.pipeline.chunk.chunk_document",
