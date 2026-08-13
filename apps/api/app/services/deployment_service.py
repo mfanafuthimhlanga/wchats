@@ -23,6 +23,8 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
     ToolUseBlock,
+    create_sdk_mcp_server,
+    tool,
 )
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -312,6 +314,53 @@ _TOOL_SUBMIT_REPORT = {
         "required": ["recommendation", "summary", "warnings"],
     },
 }
+
+# BACKLOG 1.32. The three-way name agreement `3.7` names: the MCP server's
+# name, the `mcp_servers` key, and the `mcp__{server}__{tool}` prefix the SDK
+# rewrites tool names into. Spelled once here so the loop that matches the
+# ToolUseBlock and the allowlist that authorises it cannot drift apart — the
+# drift IS the defect this constant exists to close.
+DEPLOYMENT_MCP_SERVER_NAME = "deployment"
+DEPLOYMENT_MCP_SERVER_VERSION = "1.0.0"
+SUBMIT_REPORT_TOOL_NAME = f"mcp__{DEPLOYMENT_MCP_SERVER_NAME}__{_TOOL_SUBMIT_REPORT['name']}"
+
+
+def build_report_tools(result_container: dict) -> list:
+    """Make `_TOOL_SUBMIT_REPORT` a tool the orchestrator can actually call.
+
+    BACKLOG `1.32`. Until 2026-08-13 `_TOOL_SUBMIT_REPORT` was referenced
+    **exactly once in the repository — its own definition.** It was never
+    passed to `ClaudeAgentOptions`, and `deployment_service` contained no
+    `create_sdk_mcp_server`, no `mcp_servers` and no `allowed_tools`. The
+    orchestrator was instructed to "call submit_report" while holding no such
+    tool, so it could never emit `ToolUseBlock(name='submit_report')`, the loop
+    always fell through, and **every deployment checklist ever run failed with
+    "Orchestrator did not produce a report".**
+
+    This is audit defect **D4 exactly** — the one already found and fixed in
+    `red_team_service` ("5 of 7 attackers were never given their tools, so they
+    reported clean"). The same shape survived here because, per `3.10`,
+    `run_orchestrator` had never been executed by anything.
+
+    The handler is a pure side-effect recorder, mirroring `report_finding`: it
+    writes the report into `result_container` and returns a minimal ack. It
+    never raises — an exception escaping an in-process MCP handler aborts the
+    whole loop, which would turn a malformed report into the same silent
+    no-report this fix exists to remove.
+    """
+
+    @tool(
+        _TOOL_SUBMIT_REPORT["name"],  # type: ignore[arg-type] # SDK stubs are narrower than the runtime contract
+        _TOOL_SUBMIT_REPORT["description"],  # type: ignore[arg-type]
+        _TOOL_SUBMIT_REPORT["input_schema"],  # type: ignore[arg-type]
+    )
+    async def _submit_report(args: dict) -> dict:
+        # First call wins, matching the loop's documented "capture the first
+        # submit_report and return" contract.
+        result_container.setdefault("report", args)
+        return {"content": [{"type": "text", "text": "report recorded"}]}
+
+    return [_submit_report]
 
 
 # ---------------------------------------------------------------------------
@@ -1899,10 +1948,24 @@ async def _run_orchestrator_loop(
     and returns immediately. No tool result is sent back to the agent
     (same side-effect pattern as report_finding in red_team_service.py).
     """
+    # BACKLOG 1.32: the tool must be REGISTERED, not merely described in the
+    # prompt. `tools=[]` + `strict_mcp_config=True` also stop the orchestrator
+    # inheriting the CLI's Bash/Read/Edit built-ins on the worker's filesystem,
+    # for the same reason red_team_service refuses them.
+    server = create_sdk_mcp_server(
+        name=DEPLOYMENT_MCP_SERVER_NAME,
+        version=DEPLOYMENT_MCP_SERVER_VERSION,
+        tools=build_report_tools(result_container),
+    )
     options = ClaudeAgentOptions(
         model=SONNET_MODEL,
         system_prompt=_DEPLOYMENT_SYSTEM_PROMPT,
         max_turns=5,
+        tools=[],
+        mcp_servers={DEPLOYMENT_MCP_SERVER_NAME: server},
+        allowed_tools=[SUBMIT_REPORT_TOOL_NAME],
+        strict_mcp_config=True,
+        permission_mode="dontAsk",
     )
     async with ClaudeSDKClient(options=options) as client:
         await client.query(
@@ -1912,9 +1975,15 @@ async def _run_orchestrator_loop(
         async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
-                    if isinstance(block, ToolUseBlock) and block.name == "submit_report":
-                        result_container["report"] = block.input
-                        # Side-effect only — no tool result sent back (same as report_finding)
+                    # The SDK rewrites in-process MCP tool names to
+                    # `mcp__{server}__{tool}`, so matching the bare name here
+                    # would reproduce 1.32 in a second place. Accept both: the
+                    # handler above has already recorded the report either way.
+                    if isinstance(block, ToolUseBlock) and block.name in (
+                        SUBMIT_REPORT_TOOL_NAME,
+                        _TOOL_SUBMIT_REPORT["name"],
+                    ):
+                        result_container.setdefault("report", block.input)
                         return
 
 
