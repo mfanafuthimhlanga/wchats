@@ -100,11 +100,13 @@ Rules:
 - When a Workflow runs, copy its script into `.dev/workflows/` so the orchestration is versioned.
 - Plans and traces are **terse working documents** — bullets, file lists, decisions. The GSD habit of
   600-word narrative paragraphs per plan is what `.planning/` became; do not reproduce it here.
-- **Model discipline: every subagent runs the session model.** Never set `model:` in a Workflow
-  `agent()` call or pass `model` to the Agent tool — omitting it inherits the resolved session model,
-  which is the only reliable way to pin it (`opus`/`sonnet` aliases are not version guarantees). Do
-  not spawn named specialist agents whose definitions pin a model in frontmatter; use
-  `general-purpose` or the default workflow subagent.
+- **Model discipline (owner, 2026-08-15): execution runs on Opus, judgement stays on the session
+  model.** Implementation subagents pass `model: 'opus'` and get small, bounded briefs with the
+  exact files and the exact exit check named — the practice audit's Opus frustrations were all
+  wide-brief frustrations. Orchestration, verification passes and reviews inherit the session
+  model (omit `model`; the alias is not a version guarantee, so pin judgement to the resolved
+  session model by omission). Do not spawn named specialist agents whose definitions pin a model
+  in frontmatter; use `general-purpose` or the default workflow subagent.
 - **The one exception: the tier-2 judge runs `model: 'fable'`.** Once per milestone, before the
   merge. It reads a **bounded artifact only** — the diff, the implementers' claims, the tier-1
   findings — assembled by a session-model collector, and never explores the tree. Its question is not
