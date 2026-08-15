@@ -322,6 +322,64 @@ def _record_tool_result(
             break
 
 
+def _judge_retrieved_context(tool_calls_log: list[dict]) -> tuple[list[str], int]:
+    """The retrieved context the Auditor is judged against — what the AGENT saw.
+
+    BACKLOG 5.16. This used to be
+    `json.dumps([str(r)[:600] for r in retrieve_results][:3])`, which cut the
+    grounding judge's evidence three separate ways at once:
+
+        [:600]        600 chars per call, against MAX_CHUNKS(5) *
+                      CHUNK_CONTENT_CHAR_LIMIT(2000) = 10,000 the agent was shown
+        [:3]          retrieve calls 4+ dropped entirely (max_turns is 6)
+        tc["result"]  a Python REPR of the SDK block, itself already cut at
+                      RETRIEVE_RESULT_CAPTURE_CHARS — the AUDIT capture, bounded
+                      because it reaches a jsonb column, not because 1800 chars
+                      is a meaningful amount of evidence
+
+    So the judge was asked "is this answer supported by its context?" while being
+    shown roughly half of it. The first valid verdict in the platform's history
+    (E2E-3, 2026-08-13) marked the agent's price claims unsupported and said so
+    in its reason — *because it was never shown the price rows*. That `partial`
+    is an artefact of this function's predecessor, not a judgement about the
+    response, and `verified_qa_candidates` (confidence >= 0.90) is starved by it.
+
+    THE RULE IS "the judge sees exactly what the agent saw", NOT a bigger number.
+    No cap is applied here, because the bound already exists upstream and belongs
+    to the retrieval layer: retrieve_tool returns at most MAX_CHUNKS chunks, each
+    already truncated to CHUNK_CONTENT_CHAR_LIMIT, and the SDK turn allows at most
+    max_turns calls. A ceiling chosen at this call site would drift away from that
+    contract the first time either constant moved, which is 2.13's history exactly.
+
+    This mirrors eval.py:488-499 deliberately — the same decision, already made
+    and reviewed on the eval path, reading the same capture. Two readers of one
+    rule is how the two answers drift apart (5.1's lesson); the shape is copied so
+    the next person changing one goes looking for the other.
+
+    Returns:
+        (contexts, unparsed_calls) — one string per CHUNK, in retrieval order,
+        and the number of retrieve calls whose framed payload could not be
+        decoded. Those fall back to the audit capture rather than contributing
+        nothing: a turn that retrieved something must never reach the judge as
+        `[]`, which is 5.11 (the empty-context era) in a new spelling.
+    """
+    contexts: list[str] = []
+    unparsed_calls = 0
+    for tc in tool_calls_log:
+        if tc.get("tool_name") != "retrieve" or not tc.get("result"):
+            continue
+        chunks = [str(c) for c in (tc.get(RETRIEVE_CHUNKS_KEY) or []) if c]
+        if chunks:
+            contexts.extend(chunks)
+            continue
+        # Undecodable, or decoded to nothing. Hand over the audit capture and
+        # COUNT it, so a degraded judge context is an observation rather than a
+        # quiet reduction in evidence that looks identical to a short answer.
+        unparsed_calls += 1
+        contexts.append(str(tc["result"]))
+    return contexts, unparsed_calls
+
+
 # ---------------------------------------------------------------------------
 # Module-level helpers — tenant DB writes via psycopg2 (parameterised only)
 # ---------------------------------------------------------------------------
@@ -1510,9 +1568,24 @@ def run_agent_turn(
             )
 
             # Dispatch validation chain (M5 — VAL-04)
-            retrieve_results = [tc.get("result") for tc in tool_calls_log
-                                 if tc.get("tool_name") == "retrieve" and tc.get("result")]
-            retrieved_context_json = json.dumps([str(r)[:600] for r in retrieve_results][:3])
+            #
+            # BACKLOG 5.16: the judge sees exactly what the agent saw. The cap
+            # that used to live on this line is gone, and the reasoning for its
+            # absence is in _judge_retrieved_context's docstring — do not
+            # reintroduce a number here.
+            judge_contexts, judge_unparsed_calls = _judge_retrieved_context(tool_calls_log)
+            retrieved_context_json = json.dumps(judge_contexts)
+            # Recorded, not inferred: E2E-6 calibrates this judge, and a
+            # calibration run has to be able to read what the judge was actually
+            # shown rather than reconstruct it from the code that was current.
+            log.info(
+                "run_agent_turn.judge_context",
+                job_id=job_id,
+                agent_id=agent_id,
+                chunks=len(judge_contexts),
+                unparsed_calls=judge_unparsed_calls,
+                chars=len(retrieved_context_json),
+            )
             # OPS-07: run_retrieval_faithfulness is appended as the LAST step —
             # it must run strictly after run_auditor commits its verdict, since
             # the sample-rate-OR-auditor-flag gate is evaluated inside the task
