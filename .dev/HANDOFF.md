@@ -61,8 +61,10 @@ Picking the obvious adversarial case is not the same as picking the case the rul
 
 ## Where the code is
 
-`chore/local-postgres`, 59 commits ahead of `main`, **unmerged**. The owner merges; Claude never does
-(the `PreToolUse` hook enforces it).
+`chore/local-postgres`, 60+ commits ahead of `main`, **unmerged** — merging it is MASTERPLAN M0.
+The owner merges; Claude never does (the `PreToolUse` hook enforces it). The 2026-08-15 audit
+session added `.dev/MASTERPLAN.md`, BACKLOG §7 (widget/endpoint defects, all six spot-verified at
+their cited lines), and `.dev/reference/260815-two-v12s-and-the-loop-that-does-not-close.md`.
 
 ## Gates
 
