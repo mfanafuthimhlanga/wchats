@@ -31,6 +31,32 @@ These words have been conflated in the record; each now means exactly one thing.
 
 `registry.py`'s `to_a2a_skill()` metadata stays as forward-compat; nothing in this plan consumes it.
 
+## Model provider: DeepSeek by default (owner decision, 2026-08-15)
+
+Every model call, both halves of the split, runs against DeepSeek's Anthropic-compatible endpoint
+`https://api.deepseek.com/anthropic` (DeepSeek v4: flash for haiku/sonnet-class calls, pro for
+opus-class). $5 of DeepSeek credits covers comprehensive testing; the Anthropic balance is off the
+critical path.
+
+- **Mechanism, no refactor.** The endpoint speaks the Anthropic Messages format, which is one of
+  the three wire formats the Agent SDK's CLI natively selects via `ANTHROPIC_BASE_URL`
+  (`.dev/reference/260811-agent-sdk-provider-surface.md` §2). Set `ANTHROPIC_BASE_URL` and put the
+  DeepSeek key in `ANTHROPIC_API_KEY`, **exported into `os.environ` of the API and every worker**
+  (the `1.28` rule); the SDK passes the whole environment to the spawned CLI.
+- **Model IDs stay pinned.** The endpoint auto-maps `claude-haiku-*`/`claude-sonnet-*` to
+  `deepseek-v4-flash` and `claude-opus-*` to `deepseek-v4-pro`, so the constants in judges,
+  attackers and the customer agent need no edit. Explicit `deepseek-v4-*` names also work.
+- **Direct clients verified env-driven.** All `anthropic.Anthropic()` sites construct bare
+  (`actor_seam.py:57`, `validation_service.py:24`, `red_team_service.py:50`, and 10 more);
+  `metadata_service.py:51` passes `api_key` but not `base_url`, so the env base URL still applies.
+- **What stays true.** Anthropic states it does not support routing to non-Claude models through
+  any gateway: this is a support posture to carry, not a blocker. Judge calibration is
+  per-provider: Spearman numbers earned on DeepSeek hold for DeepSeek only, and switching a role
+  back to Anthropic re-runs `0.1` for that role.
+- **Proof before spend.** The seam counts as landed only when one Agent SDK turn and one
+  direct-API judge call have been observed returning verdicts through the endpoint (`7.7`).
+  Anthropic remains available per-environment by unsetting `ANTHROPIC_BASE_URL`.
+
 ## The milestones
 
 Order is deliberate: backend and measurement first, cloud before console polish (a polished console
@@ -49,15 +75,15 @@ last. Each milestone ends in an observable gate, run for real, never asserted.
 The defensibility claim rests on judges that have never been read under full context and never
 calibrated. Nothing deploys on top of unverified measurement.
 
+- Step 0: land `7.7`, the DeepSeek provider seam (§Model provider), proven by one observed SDK
+  turn and one observed judge call. Everything after this spends DeepSeek credits.
 - E2E-3b: one live customer turn, `RETRIEVAL_FAITHFULNESS_SAMPLE_RATE=1.0`, read the verdict and
   `judge_context` counters. Settles `5.13`, `5.15`; first verdict under the `5.16` fix.
 - E2E-6: capture the 20 calibration responses (`0.1` prerequisite), owner scores
   `human_scores.csv`, run the Spearman >= 0.75 gate.
 - E2E-7 per PRODUCTION-READINESS §4.
-- **[owner]** `0.7` model-provider decision resolves to: fund the Anthropic key. The customer agent
-  cannot route elsewhere (SDK constraint, verified in `260811-agent-sdk-provider-surface`), so
-  credits are required for production regardless; a DeepSeek judge split stays available later but
-  is not on the critical path.
+- `0.7` is decided (owner, 2026-08-15): DeepSeek is the default provider for both halves via the
+  Anthropic-compatible endpoint. See §Model provider; the work row is `7.7`.
 
 **Exit:** a grounding verdict from a live turn whose reason cites provenance, and calibrated judges
 with the Spearman number recorded.
@@ -182,7 +208,7 @@ JWT_SECRET, UPLOADS_DIR, LOG_LEVEL, SENTRY_DSN, CLERK_JWKS_URL.
 | Name | Needed by | Note |
 |---|---|---|
 | `PLATFORM_CREDENTIAL_KEY` | M1 (app cannot boot without it) | **[owner]** key material; generate once, never rotate casually (`1.22`) |
-| Anthropic credit balance | M1 | key name present; balance is the `0.7` decision |
+| DeepSeek API key + `ANTHROPIC_BASE_URL` | M1 | the DeepSeek key goes into `ANTHROPIC_API_KEY` with the base URL set (§Model provider); $5 credits available. Anthropic balance no longer on the critical path |
 | `S3_UPLOADS_BUCKET`, `S3_ENDPOINT_URL`, AWS creds | M1 local (MinIO), M4 real | local seam refused in production by design |
 | `EMBEDDING_PROVIDER=voyage` | M1 | default is `bedrock`, which needs AWS |
 | `LANGFUSE_*` (3 names) | M4 | observability; config fields exist |
@@ -200,3 +226,8 @@ JWT_SECRET, UPLOADS_DIR, LOG_LEVEL, SENTRY_DSN, CLERK_JWKS_URL.
   is the milestone most likely to grow.
 - **Judge calibration can fail its own gate** (Spearman < 0.75); if it does, M1 ends in prompt
   iteration on the judges, and nothing downstream starts until it passes.
+- **The DeepSeek compatibility layer is a third party's implementation of Anthropic's format.**
+  Anthropic does not support non-Claude routing, and features the CLI negotiates via beta headers
+  (caching, fine-grained tool streaming) may degrade silently. The `7.7` observed-turn proof is the
+  detector; if the SDK half fails it, the fallback is DeepSeek for the direct-API half only and
+  Anthropic for the agent, which is the old `0.7` split.

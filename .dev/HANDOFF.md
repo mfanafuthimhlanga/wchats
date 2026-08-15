@@ -10,7 +10,13 @@ next move sits in.** E2E-3b below is M1's first step. Production readiness has o
 is in that file: the Mellow transactional agent live via the UI, and the Bantuson support agent live
 via MCP, both tested on their Vercel URLs.
 
-**Run E2E-3b: one live customer turn, and read the grounding verdict it produces.**
+**First: land `7.7` — DeepSeek becomes the default provider** (owner decision 2026-08-15, $5
+credits): `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`, DeepSeek key in
+`ANTHROPIC_API_KEY`, exported into worker `os.environ`, proven by one observed SDK turn and one
+observed judge call. MASTERPLAN §Model provider carries the mechanism and the fallback.
+
+**Then run E2E-3b on that provider: one live customer turn, and read the grounding verdict it
+produces.**
 
 `5.16` was fixed today, so the Auditor is now handed every retrieved chunk untruncated instead of
 1800 chars. **No live turn has produced a verdict that way.** The only grounding verdict ever

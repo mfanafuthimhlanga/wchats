@@ -105,3 +105,18 @@ other half is a standing maintenance commitment against an unsupported configura
 - Whether any existing OSS proxy (LiteLLM et al.) meets the contract in §4. Not tested. Note that meeting it
   today is not the bar; tracking it across releases is.
 - Cost/latency of DeepSeek on this workload. No measurement exists.
+
+## 7. Addendum 2026-08-15: the premise changed, and the conclusion inverts
+
+This note's "DeepSeek cannot follow" conclusion rested on one premise: DeepSeek exposed only an
+OpenAI-shaped endpoint, and §2's three accepted wire formats are all Anthropic-shaped. **DeepSeek now
+serves the Anthropic Messages format directly at `https://api.deepseek.com/anthropic`**, with model
+auto-mapping (`claude-haiku/sonnet-*` → `deepseek-v4-flash`, `claude-opus-*` → `deepseek-v4-pro`).
+That is the exact mechanism §2 documents as supported: `ANTHROPIC_BASE_URL` selects Anthropic
+Messages, and the compatibility layer is DeepSeek's to maintain, not ours — §4's translating-proxy
+burden never arises.
+
+Still true and carried forward: §3's support posture (Anthropic does not support non-Claude routing
+through any gateway) and all of §6, which is now the `7.7` verification list — the seam counts as
+landed only when one SDK turn and one direct-API judge call have been observed through the endpoint.
+Owner decision and mechanism: `.dev/MASTERPLAN.md` §Model provider; work row BACKLOG `7.7`.
