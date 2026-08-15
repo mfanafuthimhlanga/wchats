@@ -283,9 +283,17 @@ Record the observed output for each step, not the intention.
   verdict in the platform's history**; then `5.16` — reading that verdict's reason showed the judge is
   handed `[:3]` results × `[:600]` chars ≈ 1800 chars against 962 retrieved tokens, so **it marked
   price claims unsupported because it was never shown the prices.** Every stored verdict is biased the
-  same way. Not fixed in place: "the judge sees what the agent saw" is a measurement-layer decision.
+  same way. **`5.16` FIXED 2026-08-15** (`OBSERVED` in unit tests and 4 mutation proofs, **not** yet
+  against the API): the judge now receives every retrieved chunk, untruncated, and the bound is the
+  retrieval layer's own rather than a number at the call site.
   **`citation_coverage` is still NULL** — both turns drew `skipped_not_sampled` at the 0.1 sample
   rate (`5.15`), so **`5.13` is not closed.** Trace: `.dev/traces/260813-e2e3-live-turn.md`.
+- **E2E-3b · one turn under the full context. NOT RUN — this is the next step.** `5.16` is fixed in
+  code and **no live turn has produced a verdict that way**, so the only grounding verdict ever
+  observed belongs to the capped era. Re-run E2E-3 and read `run_agent_turn.judge_context`
+  (chunks / unparsed_calls / chars) beside the verdict. Set `RETRIEVAL_FAITHFULNESS_SAMPLE_RATE=1.0`
+  for the run and it also settles `5.13` / `5.15`, which are waiting on one sampled turn.
+  Trace when done: `.dev/traces/260815-judge-sees-agent-context.md` records the code half.
 - **E2E-4 · the checklist and the gate. PARTIALLY DONE 2026-08-13 — the checklist COMPLETED for the
   first time in the project's history** (79.7s, `recommendation=block`), and `POST /approve-deployment`
   refused it with **422**. Took two fixes: `1.30` (the timeout logged an empty `str(asyncio.TimeoutError())`,
@@ -317,6 +325,8 @@ Record the observed output for each step, not the intention.
 - **E2E-6 · calibrate the judges.** `0.1`. Capture responses (now possible — Phase A produced a real
   ingested agent), then the owner scores 10 rows, then run the Spearman gate. **Everything in §3.4
   is downstream of this.** Blocked on `0.7 · model-provider-decision` if there is no Claude balance.
+  **Do E2E-3b first.** `5.16`'s fix is unobserved against the API, and calibrating the Auditor on
+  responses captured before it is confirmed live measures the cap a second time.
 - **E2E-7 · one full nightly.** Let `eval-nightly` and the red-team beat run once against a real
   tenant, deliberately and watched — **after** `0.4 · eval-pii-egress` is decided, because that is
   when customer rows first reach the Ragas judge.
