@@ -1,6 +1,6 @@
 """BACKLOG 5.16 — the grounding judge must see exactly what the agent saw.
 
-The defect these tests pin, stated as what it cost rather than as a slice:
+The defect, stated as what it cost rather than as a slice:
 
     `agent.py` built the Auditor's context as
     `json.dumps([str(r)[:600] for r in retrieve_results][:3])`, where `r` is
@@ -10,35 +10,29 @@ The defect these tests pin, stated as what it cost rather than as a slice:
     (MAX_CHUNKS x CHUNK_CONTENT_CHAR_LIMIT) the agent was shown, retrieve calls
     4+ dropped, and a repr in place of the chunk text.
 
-    So the judge was asked "is this answer supported by its context?" while being
-    shown roughly half of it. The first valid verdict in the platform's history
-    (E2E-3, 2026-08-13) marked the agent's price claims unsupported and gave as
-    its reason that the context "only confirms VAT exclusion" — it had not been
-    shown the price rows the agent answered from. Every stored `auditor.complete`
-    is biased toward partial/ungrounded by this, `verified_qa_candidates`
-    (confidence >= 0.90) is starved, and 0.6's count(*) would read the artefact
-    as signal.
+    The first valid verdict in the platform's history (E2E-3, 2026-08-13) marked
+    the agent's price claims unsupported and gave as its reason that the context
+    "only confirms VAT exclusion" — it had not been shown the price rows the
+    agent answered from.
 
-Why no existing test caught it: `test_agent_tool_result_stream.py` proves the
-capture REACHES `tool_calls_log` (5.9) and `test_validators.py` drives
-`run_auditor` with a context string the test supplies. Nothing asserted anything
-about the step BETWEEN them — the one place the evidence was cut. A boundary
-with a test on each side and none across it.
+WHY THIS MODULE IS SHAPED THE WAY IT IS. Its first version guarded the SHAPE OF
+THE LINE with two AST checks, and an adversarial review then reintroduced the
+whole defect five ways that stayed 10/10 green: a truncating helper, a
+differently named variable, `itertools.islice`, a second assignment on the next
+line, and rebuilding the old repr while still calling the helper. A text-shaped
+guard bans one spelling, and the author picks the spelling.
 
-These tests drive the REAL capture path (`_record_tool_result`, the real framer,
-the real SDK dataclass) and then compare what the judge is handed against what
-the agent was shown. The last one is a structural pin: the cap may not come back
-to that line, checked by walking the AST rather than by reading the source as
-text — 1.33 B4 is what happens when a check about code can be satisfied by prose.
+So the load-bearing test here is `TestWhatTheAuditorIsActuallyHanded`: it drives
+the real dispatch seam and asserts on **the argument `run_auditor.si` receives**.
+Guard the value the consumer gets, never the syntax that produces it.
 """
 
 from __future__ import annotations
 
-import ast
 import importlib
 import json
 import sys
-from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -46,12 +40,12 @@ from app.services.agent_tools import (
     CHUNK_CONTENT_CHAR_LIMIT,
     MAX_CHUNKS,
     _frame_retrieved_context,
+    _RETRIEVE_CALLS_PER_TURN_MAX,
 )
 from app.worker.tasks.runtime import agent as agent_module
 
-#: The two numbers the old line applied. Named so every assertion below can say
-#: which half of the defect it is standing on, and so this module reads as a
-#: statement about a specific historical cut rather than about "truncation".
+#: The two numbers the old line applied, named so each assertion can say which
+#: half of the defect it stands on.
 OLD_PER_CALL_CHAR_CAP = 600
 OLD_RESULT_COUNT_CAP = 3
 
@@ -61,10 +55,10 @@ def _real_tool_result_block():
 
     Duplicated from `test_agent_tool_result_stream.py` rather than imported from
     it: importing another test module for a helper makes this module's meaning
-    depend on that one still existing under that name, and the thing being
-    defended against here is BACKLOG 2.24 — `test_agent_task.py` installs a fake
-    `claude_agent_sdk` into `sys.modules` and never removes it, so by collection
-    order this module would otherwise capture a MagicMock and prove nothing.
+    depend on that one keeping the name. The hazard is BACKLOG 2.24 —
+    `test_agent_task.py` installs a fake `claude_agent_sdk` into `sys.modules`
+    and never removes it, so by collection order this module would otherwise
+    capture a MagicMock and prove nothing.
     """
     saved = {
         name: mod
@@ -107,29 +101,30 @@ def _framed(chunk_texts: list[str]) -> str:
 
     `retrieve_tool` returns `_frame_retrieved_context(str(chunks))`. Building the
     fixture with the production framer rather than a literal means it cannot
-    drift away from what the tool emits — which is precisely how 1.26 survived:
-    a fixture that manufactured a contract the product had abandoned.
+    drift away from what the tool emits — which is how 1.26 survived: a fixture
+    that manufactured a contract the product had abandoned.
     """
     return _frame_retrieved_context(str([{"content": t, "score": 0.9} for t in chunk_texts]))
 
 
-def _capture(calls: list[list[str]]) -> list[dict]:
+def _capture(calls: list[str | list[str]], *, is_error: bool = False) -> list[dict]:
     """Drive `_record_tool_result` once per retrieve call; return tool_calls_log.
 
-    `calls` is one list of chunk texts per retrieve call, so the caller states the
-    agent's evidence and this returns the log the dispatch site reads.
+    Each entry is either a list of chunk texts (framed by the real producer) or a
+    raw string, which is how an undecodable or errored payload is expressed.
     """
     tool_calls_log: list[dict] = []
     tool_names_by_use_id: dict[str, str] = {}
-    for i, chunk_texts in enumerate(calls):
+    for i, call in enumerate(calls):
         use_id = f"toolu_{i}"
         tool_names_by_use_id[use_id] = "retrieve"
         tool_calls_log.append({"tool_name": "retrieve", "input": {"query": f"q{i}"}})
+        payload = _framed(call) if isinstance(call, list) else call
         agent_module._record_tool_result(
             ToolResultBlock(
                 tool_use_id=use_id,
-                content=[{"type": "text", "text": _framed(chunk_texts)}],
-                is_error=False,
+                content=[{"type": "text", "text": payload}],
+                is_error=is_error,
             ),
             tool_names_by_use_id=tool_names_by_use_id,
             tool_calls_log=tool_calls_log,
@@ -147,231 +142,238 @@ def _emit_is_not_a_database(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The three cuts, one test each.
+# The load-bearing guard: what run_auditor is actually handed.
 # ---------------------------------------------------------------------------
 
 
-def test_a_chunk_longer_than_the_old_cap_reaches_the_judge_whole() -> None:
-    """`[:600]`. A chunk the agent was shown in full must reach the judge in full."""
-    long_chunk = _chunk_text("prices", 1500)
-    contexts, _unparsed = agent_module._judge_retrieved_context(_capture([[long_chunk]]))
+class TestWhatTheAuditorIsActuallyHanded:
+    """Drive `_dispatch_validation_chain` and read the argument off `run_auditor.si`.
 
-    assert long_chunk in contexts, (
-        "the chunk the agent answered from does not appear in the judge's context "
-        f"as a whole string. Longest element is {max((len(c) for c in contexts), default=0)} "
-        f"chars against the chunk's {len(long_chunk)} — the judge is being asked "
-        "whether claims are supported by evidence it was not shown, which is what "
-        "made the first real verdict `partial`"
-    )
-    assert len(long_chunk) > OLD_PER_CALL_CHAR_CAP, (
-        "the fixture chunk is shorter than the cap under test, so this test would "
-        "pass with the old code — it would be a tautology, not a proof"
-    )
-
-
-def test_every_retrieve_call_reaches_the_judge() -> None:
-    """`[:3]`. A turn may retrieve up to `max_turns` times; none of it is optional."""
-    per_call = [[_chunk_text(f"call{i}", 700)] for i in range(OLD_RESULT_COUNT_CAP + 2)]
-    contexts, _unparsed = agent_module._judge_retrieved_context(_capture(per_call))
-
-    missing = [
-        chunks[0][:20]
-        for chunks in per_call
-        if not any(chunks[0] in c for c in contexts)
-    ]
-    assert not missing, (
-        f"{len(missing)} retrieve call(s) contributed nothing to the judge's "
-        f"context: {missing}. The old `[:3]` dropped every call past the third, so "
-        "an agent that searched again to answer well was judged as if it had not"
-    )
-
-
-def test_the_judge_gets_one_element_per_chunk_not_one_repr_per_call() -> None:
-    """`tc["result"]`. The audit capture is a repr; the judge needs chunk text.
-
-    Feeding a repr hands the judge dict syntax it cannot distinguish from
-    evidence, in a single element, which is the same reason eval.py:481 refuses
-    to score `result`.
+    This is the guard the first version of this module lacked. Every one of the
+    five defect reintroductions the adversary found changes this value, and none
+    of them changed the shape of the line the old AST checks inspected.
     """
-    chunks = [_chunk_text("a", 700), _chunk_text("b", 700), _chunk_text("c", 700)]
-    contexts, _unparsed = agent_module._judge_retrieved_context(_capture([chunks]))
 
-    assert len(contexts) == len(chunks), (
-        f"the judge got {len(contexts)} context element(s) for {len(chunks)} "
-        "retrieved chunks — chunk boundaries the agent saw were collapsed"
-    )
-    assert not any("'content':" in c or "'score':" in c for c in contexts), (
-        "a Python repr of the chunk dicts reached the judge; the transport "
-        "encoding is then most of its token budget and is scored as evidence"
-    )
+    @staticmethod
+    def _dispatch(tool_calls_log: list[dict]) -> tuple[str, tuple]:
+        with (
+            patch.object(agent_module, "celery_chain") as chain,
+            patch.object(agent_module, "run_gatekeeper"),
+            patch.object(agent_module, "run_auditor") as auditor,
+            patch.object(agent_module, "run_strategist"),
+            patch.object(agent_module, "run_retrieval_faithfulness"),
+        ):
+            returned = agent_module._dispatch_validation_chain(
+                agent_id="agent-1",
+                job_id="job-5-16",
+                response_text="Tier A costs R450.",
+                message="what does tier A cost?",
+                conversation_id="conv-1",
+                tool_calls_log=tool_calls_log,
+            )
+            chain.return_value.apply_async.assert_called_once_with(queue="runtime")
+            return returned, auditor.si.call_args.args
+
+    def test_the_auditor_receives_every_chunk_untruncated(self) -> None:
+        shown = [
+            _chunk_text(f"chunk{i}", CHUNK_CONTENT_CHAR_LIMIT) for i in range(MAX_CHUNKS)
+        ]
+        _returned, args = self._dispatch(_capture([shown]))
+
+        handed_to_judge = json.loads(args[4])
+        assert handed_to_judge == shown, (
+            "the string dispatched to run_auditor is not the chunks the agent was "
+            f"shown. agent saw {len(shown)} chunks / {sum(len(c) for c in shown)} "
+            f"chars; judge is handed {len(handed_to_judge)} / "
+            f"{sum(len(c) for c in handed_to_judge)}"
+        )
+
+    def test_every_retrieve_call_reaches_the_auditor(self) -> None:
+        """The old `[:3]` dropped calls 4+. The real per-turn cap is 8."""
+        calls = [
+            [_chunk_text(f"call{i}", 700)] for i in range(_RETRIEVE_CALLS_PER_TURN_MAX)
+        ]
+        _returned, args = self._dispatch(_capture(calls))
+
+        handed_to_judge = json.loads(args[4])
+        missing = [c[0][:20] for c in calls if c[0] not in handed_to_judge]
+        assert not missing, (
+            f"{len(missing)} of {len(calls)} retrieve calls contributed nothing to "
+            f"what run_auditor was handed: {missing}"
+        )
+
+    def test_a_chunk_longer_than_the_old_cap_arrives_whole(self) -> None:
+        long_chunk = _chunk_text("prices", 1500)
+        assert len(long_chunk) > OLD_PER_CALL_CHAR_CAP, (
+            "the fixture chunk is shorter than the cap under test, so this would "
+            "pass with the old code — a tautology, not a proof"
+        )
+        _returned, args = self._dispatch(_capture([[long_chunk]]))
+
+        assert long_chunk in json.loads(args[4]), (
+            "the chunk the agent answered from did not reach run_auditor whole"
+        )
+
+    def test_the_returned_string_is_the_dispatched_string(self) -> None:
+        """Closes the gap between what the seam reports and what it sends.
+
+        Without this, a change could return the honest value and dispatch a
+        truncated one, and every assertion above would still pass.
+        """
+        returned, args = self._dispatch(_capture([[_chunk_text("a", 900)]]))
+        assert returned == args[4]
+
+    def test_a_turn_that_retrieved_nothing_hands_over_an_empty_context(self) -> None:
+        """The complement, and it must stay honest.
+
+        Padding an empty context would make an ungrounded answer look judged.
+        """
+        _returned, args = self._dispatch([{"tool_name": "lookup_structured", "result": "x"}])
+        assert json.loads(args[4]) == []
 
 
 # ---------------------------------------------------------------------------
-# The rule itself: judge-context == agent-context.
+# The four states of a retrieve call, counted separately.
 # ---------------------------------------------------------------------------
 
 
-def test_judge_context_is_exactly_what_the_agent_was_shown() -> None:
-    """The whole of 5.16 in one assertion, over a realistic turn.
+class TestTheFourStatesAreNotCollapsed:
+    """The first version inferred "unparsed" from an empty chunk list.
 
-    `MAX_CHUNKS` chunks at `CHUNK_CONTENT_CHAR_LIMIT` is what `retrieve_tool`
-    hands the agent at its own ceiling. Equality — not "contains", not "at least"
-    — because both directions are defects: less means the judge marks supported
-    claims unsupported, more means it is judging against evidence the agent never
-    had, which would make a `grounded` verdict unearned.
+    That made three different observations indistinguishable: a corpus miss, an
+    undecodable payload, and a DoS-guard refusal. It also fed the repr of a
+    framed empty list to the judge as evidence for the corpus-miss case, which is
+    the exact thing 5.16 exists to stop.
     """
-    shown = [_chunk_text(f"chunk{i}", CHUNK_CONTENT_CHAR_LIMIT) for i in range(MAX_CHUNKS)]
-    contexts, unparsed = agent_module._judge_retrieved_context(_capture([shown]))
 
-    assert contexts == shown, (
-        "the judge's context is not the agent's context. "
-        f"agent saw {len(shown)} chunks / {sum(len(c) for c in shown)} chars; "
-        f"judge got {len(contexts)} / {sum(len(c) for c in contexts)}"
-    )
-    assert unparsed == 0
+    def test_a_corpus_miss_contributes_nothing_and_is_not_called_a_decode_failure(self) -> None:
+        contexts, counts = agent_module._judge_retrieved_context(_capture([[]]))
+
+        assert contexts == [], (
+            "a retrieve that found nothing put its own framed-empty-list repr in "
+            "front of the judge as a retrieved passage"
+        )
+        assert counts["empty"] == 1
+        assert counts["unparsed"] == 0, (
+            "a corpus miss was counted as a decode failure, so the metric E2E-6 "
+            "reads cannot tell 'found nothing' from 'could not read it'"
+        )
+
+    def test_an_undecodable_payload_falls_back_and_is_counted_as_unparsed(self) -> None:
+        """Reachable only via the SOURCE key, which is why the product reads it."""
+        log = _capture(["<<<RETRIEVED CONTEXT>>> not-a-python-literal <<<END>>>"])
+        assert log[0][agent_module.RETRIEVE_CHUNKS_SOURCE_KEY] == (
+            agent_module.RETRIEVE_CHUNKS_UNPARSED
+        ), "the fixture did not actually produce an undecodable payload"
+
+        contexts, counts = agent_module._judge_retrieved_context(log)
+
+        assert contexts, (
+            "an undecodable retrieve contributed nothing, so the judge is handed "
+            "[] for a turn that retrieved — BACKLOG 5.11 in a new spelling"
+        )
+        assert counts["unparsed"] == 1
+        assert counts["empty"] == 0
+
+    def test_an_errored_retrieve_is_not_evidence(self) -> None:
+        """The DoS guard's refusal is a control message the agent read as a failure.
+
+        `retrieve_tool` returns "Retrieve quota exceeded for this turn" with
+        is_error set. Feeding it to the judge puts a sentence about quotas into
+        the RETRIEVED CONTEXT block of the turn least likely to be well grounded.
+        """
+        refusal = (
+            f"Retrieve quota exceeded for this turn (max {_RETRIEVE_CALLS_PER_TURN_MAX} "
+            "calls allowed). Please synthesize an answer from the results already retrieved."
+        )
+        contexts, counts = agent_module._judge_retrieved_context(
+            _capture([refusal], is_error=True)
+        )
+
+        assert not any("quota exceeded" in c.lower() for c in contexts), (
+            "a tool-error control message reached the grounding judge as a "
+            "retrieved passage"
+        )
+        assert contexts == []
+        assert counts["errored"] == 1
+        assert counts["unparsed"] == 0
+
+    def test_the_states_are_counted_independently_in_one_turn(self) -> None:
+        """A turn mixing all four, so no count can be satisfied by another's value."""
+        good = [_chunk_text("a", 700), _chunk_text("b", 700)]
+        log = _capture([good, [], "<<<RETRIEVED CONTEXT>>> junk <<<END>>>"])
+        log += _capture(["refused"], is_error=True)
+
+        contexts, counts = agent_module._judge_retrieved_context(log)
+
+        assert counts == {
+            "calls": 4,
+            "chunks": 2,
+            "empty": 1,
+            "unparsed": 1,
+            "errored": 1,
+        }, f"state tally is wrong: {counts}"
+        assert contexts[:2] == good
+
+
+# ---------------------------------------------------------------------------
+# The bound, and that it belongs to the retrieval layer.
+# ---------------------------------------------------------------------------
 
 
 def test_the_helper_applies_no_cap_of_its_own() -> None:
-    """No number is chosen here — the bound is the retrieval layer's.
+    """No number is chosen here. The bound is MAX_CHUNKS x CHAR_LIMIT x CALL_CAP.
 
-    Six calls (the `max_turns=6` worst case) at the retrieval ceiling. If a future
-    change adds a ceiling at this call site it will be an arbitrary one, it will
-    drift from `MAX_CHUNKS` / `CHUNK_CONTENT_CHAR_LIMIT` the first time either
-    moves, and this test is what makes that a decision rather than an accident.
+    Driven at the real per-turn ceiling, which is `_RETRIEVE_CALLS_PER_TURN_MAX`
+    (8) and NOT `max_turns` (6): max_turns bounds assistant turns, and parallel
+    tool use puts several retrieves in one. The first version of this test used 6
+    and therefore did not exercise the bound it named.
     """
     calls = [
         [_chunk_text(f"c{call}-{i}", CHUNK_CONTENT_CHAR_LIMIT) for i in range(MAX_CHUNKS)]
-        for call in range(6)
+        for call in range(_RETRIEVE_CALLS_PER_TURN_MAX)
     ]
-    contexts, _unparsed = agent_module._judge_retrieved_context(_capture(calls))
+    contexts, counts = agent_module._judge_retrieved_context(_capture(calls))
 
     expected = [text for call in calls for text in call]
     assert contexts == expected, (
         f"{len(expected) - len(contexts)} of {len(expected)} chunks were dropped "
         "at the judge boundary"
     )
+    assert counts["chunks"] == MAX_CHUNKS * _RETRIEVE_CALLS_PER_TURN_MAX
 
 
-def test_an_undecodable_payload_falls_back_and_is_counted() -> None:
-    """A degraded context is an observation, never a quiet reduction in evidence.
+def test_the_worst_case_is_the_documented_one() -> None:
+    """Pins the number the cost estimate is derived from.
 
-    `_retrieved_chunk_texts` returns None (never []) when the framed payload
-    cannot be read. Contributing nothing for such a call would hand the judge
-    `[]` for a turn that DID retrieve — which is 5.11, the empty-context era,
-    in a new spelling.
+    If a retrieval constant moves, the cost of every Auditor call moves with it,
+    and this is the test that says so out loud instead of leaving it to be
+    rediscovered from a bill.
     """
-    tool_calls_log = [
-        {
-            "tool_name": "retrieve",
-            "result": "<<<RETRIEVED CONTEXT>>> not-a-python-literal <<<END>>>",
-            agent_module.RETRIEVE_CHUNKS_KEY: [],
-            agent_module.RETRIEVE_CHUNKS_SOURCE_KEY: agent_module.RETRIEVE_CHUNKS_UNPARSED,
-        }
+    calls = [
+        [_chunk_text(f"c{call}-{i}", CHUNK_CONTENT_CHAR_LIMIT) for i in range(MAX_CHUNKS)]
+        for call in range(_RETRIEVE_CALLS_PER_TURN_MAX)
     ]
-    contexts, unparsed = agent_module._judge_retrieved_context(tool_calls_log)
+    contexts, _counts = agent_module._judge_retrieved_context(_capture(calls))
 
-    assert contexts, (
-        "a retrieve call whose payload could not be decoded contributed nothing, "
-        "so the grounding judge is handed an empty context for a turn that "
-        "retrieved — BACKLOG 5.11 in a new spelling"
-    )
-    assert unparsed == 1, (
-        "the degraded call was not counted, so nothing downstream can tell a "
-        "short context apart from a decode failure"
-    )
+    ceiling = MAX_CHUNKS * CHUNK_CONTENT_CHAR_LIMIT * _RETRIEVE_CALLS_PER_TURN_MAX
+    assert sum(len(c) for c in contexts) == ceiling == 80_000
 
 
-def test_a_turn_that_retrieved_nothing_reports_nothing() -> None:
-    """The complement, and it must stay honest: no retrieval means no context.
+def test_the_judge_gets_one_element_per_chunk_not_one_repr_per_call() -> None:
+    """`tc["result"]` is a repr; the judge needs chunk text.
 
-    Padding an empty context would make an ungrounded answer look judged.
+    A repr hands the judge dict syntax it cannot distinguish from evidence, in a
+    single element, which is why eval.py:481 refuses to score `result`.
     """
-    contexts, unparsed = agent_module._judge_retrieved_context(
-        [{"tool_name": "lookup_structured", "result": "irrelevant"}]
+    chunks = [_chunk_text("a", 700), _chunk_text("b", 700), _chunk_text("c", 700)]
+    contexts, _counts = agent_module._judge_retrieved_context(_capture([chunks]))
+
+    assert len(contexts) == len(chunks), (
+        f"the judge got {len(contexts)} element(s) for {len(chunks)} chunks — "
+        "chunk boundaries the agent saw were collapsed"
     )
-    assert contexts == []
-    assert unparsed == 0
-
-
-# ---------------------------------------------------------------------------
-# Structural pin — the cap may not come back to the dispatch line.
-# ---------------------------------------------------------------------------
-
-
-def _retrieved_context_json_assignment() -> ast.Assign:
-    """The AST node that builds the judge's context, found by walking the tree.
-
-    AST rather than a substring search over the source: 1.33 B4 is the record of
-    a check about code that a docstring sentence satisfied. Comments and prose
-    are invisible here by construction.
-    """
-    tree = ast.parse(Path(agent_module.__file__).read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == "retrieved_context_json"
-            for t in node.targets
-        ):
-            return node
-    raise AssertionError(
-        "no `retrieved_context_json = ...` assignment found in agent.py — this "
-        "guard has been renamed out from under itself and is proving nothing"
+    assert not any("'content':" in c or "'score':" in c for c in contexts), (
+        "a Python repr of the chunk dicts reached the judge; the transport "
+        "encoding is then most of its token budget and is scored as evidence"
     )
-
-
-def test_the_dispatch_site_slices_nothing() -> None:
-    """No slice, no integer literal, on the line that builds the judge's context."""
-    node = _retrieved_context_json_assignment()
-    offenders = [
-        n for n in ast.walk(node.value)
-        if isinstance(n, ast.Slice)
-        or (isinstance(n, ast.Constant) and isinstance(n.value, int))
-    ]
-    assert not offenders, (
-        "a slice or a numeric literal has reappeared where the judge's context is "
-        f"built (agent.py:{node.lineno}). That line held BACKLOG 5.16 — 600 chars "
-        "and 3 results — and the bound belongs to the retrieval layer "
-        "(MAX_CHUNKS x CHUNK_CONTENT_CHAR_LIMIT), not to this call site"
-    )
-
-
-def test_the_dispatch_site_calls_the_helper() -> None:
-    """`_judge_retrieved_context` is used, not merely defined.
-
-    A helper defined at module scope and never wired is invisible to every test
-    that drives it directly — which is 1.32 exactly, a tool schema defined and
-    never registered, green in 2,200 tests.
-    """
-    tree = ast.parse(Path(agent_module.__file__).read_text(encoding="utf-8"))
-    definitions = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "_judge_retrieved_context"
-    ]
-    assert len(definitions) == 1, "expected exactly one _judge_retrieved_context def"
-
-    def_lines = range(definitions[0].lineno, (definitions[0].end_lineno or 0) + 1)
-    call_sites = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Name)
-        and n.func.id == "_judge_retrieved_context"
-        and n.lineno not in def_lines
-    ]
-    assert call_sites, (
-        "_judge_retrieved_context is defined and never called from agent.py. The "
-        "judge's context is being built somewhere else and none of the tests "
-        "above describe what the Auditor actually receives"
-    )
-
-
-def test_the_judges_context_is_json_the_auditor_can_parse() -> None:
-    """`run_auditor` does `json.loads` for its chunk count and passes the string on.
-
-    The count reaches Langfuse as `context_chunks`; it must be the real chunk
-    count, not the number of tool calls.
-    """
-    shown = [_chunk_text("a", 800), _chunk_text("b", 800)]
-    contexts, _unparsed = agent_module._judge_retrieved_context(_capture([shown]))
-    parsed = json.loads(json.dumps(contexts))
-
-    assert parsed == shown
-    assert len(parsed) == 2, "context_chunks would report the tool-call count"
