@@ -15,7 +15,7 @@ import { test, expect } from '@playwright/test'
 // present in this real, backend-driven port, so the ledger row transition is
 // used as the concrete, present-in-production analogue of the same
 // mechanism).
-test.use({ reducedMotion: 'reduce' })
+test.use({ contextOptions: { reducedMotion: 'reduce' } })
 
 test.describe('@smoke reduced motion', () => {
   test('prefers-reduced-motion is honored by the browser context', async ({ page }) => {
