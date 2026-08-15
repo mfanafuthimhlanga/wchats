@@ -299,9 +299,18 @@ Record the observed output for each step, not the intention.
   produced**, so the approve route's success path remains unexercised. Also found `1.31` (a
   crash-orphaned `running` row blocks every checklist for 60 minutes, and `acks_late` redelivery
   cannot rescue it). Trace: `.dev/traces/260813-e2e4-checklist.md`.
-- **E2E-5 · prove the gate refuses.** Raise a critical finding *after* a clean checklist and confirm
-  the API still accepts the deploy — that is `5.1`, and E2E-5 is the test that makes it undeniable.
-  Fix it, then re-run.
+- ~~**E2E-5 · prove the gate refuses.**~~ **DONE 2026-08-13 — proved, then fixed, then re-proved.**
+  A clean checklist froze `recommendation='ship'`; a critical finding was raised **after** it; approve
+  returned **200** and logged `deployment.approved`. The API deployed an agent with an open critical
+  finding against it. **Structural, not a missing `if`:** `red_team_findings` is in the *tenant* DB
+  and the route only ever touched the *control* DB. Fixed with guard 2b re-reading via the **same**
+  function the checklist uses, fail-closed on an unreadable connection. `5.1` closed (`69f6fab`);
+  `2.19`'s gate-version general form stays open as the better long-term shape.
+  **Read the retro entry for this one:** the first mutation proof of the fail-closed branch was
+  **invalid** (two compensating changes, green in both states), which exposed that nothing tested that
+  branch at all; and the replacement test initially passed for the wrong reason, because a 422 in a
+  five-guard sequence identifies nothing without its message. Trace:
+  `.dev/traces/260813-e2e5-ops15.md`.
 
 ### Phase B — the evidence the product is sold on
 

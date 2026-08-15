@@ -912,3 +912,87 @@ class TestChecklistReadEnvelopeDrift:
         body = response.json()
         assert len(body["runs"]) == 2
         assert mock_db.execute.await_count == 2
+
+
+class TestApproveFailsClosedWhenLiveFindingsCannotBeRead:
+    """Guard 2b must refuse when it CANNOT check, not only when it finds something.
+
+    BACKLOG `5.1`. The guard re-reads live red-team findings from the tenant DB
+    at approve time. If that read fails — an undecryptable connection string, an
+    unreachable database, a credential rotated out from under the row — the
+    honest answer is "unknown", and unknown is never permission to deploy.
+    **"I could not check" is not "there is nothing to find."**
+
+    This class exists because the first mutation proof written for the
+    fail-closed branch was INVALID: it mutated the route to fail open *and*
+    reverted the fixture's token in the same step, so the two changes
+    compensated and the suite stayed green in both states. A mutation that does
+    not modify what it claims to modify is not weak evidence, it is none
+    (retro.md, second standing rule). Nothing tested this branch at all — so
+    here it is, tested.
+    """
+
+    async def _post_with_unreadable_connection(self):
+        # envelope_hash must MATCH the (empty) live projection, or guard 4
+        # refuses for drift and this test would pass without guard 2b existing
+        # at all. Observed: with the guard mutated to fail open, the status-code
+        # assertion below still saw 422 -- from envelope drift. A 422 proves
+        # nothing on its own in a route with five guards; the detail does.
+        run = _make_complete_checklist_run(
+            agent_id=uuid4(),
+            recommendation="ship",
+            envelope_hash=canonical_envelope_hash([]),
+        )
+        fake_tenant = _make_fake_tenant()
+        mock_agent = _make_ready_agent(fake_tenant, agent_id=run.agent_id)
+        # Not a valid fernet token — fernet_decrypt raises InvalidToken, which
+        # is the shape of every real "cannot read the tenant DB" failure.
+        mock_agent.neon_connection_string = b"not-a-fernet-token"
+        mock_db = _make_mock_db(mock_agent, run)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    f"/api/v1/agents/{run.agent_id}/approve-deployment",
+                    json={"checklist_run_id": str(run.id)},
+                    headers={"X-API-Key": "vrd_live_test"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+        return response, mock_agent
+
+    @pytest.mark.anyio
+    async def test_it_refuses_rather_than_approving_unchecked(self):
+        response, mock_agent = await self._post_with_unreadable_connection()
+
+        assert response.status_code == 422, (
+            "approve-deployment succeeded while it was UNABLE to read the agent's "
+            "live red-team findings. An unverifiable agent must not deploy — "
+            f"got {response.status_code}: {response.text[:300]}"
+        )
+        assert "could not verify" in response.json()["detail"].lower(), (
+            "a 422 arrived, but not from guard 2b -- this route has five guards "
+            "and any of them yields 422, so the status code alone cannot show "
+            f"which refused. detail={response.json()['detail']!r}"
+        )
+        assert mock_agent.is_deployed is False, (
+            "the agent was marked deployed despite the refusal"
+        )
+
+    @pytest.mark.anyio
+    async def test_the_detail_says_it_could_not_verify_not_that_it_found_something(self):
+        """The two refusals mean different things and must read differently.
+
+        "3 critical findings are open" tells the owner to contain them.
+        "could not verify" tells them to fix their database. Collapsing the two
+        sends them to the wrong place — the same failure `1.30` records, where
+        a timeout was reported in the vocabulary of a model-quality problem.
+        """
+        response, _ = await self._post_with_unreadable_connection()
+        detail = response.json()["detail"].lower()
+        assert "could not verify" in detail, detail
+        assert "critical red-team finding(s) are open" not in detail, detail

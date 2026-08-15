@@ -473,3 +473,35 @@ fix, so `git checkout HEAD -- <file>` — the restore step the proof protocol ma
 version that *predated the fix* and silently deleted it. Caught immediately, re-applied, and the
 proofs were re-run against a committed HEAD. The protocol says "restore from `HEAD` unconditionally";
 it only works if `HEAD` already contains what you are proving. **Commit the fix, then mutate.**
+
+## Family K — "the mutation proof that compensated for itself"
+
+**Instance: my own, 2026-08-13, while closing `5.1`.**
+
+The route's new guard 2b fails closed when it cannot read the tenant DB. To prove that branch I
+mutated the route to fail *open* — and, in the same step, reverted the unit fixture's connection
+token to an undecryptable value so the branch would be reached. **The suite stayed green in both
+states**, and for a moment that looked like evidence.
+
+It is none. Two changes in one step compensated: with the token reverted *and* the route failing
+open, the request sailed past the guard and the success tests still saw 200. I never observed red, so
+I had observed nothing. This is `retro.md`'s existing second standing rule firing on its author —
+*"write the expected direction of a mutation down before running it"* — and the rule worked exactly
+as written: the green demanded an explanation and did not have one.
+
+**The real finding underneath: nothing tested that branch at all.** The fail-closed path had been
+written, reviewed by me, and committed without a single test reaching it.
+`TestApproveFailsClosedWhenLiveFindingsCannotBeRead` exists because the invalid proof exposed that.
+
+**And the second attempt found a third thing.** With one change only (route → fail open), *one* of
+the two new tests went red and the other stayed green. The one that stayed green asserted only
+`status_code == 422` — and this route has **five** guards, every one of which yields 422. It was
+being satisfied by envelope drift, not by the guard it named. A status-code assertion in a
+validation *sequence* is close to a tautology; the **detail message** is what identifies which guard
+fired. Fixed by making the run's envelope hash match the live projection so guard 4 cannot fire, and
+by asserting the message.
+
+**Standing rule added:** in any handler with more than one refusal path, a test that asserts the
+status code alone has not identified the refusal. Assert the reason. And when a mutation demands a
+compensating change elsewhere to reach the branch, that is not one proof — it is two changes and no
+observation. Make the fixture change first, watch the suite, *then* mutate.
