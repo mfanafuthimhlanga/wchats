@@ -23,44 +23,68 @@ to evidence") one level up: **the call itself is the unevidenced claim.**
 
 Coverage does not help. `_judge_retrieved_context` was at 100% line coverage while dead.
 
-## The habit
+## The habit, corrected by an adversary pass the same day
 
-**For anything defined at module scope that production must call, pin the call site, not the
-behaviour.** Two assertions, both cheap:
+The first version of this note said: pin the call site with an AST walk, asserting the symbol is
+referenced outside its own definition and that the call site has the right shape. **That is not
+enough, and the counter-example is this note's own worked example.**
 
-1. The symbol is referenced somewhere other than its own definition.
-2. The call site has the shape it must have (no cap reintroduced, no argument order swapped, the
-   registered name matching the dispatched name).
+An adversarial review reintroduced the `5.16` defect **five ways that all stayed green** against
+exactly those two AST assertions:
 
-**Walk the AST. Never scan the source as text.** `1.33` B4 is the record of what happens otherwise:
-a check about code that a sentence of documentation satisfied, so the module got *weaker* the more it
-was documented. `ast.parse` makes comments and docstrings invisible by construction.
+| Reintroduction | Why the AST guard missed it |
+|---|---|
+| truncate into a differently named variable, then dump that | a different `Assign` node; the guard inspected the first one |
+| move the truncation into a helper | no slice and no literal at the call site |
+| `list(islice(contexts, JUDGE_CTX_CAP))` | `islice` is a `Call`, not an `ast.Slice`; the cap is a name |
+| a second assignment to the same name on the next line | the walk returns the first match and stops |
+| rebuild the old value while still calling the helper | the "is it called" check passed |
 
-Worked example, `tests/unit/test_judge_sees_agent_context.py`:
+**A structural guard bans one spelling, and the author picks the spelling.** It is better than a text
+scan and it is not a wiring check.
+
+### What actually works: guard the argument the consumer receives
+
+Extract a seam whose return value or call arguments a test can read, then assert on the value handed
+over. For `5.16`, `_dispatch_validation_chain` builds the judge context and dispatches the chain; the
+test patches `celery_chain` and `run_auditor` and reads `run_auditor.si.call_args`:
 
 ```python
-tree = ast.parse(Path(agent_module.__file__).read_text(encoding="utf-8"))
-def_lines = range(definition.lineno, definition.end_lineno + 1)
-call_sites = [
-    n for n in ast.walk(tree)
-    if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-    and n.func.id == "_judge_retrieved_context" and n.lineno not in def_lines
-]
-assert call_sites
+with patch.object(agent_module, "celery_chain") as chain, \
+     patch.object(agent_module, "run_auditor") as auditor:
+    returned = agent_module._dispatch_validation_chain(...)
+assert json.loads(auditor.si.call_args.args[4]) == what_the_agent_saw
+assert returned == auditor.si.call_args.args[4]   # reported == dispatched
 ```
 
-Excluding the definition's own line range is what makes it a wiring check rather than a
-does-this-symbol-exist check.
+All five reintroductions fail against this, because all five change the value. The second assertion
+matters on its own: without it, a change could return the honest value and dispatch a truncated one.
 
-## How to know your own module has this hole
+**Where an AST walk is still right** is the narrower question of existence: "this symbol is
+registered", "no module references `settings.UPLOADS_DIR`", "these two names agree". Use it for
+absence pins and registration checks (`1.32`, `1.26`), never as the only guard on a value.
 
-Restore the original defect and run the module. **If the behavioural tests stay green, they were
-never the guard.** That is the only reliable detector, and it takes one mutation.
+**And when you do use one, walk the AST rather than scanning text.** `1.33` B4 is the record of a
+check about code that a docstring sentence satisfied, so the module got *weaker* the more it was
+documented. `ast.parse` makes comments invisible by construction.
 
-Existing modules worth this treatment, in the order they would hurt: `red_team_service` (D4 was
-found here first, and `1.32` proves the fix did not generalise), `transactional/tools.py` (the
-capability envelope rides entirely on `mcp__customer-tools__*` names agreeing across three places),
-`eval.py`.
+## The test that tells you which kind you have
+
+**Restore the original defect and run the module.** If the behavioural tests stay green, they were
+never the guard. If the structural tests also stay green under a second spelling of the same defect,
+they were a spelling check. Both took one mutation each to discover, and both were discovered by
+someone other than the author.
+
+## Where to look next
+
+Modules worth this treatment, in the order they would hurt: `red_team_service` (D4 was found here
+first, and `1.32` proves the fix did not generalise), `transactional/tools.py` (the capability
+envelope rides entirely on `mcp__customer-tools__*` names agreeing across three places), `eval.py`.
+
+For each, ask the seam question rather than the coverage question: **is there any test that observes
+the value the next stage receives?** For `retrieved_context_json` the answer was no — it was built
+inside a 400-line task body, and `validators.py`'s tests supplied their own string, so both ends were
+tested and nothing joined them.
 
 ## Prior art in this repo
 

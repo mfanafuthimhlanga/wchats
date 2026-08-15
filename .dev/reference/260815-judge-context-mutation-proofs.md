@@ -1,5 +1,9 @@
 # Mutation proofs: the judge's context (`5.16`)
 
+> **Round 2 is at the bottom and supersedes round 1's conclusion.** An adversary pass defeated the
+> guards proved here, five ways, all green. Read round 2 before trusting M1's reading.
+
+
 Four proofs that `tests/unit/test_judge_sees_agent_context.py` fails on the defect it names, plus
 two attempts that were invalid and are recorded as such. Each mutation was applied to
 `apps/api/app/worker/tasks/runtime/agent.py`, the module run, then the file restored from a byte
@@ -81,3 +85,63 @@ This is the same failure the `5.1` proof hit (recorded in retro K): a mutation p
 compensated for itself and stayed green in both states. The general form is that **the proof needs
 its own evidence that the mutation landed**, printed before the test run, not inferred from the
 result.
+
+---
+
+# Round 2: the adversary defeated the guards above
+
+An adversarial review of commit `283310e` reintroduced the whole `5.16` defect five ways. **Every one
+was 10/10 green** against the two AST guards round 1 proved. Round 1's M1 reading, "only the AST pins
+caught it", was therefore too generous to them: they caught **one spelling**.
+
+| Mutation | Adversary's observed result |
+|---|---|
+| `capped_contexts = [c[:600] for c in judge_contexts[:3]]`, dispatch uses it | `10 passed in 16.25s` |
+| `json.dumps(_cap_judge_context(judge_contexts))` | `10 passed in 13.67s` |
+| `json.dumps(list(islice(judge_contexts, JUDGE_CTX_CAP)))` | `10 passed in 19.15s` |
+| helper still called, result discarded, rebuild from `tc["result"]` | `10 passed in 17.37s` |
+| second `retrieved_context_json = ...` on the next line, `[:600]` and `[:3]` verbatim | `10 passed in 12.98s` |
+| `json.dumps(judge_contexts[:JUDGE_CTX_CAP])` on the dispatch line | `1 failed, 9 passed` (the only one caught) |
+
+## The same five against the behavioural pin
+
+`_dispatch_validation_chain` now exists as a seam and `TestWhatTheAuditorIsActuallyHanded` asserts on
+`run_auditor.si.call_args`. Re-running the adversary's own five, each mutation printing
+`=== <name> APPLIED ===` before its run so an unapplied mutation cannot masquerade as a pass:
+
+```
+=== M-A different variable name APPLIED ===
+FAILED ...::test_the_auditor_receives_every_chunk_untruncated
+FAILED ...::test_every_retrieve_call_reaches_the_auditor
+FAILED ...::test_a_chunk_longer_than_the_old_cap_arrives_whole
+3 failed, 9 passed in 16.23s
+
+=== M-C truncating helper APPLIED ===
+3 failed, 9 passed in 16.21s
+
+=== M-D islice + named constant APPLIED ===
+2 failed, 10 passed in 17.95s
+
+=== M-E old repr source restored APPLIED ===
+3 failed, 9 passed in 19.42s
+
+=== M-I second overwriting assignment APPLIED ===
+3 failed, 9 passed in 11.33s
+
+=== RESTORED ===
+```
+
+Restored by byte copy taken before the first mutation; `git diff --stat` against the working tree
+showed only the intended fix afterwards, and the module returned `12 passed`.
+
+**M-D fails on 2 rather than 3 because `islice(contexts, 3)` keeps the first three elements intact,
+so the single-long-chunk test still passes.** Two failures is a fail; the detail is recorded because
+a partial catch is the kind of thing that gets rounded up to "caught" on a second reading.
+
+## The conclusion that replaces round 1's
+
+Round 1 concluded that structural pins are what catch wiring defects. **That is half right and the
+wrong half is load-bearing.** A structural pin catches the spelling its author imagined. What catches
+the defect is asserting on the value the consumer is handed, which requires a seam that a test can
+reach. The full argument is in
+`.dev/reference/260815-wiring-is-invisible-to-behavioural-tests.md`.

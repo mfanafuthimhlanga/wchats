@@ -15,9 +15,30 @@ next Phase B step) on top of it measures the cap a second time.
 Set `RETRIEVAL_FAITHFULNESS_SAMPLE_RATE=1.0` for that run. It costs nothing extra and settles `5.13`
 and `5.15`, which have been waiting on one sampled turn since 2026-08-13.
 
-Read beside the verdict: `run_agent_turn.judge_context` now logs `chunks`, `unparsed_calls`, `chars`.
+Read beside the verdict: `run_agent_turn.judge_context` logs `calls`, `chunks`, `empty`, `unparsed`,
+`errored` and `chars`. Those five states are counted separately on purpose, because the first
+version of the fix collapsed them and fed a corpus miss to the judge as evidence.
+
+Expect the Auditor call to cost about **$0.0025** on a typical turn and up to **$0.020** at the
+retrieval ceiling (80,000 chars, about 20,000 input tokens), against roughly $0.00046 before.
 
 After that, `PRODUCTION-READINESS.md` §4 Phase B: E2E-6, then E2E-7.
+
+## The one thing to internalise from today
+
+**A structural guard bans the spelling its author imagined.** `5.16` shipped with two AST checks on
+the line that built the judge's context. An adversary reintroduced the whole defect five ways that
+stayed 10/10 green: a truncating helper, a renamed variable, `itertools.islice`, a second assignment
+on the next line, and rebuilding the old value while still calling the new helper.
+
+What works is asserting on **the argument the consumer receives**, which needs a seam a test can
+reach. `_dispatch_validation_chain` is that seam; `TestWhatTheAuditorIsActuallyHanded` reads
+`run_auditor.si.call_args`. All five now fail.
+
+`.dev/reference/260815-wiring-is-invisible-to-behavioural-tests.md` carries the argument and the
+list of modules where the same hole is likely. The seam question to ask of each: **is there any test
+that observes the value the next stage receives?** For `retrieved_context_json` the answer was no,
+and both ends of that boundary had tests.
 
 ## Where the code is
 
