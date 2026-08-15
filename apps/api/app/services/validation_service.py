@@ -17,6 +17,8 @@ import structlog
 from langfuse import Langfuse
 from pydantic import BaseModel, field_validator
 
+from app.utils.context_frame import frame_retrieved_context
+
 log = structlog.get_logger(__name__)
 
 ANTHROPIC_CLIENT = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
@@ -239,8 +241,15 @@ def call_auditor(
                 f"{question}\n\n"
                 "RESPONSE:\n"
                 f"{response_text}\n\n"
-                "RETRIEVED CONTEXT:\n"
-                f"{retrieved_context}"
+                # BACKLOG 5.19. The retrieval layer frames these chunks for the
+                # AGENT with an explicit data-not-instructions boundary
+                # (SEC-02/L6), and agent.py strips that frame when it decodes the
+                # payload back into chunks. So the judge used to receive
+                # tenant-ingested, attacker-influenceable text bare — and since
+                # 5.16 it receives up to 80,000 chars of it rather than 1,800.
+                # Restored here, where the model actually reads it, using the
+                # same string the agent gets rather than a second copy.
+                f"{frame_retrieved_context(retrieved_context)}"
             ),
         }],
         tools=[{

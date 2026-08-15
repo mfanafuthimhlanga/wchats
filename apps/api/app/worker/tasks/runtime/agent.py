@@ -158,6 +158,16 @@ RETRIEVE_RESULT_IS_ERROR_KEY = "result_is_error"
 #: sampler read it and the chat path stays byte-for-byte.
 RETRIEVE_CHUNKS_KEY = "retrieved_chunks"
 
+#: The key carrying the same chunks rendered FOR THE GROUNDING JUDGE: content
+#: plus the provenance the agent saw (document_id, section, chunk_id, score).
+#:
+#: Separate from RETRIEVE_CHUNKS_KEY because the two readers need different
+#: things and BACKLOG 5.18 is what happens when one serves both. Ragas scores
+#: text against text, so provenance is noise to it. The Auditor is asked whether
+#: a claim is supported, and a claim naming a document or a section cannot be
+#: supported by a context that contains neither.
+RETRIEVE_JUDGE_CHUNKS_KEY = "judge_chunks"
+
 #: Companion to the key above: 'chunks' when the framed payload was split back
 #: into per-chunk strings, 'unparsed' when it could not be. Never absent, so the
 #: eval reports a turn whose contexts could not be read as an unparsed
@@ -207,14 +217,17 @@ def _tool_result_text(content: object) -> str:
     return str(content)
 
 
-def _retrieved_chunk_texts(result_text: str) -> list[str] | None:
-    """Split a framed retrieve result back into ONE STRING PER CHUNK.
+def _retrieved_chunk_records(result_text: str) -> list | None:
+    """Split a framed retrieve result back into the CHUNK OBJECTS it carried.
 
-    `agent_tools.retrieve_tool` returns
-    `_frame_retrieved_context(str(chunks))` — the header, then the repr of a
-    list of chunk dicts, then the footer. This undoes exactly that, so what the
-    eval scores is the chunk text the agent was shown rather than the transport
-    encoding around it.
+    `agent_tools.retrieve_tool` returns `_frame_retrieved_context(str(chunks))` —
+    the header, then the repr of a list of chunk dicts, then the footer. This
+    undoes exactly that.
+
+    THE ONLY PARSER. Two renderings hang off it and both must describe the same
+    retrieval: `_retrieved_chunk_texts` (content only, what `eval.py` scores) and
+    `_judge_chunk_record` (content plus provenance, what the Auditor judges).
+    Parsing twice would let them disagree about what a turn retrieved.
 
     Returns None — never `[]` — when the payload cannot be read, because "this
     turn retrieved nothing" and "this turn retrieved something this function
@@ -238,9 +251,17 @@ def _retrieved_chunk_texts(result_text: str) -> list[str] | None:
         return None
     if not isinstance(chunks, list):
         return None
+    return chunks
 
+
+def _chunk_texts_from_records(records: list) -> list[str]:
+    """The eval's rendering: one content string per chunk, empties dropped.
+
+    Extracted unchanged from `_retrieved_chunk_texts` when `_judge_chunk_record`
+    was added, so `eval.py`'s input is byte-identical to what it was before.
+    """
     texts: list[str] = []
-    for chunk in chunks:
+    for chunk in records:
         if isinstance(chunk, dict):
             content = chunk.get("content", "")
         else:
@@ -249,6 +270,74 @@ def _retrieved_chunk_texts(result_text: str) -> list[str] | None:
         if rendered:
             texts.append(rendered)
     return texts
+
+
+def _retrieved_chunk_texts(result_text: str) -> list[str] | None:
+    """ONE STRING PER CHUNK, content only. Read by `eval.py`; see the parser above."""
+    records = _retrieved_chunk_records(result_text)
+    if records is None:
+        return None
+    return _chunk_texts_from_records(records)
+
+
+def _judge_chunk_record(chunk: object) -> str:
+    """Render ONE retrieved chunk for the grounding judge, metadata included.
+
+    BACKLOG 5.18. `retrieve_tool` returns the repr of full chunk dicts, so the
+    agent sees `chunk_id`, `document_id`, `section` and `score` alongside the
+    text. `_retrieved_chunk_texts` keeps `content` alone, which is right for the
+    eval (Ragas scores text against text) and wrong for the Auditor: **an answer
+    that cites a document or section name has no support in a context that
+    contains neither.** That is 5.16's own failure mode one level down — the
+    judge marking a claim unsupported because it was not shown the evidence.
+
+    Not fixed by changing `_retrieved_chunk_texts`: `eval.py` imports it, and
+    changing what it returns changes Ragas scoring, which is a measurement
+    decision of its own. One parse, two renderings, one reader each.
+
+    The rendering is a labelled header line then the content, rather than the raw
+    dict repr the agent saw. Same information, without the dict syntax that
+    `RETRIEVE_CHUNKS_KEY`'s own docstring records as dominating the token budget.
+    """
+    if not isinstance(chunk, dict):
+        return str(chunk)
+    fields = [
+        f"{label}: {chunk[key]}"
+        for label, key in (
+            ("source", "document_id"),
+            ("section", "section"),
+            ("chunk", "chunk_id"),
+            ("score", "score"),
+        )
+        if chunk.get(key) not in (None, "")
+    ]
+    content = str(chunk.get("content", "") or "")
+    return f"[{' | '.join(fields)}]\n{content}" if fields else content
+
+
+def _attach_retrieve_capture(tc: dict, raw: object, block: "ToolResultBlock") -> None:
+    """Write every retrieve capture onto one `tool_calls_log` entry.
+
+    One function so the id-matched path and the positional fallback cannot drift
+    apart. They did not, when this was two copies of the same block, but 5.1's
+    lesson is that two writers of one rule is how two answers start disagreeing.
+    """
+    tc["result"] = str(raw)[:RETRIEVE_RESULT_CAPTURE_CHARS]
+    # BACKLOG 5.16: an errored retrieve is not evidence. retrieve_tool returns
+    # its DoS-guard refusal as ordinary text with is_error set, so without this
+    # the sentence "Retrieve quota exceeded for this turn" reaches the grounding
+    # judge as a retrieved passage.
+    tc[RETRIEVE_RESULT_IS_ERROR_KEY] = bool(getattr(block, "is_error", False))
+    records = _retrieved_chunk_records(_tool_result_text(raw))
+    tc[RETRIEVE_CHUNKS_KEY] = _chunk_texts_from_records(records or [])
+    tc[RETRIEVE_JUDGE_CHUNKS_KEY] = [
+        rendered
+        for rendered in (_judge_chunk_record(r) for r in (records or []))
+        if rendered
+    ]
+    tc[RETRIEVE_CHUNKS_SOURCE_KEY] = (
+        RETRIEVE_CHUNKS_PARSED if records is not None else RETRIEVE_CHUNKS_UNPARSED
+    )
 
 
 def _record_tool_result(
@@ -319,19 +408,37 @@ def _record_tool_result(
     # _persist_messages writes tool_name / input / result only.
     if tool_name_short != "retrieve":
         return
+    # BACKLOG 5.21: attach to the call that PRODUCED this result, by id.
+    #
+    # The old rule was "the most recent retrieve entry without a result", walking
+    # in reverse. The SDK may emit several ToolUseBlocks before any result
+    # returns, and then the first result to arrive lands on the LAST call issued
+    # — so the chunks are attributed to the wrong query, silently, and the
+    # ordering claim in _judge_retrieved_context's docstring would be false.
+    # `red_team_probe.py`'s single `pending_skill` variable had this defect by
+    # construction (5.9); this is the same shape and the block carries the id
+    # that settles it.
+    target = next(
+        (tc for tc in tool_calls_log if tc.get("tool_use_id") == use_id), None
+    )
+    if target is not None:
+        if "result" not in target:
+            _attach_retrieve_capture(target, raw, block)
+        return
+    # No entry carries the id. Pre-5.21 logs and hand-built fixtures look like
+    # this, so the positional walk stays as a fallback — but it is LOGGED,
+    # because it is the shape that produced the mis-attribution and a silent
+    # fallback would hide a regression in the id plumbing above.
+    log.warning(
+        "_record_tool_result.no_tool_use_id_match",
+        job_id=job_id,
+        tool_use_id=use_id,
+        note="falling back to positional attachment; attribution is unreliable "
+             "if this turn used parallel tool calls",
+    )
     for tc in reversed(tool_calls_log):
         if tc.get("tool_name") == "retrieve" and "result" not in tc:
-            tc["result"] = str(raw)[:RETRIEVE_RESULT_CAPTURE_CHARS]
-            # BACKLOG 5.16: an errored retrieve is not evidence. retrieve_tool
-            # returns its DoS-guard refusal as ordinary text with is_error set,
-            # so without this the sentence "Retrieve quota exceeded for this
-            # turn" reaches the grounding judge as a retrieved passage.
-            tc[RETRIEVE_RESULT_IS_ERROR_KEY] = bool(getattr(block, "is_error", False))
-            chunks = _retrieved_chunk_texts(_tool_result_text(raw))
-            tc[RETRIEVE_CHUNKS_KEY] = chunks or []
-            tc[RETRIEVE_CHUNKS_SOURCE_KEY] = (
-                RETRIEVE_CHUNKS_PARSED if chunks is not None else RETRIEVE_CHUNKS_UNPARSED
-            )
+            _attach_retrieve_capture(tc, raw, block)
             break
 
 
@@ -425,7 +532,9 @@ def _judge_retrieved_context(tool_calls_log: list[dict]) -> tuple[list[str], int
             counts["unparsed"] += 1
             contexts.append(str(tc.get("result") or ""))
             continue
-        chunks = [str(c) for c in (tc.get(RETRIEVE_CHUNKS_KEY) or []) if c]
+        # RETRIEVE_JUDGE_CHUNKS_KEY, not RETRIEVE_CHUNKS_KEY: the judge needs the
+        # provenance the agent saw as well as the text (BACKLOG 5.18).
+        chunks = [str(c) for c in (tc.get(RETRIEVE_JUDGE_CHUNKS_KEY) or []) if c]
         if not chunks:
             counts["empty"] += 1
             continue
@@ -1183,6 +1292,12 @@ async def _run_sdk_turn(
                         tool_calls_log.append({
                             "tool_name": tool_name_short,
                             "input": block.input,
+                            # BACKLOG 5.21: carried so _record_tool_result can
+                            # attach a result to the call that PRODUCED it.
+                            # Without it the only available rule is "the most
+                            # recent entry without a result", which mis-attributes
+                            # under parallel tool use.
+                            "tool_use_id": block.id,
                         })
                         # Escalation detection: based on ToolUseBlock evidence only (T-04-03-03)
                         if block.name.endswith("escalate_to_human"):

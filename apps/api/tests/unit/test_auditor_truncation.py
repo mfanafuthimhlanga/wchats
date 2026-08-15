@@ -175,3 +175,98 @@ def test_a_schema_violation_that_is_NOT_truncation_still_raises_validation_error
     ):
         with pytest.raises(ValidationError):
             call_auditor("q", "r", "ctx")
+
+
+# ---------------------------------------------------------------------------
+# BACKLOG 5.19 — the retrieval frame reaches the judge
+# ---------------------------------------------------------------------------
+
+
+def test_the_retrieved_context_reaches_the_judge_framed():
+    """The SEC-02/L6 boundary the AGENT gets must reach the judge too.
+
+    `retrieve_tool` wraps retrieved chunks in a header saying everything inside
+    is data and never instructions; `agent.py` strips it when decoding the
+    payload back into chunks. So the Auditor used to receive tenant-ingested,
+    attacker-influenceable text bare, and since `5.16` it receives up to 80,000
+    chars of it rather than 1,800.
+
+    Asserts the SAME string the agent gets, imported from the one place it is
+    defined, so a second copy cannot drift away from the control it enforces.
+    """
+    from app.utils.context_frame import (
+        RETRIEVED_CONTEXT_FOOTER,
+        RETRIEVED_CONTEXT_HEADER,
+    )
+
+    seen = {}
+
+    def _capture(**kw):
+        seen.update(kw)
+        return _response(stop_reason="tool_use", content=[_tool_use(_GOOD_VERDICT)])
+
+    context = '["Tier A costs R450."]'
+    with patch.object(validation_service.ANTHROPIC_CLIENT.messages, "create", _capture):
+        call_auditor("q", "r", context)
+
+    sent = seen["messages"][0]["content"]
+    assert RETRIEVED_CONTEXT_HEADER in sent, (
+        "the judge's retrieved context carries no data-not-instructions "
+        "boundary, so a directive inside a tenant's own document is presented "
+        "to the grounding judge as ordinary evidence"
+    )
+    assert RETRIEVED_CONTEXT_FOOTER in sent
+    header_at = sent.index(RETRIEVED_CONTEXT_HEADER)
+    assert header_at < sent.index(context) < sent.index(RETRIEVED_CONTEXT_FOOTER), (
+        "the context is not enclosed by the frame; a boundary the evidence sits "
+        "outside of bounds nothing"
+    )
+
+
+# ---------------------------------------------------------------------------
+# BACKLOG 5.18 — the two output constants must stay solvent together
+# ---------------------------------------------------------------------------
+
+
+def test_the_span_cap_and_the_token_ceiling_are_solvent_together():
+    """`5.14` needed BOTH numbers and nothing pinned their relationship.
+
+    A verdict is `AUDITOR_MAX_CITATION_SPANS` spans, each carrying a `claim` and
+    a `source_chunk` excerpt the system prompt caps at 25 words, plus a reason
+    and the JSON scaffolding. If someone raises the span cap without raising the
+    ceiling, `5.14` returns: every verdict truncates and the error names the
+    schema rather than the budget.
+
+    Deliberately arithmetic rather than a live call. It is the RELATIONSHIP that
+    has to hold, and the cost of proving it should not be an API bill.
+    """
+    words_per_excerpt = 25
+    tokens_per_word = 1.4          # conservative for English prose
+    excerpts_per_span = 2          # claim + source_chunk
+    json_overhead_per_span = 20    # keys, quotes, braces, the boolean
+
+    span_tokens = (
+        words_per_excerpt * tokens_per_word * excerpts_per_span
+        + json_overhead_per_span
+    )
+    reason_and_scaffolding = 150
+
+    worst_case = (
+        validation_service.AUDITOR_MAX_CITATION_SPANS * span_tokens
+        + reason_and_scaffolding
+    )
+
+    assert worst_case < validation_service.AUDITOR_MAX_TOKENS, (
+        f"a full verdict needs about {worst_case:.0f} output tokens against a "
+        f"ceiling of {validation_service.AUDITOR_MAX_TOKENS}. That is BACKLOG "
+        "5.14 exactly: the tool call truncates mid-JSON and pydantic reports "
+        "'Field required', which points at the prompt instead of the budget."
+    )
+
+
+# NOT ADDED HERE, deliberately: a second "is the cap in the prompt?" test.
+# `test_the_span_cap_reaches_the_model` above already pins the whole phrase
+# `at most {N} citation spans`, and the weaker `str(N) in system` form is the
+# exact vacuity BACKLOG 1.33 B5 removed — the "2" in "under 25 words" satisfied
+# it. Two guards on one claim, one of them weaker, is how the weaker one becomes
+# the one someone edits.

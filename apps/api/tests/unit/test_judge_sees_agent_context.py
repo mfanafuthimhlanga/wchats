@@ -96,15 +96,41 @@ def _chunk_text(label: str, length: int) -> str:
     return head + ("x" * (length - len(head)))
 
 
+#: Provenance the agent is shown alongside every chunk. Present in the fixture
+#: because BACKLOG 5.18 is that the judge was NOT shown it, and a fixture without
+#: it cannot see that defect — the first version of this module built chunks as
+#: `{"content": t, "score": 0.9}` and was structurally blind to the finding.
+DOC_ID = "PRICE-LIST.pdf"
+SECTION = "Tariffs"
+
+
+def _chunk_dicts(chunk_texts: list[str]) -> list[dict]:
+    return [
+        {
+            "content": t,
+            "chunk_id": f"chunk-{i}",
+            "document_id": DOC_ID,
+            "section": SECTION,
+            "score": 0.9,
+        }
+        for i, t in enumerate(chunk_texts)
+    ]
+
+
 def _framed(chunk_texts: list[str]) -> str:
-    """Frame chunk texts with the REAL producer.
+    """Frame chunk dicts with the REAL producer.
 
     `retrieve_tool` returns `_frame_retrieved_context(str(chunks))`. Building the
     fixture with the production framer rather than a literal means it cannot
     drift away from what the tool emits — which is how 1.26 survived: a fixture
     that manufactured a contract the product had abandoned.
     """
-    return _frame_retrieved_context(str([{"content": t, "score": 0.9} for t in chunk_texts]))
+    return _frame_retrieved_context(str(_chunk_dicts(chunk_texts)))
+
+
+def _carries(elements: list[str], text: str) -> bool:
+    """Is this chunk's text present, whole, in some judge element?"""
+    return any(text in e for e in elements)
 
 
 def _capture(calls: list[str | list[str]], *, is_error: bool = False) -> list[dict]:
@@ -118,7 +144,15 @@ def _capture(calls: list[str | list[str]], *, is_error: bool = False) -> list[di
     for i, call in enumerate(calls):
         use_id = f"toolu_{i}"
         tool_names_by_use_id[use_id] = "retrieve"
-        tool_calls_log.append({"tool_name": "retrieve", "input": {"query": f"q{i}"}})
+        # `tool_use_id` because production sets it (BACKLOG 5.21). Without it
+        # every test here would exercise the positional FALLBACK rather than the
+        # path a real turn takes, which is the shape of defect 1.26: a fixture
+        # quietly describing a contract the product no longer uses.
+        tool_calls_log.append({
+            "tool_name": "retrieve",
+            "input": {"query": f"q{i}"},
+            "tool_use_id": use_id,
+        })
         payload = _framed(call) if isinstance(call, list) else call
         agent_module._record_tool_result(
             ToolResultBlock(
@@ -181,11 +215,14 @@ class TestWhatTheAuditorIsActuallyHanded:
         _returned, args = self._dispatch(_capture([shown]))
 
         handed_to_judge = json.loads(args[4])
-        assert handed_to_judge == shown, (
-            "the string dispatched to run_auditor is not the chunks the agent was "
-            f"shown. agent saw {len(shown)} chunks / {sum(len(c) for c in shown)} "
-            f"chars; judge is handed {len(handed_to_judge)} / "
-            f"{sum(len(c) for c in handed_to_judge)}"
+        assert len(handed_to_judge) == len(shown), (
+            f"the judge got {len(handed_to_judge)} elements for {len(shown)} "
+            "chunks the agent was shown"
+        )
+        missing = [t[:20] for t in shown if not _carries(handed_to_judge, t)]
+        assert not missing, (
+            "chunk text the agent answered from did not reach run_auditor whole: "
+            f"{missing}"
         )
 
     def test_every_retrieve_call_reaches_the_auditor(self) -> None:
@@ -196,7 +233,7 @@ class TestWhatTheAuditorIsActuallyHanded:
         _returned, args = self._dispatch(_capture(calls))
 
         handed_to_judge = json.loads(args[4])
-        missing = [c[0][:20] for c in calls if c[0] not in handed_to_judge]
+        missing = [c[0][:20] for c in calls if not _carries(handed_to_judge, c[0])]
         assert not missing, (
             f"{len(missing)} of {len(calls)} retrieve calls contributed nothing to "
             f"what run_auditor was handed: {missing}"
@@ -210,8 +247,31 @@ class TestWhatTheAuditorIsActuallyHanded:
         )
         _returned, args = self._dispatch(_capture([[long_chunk]]))
 
-        assert long_chunk in json.loads(args[4]), (
+        assert _carries(json.loads(args[4]), long_chunk), (
             "the chunk the agent answered from did not reach run_auditor whole"
+        )
+
+    def test_the_provenance_the_agent_saw_reaches_the_judge(self) -> None:
+        """BACKLOG 5.18. A claim naming a document cannot be supported without it.
+
+        `retrieve_tool` hands the agent the repr of full chunk dicts, so the agent
+        sees `document_id`, `section`, `chunk_id` and `score`. Sending the judge
+        content alone reproduces 5.16's own failure mode one level down: the
+        judge marks a claim unsupported because it was not shown the evidence.
+        """
+        _returned, args = self._dispatch(_capture([[_chunk_text("prices", 400)]]))
+        handed_to_judge = json.loads(args[4])
+
+        assert any(DOC_ID in e for e in handed_to_judge), (
+            f"the source document {DOC_ID!r} is absent from the judge's context, "
+            "so an answer citing it by name has nothing to be grounded against"
+        )
+        assert any(SECTION in e for e in handed_to_judge), (
+            f"the section {SECTION!r} is absent from the judge's context"
+        )
+        assert not any("'content':" in e for e in handed_to_judge), (
+            "the raw dict repr reached the judge; provenance must be rendered, "
+            "not pasted, or the transport encoding is scored as evidence"
         )
 
     def test_the_returned_string_is_the_dispatched_string(self) -> None:
@@ -313,7 +373,7 @@ class TestTheFourStatesAreNotCollapsed:
             "unparsed": 1,
             "errored": 1,
         }, f"state tally is wrong: {counts}"
-        assert contexts[:2] == good
+        assert all(_carries(contexts[:2], t) for t in good)
 
 
 # ---------------------------------------------------------------------------
@@ -336,19 +396,22 @@ def test_the_helper_applies_no_cap_of_its_own() -> None:
     contexts, counts = agent_module._judge_retrieved_context(_capture(calls))
 
     expected = [text for call in calls for text in call]
-    assert contexts == expected, (
-        f"{len(expected) - len(contexts)} of {len(expected)} chunks were dropped "
-        "at the judge boundary"
+    dropped = [t[:20] for t in expected if not _carries(contexts, t)]
+    assert not dropped, (
+        f"{len(dropped)} of {len(expected)} chunks were dropped at the judge "
+        "boundary"
     )
     assert counts["chunks"] == MAX_CHUNKS * _RETRIEVE_CALLS_PER_TURN_MAX
 
 
-def test_the_worst_case_is_the_documented_one() -> None:
-    """Pins the number the cost estimate is derived from.
+def test_the_worst_case_is_bounded_by_the_retrieval_contract() -> None:
+    """Pins the number the cost estimate and BACKLOG 5.20 are derived from.
 
-    If a retrieval constant moves, the cost of every Auditor call moves with it,
-    and this is the test that says so out loud instead of leaving it to be
-    rediscovered from a bill.
+    Two claims, because they fail differently. The CONTENT total is exactly the
+    retrieval ceiling, so if a retrieval constant moves, the cost of every
+    Auditor call moves with it and this test says so instead of leaving it to be
+    found in a bill. The TOTAL adds one provenance header per chunk (5.18), which
+    is bounded per chunk and must stay small relative to the content.
     """
     calls = [
         [_chunk_text(f"c{call}-{i}", CHUNK_CONTENT_CHAR_LIMIT) for i in range(MAX_CHUNKS)]
@@ -357,7 +420,117 @@ def test_the_worst_case_is_the_documented_one() -> None:
     contexts, _counts = agent_module._judge_retrieved_context(_capture(calls))
 
     ceiling = MAX_CHUNKS * CHUNK_CONTENT_CHAR_LIMIT * _RETRIEVE_CALLS_PER_TURN_MAX
-    assert sum(len(c) for c in contexts) == ceiling == 80_000
+    assert ceiling == 80_000
+    content_total = sum(len(t) for call in calls for t in call)
+    assert content_total == ceiling
+
+    total = sum(len(c) for c in contexts)
+    overhead = total - content_total
+    assert 0 < overhead <= 200 * len(contexts), (
+        f"provenance overhead is {overhead} chars over {len(contexts)} chunks, "
+        "which is no longer a header per chunk"
+    )
+    assert total < 1.2 * ceiling, (
+        f"the judge's context is {total} chars against a {ceiling}-char retrieval "
+        "ceiling; BACKLOG 5.20's measured Celery message size no longer holds"
+    )
+
+
+class TestResultsAttachToTheCallThatProducedThem:
+    """BACKLOG 5.21. Parallel tool use, and the rule that used to decide this.
+
+    `_record_tool_result` matched "the most recent retrieve entry without a
+    result", walking in reverse. The SDK may emit several ToolUseBlocks before
+    any result returns, so the first result to arrive landed on the LAST call
+    issued and the chunks were attributed to the wrong query — silently, and in a
+    way that made `_judge_retrieved_context`'s "in retrieval order" false.
+    """
+
+    @staticmethod
+    def _two_calls_results_out_of_order() -> list[dict]:
+        """Both tool_use blocks first, THEN results in issue order.
+
+        Issue order is the case that breaks positional attachment, and getting
+        this backwards is how the first version of this test was a tautology: a
+        reverse-order arrival paired up correctly by accident under
+        `reversed(tool_calls_log)`, so the mutation that removed id-matching
+        stayed 25/25 green. With both calls outstanding and A's result arriving
+        first, the reverse walk finds B — the most recent entry without a result
+        — and attaches A's chunks to B's query.
+        """
+        tool_calls_log = [
+            {"tool_name": "retrieve", "input": {"query": "refunds"},
+             "tool_use_id": "toolu_refunds"},
+            {"tool_name": "retrieve", "input": {"query": "shipping"},
+             "tool_use_id": "toolu_shipping"},
+        ]
+        names = {"toolu_refunds": "retrieve", "toolu_shipping": "retrieve"}
+        for use_id, text in (
+            ("toolu_refunds", "REFUNDS are accepted within 30 days."),
+            ("toolu_shipping", "SHIPPING is free above R500."),
+        ):
+            agent_module._record_tool_result(
+                ToolResultBlock(
+                    tool_use_id=use_id,
+                    content=[{"type": "text", "text": _framed([text])}],
+                    is_error=False,
+                ),
+                tool_names_by_use_id=names,
+                tool_calls_log=tool_calls_log,
+                job_id="job-5-21",
+                db=object(),
+                redis=object(),
+            )
+        return tool_calls_log
+
+    def test_each_result_lands_on_its_own_query(self) -> None:
+        log = self._two_calls_results_out_of_order()
+
+        refunds, shipping = log[0], log[1]
+        assert "REFUNDS" in str(refunds[agent_module.RETRIEVE_CHUNKS_KEY]), (
+            "the 'refunds' query carries the shipping result — chunks are "
+            "attributed to the wrong question, so the judge is told the agent "
+            "retrieved something it did not"
+        )
+        assert "SHIPPING" in str(shipping[agent_module.RETRIEVE_CHUNKS_KEY])
+
+    def test_a_log_entry_without_an_id_still_gets_its_result(self) -> None:
+        """The fallback path, kept because hand-built logs and old traces lack ids.
+
+        It must still capture, or a caller that predates 5.21 silently loses the
+        judge's evidence entirely — a worse outcome than the mis-attribution the
+        id match exists to prevent.
+        """
+        tool_calls_log = [{"tool_name": "retrieve", "input": {"query": "refunds"}}]
+        agent_module._record_tool_result(
+            ToolResultBlock(
+                tool_use_id="toolu_unknown_to_the_log",
+                content=[{"type": "text", "text": _framed(["REFUNDS within 30 days."])}],
+                is_error=False,
+            ),
+            tool_names_by_use_id={"toolu_unknown_to_the_log": "retrieve"},
+            tool_calls_log=tool_calls_log,
+            job_id="job-5-21",
+            db=object(),
+            redis=object(),
+        )
+
+        contexts, counts = agent_module._judge_retrieved_context(tool_calls_log)
+        assert counts["chunks"] == 1, (
+            "a log entry carrying no tool_use_id captured nothing, so a caller "
+            "predating 5.21 hands the grounding judge an empty context"
+        )
+        assert _carries(contexts, "REFUNDS within 30 days.")
+
+    def test_the_judges_context_is_in_retrieval_order(self) -> None:
+        """The ordering claim in the helper's docstring, made observable."""
+        contexts, _counts = agent_module._judge_retrieved_context(
+            self._two_calls_results_out_of_order()
+        )
+        joined = "\n".join(contexts)
+        assert joined.index("REFUNDS") < joined.index("SHIPPING"), (
+            "the judge's context is in result-arrival order, not retrieval order"
+        )
 
 
 def test_the_judge_gets_one_element_per_chunk_not_one_repr_per_call() -> None:
