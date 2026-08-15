@@ -348,6 +348,72 @@ async def acknowledge_warnings(
 # ---------------------------------------------------------------------------
 
 
+async def _refuse_if_a_critical_finding_is_open(agent: Agent) -> None:
+    """422 when the agent has an open critical red-team finding, right now.
+
+    BACKLOG `5.1`. `red_team_findings` lives in the TENANT database and this
+    route only ever touched the control database, which is the mechanical
+    reason it could not consult live findings — it had nothing to read them
+    with. The agent's own encrypted connection string is that "something".
+
+    Fail-closed on purpose, in both directions:
+      - an unreadable connection string refuses rather than waving the deploy
+        through, because "I could not check" is not "there is nothing to find";
+      - the check runs on every approval, not only when the frozen
+        recommendation is already suspicious.
+
+    Runs in a worker thread: `_fetch_red_team_summary_sync` is blocking psycopg2
+    and this is an async route, so calling it inline would stall the event loop
+    for the duration of a cross-region round trip.
+    """
+    import asyncio
+
+    from app.core.security import fernet_decrypt, require_ciphertext
+    from app.services.deployment_service import _fetch_red_team_summary_sync
+
+    try:
+        conn_str = fernet_decrypt(
+            require_ciphertext(
+                agent.neon_connection_string, "agents.neon_connection_string"
+            )
+        )
+        summary = await asyncio.to_thread(
+            _fetch_red_team_summary_sync, str(agent.id), conn_str
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — fail closed, see docstring
+        log.error(
+            "approve_deployment.live_finding_check_failed",
+            agent_id=str(agent.id),
+            error_type=type(exc).__name__,
+            error=str(exc) or repr(exc),
+        )
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Could not verify the agent's live red-team findings, so the "
+                "deployment cannot be approved. Retry once the tenant database "
+                "is reachable."
+            ),
+        ) from exc
+
+    if summary.get("deployment_blocked"):
+        critical = summary.get("critical_count")
+        log.warning(
+            "approve_deployment.refused_open_critical_finding",
+            agent_id=str(agent.id),
+            critical_count=critical,
+        )
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Cannot approve: {critical} critical red-team finding(s) are open "
+                "against this agent right now. Contain them and re-run the checklist."
+            ),
+        )
+
+
 @router.post("/agents/{agent_id}/approve-deployment")
 async def approve_deployment(
     agent_id: UUID,
@@ -413,6 +479,25 @@ async def approve_deployment(
             status_code=422,
             detail="Acknowledge all warnings before approving",
         )
+    # 2b. BACKLOG 5.1 / OPS-15 server-side gap. Guard 2 above validates the
+    #     recommendation FROZEN at checklist time. A critical finding raised
+    #     AFTER that — a red-team run finishing minutes later, or a human filing
+    #     one — does not change it, so the API deployed an agent with an open
+    #     critical finding against it. Observed doing exactly that in E2E-5:
+    #     `recommendation=ship` then `deployment.approved`, 200.
+    #
+    #     The console was fixed to refuse; any script, curl or CI job holding a
+    #     tenant key still took this path, so "fails closed" was true of the UI
+    #     and not of the API.
+    #
+    #     This re-read deliberately calls the SAME function the checklist uses
+    #     (`_fetch_red_team_summary_sync`) rather than a second hand-written
+    #     query. Two readers of the same rule are how the approve-time answer
+    #     and the checklist-time answer drift apart — which is the whole shape
+    #     of this defect. `2.19` is the general form; the eval sibling of this
+    #     hole was closed the same way at `8b124d4`, by re-reading at approve
+    #     time instead of trusting the frozen verdict.
+    await _refuse_if_a_critical_finding_is_open(agent)
     # 3b. Audit D1 / P3 review: the stored run's own eval evidence must claim
     #     the agent was invoked. `recommendation` is FROZEN at checklist time by
     #     whatever gate was running that day, so refusing an uninvoked run in

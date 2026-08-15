@@ -35,9 +35,10 @@ os.environ.setdefault("JWT_SECRET", "test_jwt_secret")
 os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.api.deps import get_async_db, get_current_tenant
@@ -101,8 +102,37 @@ def _make_ready_agent(tenant: MagicMock, agent_id: UUID | None = None) -> MagicM
     agent.status = "ready"
     agent.is_deployed = False
     agent.deleted_at = None
-    agent.neon_connection_string = b"fake-encrypted-bytes"
+    # BACKLOG 5.1: approve now decrypts this to re-read live red-team findings
+    # (guard 2b), so it must be a REAL fernet token. Leaving the old
+    # b"fake-encrypted-bytes" here would make every approve test fail closed on
+    # an InvalidToken and prove nothing about the guard it was written for.
+    from app.core.security import fernet_encrypt
+
+    agent.neon_connection_string = fernet_encrypt("postgresql://stub/stub")
     return agent
+
+
+@pytest.fixture(autouse=True)
+def _clean_live_red_team_findings():
+    """Stub the tenant-DB read guard 2b performs (BACKLOG 5.1).
+
+    Only the DATABASE READ is stubbed — the decrypt in
+    `_refuse_if_a_critical_finding_is_open` still runs for real against the
+    token `_make_ready_agent` now supplies, so the guard's plumbing is
+    exercised here and only its query is faked. These are unit tests with no
+    tenant Postgres; the guard's actual refusal behaviour is owned by
+    `tests/integration/test_deploy_gate_redteam.py`, which drives it against a
+    real findings table in both directions.
+
+    Autouse rather than per-test: every approve test reaches this guard, and a
+    test that forgets the stub fails with a confusing InvalidToken 422 rather
+    than the thing it was asserting.
+    """
+    with patch(
+        "app.services.deployment_service._fetch_red_team_summary_sync",
+        return_value={"deployment_blocked": False, "critical_count": 0},
+    ):
+        yield
 
 
 def _make_complete_checklist_run(

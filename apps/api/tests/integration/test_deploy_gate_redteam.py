@@ -313,7 +313,12 @@ def _run_checklist_against_real_findings(agent_id: str, conn_url: str) -> dict:
     return result
 
 
-async def _post_approve_deployment(agent_id: str, run_id: str, recommendation: str) -> int:
+async def _post_approve_deployment(
+    agent_id: str,
+    run_id: str,
+    recommendation: str,
+    tenant_conn_url: str | None = None,
+) -> int:
     """POST /approve-deployment against an isolated FastAPI app wrapping only
     the deployment router (app.main not importable — see module docstring).
     Returns the HTTP status code."""
@@ -336,6 +341,16 @@ async def _post_approve_deployment(agent_id: str, run_id: str, recommendation: s
     agent.id = uuid.UUID(agent_id)
     agent.tenant_id = tenant.id
     agent.is_deployed = False
+    # BACKLOG 5.1 / E2E-5. `red_team_findings` lives in the TENANT database, and
+    # the approve route has only ever touched the control DB — which is the
+    # mechanical reason it cannot consult live findings. A route that re-reads
+    # them needs a decryptable connection string here; supplying one is what
+    # lets the test distinguish "the route chose not to look" from "the route
+    # had nothing to look with".
+    if tenant_conn_url is not None:
+        from app.core.security import fernet_encrypt
+
+        agent.neon_connection_string = fernet_encrypt(tenant_conn_url)
 
     from app.services.capability_service import canonical_envelope_hash
 
@@ -417,7 +432,15 @@ def test_deploy_gate_blocks_then_unblocks_on_contain(tenant_db_url):
     assert result["_signals"]["red_team_summary"]["critical_count"] == 1
 
     status_code = asyncio.run(
-        _post_approve_deployment(agent_id, result["_run_id"], recommendation="block")
+        # BACKLOG 5.1: the route now also re-reads live findings (guard 2b), so
+        # it needs a decryptable tenant connection. Guard 2 still fires first
+        # here — a frozen 'block' is refused without a DB round trip at all.
+        _post_approve_deployment(
+            agent_id,
+            result["_run_id"],
+            recommendation="block",
+            tenant_conn_url=tenant_db_url,
+        )
     )
     assert status_code == 422, "POST /approve-deployment must return 422 for an open critical finding"
 
@@ -431,6 +454,86 @@ def test_deploy_gate_blocks_then_unblocks_on_contain(tenant_db_url):
     assert result2["_signals"]["red_team_summary"]["deployment_blocked"] is False
 
     status_code2 = asyncio.run(
-        _post_approve_deployment(agent_id, result2["_run_id"], recommendation=result2["recommendation"])
+        # And this now proves the other direction of guard 2b: with the finding
+        # contained, the LIVE re-read agrees with the frozen recommendation and
+        # the approval succeeds. Before 5.1 this call proved only that the
+        # frozen value was 'ship'.
+        _post_approve_deployment(
+            agent_id,
+            result2["_run_id"],
+            recommendation=result2["recommendation"],
+            tenant_conn_url=tenant_db_url,
+        )
     )
     assert status_code2 == 200, "POST /approve-deployment must succeed once the critical finding is contained"
+
+
+def test_approve_still_accepts_a_critical_finding_raised_after_a_clean_checklist(
+    tenant_db_url,
+):
+    """BACKLOG 5.1 / E2E-5 — the OPS-15 server-side gap, made undeniable.
+
+    The test above proves the ordering `finding -> checklist -> approve`: the
+    checklist sees the finding, freezes `recommendation='block'`, and guard 2
+    refuses. That ordering is safe.
+
+    **This test proves the OTHER ordering, which is the one that matters.**
+    A checklist runs clean, freezing `recommendation='ship'`. A critical finding
+    is raised *afterwards* — a red-team run completing minutes later, or a human
+    filing one. `POST /approve-deployment` then validates against the FROZEN
+    recommendation and **never consults live `open_findings`**, so it deploys an
+    agent with an open critical finding against it.
+
+    The mechanism is structural, not an oversight of one `if`: `red_team_findings`
+    lives in the **tenant** database and the approve route only ever touches the
+    **control** database. It has nothing to read the findings with.
+
+    `5.1` notes this "fails closed, so not a security hole" — that is true of the
+    *console*, which was fixed to refuse. It is not true of the API, and any
+    script, curl or CI job holding a tenant key takes this path.
+
+    The eval sibling of exactly this hole was closed at `8b124d4` by re-reading
+    `report.eval_summary.agent_invoked` at approve time instead of trusting the
+    frozen verdict. This is the red-team half of the same shape, and `2.19` is
+    the general form (a stored verdict outliving the rules that produced it).
+    """
+    agent_id = str(uuid4())
+    _seed_measured_eval_run(tenant_db_url, agent_id)
+    # The red-team half must be MEASURED AND EMPTY, not absent. With no red-team
+    # run at all `apply_signal_evidence_gate` downgrades ship -> block on
+    # `red_team_signal=no_runs` (observed: "evidence_gate_downgraded
+    # orchestrator_recommendation=ship gated_recommendation=block"), which is
+    # the gate working and would make this test's subject unobservable — the
+    # same trap BACKLOG 1.15 hit on the eval half. Seeding a finding and
+    # containing it leaves a completed run with zero OPEN criticals.
+    _contain_finding(tenant_db_url, _seed_open_critical_finding(tenant_db_url))
+
+    # --- 1. a CLEAN checklist: no OPEN findings at run time ---
+    clean = _run_checklist_against_real_findings(agent_id, tenant_db_url)
+    assert clean["status"] == "complete"
+    assert clean["recommendation"] != "block", (
+        "precondition failed: the checklist must be clean for this test to say "
+        f"anything about approve-time re-reading. got {clean}"
+    )
+    assert clean["_signals"]["red_team_summary"]["deployment_blocked"] is False
+
+    # --- 2. a critical finding is raised AFTER the run was frozen ---
+    _seed_open_critical_finding(tenant_db_url)
+
+    # --- 3. approve, using the still-clean frozen run ---
+    status_code = asyncio.run(
+        _post_approve_deployment(
+            agent_id,
+            clean["_run_id"],
+            recommendation=clean["recommendation"],
+            tenant_conn_url=tenant_db_url,
+        )
+    )
+
+    assert status_code == 422, (
+        "POST /approve-deployment accepted a deployment while a CRITICAL red-team "
+        "finding was open against the agent. The finding was raised after the "
+        "checklist froze its recommendation, and the route validates only that "
+        f"frozen value — it never re-reads live open_findings. Got {status_code}, "
+        "expected 422. This is BACKLOG 5.1 (OPS-15 server-side gap)."
+    )
