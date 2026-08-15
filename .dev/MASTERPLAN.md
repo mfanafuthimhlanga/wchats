@@ -159,16 +159,37 @@ explained by an established cause.
 
 The founding promise, run for real: a business owner completes signup to deploy through the UI.
 
-- **[owner]** Stripe test-mode account + restricted key for Mellow; seeded as the tenant's
-  `integration_credentials` row through the console (INT-01 path). Set `STRIPE_TEST_MODE_ENABLED`
-  ceremony only for the live-gate test.
+- Step 0: the Paystack adapter (`7.10`). Paystack is the SA-default provider (owner decision
+  2026-08-15, rationale in `.dev/reference/260815-sa-payment-provider-decision.md`: T+1 settlement
+  and free payouts against Stripe direct's ~T+7 and uncertain SA availability). Mirrors
+  `stripe_adapter.py`'s three operations; idempotency rides the unique transaction `reference`
+  plus the platform's own `idempotency.py` for refund dedup, because Paystack has no native
+  idempotency header. The Stripe adapter stays for future international tenants and
+  `test_stripe_live` parks with it.
+- The rails, decided (owner, 2026-08-15): **three rails, one provider.**
+  1. **Paystack card** is the agent's automation rail: refunds, subscriptions, payment links, all
+     API-driven.
+  2. **Instant EFT is an optional extra delivered as a Paystack channel** (`channels:
+     ["card", "eft"]` covers Pay with Bank and Capitec Pay), never a second provider. PayFast was
+     evaluated and rejected for the agent surface: its refunds are dashboard-driven, which breaks
+     `issue_refund` automation.
+  3. **The static FNB account stays, agent-served, human-approved** (`7.11`): the agent hands the
+     bank details to customers who choose manual EFT; the order is created awaiting proof of
+     payment; the customer uploads the POP with the order; it lands in a console queue that
+     **Mellow approves, never the agent** — the approval route accepts a Clerk JWT only, the same
+     machine-credential refusal the label route already enforces (`4.7`), so the exclusion is
+     structural, not prompted. Refunds on this rail likewise route through
+     `pending_confirmations` for the owner to execute.
+- **[owner]** Paystack account + test-mode secret key for Mellow; seeded as the tenant's
+  `integration_credentials` row through the console (INT-01 path). Verify the actual settlement
+  terms at signup, before promising Mellow anything.
 - Provision the Mellow tenant and agent entirely via UI. Ingest the Mellow corpus (product and
   policy docs from `../mellows-earth-elements`). Eval, red team, checklist, approve: the gate earns
   its second ship, this time on a real business corpus.
 - Embed the widget on the Mellow Vercel site; run the live test: grounded product answers plus one
-  transactional action (refund or order via Stripe test mode) passing the IDV + Actor + envelope
-  chain. First live provider call in the project's history (`test_stripe_live` gate finally
-  exercised).
+  transactional action (refund or order via Paystack test mode) passing the IDV + Actor + envelope
+  chain — the first live provider call in the project's history, and the shop's first real payment
+  rail (today's checkout is a static EFT instruction block).
 
 **Exit:** the owner's test on the Mellow Vercel URL passes, recorded with job ids and the audit rows
 of the transactional action.
@@ -240,7 +261,7 @@ Wire as `make gates` and `make gates-fast` in the existing `apps/api/Makefile`; 
 | M3 | Each `7.1`-`7.6` fix lands red-then-green. PROD-11: snippet pasted on a plain static page, zero hand-edits, working chat, screenshot plus network log. BYO proof: one turn driven by curl and EventSource using only the doc page. Size gate extended to all three shipped files; a contract test pins console snippet == API snippet |
 | M4 | CI green **on a remote runner** quoted (first time, `1.1`). Staging: one grounded answer on a public URL, job id quoted. Beat: the first `eval-nightly` run row observed within 24h of deploy, and the `0.4` decision line recorded before it can fire. §3.7 unknowns closed by observation, not reading |
 | M5 | Mockup gate: owner eyes, the one deliberately manual gate. Src gate: adversarial UX review on **rendered pixels** with computed contrast ratios (a code-only pass may not report PASS); admin e2e green or every red tied to an established cause; zero new tsc errors |
-| M6 | The acceptance script is written **before** the run as Gherkin: grounded cited answer; refund through IDV, Actor and envelope with audit rows plus the Stripe test-mode object id; and one **refusal observed** (over-ceiling amount denied), because an enforcement chain never seen refusing is unobserved. Every step driven through the UI only |
+| M6 | The acceptance script is written **before** the run as Gherkin: grounded cited answer; refund through IDV, Actor and envelope with audit rows plus the Paystack test-mode refund reference; one **refusal observed** (over-ceiling amount denied), because an enforcement chain never seen refusing is unobserved; one manual-EFT order with POP traversing the queue to a Mellow approval; and one agent-credential approval attempt on that queue **observed refused** |
 | M7 | MCP conformance: tool list typed, statelessness proven by replaying a call on a fresh connection, the approve journey exercised as MRTR. The Bantuson agent's full lifecycle recorded as MCP tool calls; live URL test same shape as M6 minus the transactional half |
 
 The Layer 2 data-science gates bind M1 and M2 specifically: sample-size floors, `unknown` never
@@ -272,7 +293,7 @@ JWT_SECRET, UPLOADS_DIR, LOG_LEVEL, SENTRY_DSN, CLERK_JWKS_URL.
 | `LANGFUSE_*` (3 names) | M4 | observability; config fields exist |
 | Clerk production instance (3 names) | M4 | current keys are the dev instance (`1.20`) |
 | `SMTP_HOST/FROM/OWNER_EMAIL` | M4, optional | digest only |
-| **Stripe: absent everywhere** | M6 | no platform Stripe field exists in `config.py` by design; needed as (a) Mellow's tenant `integration_credentials` restricted key, (b) `STRIPE_TEST_API_KEY` + `STRIPE_TEST_CHARGE_ID` for the live gate test |
+| **Paystack: absent everywhere** | M6 | the SA-default provider; no platform payment field exists in `config.py` by design. Needed as (a) Mellow's tenant `integration_credentials` test-mode key, (b) the env names the `7.10` live-gate test declares. The Stripe names (`STRIPE_TEST_API_KEY`, `STRIPE_TEST_CHARGE_ID`) park with the Stripe adapter for a future international tenant |
 
 ## Risks that can move the plan
 
