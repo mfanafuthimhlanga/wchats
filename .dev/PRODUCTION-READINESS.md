@@ -286,9 +286,19 @@ Record the observed output for each step, not the intention.
   same way. Not fixed in place: "the judge sees what the agent saw" is a measurement-layer decision.
   **`citation_coverage` is still NULL** — both turns drew `skipped_not_sampled` at the 0.1 sample
   rate (`5.15`), so **`5.13` is not closed.** Trace: `.dev/traces/260813-e2e3-live-turn.md`.
-- **E2E-4 · the checklist and the gate.** `POST /checklist-runs` on that agent. Assert the eval
-  actually invokes the agent, red-team runs 7/7 with tools, and the gate's verdict is derived from
-  real signals. Then `POST /approve-deployment`.
+- **E2E-4 · the checklist and the gate. PARTIALLY DONE 2026-08-13 — the checklist COMPLETED for the
+  first time in the project's history** (79.7s, `recommendation=block`), and `POST /approve-deployment`
+  refused it with **422**. Took two fixes: `1.30` (the timeout logged an empty `str(asyncio.TimeoutError())`,
+  erasing its own diagnosis) and **`1.32` — the orchestrator was never given the `submit_report` tool
+  it is prompted to call**, which is audit defect **D4** surviving in a second module. The verdict is
+  derived from real signals (`eval_signal=no_runs`, `red_team=no_runs`) and the orchestrator's summary
+  states the measurement-honesty rule unprompted: *"'no findings' from zero tests is not a clean
+  result, it is an absence of measurement."* **STILL OPEN, and the plan's wording is not satisfied:**
+  the eval was never observed invoking the agent and red-team never ran 7/7 with tools — both reported
+  *absent*, which is a weaker claim than the step asks for. **No `ship` verdict has ever been
+  produced**, so the approve route's success path remains unexercised. Also found `1.31` (a
+  crash-orphaned `running` row blocks every checklist for 60 minutes, and `acks_late` redelivery
+  cannot rescue it). Trace: `.dev/traces/260813-e2e4-checklist.md`.
 - **E2E-5 · prove the gate refuses.** Raise a critical finding *after* a clean checklist and confirm
   the API still accepts the deploy — that is `5.1`, and E2E-5 is the test that makes it undeniable.
   Fix it, then re-run.
