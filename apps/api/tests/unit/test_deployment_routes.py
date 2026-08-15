@@ -996,3 +996,79 @@ class TestApproveFailsClosedWhenLiveFindingsCannotBeRead:
         detail = response.json()["detail"].lower()
         assert "could not verify" in detail, detail
         assert "critical red-team finding(s) are open" not in detail, detail
+
+
+class TestApproveRefusesAnOpenCriticalFinding:
+    """Guard 2b's HEADLINE direction, at unit level (BACKLOG `5.1`, `1.33`).
+
+    An adversarial review found that disabling the refusal itself --
+    `if summary.get("deployment_blocked")` -> `if False` -- left this module at
+    **21/21 green** while approve-deployment shipped an agent with open critical
+    findings. The only coverage of that direction lived in
+    `tests/integration/test_deploy_gate_redteam.py`, which is skipped unless
+    `INTEGRATION_TESTS_ENABLED=1` and a local Postgres exists. **A skipped test
+    is unobserved, never a pass** -- so the behaviour the whole `5.1` fix exists
+    to deliver had no runnable proof at all.
+
+    These tests override the module's autouse stub, which reports a clean
+    summary for every other test here.
+    """
+
+    def _blocked_summary(self):
+        return {"deployment_blocked": True, "critical_count": 3}
+
+    async def _post(self):
+        run = _make_complete_checklist_run(
+            agent_id=uuid4(),
+            recommendation="ship",
+            envelope_hash=canonical_envelope_hash([]),
+        )
+        fake_tenant = _make_fake_tenant()
+        mock_agent = _make_ready_agent(fake_tenant, agent_id=run.agent_id)
+        mock_db = _make_mock_db(mock_agent, run)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        try:
+            with patch(
+                "app.services.deployment_service._fetch_red_team_summary_sync",
+                return_value=self._blocked_summary(),
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.post(
+                        f"/api/v1/agents/{run.agent_id}/approve-deployment",
+                        json={"checklist_run_id": str(run.id)},
+                        headers={"X-API-Key": "vrd_live_test"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+        return response, mock_agent
+
+    @pytest.mark.anyio
+    async def test_an_open_critical_finding_refuses_the_deployment(self):
+        response, mock_agent = await self._post()
+
+        assert response.status_code == 422, (
+            "approve-deployment SHIPPED an agent with 3 open critical red-team "
+            f"findings. got {response.status_code}: {response.text[:300]}"
+        )
+        assert mock_agent.is_deployed is False, (
+            "the agent was marked deployed despite the refusal"
+        )
+
+    @pytest.mark.anyio
+    async def test_the_detail_names_the_findings_not_a_verification_failure(self):
+        """Five guards return 422 here, so the status code identifies nothing.
+
+        This assertion is what distinguishes "an open finding refused you" from
+        "I could not check" and from envelope drift. The run's envelope hash is
+        matched to the live projection above precisely so guard 4 cannot be the
+        one answering.
+        """
+        response, _ = await self._post()
+        detail = response.json()["detail"].lower()
+        assert "critical red-team finding(s) are open" in detail, detail
+        assert "could not verify" not in detail, detail
+        assert "3" in detail, f"the count should reach the operator: {detail}"

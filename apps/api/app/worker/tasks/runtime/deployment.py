@@ -79,17 +79,9 @@ from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
 
-#: Wall-clock ceiling for the deployment orchestrator's SDK turn (BACKLOG 1.30).
-#:
-#: Was an inline `120.0`. The first checklist run ever executed (E2E-4,
-#: 2026-08-13) blew straight through it: the orchestrator is a multi-turn
-#: claude-sonnet-4-6 agent reasoning over five signal blocks, and 120s is not a
-#: budget it was ever measured against — nothing had run it (`3.10`).
-#:
-#: Named rather than inline so the timeout can be logged when it fires. A
-#: ceiling that appears only in the traceback of an exception whose `str()` is
-#: empty is a ceiling nobody can see.
-ORCHESTRATOR_TIMEOUT_S = 300.0
+# BACKLOG 1.33: the ceiling now lives in deployment_service so the task and
+# the service's own run_orchestrator bridge cannot drift apart. They had.
+from app.services.deployment_service import ORCHESTRATOR_TIMEOUT_S  # noqa: E402
 
 
 def _dispatch_eval_run(agent_id: str) -> bool:

@@ -100,9 +100,20 @@ def _get_s3():
         kwargs: dict = {"region_name": settings.AWS_REGION}
         if endpoint:
             kwargs["endpoint_url"] = endpoint
+            # BACKLOG 1.33: log the HOST, never the whole URL. An endpoint URL
+            # carries userinfo, and MinIO setups routinely embed the access key
+            # and secret:
+            #   http://AKIAEXAMPLE:s3cr3t-p4ssw0rd@minio.internal:9000
+            # This line fires on every process that sets the seam, so the whole
+            # URL would put those credentials in every such log.
+            from urllib.parse import urlsplit  # noqa: PLC0415
+
+            parsed = urlsplit(endpoint)
             log.warning(
                 "storage_service.endpoint_override_active",
-                endpoint_url=endpoint,
+                endpoint_host=parsed.hostname,
+                endpoint_port=parsed.port,
+                endpoint_scheme=parsed.scheme,
                 environment=settings.ENVIRONMENT,
             )
         _s3 = boto3.client("s3", **kwargs)

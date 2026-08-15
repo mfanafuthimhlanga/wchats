@@ -25,6 +25,35 @@
 > Three of those (`1.26`, `1.32`, `5.1`) are the *same shape*: a boundary moved, or was never wired,
 > and **the tests could not see it because they mocked the very thing that was broken.**
 >
+> ## AN ADVERSARY PASS THEN FOUND THE SAME CLASS INSIDE THE FIXES
+>
+> Green gates were the entry condition, not the verdict. A separate agent mutated the Phase A product
+> code eleven times. **Five mutations proved a guard written this week could not fail on the defect it
+> names**, and one found a credential leak the `5.1` fix introduced. All fixed under **`1.33`**, each
+> re-proved by re-running the adversary's own mutation.
+>
+> | What it broke | What the suite said |
+> |---|---|
+> | stripped the whole `1.32` SDK wiring, kept the comments | **1 failed, 7 passed** |
+> | disabled guard 2b's refusal outright (`5.1`'s entire point) | **21/21 green** |
+> | swapped `upload_key(agent_id, doc_id)` to `(doc_id, agent_id)` | **18 passed** |
+> | set the span cap to 2 and deleted the sentence stating it | **7 passed** |
+>
+> **The sharpest one is worth internalising:** `test_sdk_tools_are_registered.py` counted references
+> to `_TOOL_SUBMIT_REPORT` to detect "defined and never used". My own docstring sentence — *"was
+> referenced exactly once in the repository"* — **was the second reference.** Prose satisfied a test
+> about code. Every text-based pin in these modules got weaker the more I documented them. All five
+> now walk the AST or pin a whole phrase.
+>
+> **The credential leak:** `deployment.py` logged `error=str(exc)` where `exc` can be psycopg2's
+> `invalid dsn: missing "=" after "<the whole decrypted connection string>"`. The same commit added
+> `error_type` to *fix* a blank-diagnosis bug (`1.30`); adding `str(exc)` beside it created the leak.
+> Now logs `error_type` only.
+>
+> Full write-up: **`.dev/reference/260815-adversary-phase-a.md`**. Its closing point is the one that
+> generalises: this defect class is invisible from the inside, and the only reliable detector is
+> someone else mutating your product code and watching your test stay green.
+>
 > ## THE TWO THINGS TO READ BEFORE DOING ANYTHING ELSE
 >
 > 1. **`5.16` — every stored grounding verdict is biased.** `agent.py:1515` hands the judge `[:3]`
@@ -39,6 +68,15 @@
 >    it was fixed once (audit D4) but nothing has run it end to end since.
 >
 > ## Also still open from Phase A
+>
+> - **`5.17`** — guard 2b re-reads the *critical* rule but not the *high* one, while
+>   `DEP_BLOCK_ON_HIGH_RED_TEAM` defaults `True`. A high-severity finding raised after the checklist
+>   still approves. Approve-time and checklist-time apply different predicates, which is the drift
+>   `5.1`'s own comment claims to prevent by sharing a reader: it shares the collector, not the rule.
+> - **`1.34`** — `test_embed_chunks_routes_to_bedrock` makes a **real network call to Voyage** when
+>   `EMBEDDING_PROVIDER=voyage` is in the ambient environment. Clean env: `9 passed in 0.95s`. With
+>   the E2E overlay sourced: `AuthenticationError` after 29s. **Run the suite in a clean shell**, or
+>   use the declared `fast` gate, which does not source the overlay.
 >
 > - **`1.31`** — a crash mid-checklist leaves a `running` row that blocks every later checklist for
 >   60 minutes, and `acks_late` redelivery **cannot** rescue it (the redelivered task reads its own

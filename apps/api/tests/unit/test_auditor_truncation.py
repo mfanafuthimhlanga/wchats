@@ -86,9 +86,22 @@ def test_the_span_cap_reaches_the_model():
         call_auditor("q", "r", "ctx")
 
     assert captured["max_tokens"] == AUDITOR_MAX_TOKENS
-    assert str(AUDITOR_MAX_CITATION_SPANS) in captured["system"], (
-        "the span cap is defined but never told to the model; the constant would "
-        f"be decorative. system={captured['system']!r}"
+
+    # BACKLOG 1.33. This was `str(AUDITOR_MAX_CITATION_SPANS) in system` -- a
+    # single-digit substring search over a paragraph of prose. An adversarial
+    # review set the cap to 2, DELETED the sentence stating it from the system
+    # prompt, and observed 7 passed: the "2" in "under 25 words" satisfied it.
+    # The test whose docstring reads "a cap the prompt never states is a cap on
+    # nothing" was green with the prompt never stating the cap. It was
+    # non-vacuous only by the accident that today's value is 8.
+    #
+    # Pinned as the whole phrase, so the number must appear in the sentence that
+    # actually instructs the model.
+    expected_phrase = f"at most {AUDITOR_MAX_CITATION_SPANS} citation spans"
+    assert expected_phrase in captured["system"], (
+        f"the system prompt does not contain {expected_phrase!r}, so the span "
+        "cap is a decorative constant the model is never told about. "
+        f"system={captured['system']!r}"
     )
 
 

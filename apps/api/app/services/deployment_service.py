@@ -275,6 +275,19 @@ Call submit_report exactly once with your assessment.
 # Tool schema
 # ---------------------------------------------------------------------------
 
+# BACKLOG 1.30 / 1.33 — the orchestrator's wall-clock ceiling.
+#
+# Defined HERE, in the service, because the Celery task imports this module and
+# the reverse would be a cycle. Both entry points (`run_orchestrator` below and
+# `worker/tasks/runtime/deployment.py`) read this one name, so the ceiling
+# cannot drift between them — it already had, at 120.0 in one and 300.0 in the
+# other, which is what an adversarial review caught.
+#
+# 120.0 was never measured against a real orchestrator turn because none had
+# ever run (`3.10`). The first that did took 127s and was killed by it.
+ORCHESTRATOR_TIMEOUT_S = 300.0
+
+
 _TOOL_SUBMIT_REPORT = {
     "name": "submit_report",
     "description": "Submit the deployment readiness report with recommendation and warnings.",
@@ -1988,18 +2001,32 @@ async def _run_orchestrator_loop(
 
 
 def run_orchestrator(signals_json: str, result_container: dict) -> None:
-    """Synchronous bridge called from the Celery task.
+    """Synchronous bridge. NOT on the live path, and kept deliberately.
 
-    Uses asyncio.run(asyncio.wait_for(..., timeout=120.0)) to guard against
-    runaway Sonnet calls. Logs and swallows exceptions so the task can mark
-    the run as failed rather than crashing the worker.
+    BACKLOG `1.33`. `run_deployment_checklist` does not call this: it goes
+    `deployment.py -> _call_orchestrator_async -> _run_orchestrator_loop`
+    directly, to avoid a nested `asyncio.run`. An adversarial review found this
+    copy still carrying **both** defects `1.30` exists to remove — an inline
+    `120.0` ceiling declared insufficient by E2E-4, and `error=str(exc)` with no
+    `error_type`, which is the blank-diagnosis line itself.
+
+    It is fixed rather than deleted because `tests/unit/test_deployment_service.py`
+    drives it, and a second entry point that behaves differently from the live
+    one is worse than either deleting it or aligning it. It now shares the live
+    path's constant, so the two cannot drift.
     """
     try:
         asyncio.run(
             asyncio.wait_for(
                 _run_orchestrator_loop(signals_json, result_container),
-                timeout=120.0,
+                timeout=ORCHESTRATOR_TIMEOUT_S,
             )
         )
     except Exception as exc:
-        log.warning("deployment_orchestrator.failed", error=str(exc))
+        # error_type, not str(exc): str(asyncio.TimeoutError()) is "" (1.30).
+        log.warning(
+            "deployment_orchestrator.failed",
+            error_type=type(exc).__name__,
+            error=str(exc) or repr(exc),
+            timeout_s=ORCHESTRATOR_TIMEOUT_S,
+        )

@@ -383,11 +383,24 @@ async def _refuse_if_a_critical_finding_is_open(agent: Agent) -> None:
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 — fail closed, see docstring
+        # BACKLOG 1.33. `error=str(exc)` is NOT logged here, deliberately, and
+        # this is the one place in the file where that asymmetry is correct.
+        # `conn_str` is the plaintext output of `fernet_decrypt`, whose docstring
+        # says "Never pass the return value to a log statement (T-02-01)" — and
+        # psycopg2 embeds the DSN in its own message:
+        #
+        #   ProgrammingError: invalid dsn: missing "=" after "<the whole string>"
+        #   OperationalError: could not translate host name "<tenant>.neon.tech"
+        #
+        # The first echoes the decrypted credential verbatim. Both are the
+        # ORDINARY failure of this call, not an exotic one, on a route any
+        # tenant-key holder can reach. `error_type` carries the diagnostic value
+        # that matters (InvalidToken vs OperationalError vs ProgrammingError)
+        # without the payload.
         log.error(
             "approve_deployment.live_finding_check_failed",
             agent_id=str(agent.id),
             error_type=type(exc).__name__,
-            error=str(exc) or repr(exc),
         )
         raise HTTPException(
             status_code=422,

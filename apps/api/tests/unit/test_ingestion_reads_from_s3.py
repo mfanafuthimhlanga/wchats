@@ -127,3 +127,78 @@ def test_readers_lowercase_the_extension_like_the_writer():
             "writer lowercases it (documents.py:191). An uppercase extension "
             "would 404. See BACKLOG 1.27."
         )
+
+
+# ---------------------------------------------------------------------------
+# The key itself, not just the fact that a key is fetched (BACKLOG 1.33)
+# ---------------------------------------------------------------------------
+
+
+def test_chunk_fetches_the_exact_key_the_upload_route_wrote():
+    """Reader and writer must agree on the S3 key, argument order included.
+
+    An adversarial review swapped the two positional arguments in `chunk.py`::
+
+        storage_service.upload_key(doc_id, agent_id, ext)   # MUTATED
+
+    and observed **18 passed**. That defect makes every chunk fetch
+    `{doc_id}/{agent_id}{ext}`, 404 on every file-source document, and reproduce
+    `1.26`'s exact symptom in a new spelling. Nothing caught it, because the
+    previous checks asserted only that the strings `storage_service.get_bytes`
+    and `storage_service.upload_key` appear in the file, and the task-level stub
+    accepted any `key` without looking at it.
+
+    This calls the REAL `upload_key` from both sides — the writer's spelling
+    (`documents.py`) and the reader's (`chunk.py`) — and requires the same
+    string. Argument order, separator and case are all covered by construction.
+    """
+    from app.services.storage_service import upload_key
+
+    agent_id = "11111111-1111-4111-8111-111111111111"
+    doc_id = "22222222-2222-4222-8222-222222222222"
+
+    # The writer: documents.py:191 builds `Path(f.filename).suffix.lower()` and
+    # calls upload_key(str(agent.id), doc_id, ext).
+    written = upload_key(agent_id, doc_id, ".pdf")
+
+    # The reader: chunk.py derives the extension from source_uri and calls
+    # upload_key(agent_id, doc_id, ext). Mirrored here in the same order.
+    ext = (Path("Policy.PDF").suffix or ".pdf").lower()
+    read = upload_key(agent_id, doc_id, ext)
+
+    assert read == written, (
+        f"reader built {read!r}, writer built {written!r}. A key assembled "
+        "differently at each end 404s on every document — that is BACKLOG 1.27, "
+        "and swapping upload_key's positional arguments produces the same "
+        "outcome in a shape no substring check can see."
+    )
+    assert written == f"{agent_id}/{doc_id}.pdf", (
+        f"upload_key's own format changed: {written!r}. Both ends move "
+        "together here, so this assertion is what stops the pair drifting as a "
+        "unit away from what is already stored in the bucket."
+    )
+
+
+def test_chunk_passes_upload_keys_arguments_in_the_documented_order():
+    """The argument ORDER at chunk.py's call site, read off the AST.
+
+    `upload_key(agent_id, doc_id, ext)` and `upload_key(doc_id, agent_id, ext)`
+    are both valid Python over two UUID strings, produce no error, and differ
+    only in the object path they fetch. The signature cannot catch it and the
+    stub did not. This reads the call node and pins the identifiers.
+    """
+    tree = ast.parse((PIPELINE_DIR / "chunk.py").read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "attr", None) == "upload_key"
+    ]
+    assert len(calls) == 1, f"expected one upload_key call in chunk.py, found {len(calls)}"
+
+    args = [getattr(a, "id", None) for a in calls[0].args]
+    assert args[:2] == ["agent_id", "doc_id"], (
+        f"chunk.py calls upload_key{tuple(args)}. The writer "
+        "(documents.py:191) passes (agent_id, doc_id, ext); swapping the first "
+        "two fetches {doc_id}/{agent_id}{ext} and 404s on every document."
+    )
