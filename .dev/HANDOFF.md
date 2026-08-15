@@ -5,6 +5,11 @@ archived at `.dev/traces/260815-handoff-archive-through-phase-a.md`; nothing was
 
 ## Next move
 
+**`.dev/MASTERPLAN.md` now carries the ordered path to production (M0-M7); it is the frame every
+next move sits in.** E2E-3b below is M1's first step. Production readiness has one definition and it
+is in that file: the Mellow transactional agent live via the UI, and the Bantuson support agent live
+via MCP, both tested on their Vercel URLs.
+
 **Run E2E-3b: one live customer turn, and read the grounding verdict it produces.**
 
 `5.16` was fixed today, so the Auditor is now handed every retrieved chunk untruncated instead of
