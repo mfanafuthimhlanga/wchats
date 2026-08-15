@@ -29,10 +29,13 @@ A merge into `main` must have all gates green, run for real and observed — nev
 # CHANGED 2026-08-13: docling IS installed now, so nothing is excluded any more.
 # `uv sync --extra dev` alone would UNINSTALL it — pass both extras.
 uv sync --extra dev --extra pipeline                    # restores .venv if it was disk-cleaned
-.venv/Scripts/python.exe -m pytest tests/unit -q
+.venv/Scripts/python.exe scripts/gates.py full          # ruff (count-pinned baseline) + import-linter
+                                                        # + lizard floors + unit suite. fast mode =
+                                                        # ruff + import-linter + collect-only smoke.
+                                                        # mutmut is dead config on native Windows.
 
 # admin    (apps/admin)
-npx tsc --noEmit          # ONE known pre-existing error: tests/reduced-motion.spec.ts:18. Zero new.
+npx tsc --noEmit          # exit 0, zero errors (the reduced-motion known error was fixed 2026-08-16)
 npm run check:no-dusk-tokens      # exit 0
 npm run check:ops-room-wiring     # exit 0  (11/11)
 npm run test:unit                 # 45, browserless
