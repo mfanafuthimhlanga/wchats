@@ -13,7 +13,9 @@ via MCP, both tested on their Vercel URLs.
 **First: land `7.7` — DeepSeek becomes the default provider** (owner decision 2026-08-15, $5
 credits): `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`, DeepSeek key in
 `ANTHROPIC_API_KEY`, exported into worker `os.environ`, proven by one observed SDK turn and one
-observed judge call. MASTERPLAN §Model provider carries the mechanism and the fallback.
+observed judge call. MASTERPLAN §Model provider carries the mechanism and the fallback. `7.8`
+(the Martin test-quality battery, never applied in this repo) also lands inside M1; the
+per-milestone proof map is MASTERPLAN §How work is verified.
 
 **Then run E2E-3b on that provider: one live customer turn, and read the grounding verdict it
 produces.**

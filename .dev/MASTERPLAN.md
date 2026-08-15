@@ -77,6 +77,8 @@ calibrated. Nothing deploys on top of unverified measurement.
 
 - Step 0: land `7.7`, the DeepSeek provider seam (§Model provider), proven by one observed SDK
   turn and one observed judge call. Everything after this spends DeepSeek credits.
+- Alongside it: `7.8`, the Martin battery (§How work is verified) — baselines measured, floors
+  written, `make gates` wired. It lands here so every later milestone inherits it.
 - E2E-3b: one live customer turn, `RETRIEVAL_FAITHFULNESS_SAMPLE_RATE=1.0`, read the verdict and
   `judge_context` counters. Settles `5.13`, `5.15`; first verdict under the `5.16` fix.
 - E2E-6: capture the 20 calibration responses (`0.1` prerequisite), owner scores
@@ -187,6 +189,62 @@ of the transactional action.
 
 **Exit:** the owner's test on the portfolio Vercel URL passes, with the agent's entire lifecycle
 having run through MCP tool calls.
+
+## How work is verified, milestone by milestone
+
+Three layers (the `verify` skill): the Martin battery, the data-science gates, the adversary. The
+battery has **never been applied here**; adopting it is scheduled work (`7.8`, lands in M1), not an
+assumption.
+
+### The standing protocol, every milestone
+
+- Plan file before execution, trace after. BACKLOG updated in the landing commit.
+- Every behaviour change carries a test **observed to fail**: mutate the guard, observe red,
+  restore from HEAD, observe green, record the observed output. A negative test never seen red is
+  indistinguishable from a tautology.
+- Gates are **quoted as observed output**, never asserted. Skipped is unobserved, never green.
+  `gates.json` `fast` (collection smoke, 170s clamp) runs from the session-end hook; `full` is the
+  definition of done and runs detached.
+- An **adversary pass by a separate agent** before anything is shown to the owner; never briefed
+  conservative; restore hygiene verified with `git status --porcelain` empty.
+- The **tier-2 Fable judge** once per milestone before the owner merges: bounded artifact, claims
+  versus evidence, verdict extracted to `.dev/reference/`.
+
+### Adopting the Martin battery (`7.8`, M1)
+
+Present today: pytest unit (~2,276), coverage floor 80.86 percent (measured baseline, never an
+absolute), `tsc`, the two admin check scripts, the widget size gate, mypy in CI. Missing, to be
+added **measure-first then ratchet** (a gate introduced at a number the repo already fails gets
+commented out within a week):
+
+| Gate | Tool | Policy on this repo |
+|---|---|---|
+| Mutation | `mutmut` | **Differential only**: no surviving mutant in a function the change touched. Never a global score on a 4 GB box |
+| Complexity | `lizard` | Changed functions only: warn CCN over 10, fail over 15 |
+| Function and module size | `lizard` | Fail functions over 60 lines; modules warn 200, fail 400, new code only |
+| Import cycles | `import-linter` | Any cycle fails, no ratchet |
+| Duplication | `jscpd` | Fail on a new clone, not the existing total |
+| Acceptance (Gherkin) | `pytest-bdd` | Adopted only where it earns its place: the M6 and M7 acceptance scripts |
+| Lint pinned | `ruff` in the venv | Closes `2.25` (today it is `uvx ruff@latest`, unreproducible offline) |
+
+Wire as `make gates` and `make gates-fast` in the existing `apps/api/Makefile`; `gates.json` keeps
+`fast` inside the 170s clamp (static + smoke) and the heavy gates live in `full`, detached.
+
+### Per-milestone proof
+
+| M | What proves the exit, concretely |
+|---|---|
+| M0 | Owner merge; `full` battery quoted green on `main` after |
+| M1 | `7.7` seam: one SDK turn and one judge verdict observed through the DeepSeek endpoint. `7.8` battery: baselines measured and written as floors. E2E-3b: verdict text plus `judge_context` counters verbatim in the trace. Calibration: Spearman at or above 0.75 **observed**, on at least the 10-row floor; below-floor reports `unknown`, never pass |
+| M2 | The gate observed **refusing** as well as shipping: flip each signal (below-floor eval, open critical finding) and watch the block, then the earned `ship` quoted with job ids. RTX-01 costed before the 7/7 run. Mutation proofs on the `5.17` and `1.31` fixes |
+| M3 | Each `7.1`-`7.6` fix lands red-then-green. PROD-11: snippet pasted on a plain static page, zero hand-edits, working chat, screenshot plus network log. BYO proof: one turn driven by curl and EventSource using only the doc page. Size gate extended to all three shipped files; a contract test pins console snippet == API snippet |
+| M4 | CI green **on a remote runner** quoted (first time, `1.1`). Staging: one grounded answer on a public URL, job id quoted. Beat: the first `eval-nightly` run row observed within 24h of deploy, and the `0.4` decision line recorded before it can fire. §3.7 unknowns closed by observation, not reading |
+| M5 | Mockup gate: owner eyes, the one deliberately manual gate. Src gate: adversarial UX review on **rendered pixels** with computed contrast ratios (a code-only pass may not report PASS); admin e2e green or every red tied to an established cause; zero new tsc errors |
+| M6 | The acceptance script is written **before** the run as Gherkin: grounded cited answer; refund through IDV, Actor and envelope with audit rows plus the Stripe test-mode object id; and one **refusal observed** (over-ceiling amount denied), because an enforcement chain never seen refusing is unobserved. Every step driven through the UI only |
+| M7 | MCP conformance: tool list typed, statelessness proven by replaying a call on a fresh connection, the approve journey exercised as MRTR. The Bantuson agent's full lifecycle recorded as MCP tool calls; live URL test same shape as M6 minus the transactional half |
+
+The Layer 2 data-science gates bind M1 and M2 specifically: sample-size floors, `unknown` never
+`pass`, seeds pinned so an eval rerun reproduces its metric, and calibration held per-provider.
 
 ## After the finish line (explicitly not blocking it)
 
