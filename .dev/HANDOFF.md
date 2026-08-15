@@ -56,6 +56,26 @@
 > passed for the wrong reason, because `assert status_code == 422` identifies nothing in a route with
 > five guards that all return 422. **Assert the reason, not the status.**
 >
+> ## Gate, observed at the session tip (`b2ec6d3`)
+>
+> ```
+> backend unit (no exclusions)   2259 passed, 13 skipped, 0 failed, 764.23s
+> grep -cE "^(FAILED|ERROR)"     0
+> ```
+>
+> **Arithmetic exact across the whole week**: 2206 pre-Phase-A + 10 docling modules + 7 storage seam
+> + 13 ingestion guard + 7 auditor + 8 SDK-tool scan + 6 orchestrator diagnostic + 2 fail-closed =
+> **2259**. No pre-existing test changed status at any point.
+>
+> The 764s is not a regression: an adversary subagent was running tests concurrently on the same 4 GB
+> box. Clean runs this week were 409 to 481s.
+>
+> **The battery is now declared** in `.dev/gates.json` (`fast` = unit suite, `full` = unit + admin +
+> widget, `timeoutSec` 900). **The integration suite is deliberately excluded** and must stay
+> excluded: it has no protection against `.env` pointing `CONTROL_DB_URL` at live Neon production, and
+> two of its modules spend money. Reasoning:
+> `.dev/reference/260815-gates-and-what-is-unsafe-to-automate.md`.
+>
 > ## How to run the E2E environment
 >
 > Overlay (never written to `.env`), MinIO for ingestion, and both queues:
