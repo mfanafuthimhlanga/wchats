@@ -43,13 +43,30 @@ the table where the local norm is next business day.
 - **TXN-02 idempotency mapping changes.** Stripe's native `Idempotency-Key` header does not exist
   on Paystack: pay-in idempotency rides the unique transaction `reference`; refund dedup rides the
   platform's own `idempotency.py`. Design it, do not port the Stripe assumption.
+- **Refunds are funded from the tenant's pending payout** (Paystack balance for registered
+  businesses), and Paystack refuses the refund when the pending payout cannot cover it. So
+  `issue_refund` has a liquidity failure mode independent of policy: the adapter must return it as
+  a counted, named outcome (`provider.insufficient_balance` or similar) that routes to
+  `pending_confirmations` for a manual refund — never a generic error. Transaction fees are
+  non-refundable.
 - The Stripe adapter and `test_stripe_live` stay in the tree, parked for a future international
   tenant. `test_paystack_live` gets authored with the same gating shape.
 - POP files (`7.11`) are untrusted customer content: stored via `storage_service`, shown to humans,
   never entering agent context or corpus. The SEC-02 boundary applies fully.
 
-## Verify at Paystack signup, not assumed
+## Verified against Paystack's own documentation (2026-08-15)
 
-- Actual settlement terms for the account (table above is from comparison articles).
-- Whether EFT-channel transactions refund through the API at parity with card-paid ones; bank-rail
-  refunds are often slower even when the API accepts the request.
+- **Refunds in SA: supported, dashboard AND API, full or partial.** SA is one of exactly three
+  refund-enabled markets (Nigeria, Ghana, South Africa). Customer sees the money in 3-10 working
+  days.
+- **Bank-side refunds are included for SA** per the refunds article. Nuance: SA's "Pay with Bank"
+  is Instant EFT **via Ozow** plus Capitec Pay, and the Pay-with-Bank article itself says nothing
+  about refunds — card refund is unambiguous, EFT-channel parity is supported-by-inference.
+- **Settlement: standard T+1/T+2, paid before 10 AM**, schedule account-specific; a Manual Payouts
+  mode is available to registered, compliant businesses after a month of history.
+
+## Still signup-only, deliberately
+
+- The account's actual fee and settlement agreement (published numbers are the standard tier).
+- One support question: explicit confirmation that Ozow-backed EFT transactions refund via the API
+  the same as card.
