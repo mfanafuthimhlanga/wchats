@@ -22,6 +22,14 @@ version of the fix collapsed them and fed a corpus miss to the judge as evidence
 Expect the Auditor call to cost about **$0.0025** on a typical turn and up to **$0.020** at the
 retrieval ceiling (80,000 chars, about 20,000 input tokens), against roughly $0.00046 before.
 
+**The verdict's own reason is now evidence about the fix.** `5.18` means each context element carries
+`source`, `section`, `chunk` and `score`. A verdict that cites a document by name proves the
+provenance arrived; one that still says "the context only confirms X" about a claim the corpus
+supports means something upstream is still cutting evidence.
+
+`5.16`, `5.18`, `5.19`, `5.20` and `5.21` all landed today and **none of them has run against the
+API.** That is one E2E-3b, not five, but read the verdict carefully.
+
 After that, `PRODUCTION-READINESS.md` §4 Phase B: E2E-6, then E2E-7.
 
 ## The one thing to internalise from today
@@ -39,6 +47,12 @@ reach. `_dispatch_validation_chain` is that seam; `TestWhatTheAuditorIsActuallyH
 list of modules where the same hole is likely. The seam question to ask of each: **is there any test
 that observes the value the next stage receives?** For `retrieved_context_json` the answer was no,
 and both ends of that boundary had tests.
+
+**The companion lesson, from closing `5.21` the same day: a mutation proof tests the test as much as
+the code.** The first `5.21` guard delivered tool results in *reverse* order, on the reasoning that
+"out of order" was the hazard, and the mutation stayed 25/25 green — a reverse arrival pairs up
+correctly by accident under a `reversed()` walk. The ordering that breaks the rule is *issue* order.
+Picking the obvious adversarial case is not the same as picking the case the rule gets wrong.
 
 ## Where the code is
 

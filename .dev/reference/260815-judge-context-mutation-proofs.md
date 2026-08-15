@@ -81,6 +81,22 @@ one.** Both anchors failed for the same reason: the mutation was expressed as a 
 survive PowerShell quoting to reach Python. The retries used line numbers with an assertion on the
 line's content, which either mutates or raises, and cannot silently no-op.
 
+## The third failure mode, found on 2026-08-15: a mutation left APPLIED
+
+Later the same day a proof script was interrupted by piping its output through
+`Select-Object -First 6`. That closes the pipe, kills the process **between restoring one mutation
+and restoring the next**, and the `finally` block never runs. The next full-suite gate ran against
+mutated product code and came back 2 failed.
+
+The restore check missed it because it grepped for **one** mutation's anchor. So the three rules,
+in the order they were learned:
+
+1. **Print evidence that the mutation landed**, before the test run.
+2. **Never truncate the script's output.** `-First N` kills it mid-loop.
+3. **After the round, assert every anchor at once**, not the one you were thinking about.
+   `git status --porcelain` cannot serve here, because legitimate uncommitted edits also show
+   as modified.
+
 This is the same failure the `5.1` proof hit (recorded in retro K): a mutation proof that
 compensated for itself and stayed green in both states. The general form is that **the proof needs
 its own evidence that the mutation landed**, printed before the test run, not inferred from the
