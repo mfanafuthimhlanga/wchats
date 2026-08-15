@@ -1,0 +1,5 @@
+{
+  "fast": "cd apps/api && .venv/Scripts/python.exe -m pytest tests/unit -q",
+  "full": "cd apps/api && .venv/Scripts/python.exe -m pytest tests/unit -q && cd ../admin && npx tsc --noEmit && npm run check:no-dusk-tokens && npm run check:ops-room-wiring && npm run test:unit && cd ../widget && npm run build && node scripts/check-size.mjs",
+  "timeoutSec": 900
+}

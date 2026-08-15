@@ -1,4 +1,84 @@
-# HANDOFF — 2026-08-12
+# HANDOFF — 2026-08-15
+
+> # START HERE — 2026-08-15. **PHASE A IS COMPLETE. E2E-0 → E2E-5 ALL DONE.**
+>
+> ## The one instruction
+>
+> **`PRODUCTION-READINESS.md` §4 Phase A is finished. Phase B is next: E2E-6 (calibrate the judges,
+> `0.1`) — but read the two blockers below first, because one of them makes E2E-6 measure an
+> artefact.**
+>
+> Every one of the six steps found a defect by running something that had never run. Four of those
+> defects meant a headline feature had **never worked at all**.
+>
+> ## What Phase A found, in one table
+>
+> | Step | The defect it found | Scope |
+> |---|---|---|
+> | E2E-0 | `1.21` — both `.env.example`s missing required keys | fresh checkout cannot boot |
+> | E2E-1 | `1.22` — `PLATFORM_CREDENTIAL_KEY` absent from the REAL `.env` | **this machine cannot boot the app** |
+> | E2E-2 | **`1.26`** — `chunk_documents` read a dead local path | **ingestion broken for every uploaded file since PROD-13** |
+> | E2E-3 | **`5.14`** — Auditor `max_tokens=512` truncated every verdict | **the grounding judge could never return a verdict** |
+> | E2E-4 | **`1.32`** — orchestrator never registered `submit_report` | **the deployment checklist could never succeed** |
+> | E2E-5 | **`5.1`** — approve never re-read live findings | **the API deployed agents with open critical findings** |
+>
+> Three of those (`1.26`, `1.32`, `5.1`) are the *same shape*: a boundary moved, or was never wired,
+> and **the tests could not see it because they mocked the very thing that was broken.**
+>
+> ## THE TWO THINGS TO READ BEFORE DOING ANYTHING ELSE
+>
+> 1. **`5.16` — every stored grounding verdict is biased.** `agent.py:1515` hands the judge `[:3]`
+>    results × `[:600]` chars ≈ 1800, against 962 retrieved tokens (~3,800). The first real verdict
+>    marked price claims unsupported **because it was never shown the prices**. `verified_qa_candidates`
+>    (needs confidence ≥ 0.90) is starved, and **`0.6`'s `count(*)` would count this artefact as
+>    signal.** E2E-6 calibrates judges — calibrating one that sees half its evidence measures the cap,
+>    not the judge. **Fix `5.16` before E2E-6.**
+> 2. **No `ship` verdict has ever been earned.** Every one in E2E-4/E2E-5 came from *seeded* eval and
+>    red-team signals. The eval has never been observed invoking the agent; red-team has never run
+>    7/7 with tools. `1.32` means red-team's own SDK wiring should now be re-checked the same way —
+>    it was fixed once (audit D4) but nothing has run it end to end since.
+>
+> ## Also still open from Phase A
+>
+> - **`1.31`** — a crash mid-checklist leaves a `running` row that blocks every later checklist for
+>   60 minutes, and `acks_late` redelivery **cannot** rescue it (the redelivered task reads its own
+>   orphaned row and no-ops). Reclaim: `UPDATE checklist_runs SET status='failed' WHERE status='running'`.
+> - **`1.22`** — owner action, HKDF key material. The app still does not boot from `.env` alone.
+> - **`5.13` / `5.15`** — `citation_coverage` has never been non-NULL; both live turns drew
+>   `skipped_not_sampled` at the 0.1 rate. Raise `RETRIEVAL_FAITHFULNESS_SAMPLE_RATE=1.0` for one run.
+> - **`2.19`** — the general form of `5.1`: stamp a gate version so a stored verdict cannot outlive
+>   the rules that produced it. `5.1` closed the red-team half only.
+>
+> ## Retro families added this week: I(7), J(5), **K**
+>
+> **K is mine and worth reading**: a mutation proof that compensated for itself and stayed green in
+> both states, which exposed that nothing tested the branch at all — and then a replacement test that
+> passed for the wrong reason, because `assert status_code == 422` identifies nothing in a route with
+> five guards that all return 422. **Assert the reason, not the status.**
+>
+> ## How to run the E2E environment
+>
+> Overlay (never written to `.env`), MinIO for ingestion, and both queues:
+> ```
+> CONTROL_DB_URL=postgresql+asyncpg://wchats:wchats@localhost:5432/wchats_control
+> CONTROL_DB_SYNC_URL=postgresql://wchats:wchats@localhost:5432/wchats_control
+> REDIS_URL=redis://localhost:6379/0
+> PLATFORM_CREDENTIAL_KEY=<generate>   S3_UPLOADS_BUCKET=wchats-uploads
+> S3_ENDPOINT_URL=http://127.0.0.1:9000   EMBEDDING_PROVIDER=voyage
+> AWS_ACCESS_KEY_ID=wchatsdev   AWS_SECRET_ACCESS_KEY=wchatsdevsecret
+> export ANTHROPIC_API_KEY   # os.environ, NOT just .env -- costs a cycle every time
+>
+> python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+> python -m celery -A app.worker.celery_app worker -Q runtime,pipeline -P solo -l info
+> C:/Users/Bantu/minio/minio.exe server C:/Users/Bantu/minio/data --address 127.0.0.1:9000
+> ```
+> **Run the unit gate DETACHED** (`Start-Process -RedirectStandardOutput`). Ordinary backgrounded runs
+> were killed mid-suite three times this week; the detached process survives its shell.
+>
+> **The live Neon project `mute-dream-53534177` is still up** (tenant `32b3715c…`, agent
+> `c14d13a1…`) with a real 16-chunk corpus. Delete by **id** only.
+
+> # HANDOFF — 2026-08-12
 
 > # START HERE — 2026-08-13. E2E-0 → E2E-3 ALL DONE. NEXT IS E2E-4 (checklist + deploy gate).
 >
