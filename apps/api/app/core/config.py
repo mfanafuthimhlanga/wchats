@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     # postgresql:// — for Celery sync engine and Alembic CLI
     CONTROL_DB_SYNC_URL: str
 
+    # Per-tenant Neon projects scale to zero. A suspended endpoint takes roughly
+    # 8-20s to wake, so at the previous hardcoded 5s the FIRST message after
+    # about five idle minutes could not reach a woken endpoint at all: psycopg2
+    # spends this budget on each address the host resolves to, every one of them
+    # timed out, and the turn died (observed on three live jobs, 2026-08-16).
+    # 30s covers the wake. Note the per-address multiplication when tuning it:
+    # a genuinely unreachable host costs this value once per resolved address.
+    TENANT_DB_CONNECT_TIMEOUT_S: int = 30
+
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
     # WR-04: disable TLS certificate verification for rediss:// connections.

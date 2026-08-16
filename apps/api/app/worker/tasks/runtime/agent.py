@@ -24,7 +24,9 @@ SSE event sequence:
     agent.tool_result   ← each MCP tool result observed in stream
     agent.escalated     ← (optional) escalate_to_human ToolUseBlock detected
     agent.response      ← terminal event with text, citations, conversation_id
-    agent.failed        ← only on final retry exhaustion
+    agent.failed        ← terminal failure only (retries exhausted). Payload
+                          carries error_type beside error, because str() of
+                          several exceptions on this path is empty (BACKLOG 1.30).
 
 Queue: runtime (CLAUDE.md non-negotiable: both Celery queues always present)
 """
@@ -1403,6 +1405,25 @@ async def _run_sdk_turn(
 # Celery task
 # ---------------------------------------------------------------------------
 
+#: Retry countdown for a tenant-DB connect that failed while the endpoint was
+#: waking. The generic countdown in the handler below is ``2 ** retries`` — 1s
+#: then 2s — which is shorter than a per-tenant Neon project's cold start, so a
+#: wake-triggered retry on that schedule fires while the endpoint is still
+#: suspended and burns the whole retry budget without ever reaching a live
+#: endpoint.
+#:
+#: The value is set by arithmetic, not by picking a point in the 8-20s wake
+#: window. ``max_retries=2`` buys three attempts and therefore only TWO
+#: countdown gaps, and a refusal from a suspended endpoint can come back fast
+#: rather than consuming its connect budget, so the attempts themselves may
+#: contribute nothing. Cumulative delay before the FINAL attempt is
+#: ``2 * countdown``, and that product is what has to clear the top of the wake
+#: window — not the countdown itself. At 8s it is 16s, which leaves a 17-20s
+#: wake exhausting all three attempts; at 10s it is 20s, which covers the
+#: ceiling. Changing max_retries changes this number.
+TENANT_WAKE_RETRY_COUNTDOWN_S = 10
+
+
 @celery_app.task(
     bind=True,
     acks_late=True,
@@ -1496,8 +1517,18 @@ def run_agent_turn(
         # (agent.neon_connection_string) — PgBouncer transaction-mode
         # compatible: no named prepared statements, no SET session vars.
         # Closed in finally even when _run_sdk_turn raises.
-        tenant_conn = psycopg2.connect(conn_str, connect_timeout=5)
+        #
+        # The connect is INSIDE the try. It used to sit outside it, and a
+        # suspended endpoint is the NORMAL state of a tenant DB idle for ~5
+        # minutes — so the first message of every conversation landed on a
+        # psycopg2.OperationalError that escaped this task's own except entirely:
+        # no retry, no agent.failed, zero job_events, and a widget waiting on a
+        # job that had already died. Observed on three live jobs, 2026-08-16.
+        tenant_conn = None
         try:
+            tenant_conn = psycopg2.connect(
+                conn_str, connect_timeout=settings.TENANT_DB_CONNECT_TIMEOUT_S
+            )
             # --------------------------------------------------------------
             # EVENT 1: agent.thinking — confirms task is running for this agent
             # --------------------------------------------------------------
@@ -1815,11 +1846,49 @@ def run_agent_turn(
                 "run_agent_turn.failed",
                 job_id=job_id,
                 agent_id=agent_id,
-                error=str(exc),
+                error_type=type(exc).__name__,
+                error=str(exc) or repr(exc),
             )
 
-            # On final retry exhaustion, mark job failed and emit failure event
+            # On final retry exhaustion: emit the failure event, then mark the
+            # job failed. TWO separate sessions and two separate try blocks,
+            # deliberately.
+            #
+            # agent.failed is the only thing the widget ever sees when a turn
+            # dies, and the job-status write beside it is bookkeeping the ops
+            # room reads later. Sharing one try/except-pass ranked them the
+            # wrong way round: a raise from get_sync_db(), from db2.get(), or
+            # from db2.commit() reached the same bare `except` and took the
+            # customer's signal down with the bookkeeping. So the emission goes
+            # FIRST and owns its own failure boundary.
             if self.request.retries >= self.max_retries:
+                # error_type rides beside error because str() of several
+                # exceptions on this path is EMPTY — TimeoutError and a bare
+                # psycopg2.OperationalError both render as "" — and
+                # {"error": ""} names nothing (BACKLOG 1.30).
+                try:
+                    with get_sync_db() as db_event:
+                        emit(
+                            job_id,
+                            "agent.failed",
+                            {
+                                "error_type": type(exc).__name__,
+                                "error": str(exc) or repr(exc),
+                            },
+                            db_event,
+                            _redis,
+                        )
+                except Exception as emit_exc:
+                    # Nothing left to tell the customer with. Logged rather than
+                    # passed, because a silent failure here is the defect this
+                    # whole branch exists to close.
+                    log.error(
+                        "run_agent_turn.failed_event_not_emitted",
+                        job_id=job_id,
+                        error_type=type(emit_exc).__name__,
+                        error=str(emit_exc) or repr(emit_exc),
+                    )
+
                 try:
                     with get_sync_db() as db2:
                         job2 = db2.get(Job, job_id)
@@ -1827,22 +1896,23 @@ def run_agent_turn(
                             job2.status = "failed"
                             job2.finished_at = datetime.now(timezone.utc)
                             db2.commit()
-                            emit(
-                                job_id,
-                                "agent.failed",
-                                {"error": str(exc)},
-                                db2,
-                                _redis,
-                            )
                 except Exception:
                     pass
             else:
-                countdown = 2 ** self.request.retries
+                # An OperationalError is overwhelmingly the tenant endpoint
+                # waking rather than a defect, and the wake outlasts the generic
+                # exponential countdown, so it retries on the wake window.
+                if isinstance(exc, psycopg2.OperationalError):
+                    countdown = TENANT_WAKE_RETRY_COUNTDOWN_S
+                else:
+                    countdown = 2 ** self.request.retries
                 raise self.retry(exc=exc, countdown=countdown)
         finally:
             # PROD-05: close the single pooled tenant-DB connection.
             # Runs even when _run_sdk_turn raises or self.retry() re-raises,
-            # preventing connection leaks on the exception paths.
-            tenant_conn.close()
+            # preventing connection leaks on the exception paths. None only when
+            # the connect above is what failed — nothing to close then.
+            if tenant_conn is not None:
+                tenant_conn.close()
 
     return {}

@@ -218,6 +218,7 @@ def test_agent_not_found():
 
 def test_first_turn_creates_conversation_and_stores_sdk_session_id():
     """First turn (conversation_id=None) creates a conversation row and stores sdk_session_id."""
+    from app.core.config import settings
     from app.worker.tasks.runtime.agent import run_agent_turn
 
     job_id = str(uuid.uuid4())
@@ -258,7 +259,9 @@ def test_first_turn_creates_conversation_and_stores_sdk_session_id():
         )
 
     # PROD-05: exactly one tenant-DB connection opened per turn
-    mock_connect.assert_called_once_with("postgresql://tenant", connect_timeout=5)
+    mock_connect.assert_called_once_with(
+        "postgresql://tenant", connect_timeout=settings.TENANT_DB_CONNECT_TIMEOUT_S
+    )
     mock_connect.return_value.close.assert_called_once()
 
     # sdk_session_id must be stored — first arg is now the shared connection (not conn_str)
@@ -964,4 +967,305 @@ def test_agent_response_carries_assistant_message_id():
     assert isinstance(payload["message_id"], str), (
         f"message_id must be a string, not {type(payload['message_id'])}; "
         f"a non-str here means a bare patch site is handing a MagicMock to the emit."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Neon cold start (observed on three live jobs, 2026-08-16).
+#
+# Per-tenant Neon projects scale to zero, so the tenant-DB connect in
+# run_agent_turn is where the FIRST message after roughly five idle minutes
+# lands, against an endpoint that needs 8-20s to wake. Three properties, one
+# defect each:
+#
+#   1. the connect budget is the configured one. A 5s literal is shorter than
+#      the wake, and psycopg2 spends it on every resolved address in turn.
+#   2. an OperationalError at that connect is retried. The connect used to sit
+#      OUTSIDE the task's own try, so the error escaped run_agent_turn with no
+#      retry and no event at all — the widget saw nothing and the job died.
+#   3. a terminal failure names what killed the turn BY TYPE. str() of a
+#      TimeoutError and of a bare OperationalError are both empty, so
+#      {"error": str(exc)} on its own is a payload that names nothing
+#      (BACKLOG 1.30).
+# ---------------------------------------------------------------------------
+
+
+def test_tenant_connect_uses_the_configured_timeout():
+    """The connect budget comes from settings, and its default clears the wake window."""
+    from app.core.config import Settings, settings
+    from app.worker.tasks.runtime.agent import run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    agent = _make_agent(str(agent_id))
+    job = _make_job(job_id)
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None
+    mock_db.get.side_effect = [agent, job]
+
+    with (
+        patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
+        patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect") as mock_connect,
+        patch(
+            "app.worker.tasks.runtime.agent._create_conversation_row",
+            return_value="00000000-0000-0000-0000-000000000040",
+        ),
+        patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
+        patch(
+            "app.worker.tasks.runtime.agent._persist_messages",
+            return_value=_PERSISTED_ASSISTANT_MSG_ID,
+        ),
+        patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
+        patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys prompt"),
+        patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_RESULT_WITH_CITATION),
+        patch("app.worker.tasks.runtime.agent.emit"),
+    ):
+        run_agent_turn.run(
+            job_id=job_id,
+            agent_id=agent_id,
+            message="First message after an idle period",
+            conversation_id=None,
+        )
+
+    assert mock_connect.call_args.kwargs.get("connect_timeout") == (
+        settings.TENANT_DB_CONNECT_TIMEOUT_S
+    ), (
+        f"the tenant connect must take its budget from "
+        f"settings.TENANT_DB_CONNECT_TIMEOUT_S, got: {mock_connect.call_args}"
+    )
+
+    # The kwarg pin above is satisfied by any value the setting happens to hold,
+    # so the setting's own DEFAULT is pinned separately: 5s is the value that
+    # produced the observed failure, and anything below the wake window
+    # reintroduces it.
+    assert Settings.model_fields["TENANT_DB_CONNECT_TIMEOUT_S"].default >= 20, (
+        "TENANT_DB_CONNECT_TIMEOUT_S must clear a Neon endpoint's 8-20s wake; "
+        "at 5s every first-message-after-idle turn timed out."
+    )
+
+
+def test_operational_error_at_tenant_connect_is_retried_on_the_wake_window():
+    """A cold tenant endpoint retries; it does not escape the task uncaught."""
+    import psycopg2
+    import pytest
+    from celery.exceptions import Retry
+
+    from app.worker.tasks.runtime.agent import TENANT_WAKE_RETRY_COUNTDOWN_S, run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    agent = _make_agent(str(agent_id))
+    job = _make_job(job_id)
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None
+    mock_db.get.side_effect = [agent, job]
+
+    connect_error = psycopg2.OperationalError("connection timeout expired")
+    mock_retry = MagicMock(return_value=Retry())
+
+    with (
+        patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
+        patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect", side_effect=connect_error),
+        patch("app.worker.tasks.runtime.agent.emit"),
+        patch.object(run_agent_turn, "retry", mock_retry),
+    ):
+        with pytest.raises(Retry):
+            run_agent_turn.run(
+                job_id=job_id,
+                agent_id=agent_id,
+                message="First message after an idle period",
+                conversation_id=None,
+            )
+
+    mock_retry.assert_called_once()
+    assert mock_retry.call_args.kwargs["exc"] is connect_error, (
+        f"the retry must carry the connect failure itself, got: {mock_retry.call_args}"
+    )
+    assert mock_retry.call_args.kwargs["countdown"] == TENANT_WAKE_RETRY_COUNTDOWN_S, (
+        f"a wake-triggered retry must wait the wake window "
+        f"({TENANT_WAKE_RETRY_COUNTDOWN_S}s), not the generic exponential "
+        f"countdown, which fires while the endpoint is still suspended. "
+        f"Got: {mock_retry.call_args}"
+    )
+
+
+def test_terminal_failure_emits_agent_failed_carrying_the_error_type():
+    """Retries exhausted: agent.failed is emitted and it names the exception type."""
+    import psycopg2
+
+    from app.worker.tasks.runtime.agent import run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    agent = _make_agent(str(agent_id))
+    job = _make_job(job_id)
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None
+    # Three reads: the agent, the job, and the job again on the failure path.
+    mock_db.get.side_effect = [agent, job, job]
+
+    # Deliberately message-less: str() of this is "", which is the shape that
+    # made the old {"error": str(exc)} payload say nothing at all.
+    connect_error = psycopg2.OperationalError()
+    assert str(connect_error) == "", "the fixture must be the empty-str() case"
+
+    emitted_events: list[tuple[str, dict]] = []
+
+    def fake_emit(jid, event_type, payload, db, redis):
+        emitted_events.append((event_type, payload or {}))
+
+    run_agent_turn.push_request(retries=run_agent_turn.max_retries)
+    try:
+        with (
+            patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
+            patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+            patch("app.worker.tasks.runtime.agent.psycopg2.connect", side_effect=connect_error),
+            patch("app.worker.tasks.runtime.agent.emit", side_effect=fake_emit),
+        ):
+            run_agent_turn.run(
+                job_id=job_id,
+                agent_id=agent_id,
+                message="First message after an idle period",
+                conversation_id=None,
+            )
+    finally:
+        run_agent_turn.pop_request()
+
+    failed = [payload for event_type, payload in emitted_events if event_type == "agent.failed"]
+    assert len(failed) == 1, (
+        f"a turn that died at the tenant connect must still emit agent.failed — "
+        f"the observed defect was ZERO events reaching the widget. "
+        f"Got: {emitted_events}"
+    )
+
+    payload = failed[0]
+    assert payload.get("error_type") == "OperationalError", (
+        f"agent.failed must name the exception type; got: {payload}"
+    )
+    assert payload.get("error"), (
+        f"agent.failed's error must be non-empty even when str(exc) is '' "
+        f"(BACKLOG 1.30 — repr is the fallback); got: {payload}"
+    )
+
+    assert job.status == "failed", "the job row must be marked failed on the terminal path"
+
+
+def test_terminal_failure_emits_agent_failed_when_the_job_row_is_unreadable():
+    """The emission is not conditional on the job-status bookkeeping succeeding.
+
+    Sibling of the test above with ONE difference: the failure path's read of
+    the job row comes back None. The turn still died and the widget is still
+    waiting, so agent.failed is still owed. This is the case that goes red if
+    the emission is ever moved back under the `if job2:` that guards the status
+    write — the shape the emission had before, and the second silent-death path
+    beside the connect that started all this.
+    """
+    import psycopg2
+
+    from app.worker.tasks.runtime.agent import run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    agent = _make_agent(str(agent_id))
+    job = _make_job(job_id)
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None
+    # Third read — the one on the failure path — finds nothing.
+    mock_db.get.side_effect = [agent, job, None]
+
+    emitted_events: list[tuple[str, dict]] = []
+
+    def fake_emit(jid, event_type, payload, db, redis):
+        emitted_events.append((event_type, payload or {}))
+
+    run_agent_turn.push_request(retries=run_agent_turn.max_retries)
+    try:
+        with (
+            patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
+            patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+            patch(
+                "app.worker.tasks.runtime.agent.psycopg2.connect",
+                side_effect=psycopg2.OperationalError(),
+            ),
+            patch("app.worker.tasks.runtime.agent.emit", side_effect=fake_emit),
+        ):
+            run_agent_turn.run(
+                job_id=job_id,
+                agent_id=agent_id,
+                message="First message after an idle period",
+                conversation_id=None,
+            )
+    finally:
+        run_agent_turn.pop_request()
+
+    failed = [payload for event_type, payload in emitted_events if event_type == "agent.failed"]
+    assert len(failed) == 1, (
+        f"agent.failed must be emitted even when the job row cannot be read on "
+        f"the failure path — the customer's only signal may not be conditional "
+        f"on bookkeeping. Got: {emitted_events}"
+    )
+    assert failed[0].get("error_type") == "OperationalError", (
+        f"agent.failed must still name the exception type; got: {failed[0]}"
+    )
+
+
+def test_terminal_failure_emits_agent_failed_when_the_job_status_write_raises():
+    """A failing job-status commit cannot take the customer's signal down with it.
+
+    The status write and the emission used to share one try/except-pass, so a
+    raise from get_sync_db(), from the job read, or from this commit swallowed
+    agent.failed along with the bookkeeping. They are separate boundaries now,
+    and the emission runs first.
+    """
+    import psycopg2
+
+    from app.worker.tasks.runtime.agent import run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    agent = _make_agent(str(agent_id))
+    job = _make_job(job_id)
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None
+    mock_db.get.side_effect = [agent, job, job]
+    # The job-status commit on the failure path is the thing that breaks.
+    mock_db.commit.side_effect = RuntimeError("control DB went away")
+
+    emitted_events: list[tuple[str, dict]] = []
+
+    def fake_emit(jid, event_type, payload, db, redis):
+        emitted_events.append((event_type, payload or {}))
+
+    run_agent_turn.push_request(retries=run_agent_turn.max_retries)
+    try:
+        with (
+            patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
+            patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+            patch(
+                "app.worker.tasks.runtime.agent.psycopg2.connect",
+                side_effect=psycopg2.OperationalError(),
+            ),
+            patch("app.worker.tasks.runtime.agent.emit", side_effect=fake_emit),
+        ):
+            run_agent_turn.run(
+                job_id=job_id,
+                agent_id=agent_id,
+                message="First message after an idle period",
+                conversation_id=None,
+            )
+    finally:
+        run_agent_turn.pop_request()
+
+    failed = [payload for event_type, payload in emitted_events if event_type == "agent.failed"]
+    assert len(failed) == 1, (
+        f"a failing job-status write must not suppress agent.failed — the two "
+        f"need separate failure boundaries, with the emission first. "
+        f"Got: {emitted_events}"
     )
