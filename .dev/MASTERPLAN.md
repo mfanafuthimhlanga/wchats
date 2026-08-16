@@ -56,6 +56,10 @@ critical path.
 - **Proof before spend.** The seam counts as landed only when one Agent SDK turn and one
   direct-API judge call have been observed returning verdicts through the endpoint (`7.7`).
   Anthropic remains available per-environment by unsetting `ANTHROPIC_BASE_URL`.
+- **Proven 2026-08-16, with one seam fact every judge depends on:** the endpoint runs claude-*
+  aliases in thinking mode, which rejects forced `tool_choice`; every forced-tool call therefore
+  carries `thinking={"type": "disabled"}` (a no-op on Anthropic). Trace:
+  `260816-deepseek-seam.md`. Cost telemetry on the SDK path is Anthropic-priced fiction: `7.13`.
 
 ## The milestones
 
