@@ -17,14 +17,18 @@ observed judge call. MASTERPLAN §Model provider carries the mechanism and the f
 (the Martin test-quality battery, never applied in this repo) also lands inside M1; the
 per-milestone proof map is MASTERPLAN §How work is verified.
 
-**Then run E2E-3b on that provider: one live customer turn, and read the grounding verdict it
-produces.** *Attempted 2026-08-16, unobserved: the tenant Neon endpoint's cold start killed two
-jobs silently and starved the third (trace `260816-e2e3b-attempt.md`; `7.14` fixed same day,
-`7.15` open). Rerun with the `7.14` fix, pre-warming via a bad-credential psycopg2 probe until it
-fails fast, and watch per-query latency — if it is still 60-90s, `7.15` is the blocker, not the
-turn. Local overrides are mandatory: `.env` points CONTROL_DB at live Neon and REDIS at Upstash;
-the run uses `postgresql://wchats:wchats@localhost:5432/wchats_control` and
-`redis://localhost:6379/0`.*
+**E2E-3b is DONE (2026-08-16, trace `260816-e2e3b-verdict.md`): the first grounded verdict under
+full context — `grounded 1.0`, 7/7 spans supported, each quoting real chunk content;
+`judge_context calls=2 chunks=10 empty=0 unparsed=0 errored=0 chars=8528`; `citation_coverage=0.5`
+(first non-NULL ever, closes `5.13`/`5.15`). The whole judge chain ran on DeepSeek.** The one
+defect it surfaced: Ragas metrics passed as classes not instances (`7.18`), so `faithfulness` is
+still None.
+
+**Next move: E2E-6 (judge calibration), per PRODUCTION-READINESS §4 Phase B.** Fix `7.18` first
+(small, located), then capture the 20 calibration responses (`0.1`'s blocker `0.2` is long done;
+the capture needs `AGENT_E2E_ENABLED=1` and the provisioned probe agent), then the owner scores
+`human_scores.csv` and the Spearman >= 0.75 gate runs — per-provider, so these scores are
+DeepSeek's. The E2E-3b run recipe (overrides, pre-warm probe) is in `260816-e2e3b-attempt.md`.
 
 `5.16` was fixed today, so the Auditor is now handed every retrieved chunk untruncated instead of
 1800 chars. **No live turn has produced a verdict that way.** The only grounding verdict ever
