@@ -18,7 +18,13 @@ observed judge call. MASTERPLAN §Model provider carries the mechanism and the f
 per-milestone proof map is MASTERPLAN §How work is verified.
 
 **Then run E2E-3b on that provider: one live customer turn, and read the grounding verdict it
-produces.**
+produces.** *Attempted 2026-08-16, unobserved: the tenant Neon endpoint's cold start killed two
+jobs silently and starved the third (trace `260816-e2e3b-attempt.md`; `7.14` fixed same day,
+`7.15` open). Rerun with the `7.14` fix, pre-warming via a bad-credential psycopg2 probe until it
+fails fast, and watch per-query latency — if it is still 60-90s, `7.15` is the blocker, not the
+turn. Local overrides are mandatory: `.env` points CONTROL_DB at live Neon and REDIS at Upstash;
+the run uses `postgresql://wchats:wchats@localhost:5432/wchats_control` and
+`redis://localhost:6379/0`.*
 
 `5.16` was fixed today, so the Auditor is now handed every retrieved chunk untruncated instead of
 1800 chars. **No live turn has produced a verdict that way.** The only grounding verdict ever
