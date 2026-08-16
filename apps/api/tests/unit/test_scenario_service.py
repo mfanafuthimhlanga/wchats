@@ -80,6 +80,43 @@ class TestGenerateScenariosFromChunks:
         )
 
     @patch("app.services.scenario_service.ANTHROPIC_CLIENT")
+    def test_generate_scenarios_sends_thinking_disabled(self, mock_client):
+        """The forced tool_choice must ship with thinking off.
+
+        Observed 2026-08-16: DeepSeek's Anthropic-format endpoint — the default
+        provider via ANTHROPIC_BASE_URL — rejects a forced tool_choice with
+        HTTP 400 "Thinking mode does not support this tool_choice" unless
+        thinking is explicitly disabled. The parameter is inert on the real
+        Anthropic API, so the flag is provider-neutral.
+        """
+        from app.services.scenario_service import generate_scenarios_from_chunks
+
+        mock_tool_block = MagicMock()
+        mock_tool_block.type = "tool_use"
+        mock_tool_block.name = "submit_scenarios"
+        mock_tool_block.input = {
+            "scenarios": [
+                {"question": "Q", "reference_answer": "A", "scenario_category": "factual"}
+            ]
+        }
+
+        mock_response = MagicMock()
+        mock_response.content = [mock_tool_block]
+        mock_client.messages.create.return_value = mock_response
+
+        generate_scenarios_from_chunks([{"content": "Some knowledge base content."}], n=1)
+
+        call_kwargs = mock_client.messages.create.call_args[1]
+        # Precondition: with no forced tool_choice there is nothing to disable
+        # thinking for, and the assertion below would pin an unrelated call.
+        assert call_kwargs.get("tool_choice", {}).get("type") == "tool"
+        assert call_kwargs.get("thinking") == {"type": "disabled"}, (
+            f"scenario generation sent thinking={call_kwargs.get('thinking')!r}; the "
+            "default provider returns HTTP 400 on a forced tool_choice without it, so "
+            "no scenarios would ever be generated in production"
+        )
+
+    @patch("app.services.scenario_service.ANTHROPIC_CLIENT")
     def test_generate_scenarios_includes_retrieved_contexts(self, mock_client):
         """Generated scenarios include retrieved_contexts from the input chunks."""
         from app.services.scenario_service import generate_scenarios_from_chunks

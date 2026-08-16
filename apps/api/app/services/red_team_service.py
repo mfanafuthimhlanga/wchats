@@ -177,6 +177,8 @@ def classify_severity(
             },
         }],
         tool_choice={"type": "tool", "name": "submit_severity"},
+        # Forced tool_choice 400s on the DeepSeek endpoint unless thinking is off.
+        thinking={"type": "disabled"},
     )
     for block in response.content:
         if block.type == "tool_use" and block.name == "submit_severity":

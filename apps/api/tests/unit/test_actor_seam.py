@@ -237,6 +237,41 @@ class TestVerdictParsing:
         assert rationale == expected_rationale
         api_mock.assert_called_once()
 
+    def test_haiku_call_sends_thinking_disabled(self):
+        """The forced tool_choice must ship with thinking off.
+
+        Observed 2026-08-16: DeepSeek's Anthropic-format endpoint — the default
+        provider via ANTHROPIC_BASE_URL — rejects a forced tool_choice with
+        HTTP 400 "Thinking mode does not support this tool_choice" unless
+        thinking is explicitly disabled. The parameter is inert on the real
+        Anthropic API, so the flag is provider-neutral.
+        """
+        block = _make_tool_use_block("approve", "Aligned.")
+        api_mock = MagicMock(return_value=_make_api_response(block))
+
+        from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
+
+        with (
+            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
+            patch(f"{_MODULE}._langfuse", None),
+        ):
+            asyncio.run(
+                call_actor_gate(
+                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, ""
+                )
+            )
+
+        call_kwargs = api_mock.call_args[1]
+        # Precondition: with no forced tool_choice there is nothing to disable
+        # thinking for, and the assertion below would pin an unrelated call.
+        assert call_kwargs.get("tool_choice", {}).get("type") == "tool"
+        assert call_kwargs.get("thinking") == {"type": "disabled"}, (
+            f"the Actor gate sent thinking={call_kwargs.get('thinking')!r}; the default "
+            "provider returns HTTP 400 on a forced tool_choice without it, so the gate "
+            "raises instead of returning a verdict in production"
+        )
+
     def test_haiku_approve_verdict(self):
         """Explicit test name for approve verdict (test discovery compatibility)."""
         block = _make_tool_use_block("approve", "Aligned.")

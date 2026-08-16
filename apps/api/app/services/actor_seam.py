@@ -254,6 +254,8 @@ async def call_actor_gate(
             },
         }],
         tool_choice={"type": "tool", "name": "submit_verdict"},
+        # Forced tool_choice 400s on the DeepSeek endpoint unless thinking is off.
+        thinking={"type": "disabled"},
     )
 
     latency_ms = int((time.time() - t0) * 1000)

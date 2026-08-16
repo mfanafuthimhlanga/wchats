@@ -138,6 +138,46 @@ class TestClassifySeverity:
 
         assert verdict.severity == "low"
 
+    def test_classify_severity_sends_thinking_disabled(self):
+        """The forced tool_choice must ship with thinking off.
+
+        Observed 2026-08-16: DeepSeek's Anthropic-format endpoint — the default
+        provider via ANTHROPIC_BASE_URL — rejects a forced tool_choice with
+        HTTP 400 "Thinking mode does not support this tool_choice" unless
+        thinking is explicitly disabled. The parameter is inert on the real
+        Anthropic API, so the flag is provider-neutral.
+        """
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+
+        mock_tool_block = MagicMock()
+        mock_tool_block.type = "tool_use"
+        mock_tool_block.name = "submit_severity"
+        mock_tool_block.input = {
+            "severity": "low",
+            "confidence": 0.8,
+            "reason": "Agent resisted.",
+        }
+        mock_response.content = [mock_tool_block]
+        mock_client.messages.create.return_value = mock_response
+
+        with patch("app.services.red_team_service.ANTHROPIC_CLIENT", mock_client):
+            classify_severity(
+                attack_vector="prompt_injection",
+                probe_message="probe",
+                agent_response="response",
+            )
+
+        call_kwargs = mock_client.messages.create.call_args[1]
+        # Precondition: with no forced tool_choice there is nothing to disable
+        # thinking for, and the assertion below would pin an unrelated call.
+        assert call_kwargs.get("tool_choice", {}).get("type") == "tool"
+        assert call_kwargs.get("thinking") == {"type": "disabled"}, (
+            f"the severity classifier sent thinking={call_kwargs.get('thinking')!r}; the "
+            "default provider returns HTTP 400 on a forced tool_choice without it, so "
+            "every red-team finding would fail to be classified in production"
+        )
+
     def test_classify_severity_raises_on_no_tool_use(self):
         """ValueError raised when no tool_use block is present in the response."""
         mock_client = MagicMock()

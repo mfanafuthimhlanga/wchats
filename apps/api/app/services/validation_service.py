@@ -183,6 +183,11 @@ def call_gatekeeper(question: str, response_text: str) -> GatekeeperVerdict:
             },
         }],
         tool_choice={"type": "tool", "name": "submit_verdict"},
+        # The default provider is now DeepSeek's Anthropic-format endpoint, which
+        # rejects a forced tool_choice with HTTP 400 "Thinking mode does not support
+        # this tool_choice" unless thinking is explicitly off. A judge is one forced
+        # verdict call and never needs to think; the flag is a no-op on Anthropic.
+        thinking={"type": "disabled"},
     )
     for block in response.content:
         if block.type == "tool_use" and block.name == "submit_verdict":
@@ -300,6 +305,8 @@ def call_auditor(
             },
         }],
         tool_choice={"type": "tool", "name": "submit_verdict"},
+        # Forced tool_choice 400s on the DeepSeek endpoint unless thinking is off.
+        thinking={"type": "disabled"},
     )
     # BACKLOG 5.14: check for truncation BEFORE validating. A tool call cut off
     # at the ceiling arrives as a partial dict, and model_validate then reports
@@ -410,6 +417,8 @@ def call_strategist(
             },
         }],
         tool_choice={"type": "tool", "name": "submit_verdict"},
+        # Forced tool_choice 400s on the DeepSeek endpoint unless thinking is off.
+        thinking={"type": "disabled"},
     )
     for block in response.content:
         if block.type == "tool_use" and block.name == "submit_verdict":
