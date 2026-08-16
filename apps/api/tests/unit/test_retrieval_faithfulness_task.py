@@ -10,9 +10,10 @@ Tests:
     6. Auditor-flag override — random >= rate but auditor-flagged still computes.
     7. citation_coverage computed from citations/retrieve-call ratio; None when
        nothing was retrieved (honest-empty-state, never fabricated 0.0).
-    8. Ragas is never actually called — _compute_ragas_faithfulness is stubbed
-       throughout (real Ragas call path is a deferred live-gate item; the
-       import is lazy specifically so this module never touches ragas/vertexai).
+    8. Task-level tests stub _compute_ragas_faithfulness so the gating and
+       write logic is tested without a judge call.
+    9. The Ragas 0.4.x scoring path itself, against the REAL ragas package
+       with a canned InstructorBaseRagasLLM in place of the network hop (7.18).
 
 Patch targets are symbols imported into app.worker.tasks.runtime.retrieval_eval:
     - app.worker.tasks.runtime.retrieval_eval.get_sync_db
@@ -263,3 +264,123 @@ def test_sample_rate_default_is_point_one():
     from app.core.config import Settings
 
     assert Settings.model_fields["RETRIEVAL_FAITHFULNESS_SAMPLE_RATE"].default == pytest.approx(0.1)
+
+
+# ---------------------------------------------------------------------------
+# Test 9: the Ragas 0.4.x scoring path, against the REAL library (7.18)
+#
+# Everything above stubs _compute_ragas_faithfulness, which is why the scoring
+# path shipped broken: the first live sampled turn logged
+#   ragas_call_failed error='All metrics must be initialised metric objects'
+# and wrote faithfulness=None. The tests below import real ragas and run real
+# metric code; only the network hop (the LLM) is replaced.
+# ---------------------------------------------------------------------------
+
+
+def _fake_instructor_llm(statements: list[str], verdicts: list[int]):
+    """An LLM that IS an InstructorBaseRagasLLM and answers from canned outputs.
+
+    Subclassing the real base matters: collections' BaseMetric rejects anything
+    that is not an InstructorBaseRagasLLM at construction time, so a MagicMock
+    would never get far enough to exercise the bug this file is about.
+    """
+    from ragas.llms.base import InstructorBaseRagasLLM
+    from ragas.metrics.collections.faithfulness.util import (
+        NLIStatementOutput,
+        StatementFaithfulnessAnswer,
+        StatementGeneratorOutput,
+    )
+
+    class _FakeInstructorLLM(InstructorBaseRagasLLM):
+        def generate(self, prompt, response_model):
+            raise AssertionError(
+                "collections metrics must reach the LLM through agenerate()"
+            )
+
+        async def agenerate(self, prompt, response_model):
+            if response_model is StatementGeneratorOutput:
+                return StatementGeneratorOutput(statements=statements)
+            if response_model is NLIStatementOutput:
+                return NLIStatementOutput(
+                    statements=[
+                        StatementFaithfulnessAnswer(
+                            statement=statement, reason="canned", verdict=verdict
+                        )
+                        for statement, verdict in zip(statements, verdicts)
+                    ]
+                )
+            raise AssertionError(f"unexpected response_model: {response_model}")
+
+    return _FakeInstructorLLM()
+
+
+def _build_metrics():
+    return mod._build_faithfulness_metrics(_fake_instructor_llm(["s"], [1]))
+
+
+def test_built_metrics_are_instances_not_classes():
+    """Every element of the metrics list is a constructed metric object."""
+    from ragas.metrics.base import SimpleBaseMetric
+
+    metrics = _build_metrics()
+
+    assert metrics, "no metrics were built"
+    for metric in metrics:
+        assert not isinstance(metric, type), (
+            f"{metric!r} is a class, not an instance"
+        )
+        assert isinstance(metric, SimpleBaseMetric), (
+            f"{metric!r} is not a Ragas metric object"
+        )
+
+
+def test_built_metrics_are_not_legacy_metrics_so_evaluate_is_the_wrong_door():
+    """Names the hierarchy fact that made the error message misleading.
+
+    ragas/evaluation.py:133 raises "All metrics must be initialised metric
+    objects" for anything that fails `isinstance(m, ragas.metrics.base.Metric)`.
+    A collections metric fails it while being a perfectly initialised object, so
+    this task must score through ascore(), not evaluate(). If a future ragas
+    makes collections metrics legacy Metrics too, this test goes red and
+    evaluate() becomes available again.
+    """
+    from ragas.metrics.base import Metric
+
+    for metric in _build_metrics():
+        assert not isinstance(metric, Metric), (
+            f"{type(metric).__name__} is now a legacy ragas Metric"
+        )
+
+
+def test_compute_ragas_faithfulness_scores_through_real_ragas(monkeypatch):
+    """The whole point: a real Faithfulness metric returns a real score.
+
+    Two statements, one supported by the context: 1/2 = 0.5. Pre-fix this
+    returned None, because evaluate() rejected the metric before any scoring
+    happened.
+    """
+    monkeypatch.setattr(
+        mod,
+        "_build_instructor_llm",
+        lambda: _fake_instructor_llm(["claim A", "claim B"], [1, 0]),
+    )
+
+    score = mod._compute_ragas_faithfulness(
+        question="what is the refund window?",
+        response_text="Refunds run 30 days. Shipping is free.",
+        contexts=["Refunds are accepted within 30 days of delivery."],
+    )
+
+    assert score == pytest.approx(0.5)
+
+
+def test_instructor_llm_wraps_an_async_client(monkeypatch):
+    """A sync Anthropic client makes agenerate() raise, which is the second
+    half of the same outage: collections metrics never call generate()."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+
+    llm = mod._build_instructor_llm()
+
+    assert llm.is_async is True, (
+        "InstructorLLM wraps a sync client; agenerate() will raise TypeError"
+    )
