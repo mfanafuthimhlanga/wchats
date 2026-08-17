@@ -213,10 +213,13 @@ def capture_all(
     if len(scenario_files) != 20:
         raise ValueError(f"Expected 20 scenarios, found {len(scenario_files)} in {SCENARIOS_DIR}")
 
-    # Fetch widget JWT once (shared across all scenarios)
-    print(f"Fetching widget JWT for agent {agent_id}...")
-    jwt = _get_widget_jwt(agent_id, api_key, base_url)
-    print("JWT obtained.")
+    # A widget JWT expires 900s after minting (widget.py:178). A 20-scenario
+    # capture is live agent turns and runs well past that, so a single shared
+    # token 401s partway through: observed 2026-08-17, 11 written then 9
+    # consecutive "401 Unauthorized" from S-012 on. Mint per scenario instead;
+    # the cost is one extra config call each, and the config route is the
+    # cheapest endpoint in the API.
+    print(f"Minting widget JWTs per scenario for agent {agent_id}...")
 
     outcomes: dict[str, str] = {}
 
@@ -239,6 +242,7 @@ def capture_all(
         print(f"  Capturing {sid}: {scenario.get('description', '')[:60]}...")
 
         try:
+            jwt = _get_widget_jwt(agent_id, api_key, base_url)
             conversation_id: str | None = None
             final_response: dict = {}
 
