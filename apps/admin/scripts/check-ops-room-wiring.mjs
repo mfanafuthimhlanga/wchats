@@ -15,11 +15,18 @@
 // check that caught WIRE-01 through WIRE-04.
 //
 // Two check families:
-//   - Honesty checks: is a false "ships in a future release" claim gone,
-//     and are the two Judgement ledger tiles reading real data instead of
-//     hardcoding "not tracked yet" over it (WIRE-02, WIRE-03)?
+//   - Honesty checks: is a false "ships in a future release" claim gone, is
+//     the false "evaluated automatically each night" schedule claim gone
+//     (BACKLOG 7.6 — no beat worker is deployed anywhere), and are the two
+//     Judgement ledger tiles reading real data instead of hardcoding "not
+//     tracked yet" over it (WIRE-02, WIRE-03)?
 //   - Reachability checks: does each operations-room region actually call
-//     the Phase 21 endpoint it needs (WIRE-01, WIRE-04)?
+//     the Phase 21 endpoint it needs (WIRE-01, WIRE-04), and does the deploy
+//     page READ the embed tag from the API rather than composing a second,
+//     disagreeing one of its own (BACKLOG 7.1)?
+//
+// Scan scope grew with those two: the honesty family was already app-wide,
+// and the embed check reads the deploy page specifically.
 //
 // Self-exclusion: this file lives in apps/admin/scripts/. Every literal it
 // searches for is written into its own source below, so it must never scan
@@ -45,6 +52,7 @@ const ADMIN_ROOT = join(__dirname, '..')
 const APP_ROOT = join(ADMIN_ROOT, 'app')
 const OPS_ROOM_PAGE = join(ADMIN_ROOT, 'app', 'agents', '[id]', 'page.tsx')
 const OPS_ROOM_COMPONENTS_DIR = join(ADMIN_ROOT, 'app', 'agents', '[id]', 'components')
+const DEPLOY_PAGE = join(ADMIN_ROOT, 'app', 'agents', '[id]', 'deploy', 'page.tsx')
 
 const EXCLUDE_DIRS = new Set(['node_modules', '.next', '.git'])
 
@@ -150,6 +158,11 @@ const OPS_ROOM_PATHS = [
 ]
 const OPS_ROOM_FILES = readTextFiles(OPS_ROOM_PATHS)
 
+// The deploy page on its own — the embed check below is about that one page
+// building an artifact it must instead read, so a hit anywhere else in the
+// console would be a different fact and must not answer for it.
+const DEPLOY_PAGE_FILES = readTextFiles(existsSync(DEPLOY_PAGE) ? [DEPLOY_PAGE] : [])
+
 // ---------------------------------------------------------------------------
 // Honesty checks (WIRE-02, WIRE-03)
 // ---------------------------------------------------------------------------
@@ -249,6 +262,88 @@ function runJudgementLedgerCheck() {
   }
 }
 
+// A false claim about a SCHEDULE, which is the same defect class as the three
+// above wearing different clothes (BACKLOG 7.6). The eval page's empty state
+// read "Your agent is evaluated automatically each night." No beat worker is
+// deployed anywhere — scheduled evals ship in M4 of the masterplan — so the
+// console was telling an owner a run had happened when none ever had, which is
+// worse than the "ships in a future release" evasions because it is not even
+// deferring: it is asserting. Both a literal check and the phrase behind it,
+// same shape as FUTURE_RELEASE_PHRASE, so the class is caught and not just the
+// one sentence.
+const SCHEDULED_EVAL_CLAIM = 'Your agent is evaluated automatically each night.'
+const SCHEDULED_EVAL_PHRASE = 'automatically each night'
+
+function runScheduledEvalClaimCheck() {
+  const hits = [
+    ...findLiteral(APP_FILES, SCHEDULED_EVAL_CLAIM),
+    ...findLiteral(APP_FILES, SCHEDULED_EVAL_PHRASE),
+  ]
+  return {
+    id: 'no-scheduled-eval-claim',
+    region: 'Eval',
+    flippedBy: 'BACKLOG 7.6',
+    pass: hits.length === 0,
+    evidence: hits,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Single-generator check (BACKLOG 7.1)
+//
+// The embed <script> tag had two generators that disagreed: the API's
+// (hardcoded CDN host, no data-api at all) and the console's own, computed in
+// the browser from NEXT_PUBLIC_WCHATS_* with an empty-string API-base default.
+// The loader warns and continues on a missing API base, so the console could
+// hand an owner a tag that renders a widget which can never reach the API.
+//
+// The API is the single generator now. This check is the standing form of that
+// decision: the deploy page must CALL the endpoint, and must contain none of
+// the fragments a hand-built tag needs. Both halves matter — the absence check
+// alone would pass on a page that had simply deleted the Embed section.
+// ---------------------------------------------------------------------------
+
+const EMBED_BUILD_FRAGMENTS = [
+  '<script src=',          // the tag being assembled as a string
+  'data-agent=',           // its required attributes, written by hand
+  'data-api=',
+  'NEXT_PUBLIC_WCHATS_',   // the build-time env vars that fed the old generator
+]
+
+function runEmbedSnippetSourceCheck() {
+  if (DEPLOY_PAGE_FILES.length === 0) {
+    return {
+      id: 'embed-snippet-single-generator',
+      region: 'Deploy',
+      flippedBy: 'BACKLOG 7.1',
+      pass: false,
+      evidence: [`deploy page not found at ${relative(ADMIN_ROOT, DEPLOY_PAGE)} — this check cannot be satisfied by the file's absence`],
+    }
+  }
+
+  const readsEndpoint = findLiteral(DEPLOY_PAGE_FILES, 'embed-snippet')
+  const builtLocally = EMBED_BUILD_FRAGMENTS.flatMap((fragment) =>
+    findLiteral(DEPLOY_PAGE_FILES, fragment).map((hit) => ({
+      ...hit,
+      snippet: `builds the tag itself ("${fragment}"): ${hit.snippet}`,
+    })),
+  )
+
+  const evidence = []
+  if (readsEndpoint.length === 0) {
+    evidence.push('the deploy page never calls GET /agents/{id}/embed-snippet — it must render what the API generated')
+  }
+  evidence.push(...builtLocally)
+
+  return {
+    id: 'embed-snippet-single-generator',
+    region: 'Deploy',
+    flippedBy: 'BACKLOG 7.1',
+    pass: readsEndpoint.length > 0 && builtLocally.length === 0,
+    evidence,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Reachability checks (WIRE-01, WIRE-04) — one per operations-room region,
 // scoped to OPS_ROOM_FILES only. A check passes when every one of its
@@ -316,7 +411,13 @@ function runReachabilityChecks() {
 function main() {
   const reportMode = process.argv.includes('--report')
 
-  const allChecks = [...runHonestyChecks(), runJudgementLedgerCheck(), ...runReachabilityChecks()]
+  const allChecks = [
+    ...runHonestyChecks(),
+    runScheduledEvalClaimCheck(),
+    runJudgementLedgerCheck(),
+    runEmbedSnippetSourceCheck(),
+    ...runReachabilityChecks(),
+  ]
 
   if (reportMode) {
     for (const c of allChecks) {
