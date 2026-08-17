@@ -24,11 +24,20 @@ full context — `grounded 1.0`, 7/7 spans supported, each quoting real chunk co
 defect it surfaced: Ragas metrics passed as classes not instances (`7.18`), so `faithfulness` is
 still None.
 
-**Next move: E2E-6 (judge calibration), per PRODUCTION-READINESS §4 Phase B.** Fix `7.18` first
-(small, located), then capture the 20 calibration responses (`0.1`'s blocker `0.2` is long done;
-the capture needs `AGENT_E2E_ENABLED=1` and the provisioned probe agent), then the owner scores
-`human_scores.csv` and the Spearman >= 0.75 gate runs — per-provider, so these scores are
-DeepSeek's. The E2E-3b run recipe (overrides, pre-warm probe) is in `260816-e2e3b-attempt.md`.
+**E2E-6 is BLOCKED, and the blocker is a credential, not code** (trace
+`260817-e2e6-capture-blocked.md`). `7.18` is fixed and landed. The capture then ran 6 scenarios and
+was stopped: **Voyage has no payment method, so the account is capped at 3 RPM / 10K TPM** (`7.21`,
+owner action at dashboard.voyageai.com). Every retrieval embeds a query and every turn reranks, so
+the capture throttles - and rerank **falls back to unranked results with only a warning**, which is
+how a calibration set gets built on quietly degraded retrieval. The four captured files were
+deleted for exactly that reason; the capture script skips existing files, so leaving them would
+have poisoned the set silently.
+
+**Order to resume E2E-6:** (1) owner adds the Voyage payment method; (2) `7.20` lands - the Ragas
+judge's live round trip hits the same thinking-mode 400 `7.7` fixed, from inside instructor, which
+is the boundary `7.18` explicitly left unproven; (3) re-capture all 20 from empty; (4) owner scores
+`human_scores.csv`; (5) Spearman gate, per-provider on DeepSeek. Run recipe (overrides, pre-warm
+probe) is in `260816-e2e3b-attempt.md`.
 
 `5.16` was fixed today, so the Auditor is now handed every retrieved chunk untruncated instead of
 1800 chars. **No live turn has produced a verdict that way.** The only grounding verdict ever
