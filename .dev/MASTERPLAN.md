@@ -144,6 +144,42 @@ doc page.
 
 **Exit:** a staging agent, provisioned in the cloud, answers a grounded question on a public URL.
 
+### M4.5 — unit economics, end to end (owner, 2026-08-17)
+
+**Gate between a validated backend and any UI work.** The backend is provable by then and the cloud
+bill is real, so this is the last moment the numbers can be measured rather than estimated, and the
+first moment they are all observable. Deliverable: one costing document with measured inputs, plus
+the levers ranked by what they save.
+
+Measure per unit, never per month, so the model scales without being rewritten:
+
+- **Per interaction, split by agent type.** A support turn (agent call + Gatekeeper + Auditor +
+  Strategist + retrieval + rerank) and a transactional turn (all of that plus the Actor gate per
+  mutating attempt, IDV, and provider API calls) have different shapes and must be priced apart.
+  The Auditor is the one to watch: it now receives the full retrieved context, up to 80,000 chars.
+- **Per flywheel cycle.** Nightly eval (per scenario x per metric, including the Ragas judge and
+  the embedding wrapper), weekly red team (attackers are Sonnet-class and multi-turn), scenario
+  mining, calibration re-runs. These are the costs that recur without a customer interaction, so
+  they set the floor under an idle tenant.
+- **Per tenant, fixed.** Neon project, ingestion at signup, storage, the share of Fargate/Redis/S3
+  a tenant occupies. This is what a free trial actually costs.
+- **Infra, fixed.** The M4 stack: three-plus ECS services, the beat worker, Redis, S3, CloudFront,
+  Langfuse, Clerk production.
+
+Two rules for the exercise, both learned the hard way here:
+
+- **Measure from token counts, never from the SDK's `total_cost_usd`** — it is priced against
+  Anthropic tables while calls go to DeepSeek (`7.13`), so it is fiction at the exact moment it
+  looks authoritative.
+- **Report `unknown` for anything not observed.** A costing that quietly fills gaps with plausible
+  numbers is the measurement-honesty failure this project already has a rule about.
+
+Known input at time of writing: retrieval/rerank modelled at ~$0.0015 per interaction, dominated by
+shipping ~30 chunks to keep 5 (`7.22`, the lever). Everything else is unmeasured.
+
+**Exit:** a costing document whose every headline number traces to an observed measurement, the
+per-tenant monthly floor stated, and the top three cost levers named with their measured saving.
+
 ### M5 — console polish, mockup first
 
 UI is where the owner's taste is the deciding input, and it comes after the backend is provable.
