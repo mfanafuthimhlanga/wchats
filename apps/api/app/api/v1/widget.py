@@ -53,9 +53,10 @@ from app.schemas.widget import (
     WidgetConfigResponse,
     WidgetFeedbackRequest,
 )
-from app.services.budget import check_and_increment_budget
+from app.services.budget import ESTIMATED_TURN_COST_USD, check_and_increment_budget
 from app.services.identity_service import OtpInvalid, OtpRateLimited, OtpStorageError, request_otp, verify_otp
-from app.services.sse import event_generator
+from app.services.rate_limit import check_agent_turn_rate_limit
+from app.services.sse import CUSTOMER_TERMINAL_EVENTS, event_generator
 from app.worker.tasks.runtime.agent import run_agent_turn
 
 log = structlog.get_logger(__name__)
@@ -81,9 +82,24 @@ _CORS_MAX_AGE = "3600"
 _MAX_CONCURRENT_SSE_PER_AGENT = 50
 
 # ---------------------------------------------------------------------------
-# F4: Estimated per-turn Anthropic cost (conservative upper bound for Haiku 4.5)
+# Redis key namespace for this route's 60/min per-agent turn ceiling.
+# POST /agents/{id}/chat passes its own prefix so the two routes never share a
+# bucket (BACKLOG 7.4). The literal value is unchanged from T-04-04-06.
 # ---------------------------------------------------------------------------
-ESTIMATED_TURN_COST_USD = 0.01
+_CHAT_RATE_LIMIT_PREFIX = "rate"
+
+# ---------------------------------------------------------------------------
+# F4: theming served when a tenant has never saved a widget_config
+# (migration 0009 defaults the JSONB column to {}).
+# Values from UI-SPEC.md Surface 1 Token System.
+# ---------------------------------------------------------------------------
+DEFAULT_THEMING = {
+    "primary_color": "#7B1C3A",
+    "accent_gold": "#B8860B",
+    "font_family": "system-ui",
+    "border_radius": "14px",
+    "background": "#FDF9F5",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +164,41 @@ async def _release_sse_slot(agent_id: str, job_id: str, redis: Redis) -> None:
     deleted = await redis.delete(slot_key)
     if deleted:
         await redis.decr(f"sse:count:{agent_id}")
+
+
+# ---------------------------------------------------------------------------
+# Stored widget_config → the flat theming dict the widget consumes
+# ---------------------------------------------------------------------------
+
+
+def theming_from_widget_config(widget_config: dict | None) -> dict:
+    """Flatten a stored ``agents.widget_config`` into a flat theming dict.
+
+    The widget turns every theming entry into a CSS custom property
+    (``Object.entries(cfg.theming)`` → ``--<key>``), so a nested block would render
+    as the string "[object Object]". WidgetConfigUpdate's ``colors`` and
+    ``typography`` blocks are therefore spread to the top level; their key spaces
+    do not collide with each other or with ``appearance`` / ``launcher_shape``.
+
+    Null values are dropped rather than serialised — ``font_custom_url`` is
+    optional, and ``--font-custom-url: None`` is not a CSS value.
+
+    Args:
+        widget_config: The JSONB column contents. None or {} means the tenant has
+                       never saved a config.
+
+    Returns:
+        A flat str→value dict. DEFAULT_THEMING (a copy) when nothing is stored.
+    """
+    if not widget_config:
+        return dict(DEFAULT_THEMING)
+    flat: dict = {}
+    for key, value in widget_config.items():
+        if isinstance(value, dict):
+            flat.update({k: v for k, v in value.items() if v is not None})
+        elif value is not None:
+            flat[key] = value
+    return flat
 
 
 # ---------------------------------------------------------------------------
@@ -292,18 +343,14 @@ async def get_widget_config(
     response.headers["Access-Control-Allow-Origin"] = _CORS_ALLOW_ORIGIN
     response.headers["Cache-Control"] = "no-store"
 
-    # Theming config from UI-SPEC.md Surface 1 Token System
-    theming = {
-        "primary_color": "#7B1C3A",
-        "accent_gold": "#B8860B",
-        "font_family": "system-ui",
-        "border_radius": "14px",
-        "background": "#FDF9F5",
-    }
+    # The tenant's saved design (POST /agents/{id}/widget-config, migration 0009),
+    # falling back to DEFAULT_THEMING when nothing has been saved.
+    theming = theming_from_widget_config(agent.widget_config)
 
     return WidgetConfigResponse(
         agent_id=agent_id,
         name=agent.name,
+        agent_name=agent.name,
         theming=theming,
         jwt=jwt_token,
     )
@@ -349,13 +396,12 @@ async def post_widget_chat(
 
     # ------------------------------------------------------------------
     # 2. Rate limit: 60 req/min per agent_id (T-04-04-06)
-    #    Bucket key rotates each 60-second window.
+    #    Shared with POST /agents/{id}/chat via app.services.rate_limit (7.4);
+    #    separate bucket prefix, identical ceiling.
     # ------------------------------------------------------------------
-    bucket = str(int(time.time()) // 60)
-    key = f"rate:{agent_id}:{bucket}"
-    await redis_client.set(key, 0, nx=True, ex=60)
-    count = await redis_client.incr(key)
-    if count > 60:
+    if not await check_agent_turn_rate_limit(
+        _CHAT_RATE_LIMIT_PREFIX, str(agent_id), redis_client
+    ):
         raise HTTPException(
             status_code=429,
             detail="Rate limit exceeded",
@@ -489,6 +535,12 @@ async def widget_job_events(
         - Per-agent_id concurrent SSE connection cap (_MAX_CONCURRENT_SSE_PER_AGENT=50)
         - asyncio.timeout(120) hard cap on the SSE generator loop
 
+    Terminal set: CUSTOMER_TERMINAL_EVENTS, so the server closes the stream itself on
+    agent.response / agent.failed instead of holding a slot to the 120s cap waiting for
+    the client to hang up (BACKLOG 7.3). The judge chain keeps writing to this job_id
+    afterwards; those events remain visible on the authenticated /jobs/{id}/events
+    stream, which keeps the default job-lifecycle terminal set.
+
     Headers:
         X-Accel-Buffering: no          — prevents nginx buffering
         Cache-Control: no-store        — explicit belt-and-suspenders
@@ -522,7 +574,13 @@ async def widget_job_events(
     async def _wrapped_generator():
         try:
             async with asyncio.timeout(120):
-                async for event in event_generator(request, job_id, db, redis_client):
+                async for event in event_generator(
+                    request,
+                    job_id,
+                    db,
+                    redis_client,
+                    terminal_events=CUSTOMER_TERMINAL_EVENTS,
+                ):
                     yield event
         except asyncio.TimeoutError:
             yield "event: timeout\ndata: {}\n\n"

@@ -6,6 +6,8 @@ Tests the SSE event generator:
     - DB replay phase: yields events from DB history
     - DB replay phase: returns immediately on terminal event in history
     - DB replay phase: returns immediately on client disconnect
+    - CUSTOMER_TERMINAL_EVENTS closes the widget stream on agent.response, while the
+      default set leaves the admin stream open for the judge chain (BACKLOG 7.3)
 """
 
 import json
@@ -198,6 +200,169 @@ class TestEventGeneratorDbReplay:
         # Generator returned before yielding because is_disconnected() returned True
         assert len(events) == 0
         pubsub.listen.assert_not_called()
+
+
+class TestCustomerTerminalEvents:
+    """BACKLOG 7.3 — the customer stream must terminate itself."""
+
+    def test_customer_set_contains_agent_response(self):
+        """agent.response ends the customer stream — the whole point of 7.3."""
+        from app.services.sse import CUSTOMER_TERMINAL_EVENTS
+        assert "agent.response" in CUSTOMER_TERMINAL_EVENTS
+
+    def test_customer_set_contains_agent_failed(self):
+        """The failure path leaks a socket the same way the success path did."""
+        from app.services.sse import CUSTOMER_TERMINAL_EVENTS
+        assert "agent.failed" in CUSTOMER_TERMINAL_EVENTS
+
+    def test_customer_set_is_a_superset_of_the_job_lifecycle_set(self):
+        """job.complete / job.failed still close the customer stream too."""
+        from app.services.sse import CUSTOMER_TERMINAL_EVENTS, TERMINAL_EVENTS
+        assert TERMINAL_EVENTS <= CUSTOMER_TERMINAL_EVENTS
+
+    def test_default_set_excludes_agent_events(self):
+        """The admin stream must NOT close on agent.response.
+
+        run_agent_turn dispatches the judge chain after emitting agent.response, so
+        gatekeeper/auditor/strategist land on the same job_id afterwards. Putting
+        agent.response in the default set would make them unreachable there.
+        """
+        from app.services.sse import TERMINAL_EVENTS
+        assert "agent.response" not in TERMINAL_EVENTS
+        assert "agent.failed" not in TERMINAL_EVENTS
+
+
+def _replay_only_mocks(event_types):
+    """Build (request, db, redis) mocks whose DB replay yields *event_types* in order."""
+    events = []
+    for event_type in event_types:
+        evt = MagicMock()
+        evt.id = uuid4()
+        evt.event_type = event_type
+        evt.payload = {}
+        events.append(evt)
+
+    mock_scalars = MagicMock()
+    mock_scalars.__iter__ = MagicMock(return_value=iter(events))
+    mock_db_result = MagicMock()
+    mock_db_result.scalars.return_value = mock_scalars
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=mock_db_result)
+
+    mock_request = AsyncMock()
+    mock_request.is_disconnected = AsyncMock(return_value=False)
+
+    pubsub = AsyncMock()
+    pubsub.__aenter__ = AsyncMock(return_value=pubsub)
+    pubsub.__aexit__ = AsyncMock(return_value=None)
+    pubsub.subscribe = AsyncMock()
+    pubsub.listen = AsyncMock()  # must NOT be called once a terminal event lands
+    mock_redis = AsyncMock()
+    mock_redis.pubsub = MagicMock(return_value=pubsub)
+
+    return mock_request, mock_db, mock_redis, pubsub
+
+
+@pytest.mark.asyncio
+class TestTerminalSetIsPerStream:
+    async def test_customer_stream_stops_at_agent_response(self):
+        """With CUSTOMER_TERMINAL_EVENTS the generator returns on agent.response.
+
+        Without this the server kept yielding keepalives to the 120s cap, holding one
+        of the 50 per-agent SSE slots for the whole two minutes.
+        """
+        from app.services.sse import CUSTOMER_TERMINAL_EVENTS, event_generator
+
+        request, db, redis, pubsub = _replay_only_mocks(
+            ["agent.thinking", "agent.response", "gatekeeper.complete"]
+        )
+
+        events = [
+            e
+            async for e in event_generator(
+                request, uuid4(), db, redis,
+                terminal_events=CUSTOMER_TERMINAL_EVENTS,
+            )
+        ]
+
+        assert [e.event for e in events] == ["agent.thinking", "agent.response"]
+        pubsub.listen.assert_not_called()
+
+    async def test_customer_stream_stops_at_agent_failed(self):
+        """The failure path terminates too."""
+        from app.services.sse import CUSTOMER_TERMINAL_EVENTS, event_generator
+
+        request, db, redis, pubsub = _replay_only_mocks(
+            ["agent.thinking", "agent.failed"]
+        )
+
+        events = [
+            e
+            async for e in event_generator(
+                request, uuid4(), db, redis,
+                terminal_events=CUSTOMER_TERMINAL_EVENTS,
+            )
+        ]
+
+        assert [e.event for e in events] == ["agent.thinking", "agent.failed"]
+        pubsub.listen.assert_not_called()
+
+    async def test_default_stream_does_not_stop_at_agent_response(self):
+        """The admin stream still reaches the judge verdicts after agent.response.
+
+        Same event history as the customer test; only the terminal set differs. This
+        is what a global TERMINAL_EVENTS change would have broken.
+        """
+        from app.services.sse import event_generator
+
+        request, db, redis, _ = _replay_only_mocks(
+            ["agent.thinking", "agent.response", "gatekeeper.complete", "job.complete"]
+        )
+
+        events = []
+        async for sse_event in event_generator(request, uuid4(), db, redis):
+            events.append(sse_event)
+
+        assert [e.event for e in events] == [
+            "agent.thinking",
+            "agent.response",
+            "gatekeeper.complete",
+            "job.complete",
+        ]
+
+    async def test_late_join_replays_full_history_before_terminating(self):
+        """A client that connects after the answer still gets everything before it.
+
+        Terminating the stream must not truncate the replay itself — only end it once
+        the customer-visible answer has been delivered.
+        """
+        from app.services.sse import CUSTOMER_TERMINAL_EVENTS, event_generator
+
+        request, db, redis, _ = _replay_only_mocks(
+            [
+                "agent.thinking",
+                "agent.tool_call",
+                "agent.tool_result",
+                "agent.escalated",
+                "agent.response",
+            ]
+        )
+
+        events = [
+            e
+            async for e in event_generator(
+                request, uuid4(), db, redis,
+                terminal_events=CUSTOMER_TERMINAL_EVENTS,
+            )
+        ]
+
+        assert [e.event for e in events] == [
+            "agent.thinking",
+            "agent.tool_call",
+            "agent.tool_result",
+            "agent.escalated",
+            "agent.response",
+        ]
 
 
 def aiter_from(lst):
