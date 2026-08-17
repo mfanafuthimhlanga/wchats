@@ -1280,9 +1280,25 @@ def _build_instructor_llm() -> InstructorLLM:
     TypeError("Cannot use agenerate() with a synchronous client") whenever its
     client is sync — which is what `instructor.from_anthropic(Anthropic())`
     produces (InstructorLLM.is_async is False for it).
+
+    `thinking={"type": "disabled"}` is 7.20. Instructor's Anthropic TOOLS
+    handler forces `tool_choice={"type": "tool", ...}` on every structured call
+    (instructor/v2/providers/anthropic/handlers.py:392), and the DeepSeek
+    Anthropic-format endpoint 400s a forced tool_choice unless thinking is
+    explicitly off — the same failure the six judge call sites already fix.
+    The seam is InstructorLLM's `**kwargs`: they are merged into `model_args`
+    (ragas/llms/base.py:772), passed through unchanged for the anthropic
+    provider (:803), and splatted into `client.chat.completions.create()` by
+    agenerate (:1109), which instructor forwards to `messages.create`. The flag
+    is a no-op on real Anthropic, so it is provider-neutral.
     """
     client = instructor.from_anthropic(anthropic.AsyncAnthropic())
-    return InstructorLLM(client=client, model=HAIKU_MODEL, provider="anthropic")
+    return InstructorLLM(
+        client=client,
+        model=HAIKU_MODEL,
+        provider="anthropic",
+        thinking={"type": "disabled"},
+    )
 
 
 def _build_ragas_metrics(llm, embeddings) -> list:

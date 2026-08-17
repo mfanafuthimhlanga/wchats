@@ -342,6 +342,24 @@ class TestRunRagasEval:
 
         assert _build_instructor_llm().is_async is True
 
+    def test_instructor_llm_disables_thinking(self, monkeypatch):
+        """7.20: instructor forces `tool_choice={"type": "tool"}` on every
+        structured call, and the DeepSeek Anthropic-format endpoint 400s a
+        forced tool_choice under thinking mode. The kwarg has to survive as far
+        as the dict InstructorLLM.agenerate splats into messages.create, which
+        is what _map_provider_params() returns.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+
+        from app.services.eval_service import _build_instructor_llm
+
+        llm = _build_instructor_llm()
+
+        assert llm._map_provider_params()["thinking"] == {"type": "disabled"}, (
+            "thinking is not disabled on the metric LLM; the forced tool_choice "
+            "instructor adds will 400 on the DeepSeek endpoint"
+        )
+
     def test_run_ragas_eval_empty_scenarios_returns_empty(self):
         """run_ragas_eval returns empty scores/means when no valid scenarios given.
         No mocking needed — the early-exit path never touches Ragas internals.

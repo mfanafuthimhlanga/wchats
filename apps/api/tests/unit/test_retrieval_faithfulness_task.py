@@ -384,3 +384,20 @@ def test_instructor_llm_wraps_an_async_client(monkeypatch):
     assert llm.is_async is True, (
         "InstructorLLM wraps a sync client; agenerate() will raise TypeError"
     )
+
+
+def test_instructor_llm_disables_thinking(monkeypatch):
+    """7.20: instructor forces `tool_choice={"type": "tool"}` on every
+    structured call, and the DeepSeek Anthropic-format endpoint 400s a forced
+    tool_choice under thinking mode. The kwarg has to survive as far as the
+    dict InstructorLLM.agenerate splats into messages.create, which is what
+    _map_provider_params() returns.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+
+    llm = mod._build_instructor_llm()
+
+    assert llm._map_provider_params()["thinking"] == {"type": "disabled"}, (
+        "thinking is not disabled on the metric LLM; the forced tool_choice "
+        "instructor adds will 400 on the DeepSeek endpoint"
+    )
