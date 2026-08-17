@@ -24,7 +24,17 @@ full context — `grounded 1.0`, 7/7 spans supported, each quoting real chunk co
 defect it surfaced: Ragas metrics passed as classes not instances (`7.18`), so `faithfulness` is
 still None.
 
-**E2E-6 is BLOCKED, and the blocker is a credential, not code** (trace
+**E2E-6 IS NOW WAITING ON THE OWNER, AND ON NOTHING ELSE.** The Voyage Tier 1 credit landed, the
+corpus captured 20/20 clean (trace `260817-e2e6-corpus-captured.md`), and
+`compute_correlation.py --check` reports `20 scenarios / 20 responses / 0 of 3 human scores`,
+exit 3 = NOT READY, which is neither pass nor fail. **The one remaining step is the owner filling
+the `human_score` column (1-5) in `apps/api/tests/evals/calibration/human_scores.csv`** - three
+rows minimum, ten present. Nothing else may fill it; a judge scored against model-written labels
+measures its agreement with itself. Then run `compute_correlation.py` for the Spearman >= 0.75
+gate. Scores are per-provider: these calibrate DeepSeek.
+
+*Historical, kept because the failure mode recurs:* **E2E-6 was BLOCKED, and the blocker was a
+credential, not code** (trace
 `260817-e2e6-capture-blocked.md`). `7.18` is fixed and landed. The capture then ran 6 scenarios and
 was stopped: **Voyage has no payment method, so the account is capped at 3 RPM / 10K TPM** (`7.21`,
 owner action at dashboard.voyageai.com). Every retrieval embeds a query and every turn reranks, so
