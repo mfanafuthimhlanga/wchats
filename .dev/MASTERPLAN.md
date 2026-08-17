@@ -110,7 +110,15 @@ signals, observed once, trace recorded.
 
 ### M3 — make the widget and the agent endpoint products
 
-The two runtime surfaces both customers will use. All defects here are located (rows `7.1`-`7.6`).
+The two runtime surfaces both customers will use. All defects here are located (rows `7.1`-`7.6`,
+plus `7.23`, which joined on 2026-08-17: the widget session dies at 15 minutes and the customer
+sees an error, found by the E2E-6 capture rather than by reading).
+
+**One authorisation recorded, because it changes a workspace's shape:** `apps/widget` had NO test
+infrastructure, so its behaviour could only ever be verified by "the build passed". vitest is
+authorised there as a devDependency (devDeps do not touch the 20480-byte gzip budget) for the
+401-retry test, and a theming-contract check joins the repo's existing check-script idiom.
+Untestable behaviour is the defect shape this project keeps paying for.
 
 - One embed-snippet generator: the API's (currently omits `data-api` and produces a widget that
   cannot talk to anything); console renders what the API returns.
