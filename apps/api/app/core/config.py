@@ -222,6 +222,27 @@ class Settings(BaseSettings):
     BLAST_RADIUS_WARN_HOURLY_CENTS: int = 200000   # R2000.00 platform-default hourly-aggregate warning
     BLAST_RADIUS_OBSERVED_WINDOW_DAYS: int = 7     # rolling window the observed blast-radius figures cover
 
+    # The two hosts the embed snippet names (BACKLOG 7.1). The snippet is the
+    # one artifact a customer pastes into their own site, so both halves of it
+    # are deployment configuration, not code:
+    #   WIDGET_CDN_BASE  where widget.js and its index.html are served from
+    #   PUBLIC_API_BASE  the origin the loader's data-api points the widget at
+    # PUBLIC_API_BASE defaults to the local uvicorn address because that is the
+    # only value that is true on a fresh checkout.
+    #
+    # THE DEFAULT IS REFUSED WHEN ENVIRONMENT == "production" — see
+    # deployment_service._make_iframe_snippet, which raises rather than emitting
+    # a snippet, exactly as storage_service._get_s3() refuses S3_ENDPOINT_URL
+    # there. The loader only warns when the API base is EMPTY
+    # (apps/widget/embed/widget.js), so a non-empty localhost value is silent:
+    # the snippet renders on the customer's site and every visitor's browser
+    # calls its own machine, with nothing in the console to say so, and
+    # http://localhost is a potentially-trustworthy origin so an https page does
+    # not even mixed-content block it. A base that cannot be reached from a
+    # visitor's browser must fail to issue a snippet, not issue a dead one.
+    WIDGET_CDN_BASE: str = "https://widget.wchats.app"
+    PUBLIC_API_BASE: str = "http://localhost:8000"
+
     def __repr__(self) -> str:  # T-01-01, T-01-02: never leak field values
         return f"Settings(LOG_LEVEL={self.LOG_LEVEL!r})"
 

@@ -12,6 +12,12 @@ Tests:
         test_approve_sets_is_deployed_true          — DEP-06: POST approve sets is_deployed=True
         test_approve_rejects_blocked                — 422 for recommendation='block'
 
+    TestEmbedSnippet                                — BACKLOG 7.1: one generator, both hosts
+        test_snippet_carries_both_data_attributes   — data-agent AND a non-empty data-api
+        test_both_hosts_come_from_settings          — neither host is a literal
+        test_route_returns_the_generated_snippet    — GET /embed-snippet serves that exact string
+        test_another_tenants_agent_is_404           — IDOR
+
 Mock strategy:
     - FastAPI dependency_overrides for get_current_tenant and get_async_db
     - ASGITransport(app=app) for request dispatch (no live HTTP server)
@@ -42,11 +48,13 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.api.deps import get_async_db, get_current_tenant
+from app.core.config import settings
 from app.main import app
 from app.models.agent import Agent
 from app.models.checklist_run import ChecklistRun
 from app.models.tenant import Tenant
 from app.services.capability_service import canonical_envelope_hash
+from app.services.deployment_service import SnippetNotConfigured, _make_iframe_snippet
 
 # ---------------------------------------------------------------------------
 # Fixture envelope row sets for the BLR-02 drift tests — Task 3 builds hashes
@@ -1072,3 +1080,190 @@ class TestApproveRefusesAnOpenCriticalFinding:
         assert "critical red-team finding(s) are open" in detail, detail
         assert "could not verify" not in detail, detail
         assert "3" in detail, f"the count should reach the operator: {detail}"
+
+
+# ---------------------------------------------------------------------------
+# TestEmbedSnippet — BACKLOG 7.1
+# ---------------------------------------------------------------------------
+
+
+class TestEmbedSnippet:
+    """GET /api/v1/agents/{agent_id}/embed-snippet — the single generator.
+
+    The defect these pin: `_make_iframe_snippet` hardcoded the CDN host and
+    emitted NO `data-api` attribute at all. `apps/widget/embed/widget.js`
+    resolves its API base from `data-api` and only warns when it is absent, so
+    the tag the API issued produced a widget that rendered on the customer's
+    site and could not talk to anything. Meanwhile the console rendered a
+    second snippet it computed itself.
+
+    `test_snippet_carries_both_data_attributes` fails on the old generator (no
+    `data-api=`); `test_both_hosts_come_from_settings` fails on any generator
+    that hardcodes either host, because it moves both settings to values that
+    appear nowhere in the source.
+    """
+
+    def test_snippet_carries_both_data_attributes(self):
+        """The tag names the agent AND the API it must call."""
+        agent_id = str(uuid4())
+        snippet = _make_iframe_snippet(agent_id)
+
+        assert f'data-agent="{agent_id}"' in snippet, snippet
+        assert "data-api=" in snippet, snippet
+        # An empty data-api is the same failure as an absent one — the loader
+        # falls through to warn-and-continue either way.
+        assert 'data-api=""' not in snippet, snippet
+
+    def test_both_hosts_come_from_settings(self, monkeypatch):
+        """Neither host is a literal in the generator."""
+        monkeypatch.setattr(settings, "WIDGET_CDN_BASE", "https://cdn.test.example/")
+        monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api.test.example/")
+
+        snippet = _make_iframe_snippet(str(uuid4()))
+
+        # rstrip("/") on both, so a base configured with a trailing slash
+        # cannot produce a double slash in the URL a customer pastes.
+        assert 'src="https://cdn.test.example/widget.js"' in snippet, snippet
+        assert 'data-api="https://api.test.example"' in snippet, snippet
+        assert "widget.wchats.app" not in snippet, snippet
+
+    async def test_route_returns_the_generated_snippet(self):
+        """The console's snippet is the API's snippet, byte for byte."""
+        fake_tenant = _make_fake_tenant()
+        agent_id = uuid4()
+        mock_agent = _make_ready_agent(fake_tenant, agent_id=agent_id)
+        mock_db = _make_mock_db(mock_agent)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get(
+                    f"/api/v1/agents/{agent_id}/embed-snippet",
+                    headers={"X-API-Key": "vrd_live_test"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["agent_id"] == str(agent_id)
+        assert body["snippet"] == _make_iframe_snippet(str(agent_id))
+        assert f'data-agent="{agent_id}"' in body["snippet"]
+        assert "data-api=" in body["snippet"]
+
+    async def test_another_tenants_agent_is_404(self):
+        """An embed tag names a live endpoint — IDOR is a 404, not a snippet."""
+        fake_tenant = _make_fake_tenant()
+        other_tenant = _make_fake_tenant()
+        agent_id = uuid4()
+        mock_agent = _make_ready_agent(other_tenant, agent_id=agent_id)
+        mock_db = _make_mock_db(mock_agent)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get(
+                    f"/api/v1/agents/{agent_id}/embed-snippet",
+                    headers={"X-API-Key": "vrd_live_test"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 404, response.text
+
+
+# ---------------------------------------------------------------------------
+# TestSnippetApiBaseIsRefusedInProduction — D2
+# ---------------------------------------------------------------------------
+
+
+class TestSnippetApiBaseIsRefusedInProduction:
+    """PUBLIC_API_BASE's localhost default must not ship a snippet.
+
+    The loader warns only when the API base is EMPTY
+    (apps/widget/embed/widget.js), so the non-empty `http://localhost:8000`
+    default is silent: the snippet renders on the customer's site, every
+    visitor's browser calls its own machine, and http://localhost is
+    potentially-trustworthy so an https page does not mixed-content block it
+    either. Mirrors storage_service._get_s3()'s refusal of S3_ENDPOINT_URL.
+    """
+
+    @pytest.mark.parametrize(
+        "api_base",
+        [
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+            "https://localhost",
+            "http://0.0.0.0:8000",
+            "",
+            "   ",
+        ],
+    )
+    def test_refused_in_production(self, monkeypatch, api_base):
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+        monkeypatch.setattr(settings, "PUBLIC_API_BASE", api_base)
+
+        with pytest.raises(SnippetNotConfigured) as exc_info:
+            _make_iframe_snippet(str(uuid4()))
+
+        assert "PUBLIC_API_BASE" in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        "api_base", ["http://localhost:8000", "http://127.0.0.1:8000", ""]
+    )
+    def test_allowed_in_development(self, monkeypatch, api_base):
+        """The same values are the point of the default outside production."""
+        monkeypatch.setattr(settings, "ENVIRONMENT", "development")
+        monkeypatch.setattr(settings, "PUBLIC_API_BASE", api_base)
+
+        snippet = _make_iframe_snippet(str(uuid4()))
+
+        assert f'data-api="{api_base}"' in snippet, snippet
+
+    def test_a_real_public_origin_is_allowed_in_production(self, monkeypatch):
+        """Only loopback and empty are refused — a configured host still works."""
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+        monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api.wchats.app/")
+
+        snippet = _make_iframe_snippet(str(uuid4()))
+
+        assert 'data-api="https://api.wchats.app"' in snippet, snippet
+
+    async def test_route_answers_503_rather_than_issuing_a_dead_snippet(
+        self, monkeypatch
+    ):
+        """A snippet a customer cannot use is an unavailable service, not a 200.
+
+        Same translation documents.py applies to StorageNotConfigured.
+        """
+        fake_tenant = _make_fake_tenant()
+        agent_id = uuid4()
+        mock_agent = _make_ready_agent(fake_tenant, agent_id=agent_id)
+        mock_db = _make_mock_db(mock_agent)
+
+        app.dependency_overrides[get_current_tenant] = lambda: fake_tenant
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+        monkeypatch.setattr(settings, "PUBLIC_API_BASE", "http://localhost:8000")
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get(
+                    f"/api/v1/agents/{agent_id}/embed-snippet",
+                    headers={"X-API-Key": "vrd_live_test"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 503, response.text
+        assert "PUBLIC_API_BASE" in response.json()["detail"]
