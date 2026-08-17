@@ -7,7 +7,6 @@
   --border-soft: #EDE3D8;
   --border-hard: #B8906A;
   --accent: #7B1C3A;
-  --accent-hover: #5E1229;
   --accent-deep: #3D0B1F;
   --accent-dim: rgba(123,28,58,0.08);
   --gold: #B8860B;
@@ -54,16 +53,24 @@ body, #root {
   overflow: hidden;
 }
 
+/* --header-bg / --header-text belong to this bar alone. They were --surface-2
+   and --text-2, which .citation-row also reads, so a tenant saving the
+   widget-config form unchanged painted the citation row in header_bg (#7B1C3A)
+   while .view-link stayed --accent (user_bubble_bg, the same #7B1C3A) — a VIEW
+   control at 1.00:1, invisible, where un-themed it measures 8.99:1. Header
+   colours now stop at the header; the citation row keeps the stylesheet's
+   surface. Fallbacks preserve the un-themed appearance and follow the
+   --send-button / --input-bg convention already used below. */
 .disclosure-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   height: 32px;
   padding: 0 12px;
-  background: var(--surface-2);
+  background: var(--header-bg, var(--surface-2));
   border-bottom: 1px solid var(--border);
   font-size: 11px;
-  color: var(--text-2);
+  color: var(--header-text, var(--text-2));
   flex-shrink: 0;
 }
 
@@ -100,7 +107,7 @@ body, #root {
 
 .message-bubble.user {
   background: var(--accent);
-  color: #fff;
+  color: var(--user-bubble-text, #fff);
   align-self: flex-end;
   border-radius: var(--radius-sm);
 }
@@ -267,7 +274,7 @@ body, #root {
   font-size: 14px;
   line-height: 1.4;
   color: var(--text-1);
-  background: var(--bg);
+  background: var(--input-bg, var(--bg));
   max-height: calc(3 * 1.4em + 16px);
   overflow-y: auto;
 }
@@ -287,7 +294,7 @@ body, #root {
   height: 44px;
   min-width: 44px;
   min-height: 44px;
-  background: var(--accent);
+  background: var(--send-button, var(--accent));
   color: #fff;
   border: none;
   border-radius: var(--radius-xs);
@@ -298,7 +305,10 @@ body, #root {
   flex-shrink: 0;
 }
 
-.input-bar button.send:hover { background: var(--accent-hover); }
+/* The hover shade is derived, not a second token: the send button's colour is
+   per-tenant (--send-button / --accent), so a fixed darker burgundy would hover
+   the wrong way on every brand but the default one. */
+.input-bar button.send:hover { filter: brightness(0.88); }
 .input-bar button.send:focus-visible { box-shadow: var(--shadow-focus); outline: none; }
 .input-bar button.send:disabled { opacity: 0.4; cursor: not-allowed; }
 

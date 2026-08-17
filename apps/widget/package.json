@@ -6,13 +6,19 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "postbuild": "node scripts/check-size.mjs",
-    "check-size": "node scripts/check-size.mjs"
+    "postbuild": "node scripts/check-size.mjs && node scripts/check-theming-contract.mjs && node scripts/sync-embed.mjs",
+    "check-size": "node scripts/check-size.mjs",
+    "check:theming-contract": "node scripts/check-theming-contract.mjs",
+    "check:embed-sync": "node scripts/sync-embed.mjs --check",
+    "test:unit": "vitest run"
   },
-  "dependencies": { "preact": "10.29.1" },
+  "dependencies": {
+    "preact": "10.29.1"
+  },
   "devDependencies": {
-    "vite": "8.0.13",
     "@preact/preset-vite": "2.10.5",
-    "terser": "5.47.1"
+    "terser": "5.47.1",
+    "vite": "8.0.13",
+    "vitest": "^4.1.10"
   }
 }
