@@ -9,8 +9,21 @@ THE GATE IS COHEN'S KAPPA ON BINARY VERDICTS (BACKLOG 8.2b, owner decision
 2026-08-18). Spearman is still computed over whichever rows carry an optional
 1-5 score, and still reported, but it no longer decides anything.
 
-    gate       Cohen's kappa >= 0.6 on (human_verdict, judge verdict)
+    gate       Cohen's kappa on (human_verdict, judge verdict), against two
+               intervals bootstrapped from the same labels - never a constant
     reported   Matthews correlation, the 2x2 confusion matrix, Spearman rho
+
+THE THRESHOLD IS DERIVED, NOT CHOSEN (BACKLOG 8.2c, owner instruction
+2026-08-18: "the kappa measurement must not be a choice it must be derived from
+data"). `KAPPA_THRESHOLD = 0.6` is gone. Both halves below are required:
+
+    (a) beats chance      judge_ci_low  > 0
+    (b) reaches ceiling   judge_ci_high >= human_ci_low
+
+The ceiling is the owner's own test-retest kappa over the SAME rows, from the
+blind second pass in human_scores_pass2.csv. A judge cannot be expected to agree
+with a human more than that human agrees with themself, so that is the scale.
+With no second pass on file the harness reports NOT CALIBRATED YET.
 
 WHY THE GATE MOVED, and it supersedes AI-SPEC.md §5.2
     Two defects in one number. The human column was a 1-5 SCALE, and a human
@@ -32,6 +45,7 @@ WHY THE GATE MOVED, and it supersedes AI-SPEC.md §5.2
 Usage:
     python apps/api/tests/evals/calibration/compute_correlation.py
     python apps/api/tests/evals/calibration/compute_correlation.py --check
+    python apps/api/tests/evals/calibration/compute_correlation.py --emit-second-pass
 
     --check reports readiness only. It touches no network and no API key: it
     says which inputs the harness has and which it is missing, which is the
@@ -60,19 +74,27 @@ Requirements:
       agent and AGENT_E2E_ENABLED=1 - see --check for what is missing)
     - the calibration sheet has `human_verdict` filled by a human (pass/fail).
       `human_score` (1-5) is optional and feeds the reported Spearman only
+    - human_scores_pass2.csv holds the SAME rows labelled a second time, blind.
+      Emit it with --emit-second-pass; it is what measures the ceiling
     - ANTHROPIC_API_KEY set in environment
 
 Exit codes:
-    0 (EXIT_CALIBRATED)         - kappa >= 0.6 over >= MIN_PAIRS pairs
-    1 (EXIT_NOT_CALIBRATED)     - kappa < 0.6; the judge is not calibrated
+    0 (EXIT_CALIBRATED)         - both halves of the gate passed over
+                                  >= MIN_PAIRS pairs
+    1 (EXIT_NOT_CALIBRATED)     - a half was MEASURED and FAILED: the judge's
+                                  interval includes 0, or it tops out below the
+                                  human's own lower bound
     2 (EXIT_SETUP_ERROR)        - missing files, unusable rows, other setup error
-    3 (EXIT_NOT_CALIBRATED_YET) - no human scores, fewer than MIN_PAIRS usable
+    3 (EXIT_NOT_CALIBRATED_YET) - no human scores, no blind second pass, fewer
+                                  than MIN_PAIRS usable
                                   pairs, or the judge failed too many of its own
                                   calls to have measured the set. NOT a pass and
                                   NOT a failure of the judge: the measurement has
                                   not been made.
     4 (EXIT_READY_TO_CALIBRATE) - `--check` only: every input is present and the
                                   correlation has NOT been computed.
+    5 (EXIT_SECOND_PASS_EMITTED) - `--emit-second-pass` only: the blind sheet was
+                                  written and nothing was measured.
 
     --check NEVER RETURNS 0. It makes no judge call by design, so it cannot
     establish the one thing exit 0 means. The first version of this fix returned
@@ -88,7 +110,16 @@ from __future__ import annotations
 import csv
 import json
 import pathlib
+import random
 import sys
+
+from tests.evals.calibration.agreement import (
+    bootstrap_kappa,
+    calibration_verdict,
+    cohens_kappa,
+    confusion,
+    human_ceiling,
+)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -99,6 +130,17 @@ EVALS_DIR = CALIBRATION_DIR.parent
 SCENARIOS_DIR = EVALS_DIR / "scenarios"
 RESPONSES_DIR = EVALS_DIR / "responses"
 HUMAN_SCORES_CSV = CALIBRATION_DIR / "human_scores.csv"
+
+# The SECOND labelling pass, and it is a separate FILE rather than a second
+# column, because the ceiling it measures is only worth anything if the pass is
+# BLIND. A `human_verdict_2` column sits next to the first verdict on the same
+# row, so the labeller reads their own answer while writing the new one and the
+# number that comes out measures their memory instead of their consistency. That
+# would inflate the ceiling towards 1.0 and refuse judges for the wrong reason.
+#
+# Same header, same reader, same validation: it is the same instrument asked a
+# second time. `--emit-second-pass` writes it, shuffled and empty.
+HUMAN_SCORES_PASS2_CSV = CALIBRATION_DIR / "human_scores_pass2.csv"
 
 THRESHOLD = 0.75  # AI-SPEC.md §5.2, Spearman. Now a REPORTED number, not the gate.
 
@@ -116,14 +158,22 @@ THRESHOLD = 0.75  # AI-SPEC.md §5.2, Spearman. Now a REPORTED number, not the g
 # Cohen's kappa fixes both: it needs only a binary label, and it subtracts the
 # rate at which the two would agree by chance.
 #
-#   below 0.4   the judge is not tracking the human
-#   0.6 to 0.8  substantial
-#   above 0.8   strong
+# AND THERE IS NO KAPPA_THRESHOLD ANY MORE (BACKLOG 8.2c). It was 0.6, the
+# Landis-Koch band boundary for "substantial" - a 1977 rule of thumb published
+# with no empirical basis, so it was not merely unmeasured here, it was never
+# measured anywhere. The owner refused it on 2026-08-18: "the kappa measurement
+# must not be a choice it must be derived from data."
 #
-# 0.6 is the floor those bands put on "substantial", and it is a CHOICE rather
-# than a measurement: nothing in this repo has ever produced a kappa, so there is
-# no observed distribution to set it against. Move it when there is one.
-KAPPA_THRESHOLD = 0.6
+# What decides now is two intervals computed from the labels themselves, in
+# agreement.py, and BOTH are required:
+#
+#     (a) beats chance      judge_ci_low  > 0
+#     (b) reaches ceiling   judge_ci_high >= human_ci_low
+#
+# (b) is the one that carries the scale: a judge cannot be expected to agree
+# with a human more than that human agrees with THEMSELF, so the owner's
+# test-retest kappa over the same rows is the ceiling. With no second pass on
+# file there is no scale, and the harness refuses rather than inventing one.
 
 # Kappa COLLAPSES on imbalanced data: when 95% of responses are good, chance
 # agreement is already near certain, so a good judge scores badly. Matthews
@@ -176,6 +226,11 @@ EXIT_NOT_CALIBRATED_YET = 3
 # --check outcome may ever share an exit code with one that did. See the
 # module docstring.
 EXIT_READY_TO_CALIBRATE = 4
+
+# Also not a status. `--emit-second-pass` writes a sheet and measures nothing,
+# so it may not share a code with any outcome that did measure something. Four
+# outcomes got four codes for that reason (audit D7); this is the fifth.
+EXIT_SECOND_PASS_EMITTED = 5
 
 STATUS_CALIBRATED = "calibrated"
 STATUS_NOT_CALIBRATED = "not_calibrated"
@@ -235,56 +290,6 @@ def spearman(xs: list[float], ys: list[float]) -> float:
 # ---------------------------------------------------------------------------
 # Agreement statistics on binary labels (stdlib only)
 # ---------------------------------------------------------------------------
-
-def confusion(pairs: list[tuple[bool, bool]]) -> dict[str, int]:
-    """The 2x2 of (human_passed, judge_passed). Four cells, four actions.
-
-    This is the report card, not a step towards one number. Each cell prescribes
-    something different:
-
-        both pass                nothing to do
-        human pass, judge fail   the judge is too harsh; read its stated reasons
-        human fail, judge pass   the judge is too LENIENT; bad answers are
-                                 reaching customers, and this is the dangerous cell
-        both fail                the AI SYSTEM is the problem, not the eval
-
-    That last cell is the one that stops a team tuning a judge when the product
-    is what is broken, and a single correlation coefficient cannot point at it.
-    """
-    cells = {"both_pass": 0, "judge_too_harsh": 0, "judge_too_lenient": 0, "both_fail": 0}
-    for human_passed, judge_passed in pairs:
-        if human_passed and judge_passed:
-            cells["both_pass"] += 1
-        elif human_passed and not judge_passed:
-            cells["judge_too_harsh"] += 1
-        elif not human_passed and judge_passed:
-            cells["judge_too_lenient"] += 1
-        else:
-            cells["both_fail"] += 1
-    return cells
-
-
-def cohens_kappa(cells: dict[str, int]) -> float:
-    """Chance-corrected agreement. NaN when chance agreement is already certain.
-
-    Returns NaN rather than 0.0 for the degenerate case, because 0.0 means "no
-    better than chance" and NaN means "this set cannot distinguish the two". A
-    corpus where both raters passed everything is the second, and reporting it as
-    the first would read as a judge failure.
-    """
-    n11, n10 = cells["both_pass"], cells["judge_too_harsh"]
-    n01, n00 = cells["judge_too_lenient"], cells["both_fail"]
-    n = n11 + n10 + n01 + n00
-    if n == 0:
-        return float("nan")
-
-    observed = (n11 + n00) / n
-    human_pass, judge_pass = (n11 + n10) / n, (n11 + n01) / n
-    expected = human_pass * judge_pass + (1 - human_pass) * (1 - judge_pass)
-    if expected >= 1.0:
-        return float("nan")
-    return (observed - expected) / (1 - expected)
-
 
 def matthews(cells: dict[str, int]) -> float:
     """Matthews correlation. NaN when a whole row or column of the 2x2 is empty.
@@ -429,6 +434,62 @@ def load_human_scores() -> list[dict]:
     read_human_score_rows() and read the denominator alongside the rows.
     """
     return read_human_score_rows()["rows"]
+
+
+def read_second_pass(path: pathlib.Path | None = None) -> dict:
+    """The blind re-label, keyed by (scenario_id, dimension).
+
+    Read by the SAME function as the first sheet, because it is the same
+    instrument asked a second time - so the BOM handling, the header check and
+    the pass/fail validation all apply to it for free, and a spreadsheet round
+    trip cannot make it read as unlabelled.
+
+    Returns `{"verdicts", "attempted", "valid", "unusable", "missing_file"}`
+    where `verdicts` maps (scenario_id, dimension) -> bool.
+    """
+    parsed = read_human_score_rows(path or HUMAN_SCORES_PASS2_CSV)
+    return {
+        "verdicts": {
+            (row["scenario_id"], row["dimension"]): row["human_passed"]
+            for row in parsed["rows"]
+        },
+        "attempted": parsed["attempted"],
+        "valid": parsed["valid"],
+        "unusable": parsed["unusable"],
+        "missing_file": parsed["missing_file"],
+    }
+
+
+def ceiling_pairs_for(rows: list[tuple[str, str, bool]], second: dict) -> dict:
+    """Pair each judged row's first verdict with its blind second verdict.
+
+    `rows` is the set of (scenario_id, dimension, human_passed) that ACTUALLY
+    ENTERED the judge's matrix, and the ceiling is measured over exactly those
+    and no others. Two reasons, and the second is the load-bearing one:
+
+      - The ceiling caps the judge, so it has to describe the rows the judge was
+        measured on. A row the judge never scored says nothing about what
+        agreement was achievable on the rows it did.
+      - The two intervals are then computed at the SAME n, so comparing them is
+        a statement about agreement rather than about sample size. A ceiling
+        measured over thirty rows against a judge measured over ten would be the
+        tighter interval by construction, and the judge would fail (b) for being
+        outnumbered.
+
+    A row missing its second verdict is NAMED, and the ceiling is withheld
+    rather than computed over the subset that happens to be complete: that
+    subset is not a random sample of the sheet, it is whichever rows the
+    labeller got to.
+    """
+    pairs: list[tuple[bool, bool]] = []
+    missing: list[str] = []
+    for scenario_id, dimension, human_passed in rows:
+        key = (scenario_id, dimension)
+        if key in second["verdicts"]:
+            pairs.append((human_passed, second["verdicts"][key]))
+        else:
+            missing.append(f"{scenario_id}/{dimension}")
+    return {"pairs": pairs, "missing": missing}
 
 
 # ---------------------------------------------------------------------------
@@ -596,10 +657,24 @@ def readiness() -> dict:
             f"against the {MIN_PAIRS} needed - re-capture them"
         )
 
-    awaiting_owner = parsed["valid"] < MIN_PAIRS
+    # BACKLOG 8.2c. The ceiling is an OWNER input like the verdicts are, and a
+    # missing one is reported here rather than discovered after a paid judge run
+    # whose numbers nobody may read.
+    second = read_second_pass()
+    rows_without_second = [
+        f"{r['scenario_id']}/{r['dimension']}"
+        for r in parsed["rows"]
+        if (r["scenario_id"], r["dimension"]) not in second["verdicts"]
+    ]
+    awaiting_ceiling = parsed["valid"] == 0 or bool(rows_without_second)
+    awaiting_owner = parsed["valid"] < MIN_PAIRS or awaiting_ceiling
 
     return {
         "scenarios_present": len(scenario_files),
+        "second_pass_valid": second["valid"],
+        "second_pass_missing_file": second["missing_file"],
+        "rows_without_second_verdict": rows_without_second,
+        "awaiting_ceiling": awaiting_ceiling,
         "deflected_responses": deflected,
         "scorable_rows": scorable_rows,
         "human_scores_attempted": parsed["attempted"],
@@ -630,6 +705,11 @@ def print_readiness(report: dict) -> int:
         f"/ {report['human_scores_attempted']} present"
     )
     print(f"  recorded responses on disk : {report['responses_present']}")
+    print(
+        f"  rows re-labelled blind     : {report['second_pass_valid']} "
+        + ("(no second-pass sheet yet)" if report["second_pass_missing_file"] else
+           f"/ {report['human_scores_valid']} needed for the ceiling")
+    )
 
     if report["deflected_responses"]:
         print(
@@ -659,6 +739,21 @@ def print_readiness(report: dict) -> int:
             "  a judge calibrated against model-written labels measures agreement with\n"
             "  itself, which is exactly the tautology this file exists to detect.\n"
         )
+
+    if report["awaiting_ceiling"]:
+        # Named even when the first sheet is empty too. Both are the owner's, both
+        # are missing, and a report that mentions only the nearer one produces a
+        # second evening of work nobody planned for.
+        print("Awaiting the owner: the HUMAN CEILING. Label the same rows a SECOND time, blind.")
+        if not report["human_scores_valid"]:
+            print("  After the first sheet above, not instead of it.")
+        print("  Run --emit-second-pass to write a shuffled sheet with the verdict column")
+        print("  empty, then fill it WITHOUT opening the first one. A judge cannot be")
+        print("  expected to agree with you more than you agree with yourself, so your own")
+        print("  test-retest kappa is the scale every judge kappa is read against. Without")
+        print("  it there is no scale, and the harness reports NOT CALIBRATED YET rather")
+        print("  than inventing a number.")
+        print()
 
     if report["ready_to_calibrate"]:
         print("READY - every input is present; run without --check to compute the correlation.")
@@ -702,6 +797,9 @@ def compute_correlation(judge_fn) -> dict:
         return {
             "status": STATUS_SETUP_ERROR,
             "kappa": None,
+            "judge_interval": None,
+            "ceiling_interval": None,
+            "gate": None,
             "matthews": None,
             "cells": None,
             "rho": None,
@@ -717,6 +815,9 @@ def compute_correlation(judge_fn) -> dict:
         return {
             "status": STATUS_NOT_CALIBRATED_YET,
             "kappa": None,
+            "judge_interval": None,
+            "ceiling_interval": None,
+            "gate": None,
             "matthews": None,
             "cells": None,
             "rho": None,
@@ -734,6 +835,9 @@ def compute_correlation(judge_fn) -> dict:
     human_scores: list[float] = []
     judge_scores: list[float] = []
     binary_pairs: list[tuple[bool, bool]] = []
+    # The rows the judge was actually measured on. The human ceiling is
+    # measured over exactly these, so the two intervals share an n.
+    judged_rows: list[tuple[str, str, bool]] = []
     errors: list[str] = []
     table: list[dict] = []
 
@@ -789,6 +893,7 @@ def compute_correlation(judge_fn) -> dict:
         # The GATE's pair: two binary labels. Every usable row contributes one,
         # because `human_verdict` is mandatory.
         binary_pairs.append((h_passed, verdict["verdict"] == "PASS"))
+        judged_rows.append((sid, dim, h_passed))
 
         # Spearman's pair: only rows where the human ALSO gave a 1-5. Reported,
         # not gated, and its own count is reported beside it so a rho over three
@@ -810,6 +915,9 @@ def compute_correlation(judge_fn) -> dict:
         return {
             "status": STATUS_NOT_CALIBRATED_YET,
             "kappa": None,
+            "judge_interval": None,
+            "ceiling_interval": None,
+            "gate": None,
             "matthews": None,
             "cells": cells,
             "rho": None,
@@ -827,6 +935,9 @@ def compute_correlation(judge_fn) -> dict:
         return {
             "status": STATUS_NOT_CALIBRATED_YET,
             "kappa": None,
+            "judge_interval": None,
+            "ceiling_interval": None,
+            "gate": None,
             "matthews": None,
             "cells": cells,
             "rho": None,
@@ -851,17 +962,38 @@ def compute_correlation(judge_fn) -> dict:
     # and is exactly why it stopped being the gate.
     rho = spearman(human_scores, judge_scores) if len(human_scores) >= MIN_PAIRS else float("nan")
 
+    # BACKLOG 8.2c. The gate is two intervals bootstrapped from these same
+    # labels, never a constant. `judge` is what this run measured; `ceiling` is
+    # what the labeller achieves against themself on the SAME rows.
+    judge_interval = bootstrap_kappa(binary_pairs)
+    second = read_second_pass()
+    ceiling = ceiling_pairs_for(judged_rows, second)
+    ceiling_interval = human_ceiling(ceiling["pairs"]) if not ceiling["missing"] else None
+
+    if ceiling["missing"]:
+        errors = errors + [
+            f"{len(ceiling['missing'])} of {pairs} judged row(s) have no blind second "
+            f"verdict, so the human ceiling was NOT computed: {', '.join(ceiling['missing'])}. "
+            f"Run `--emit-second-pass`, label {HUMAN_SCORES_PASS2_CSV.name} without "
+            "looking at the first sheet, and run again."
+        ]
+
+    gate = calibration_verdict(judge_interval, ceiling_interval)
+
     result = {
         "kappa": None if kappa != kappa else kappa,
         "matthews": None if mcc != mcc else mcc,
         "cells": cells,
         "rho": None if rho != rho else rho,
+        "judge_interval": judge_interval,
+        "ceiling_interval": ceiling_interval,
+        "gate": gate,
         "scored_pairs": len(human_scores),
         "pairs": pairs,
         "pair_rate": pair_rate,
         "attempted": parsed["attempted"],
         "valid": parsed["valid"],
-        "errors": errors,
+        "errors": errors + gate["reasons"],
         "table": table,
     }
 
@@ -869,7 +1001,8 @@ def compute_correlation(judge_fn) -> dict:
         # Undefined, not zero. Both raters labelled everything the same way, so
         # chance agreement is already certain and this set cannot distinguish a
         # good judge from a coin. Matthews is reported if it survived; neither is
-        # a pass.
+        # a pass. The bootstrap reaches the same conclusion one step later; this
+        # branch keeps the specific message, and orders it first.
         result["status"] = STATUS_NOT_CALIBRATED_YET
         result["errors"] = errors + [
             "Cohen's kappa is undefined: every label on one side is identical, so "
@@ -878,7 +1011,17 @@ def compute_correlation(judge_fn) -> dict:
         ]
         return result
 
-    result["status"] = STATUS_CALIBRATED if kappa >= KAPPA_THRESHOLD else STATUS_NOT_CALIBRATED
+    # A FAILED half is a measurement and reports NOT CALIBRATED. A MISSING half -
+    # an unusable judge interval, or a ceiling nobody has labelled - is an
+    # absence and reports NOT CALIBRATED YET. The distinction is the whole
+    # point of the four exit codes: one tells the owner to fix the judge, the
+    # other tells them the measurement has not been made.
+    if gate["calibrated"]:
+        result["status"] = STATUS_CALIBRATED
+    elif gate["beats_chance"] is False or gate["reaches_ceiling"] is False:
+        result["status"] = STATUS_NOT_CALIBRATED
+    else:
+        result["status"] = STATUS_NOT_CALIBRATED_YET
     return result
 
 
@@ -914,7 +1057,7 @@ def _print_agreement(result: dict) -> None:
     kappa = result.get("kappa")
     mcc = result.get("matthews")
     rho = result.get("rho")
-    print(f"  Cohen's kappa   {kappa:.3f}   GATE, floor {KAPPA_THRESHOLD}"
+    print(f"  Cohen's kappa   {kappa:.3f}   the point estimate; the INTERVAL is the gate"
           if kappa is not None else
           "  Cohen's kappa   undefined   one label on both sides; chance agreement is certain")
     print(f"  Matthews        {mcc:.3f}   reported; read this when the corpus is lopsided"
@@ -927,11 +1070,124 @@ def _print_agreement(result: dict) -> None:
         print("  Spearman rho    not computed   too few rows carried an optional 1-5 score")
     print(f"\n  {result['pairs']} labelled row(s) produced a verdict pair "
           f"({result['pair_rate']:.0%} of {result['valid']}).")
+    _print_gate(result)
+
+
+def _print_gate(result: dict) -> None:
+    """The two intervals and which half each one answers (BACKLOG 8.2c).
+
+    Printed as intervals rather than as a mark against a number, because there
+    is no number: the gate compares one measured interval against another, and a
+    reader who cannot see both cannot tell a judge that is wrong from a corpus
+    too small to say anything about one.
+    """
+    gate = result.get("gate")
+    if not gate:
+        return
+
+    print()
+    print("The gate, derived from these labels and from no constant:")
+    print()
+    _print_interval("judge 95% CI", result.get("judge_interval"),
+                    "(a) beats chance when this low bound is above 0")
+    _print_interval("human ceiling", result.get("ceiling_interval"),
+                    "(b) the judge's high bound must reach this low bound")
+    print()
+    print(f"  (a) beats chance    {_half(gate['beats_chance'])}")
+    print(f"  (b) reaches ceiling {_half(gate['reaches_ceiling'])}")
+
+
+def _print_interval(label: str, interval: dict | None, note: str) -> None:
+    """An interval that was never measured must not render as a bad one."""
+    if interval is None:
+        print(f"  {label:<16}never measured   {note}")
+    elif interval.get("usable"):
+        print(f"  {label:<16}[{interval['low']:+.3f}, {interval['high']:+.3f}]   {note}")
+    else:
+        print(f"  {label:<16}not a measurement   "
+              f"{interval['undefined_fraction']:.0%} of resamples had no kappa at all")
+
+
+def _half(value: bool | None) -> str:
+    """A missing half is not a failed one, and must never print as one."""
+    if value is True:
+        return "yes"
+    if value is False:
+        return "NO"
+    return "not measured"
+
+
+#: Fixed so a re-emit after a deleted file produces the same sheet, and so a
+#: test can assert the order changed rather than assert against luck.
+SECOND_PASS_SHUFFLE_SEED = 20260818
+
+
+def emit_second_pass(path: pathlib.Path | None = None) -> tuple[int, list[str]]:
+    """Write the blind re-labelling sheet. Returns (exit code, messages).
+
+    Three refusals, and each one protects the ceiling from being a number about
+    something else:
+
+      - **The file already exists.** Overwriting it destroys labels only the
+        owner can produce. Delete it deliberately if that is really the intent.
+      - **The first pass is incomplete.** Labelling both sheets in one sitting is
+        not a test-retest; it is one pass copied. Finish the first, then come
+        back.
+      - **There are no rows.** Nothing to re-label.
+
+    What it writes: `scenario_id`, `dimension`, and an EMPTY `human_verdict`,
+    shuffled. No `notes` column, because pass one's notes are the owner's own
+    reasoning and reading them back is reading back the answer.
+    """
+    target = path or HUMAN_SCORES_PASS2_CSV
+    if target.exists():
+        return EXIT_SETUP_ERROR, [
+            f"{target.name} already exists and was NOT overwritten. It holds labels "
+            "only you can produce; delete it by hand if you really mean to start over."
+        ]
+
+    parsed = read_human_score_rows()
+    if parsed["missing_file"]:
+        return EXIT_SETUP_ERROR, [f"{HUMAN_SCORES_CSV.name} not found."]
+    if parsed["unusable"] or parsed["valid"] == 0:
+        return EXIT_SETUP_ERROR, [
+            f"the first pass is not finished: {parsed['valid']} of {parsed['attempted']} "
+            "row(s) carry a verdict. Labelling both sheets in one sitting is one pass "
+            "copied, not a test-retest, so this refuses rather than emitting a partial "
+            "sheet you cannot re-emit later. Either finish the rows below, or DELETE the "
+            "ones you do not intend to label - the ceiling is measured over the rows that "
+            "reach the judge, so a row you never label costs nothing by being absent."
+        ] + parsed["unusable"]
+
+    rows = [(r["scenario_id"], r["dimension"]) for r in parsed["rows"]]
+    random.Random(SECOND_PASS_SHUFFLE_SEED).shuffle(rows)
+
+    # Written by hand rather than through the stdlib CSV writer: the harness must
+    # never own a code path that can serialise a verdict into a calibration
+    # sheet, and tests/unit/test_calibration_harness.py asserts on the absence of
+    # those two names in this file's source.
+    body = "scenario_id,dimension,human_verdict"
+    for scenario_id, dimension in rows:
+        body += "%s%s,%s," % (chr(10), scenario_id, dimension)
+    target.write_text(body + chr(10), encoding="utf-8")
+
+    return EXIT_SECOND_PASS_EMITTED, [
+        f"Wrote {target.name}: {len(rows)} row(s), shuffled, verdict column empty.",
+        "Fill it WITHOUT opening the first sheet. Leave time between the two passes if",
+        "you can - what is being measured is how consistently you judge these rows, and",
+        "that number caps every judge this harness will ever grade.",
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns the exit code rather than calling sys.exit."""
     args = sys.argv[1:] if argv is None else argv
+
+    if "--emit-second-pass" in args:
+        code, messages = emit_second_pass()
+        for message in messages:
+            print(message)
+        return code
 
     if "--check" in args:
         return print_readiness(readiness())
@@ -1019,13 +1275,16 @@ def main(argv: list[str] | None = None) -> int:
         _print_agreement(result)
         if status == STATUS_CALIBRATED:
             print(
-                f"PASS - the judge is calibrated (kappa {result['kappa']:.3f} >= "
-                f"{KAPPA_THRESHOLD}) over {result['pair_rate']:.0%} of the labelled set."
+                f"PASS - the judge is calibrated over {result['pair_rate']:.0%} of the "
+                "labelled set. Its kappa interval clears chance AND reaches\n"
+                "the labeller's own test-retest interval, so it is not distinguishably "
+                "worse than\n"
+                "the person who wrote the labels."
             )
         else:
             print(
-                f"FAIL - the judge is NOT calibrated (kappa {result['kappa']:.3f} < "
-                f"{KAPPA_THRESHOLD}).\n"
+                "FAIL - the judge is NOT calibrated. The half that failed is named "
+                "above, with the interval that decided it.\n"
                 "Read the confusion matrix above before touching judge.py: if the "
                 "both-fail\ncell is the large one, the AI SYSTEM is what is broken and "
                 "tuning the judge\nwill only teach it to agree with a bad product."

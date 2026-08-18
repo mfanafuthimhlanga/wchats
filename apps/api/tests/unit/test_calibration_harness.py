@@ -78,6 +78,38 @@ def _write_csv(
     return path
 
 
+def _write_second_pass(
+    path: pathlib.Path,
+    rows: list[tuple[str, str, str]],
+    mode: str = "match",
+) -> pathlib.Path:
+    """The blind re-label sheet (BACKLOG 8.2c). Same header, no notes, no score.
+
+    `mode` is what KIND of labeller wrote it:
+
+        "match"    perfectly self-consistent - the ceiling is 1.0
+        "sloppy"   flips one row - a real labeller, and a ceiling below 1.0
+        "partial"  omits one row - no ceiling at all, because the rows the
+                   labeller happened to finish are not a random sample
+
+    Default "match" so that every test about the JUDGE keeps being about the
+    judge. The ceiling's own behaviour is pinned by TestTheCeilingIsMeasuredNotChosen.
+    """
+    labelled = [(sid, dim, _verdict_for(score)) for sid, dim, score in rows]
+    labelled = [row for row in labelled if row[2]]
+    if mode == "partial" and labelled:
+        labelled = labelled[:-1]
+    if mode == "sloppy" and labelled:
+        sid, dim, verdict = labelled[0]
+        flipped = cc.VERDICT_FAIL if verdict == cc.VERDICT_PASS else cc.VERDICT_PASS
+        labelled[0] = (sid, dim, flipped)
+
+    lines = ["scenario_id,dimension,human_verdict"]
+    lines += [f"{sid},{dim},{verdict}" for sid, dim, verdict in labelled]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 @pytest.fixture
 def calibration_tree(tmp_path, monkeypatch):
     """Point the harness at a tmp scenarios/responses/csv triple.
@@ -93,7 +125,8 @@ def calibration_tree(tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "SCENARIOS_DIR", scenarios)
     monkeypatch.setattr(cc, "RESPONSES_DIR", responses)
 
-    def build(rows, *, capture: set[str] | None = None, with_scores: bool = True):
+    def build(rows, *, capture: set[str] | None = None, with_scores: bool = True,
+              second_pass: str | None = "match"):
         for sid, _dim, _score in rows:
             (scenarios / f"{sid}_fixture.json").write_text(
                 json.dumps({"id": sid, "turns": [{"role": "user", "message": f"q for {sid}"}]}),
@@ -107,6 +140,13 @@ def calibration_tree(tmp_path, monkeypatch):
                 )
         csv_path = _write_csv(tmp_path / "human_scores.csv", rows, with_scores=with_scores)
         monkeypatch.setattr(cc, "HUMAN_SCORES_CSV", csv_path)
+
+        # BACKLOG 8.2c. Pointed at tmp ALWAYS, so no test can read the real
+        # sheet, and written unless a test is about its absence.
+        pass2_path = tmp_path / "human_scores_pass2.csv"
+        monkeypatch.setattr(cc, "HUMAN_SCORES_PASS2_CSV", pass2_path)
+        if second_pass is not None:
+            _write_second_pass(pass2_path, rows, mode=second_pass)
         return csv_path
 
     return build
@@ -400,12 +440,15 @@ class TestCalibratedAndUncalibrated:
         assert result["kappa"] == pytest.approx(1.0), "the verdicts do not"
         assert result["status"] == cc.STATUS_CALIBRATED
 
-    def test_a_judge_below_the_kappa_floor_is_not_calibrated(self, calibration_tree):
-        """0.6 is the floor, and it is a choice rather than a measurement.
+    def test_a_judge_whose_interval_includes_zero_is_not_calibrated(self, calibration_tree):
+        """BACKLOG 8.2c replaced the 0.6 floor this test used to assert.
 
-        The practice's bands: below 0.4 the judge is not tracking the human, 0.6
-        to 0.8 substantial, above 0.8 strong. Nothing in this repo has produced a
-        kappa yet, so there is no observed distribution to set the floor against.
+        Four of six rows agree, so the point estimate is 0.25 - which under the
+        old gate meant "below 0.6" and under no gate at all would have read as
+        "some agreement". Six rows cannot support either reading: the interval
+        straddles zero, so this corpus does not show the judge doing better than
+        chance, and that is a MEASUREMENT and therefore a failure rather than an
+        absence.
         """
         rows = [(f"S-4{i:02d}", "grounding_fidelity", s)
                 for i, s in enumerate(["5", "5", "5", "5", "1", "1"])]
@@ -416,8 +459,9 @@ class TestCalibratedAndUncalibrated:
                               "S-404": 5, "S-405": 1})
         )
 
-        assert cc.KAPPA_THRESHOLD == 0.6
-        assert 0 < result["kappa"] < cc.KAPPA_THRESHOLD
+        assert result["kappa"] == pytest.approx(0.25, abs=0.01), "the point estimate"
+        assert result["judge_interval"]["low"] <= 0, "and six rows cannot rule out chance"
+        assert result["gate"]["beats_chance"] is False
         assert result["status"] == cc.STATUS_NOT_CALIBRATED
 
     def test_a_judge_that_passes_everything_is_refused(self, calibration_tree):
@@ -553,6 +597,48 @@ class TestReadiness:
         )
         assert any("outside 1-5" in u for u in report["human_scores_unusable"])
         assert any("non-integer" in u for u in report["human_scores_unusable"])
+
+    def test_readiness_names_the_missing_ceiling(self, calibration_tree, capsys):
+        """BACKLOG 8.2c. The ceiling is an OWNER input, like the verdicts are.
+
+        Reported here rather than discovered after a paid judge run whose
+        numbers nobody may read. Observed by mutation 2026-08-18: dropping
+        `awaiting_ceiling` from `awaiting_owner` left every other test green,
+        so --check would have said READY over a tree that cannot produce a
+        readable result.
+        """
+        calibration_tree(_FOUR_ROWS, second_pass=None)
+
+        report = cc.readiness()
+
+        assert report["blocking"] == [], "nothing machine-fixable is missing"
+        assert report["second_pass_valid"] == 0
+        assert len(report["rows_without_second_verdict"]) == 4
+        assert report["awaiting_ceiling"] is True
+        assert report["awaiting_owner_scores"] is True
+        assert report["ready_to_calibrate"] is False
+
+        assert cc.print_readiness(report) == cc.EXIT_NOT_CALIBRATED_YET
+        assert "HUMAN CEILING" in capsys.readouterr().out, (
+            "the exit code alone does not tell the owner which sheet is missing"
+        )
+
+    def test_an_unlabelled_sheet_names_BOTH_missing_owner_inputs(
+        self, calibration_tree, capsys
+    ):
+        """The state the shipped tree is actually in, and both asks are the owner's.
+
+        Naming only the nearer one produces a second evening of work nobody
+        planned for: the owner labels the sheet, comes back, and is told there
+        is a whole second pass to do.
+        """
+        calibration_tree([(sid, dim, "") for sid, dim, _ in _FOUR_ROWS], second_pass=None)
+
+        cc.print_readiness(cc.readiness())
+        printed = capsys.readouterr().out
+
+        assert "human verdicts needed are filled in" in printed
+        assert "HUMAN CEILING" in printed
 
     def test_readiness_flags_a_dimension_the_judge_does_not_have(self, calibration_tree):
         """A typo in an unscored row is worth catching before the owner spends an
@@ -940,3 +1026,253 @@ class TestADeflectionNeverEntersTheGate:
             "grading a deflection measures the firewall, so it may not decide the gate"
         )
         assert any("deflection" in e for e in result["errors"])
+
+
+# ---------------------------------------------------------------------------
+# BACKLOG 8.2c — the threshold is derived from the labels, and there is none
+# ---------------------------------------------------------------------------
+
+
+#: 20 rows, balanced 10 pass / 10 fail. Twenty is the smallest size used in this
+#: file at which a judge can be WRONG about several rows and still have its
+#: interval clear zero — which is the only configuration where half (b) can be
+#: the half that decides anything. At six rows every imperfect judge already
+#: fails (a), so (b) would never be reached and could not be tested.
+_TWENTY_BALANCED = [
+    (f"S-5{i:02d}", "grounding_fidelity", "5" if i < 10 else "1")
+    for i in range(20)
+]
+
+
+def _judge_wrong_about(n: int):
+    """Agrees with the human on every row of _TWENTY_BALANCED except `n` of them.
+
+    The flips are split across both labels so the judge's marginals stay near
+    the human's. A judge that only ever errs one way moves the chance rate as
+    well as the agreement rate, and then kappa is measuring two things at once.
+    """
+    wrong = {f"S-5{i:02d}" for i in range(n // 2)}
+    wrong |= {f"S-5{10 + i:02d}" for i in range(n - n // 2)}
+    scores = {}
+    for i, (sid, _dim, _score) in enumerate(_TWENTY_BALANCED):
+        judge_passes = (i < 10) != (sid in wrong)
+        scores[sid] = 5 if judge_passes else 1
+    return _judge_returning(scores)
+
+
+class TestTheCeilingIsMeasuredNotChosen:
+    """The gate is two intervals from these labels, and no constant at all.
+
+    `KAPPA_THRESHOLD = 0.6` was a Landis-Koch band boundary: a 1977 rule of
+    thumb published with no empirical basis, so it was not merely unmeasured
+    here, it was never measured anywhere. The owner refused it on 2026-08-18.
+
+    What replaced it needs BOTH halves, and half (b) is why the second sheet
+    exists: a judge cannot be expected to agree with a human more than that
+    human agrees with THEMSELF, so the labeller's own test-retest kappa is the
+    scale. Two tests below are the pair that proves the scale is real — the SAME
+    judge passes against one labeller and fails against another, with nothing in
+    the code different between them.
+    """
+
+    PERFECT = {"S-101": 1, "S-102": 2, "S-103": 4, "S-104": 5}
+
+    def test_no_second_pass_is_never_a_pass(self, calibration_tree):
+        """The judge is perfect. It is still not calibrated, and that is right."""
+        calibration_tree(_FOUR_ROWS, second_pass=None)
+
+        result = cc.compute_correlation(_judge_returning(self.PERFECT))
+
+        assert result["kappa"] == pytest.approx(1.0), "the judge agreed on every row"
+        assert result["gate"]["beats_chance"] is True
+        assert result["gate"]["reaches_ceiling"] is None, "None, never False"
+        assert result["ceiling_interval"] is None
+        assert result["status"] == cc.STATUS_NOT_CALIBRATED_YET, (
+            "an unmeasured ceiling is an absence, not a judge failure"
+        )
+        assert any("HUMAN CEILING" in e for e in result["errors"])
+
+    def test_a_partial_second_pass_is_refused_rather_than_used(self, calibration_tree):
+        """Three of four rows re-labelled is not a ceiling over four rows.
+
+        The finished subset is not a random sample of the sheet — it is whichever
+        rows the labeller got to before stopping — and it would also be measured
+        at a smaller n than the judge, which makes the comparison a statement
+        about sample size rather than about agreement.
+        """
+        calibration_tree(_FOUR_ROWS, second_pass="partial")
+
+        result = cc.compute_correlation(_judge_returning(self.PERFECT))
+
+        assert result["ceiling_interval"] is None
+        assert result["status"] == cc.STATUS_NOT_CALIBRATED_YET
+        assert any("no blind second verdict" in e for e in result["errors"])
+        assert any("S-104" in e for e in result["errors"]), "the missing row is named"
+
+    def test_a_judge_that_reaches_the_ceiling_is_calibrated(self, calibration_tree):
+        calibration_tree(_FOUR_ROWS)
+
+        result = cc.compute_correlation(_judge_returning(self.PERFECT))
+
+        assert result["ceiling_interval"]["usable"] is True
+        assert result["gate"]["beats_chance"] is True
+        assert result["gate"]["reaches_ceiling"] is True
+        assert result["status"] == cc.STATUS_CALIBRATED
+
+    def test_a_judge_below_a_perfect_labeller_beats_chance_and_still_fails(
+        self, calibration_tree
+    ):
+        """Half (b) deciding on its own, which half (a) alone cannot do.
+
+        The judge is wrong about four of twenty rows: enough that its interval
+        clears zero comfortably, and enough that it cannot reach the interval of
+        a labeller who reproduced every one of their own verdicts.
+        """
+        calibration_tree(_TWENTY_BALANCED, second_pass="match")
+
+        result = cc.compute_correlation(_judge_wrong_about(4))
+
+        assert result["gate"]["beats_chance"] is True, "it is clearly not a coin"
+        assert result["gate"]["reaches_ceiling"] is False
+        assert result["status"] == cc.STATUS_NOT_CALIBRATED
+        assert any("below the human" in e for e in result["errors"])
+
+    def test_the_same_judge_passes_against_a_labeller_who_is_not_perfect(
+        self, calibration_tree
+    ):
+        """The scale is the labeller, and this is the test that proves it.
+
+        Identical judge, identical rows, identical code. The only thing that
+        changed is that the human contradicted one of their own verdicts on the
+        second pass — so the ceiling came down, and a judge that was
+        distinguishably worse than a perfect labeller is not distinguishably
+        worse than this one.
+
+        If this test and the one above ever agree, the ceiling has stopped being
+        read from the data.
+        """
+        calibration_tree(_TWENTY_BALANCED, second_pass="sloppy")
+
+        result = cc.compute_correlation(_judge_wrong_about(4))
+
+        assert result["ceiling_interval"]["usable"] is True
+        assert result["ceiling_interval"]["point"] < 1.0, "the labeller contradicted a row"
+        assert result["gate"]["reaches_ceiling"] is True
+        assert result["status"] == cc.STATUS_CALIBRATED
+
+    def test_a_one_sided_second_pass_is_no_ceiling_at_all(self, calibration_tree):
+        """A human who labelled everything the same way has set no ceiling.
+
+        Their self-agreement is undefined for the same reason a judge's would be:
+        chance agreement is already certain. Reporting it as a LOW ceiling would
+        let any judge through, which is the failure mode this whole file exists
+        to prevent.
+        """
+        rows = [(f"S-6{i:02d}", "grounding_fidelity", "5") for i in range(6)]
+        calibration_tree(rows)
+
+        result = cc.compute_correlation(
+            _judge_returning({f"S-6{i:02d}": (5 if i < 3 else 1) for i in range(6)})
+        )
+
+        assert result["status"] != cc.STATUS_CALIBRATED
+
+    def test_the_module_holds_no_threshold_constant(self):
+        """The property the row exists for, asserted rather than described.
+
+        Re-adding the constant fails here even if nothing reads it yet, because
+        a number sitting in this module is a number someone gates on later.
+        """
+        assert not hasattr(cc, "KAPPA_THRESHOLD")
+
+        import inspect
+
+        source = inspect.getsource(cc.compute_correlation)
+        assert "0.6" not in source
+        assert 'gate["calibrated"]' in source, (
+            "the status must come from the two measured intervals and nothing else"
+        )
+
+
+class TestTheSecondPassSheetIsWrittenEmptyAndBlind:
+    """`--emit-second-pass`. The one thing in this harness that writes a sheet.
+
+    It writes the QUESTION, never an answer: scenario, dimension, and an empty
+    verdict column. It carries no notes, because pass one's notes are the
+    owner's own reasoning about the row and reading them back is reading back
+    the answer.
+    """
+
+    def _emit(self, calibration_tree, rows=None):
+        calibration_tree(rows or _FOUR_ROWS, second_pass=None)
+        return cc.emit_second_pass()
+
+    def test_it_writes_every_row_with_an_empty_verdict(self, calibration_tree):
+        code, _messages = self._emit(calibration_tree)
+
+        assert code == cc.EXIT_SECOND_PASS_EMITTED
+        text = cc.HUMAN_SCORES_PASS2_CSV.read_text(encoding="utf-8")
+        header, *body = [line for line in text.splitlines() if line]
+
+        assert header == "scenario_id,dimension,human_verdict"
+        assert len(body) == 4
+        assert all(line.endswith(",") for line in body), "no verdict may be pre-filled"
+        assert "note" not in text, "pass one's notes would leak the first answer"
+        assert cc.read_second_pass()["valid"] == 0, "and it reads as unlabelled"
+
+    def test_it_never_shares_an_exit_code_with_a_measurement(self):
+        assert cc.EXIT_SECOND_PASS_EMITTED != cc.EXIT_CALIBRATED
+        assert cc.EXIT_SECOND_PASS_EMITTED not in cc.EXIT_CODE_FOR_STATUS.values()
+        assert cc.EXIT_SECOND_PASS_EMITTED != cc.EXIT_READY_TO_CALIBRATE
+
+    def test_it_refuses_to_overwrite_an_existing_sheet(self, calibration_tree):
+        """The one file in this harness holding labels that cost an evening."""
+        calibration_tree(_FOUR_ROWS, second_pass="match")
+        before = cc.HUMAN_SCORES_PASS2_CSV.read_bytes()
+
+        code, messages = cc.emit_second_pass()
+
+        assert code == cc.EXIT_SETUP_ERROR
+        assert cc.HUMAN_SCORES_PASS2_CSV.read_bytes() == before
+        assert any("NOT overwritten" in m for m in messages)
+
+    def test_it_refuses_while_the_first_pass_is_unfinished(self, calibration_tree):
+        """Both sheets labelled in one sitting is one pass copied, not a retest."""
+        rows = [("S-101", "grounding_fidelity", "5"),
+                ("S-102", "grounding_fidelity", "")]
+        calibration_tree(rows, second_pass=None)
+
+        code, messages = cc.emit_second_pass()
+
+        assert code == cc.EXIT_SETUP_ERROR
+        assert not cc.HUMAN_SCORES_PASS2_CSV.exists()
+        assert any("test-retest" in m for m in messages)
+
+    def test_it_never_writes_the_first_sheet(self, calibration_tree):
+        calibration_tree(_FOUR_ROWS, second_pass=None)
+        before = cc.HUMAN_SCORES_CSV.read_bytes()
+
+        cc.emit_second_pass()
+
+        assert cc.HUMAN_SCORES_CSV.read_bytes() == before
+
+    def test_the_rows_come_back_in_a_different_order(self, calibration_tree):
+        """Shuffled, so the sheet cannot be re-labelled from muscle memory."""
+        rows = [(f"S-7{i:02d}", "grounding_fidelity", "5" if i % 2 else "1")
+                for i in range(10)]
+        self._emit(calibration_tree, rows)
+
+        emitted = [line.split(",")[0] for line in
+                   cc.HUMAN_SCORES_PASS2_CSV.read_text(encoding="utf-8").splitlines()[1:]
+                   if line]
+
+        assert sorted(emitted) == sorted(sid for sid, _d, _s in rows), "same rows"
+        assert emitted != [sid for sid, _d, _s in rows], "different order"
+
+    def test_main_routes_the_flag(self, calibration_tree, capsys):
+        calibration_tree(_FOUR_ROWS, second_pass=None)
+
+        code = cc.main(["--emit-second-pass"])
+
+        assert code == cc.EXIT_SECOND_PASS_EMITTED
+        assert "WITHOUT opening the first sheet" in capsys.readouterr().out

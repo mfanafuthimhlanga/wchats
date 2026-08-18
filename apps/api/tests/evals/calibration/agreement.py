@@ -36,8 +36,6 @@ from __future__ import annotations
 import random
 from collections.abc import Sequence
 
-from tests.evals.calibration.compute_correlation import cohens_kappa, confusion
-
 #: Fixed so the gate does not flicker between runs on the same data. An unseeded
 #: bootstrap is the same defect as an unset judge temperature, one level up.
 BOOTSTRAP_SEED = 20260818
@@ -48,9 +46,77 @@ BOOTSTRAP_ITERATIONS = 10_000
 
 #: Above this fraction of resamples having no defined kappa, the interval is not
 #: a measurement. A one-sided corpus lands here, and that is the honest answer.
+#:
+#: THIS IS STILL A CHOSEN NUMBER, and it is the only one left in the gate. It is
+#: a different KIND of number from the 0.6 that was deleted, and the difference
+#: is the direction it fails in: 0.6 decided whether a judge PASSED, so choosing
+#: it wrong let a judge through. This one decides whether a measurement EXISTS,
+#: and choosing it wrong makes the harness refuse a corpus it could have read.
+#: Nothing passes because of it. Raise it only with a corpus in front of you.
 MAX_UNDEFINED_FRACTION = 0.2
 
+#: The convention, and it is reported as an interval rather than as a mark
+#: against a level, so nothing here is gated on the 5% being 5%.
 CONFIDENCE = 0.95
+
+
+# ---------------------------------------------------------------------------
+# The two primitives every number below is built from
+# ---------------------------------------------------------------------------
+# These lived in compute_correlation.py until 8.2c wired this module into it.
+# The harness imports them FROM HERE now: the module named `agreement` owns how
+# agreement is counted, and the CLI owns the run. The other direction was a
+# cycle waiting for the first caller.
+
+
+def confusion(pairs: Sequence[tuple[bool, bool]]) -> dict[str, int]:
+    """The 2x2 of (human_passed, judge_passed). Four cells, four actions.
+
+    This is the report card, not a step towards one number. Each cell prescribes
+    something different:
+
+        both pass                nothing to do
+        human pass, judge fail   the judge is too harsh; read its stated reasons
+        human fail, judge pass   the judge is too LENIENT; bad answers are
+                                 reaching customers, and this is the dangerous cell
+        both fail                the AI SYSTEM is the problem, not the eval
+
+    That last cell is the one that stops a team tuning a judge when the product
+    is what is broken, and a single correlation coefficient cannot point at it.
+    """
+    cells = {"both_pass": 0, "judge_too_harsh": 0, "judge_too_lenient": 0, "both_fail": 0}
+    for human_passed, judge_passed in pairs:
+        if human_passed and judge_passed:
+            cells["both_pass"] += 1
+        elif human_passed and not judge_passed:
+            cells["judge_too_harsh"] += 1
+        elif not human_passed and judge_passed:
+            cells["judge_too_lenient"] += 1
+        else:
+            cells["both_fail"] += 1
+    return cells
+
+
+def cohens_kappa(cells: dict[str, int]) -> float:
+    """Chance-corrected agreement. NaN when chance agreement is already certain.
+
+    Returns NaN rather than 0.0 for the degenerate case, because 0.0 means "no
+    better than chance" and NaN means "this set cannot distinguish the two". A
+    corpus where both raters passed everything is the second, and reporting it as
+    the first would read as a judge failure.
+    """
+    n11, n10 = cells["both_pass"], cells["judge_too_harsh"]
+    n01, n00 = cells["judge_too_lenient"], cells["both_fail"]
+    n = n11 + n10 + n01 + n00
+    if n == 0:
+        return float("nan")
+
+    observed = (n11 + n00) / n
+    human_pass, judge_pass = (n11 + n10) / n, (n11 + n01) / n
+    expected = human_pass * judge_pass + (1 - human_pass) * (1 - judge_pass)
+    if expected >= 1.0:
+        return float("nan")
+    return (observed - expected) / (1 - expected)
 
 
 def _percentile(sorted_values: list[float], fraction: float) -> float:

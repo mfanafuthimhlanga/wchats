@@ -21,12 +21,8 @@ import math
 
 import pytest
 
-from tests.evals.calibration.compute_correlation import (
-    KAPPA_THRESHOLD,
-    cohens_kappa,
-    confusion,
-    matthews,
-)
+from tests.evals.calibration.agreement import cohens_kappa, confusion
+from tests.evals.calibration.compute_correlation import matthews
 
 
 def _cells(both_pass=0, judge_too_harsh=0, judge_too_lenient=0, both_fail=0):
@@ -83,7 +79,10 @@ class TestCohensKappa:
         cells = confusion([(True, True), (True, True), (False, True), (False, True)])
         assert cells["judge_too_lenient"] == 2
         assert cohens_kappa(cells) == pytest.approx(0.0)
-        assert cohens_kappa(cells) < KAPPA_THRESHOLD
+        # BACKLOG 8.2c: there is no threshold constant to compare against any
+        # more. 0.0 is the meaning itself - no better than chance - and the gate
+        # refuses it on the interval, in test_agreement_threshold.py.
+        assert cohens_kappa(cells) <= 0.0
 
     def test_total_agreement_on_one_label_is_undefined_not_perfect(self):
         """Both raters passed everything, so a coin agrees just as often.

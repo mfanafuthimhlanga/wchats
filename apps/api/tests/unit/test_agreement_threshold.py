@@ -79,11 +79,30 @@ class TestTheBootstrap:
         assert result["low"] is None and result["high"] is None
 
     def test_a_nearly_one_sided_corpus_is_also_refused(self):
-        """The realistic version: nine pass, one fail. This corpus's actual shape."""
+        """The realistic version, and the test that actually pins the fraction.
+
+        Nine pass, one fail: this corpus's actual expected shape. It skipped
+        itself when the resamples stayed definable, which made it unable to
+        fail - and MAX_UNDEFINED_FRACTION was then pinned by nothing, because
+        the entirely-one-sided test above is caught one line earlier by
+        `defined` being empty. Observed by mutation 2026-08-18: deleting the
+        fraction check left that test green.
+
+        Two thirds of the resamples here ARE defined, so a percentile could be
+        taken. It must not be: the third that dropped the single `fail` describe
+        a corpus with no disagreement in it at all, and the interval would be
+        reporting on those as though they were observations.
+        """
         result = bootstrap_kappa(pairs(agree_pass=9, agree_fail=1))
-        if result["usable"]:
-            pytest.skip(f"resamples stayed definable at {result['undefined_fraction']:.0%}")
-        assert result["low"] is None
+
+        assert result["undefined_fraction"] > MAX_UNDEFINED_FRACTION, (
+            "the premise: enough resamples lose the minority label"
+        )
+        assert result["undefined_fraction"] < 1.0, (
+            "and enough survive that a number COULD have been returned"
+        )
+        assert result["usable"] is False
+        assert result["low"] is None and result["high"] is None
 
     def test_too_few_pairs_is_not_a_measurement(self):
         assert bootstrap_kappa([(True, True)])["usable"] is False
