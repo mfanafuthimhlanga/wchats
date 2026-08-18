@@ -139,7 +139,14 @@ def _call_chat_and_drain_sse(
 
                         elif current_event == "agent.tool_call":
                             tool_calls_log.append({
-                                "tool_name": payload.get("tool", ""),
+                                # BACKLOG 7.29, second finding: this read
+                                # `payload.get("tool", "")` and the emitter sends
+                                # `tool_name` (agent.py:1290), so every captured
+                                # row carried `tool_name: ""`. Not BACKLOG 5.9
+                                # returning — that defect was on the emitting
+                                # side and stays fixed. A grounding judge joins
+                                # on this name, so an empty one joins to nothing.
+                                "tool_name": payload.get("tool_name", ""),
                                 "input": payload.get("input", {}),
                                 "result": {},  # result not in SSE; filled from tool log if available
                             })
