@@ -68,8 +68,9 @@ class TestCohensKappa:
         """Half right on a balanced set is exactly what a coin achieves."""
         assert cohens_kappa(_cells(1, 1, 1, 1)) == pytest.approx(0.0)
 
-    def test_perfect_disagreement_is_negative(self):
-        assert cohens_kappa(_cells(judge_too_harsh=2, judge_too_lenient=2)) < 0
+    def test_perfect_disagreement_is_minus_one(self):
+        """The exact value, not `< 0`: a mutation halving it would survive that."""
+        assert cohens_kappa(_cells(judge_too_harsh=2, judge_too_lenient=2)) == pytest.approx(-1.0)
 
     def test_a_judge_that_passes_everything_scores_zero(self):
         """The defect that moved the gate.
@@ -101,10 +102,17 @@ class TestCohensKappa:
         """The known failure mode, on the corpus shape this project actually has.
 
         Nineteen of twenty responses are good and the judge gets nineteen right,
-        missing one. Raw agreement is 95%. Kappa is far lower, because chance
-        agreement is already near certain when one label dominates, and reading
-        it as "the judge is poor" would be wrong. Matthews is the statistic to
-        read instead, and it is higher here.
+        missing one. Raw agreement is 95%. Kappa is 0.0, because chance agreement
+        is already near certain when one label dominates, and reading that as
+        "the judge is poor" would be wrong.
+
+        CORRECTED 2026-08-18 by adversarial review: an earlier version of this
+        docstring said "Matthews is the statistic to read instead, and it is
+        higher here". On THESE cells Matthews is NaN, not higher: the human never
+        said FAIL, so a whole marginal is zero and MCC is undefined too. The
+        honest statement is that a corpus this one-sided cannot measure a judge
+        with either statistic, which is the case `8.2c`'s bootstrap refuses
+        outright. The test below uses cells where MCC IS defined, and says so.
         """
         cells = _cells(both_pass=19, judge_too_harsh=1)
         kappa = cohens_kappa(cells)
@@ -121,11 +129,19 @@ class TestMatthews:
         assert matthews(_cells(judge_too_harsh=2, judge_too_lenient=2)) == pytest.approx(-1.0)
 
     def test_it_survives_imbalance_that_kappa_does_not(self):
-        """Same cells as the kappa collapse test, read the other way."""
+        """DIFFERENT cells from the collapse test, and the difference is the point.
+
+        MCC is undefined on `(19,1,0,0)` because a marginal is zero. It needs at
+        least one observation in each of the human's two labels. These cells add
+        that one row, and MCC then reads higher than kappa on the same data.
+        """
         cells = _cells(both_pass=18, both_fail=1, judge_too_harsh=1)
         mcc = matthews(cells)
         assert not math.isnan(mcc)
-        assert mcc > cohens_kappa(cells) or mcc > 0.5
+        # Not an OR. The claim is that MCC reads higher than kappa on imbalanced
+        # data, and an `or mcc > 0.5` escape hatch would let the first half fail
+        # silently.
+        assert mcc > cohens_kappa(cells)
 
     def test_a_constant_judge_is_undefined_rather_than_flattering(self):
         """No variance on one side leaves a zero in the denominator."""

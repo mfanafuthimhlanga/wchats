@@ -55,10 +55,24 @@ def _verdict_for(score: str) -> str:
         return cc.VERDICT_PASS
 
 
-def _write_csv(path: pathlib.Path, rows: list[tuple[str, str, str]]) -> pathlib.Path:
+def _write_csv(
+    path: pathlib.Path,
+    rows: list[tuple[str, str, str]],
+    *,
+    with_scores: bool = True,
+) -> pathlib.Path:
+    """The sheet. `with_scores=False` writes the shape the owner is ASKED for.
+
+    F13, adversarial review 2026-08-18. Verdict and score were always both
+    present or both absent here, because both were derived from one tuple field.
+    So no test ever fed a verdict-only row - the row the harness's own printed
+    guidance asks the owner to produce - and F1, a TypeError in `main()` on
+    exactly that shape, sat undetected behind the gap.
+    """
     lines = ["scenario_id,dimension,human_verdict,human_score,notes"]
     lines += [
-        f"{sid},{dim},{_verdict_for(score)},{score},note" for sid, dim, score in rows
+        f"{sid},{dim},{_verdict_for(score)},{score if with_scores else ''},note"
+        for sid, dim, score in rows
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
@@ -79,7 +93,7 @@ def calibration_tree(tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "SCENARIOS_DIR", scenarios)
     monkeypatch.setattr(cc, "RESPONSES_DIR", responses)
 
-    def build(rows, *, capture: set[str] | None = None):
+    def build(rows, *, capture: set[str] | None = None, with_scores: bool = True):
         for sid, _dim, _score in rows:
             (scenarios / f"{sid}_fixture.json").write_text(
                 json.dumps({"id": sid, "turns": [{"role": "user", "message": f"q for {sid}"}]}),
@@ -91,7 +105,7 @@ def calibration_tree(tmp_path, monkeypatch):
                                 "tool_calls_log": []}),
                     encoding="utf-8",
                 )
-        csv_path = _write_csv(tmp_path / "human_scores.csv", rows)
+        csv_path = _write_csv(tmp_path / "human_scores.csv", rows, with_scores=with_scores)
         monkeypatch.setattr(cc, "HUMAN_SCORES_CSV", csv_path)
         return csv_path
 
@@ -788,3 +802,141 @@ class TestCalibrationReadsRunZero:
         )
         assert result["status"] == cc.STATUS_CALIBRATED
         assert result["pairs"] == 4
+
+
+# ---------------------------------------------------------------------------
+# Adversarial review 2026-08-18. The BLOCK findings and the gap that hid them.
+# ---------------------------------------------------------------------------
+
+
+class TestTheShapeTheOwnerIsActuallyAskedFor:
+    """A verdict and NO score. The harness prints "a 1-5 score is optional".
+
+    F1 was a TypeError in `main()` on exactly this row: the table formatter did
+    `judge_score - human_score` and `f"{human_score:>6}"` while 8.2b had made
+    `human_score` optional. The gate computed kappa correctly and the CLI died on
+    the way to printing it, so a shell read the non-zero exit as NOT CALIBRATED
+    over a judge that was.
+    """
+
+    def test_a_verdict_without_a_score_is_a_usable_row(self, calibration_tree):
+        calibration_tree(_FOUR_ROWS, with_scores=False)
+        parsed = cc.read_human_score_rows()
+
+        assert parsed["valid"] == 4
+        assert all(row["human_score"] is None for row in parsed["rows"])
+        assert all(row["human_verdict"] in (cc.VERDICT_PASS, cc.VERDICT_FAIL)
+                   for row in parsed["rows"])
+
+    def test_the_gate_still_decides_without_any_scores(self, calibration_tree):
+        calibration_tree(_FOUR_ROWS, with_scores=False)
+        result = cc.compute_correlation(
+            _judge_returning({"S-101": 1, "S-102": 2, "S-103": 4, "S-104": 5})
+        )
+        assert result["status"] == cc.STATUS_CALIBRATED
+        assert result["kappa"] == pytest.approx(1.0)
+        assert result["rho"] is None, "Spearman needs scores; the gate does not"
+
+    def test_main_does_not_crash_on_a_verdict_only_sheet(self, calibration_tree, monkeypatch, capsys):
+        """The regression test for F1, driving the CLI the way a person runs it."""
+        calibration_tree(_FOUR_ROWS, with_scores=False)
+        import tests.evals.judge as judge_module
+
+        monkeypatch.setattr(
+            judge_module, "judge",
+            _judge_returning({"S-101": 1, "S-102": 2, "S-103": 4, "S-104": 5}),
+        )
+
+        exit_code = cc.main([])
+
+        out = capsys.readouterr().out
+        assert exit_code == cc.EXIT_CALIBRATED, out
+        assert "Cohen's kappa" in out, "the gate's number must reach the reader"
+        assert "human PASS" in out, "the matrix is the report card"
+
+    def test_a_verdict_and_a_score_that_disagree_are_both_kept(self, calibration_tree, tmp_path):
+        """The human is allowed to contradict themself, and nothing silently fixes it.
+
+        The fixtures derived the verdict FROM the score, so a `fail` beside a `5`
+        was inexpressible. The gate reads the verdict; Spearman reads the score.
+        """
+        (tmp_path / "human_scores.csv").write_text(
+            "scenario_id,dimension,human_verdict,human_score,notes\n"
+            "S-101,grounding_fidelity,fail,5,contradicts on purpose\n",
+            encoding="utf-8",
+        )
+        rows = cc.read_human_score_rows(tmp_path / "human_scores.csv")["rows"]
+        assert rows[0]["human_verdict"] == cc.VERDICT_FAIL
+        assert rows[0]["human_passed"] is False
+        assert rows[0]["human_score"] == 5
+
+
+class TestASpreadsheetRoundTripDoesNotReadAsUnlabelled:
+    """F2 and F3. Both produced "nobody has labelled anything" over a full sheet."""
+
+    def test_an_excel_utf8_bom_does_not_empty_every_scenario_id(self, tmp_path):
+        """Excel's "CSV UTF-8" writes a BOM. The first header became \ufeffscenario_id,
+        so every row parsed as VALID with an empty scenario_id and readiness
+        reported READY over a file that produced zero pairs.
+        """
+        path = tmp_path / "human_scores.csv"
+        path.write_bytes(
+            b"\xef\xbb\xbf"
+            b"scenario_id,dimension,human_verdict,human_score,notes\n"
+            b"S-101,grounding_fidelity,pass,,note\n"
+        )
+        rows = cc.read_human_score_rows(path)["rows"]
+        assert rows[0]["scenario_id"] == "S-101", "the BOM must not become part of the header"
+
+    @pytest.mark.parametrize("header", ["Human_Verdict", "verdict", "human verdict"])
+    def test_a_renamed_or_padded_gate_column_is_reported_as_a_header_problem(
+        self, tmp_path, header
+    ):
+        """Not as ten unlabelled rows. They need different actions from the owner."""
+        path = tmp_path / "human_scores.csv"
+        path.write_text(
+            f"scenario_id,dimension,{header},human_score,notes\n"
+            "S-101,grounding_fidelity,pass,,note\n",
+            encoding="utf-8",
+        )
+        parsed = cc.read_human_score_rows(path)
+
+        assert parsed["valid"] == 0
+        assert any("no `human_verdict` column" in u for u in parsed["unusable"]), parsed["unusable"]
+        assert not any("not filled in yet" in u for u in parsed["unusable"]), (
+            "a missing column must not read as an unlabelled sheet"
+        )
+
+    def test_a_padded_header_that_strips_to_the_right_name_is_still_detected(self, tmp_path):
+        """` human_verdict` strips to the right name, so the column IS present."""
+        path = tmp_path / "human_scores.csv"
+        path.write_text(
+            "scenario_id,dimension, human_verdict,human_score,notes\n"
+            "S-101,grounding_fidelity,pass,,note\n",
+            encoding="utf-8",
+        )
+        parsed = cc.read_human_score_rows(path)
+        assert not any("no `human_verdict` column" in u for u in parsed["unusable"])
+
+
+class TestADeflectionNeverEntersTheGate:
+    """F11. `deflected_response_ids` was advisory: readiness called it, the gate did not."""
+
+    def test_a_labelled_deflection_is_excluded_from_the_matrix(self, calibration_tree, tmp_path):
+        from app.utils.pii_firewall import PII_DEFLECTION
+
+        calibration_tree(_FOUR_ROWS)
+        (tmp_path / "responses" / "S-101.json").write_text(
+            json.dumps({"scenario_id": "S-101", "response_text": PII_DEFLECTION,
+                        "tool_calls_log": []}),
+            encoding="utf-8",
+        )
+
+        result = cc.compute_correlation(
+            _judge_returning({"S-101": 1, "S-102": 2, "S-103": 4, "S-104": 5})
+        )
+
+        assert sum(result["cells"].values()) == 3, (
+            "grading a deflection measures the firewall, so it may not decide the gate"
+        )
+        assert any("deflection" in e for e in result["errors"])

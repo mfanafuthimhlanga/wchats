@@ -1,5 +1,5 @@
 """
-compute_correlation.py — Calibrate the LLM judge against human labels.
+compute_correlation.py - Calibrate the LLM judge against human labels.
 
 Reads the calibration sheet (scenario_id, dimension, human_verdict,
 human_score, notes), loads run 0 of each recorded response, calls the judge,
@@ -40,7 +40,7 @@ Usage:
 WHOSE COLUMN human_score IS
     The owner's, and no one else's. Every cell ships empty by design. An
     agent-filled calibration set would silently destroy the only instrument
-    that can say whether ANY judge in this system is trustworthy — the
+    that can say whether ANY judge in this system is trustworthy - the
     Gatekeeper, the Auditor, the Strategist, classify_severity, and the Actor
     gate that runs synchronously before money moves. Nothing in this file
     writes to human_scores.csv; it is opened for reading only, and
@@ -49,7 +49,7 @@ WHOSE COLUMN human_score IS
 WHY THE EXIT CODES CHANGED (audit D7)
     The shipped script exited 0 both when the judge was calibrated and when
     nobody had scored anything yet, calling the second case "informational".
-    In CI, in a checklist, or in a summary, exit 0 reads as success — so an
+    In CI, in a checklist, or in a summary, exit 0 reads as success - so an
     instrument that had never been given a single label reported the same
     thing as one that had passed. Missing data is never passing data. An
     unscored file now exits EXIT_NOT_CALIBRATED_YET, which is neither pass nor
@@ -57,21 +57,21 @@ WHY THE EXIT CODES CHANGED (audit D7)
 
 Requirements:
     - responses/ populated via capture_responses.py (needs a live, ingested
-      agent and AGENT_E2E_ENABLED=1 — see --check for what is missing)
+      agent and AGENT_E2E_ENABLED=1 - see --check for what is missing)
     - the calibration sheet has `human_verdict` filled by a human (pass/fail).
       `human_score` (1-5) is optional and feeds the reported Spearman only
     - ANTHROPIC_API_KEY set in environment
 
 Exit codes:
-    0 (EXIT_CALIBRATED)         — kappa >= 0.6 over >= MIN_PAIRS pairs
-    1 (EXIT_NOT_CALIBRATED)     — kappa < 0.6; the judge is not calibrated
-    2 (EXIT_SETUP_ERROR)        — missing files, unusable rows, other setup error
-    3 (EXIT_NOT_CALIBRATED_YET) — no human scores, fewer than MIN_PAIRS usable
+    0 (EXIT_CALIBRATED)         - kappa >= 0.6 over >= MIN_PAIRS pairs
+    1 (EXIT_NOT_CALIBRATED)     - kappa < 0.6; the judge is not calibrated
+    2 (EXIT_SETUP_ERROR)        - missing files, unusable rows, other setup error
+    3 (EXIT_NOT_CALIBRATED_YET) - no human scores, fewer than MIN_PAIRS usable
                                   pairs, or the judge failed too many of its own
                                   calls to have measured the set. NOT a pass and
                                   NOT a failure of the judge: the measurement has
                                   not been made.
-    4 (EXIT_READY_TO_CALIBRATE) — `--check` only: every input is present and the
+    4 (EXIT_READY_TO_CALIBRATE) - `--check` only: every input is present and the
                                   correlation has NOT been computed.
 
     --check NEVER RETURNS 0. It makes no judge call by design, so it cannot
@@ -138,6 +138,10 @@ MATTHEWS_FLOOR = 0.5
 #: different guesses about what the labeller meant.
 VERDICT_PASS = "pass"
 VERDICT_FAIL = "fail"
+
+#: The column the gate reads. Its ABSENCE is reported as a header problem rather
+#: than as ten unlabelled rows: those need different actions from the owner.
+REQUIRED_COLUMN = "human_verdict"
 
 # Spearman over two points is not a correlation, it is a line through two
 # points. spearman() already returns nan below three; this names the same floor
@@ -333,10 +337,41 @@ def read_human_score_rows(path: pathlib.Path | None = None) -> dict:
     unusable: list[str] = []
     attempted = 0
 
-    with csv_path.open(newline="", encoding="utf-8") as f:
+    with csv_path.open(newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
-        for row in reader:
+
+        # F3, adversarial review 2026-08-18. Nothing checked that the gate column
+        # was PRESENT, so `Human_Verdict` or a space-padded ` human_verdict` -
+        # what a spreadsheet round trip produces - yielded ten copies of
+        # "human_verdict not filled in yet" over a fully labelled file. That is
+        # the one message this harness exists to make trustworthy, and a missing
+        # column is a different problem from an unlabelled row.
+        #
+        # `utf-8-sig` above is the other half: Excel's "CSV UTF-8" writes a BOM,
+        # which made the first header `\ufeffscenario_id`, so every row parsed as
+        # VALID with an empty `scenario_id` and readiness reported READY over a
+        # file that produced zero pairs.
+        fieldnames = [(name or "").strip() for name in (reader.fieldnames or [])]
+        if REQUIRED_COLUMN not in fieldnames:
+            return {
+                "attempted": 0,
+                "valid": 0,
+                "rows": [],
+                "unusable": [
+                    f"{csv_path.name} has no `{REQUIRED_COLUMN}` column. Found: "
+                    f"{fieldnames or '(no header row)'}. This is a header problem, not an "
+                    "unlabelled sheet; a spreadsheet round trip renames or pads headers."
+                ],
+                "missing_file": False,
+            }
+
+        for raw_row in reader:
             attempted += 1
+            # Keys are STRIPPED, because a spreadsheet round trip pads them and
+            # ` human_verdict` is recoverable data rather than a broken sheet.
+            # DictReader keys on the raw header, so without this the column is
+            # present by name and absent by lookup.
+            row = {(k or "").strip(): v for k, v in raw_row.items()}
             scenario_id = (row.get("scenario_id") or "").strip()
             dimension = (row.get("dimension") or "").strip()
             verdict_str = (row.get("human_verdict") or "").strip().lower()
@@ -519,7 +554,7 @@ def readiness() -> dict:
     all_referenced_ids: list[str] = []
     all_referenced_dims: list[str] = []
     if not parsed["missing_file"]:
-        with HUMAN_SCORES_CSV.open(newline="", encoding="utf-8") as f:
+        with HUMAN_SCORES_CSV.open(newline="", encoding="utf-8-sig") as f:
             for row in csv.DictReader(f):
                 all_referenced_ids.append((row.get("scenario_id") or "").strip())
                 all_referenced_dims.append((row.get("dimension") or "").strip())
@@ -693,6 +728,9 @@ def compute_correlation(judge_fn) -> dict:
             "table": [],
         }
 
+    # Excluded from the gate, not merely reported by `readiness()`. See F11 below.
+    deflected = set(deflected_response_ids([r["scenario_id"] for r in parsed["rows"]]))
+
     human_scores: list[float] = []
     judge_scores: list[float] = []
     binary_pairs: list[tuple[bool, bool]] = []
@@ -729,6 +767,23 @@ def compute_correlation(judge_fn) -> dict:
                           "human_verdict": row["human_verdict"], "human": h_score,
                           "judge_verdict": None, "judge": None,
                           "reason": verdict["reason"]})
+            continue
+
+        # F11, adversarial review 2026-08-18. `deflected_response_ids` was called
+        # from `readiness()` and NOWHERE ELSE, so a labelled PII deflection was
+        # judged and landed in the confusion matrix that decides STATUS_CALIBRATED
+        # - exactly what its own docstring says must not happen. Grading a
+        # deflection measures the firewall, and a human label against one is a
+        # number about the wrong thing.
+        if sid in deflected:
+            errors.append(
+                f"{sid}/{dim}: recorded response is the PII firewall's deflection, so it "
+                "is excluded from the agreement matrix. Re-capture it."
+            )
+            table.append({"scenario_id": sid, "dimension": dim,
+                          "human_verdict": row["human_verdict"], "human": h_score,
+                          "judge_verdict": None, "judge": None,
+                          "reason": "excluded: PII deflection"})
             continue
 
         # The GATE's pair: two binary labels. Every usable row contributes one,
@@ -889,15 +944,32 @@ def main(argv: list[str] | None = None) -> int:
         f"Calibration run - {result['valid']} scored / {result['attempted']} rows present\n"
     )
     if result["table"]:
-        print(f"{'Scenario':<10}  {'Dimension':<30}  {'Human':>6}  {'Judge':>6}  {'Diff':>5}  Reason")
-        print("-" * 100)
+        # F1, adversarial review 2026-08-18. This formatter did `j - entry["human"]`
+        # and `f"{entry['human']:>6}"`, and 8.2b made `human_score` OPTIONAL. The
+        # harness's own printed guidance tells the owner to fill only the binary
+        # column, so the INTENDED workflow produces `human_score is None` and this
+        # raised TypeError before printing anything. The gate had already computed
+        # kappa correctly; the CLI died on the way to showing it, and a shell reads
+        # the non-zero exit as "not calibrated" over a judge that was.
+        #
+        # The VERDICTS are the gate, so they lead. The 1-5 scores are optional and
+        # render as "-" when absent.
+        print(
+            f"{'Scenario':<10}  {'Dimension':<28}  {'Human':>6}  {'Judge':>6}  "
+            f"{'Score':>11}  Reason"
+        )
+        print("-" * 104)
         for entry in result["table"]:
-            j = entry["judge"]
-            diff = f"{j - entry['human']:+d}" if j is not None else "—"
-            j_txt = str(j) if j is not None else "ERR"
+            human_score, judge_score = entry["human"], entry["judge"]
+            if human_score is None or judge_score is None:
+                score_cell = "-"
+            else:
+                score_cell = f"{human_score}/{judge_score} ({judge_score - human_score:+d})"
             print(
-                f"{entry['scenario_id']:<10}  {entry['dimension']:<30}  "
-                f"{entry['human']:>6}  {j_txt:>6}  {diff:>5}  {entry['reason'][:60]}"
+                f"{entry['scenario_id']:<10}  {entry['dimension']:<28}  "
+                f"{(entry.get('human_verdict') or '-'):>6}  "
+                f"{(entry.get('judge_verdict') or 'ERR'):>6}  "
+                f"{score_cell:>11}  {entry['reason'][:52]}"
             )
         print()
 
@@ -912,16 +984,37 @@ def main(argv: list[str] | None = None) -> int:
     if status == STATUS_SETUP_ERROR:
         print("SETUP ERROR - the harness could not read its own inputs.")
     elif status == STATUS_NOT_CALIBRATED_YET:
+        # F12, adversarial review 2026-08-18. This branch also carries the
+        # KAPPA-UNDEFINED case, where both floors were MET and the cells are fully
+        # populated. It printed no matrix, named the two floors as the cause when
+        # neither had failed, and pointed at `human_score` - which has not been the
+        # gate column since 8.2b. The matrix is the diagnostic on exactly this
+        # path: it is what shows that both raters used one label.
+        if result.get("cells") and sum(result["cells"].values()):
+            _print_agreement(result)
         rate = result.get("pair_rate")
-        print(
-            f"NOT CALIBRATED YET - {result['pairs']} usable pair(s) out of "
-            f"{result['valid']} labelled row(s)"
-            + (f" ({rate:.0%})" if rate is not None else "")
-            + f"; {MIN_PAIRS} pairs and {MIN_PAIR_RATE:.0%} of the set are needed.\n"
-            "This is neither a pass nor a judge failure: the measurement has not been made.\n"
-            "Run with --check to see exactly which input is missing. If it is the\n"
-            "human_score column, that one is the owner's and must be filled by a human."
+        floors_met = (
+            result["pairs"] >= MIN_PAIRS and rate is not None and rate >= MIN_PAIR_RATE
         )
+        if floors_met:
+            print(
+                "NOT CALIBRATED YET - every labelled row produced a pair, and the "
+                "measurement still could not be made.\n"
+                "See the errors above: the usual cause is that one label was used for "
+                "every row, which makes\nchance agreement certain and kappa undefined. "
+                "Label a scenario the other way, or label more rows."
+            )
+        else:
+            print(
+                f"NOT CALIBRATED YET - {result['pairs']} usable pair(s) out of "
+                f"{result['valid']} labelled row(s)"
+                + (f" ({rate:.0%})" if rate is not None else "")
+                + f"; {MIN_PAIRS} pairs and {MIN_PAIR_RATE:.0%} of the set are needed.\n"
+                "This is neither a pass nor a judge failure: the measurement has not been "
+                "made.\nRun with --check to see which input is missing. If it is the "
+                f"`{REQUIRED_COLUMN}` column,\nthat one is the owner's and must be filled "
+                "by a human."
+            )
     else:
         _print_agreement(result)
         if status == STATUS_CALIBRATED:

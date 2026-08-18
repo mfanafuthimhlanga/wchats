@@ -245,6 +245,19 @@ def _build_instructor_llm():
         # anthropic provider (:803), splatted into the client call by agenerate
         # (:1109). Ragas metrics ARE judges, so they get the same temperature as
         # every other verdict in the system.
+        #
+        # CORRECTED 2026-08-18 by adversarial review: this site was NOT sampling
+        # at the provider default before 8.2a. ragas 0.4.3's InstructorModelArgs
+        # defaults to `temperature=0.01, top_p=0.1` whenever `model_args is None`,
+        # which is how this is constructed, and 0.01 was measured on the wire. So
+        # the change here is 0.01 -> 0, not "unset -> 0", and the 8.2a commit's
+        # "every LLM call sampled at whatever the provider defaults to" was false
+        # for 2 of the 9 sites.
+        #
+        # STILL OPEN and deliberately not changed here: ragas also sends
+        # `top_p: 0.1` alongside, and Anthropic's guidance is to set temperature
+        # OR top_p, not both. Changing it changes retrieval-eval behaviour and
+        # wants its own measurement. BACKLOG 8.10.
         temperature=0,
     )
 

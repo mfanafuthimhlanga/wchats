@@ -281,9 +281,11 @@ class TestVerdictParsing:
         with nothing in the code, the conversation or the arguments having
         changed. Judgement is the one task that wants no creativity.
 
-        3-8% verdict variance survives temperature 0 anyway, from batching and
+        Some verdict variance survives temperature 0 anyway, from batching and
         hardware nondeterminism. That is an argument for sampling a high-stakes
         verdict more than once, not for leaving the temperature unset.
+
+        An earlier version put that at 3 to 8 percent, which is quoted from a talk and has never been measured in this system (BACKLOG 8.11).
         """
         block = _make_tool_use_block("approve", "Aligned.")
         api_mock = MagicMock(return_value=_make_api_response(block))

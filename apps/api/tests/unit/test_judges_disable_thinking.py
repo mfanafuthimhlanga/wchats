@@ -36,9 +36,10 @@ THINKING_DISABLED = {"type": "disabled"}
 #: BACKLOG 8.2a. Judgement is the one task that wants no creativity, and until
 #: 8.2a `grep -rn "temperature" app tests/evals` returned NOTHING: every judge in
 #: the platform sampled at the provider default, including the Actor gate that
-#: runs before money moves. Expect 3-8% verdict variance to survive this anyway
-#: (batching, hardware nondeterminism), which is why a high-stakes verdict wants
-#: more than one sample. Not a reason to leave it unset.
+#: runs before money moves. Some verdict variance survives temperature 0
+#: anyway, from batching and hardware nondeterminism, which is why a
+#: high-stakes verdict wants more than one sample. Not a reason to leave it
+#: unset. An earlier version put that at 3 to 8 percent, which is quoted from a talk and has never been measured in this system (BACKLOG 8.11).
 JUDGEMENT_TEMPERATURE = 0
 
 
