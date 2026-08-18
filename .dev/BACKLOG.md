@@ -373,12 +373,13 @@ found an item, nothing more.
 
 | Plan step | Rows it consumes |
 |---|---|
-| **M1**, one owner action from done | `0.1` (three human scores) |
+| **M1**, one owner action from done | `0.1` (eight scorable rows; `7.29` gates the other two, so `grounding_fidelity` rests on one row until it is fixed) |
+| **Next code item, ahead of M2** | `7.29` — the PII firewall deletes correct answers that quote the tenant's own published contact address. Wants a plan file and a red-team probe, not a regex tweak |
 | **M2**, first earned ship | `5.17`, `1.31`, `1.13b` (cost RTX-01 before running it), then the eval and red-team runs themselves |
 | **M4**, cloud | `0.3`, `0.4`, `1.20`, `7.19`; plus M3's deferred PROD-11 and the BYO-client proof |
 | **M4.5**, unit economics | `7.13` (SDK cost telemetry is Anthropic-priced fiction), `7.22` (rerank ships 6x what it keeps) |
 | **M5**, console polish | `5.4`, `5.5`, `1.19`, `7.27` |
-| **M6**, Mellow live | `7.10` (Paystack adapter), `7.11` (POP queue), `5.6` |
+| **M6**, Mellow live | `7.10` (Paystack adapter), `7.11` (POP queue), `5.6`, and `7.29` must already be closed — Mellow's corpus will carry their contact email, so their agent would refuse to hand out their own address on day one |
 | **M7**, MCP surface | the PRD v1.2 protocol work, none of which was ever built |
 | **After launch, deliberately** | the improvement-loop repairs — `2.28` miner, `2.4` labelling UI, `4.x` — because every one needs production traffic to be worth measuring (`0.6`), and §6's ladder sits on top of all of them |
 

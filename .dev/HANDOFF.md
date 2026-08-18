@@ -10,21 +10,29 @@ agent live via MCP, both tested on their Vercel URLs. Nothing else counts as don
 
 ## Next move
 
-**One owner action, then M1 closes.** Fill the `human_score` column (1 to 5) in
-`apps/api/tests/evals/calibration/human_scores.csv` — ten rows present, three is the gate's minimum
-— then run:
+**One owner action, then M1 closes: score eight rows.** Fill the `human_score` column (1 to 5) in
+`apps/api/tests/evals/calibration/human_scores.csv` — ten rows present, **two of them now marked
+skip** (below), three is the gate's minimum — then run:
 
 ```
 apps\api\.venv\Scripts\python.exe apps\api\tests\evals\calibration\compute_correlation.py
 ```
 
-`--check` currently reports `20 scenarios / 20 responses / 0 of 3 human scores`, **exit 3 = NOT
-READY**, which is neither pass nor fail. The 20-response corpus is captured, clean and on disk
-(gitignored, regenerable). Nothing but a human may fill that column: a judge scored against
-model-written labels measures its agreement with itself. **The scores are per-provider** — they
-calibrate DeepSeek, and a later move back to Anthropic re-runs the gate.
+A scoring sheet pairing each captured answer with the judge's own rubric is published at
+**https://claude.ai/code/artifact/179dc28f-ce9c-45e9-b2f4-ddedbc381dec** (regenerate with the
+scratchpad builder if the corpus is ever re-captured). The scale is the judge's: 1 clear failure,
+3 borderline, 5 clear pass. `--check` reports `20 scenarios / 20 responses / 0 of 3 human scores`,
+**exit 3 = NOT READY**, which is neither pass nor fail. Nothing but a human may fill that column: a
+judge scored against model-written labels measures its agreement with itself. **The scores are
+per-provider** — they calibrate DeepSeek.
 
-**Then M4, the cloud**, which now also carries M3's unmet exit criterion (below).
+**S-002 and S-003 are unscorable until `7.29` is fixed.** Both returned the PII firewall's
+deflection instead of an answer, and scoring a deflection measures the firewall rather than
+grounding. That leaves eight scorable rows, comfortably over the minimum, but **`grounding_fidelity`
+then rests on S-001 alone** — so re-capture those two after `7.29` and score them to give that
+dimension real weight.
+
+**Then `7.29` itself, then M4.** M4 also carries M3's unmet exit criterion (below).
 
 ## Where things stand
 
@@ -33,6 +41,7 @@ calibrate DeepSeek, and a later move back to Anthropic re-runs the gate.
 | **M0** merge | **Done.** `main` fast-forwarded 116 commits, battery quoted green |
 | **M1** measurement | **One human step from done.** `7.7` DeepSeek seam, `7.8` Martin battery, E2E-3b verdict, `7.18`/`7.20` Ragas, E2E-6 corpus all landed. Only the Spearman gate remains |
 | **M2** first earned ship | Not started. Needs a real eval run and a 7/7 red-team run |
+| **`7.29`** the firewall | **New, and it outranks M2.** The PII firewall deletes correct answers that quote the tenant's own published contact address. Proven against the live corpus, blocks part of M1's calibration and would hit Mellow on day one (M6) |
 | **M3** widget + endpoint | **Done** (`7.1`-`7.6`, `7.23`), trace `260818-m3-widget-endpoint.md`. **Exit criterion deliberately unmet**: PROD-11 needs a public API base, so it moves to M4 |
 | **M4** cloud | Not started. Absorbs PROD-11, the BYO-client proof and the endpoint doc page |
 | **M4.5** unit economics | Scheduled gate before any UI polish (owner, 2026-08-17) |
