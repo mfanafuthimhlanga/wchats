@@ -61,3 +61,92 @@ def test_the_corpus_validator_agrees_with_this_shape():
         "an absent chunk must be reported, or the corpus passes validation and "
         "fails grounding silently"
     )
+
+
+# ---------------------------------------------------------------------------
+# BACKLOG 8.1 — a run is an INDEPENDENT attempt, which is what makes reliable@k
+# a statement about the agent rather than about one long session
+# ---------------------------------------------------------------------------
+
+
+class TestARunIsIndependent:
+    """Asserted on the arguments the client receives, never on the source text.
+
+    `capture_one_run` is the only place that decides whether run 1 is a second
+    attempt or turn k+1 of run 0's conversation, and the difference is invisible
+    in the recorded corpus: both produce a `response_text` and a `tool_calls_log`.
+    """
+
+    def _patched(self, monkeypatch, turns):
+        from tests.evals import capture_responses as cr
+
+        minted: list[str] = []
+        calls: list[dict] = []
+
+        monkeypatch.setattr(cr, "CONTROL_DB_SYNC_URL", "")
+        monkeypatch.setattr(
+            cr, "_get_widget_jwt",
+            lambda agent_id, api_key, base_url: minted.append(agent_id) or f"jwt-{len(minted)}",
+        )
+
+        def _chat(**kwargs):
+            calls.append(kwargs)
+            return {
+                "response_text": f"answer {len(calls)}",
+                "tool_calls_log": [],
+                "conversation_id": f"conv-{len(minted)}",
+                "job_id": "j",
+            }
+
+        monkeypatch.setattr(cr, "_call_chat_and_drain_sse", _chat)
+        scenario = {"id": "S-101", "turns": turns}
+        return cr, scenario, minted, calls
+
+    def test_each_run_mints_its_own_widget_jwt(self, monkeypatch):
+        """The token expires 900s after minting and k runs cross that k times sooner."""
+        cr, scenario, minted, calls = self._patched(
+            monkeypatch, [{"role": "user", "message": "q"}]
+        )
+
+        cr.capture_one_run(scenario, "agent-1", "key", "http://localhost:8000", 300)
+        cr.capture_one_run(scenario, "agent-1", "key", "http://localhost:8000", 300)
+
+        assert len(minted) == 2, "one JWT per run, not one shared across the capture"
+        assert [c["api_key"] for c in calls] == ["jwt-1", "jwt-2"]
+
+    def test_a_run_starts_a_fresh_conversation(self, monkeypatch):
+        """Run 1 continuing run 0 would be turn k+1 of one session, not an attempt."""
+        cr, scenario, _minted, calls = self._patched(
+            monkeypatch, [{"role": "user", "message": "q"}]
+        )
+
+        cr.capture_one_run(scenario, "agent-1", "key", "http://localhost:8000", 300)
+        cr.capture_one_run(scenario, "agent-1", "key", "http://localhost:8000", 300)
+
+        assert [c["conversation_id"] for c in calls] == [None, None], (
+            "the second run carried run 0's conversation_id, so reliable@k over these "
+            "would measure one long session rather than two independent attempts"
+        )
+
+    def test_turns_within_one_run_stay_in_one_conversation(self, monkeypatch):
+        """The other half: a multi-turn scenario is still one conversation."""
+        cr, scenario, _minted, calls = self._patched(
+            monkeypatch,
+            [{"role": "user", "message": "q1"}, {"role": "user", "message": "q2"}],
+        )
+
+        cr.capture_one_run(scenario, "agent-1", "key", "http://localhost:8000", 300)
+
+        assert calls[0]["conversation_id"] is None
+        assert calls[1]["conversation_id"] == "conv-1", (
+            "session_continuity is a judged dimension; turn 2 must see turn 1"
+        )
+
+    def test_the_last_turn_is_the_one_recorded(self, monkeypatch):
+        cr, scenario, _minted, _calls = self._patched(
+            monkeypatch,
+            [{"role": "user", "message": "q1"}, {"role": "user", "message": "q2"}],
+        )
+
+        run = cr.capture_one_run(scenario, "agent-1", "key", "http://localhost:8000", 300)
+        assert run["response_text"] == "answer 2"
