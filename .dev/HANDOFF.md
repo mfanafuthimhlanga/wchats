@@ -10,9 +10,22 @@ agent live via MCP, both tested on their Vercel URLs. Nothing else counts as don
 
 ## Next move
 
-**The corpus cannot be scored. It has to be re-captured, and one decision has to be made first.**
+**Everything the re-capture needed is landed. The re-capture itself is blocked on the owner, and
+the next unblocked code item is `8.2`'s temperature half.**
 
-Run this and it says so itself:
+| | State |
+|---|---|
+| `8.1` k > 1 record shape and pass@k | **landed 2026-08-18**, five mutation proofs, `260818-pass-at-k-corpus-shape.md` |
+| `7.34` chunks in the corpus | landed, migration `0017` verified locally |
+| `7.29` PII firewall | landed, five mutation proofs |
+| **the re-capture** | **[owner]** `7.32` credential, plus the plaintext tenant `API_KEY` |
+| **`8.2a` judge temperature** | **[code], unblocked, plan written**: `.dev/plans/260818-judge-temperature-zero.md` |
+
+`8.2a` goes before the re-capture rather than after it, because a judge sampling at the provider
+default poisons every number downstream of it including the first calibration run. Measured
+2026-08-18: `grep -rn "temperature" app tests/evals` returns nothing.
+
+**The corpus still cannot be scored.** Run this and it says so itself:
 
 ```
 apps/api/.venv/Scripts/python.exe apps/api/tests/evals/validate_corpus.py
@@ -52,18 +65,29 @@ it. **The live tenant still needs migrating before a capture**, or the INSERT fa
 This file previously said the migration could never run here. That was quoting a CLAUDE.md line
 stale since 2026-08-10, and it was wrong: see `7.36`.
 
-### `8.1` lands BEFORE the re-capture, and it is bigger than it was first filed
+### `8.1` is landed, and what it changed about reading a number
 
-The capture is live agent turns against a live tenant. At k=1 the corpus still cannot separate
-"cannot" from "sometimes", so a third capture becomes necessary the moment anyone asks how
-consistent the agent is. Avoiding that is what the whole last round of work was for.
+The corpus records k runs per scenario. `tests/evals/corpus.py` owns the shape and all five call
+sites read through it; `tests/evals/rates.py` computes the two metrics.
 
-**The row first said "cheap to add: loop k". That was wrong.** The corpus is single-response by
-construction and five call sites across four files key on `responses/{scenario_id}.json` holding one
-`response_text` and one `tool_calls_log`: `capture_responses.py:344` (which also skips on that
-path's existence), `run_evals.py:78`, `compute_correlation.py:267` and `:299`, plus
-`validate_corpus.py`'s glob. **They move together or the corpus silently keeps only the last run**,
-which is a fresh instance of the class this session spent its time naming.
+```
+{"scenario_id": "S-001", "runs": [{"response_text": ..., "tool_calls_log": [...]}, ...]}
+```
+
+- **Position is the run index. Run 0 is the row the human scores**, and calibration reads run 0 only.
+  Run 0 rather than the last run, because the last run moves under a top-up.
+- **`capture_responses.py --runs K` TOPS A SCENARIO UP.** It no longer skips on the file existing,
+  which under k meant "captured at some k, possibly 1". Deleting a file still re-captures it in full.
+- **Each run is a fresh conversation with its own widget JWT.** A run continuing the previous run's
+  conversation is turn k+1 of one session, and reliable@k over those measures the session.
+- **The P0 gate is `reliable@k == 1.0`**, and a failure says NEVER passed (capability: change the
+  model, tools or architecture) or FLAKY n/k (variance). Those need opposite work.
+- **Aggregation is the mean of per-scenario rates**, never total successes over total runs, so a
+  ragged corpus cannot let the scenarios that got more runs decide the number.
+
+**The twenty files on disk are still the contaminated k=1 set**, and the harness says so in its own
+output rather than implying otherwise: `runs per scenario: k=1 across all 20`, and a standing
+warning under the summary table. Only the re-capture changes that.
 
 ### The order, and why it is one capture rather than two
 
@@ -71,7 +95,7 @@ which is a fresh instance of the class this session spent its time naming.
 multiplies the only human step in the system by k, which is why the sequence matters:
 
 ```
-1. land 8.1              record shape holds k runs        no owner input needed
+1. land 8.1              record shape holds k runs        DONE 2026-08-18
 2. capture ONCE at k>1   run 0 of each scenario is the human's row
 3. human scores run 0    ten rows, unchanged from today
 4. judge is calibrated   against those human labels, at temperature 0
@@ -93,7 +117,7 @@ while the services are still up rather than a day later at scoring time.
 
 | Before running | State |
 |---|---|
-| `8.1` k > 1 and the record shape | **land it first, and it is not a one-line loop.** A k=1 corpus buys a third capture |
+| `8.1` k > 1 and the record shape | **landed 2026-08-18.** Pass `--runs 5`; a scenario short of 5 is topped up, not skipped |
 | `7.32` control DB credential | **BLOCKING.** Rejected by Neon. Nothing can run until it is refreshed |
 | plaintext tenant `API_KEY` and `AGENT_ID` | **BLOCKING.** Only the key's hash is stored |
 | `7.34` chunk source | decided, landed, and `0017` is verified locally. **The LIVE tenant DB still needs it applied**, or the capture fails on the INSERT |
@@ -101,7 +125,7 @@ while the services are still up rather than a day later at scoring time.
 | `tool_name: ""` | closed in the capture script |
 | `CAPTURE_TIMEOUT` | closed: default is 300, was 30 against a measured 101s turn |
 | `CONTROL_DB_SYNC_URL` exported for the capture | needed for the chunk read-back. Unset means the run warns, records no chunks, and the validator reports BLIND |
-| widget JWT expiry (`7.23`) | closed: minted per scenario |
+| widget JWT expiry (`7.23`) | closed: minted per RUN, since k runs cross the 900s window k times sooner |
 | Voyage throttling (`7.21`) | closed by the credit. Confirm by the ABSENCE of `rerank.voyage_failed_falling_back` in the run |
 | `ANTHROPIC_API_KEY` exported into `os.environ` | operational, see below |
 | Redis `runtime` queue drained, tenant Neon pre-warmed | operational, see below |
@@ -151,7 +175,7 @@ because that is where the harness's 170s clamp actually bites.
 |---|---|---|
 | `static` | ruff, import contracts, lizard | 8.4s cold, 3.2s warm. **What the Stop hook runs.** Nothing in it imports app code, so its headroom cannot erode by adding a dependency |
 | `fast` | static + whole-suite collection | 142.5s and growing with the dependency tree, not with the suite |
-| `full` | fast + the unit suite | **551.0s green on 2026-08-18**: suite 468.8s, 2408 passed, 13 skipped, exit 0 |
+| `full` | fast + the unit suite | **green 2026-08-18 on the `8.1` tree**: `static` 3.4s, suite **2464 passed, 13 skipped, 517.82s**, exit 0. The step order means a killed run reports `FAILED at step 5`, which is indistinguishable from a real failure until you read the log for an `F` |
 
 The old hook gate was whole-suite `--collect-only`. `gates.json` had warned in its own comment that
 a heavy dependency would push it past the clamp and that being killed there reports nothing at all.
@@ -209,6 +233,10 @@ present in `.env` — that has cost four debugging cycles, most recently as a pr
    lies** — the proxy accepts while the compute wakes.
 3. Run the unit suite only in a **clean shell**: with the overlay sourced, `1.34` makes one test
    place a real Voyage network call.
+4. **A `full` run stalled at 2 percent is not stalled.** `tests/unit/test_agent_task.py` runs at
+   about 11 seconds a test and sits early in the alphabet, so the first 5 percent of 2470 takes
+   roughly twenty minutes and the remaining 95 percent takes a few. Measured 2026-08-18: 126 tests
+   at 14:31:43, 1400 at 14:34:34. The 468.8s whole-suite figure is consistent with that.
 
 **The live Neon project `mute-dream-53534177` is deliberately still up** (agent `c14d13a1…`) with a
 real 16-chunk corpus. Every live run uses it. **Delete by id only, never by name pattern.**
@@ -245,6 +273,9 @@ before money moves.
 - **`260818-eval-practice-gap-analysis.md`** — nine things two eval practitioners do that we do
   not, each checked against the code before being written down. Act on the first one first:
   every scenario runs ONCE, so no number we have separates "cannot" from "sometimes".
+- **`260818-pass-at-k-mutation-proofs.md`** — the five guards `8.1` added, each mutated and
+  observed red. Every one of them mutates a SILENCE: the mutant returns a plausible number rather
+  than raising, which is the class the note below generalises.
 - **`260818-green-for-the-wrong-reason.md`** — four checks that were green while the thing they
   guard was broken, found in one session, each with the cheap test that separates them. Read it
   before trusting any negative test, and before writing a mutation proof.
