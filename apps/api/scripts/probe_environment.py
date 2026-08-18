@@ -96,16 +96,37 @@ def report_env_files() -> dict[str, str]:
     return winner
 
 
-def report_exported() -> None:
-    """`.env` is not `os.environ`, and the difference has cost four debug cycles.
+def report_provider(env: dict[str, str]) -> None:
+    """WHICH PROVIDER the Anthropic-shaped variables actually point at.
 
-    Pydantic loads `.env` into Settings; the Anthropic client reads os.environ. A
-    worker started without ANTHROPIC_API_KEY exported loses every direct-API
-    call, and at least one task reports success anyway (BACKLOG 1.28).
+    **DeepSeek is the default provider** (BACKLOG `0.7`, owner 2026-08-15), reached
+    through its Anthropic-compatible endpoint. The variables are named
+    `ANTHROPIC_*` because the Claude Agent SDK accepts only Anthropic wire
+    formats, not because the calls go to Anthropic, and reading those names as
+    "Anthropic" is a mistake this script previously invited.
+
+    `.env` is not `os.environ`, and the gap is `1.28`: pydantic loads `.env` into
+    Settings while the client reads `os.environ`. **An unexported base URL does
+    not merely fail. The client falls back to `api.anthropic.com`**, so the
+    split-brain is Settings saying DeepSeek while the socket goes to Anthropic,
+    on a key that is not Anthropic's. That is the accidental-spend path, and it is
+    why this reports the HOST rather than a tick.
     """
+    print("\n  provider (the ANTHROPIC_* names are the SDK's wire format, not the vendor):")
+    url = env.get("ANTHROPIC_BASE_URL", "")
+    host = re.sub(r"^https?://", "", url).split("/")[0] if url else ""
+    print(f"    ANTHROPIC_BASE_URL in .env     {host or 'ABSENT'}")
+    if host and "deepseek" not in host:
+        print(f"      WARNING: {host} is not DeepSeek, which is the default provider (0.7)")
+
     print("\n  exported into os.environ (NOT the same as present in .env):")
     for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"):
-        print(f"    {key:26} {'exported' if os.environ.get(key) else 'NOT exported'}")
+        value = os.environ.get(key)
+        state = "exported" if value else "NOT exported"
+        print(f"    {key:26} {state}")
+    if not os.environ.get("ANTHROPIC_BASE_URL"):
+        print("      -> a client started from this shell would default to api.anthropic.com,")
+        print("         which is the WRONG PROVIDER on a DeepSeek key (1.28). Export it.")
 
 
 def probe_postgres(label: str, dsn: str, timeout: int = 20) -> str | None:
@@ -249,7 +270,7 @@ def main() -> int:
     print("=" * 78)
     print("\nENV FILES")
     env = report_env_files()
-    report_exported()
+    report_provider(env)
     print("\n" + "=" * 78)
     print("\nDATABASES")
     probe_local_cluster()
