@@ -124,3 +124,41 @@ class TestWhatAFailureSays:
 
     def test_a_dimension_nobody_captured_reports_nothing_rather_than_passing(self):
         assert run_evals._dimension_failures("D5", {}, {}) == []
+
+
+class TestNothingCheckedIsNotEverythingPassing:
+    """Missing data is never passing data, one level up from `scenario_rates`.
+
+    With `responses/` empty this dimension asserts over three empty sets. The
+    pre-8.1 harness reported that as a pass and exited 0, which is what a shell,
+    a checklist or a summary reads as success.
+    """
+
+    def test_an_unmeasured_dimension_contributes_no_failure(self):
+        assert run_evals._dimension_failures("D5", {}, {}) == []
+
+    def test_but_an_unmeasured_dimension_is_not_counted_as_measured(self):
+        from tests.evals import rates
+
+        agg = rates.aggregate({})
+        assert agg["scenarios"] == 0
+        assert agg["pass_at_k"] is None and agg["reliable_at_k"] is None, (
+            "a rate over zero observations is unknown; the CLI keys 'NOT MEASURED' on this"
+        )
+
+    def test_a_negative_run_index_is_refused_rather_than_wrapped(self, tmp_path):
+        """`runs[-1]` is the run that MOVES under a top-up."""
+        import json
+
+        from tests.evals import corpus
+
+        path = tmp_path / "S-101.json"
+        path.write_text(
+            json.dumps({"scenario_id": "S-101", "runs": [
+                {"response_text": "first", "tool_calls_log": []},
+                {"response_text": "last", "tool_calls_log": []},
+            ]}),
+            encoding="utf-8",
+        )
+        with pytest.raises(corpus.CorpusShapeError):
+            corpus.load_run(path, -1)

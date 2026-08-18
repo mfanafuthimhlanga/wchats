@@ -101,7 +101,12 @@ def load_runs(path: pathlib.Path) -> list[dict]:
 def load_run(path: pathlib.Path, index: int = RUN_ZERO) -> dict:
     """One run of the scenario at `path`. Defaults to the run the human scores."""
     runs = load_runs(path)
-    if index >= len(runs):
+    # `index < 0` is rejected rather than wrapped. Python would silently return
+    # runs[-1] for -1, and the last run is the one that MOVES under a top-up:
+    # a scenario re-captured from 3 to 5 changes it, so a caller that meant run
+    # 0 and got the last one would correlate a judge against text the human
+    # never labelled, and nothing would raise.
+    if index < 0 or index >= len(runs):
         raise CorpusShapeError(
             f"{path.name} holds {len(runs)} run(s); run {index} was asked for"
         )

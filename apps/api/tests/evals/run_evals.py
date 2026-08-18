@@ -344,6 +344,17 @@ def test_deterministic_dimensions_d5_d6_d7():
     if failure_msgs:
         pytest.fail("\n".join(failure_msgs))
 
+    # Nothing checked is not everything passing. With responses/ empty this test
+    # exercised no scenario and asserted over three empty sets, and both this
+    # version and the pre-8.1 one reported that as a pass. A skip is unobserved
+    # and reads as unobserved; a pass reads as evidence.
+    if not any(outcomes[dim] for dim in ("D3", "D5", "D6")):
+        pytest.skip(
+            f"No recorded response for any of the {len(skipped)} scenario(s) with "
+            "deterministic checks. Nothing was measured, so nothing passed - run "
+            "capture_responses.py."
+        )
+
     log.info(
         "deterministic_checks.summary",
         **{f"{dim.lower()}_scenarios": len(outcomes[dim]) for dim in ("D3", "D5", "D6")},
@@ -606,13 +617,24 @@ def main() -> None:
         labels[dim] for dim, agg in aggregates.items()
         if agg["scenarios"] and agg["reliable_at_k"] < 1.0
     ]
+    measured = [labels[dim] for dim, agg in aggregates.items() if agg["scenarios"]]
+
     print()
     if not gate_passed or unreliable or d7_passed is False:
         print("**Result: FAILURES detected - see above for details.**")
         sys.exit(1)
-    else:
-        print("**Result: All checked dimensions PASSED on every run.**")
-        sys.exit(0)
+    if not measured:
+        # An empty corpus used to print "All checked dimensions PASSED" and exit
+        # 0, which is what a shell, a checklist or a summary reads as success.
+        # Missing data is never passing data.
+        print(
+            "**Result: NOT MEASURED. No recorded response for any scenario carrying a "
+            "deterministic check, so no dimension was evaluated. Run "
+            "capture_responses.py.**"
+        )
+        sys.exit(1)
+    print(f"**Result: {', '.join(measured)} PASSED on every recorded run.**")
+    sys.exit(0)
 
 
 if __name__ == "__main__":
