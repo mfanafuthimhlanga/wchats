@@ -10,44 +10,90 @@ agent live via MCP, both tested on their Vercel URLs. Nothing else counts as don
 
 ## Next move
 
-**Everything the re-capture needed is landed. The re-capture itself is blocked on the owner, and
-the next unblocked code item is `8.2`'s temperature half.**
+**One number from the owner, and everything else is code.** How many of the 45 available
+calibration rows will be labelled, twice. Nothing today: the corpus is contaminated, so there is
+nothing to label until the re-capture.
 
 | | State |
 |---|---|
-| `8.1` k > 1 record shape and pass@k | **landed 2026-08-18**, five mutation proofs, `260818-pass-at-k-corpus-shape.md` |
-| `7.34` chunks in the corpus | landed, migration `0017` verified locally |
-| `7.29` PII firewall | landed, five mutation proofs |
-| **the re-capture** | **NOT owner-blocked. See "7.32 does not block the capture" below.** Needs `8.2` first (temperature, and the human column's scale) |
-| **`8.2a` judge temperature** | **landed 2026-08-18.** Nine verdict sites at `temperature=0`; three generators deliberately not |
-| **`8.2b` binary label + kappa** | **landed 2026-08-18.** Gate is Cohen's kappa >= 0.6, superseding AI-SPEC §5.2 |
-| **`8.2c` confidence intervals** | **[code], OPEN, and it gates reading any number**: the harness prints point estimates |
+| `8.1` k>1 record shape, pass@k | **landed + adversarially reviewed.** 3 BLOCKs and 11 surviving mutants fixed; 12/12 mutations now red |
+| `8.2a` judge temperature | **landed + reviewed.** 3 tautologies fixed |
+| `8.2b` binary label + kappa | **landed + reviewed.** 2 BLOCKs fixed, one of which broke the owner's workflow |
+| **`8.2c` data-derived threshold** | **[code], OPEN, and it gates everything downstream.** `agreement.py` is written and passes 13 tests; nothing calls it yet |
+| **the sheet size** | **[owner] the one open decision.** See "What labelling costs" below |
+| the re-capture at k=5 | **[code], unblocked.** 100 live turns. Seed the LOCAL control DB; `7.32` does not block it |
+| `7.34` chunks, `7.29` firewall | landed; `0017` applied and verified on the live tenant |
 
-`8.2a` goes before the re-capture rather than after it, because a judge sampling at the provider
-default poisons every number downstream of it including the first calibration run. Measured
-2026-08-18: `grep -rn "temperature" app tests/evals` returns nothing.
+### `8.2c` is the gate, and `KAPPA_THRESHOLD = 0.6` is still in the code
 
-**The corpus still cannot be scored.** Run this and it says so itself:
+The harness currently gates on a constant. **0.6 is a Landis-Koch band boundary: a 1977 rule of
+thumb published with no empirical basis**, so it is not merely unmeasured here, it was never
+measured anywhere. The owner refused it on 2026-08-18.
+
+The replacement is two halves, both derived from the data, and BOTH required:
 
 ```
-apps/api/.venv/Scripts/python.exe apps/api/tests/evals/validate_corpus.py
+(a) beats chance      judge_kappa_ci_low  > 0
+(b) reaches ceiling   judge_kappa_ci_high >= human_kappa_ci_low
 ```
 
-`FATAL 15 rows, BLIND 14 rows, exit 1`. Two independent defects, and the second is the one that
-matters more:
+(b) is the one that matters. **A judge cannot be expected to agree with a human more than that
+human agrees with themself**, so the owner's test-retest kappa IS the scale, and with no ceiling
+measured the harness refuses rather than inventing a number. `agreement.py` implements both;
+`compute_correlation.py` does not call it yet. Plan: `260818-kappa-threshold-from-data.md`.
 
-1. **Four responses are the PII firewall's deflection** (S-002, S-003, S-005, S-010). Scoring a
-   deflection measures the firewall. `7.29`'s code fix has landed, so a re-capture returns real
-   answers.
-2. **No response carries a retrieved chunk.** `grounding_fidelity`'s rubric requires a claim to be
-   traceable to a chunk *provided in the tool_calls log*, and every entry has `"result": {}`. The
-   rubric's PASS branch is unreachable, so **every grounding verdict must FAIL regardless of the
-   answer**. Every tool call is also named `""`, so the judge cannot see that retrieve was called
-   either, and `run_evals.py` counts escalate and clarify calls by that same name.
+### What labelling costs, and what a row is
 
-**Do not score the current sheet.** Eight rows are readable, but the number that came out would be
-agreement between a human and a judge that cannot see the evidence, on a corpus that has to be
-re-captured anyway.
+A row is one **(scenario, dimension)** pair. **45 apply across the 20 scenarios; the sheet uses 10.**
+Adding rows is a sheet change and costs nothing; the owner's cost is the two columns at the end:
+`human_verdict` (pass/fail) and a one-line reason in `notes`. Then the same rows again, blind.
+
+Measured 2026-08-18, 95% bootstrap interval on a judge wrong about 2 rows in 10:
+
+```
+rows      judge interval        what can be concluded
+  10      [-0.09, 1.00]         nothing; it includes zero
+  15      [ 0.05, 1.00]         beats chance, barely
+  20      [ 0.17, 0.90]         beats chance
+  30      [ 0.26, 0.86]         beats chance, and the interval is readable
+```
+
+The owner's own test-retest ceiling needs the same: at 10 rows it is `[0.19, 1.00]`, too wide to cap
+anything; at 30 it is `[0.52, 1.00]`.
+
+**The sheet must span all four scenario categories deliberately.** The 45 rows skew hard
+(`escalation_accuracy` 20, `session_continuity` 2), and kappa needs BOTH labels present. If every
+labelled row comes back `pass`, kappa is undefined and the exercise reports "cannot establish".
+Adversarial and out-of-scope scenarios are where the `fail`s come from.
+
+### What the two adversarial reviews changed
+
+Both ran as independent agents. Between them: **5 BLOCKs, 14 surviving mutants, and six claims of
+mine that were false.** All fixed or filed; **19/19 mutations now go red.** Traces carry the detail;
+the four that change how someone works here:
+
+- **The workflow given to the owner crashed on first use.** `compute_correlation` prints "a 1-5
+  score is optional" and its table then did arithmetic on that `None`. The gate had computed
+  `kappa=1.0 calibrated`; the CLI died before printing it, and a shell reads the non-zero exit as
+  NOT calibrated. The fixture derived the verdict FROM the score, so the row shape the harness asks
+  for was inexpressible in any test.
+- **Excel would have broken the sheet silently.** "CSV UTF-8" writes a BOM; every row parsed valid
+  with an empty `scenario_id` and readiness reported READY over a file producing zero pairs. Now
+  `utf-8-sig`, and a padded header is normalised rather than read as an unlabelled sheet.
+- **A `getsource` guard was bypassed by one indirection.** Moving `{"temperature": 0}` to a module
+  constant left the red-team probe deterministic on the wire and invisible to the check. Assert on
+  the kwargs the client receives; never on source text.
+- **`pass@k` was biased under ragged k** while `reliable@k` was not. It grows with k on its own, so
+  it is now `None` on a ragged corpus rather than printed with a warning beside it.
+
+### Numbers that were repeated here and were wrong
+
+- "every LLM call sampled at the provider default": false for the two Ragas sites, which were at
+  `temperature=0.01, top_p=0.1` (`8.10`).
+- "3 to 8 percent verdict variance survives temperature 0": quoted from a talk, never measured here,
+  and it had reached six production comments (`8.11`). This is `7.36` happening inside code.
+- "every verdict samples at temperature 0": false of the deployment orchestrator; four
+  `claude_agent_sdk` sites take no temperature and one returns a verdict (`8.12`).
 
 ### `7.34` is decided and landed
 
@@ -66,30 +112,6 @@ it. **The live tenant still needs migrating before a capture**, or the INSERT fa
 
 This file previously said the migration could never run here. That was quoting a CLAUDE.md line
 stale since 2026-08-10, and it was wrong: see `7.36`.
-
-### `8.1` is landed, and what it changed about reading a number
-
-The corpus records k runs per scenario. `tests/evals/corpus.py` owns the shape and all five call
-sites read through it; `tests/evals/rates.py` computes the two metrics.
-
-```
-{"scenario_id": "S-001", "runs": [{"response_text": ..., "tool_calls_log": [...]}, ...]}
-```
-
-- **Position is the run index. Run 0 is the row the human scores**, and calibration reads run 0 only.
-  Run 0 rather than the last run, because the last run moves under a top-up.
-- **`capture_responses.py --runs K` TOPS A SCENARIO UP.** It no longer skips on the file existing,
-  which under k meant "captured at some k, possibly 1". Deleting a file still re-captures it in full.
-- **Each run is a fresh conversation with its own widget JWT.** A run continuing the previous run's
-  conversation is turn k+1 of one session, and reliable@k over those measures the session.
-- **The P0 gate is `reliable@k == 1.0`**, and a failure says NEVER passed (capability: change the
-  model, tools or architecture) or FLAKY n/k (variance). Those need opposite work.
-- **Aggregation is the mean of per-scenario rates**, never total successes over total runs, so a
-  ragged corpus cannot let the scenarios that got more runs decide the number.
-
-**The twenty files on disk are still the contaminated k=1 set**, and the harness says so in its own
-output rather than implying otherwise: `runs per scenario: k=1 across all 20`, and a standing
-warning under the summary table. Only the re-capture changes that.
 
 ### `7.32` does not block the capture, and `0017` is applied to the live tenant
 
@@ -115,45 +137,17 @@ mattering once a local control row is seeded, because then whoever seeds it choo
 never tested.** Same class as `7.36`, one row over. `probe_environment.py` exists so the next
 session runs the check instead of inheriting the sentence.
 
-### `k=5`, and the arithmetic is written down
+### The k, the label scale, and where their reasoning lives
 
-`.dev/reference/260818-how-much-k-and-why.md`. The fundamentals guide names no k: it gives one floor
-(k > 1) and one warning that five trials is still unstable. Applying its own "quote an interval" rule
-settles it: **k=5 is the smallest k where "never passes" `[0.00, 0.43]` and "always passes"
-`[0.57, 1.00]` do not overlap at 95%.** At k=3 they overlap. k=5 is 100 live agent turns.
+`k=5` because it is the smallest k at which "never passes" `[0.00, 0.43]` and "always passes"
+`[0.57, 1.00]` have non-overlapping 95% intervals; k=3 they overlap. Arithmetic:
+`260818-how-much-k-and-why.md`.
 
-k=5 does **not** buy a shipping claim; the strongest honest sentence is "at least 57% reliable", and
-k >= 10 is 200 turns. The top-up is the way out: a scenario that comes back flaky at k=5 goes to
-k=25 for 20 more turns instead of re-capturing twenty.
-
-### The human score column WAS on the wrong scale. Fixed, and still empty
-
-**Decided and landed 2026-08-18 (owner).** The sheet now carries an empty `human_verdict`
-column, the gate is Cohen's kappa >= 0.6, and `human_score` is optional. **Label BINARY, and write
-why in `notes`.** What follows is why, kept because the reasoning outlives the change.
-
-The fundamentals guide §8 is explicit: **"Binary, not a scale. Over a hundred traces a human cannot hold
-a 1-5 scale steady."** §9's loop is human-labels-binary, then judge, then measure agreement.
-
-Measured 2026-08-18:
-
-```
-human_scores.csv    scenario_id,dimension,human_score,notes    10 rows, ALL EMPTY
-judge()             returns BOTH "verdict" (PASS/FAIL) and "score" (1-5)
-run_evals.py        gates on verdict        <- already binary
-compute_correlation correlates on score     <- the only 1-5 consumer
-kappa / matthews    absent from the repo for judge calibration
-```
-
-So the binary signal already exists on the judge side. The 1-5 scale exists only to feed Spearman,
-which AI-SPEC §5.2 chose before this practice was read. It costs three things: noisier labels,
-no chance correction, and **no confusion matrix**, because kappa and a 2x2 are categorical and
-cannot be built from 1-5 vs 1-5 without collapsing to binary first.
-
-Moving the gate from Spearman to kappa contradicts AI-SPEC §5.2. **The owner decided it on
-2026-08-18** ("the spec changes because i pushed back on it"), and all ten cells were still empty,
-so it cost nothing. AI-SPEC has NOT been edited; `compute_correlation.py`'s docstring records the
-supersession.
+The human label is BINARY (`human_verdict`), with the 1-5 `human_score` optional and feeding only
+the reported Spearman. A human cannot hold a five-point scale steady across many rows, and the judge
+already returned both a verdict and a score, so only the human column was ever on the wrong scale.
+AI-SPEC §5.2 is struck through on that line, which is the one deliberate edit to frozen `.planning/`.
+Reasoning: `260818-judge-temperature-and-kappa.md`.
 
 ### The order, and why it is one capture rather than two
 
@@ -161,18 +155,22 @@ supersession.
 multiplies the only human step in the system by k, which is why the sequence matters:
 
 ```
-1. land 8.1              record shape holds k runs        DONE 2026-08-18
-2. capture ONCE at k>1   run 0 of each scenario is the human's row
-3. human scores run 0    ten rows, unchanged from today
-4. judge is calibrated   against those human labels, at temperature 0
-5. calibrated judge      scores all k runs -> reliable@k per category, with an interval
+1. 8.1 record shape       k runs per scenario              DONE 2026-08-18
+2. 8.2a judge temperature before ANY judging happens       DONE 2026-08-18
+3. 8.2b binary label      before the owner labels anything DONE 2026-08-18
+4. 8.2c the threshold     before any kappa is read         OPEN, and it gates the rest
+5. size the sheet         N of 45 rows, spanning categories OWNER: the one open number
+6. capture ONCE at k=5    run 0 of each scenario is the human's row
+7. owner labels run 0     N binary verdicts + N reasons
+8. owner RE-labels blind  the same N, for the ceiling
+9. the gate computes      judge CI against the human ceiling
 ```
 
 **Run 0 carries the human column, so human effort does not multiply and only one capture is
-needed.** Reversing steps 4 and 5 buys nothing and costs k times the labelling.
+needed.** Steps 2 to 4 all come BEFORE the capture, and each for a different reason: a judge
+sampling at the provider default poisons every number downstream of it, the sheet's shape changes
+what the owner writes, and the threshold decides whether any of it can be read.
 
-**Correcting what this file said last:** `8.2` is not simply "after the capture". Its temperature
-half must be set before ANY judging happens, and its kappa half is entangled with step 4 above.
 `8.3` (per scenario category rather than pooled) is genuinely analysis-side and can land last, but
 before anyone reads a number off the corpus.
 
@@ -183,7 +181,9 @@ while the services are still up rather than a day later at scoring time.
 
 | Before running | State |
 |---|---|
-| `8.1` k > 1 and the record shape | **landed 2026-08-18.** Pass `--runs 5`; a scenario short of 5 is topped up, not skipped |
+| `8.1` k > 1 and the record shape | **landed and adversarially reviewed.** Pass `--runs 5`; a scenario short of 5 is topped up, not skipped |
+| `8.2c` the threshold | **OPEN and it blocks reading the result, not the capture.** The capture can run first; the numbers cannot be read until this lands |
+| the sheet size | **[owner] OPEN.** It does not block the capture either. Label after |
 | `7.32` control DB credential | **not blocking.** Seed the LOCAL `wchats_control` (alembic 0019) with a tenant and agent row whose `neon_connection_string` is the Fernet-encrypted live tenant URI |
 | plaintext tenant `API_KEY` and `AGENT_ID` | **not blocking.** Both are absent from `.env`, but seeding the local control row means choosing the plaintext |
 | `7.34` chunk source | decided, landed, and **`0017` is APPLIED to the live tenant and verified** (2026-08-18) |
@@ -221,7 +221,7 @@ merges; Claude never does (the `PreToolUse` hook enforces it).
 
 | Item | What it needs |
 |---|---|
-| `0.1 · score-judge-calibration` | **The one thing standing between here and M1 closing.** Three rows minimum in `human_scores.csv` |
+| `0.1 · score-judge-calibration` | **Still the one thing between here and M1 closing, and the shape of the ask changed on 2026-08-18.** Not three rows of 1-5 scores: a BINARY `human_verdict` plus a written reason, on as many of the 45 available (scenario, dimension) rows as the owner will take, and then the SAME rows again blind for the ceiling. The number is the open decision; 10 rows can establish nothing, ~30 can. Nothing to label until the re-capture |
 | `7.32 · control-db-credential-stale` | **RE-SCOPED 2026-08-18: it does NOT block the capture.** The credential really is rejected, and `NEON_API_KEY` cannot reach that project to fix it, so refreshing it from the Neon console is still yours. But the local control DB is at head and the tenant URI is retrievable, so nothing waits on this. It blocks only work that must read PRODUCTION control state |
 | `7.29` re-capture | `AGENT_ID` and the **plaintext** tenant `API_KEY`, on top of `7.32`. Only the key's hash is stored, so it cannot be recovered here. With both, delete `tests/evals/responses/S-002.json`, `S-003.json`, `S-005.json` and `S-010.json` and run the capture WITHOUT `--overwrite`: it skips files that already exist, so exactly those four re-run, four agent turns of cost |
 | `0.4 · eval-pii-egress` | Decide BEFORE M4 deploys a beat worker: PII firewall on the eval path, or accepted egress named as such. `eval-nightly` fires the first night beat exists |
@@ -339,6 +339,10 @@ before money moves.
 - **`260818-eval-practice-gap-analysis.md`** — nine things two eval practitioners do that we do
   not, each checked against the code before being written down. Act on the first one first:
   every scenario runs ONCE, so no number we have separates "cannot" from "sometimes".
+- **`260818-what-a-self-review-missed.md`** - the same branch reviewed three times, with the
+  counts. The self-review probed no mutants; the two independent passes found 11 of 22 and 3
+  of 14 surviving. Read it before deciding a self-review is enough, and for the four finding
+  types an author structurally cannot reach.
 - **`260818-pass-at-k-mutation-proofs.md`** — the five guards `8.1` added, each mutated and
   observed red. Every one of them mutates a SILENCE: the mutant returns a plausible number rather
   than raising, which is the class the note below generalises.
