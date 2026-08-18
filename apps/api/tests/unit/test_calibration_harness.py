@@ -396,16 +396,33 @@ class TestTheHumanColumnIsNeverWritten:
 class TestReadiness:
     """`--check` answers 'what is stopping anyone from finding out'."""
 
-    def test_the_shipped_tree_is_honest_about_being_unready(self):
+    def test_the_shipped_tree_is_honest_about_being_unready(self, capsys):
+        """The tree is unready, and the report must SAY WHY rather than just say no.
+
+        RED FROM 2026-08-17 TO 2026-08-18, undetected. It asserted `blocking` was
+        non-empty, which was true only while `responses/` had never been captured.
+        The E2E-6 capture filled that directory, every machine-fixable input became
+        present, and `blocking` correctly emptied — leaving the assertion pinned to
+        a state the project had moved past. The last full battery ran 2026-08-16,
+        the day before, and `fast` is collect-only, so nothing ran this until now.
+
+        The rewrite keeps the intent and stops pinning one spelling of it: whatever
+        is missing, the report must name it, and the caller must not read exit 0.
+        """
         report = cc.readiness()
 
         assert report["scenarios_present"] == 20
         assert report["human_scores_attempted"] >= 10
-        assert report["ready_to_calibrate"] is False, (
-            "responses/ has never been captured — see the module docstring"
-        )
-        assert report["blocking"], "an unready harness must name what is missing"
+        assert report["ready_to_calibrate"] is False
+
+        named = report["blocking"] or report["awaiting_owner_scores"]
+        assert named, "an unready harness must name what is missing"
+
         assert cc.print_readiness(report) == cc.EXIT_NOT_CALIBRATED_YET
+        printed = capsys.readouterr().out
+        assert "Awaiting the owner" in printed or "Blocking" in printed, (
+            "the exit code alone does not tell a reader what to do next"
+        )
 
     def test_readiness_reports_valid_beside_attempted(self, calibration_tree):
         calibration_tree([
@@ -461,6 +478,77 @@ class TestReadiness:
             "a complete tmp tree with four scored rows IS ready — otherwise this "
             "test would pass for the wrong reason"
         )
+
+    def test_a_deflected_response_is_named_and_does_not_count_as_scorable(
+        self, calibration_tree, tmp_path
+    ):
+        """BACKLOG 7.29: the corpus check that ran could not see a deflection.
+
+        It looked for empties, short answers and provider-error text. The PII
+        deflection is a well-formed sentence of ordinary length, so four of the
+        twenty E2E-6 responses passed as clean and were only found while someone
+        read them. Scoring one measures the firewall rather than the judge.
+        """
+        from app.utils.pii_firewall import PII_DEFLECTION
+
+        calibration_tree(_FOUR_ROWS)
+        (tmp_path / "responses" / "S-101.json").write_text(
+            json.dumps({
+                "scenario_id": "S-101",
+                "response_text": PII_DEFLECTION,
+                "tool_calls_log": [],
+            }),
+            encoding="utf-8",
+        )
+        report = cc.readiness()
+
+        assert report["deflected_responses"] == ["S-101"]
+        assert report["scorable_rows"] == 3
+        assert report["blocking"] == [], (
+            "three scorable rows still meet the minimum, so naming the deflection "
+            "must not stop the owner scoring the rest"
+        )
+
+    def test_deflections_below_the_minimum_block(self, calibration_tree, tmp_path):
+        from app.utils.pii_firewall import PII_DEFLECTION
+
+        calibration_tree(_FOUR_ROWS)
+        for sid in ("S-101", "S-102"):
+            (tmp_path / "responses" / f"{sid}.json").write_text(
+                json.dumps({
+                    "scenario_id": sid,
+                    "response_text": PII_DEFLECTION,
+                    "tool_calls_log": [],
+                }),
+                encoding="utf-8",
+            )
+        report = cc.readiness()
+
+        assert report["deflected_responses"] == ["S-101", "S-102"]
+        assert report["scorable_rows"] == 2
+        assert any("PII deflection" in b for b in report["blocking"])
+        assert report["ready_to_calibrate"] is False
+
+    def test_an_ordinary_answer_is_never_called_a_deflection(
+        self, calibration_tree, tmp_path
+    ):
+        """The control: a real answer that mentions contacting the team is scorable."""
+        calibration_tree(_FOUR_ROWS)
+        (tmp_path / "responses" / "S-101.json").write_text(
+            json.dumps({
+                "scenario_id": "S-101",
+                "response_text": (
+                    "For anything involving your order, please contact our team "
+                    "directly at hello@acmecoffee.example and we'll help you."
+                ),
+                "tool_calls_log": [],
+            }),
+            encoding="utf-8",
+        )
+        report = cc.readiness()
+
+        assert report["deflected_responses"] == []
+        assert report["scorable_rows"] == 4
 
     def test_a_ready_tree_says_ready_and_does_not_say_calibrated(self, calibration_tree):
         """P4 review: this pinned `== EXIT_CALIBRATED`, i.e. exit 0.

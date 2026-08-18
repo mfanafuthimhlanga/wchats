@@ -273,6 +273,38 @@ def load_response(scenario_id: str) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def deflected_response_ids(scenario_ids: list[str]) -> list[str]:
+    """Which of these recorded responses are the PII firewall's deflection.
+
+    BACKLOG 7.29. Four of the twenty E2E-6 responses came back byte-identical as
+    the deflection, and the corpus was accepted as clean because the check that
+    ran looked for empties, short answers and provider-error text. A deflection
+    is none of those: it is a well-formed sentence of the right length.
+
+    It is also unscorable. Grading it measures the firewall rather than the judge,
+    so a human score against one is a number about the wrong thing, and it enters
+    the correlation as though it were about grounding.
+
+    `PII_DEFLECTION` is imported rather than copied. A second copy of that string
+    would go stale the first time the wording changes, and this function would
+    then report a clean corpus by failing to recognise the deflection.
+    """
+    from app.utils.pii_firewall import PII_DEFLECTION  # noqa: PLC0415
+
+    deflected = []
+    for sid in scenario_ids:
+        path = RESPONSES_DIR / f"{sid}.json"
+        if not path.exists():
+            continue
+        try:
+            recorded = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if (recorded.get("response_text") or "").strip() == PII_DEFLECTION:
+            deflected.append(sid)
+    return sorted(deflected)
+
+
 def build_transcript(scenario: dict, response: dict) -> str:
     parts = []
     for turn in scenario.get("turns", []):
@@ -347,10 +379,26 @@ def readiness() -> dict:
     if unknown_dimensions:
         blocking.append(f"human_scores.csv references unknown judge dimension(s): {', '.join(unknown_dimensions)}")
 
+    # BACKLOG 7.29: a deflected response cannot be scored for the judge, so it
+    # does not count towards the pairs a calibration run could ever produce.
+    # Blocking only when it actually bites, which is when too few scorable rows
+    # remain: reporting it always, and blocking only sometimes, is the difference
+    # between telling the owner something and stopping them.
+    deflected = deflected_response_ids(all_referenced_ids)
+    scorable_rows = len([s for s in all_referenced_ids if s and s not in set(deflected)])
+    if deflected and scorable_rows < MIN_PAIRS:
+        blocking.append(
+            f"{len(deflected)} recorded response(s) are the PII deflection and cannot be "
+            f"scored ({', '.join(deflected)}), leaving {scorable_rows} scorable row(s) "
+            f"against the {MIN_PAIRS} needed - re-capture them"
+        )
+
     awaiting_owner = parsed["valid"] < MIN_PAIRS
 
     return {
         "scenarios_present": len(scenario_files),
+        "deflected_responses": deflected,
+        "scorable_rows": scorable_rows,
         "human_scores_attempted": parsed["attempted"],
         "human_scores_valid": parsed["valid"],
         "human_scores_unusable": parsed["unusable"],
@@ -379,6 +427,12 @@ def print_readiness(report: dict) -> int:
         f"/ {report['human_scores_attempted']} present"
     )
     print(f"  recorded responses on disk : {report['responses_present']}")
+
+    if report["deflected_responses"]:
+        print(
+            f"  PII-deflected, unscorable  : {', '.join(report['deflected_responses'])} "
+            f"({report['scorable_rows']} scorable row(s) remain)"
+        )
 
     if report["unknown_scenarios"]:
         print(f"  unknown scenario ids       : {', '.join(report['unknown_scenarios'])}")
