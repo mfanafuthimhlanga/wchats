@@ -363,9 +363,33 @@ work list; the audit that located them is in the session trace of 2026-08-15.
 
 ## Suggested order
 
+**SUPERSEDED 2026-08-15 by `.dev/MASTERPLAN.md`, which orders the work M0 to M7 against one
+definition of production readiness.** This file answers *what is outstanding*; the plan answers
+*what is next*. Do not derive an order from the section numbers here — they record which audit
+found an item, nothing more.
+
+**Where the open rows sit against the plan, as of 2026-08-18:**
+
+| Plan step | Rows it consumes |
+|---|---|
+| **M1**, one owner action from done | `0.1` (three human scores) |
+| **M2**, first earned ship | `5.17`, `1.31`, `1.13b` (cost RTX-01 before running it), then the eval and red-team runs themselves |
+| **M4**, cloud | `0.3`, `0.4`, `1.20`, `7.19`; plus M3's deferred PROD-11 and the BYO-client proof |
+| **M4.5**, unit economics | `7.13` (SDK cost telemetry is Anthropic-priced fiction), `7.22` (rerank ships 6x what it keeps) |
+| **M5**, console polish | `5.4`, `5.5`, `1.19`, `7.27` |
+| **M6**, Mellow live | `7.10` (Paystack adapter), `7.11` (POP queue), `5.6` |
+| **M7**, MCP surface | the PRD v1.2 protocol work, none of which was ever built |
+| **After launch, deliberately** | the improvement-loop repairs — `2.28` miner, `2.4` labelling UI, `4.x` — because every one needs production traffic to be worth measuring (`0.6`), and §6's ladder sits on top of all of them |
+
+Rows not listed above are open but unscheduled: they are real, and none of them blocks the two
+Vercel URLs that define done.
+
+### The historical order, kept because its reasoning still holds
+
 **Revised 2026-08-07.** The earlier order said `0.1` and `0.2` were cheap and could run in parallel
 with anything. `0.1` is not parallel to `0.2` — it is **behind** it, because the responses a human
-would score cannot be captured without a database. Corrected above.
+would score cannot be captured without a database. Corrected above. *(Both are now settled: `0.2`
+landed 2026-08-10, and `0.1`'s corpus was captured 2026-08-17, leaving only the human scores.)*
 
 `0.2` (a local PostgreSQL) is now the single highest-leverage owner action: it unblocks `0.1`, the
 three migration roundtrips, `VER-01`/`AUD-03`/`CAP-03`, the 6 UAT checkpoints, the 4 `human_needed`
