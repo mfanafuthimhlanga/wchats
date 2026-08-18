@@ -1,12 +1,33 @@
 """
-compute_correlation.py — Calibrate the LLM judge against human scores.
+compute_correlation.py — Calibrate the LLM judge against human labels.
 
-Reads human_scores.csv (scenario_id, dimension, human_score), loads the
-corresponding recorded response from responses/, calls the judge, then
-computes Spearman rank correlation between judge scores and human scores.
+Reads the calibration sheet (scenario_id, dimension, human_verdict,
+human_score, notes), loads run 0 of each recorded response, calls the judge,
+and measures agreement.
 
-Target: Spearman >= 0.75 (AI-SPEC.md §5.2) before trusting automated
-judge results at scale.
+THE GATE IS COHEN'S KAPPA ON BINARY VERDICTS (BACKLOG 8.2b, owner decision
+2026-08-18). Spearman is still computed over whichever rows carry an optional
+1-5 score, and still reported, but it no longer decides anything.
+
+    gate       Cohen's kappa >= 0.6 on (human_verdict, judge verdict)
+    reported   Matthews correlation, the 2x2 confusion matrix, Spearman rho
+
+WHY THE GATE MOVED, and it supersedes AI-SPEC.md §5.2
+    Two defects in one number. The human column was a 1-5 SCALE, and a human
+    cannot hold a scale steady: the same quality gets a 3 one hour and a 4 the
+    next, so every label carried avoidable noise. And Spearman is NOT
+    chance-corrected, so on a mostly-good corpus most of the agreement it
+    measures is luck.
+
+    The concrete failure: a judge that returns PASS to every input ranks in
+    perfect agreement with any human whose scores happen to rise, so the shipped
+    harness reported rho = 1.000 and "safe to trust automated results" over a
+    judge that was not reading the response. Kappa subtracts the chance rate and
+    refuses it. `test_a_judge_that_passes_everything_is_refused` pins that.
+
+    The confusion matrix is the report card, because each cell prescribes
+    something different, and the both-fail cell is the one that stops a team
+    tuning a judge when the product is what is broken.
 
 Usage:
     python apps/api/tests/evals/calibration/compute_correlation.py
@@ -37,12 +58,13 @@ WHY THE EXIT CODES CHANGED (audit D7)
 Requirements:
     - responses/ populated via capture_responses.py (needs a live, ingested
       agent and AGENT_E2E_ENABLED=1 — see --check for what is missing)
-    - human_scores.csv has the human_score column filled by a human (1-5)
+    - the calibration sheet has `human_verdict` filled by a human (pass/fail).
+      `human_score` (1-5) is optional and feeds the reported Spearman only
     - ANTHROPIC_API_KEY set in environment
 
 Exit codes:
-    0 (EXIT_CALIBRATED)         — correlation >= 0.75 over >= MIN_PAIRS pairs
-    1 (EXIT_NOT_CALIBRATED)     — correlation < 0.75; judge not calibrated
+    0 (EXIT_CALIBRATED)         — kappa >= 0.6 over >= MIN_PAIRS pairs
+    1 (EXIT_NOT_CALIBRATED)     — kappa < 0.6; the judge is not calibrated
     2 (EXIT_SETUP_ERROR)        — missing files, unusable rows, other setup error
     3 (EXIT_NOT_CALIBRATED_YET) — no human scores, fewer than MIN_PAIRS usable
                                   pairs, or the judge failed too many of its own
@@ -78,7 +100,44 @@ SCENARIOS_DIR = EVALS_DIR / "scenarios"
 RESPONSES_DIR = EVALS_DIR / "responses"
 HUMAN_SCORES_CSV = CALIBRATION_DIR / "human_scores.csv"
 
-THRESHOLD = 0.75  # AI-SPEC.md §5.2
+THRESHOLD = 0.75  # AI-SPEC.md §5.2, Spearman. Now a REPORTED number, not the gate.
+
+# BACKLOG 8.2b, and it supersedes the Spearman gate above (owner decision,
+# 2026-08-18: "the spec changes because i pushed back on it").
+#
+# WHY THE GATE MOVED. Two defects in one number. (a) The human column was a 1-5
+# SCALE, and the practice is explicit that a human cannot hold a scale steady:
+# the same quality gets a 3 one hour and a 4 the next, so every label carried
+# avoidable noise. (b) Spearman is NOT CHANCE-CORRECTED. Two raters agree by
+# luck, and on a mostly-good corpus like ours that luck is most of the
+# agreement, so a high rho can be produced by a judge that is not tracking the
+# human at all.
+#
+# Cohen's kappa fixes both: it needs only a binary label, and it subtracts the
+# rate at which the two would agree by chance.
+#
+#   below 0.4   the judge is not tracking the human
+#   0.6 to 0.8  substantial
+#   above 0.8   strong
+#
+# 0.6 is the floor those bands put on "substantial", and it is a CHOICE rather
+# than a measurement: nothing in this repo has ever produced a kappa, so there is
+# no observed distribution to set it against. Move it when there is one.
+KAPPA_THRESHOLD = 0.6
+
+# Kappa COLLAPSES on imbalanced data: when 95% of responses are good, chance
+# agreement is already near certain, so a good judge scores badly. Matthews
+# correlation does not have that failure mode, so it is computed alongside and
+# reported whenever kappa is undefined or the corpus is lopsided. Reported, never
+# gated: swapping the gate to whichever statistic looks better is how a gate
+# stops meaning anything.
+MATTHEWS_FLOOR = 0.5
+
+#: The two spellings a human may write in `human_verdict`. Anything else is
+#: rejected by name rather than coerced, because "ok", "y" and "1" are three
+#: different guesses about what the labeller meant.
+VERDICT_PASS = "pass"
+VERDICT_FAIL = "fail"
 
 # Spearman over two points is not a correlation, it is a line through two
 # points. spearman() already returns nan below three; this names the same floor
@@ -170,6 +229,74 @@ def spearman(xs: list[float], ys: list[float]) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Agreement statistics on binary labels (stdlib only)
+# ---------------------------------------------------------------------------
+
+def confusion(pairs: list[tuple[bool, bool]]) -> dict[str, int]:
+    """The 2x2 of (human_passed, judge_passed). Four cells, four actions.
+
+    This is the report card, not a step towards one number. Each cell prescribes
+    something different:
+
+        both pass                nothing to do
+        human pass, judge fail   the judge is too harsh; read its stated reasons
+        human fail, judge pass   the judge is too LENIENT; bad answers are
+                                 reaching customers, and this is the dangerous cell
+        both fail                the AI SYSTEM is the problem, not the eval
+
+    That last cell is the one that stops a team tuning a judge when the product
+    is what is broken, and a single correlation coefficient cannot point at it.
+    """
+    cells = {"both_pass": 0, "judge_too_harsh": 0, "judge_too_lenient": 0, "both_fail": 0}
+    for human_passed, judge_passed in pairs:
+        if human_passed and judge_passed:
+            cells["both_pass"] += 1
+        elif human_passed and not judge_passed:
+            cells["judge_too_harsh"] += 1
+        elif not human_passed and judge_passed:
+            cells["judge_too_lenient"] += 1
+        else:
+            cells["both_fail"] += 1
+    return cells
+
+
+def cohens_kappa(cells: dict[str, int]) -> float:
+    """Chance-corrected agreement. NaN when chance agreement is already certain.
+
+    Returns NaN rather than 0.0 for the degenerate case, because 0.0 means "no
+    better than chance" and NaN means "this set cannot distinguish the two". A
+    corpus where both raters passed everything is the second, and reporting it as
+    the first would read as a judge failure.
+    """
+    n11, n10 = cells["both_pass"], cells["judge_too_harsh"]
+    n01, n00 = cells["judge_too_lenient"], cells["both_fail"]
+    n = n11 + n10 + n01 + n00
+    if n == 0:
+        return float("nan")
+
+    observed = (n11 + n00) / n
+    human_pass, judge_pass = (n11 + n10) / n, (n11 + n01) / n
+    expected = human_pass * judge_pass + (1 - human_pass) * (1 - judge_pass)
+    if expected >= 1.0:
+        return float("nan")
+    return (observed - expected) / (1 - expected)
+
+
+def matthews(cells: dict[str, int]) -> float:
+    """Matthews correlation. NaN when a whole row or column of the 2x2 is empty.
+
+    The statistic to read when kappa collapses on an imbalanced corpus, which is
+    the corpus we have: mostly-good responses.
+    """
+    n11, n10 = cells["both_pass"], cells["judge_too_harsh"]
+    n01, n00 = cells["judge_too_lenient"], cells["both_fail"]
+    denominator = (n11 + n01) * (n11 + n10) * (n00 + n01) * (n00 + n10)
+    if denominator == 0:
+        return float("nan")
+    return (n11 * n00 - n01 * n10) / (denominator ** 0.5)
+
+
+# ---------------------------------------------------------------------------
 # CSV reader
 # ---------------------------------------------------------------------------
 
@@ -212,23 +339,41 @@ def read_human_score_rows(path: pathlib.Path | None = None) -> dict:
             attempted += 1
             scenario_id = (row.get("scenario_id") or "").strip()
             dimension = (row.get("dimension") or "").strip()
+            verdict_str = (row.get("human_verdict") or "").strip().lower()
             score_str = (row.get("human_score") or "").strip()
 
-            if not score_str:
-                unusable.append(f"{scenario_id}/{dimension}: human_score not filled in yet")
+            # BACKLOG 8.2b: `human_verdict` is the gate column now. `human_score`
+            # is optional and feeds the reported Spearman only.
+            if not verdict_str:
+                unusable.append(f"{scenario_id}/{dimension}: human_verdict not filled in yet")
                 continue
-            try:
-                score = int(score_str)
-            except ValueError:
-                unusable.append(f"{scenario_id}/{dimension}: non-integer human_score {score_str!r}")
+            if verdict_str not in (VERDICT_PASS, VERDICT_FAIL):
+                unusable.append(
+                    f"{scenario_id}/{dimension}: human_verdict {verdict_str!r} is neither "
+                    f"{VERDICT_PASS!r} nor {VERDICT_FAIL!r}"
+                )
                 continue
-            if not 1 <= score <= 5:
-                unusable.append(f"{scenario_id}/{dimension}: human_score {score} outside 1-5")
-                continue
+
+            score = None
+            if score_str:
+                try:
+                    score = int(score_str)
+                except ValueError:
+                    unusable.append(
+                        f"{scenario_id}/{dimension}: non-integer human_score {score_str!r}"
+                    )
+                    continue
+                if not 1 <= score <= 5:
+                    unusable.append(
+                        f"{scenario_id}/{dimension}: human_score {score} outside 1-5"
+                    )
+                    continue
 
             rows.append({
                 "scenario_id": scenario_id,
                 "dimension": dimension,
+                "human_verdict": verdict_str,
+                "human_passed": verdict_str == VERDICT_PASS,
                 "human_score": score,
                 "notes": (row.get("notes") or "").strip(),
             })
@@ -446,7 +591,7 @@ def print_readiness(report: dict) -> int:
     print("Calibration readiness (no judge calls, no network)\n")
     print(f"  scenarios on disk          : {report['scenarios_present']}")
     print(
-        f"  human_scores.csv rows      : {report['human_scores_valid']} scored "
+        f"  rows with a human verdict  : {report['human_scores_valid']} labelled "
         f"/ {report['human_scores_attempted']} present"
     )
     print(f"  recorded responses on disk : {report['responses_present']}")
@@ -471,7 +616,10 @@ def print_readiness(report: dict) -> int:
     if report["awaiting_owner_scores"]:
         print(
             f"Awaiting the owner: {report['human_scores_valid']} of the {MIN_PAIRS} human "
-            "scores needed are filled in.\n"
+            "verdicts needed are filled in.\n"
+            "  Label BINARY - pass or fail - and write WHY in `notes`. A 1-5 score is\n"
+            "  optional: a human cannot hold a scale steady across many rows, and the\n"
+            "  gate is Cohen's kappa on the binary label.\n"
             "  That column is yours. Do not let anything - or anyone - fill it for you:\n"
             "  a judge calibrated against model-written labels measures agreement with\n"
             "  itself, which is exactly the tautology this file exists to detect.\n"
@@ -499,20 +647,28 @@ def compute_correlation(judge_fn) -> dict:
     asserted by a test without driving a CLI. `judge_fn` is injected for the
     same reason — the shipped code reached into tests.evals.judge inside main().
 
+    **The GATE is Cohen's kappa on the binary verdicts** (BACKLOG 8.2b). Spearman
+    is still computed and still reported, over whichever rows carry an optional
+    1-5 `human_score`, but it no longer decides anything: it is not
+    chance-corrected, and on a mostly-good corpus most of its agreement is luck.
+
     Returns:
-        {"status", "rho", "pairs", "pair_rate", "attempted", "valid", "errors",
-        "table"}. `rho` is None whenever status is anything but
-        calibrated/not_calibrated, so a caller can never read a number out of a
-        run that did not make the measurement. `pair_rate` is pairs/valid — the
-        fraction of the human-labelled set that actually produced a comparable
-        pair, which is the judge's own success rate on this run — and it is
-        GATED, not merely reported: see MIN_PAIR_RATE.
+        {"status", "kappa", "matthews", "cells", "rho", "pairs", "pair_rate",
+        "attempted", "valid", "errors", "table"}. Every statistic is None
+        whenever it was not computed, so a caller can never read a number out of
+        a run that did not make the measurement. `pair_rate` is pairs/valid, the
+        fraction of the human-labelled set that produced a comparable pair, which
+        is the judge's own success rate on this run, and it is GATED rather than
+        merely reported: see MIN_PAIR_RATE.
     """
     parsed = read_human_score_rows()
 
     if parsed["missing_file"]:
         return {
             "status": STATUS_SETUP_ERROR,
+            "kappa": None,
+            "matthews": None,
+            "cells": None,
             "rho": None,
             "pairs": 0,
             "pair_rate": None,
@@ -525,6 +681,9 @@ def compute_correlation(judge_fn) -> dict:
     if parsed["valid"] == 0:
         return {
             "status": STATUS_NOT_CALIBRATED_YET,
+            "kappa": None,
+            "matthews": None,
+            "cells": None,
             "rho": None,
             "pairs": 0,
             "pair_rate": None,
@@ -536,6 +695,7 @@ def compute_correlation(judge_fn) -> dict:
 
     human_scores: list[float] = []
     judge_scores: list[float] = []
+    binary_pairs: list[tuple[bool, bool]] = []
     errors: list[str] = []
     table: list[dict] = []
 
@@ -543,14 +703,17 @@ def compute_correlation(judge_fn) -> dict:
         sid = row["scenario_id"]
         dim = row["dimension"]
         h_score = row["human_score"]
+        h_passed = row["human_passed"]
 
         try:
             scenario = load_scenario(sid)
             response = load_response(sid)
         except FileNotFoundError as exc:
             errors.append(str(exc))
-            table.append({"scenario_id": sid, "dimension": dim, "human": h_score,
-                          "judge": None, "reason": f"ERROR: {exc}"})
+            table.append({"scenario_id": sid, "dimension": dim,
+                          "human_verdict": row["human_verdict"], "human": h_score,
+                          "judge_verdict": None, "judge": None,
+                          "reason": f"ERROR: {exc}"})
             continue
 
         verdict = judge_fn(dim, build_transcript(scenario, response),
@@ -562,21 +725,38 @@ def compute_correlation(judge_fn) -> dict:
         # correlating it would move rho with the failure rate of the API.
         if j_score == 0:
             errors.append(f"{sid}/{dim}: judge returned ERROR — {verdict['reason']}")
-            table.append({"scenario_id": sid, "dimension": dim, "human": h_score,
-                          "judge": None, "reason": verdict["reason"]})
+            table.append({"scenario_id": sid, "dimension": dim,
+                          "human_verdict": row["human_verdict"], "human": h_score,
+                          "judge_verdict": None, "judge": None,
+                          "reason": verdict["reason"]})
             continue
 
-        human_scores.append(float(h_score))
-        judge_scores.append(float(j_score))
-        table.append({"scenario_id": sid, "dimension": dim, "human": h_score,
-                      "judge": j_score, "reason": verdict["reason"]})
+        # The GATE's pair: two binary labels. Every usable row contributes one,
+        # because `human_verdict` is mandatory.
+        binary_pairs.append((h_passed, verdict["verdict"] == "PASS"))
 
-    pairs = len(human_scores)
+        # Spearman's pair: only rows where the human ALSO gave a 1-5. Reported,
+        # not gated, and its own count is reported beside it so a rho over three
+        # of ten rows cannot read as a rho over ten.
+        if h_score is not None:
+            human_scores.append(float(h_score))
+            judge_scores.append(float(j_score))
+
+        table.append({"scenario_id": sid, "dimension": dim,
+                      "human_verdict": row["human_verdict"], "human": h_score,
+                      "judge_verdict": verdict["verdict"], "judge": j_score,
+                      "reason": verdict["reason"]})
+
+    pairs = len(binary_pairs)
     pair_rate = pairs / parsed["valid"]
+    cells = confusion(binary_pairs)
 
     if pairs < MIN_PAIRS:
         return {
             "status": STATUS_NOT_CALIBRATED_YET,
+            "kappa": None,
+            "matthews": None,
+            "cells": cells,
             "rho": None,
             "pairs": pairs,
             "pair_rate": pair_rate,
@@ -591,6 +771,9 @@ def compute_correlation(judge_fn) -> dict:
     if pair_rate < MIN_PAIR_RATE:
         return {
             "status": STATUS_NOT_CALIBRATED_YET,
+            "kappa": None,
+            "matthews": None,
+            "cells": cells,
             "rho": None,
             "pairs": pairs,
             "pair_rate": pair_rate,
@@ -605,25 +788,20 @@ def compute_correlation(judge_fn) -> dict:
             "table": table,
         }
 
-    rho = spearman(human_scores, judge_scores)
-    if rho != rho:  # NaN — zero variance on one side; no ranking to correlate
-        return {
-            "status": STATUS_NOT_CALIBRATED_YET,
-            "rho": None,
-            "pairs": pairs,
-            "pair_rate": pair_rate,
-            "attempted": parsed["attempted"],
-            "valid": parsed["valid"],
-            "errors": errors + [
-                "Spearman is undefined (no variance in one of the two score sets) - "
-                "score a wider spread of scenarios."
-            ],
-            "table": table,
-        }
+    kappa = cohens_kappa(cells)
+    mcc = matthews(cells)
 
-    return {
-        "status": STATUS_CALIBRATED if rho >= THRESHOLD else STATUS_NOT_CALIBRATED,
-        "rho": rho,
+    # Spearman is REPORTED, over whichever rows carried an optional 1-5. NaN when
+    # one side has no variance, which is the common case on a mostly-good corpus
+    # and is exactly why it stopped being the gate.
+    rho = spearman(human_scores, judge_scores) if len(human_scores) >= MIN_PAIRS else float("nan")
+
+    result = {
+        "kappa": None if kappa != kappa else kappa,
+        "matthews": None if mcc != mcc else mcc,
+        "cells": cells,
+        "rho": None if rho != rho else rho,
+        "scored_pairs": len(human_scores),
         "pairs": pairs,
         "pair_rate": pair_rate,
         "attempted": parsed["attempted"],
@@ -632,10 +810,69 @@ def compute_correlation(judge_fn) -> dict:
         "table": table,
     }
 
+    if kappa != kappa:
+        # Undefined, not zero. Both raters labelled everything the same way, so
+        # chance agreement is already certain and this set cannot distinguish a
+        # good judge from a coin. Matthews is reported if it survived; neither is
+        # a pass.
+        result["status"] = STATUS_NOT_CALIBRATED_YET
+        result["errors"] = errors + [
+            "Cohen's kappa is undefined: every label on one side is identical, so "
+            "chance agreement is certain and this set cannot measure the judge. "
+            "Label a scenario the other way, or score more rows."
+        ]
+        return result
+
+    result["status"] = STATUS_CALIBRATED if kappa >= KAPPA_THRESHOLD else STATUS_NOT_CALIBRATED
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+def _print_agreement(result: dict) -> None:
+    """The 2x2 first, then the statistics, because the cells say what to DO.
+
+    A single coefficient cannot distinguish "the judge is too harsh" from "the
+    product is broken", and those need different people to do different things.
+    """
+    cells = result.get("cells") or {}
+    print("Agreement, human against judge:\n")
+    print(f"{'':>22}  {'judge PASS':>12}  {'judge FAIL':>12}")
+    print(f"{'human PASS':>22}  {cells.get('both_pass', 0):>12}  "
+          f"{cells.get('judge_too_harsh', 0):>12}")
+    print(f"{'human FAIL':>22}  {cells.get('judge_too_lenient', 0):>12}  "
+          f"{cells.get('both_fail', 0):>12}")
+    print()
+    if cells.get("judge_too_lenient"):
+        print(f"  {cells['judge_too_lenient']} row(s) the judge PASSED and the human "
+              "FAILED. Bad answers reach customers.")
+    if cells.get("judge_too_harsh"):
+        print(f"  {cells['judge_too_harsh']} row(s) the judge FAILED and the human "
+              "PASSED. Read the judge's stated reasons.")
+    if cells.get("both_fail"):
+        print(f"  {cells['both_fail']} row(s) BOTH failed. That is the product, "
+              "not the eval.")
+    print()
+
+    kappa = result.get("kappa")
+    mcc = result.get("matthews")
+    rho = result.get("rho")
+    print(f"  Cohen's kappa   {kappa:.3f}   GATE, floor {KAPPA_THRESHOLD}"
+          if kappa is not None else
+          "  Cohen's kappa   undefined   one label on both sides; chance agreement is certain")
+    print(f"  Matthews        {mcc:.3f}   reported; read this when the corpus is lopsided"
+          if mcc is not None else
+          "  Matthews        undefined   a row or column of the 2x2 is empty")
+    if rho is not None:
+        print(f"  Spearman rho    {rho:.3f}   reported over {result.get('scored_pairs', 0)} "
+              f"row(s) with a 1-5 score, AI-SPEC 5.2's {THRESHOLD}. NOT the gate")
+    else:
+        print("  Spearman rho    not computed   too few rows carried an optional 1-5 score")
+    print(f"\n  {result['pairs']} labelled row(s) produced a verdict pair "
+          f"({result['pair_rate']:.0%} of {result['valid']}).")
+
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns the exit code rather than calling sys.exit."""
@@ -685,22 +922,21 @@ def main(argv: list[str] | None = None) -> int:
             "Run with --check to see exactly which input is missing. If it is the\n"
             "human_score column, that one is the owner's and must be filled by a human."
         )
-    elif status == STATUS_CALIBRATED:
-        print(
-            f"Spearman rho = {result['rho']:.3f}  (n={result['pairs']} of "
-            f"{result['valid']} labelled, threshold={THRESHOLD})"
-        )
-        print(
-            f"PASS - judge is calibrated (rho {result['rho']:.3f} >= {THRESHOLD}) "
-            f"over {result['pair_rate']:.0%} of the scored set. "
-            "Safe to trust automated results."
-        )
     else:
-        print(f"Spearman rho = {result['rho']:.3f}  (n={result['pairs']}, threshold={THRESHOLD})")
-        print(
-            f"FAIL - judge is NOT calibrated (rho {result['rho']:.3f} < {THRESHOLD}).\n"
-            "Review rubrics in judge.py and adjust JUDGE_RUBRICS until rho >= 0.75."
-        )
+        _print_agreement(result)
+        if status == STATUS_CALIBRATED:
+            print(
+                f"PASS - the judge is calibrated (kappa {result['kappa']:.3f} >= "
+                f"{KAPPA_THRESHOLD}) over {result['pair_rate']:.0%} of the labelled set."
+            )
+        else:
+            print(
+                f"FAIL - the judge is NOT calibrated (kappa {result['kappa']:.3f} < "
+                f"{KAPPA_THRESHOLD}).\n"
+                "Read the confusion matrix above before touching judge.py: if the "
+                "both-fail\ncell is the large one, the AI SYSTEM is what is broken and "
+                "tuning the judge\nwill only teach it to agree with a bad product."
+            )
 
     return EXIT_CODE_FOR_STATUS[status]
 

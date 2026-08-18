@@ -37,9 +37,29 @@ from tests.evals.calibration import compute_correlation as cc
 # ---------------------------------------------------------------------------
 
 
+def _verdict_for(score: str) -> str:
+    """The binary label a 1-5 score implies, for FIXTURES only.
+
+    BACKLOG 8.2b moved the gate to `human_verdict`. Real labelling is binary and
+    the 1-5 score is optional; these fixtures keep both so the reported Spearman
+    is still exercised, and derive one from the other so a row stays a 3-tuple.
+    """
+    if not score:
+        return ""  # an unlabelled row: no verdict AND no score
+    try:
+        return cc.VERDICT_PASS if int(score) >= 3 else cc.VERDICT_FAIL
+    except ValueError:
+        # A fixture deliberately writing a malformed score keeps a WELL-FORMED
+        # verdict, so the row exercises the score parser rather than being
+        # rejected one column earlier and never reaching it.
+        return cc.VERDICT_PASS
+
+
 def _write_csv(path: pathlib.Path, rows: list[tuple[str, str, str]]) -> pathlib.Path:
-    lines = ["scenario_id,dimension,human_score,notes"]
-    lines += [f"{sid},{dim},{score},note" for sid, dim, score in rows]
+    lines = ["scenario_id,dimension,human_verdict,human_score,notes"]
+    lines += [
+        f"{sid},{dim},{_verdict_for(score)},{score},note" for sid, dim, score in rows
+    ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
@@ -168,22 +188,48 @@ class TestUnscoredIsNotAPass:
         )
         assert len(result["errors"]) == 4
 
-    def test_zero_variance_is_unknown_not_pass(self, calibration_tree):
-        """Every human score identical means there is no ranking to correlate.
+    def test_total_agreement_on_one_label_is_unknown_not_pass(self, calibration_tree):
+        """Both raters said PASS to everything, so chance agreement is certain.
 
-        spearman() returns nan; nan >= 0.75 is False, so the shipped code would
-        have called this FAIL. It is neither: nothing was measured.
+        BACKLOG 8.2b. Raw agreement here is 100%, and the shipped harness would
+        have reported that as a calibrated judge. Cohen's kappa is UNDEFINED
+        instead: with one label on both sides, a coin agrees just as often, so
+        this set cannot distinguish a good judge from a coin. Undefined is
+        reported as NOT CALIBRATED YET, which is neither a pass nor a judge
+        failure.
         """
-        rows = [(sid, dim, "3") for sid, dim, _ in _FOUR_ROWS]
+        rows = [(sid, dim, "5") for sid, dim, _ in _FOUR_ROWS]
+        calibration_tree(rows)
+
+        result = cc.compute_correlation(
+            _judge_returning({"S-101": 5, "S-102": 5, "S-103": 5, "S-104": 5})
+        )
+
+        assert result["cells"]["both_pass"] == 4
+        assert result["kappa"] is None, "undefined, and never rendered as 0.0"
+        assert result["status"] == cc.STATUS_NOT_CALIBRATED_YET
+        assert any("undefined" in e for e in result["errors"])
+
+    def test_chance_level_agreement_is_a_measurement_and_it_fails(self, calibration_tree):
+        """The other side of the same coin, and it must NOT be 'yet'.
+
+        The human passed everything; the judge passed half. Raw agreement is 50%
+        and kappa is 0.0 exactly: no better than chance. That IS a measurement,
+        so it is a failure rather than an absence, and the distinction is what
+        tells the owner whether to label more rows or fix the judge.
+        """
+        rows = [(sid, dim, "5") for sid, dim, _ in _FOUR_ROWS]
         calibration_tree(rows)
 
         result = cc.compute_correlation(
             _judge_returning({"S-101": 1, "S-102": 2, "S-103": 4, "S-104": 5})
         )
 
-        assert result["status"] == cc.STATUS_NOT_CALIBRATED_YET
-        assert result["rho"] is None
-        assert any("undefined" in e for e in result["errors"])
+        assert result["kappa"] == pytest.approx(0.0)
+        assert result["status"] == cc.STATUS_NOT_CALIBRATED
+        assert result["cells"] == {
+            "both_pass": 2, "judge_too_harsh": 2, "judge_too_lenient": 0, "both_fail": 0
+        }
 
     def test_a_judge_that_failed_most_of_its_calls_is_not_calibrated(
         self, calibration_tree
@@ -243,7 +289,14 @@ class TestUnscoredIsNotAPass:
             if sid == "S-303":
                 return {"dimension": dimension, "verdict": "ERROR", "score": 0,
                         "reason": "529 overloaded"}
-            return {"dimension": dimension, "verdict": "PASS",
+            # The verdict follows the score. BACKLOG 8.2b: this stub used to
+            # hardcode "PASS", and under Spearman that still reported rho = 1.0
+            # and CALIBRATED, because a judge that passes everything ranks in
+            # perfect agreement with any human whose scores happen to rise. That
+            # is the defect kappa exists to catch, so the stub can no longer be
+            # written that way without failing a different test in this module.
+            return {"dimension": dimension,
+                    "verdict": "PASS" if scores[sid] >= 3 else "FAIL",
                     "score": scores[sid], "reason": "ok"}
 
         result = cc.compute_correlation(_one_error_judge)
@@ -252,7 +305,8 @@ class TestUnscoredIsNotAPass:
         assert result["pair_rate"] == pytest.approx(0.9)
         assert result["pair_rate"] >= cc.MIN_PAIR_RATE
         assert result["status"] == cc.STATUS_CALIBRATED
-        assert result["rho"] == pytest.approx(1.0)
+        assert result["kappa"] == pytest.approx(1.0), "the gate"
+        assert result["rho"] == pytest.approx(1.0), "still reported beside it"
 
     def test_a_missing_csv_is_a_setup_error_not_a_pass(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cc, "HUMAN_SCORES_CSV", tmp_path / "nope.csv")
@@ -312,19 +366,63 @@ class TestCalibratedAndUncalibrated:
         assert result["rho"] == pytest.approx(-1.0)
         assert cc.EXIT_CODE_FOR_STATUS[result["status"]] == cc.EXIT_NOT_CALIBRATED
 
-    def test_the_threshold_is_the_one_ai_spec_names(self, calibration_tree):
-        """A rho just under 0.75 must fail; the gate is 0.75, not 'positive'."""
+    def test_the_gate_is_kappa_and_spearman_is_only_reported(self, calibration_tree):
+        """BACKLOG 8.2b, owner decision 2026-08-18. Both numbers, one gate.
+
+        The judge here ranks within each half differently from the human but
+        agrees on every pass/fail call. Spearman sees the rank disagreement and
+        drops to 0.6; kappa sees perfect agreement on the question that decides
+        anything. The gate follows kappa, and rho is still printed beside it so
+        the AI-SPEC number is not silently abandoned.
+        """
         calibration_tree(_FOUR_ROWS)
-        # human ranks 1,2,3,4 vs judge ranks 2,1,4,3 -> sum d^2 = 4 -> rho = 0.6,
-        # a judge that agrees on the broad ordering and disagrees on every
-        # adjacent pair. Positive, useless, and below the gate.
+        # human 1,2,4,5 -> fail,fail,pass,pass ; judge 2,1,5,4 -> same verdicts
         result = cc.compute_correlation(
             _judge_returning({"S-101": 2, "S-102": 1, "S-103": 5, "S-104": 4})
         )
 
-        assert cc.THRESHOLD == 0.75
-        assert 0 < result["rho"] < cc.THRESHOLD
+        assert cc.THRESHOLD == 0.75, "AI-SPEC 5.2's number, still reported"
+        assert 0 < result["rho"] < cc.THRESHOLD, "the ranks disagree"
+        assert result["kappa"] == pytest.approx(1.0), "the verdicts do not"
+        assert result["status"] == cc.STATUS_CALIBRATED
+
+    def test_a_judge_below_the_kappa_floor_is_not_calibrated(self, calibration_tree):
+        """0.6 is the floor, and it is a choice rather than a measurement.
+
+        The practice's bands: below 0.4 the judge is not tracking the human, 0.6
+        to 0.8 substantial, above 0.8 strong. Nothing in this repo has produced a
+        kappa yet, so there is no observed distribution to set the floor against.
+        """
+        rows = [(f"S-4{i:02d}", "grounding_fidelity", s)
+                for i, s in enumerate(["5", "5", "5", "5", "1", "1"])]
+        calibration_tree(rows)
+        # Four of six agree; the judge flips one pass and one fail.
+        result = cc.compute_correlation(
+            _judge_returning({"S-400": 5, "S-401": 5, "S-402": 5, "S-403": 1,
+                              "S-404": 5, "S-405": 1})
+        )
+
+        assert cc.KAPPA_THRESHOLD == 0.6
+        assert 0 < result["kappa"] < cc.KAPPA_THRESHOLD
         assert result["status"] == cc.STATUS_NOT_CALIBRATED
+
+    def test_a_judge_that_passes_everything_is_refused(self, calibration_tree):
+        """The defect the old gate could not see, and the reason it moved.
+
+        A judge that returns PASS to every input ranks in perfect agreement with
+        any human whose scores happen to rise, so Spearman reported rho = 1.0 and
+        'safe to trust automated results' over a judge that is not reading the
+        response at all. Kappa subtracts the chance rate and refuses it.
+        """
+        calibration_tree(_FOUR_ROWS)
+        result = cc.compute_correlation(
+            _judge_returning({"S-101": 3, "S-102": 4, "S-103": 4, "S-104": 5})
+        )
+
+        assert result["cells"]["judge_too_lenient"] == 2, "it passed two the human failed"
+        assert result["status"] != cc.STATUS_CALIBRATED, (
+            "a judge that passes everything must never be reported as calibrated"
+        )
 
 
 # ---------------------------------------------------------------------------
