@@ -112,7 +112,7 @@ because that is where the harness's 170s clamp actually bites.
 |---|---|---|
 | `static` | ruff, import contracts, lizard | 8.4s cold, 3.2s warm. **What the Stop hook runs.** Nothing in it imports app code, so its headroom cannot erode by adding a dependency |
 | `fast` | static + whole-suite collection | 142.5s and growing with the dependency tree, not with the suite |
-| `full` | fast + the unit suite | **693.4s green on 2026-08-18**: suite 547.4s, 2364 passed, 13 skipped, exit 0 |
+| `full` | fast + the unit suite | **551.0s green on 2026-08-18**: suite 468.8s, 2408 passed, 13 skipped, exit 0 |
 
 The old hook gate was whole-suite `--collect-only`. `gates.json` had warned in its own comment that
 a heavy dependency would push it past the clamp and that being killed there reports nothing at all.
