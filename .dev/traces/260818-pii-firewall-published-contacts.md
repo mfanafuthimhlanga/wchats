@@ -194,3 +194,30 @@ restored green.
 worker's in-process `tool_calls_log`; `retrieved_context_json` is a Celery task argument and a
 char-count log line, and nothing durable holds it. Widening the SSE payload is not available because
 that stream is the customer's. HANDOFF carries the three options and the recommendation.
+
+## 7.34: the corpus now carries its own evidence
+
+Owner decision 2026-08-18, from three options that differed in what the corpus would MEAN rather
+than in cost: keep it on the served path, so it measures what a customer receives with the PII
+firewall applied, rather than the eval path that no customer uses.
+
+| Half | State |
+|---|---|
+| migration `0017`, `tool_calls.retrieved_chunks` | written, **never run**. No PostgreSQL here |
+| `_persist_messages` writes the judge rendering | landed, 8 tests, mutation-proven |
+| `capture_responses.py` reads the row back | landed, 6 tests |
+
+**Both halves apply the same rule, and a test asserts they agree.** NULL means the call retrieves
+nothing or its capture could not be decoded; `[]` means a retrieve ran and matched nothing.
+`validate_corpus` keys BLIND on falsiness, so collapsing them would let a corpus miss read as absent
+evidence, which is `5.16` one level down.
+
+**Mutation proof.** Swapping `RETRIEVE_JUDGE_CHUNKS_KEY` for `RETRIEVE_CHUNKS_KEY` in the write
+turns 4 of 8 red, including the provenance test. `5.18` is the reason the judge rendering is the one
+stored: a claim naming a document cannot be supported by a context that contains neither.
+
+**The unverified half is named rather than implied.** `0017` exists in a file and in no database.
+The tests cover the two functions that decide what a row stores and what the corpus records; the
+INSERT is unobserved and stays that way until a tenant DB is migrated, which is behind `7.32`. A
+capture against an unmigrated tenant fails on the INSERT rather than silently recording nothing,
+which is the right failure but is still a failure someone has to expect.

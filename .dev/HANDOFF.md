@@ -34,16 +34,19 @@ matters more:
 agreement between a human and a judge that cannot see the evidence, on a corpus that has to be
 re-captured anyway.
 
-### The decision that blocks the re-capture: `7.34`
+### `7.34` is decided and landed
 
-The chunks exist only on the worker's in-process `tool_calls_log`. They are not persisted, not
-emitted over SSE, and SSE is customer-facing so widening it is not an option. Pick one:
+The chunks existed only on the worker's in-process `tool_calls_log`. The owner chose the SERVED path
+on 2026-08-18, so the corpus keeps measuring what a customer receives with the firewall applied:
 
-| | What it costs | What the corpus then measures |
-|---|---|---|
-| **(a) persist the judge context per turn, capture reads it back** | one write plus a read | the SERVED path, firewall included. **Recommended** |
-| (b) capture through the eval path in-process | nothing, `eval.py` already reads the chunks | a path no customer uses: the eval path sets `pii_firewall_applied=False`, and it collides with `0.4` |
-| (c) capture-only authenticated endpoint | (a)'s write plus new surface | same as (a) |
+```
+worker turn ──> _persist_messages ──> tool_calls.retrieved_chunks   (migration 0017)
+capture ──SSE──> response_text, then reads that row back ──> responses/S-0NN.json
+```
+
+**Migration `0017` has never run.** There is no PostgreSQL here, so the column exists in a file and
+not in any database. It applies when a tenant DB is next migrated, which is behind `7.32`. Until
+then the write is unobserved, and a capture against an unmigrated tenant will fail on the INSERT.
 
 ### Then the re-capture, once, with everything already closed
 
@@ -54,10 +57,11 @@ while the services are still up rather than a day later at scoring time.
 |---|---|
 | `7.32` control DB credential | **BLOCKING.** Rejected by Neon. Nothing can run until it is refreshed |
 | plaintext tenant `API_KEY` and `AGENT_ID` | **BLOCKING.** Only the key's hash is stored |
-| `7.34` chunk source | **BLOCKING.** The decision above |
+| `7.34` chunk source | decided and landed. **Migration `0017` must be applied to the tenant DB first**, or the capture fails on the INSERT |
 | `7.29` firewall | closed in code |
 | `tool_name: ""` | closed in the capture script |
 | `CAPTURE_TIMEOUT` | closed: default is 300, was 30 against a measured 101s turn |
+| `CONTROL_DB_SYNC_URL` exported for the capture | needed for the chunk read-back. Unset means the run warns, records no chunks, and the validator reports BLIND |
 | widget JWT expiry (`7.23`) | closed: minted per scenario |
 | Voyage throttling (`7.21`) | closed by the credit. Confirm by the ABSENCE of `rerank.voyage_failed_falling_back` in the run |
 | `ANTHROPIC_API_KEY` exported into `os.environ` | operational, see below |
