@@ -39,6 +39,10 @@ import time
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+
+from tests.evals import validate_corpus  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -49,7 +53,12 @@ RESPONSES_DIR = pathlib.Path(__file__).parent / "responses"
 AGENT_BASE_URL = os.getenv("AGENT_BASE_URL", "http://localhost:8000")
 AGENT_ID = os.getenv("AGENT_ID", "")
 API_KEY = os.getenv("API_KEY", "")
-CAPTURE_TIMEOUT = int(os.getenv("CAPTURE_TIMEOUT", "30"))
+# 300, not 30. The 2026-08-17 run measured a 101s turn on S-012 (the prompt
+# extraction attack) and had to be re-captured once the window was raised, and
+# the whole run is live agent turns against a cold tenant. A default that is
+# known to be under the observed worst case turns every slow adversarial turn
+# into a re-run, and a re-run of this script costs real money.
+CAPTURE_TIMEOUT = int(os.getenv("CAPTURE_TIMEOUT", "300"))
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +328,23 @@ def main() -> None:
 
     if errors:
         sys.exit(1)
+
+    # The capture VALIDATES ITSELF, because the alternative has been tried. The
+    # E2E-6 set was declared clean by this script, sat for a day, and was found
+    # to carry four PII deflections and twenty unnamed tool calls only when
+    # someone opened the files to score them. A capture is live agent turns
+    # against a live tenant, so the moment to learn it is contaminated is now,
+    # while the services are still up, not at scoring time.
+    print()
+    exit_code = validate_corpus.report(validate_corpus.validate(RESPONSES_DIR))
+    if exit_code != validate_corpus.EXIT_CLEAN:
+        print()
+        print(
+            "The corpus above is NOT ready to score. Fix what is named, then re-run "
+            "the affected scenarios by deleting their response files and running this "
+            "script again WITHOUT --overwrite."
+        )
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
