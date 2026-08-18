@@ -102,3 +102,39 @@ Named because a proof list reads as a completeness claim otherwise.
   `capture_one_run` is proven; the loop that joins them needs a live agent, so what happens when a
   run fails halfway through a 5-run top-up is reasoned about and not observed.
 - **No mutation was run against the judged half of `run_evals.py`.** It needs an API key.
+
+
+## Reproduce these
+
+The house convention is that a mutation-proof note carries its own commands, so the proofs are
+re-runnable from the tracked artifact rather than from a script in a temp directory. From `apps/api`,
+with `PY=.venv/Scripts/python.exe`. Each block: mutate, expect RED, restore, expect GREEN.
+
+```bash
+# M1
+sed -i 's|^    return max(target - present, 0)$|    return max(target, 0)|' tests/evals/corpus.py
+$PY -m pytest tests/unit/test_corpus_runs.py::TestTopUpArithmetic -q
+git checkout HEAD -- apps/api/tests/evals/corpus.py
+
+# M2
+sed -i 's|^        for index, run in enumerate(runs):$|        for index, run in enumerate(runs[:1]):|' tests/evals/validate_corpus.py
+$PY -m pytest tests/unit/test_corpus_validator.py::test_a_defect_in_a_later_run_is_found -q
+git checkout HEAD -- apps/api/tests/evals/validate_corpus.py
+
+# M3  replace aggregate()'s reliable_at_k line with:
+#     "reliable_at_k": sum(r["passes"] for r in rated.values()) / sum(ks),
+$PY -m pytest "tests/unit/test_pass_at_k.py::TestAcrossScenarios::test_a_ragged_corpus_weights_scenarios_not_runs" -q
+git checkout HEAD -- apps/api/tests/evals/rates.py
+
+# M4
+sed -i 's|^    return corpus.load_run(path, corpus.RUN_ZERO)$|    return corpus.load_run(path, -1)|' tests/evals/calibration/compute_correlation.py
+$PY -m pytest "tests/unit/test_calibration_harness.py::TestCalibrationReadsRunZero::test_the_judge_is_shown_run_zero_not_the_last_run" -q
+git checkout HEAD -- apps/api/tests/evals/calibration/compute_correlation.py
+
+# M5
+sed -i 's|^            for index, run in enumerate(runs):$|            for index, run in enumerate(runs[:1]):|' tests/evals/run_evals.py
+$PY -m pytest "tests/unit/test_eval_run_rates.py::TestCollection::test_every_run_is_checked_not_just_the_first" -q
+git checkout HEAD -- apps/api/tests/evals/run_evals.py
+```
+
+Finish with `git status --porcelain` and confirm no source file is left mutated.
