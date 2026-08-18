@@ -420,7 +420,7 @@ def test_deterministic_dimensions_d5_d6_d7():
     # exercised no scenario and asserted over three empty sets, and both this
     # version and the pre-8.1 one reported that as a pass. A skip is unobserved
     # and reads as unobserved; a pass reads as evidence.
-    if not any(outcomes[dim] for dim in ("D3", "D5", "D6")):  # noqa: SIM102
+    if not any(outcomes[dim] for dim in ("D3", "D5", "D6")):
         pytest.skip(
             f"No recorded response for any of the {len(skipped)} scenario(s) with "
             "deterministic checks. Nothing was measured, so nothing passed - run "
