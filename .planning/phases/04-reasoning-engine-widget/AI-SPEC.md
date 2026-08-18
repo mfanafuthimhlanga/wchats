@@ -1017,7 +1017,41 @@ Respond only in the JSON format specified in your system prompt.
 - Each scenario produces one verdict per applicable dimension.
 - Final report: `{dimension: {pass_count, fail_count, pass_rate, mean_score}}`.
 - Scenarios where the judge returns a score of 3 (borderline) are flagged for human review — they do not count as automatic failures but are not counted as passes.
-- Target: >= 0.75 Spearman correlation between judge scores and human scores on the calibration set (10 scenarios reviewed by the implementer before trusting automated results).
+- ~~Target: >= 0.75 Spearman correlation between judge scores and human scores on the calibration set (10 scenarios reviewed by the implementer before trusting automated results).~~
+
+  **SUPERSEDED 2026-08-18 (owner decision). The gate is chance-corrected agreement on a BINARY
+  label, and its threshold is derived from data rather than chosen.** This is the one edit made to
+  a frozen `.planning/` artifact; it is recorded here rather than only in `.dev/` because a reader
+  who finds the old sentence would otherwise implement it.
+
+  Two defects in the superseded target:
+
+  1. **A 1-5 scale is the wrong instrument for a human.** A human cannot hold a five-point scale
+     steady across many rows: the same quality gets a 3 one hour and a 4 the next. The human label
+     is now BINARY (`human_verdict`, pass/fail) with a free-text reason. A 1-5 `human_score` stays
+     as an optional column and feeds the reported Spearman only.
+  2. **Spearman is not chance-corrected.** Two raters agree by luck, and on a mostly-good corpus
+     that luck is most of the agreement. Concretely: a judge that returns PASS to every input ranks
+     in perfect agreement with any human whose scores happen to rise, so this target could be met
+     at rho = 1.000 by a judge that was not reading the response at all.
+
+  **Replacement gate**, in `apps/api/tests/evals/calibration/compute_correlation.py`:
+
+  - **Cohen's kappa** between `human_verdict` and the judge's verdict, with a bootstrap confidence
+    interval. **The threshold is not a constant.** A judge is calibrated only when the interval's
+    lower bound clears chance AND reaches a measured human ceiling.
+  - **The ceiling is the human's own test-retest agreement**: the same rows labelled twice, blind.
+    A judge cannot be expected to agree with a human more than the human agrees with themself, so
+    until that ceiling is measured the harness reports NOT CALIBRATED YET rather than inventing a
+    number.
+  - **Matthews correlation** is reported alongside, because kappa collapses on imbalanced data and
+    this corpus is imbalanced. Reported, never gated.
+  - **The 2x2 confusion matrix is the report card** and prints before any coefficient: each cell
+    prescribes a different action, and the both-fail cell is the one that says the product is
+    broken rather than the judge.
+
+  Rationale and the arithmetic: `.dev/reference/260818-llm-eval-fundamentals.md` §9-§11,
+  `.dev/traces/260818-judge-temperature-and-kappa.md`, BACKLOG `8.2`.
 
 **Avoiding self-evaluation bias:**
 - Agent model: `claude-haiku-4-5-20251001`
