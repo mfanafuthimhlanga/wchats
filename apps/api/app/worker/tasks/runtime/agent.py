@@ -846,6 +846,42 @@ def _resolve_turn_prompt_version(
         return None, None, False
 
 
+def _persisted_chunks(tc: dict) -> str | None:
+    """The judge chunks to store for one tool call, or None for SQL NULL.
+
+    BACKLOG 7.34. `grounding_fidelity` asks whether a claim is traceable to a
+    chunk "provided in the tool_calls log", and until this column existed nothing
+    outside the worker could provide one, so the rubric's PASS branch was
+    unreachable and every grounding verdict had to FAIL.
+
+    RETRIEVE_JUDGE_CHUNKS_KEY, not RETRIEVE_CHUNKS_KEY: the reader is a judge
+    asked whether a claim is SUPPORTED, and BACKLOG 5.18 is the finding that a
+    claim naming a document or a section cannot be supported by a context that
+    contains neither. Ragas wants the content-only rendering and reads it
+    elsewhere; one parse, two renderings, one reader each.
+
+    NULL AND `[]` ARE DIFFERENT OBSERVATIONS and this function is where they
+    stay apart:
+
+        None  this call retrieves nothing, or its capture could not be decoded,
+              or the retrieve errored and its "refusal" text is not evidence
+        []    a retrieve ran and the corpus matched nothing
+
+    Collapsing them is BACKLOG 5.16 one level down: an empty context makes every
+    claim unsupported, so reporting a decode failure as "retrieved nothing"
+    manufactures an ungrounded verdict about the decoder rather than the answer.
+    """
+    if tc.get("tool_name") != "retrieve":
+        return None
+    if tc.get(RETRIEVE_RESULT_IS_ERROR_KEY):
+        return None
+    if tc.get(RETRIEVE_CHUNKS_SOURCE_KEY) == RETRIEVE_CHUNKS_UNPARSED:
+        return None
+    if RETRIEVE_JUDGE_CHUNKS_KEY not in tc:
+        return None
+    return json.dumps(tc.get(RETRIEVE_JUDGE_CHUNKS_KEY) or [])
+
+
 def _persist_messages(
     conn,
     conv_id: str,
@@ -893,8 +929,9 @@ def _persist_messages(
         for tc in tool_calls_log:
             cur.execute(
                 """
-                INSERT INTO tool_calls (id, message_id, tool_name, arguments, result, created_at)
-                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, NOW())
+                INSERT INTO tool_calls
+                    (id, message_id, tool_name, arguments, result, retrieved_chunks, created_at)
+                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, NOW())
                 """,
                 (
                     str(uuid.uuid4()),
@@ -902,6 +939,11 @@ def _persist_messages(
                     tc.get("tool_name", ""),
                     json.dumps(tc.get("input", {})),
                     json.dumps(tc.get("result", {})),
+                    # BACKLOG 7.34. `result` is unchanged beside it: that column
+                    # is the 1800-char audit repr, and one column holding either
+                    # a repr or a chunk list depending on when the row was
+                    # written gets read as whichever the reader had in mind.
+                    _persisted_chunks(tc),
                 ),
             )
     conn.commit()
