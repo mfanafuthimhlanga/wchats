@@ -126,3 +126,83 @@ def test_an_unreadable_file_is_fatal_not_skipped(tmp_path, bad):
     (directory / "S-101.json").write_text(bad, encoding="utf-8")
     result = vc.validate(directory)
     assert "S-101" in result["fatal"]
+
+
+# ---------------------------------------------------------------------------
+# BACKLOG 8.1 — a record holds k runs, and every one of them is checked
+# ---------------------------------------------------------------------------
+
+
+def _k_record(*runs: dict) -> dict:
+    return {"scenario_id": "S-101", "runs": list(runs)}
+
+
+def _good_run(text=GOOD_ANSWER, calls=None):
+    return {
+        "response_text": text,
+        "tool_calls_log": [dict(RETRIEVE_CALL)] if calls is None else calls,
+    }
+
+
+def test_a_defect_in_a_later_run_is_found(tmp_path):
+    """The load-bearing 8.1 test.
+
+    Run 0 answers and run 2 deflects: the most informative row the corpus can
+    carry, because it separates a deterministic defect from a flaky one. A
+    validator reading one run per scenario calls this clean, which is how a k=5
+    capture gets scored as though it were evidence of consistency.
+    """
+    record = _k_record(_good_run(), _good_run(), _good_run(text=PII_DEFLECTION))
+    result = vc.validate(_corpus(tmp_path, {"S-101": record}))
+    reasons = " ".join(result["fatal"]["S-101"])
+    assert "deflection" in reasons
+    assert "run 2" in reasons, "a finding must name the run, or nobody can re-capture the right one"
+
+
+def test_a_clean_run_zero_does_not_absolve_the_rest(tmp_path):
+    """The same property from the other side: reading only run 0 must not pass."""
+    record = _k_record(_good_run(), _good_run(text="Yes."))
+    result = vc.validate(_corpus(tmp_path, {"S-101": record}))
+    assert "S-101" in result["fatal"], "run 1 is under the answer floor and the corpus is not clean"
+
+
+def test_a_blind_run_is_reported_by_run(tmp_path):
+    blind = [{"tool_name": "retrieve", "input": {"query": "q"}, "result": {}}]
+    record = _k_record(_good_run(), _good_run(calls=blind))
+    result = vc.validate(_corpus(tmp_path, {"S-101": record}))
+    assert "run 1" in " ".join(result["blind"]["S-101"])
+    assert vc.report(result) == vc.EXIT_BLIND
+
+
+def test_a_single_run_corpus_reads_exactly_as_it_did_before_runs_existed(tmp_path):
+    """No `run 0:` prefix at k=1, so today's tree reports what it always reported."""
+    result = vc.validate(_corpus(tmp_path, {"S-101": _row(text=PII_DEFLECTION)}))
+    assert result["fatal"]["S-101"] == ["response is the PII firewall's deflection"]
+
+
+def test_the_run_count_is_reported_per_scenario(tmp_path):
+    record = _k_record(_good_run(), _good_run(), _good_run())
+    result = vc.validate(_corpus(tmp_path, {"S-101": record, "S-102": _row()}))
+    assert result["runs"] == {"S-101": 3, "S-102": 1}
+
+
+def test_a_ragged_corpus_says_so_and_names_the_short_scenarios(tmp_path):
+    """pass@k over scenarios captured a different number of times is not comparable."""
+    record = _k_record(_good_run(), _good_run(), _good_run())
+    result = vc.validate(_corpus(tmp_path, {"S-101": record, "S-102": _row()}))
+    line = vc._runs_line(result["runs"])
+    assert "RAGGED" in line
+    assert "S-102" in line
+
+
+def test_an_equal_corpus_does_not_cry_ragged(tmp_path):
+    record = _k_record(_good_run(), _good_run())
+    result = vc.validate(_corpus(tmp_path, {"S-101": record, "S-102": record}))
+    line = vc._runs_line(result["runs"])
+    assert "RAGGED" not in line
+    assert "k=2" in line
+
+
+def test_a_record_with_no_runs_is_fatal_not_skipped(tmp_path):
+    result = vc.validate(_corpus(tmp_path, {"S-101": {"scenario_id": "S-101", "runs": []}}))
+    assert "unreadable record" in " ".join(result["fatal"]["S-101"])

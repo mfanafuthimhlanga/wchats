@@ -39,6 +39,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 from app.utils.pii_firewall import PII_DEFLECTION  # noqa: E402
+from tests.evals import corpus  # noqa: E402
 
 RESPONSES_DIR = pathlib.Path(__file__).parent / "responses"
 
@@ -124,6 +125,15 @@ def _blind_findings(sid: str, record: dict) -> list[str]:
 
 
 def validate(responses_dir: pathlib.Path | None = None) -> dict:
+    """Check EVERY run of every scenario, not the first one and not the last.
+
+    BACKLOG 8.1. A record now holds k runs, and a defect in any one of them is a
+    defect in the corpus: run 0 answering correctly while run 2 deflects is the
+    single most informative row the corpus can carry, and a validator reading one
+    run per scenario reports it clean. Same class as the unnamed tool call that
+    hid the missing chunk - one check masking another until the next capture has
+    already been paid for.
+    """
     directory = responses_dir or RESPONSES_DIR
     if not directory.exists():
         return {"setup_error": f"{directory} does not exist - run capture_responses.py first"}
@@ -134,19 +144,56 @@ def validate(responses_dir: pathlib.Path | None = None) -> dict:
 
     fatal: dict[str, list[str]] = {}
     blind: dict[str, list[str]] = {}
+    run_counts: dict[str, int] = {}
     for path in files:
         sid = path.stem
         try:
-            record = json.loads(path.read_text(encoding="utf-8"))
+            runs = corpus.load_runs(path)
         except json.JSONDecodeError as exc:
             fatal[sid] = [f"not valid JSON: {exc}"]
             continue
-        if found := _fatal_findings(sid, record):
-            fatal[sid] = found
-        if found := _blind_findings(sid, record):
-            blind[sid] = found
+        except corpus.CorpusShapeError as exc:
+            fatal[sid] = [f"unreadable record: {exc}"]
+            continue
 
-    return {"checked": len(files), "fatal": fatal, "blind": blind, "setup_error": None}
+        run_counts[sid] = len(runs)
+        for index, run in enumerate(runs):
+            # The prefix appears only above k=1, so a single-run corpus reads
+            # exactly as it did before runs existed.
+            where = f"run {index}: " if len(runs) > 1 else ""
+            for reason in _fatal_findings(sid, run):
+                fatal.setdefault(sid, []).append(where + reason)
+            for reason in _blind_findings(sid, run):
+                blind.setdefault(sid, []).append(where + reason)
+
+    return {
+        "checked": len(files),
+        "fatal": fatal,
+        "blind": blind,
+        "runs": run_counts,
+        "setup_error": None,
+    }
+
+
+def _runs_line(run_counts: dict[str, int]) -> str:
+    """How many runs each scenario carries, said out loud.
+
+    BACKLOG 8.1. pass@k and reliable@k are comparable across scenarios only when
+    the scenarios were captured the same number of times, and a capture that
+    errors partway leaves a corpus that is 5 for some and 1 for others. No one
+    can fix that by re-reading a row, so it is neither FATAL nor BLIND; it is a
+    fact about the corpus that has to be visible where a number is read off it.
+    """
+    if not run_counts:
+        return "  runs per scenario: none recorded"
+    low, high = min(run_counts.values()), max(run_counts.values())
+    if low == high:
+        return f"  runs per scenario: k={low} across all {len(run_counts)}"
+    short = sorted(sid for sid, n in run_counts.items() if n < high)
+    return (
+        f"  runs per scenario: {low} to {high} - RAGGED, so a rate pooled over this corpus is "
+        f"decided by the capture. Short: {', '.join(short)}"
+    )
 
 
 def report(result: dict) -> int:
@@ -154,7 +201,8 @@ def report(result: dict) -> int:
         print(f"SETUP: {result['setup_error']}")
         return EXIT_SETUP
 
-    print(f"Corpus validation: {result['checked']} recorded response(s)\n")
+    print(f"Corpus validation: {result['checked']} recorded response(s)")
+    print(_runs_line(result.get("runs") or {}) + "\n")
 
     for sid, reasons in sorted(result["fatal"].items()):
         for reason in reasons:
