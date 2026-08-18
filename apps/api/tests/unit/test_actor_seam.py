@@ -272,6 +272,41 @@ class TestVerdictParsing:
             "raises instead of returning a verdict in production"
         )
 
+    def test_haiku_call_sends_temperature_zero(self):
+        """BACKLOG 8.2a. The highest-stakes judge in the system samples at 0.
+
+        `call_actor_gate` runs SYNCHRONOUSLY before money moves. Until 8.2a every
+        judge here sampled at whatever the provider defaults to, so the same
+        proposed action could be approved on one call and refused on the next
+        with nothing in the code, the conversation or the arguments having
+        changed. Judgement is the one task that wants no creativity.
+
+        3-8% verdict variance survives temperature 0 anyway, from batching and
+        hardware nondeterminism. That is an argument for sampling a high-stakes
+        verdict more than once, not for leaving the temperature unset.
+        """
+        block = _make_tool_use_block("approve", "Aligned.")
+        api_mock = MagicMock(return_value=_make_api_response(block))
+
+        from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
+
+        with (
+            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
+            patch(f"{_MODULE}._langfuse", None),
+        ):
+            asyncio.run(
+                call_actor_gate(
+                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, ""
+                )
+            )
+
+        call_kwargs = api_mock.call_args[1]
+        assert call_kwargs.get("temperature") == 0, (
+            f"the Actor gate sent temperature={call_kwargs.get('temperature')!r}. A gate "
+            "that runs before money moves may not sample its verdict."
+        )
+
     def test_haiku_approve_verdict(self):
         """Explicit test name for approve verdict (test discovery compatibility)."""
         block = _make_tool_use_block("approve", "Aligned.")

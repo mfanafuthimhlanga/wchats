@@ -140,6 +140,12 @@ def call_gatekeeper(question: str, response_text: str) -> GatekeeperVerdict:
         ValueError: If no tool_use block is returned by the judge.
     """
     response = ANTHROPIC_CLIENT.messages.create(
+        # BACKLOG 8.2a. Judgement is the one task that wants no creativity, and
+        # every judge in this system sampled at the provider default until now.
+        # Expect 3-8% verdict variance to survive this anyway (batching, hardware
+        # nondeterminism), which is why a high-stakes verdict eventually wants
+        # more than one sample; it is not a reason to leave it unset.
+        temperature=0,
         model=HAIKU_MODEL,
         max_tokens=512,
         system=(
@@ -217,6 +223,12 @@ def call_auditor(
         ValueError: If no tool_use block is returned by the judge.
     """
     response = ANTHROPIC_CLIENT.messages.create(
+        # BACKLOG 8.2a. Judgement is the one task that wants no creativity, and
+        # every judge in this system sampled at the provider default until now.
+        # Expect 3-8% verdict variance to survive this anyway (batching, hardware
+        # nondeterminism), which is why a high-stakes verdict eventually wants
+        # more than one sample; it is not a reason to leave it unset.
+        temperature=0,
         model=HAIKU_MODEL,
         # BACKLOG 5.14. 512 was enough only while the Auditor received an EMPTY
         # retrieved_context (5.11) — an empty citation_spans array costs almost
@@ -359,6 +371,12 @@ def call_strategist(
     donot_str = "\n".join(f"- {item}" for item in soul_donot_list) if soul_donot_list else "(none specified)"
 
     response = ANTHROPIC_CLIENT.messages.create(
+        # BACKLOG 8.2a. Judgement is the one task that wants no creativity, and
+        # every judge in this system sampled at the provider default until now.
+        # Expect 3-8% verdict variance to survive this anyway (batching, hardware
+        # nondeterminism), which is why a high-stakes verdict eventually wants
+        # more than one sample; it is not a reason to leave it unset.
+        temperature=0,
         model=HAIKU_MODEL,
         max_tokens=512,
         system=(

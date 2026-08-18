@@ -240,6 +240,12 @@ def _build_instructor_llm():
         model=HAIKU_MODEL,
         provider="anthropic",
         thinking={"type": "disabled"},
+        # BACKLOG 8.2a. Same **kwargs seam as `thinking`: merged into
+        # `model_args` (ragas/llms/base.py:772), passed through unchanged for the
+        # anthropic provider (:803), splatted into the client call by agenerate
+        # (:1109). Ragas metrics ARE judges, so they get the same temperature as
+        # every other verdict in the system.
+        temperature=0,
     )
 
 

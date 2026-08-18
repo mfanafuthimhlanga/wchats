@@ -152,6 +152,11 @@ def judge(
         response = client.messages.create(
             model="claude-sonnet-4-5-20251001",
             max_tokens=256,
+            # BACKLOG 8.2a. This is the judge the whole calibration harness
+            # correlates against a human. Sampling it at the provider default
+            # meant the number rho measured moved between runs for reasons that
+            # had nothing to do with the judge's rubric or the human's label.
+            temperature=0,
             system=JUDGE_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt_body}],
         )

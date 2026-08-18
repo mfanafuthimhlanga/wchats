@@ -1,4 +1,4 @@
-"""Every judge in `validation_service` must send `thinking` disabled.
+"""Every judge in `validation_service` sends `thinking` disabled and `temperature=0`.
 
 Observed 2026-08-16 against DeepSeek's Anthropic-format endpoint, which is the
 platform's default provider via `ANTHROPIC_BASE_URL`: a `messages.create`
@@ -32,6 +32,14 @@ from app.services import validation_service
 
 #: What every forced-tool-choice call site must send.
 THINKING_DISABLED = {"type": "disabled"}
+
+#: BACKLOG 8.2a. Judgement is the one task that wants no creativity, and until
+#: 8.2a `grep -rn "temperature" app tests/evals` returned NOTHING: every judge in
+#: the platform sampled at the provider default, including the Actor gate that
+#: runs before money moves. Expect 3-8% verdict variance to survive this anyway
+#: (batching, hardware nondeterminism), which is why a high-stakes verdict wants
+#: more than one sample. Not a reason to leave it unset.
+JUDGEMENT_TEMPERATURE = 0
 
 
 def _tool_use(payload: dict):
@@ -81,6 +89,13 @@ def test_judge_sends_thinking_disabled_with_its_forced_tool_choice(name, invoke,
     assert captured["tool_choice"]["type"] == "tool", (
         f"{name} no longer forces a tool_choice, so this guard proves nothing. "
         f"tool_choice={captured.get('tool_choice')!r}"
+    )
+
+    assert captured.get("temperature") == JUDGEMENT_TEMPERATURE, (
+        f"{name} sent temperature={captured.get('temperature')!r}. A judge that samples "
+        "returns a different verdict on the same input, which makes every number "
+        "downstream of it - rho, pass@k, a deploy gate - move for reasons that have "
+        "nothing to do with the response being judged."
     )
 
     assert captured.get("thinking") == THINKING_DISABLED, (
