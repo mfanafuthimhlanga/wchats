@@ -78,7 +78,7 @@ from app.services.agent_tools import (
 from app.services.escalation import send_escalation_email
 from app.services.events import emit
 from app.services.prompt_version_service import resolve_prompt_version
-from app.utils.pii_firewall import scan_response
+from app.utils.pii_firewall import detect_pii, scan_response
 from app.worker.celery_app import celery_app
 from app.worker.tasks.runtime.retrieval_eval import run_retrieval_faithfulness
 from app.worker.tasks.runtime.validators import run_auditor, run_gatekeeper, run_strategist
@@ -543,6 +543,54 @@ def _judge_retrieved_context(tool_calls_log: list[dict]) -> tuple[list[str], int
         counts["chunks"] += len(chunks)
         contexts.extend(chunks)
     return contexts, counts
+
+
+def _published_context(tool_calls_log: list[dict]) -> list[str]:
+    """What the TENANT published, for the PII firewall's exemption (BACKLOG 7.29).
+
+    The firewall stops the agent leaking a CUSTOMER's personal data. It is not
+    meant to stop it repeating the BUSINESS's own published contact details, and
+    it was doing exactly that: three of twenty E2E-6 responses came back as the
+    deflection, because the best-matching chunk was the corpus's "Contact and
+    Escalation" section and a correct answer quotes the address in it.
+
+    A THIRD RENDERING OF ONE PARSE, joining `_retrieved_chunk_texts` (what the
+    eval scores) and `_judge_chunk_record` (what the Auditor judges). It differs
+    from `_judge_retrieved_context` in the two places that decide whether an
+    exemption is safe, so it cannot borrow that function:
+
+        content only   RETRIEVE_CHUNKS_KEY, not RETRIEVE_JUDGE_CHUNKS_KEY. The
+                       judge needs provenance; an allowlist needs the smallest
+                       surface that answers the question.
+        unparsed -> nothing   the judge falls back to the audit `result` repr
+                       because it has no "unscorable" verdict. The firewall does
+                       have one: contribute nothing, and today's behaviour (no
+                       exemption, deflect) is what happens. Fail closed.
+
+    WHAT IS DELIBERATELY NOT IN HERE, because each would be a bypass:
+
+        the framed payload   it echoes the retrieve QUERY, so a customer who
+                             types their own address into the chat would see it
+                             come back exempted
+        the customer message and history   the same bypass, one step shorter
+        the agent soul       `pii_firewall`'s stated property is that nothing in
+                             the soul reaches its behaviour (T-18-SEC-02)
+        errored retrieves    `retrieve_tool` returns its DoS-guard refusal as
+                             ordinary text with is_error set, and a refusal is
+                             not published material
+
+    Returns one string per retrieved chunk, in retrieval order.
+    """
+    published: list[str] = []
+    for tc in tool_calls_log:
+        if tc.get("tool_name") != "retrieve" or "result" not in tc:
+            continue
+        if tc.get(RETRIEVE_RESULT_IS_ERROR_KEY):
+            continue
+        if tc.get(RETRIEVE_CHUNKS_SOURCE_KEY) == RETRIEVE_CHUNKS_UNPARSED:
+            continue
+        published.extend(str(c) for c in (tc.get(RETRIEVE_CHUNKS_KEY) or []) if c)
+    return published
 
 
 def _dispatch_validation_chain(
@@ -1705,7 +1753,16 @@ def run_agent_turn(
             # ingested document can disable it. Citations are extracted from the deflection
             # when a flag fires, which correctly yields an empty citation list — a
             # deflection cites nothing.
-            filtered_text, pii_detector = scan_response(response_text)
+            #
+            # BACKLOG 7.29: the firewall is given what the tenant PUBLISHED this
+            # turn, so an answer quoting the business's own contact address is no
+            # longer deleted. Email only; card and SA ID have no exemption path.
+            # The list is read for one set-membership test and never interpreted,
+            # so a chunk that instructs the firewall off does nothing.
+            published = _published_context(tool_calls_log)
+            filtered_text, pii_detector = scan_response(
+                response_text, published_context=published
+            )
             if pii_detector is not None:
                 log.warning(
                     "pii_firewall.response_deflected",
@@ -1714,6 +1771,19 @@ def run_agent_turn(
                     conversation_id=str(local_conversation_id),
                     detector=pii_detector,
                     original_length=len(response_text),
+                    published_chunks=len(published),
+                )
+            elif published and detect_pii(response_text) is not None:
+                # Passed only BECAUSE the address was published. Logged so the
+                # exemption is observable rather than silent: this is the one
+                # line that tells a later reader an address left the system on
+                # the strength of the corpus, and which turn it was.
+                log.info(
+                    "pii_firewall.published_contact_allowed",
+                    job_id=job_id,
+                    agent_id=agent_id,
+                    conversation_id=str(local_conversation_id),
+                    published_chunks=len(published),
                 )
             response_text = filtered_text
 
