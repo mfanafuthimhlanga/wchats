@@ -61,6 +61,17 @@ _KNOWN_BROKEN: dict[tuple[str, str], tuple[int, str]] = {
         "`get_adapter` is the older name and was never re-pointed. The test would "
         "raise AttributeError at patch time; it has never run.",
     ),
+    (
+        "tests/integration/test_eval_e2e.py",
+        "app.services.eval_service.evaluate",
+    ): (
+        2,
+        "BACKLOG 7.33. `evaluate` is the Ragas 0.3 entry point. 7.18 moved scoring "
+        "to the 0.4.x `ascore` API and the name left eval_service with it; these two "
+        "sites were never re-pointed, because the integration suite has no "
+        "PostgreSQL to run against and so cannot fail. Same shape as the pin above "
+        "and the same reason it survived: nothing executes it.",
+    ),
 }
 # FIXED 2026-08-10 (chore/local-postgres): the 4-site
 # ("tests/integration/test_ingestion_chain.py",

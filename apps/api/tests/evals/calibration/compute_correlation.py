@@ -291,8 +291,11 @@ def deflected_response_ids(scenario_ids: list[str]) -> list[str]:
     """
     from app.utils.pii_firewall import PII_DEFLECTION  # noqa: PLC0415
 
+    # Deduped: `scenario_ids` is one entry per ROW, and a scenario scored on two
+    # dimensions appears twice. `scorable_rows` counts rows and wants the
+    # duplicates; this list names scenarios and would print one twice.
     deflected = []
-    for sid in scenario_ids:
+    for sid in dict.fromkeys(scenario_ids):
         path = RESPONSES_DIR / f"{sid}.json"
         if not path.exists():
             continue

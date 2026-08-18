@@ -529,6 +529,33 @@ class TestReadiness:
         assert any("PII deflection" in b for b in report["blocking"])
         assert report["ready_to_calibrate"] is False
 
+    def test_a_scenario_scored_on_two_dimensions_is_named_once(
+        self, calibration_tree, tmp_path
+    ):
+        """`scorable_rows` counts rows; `deflected_responses` names scenarios."""
+        from app.utils.pii_firewall import PII_DEFLECTION
+
+        calibration_tree([
+            ("S-101", "grounding_fidelity", "4"),
+            ("S-101", "knowledge_gap_honesty", "4"),
+            ("S-102", "grounding_fidelity", "2"),
+            ("S-103", "grounding_fidelity", "5"),
+        ])
+        (tmp_path / "responses" / "S-101.json").write_text(
+            json.dumps({
+                "scenario_id": "S-101",
+                "response_text": PII_DEFLECTION,
+                "tool_calls_log": [],
+            }),
+            encoding="utf-8",
+        )
+        report = cc.readiness()
+
+        assert report["deflected_responses"] == ["S-101"]
+        assert report["scorable_rows"] == 2, (
+            "two rows referenced S-101, so both are unscorable"
+        )
+
     def test_an_ordinary_answer_is_never_called_a_deflection(
         self, calibration_tree, tmp_path
     ):

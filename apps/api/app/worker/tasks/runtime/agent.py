@@ -579,6 +579,17 @@ def _published_context(tool_calls_log: list[dict]) -> list[str]:
                              ordinary text with is_error set, and a refusal is
                              not published material
 
+    THE ONE THING THAT WOULD WIDEN THIS SILENTLY, checked 2026-08-18 and clear:
+    `verified_qa`. Those rows are answers derived from CONVERSATIONS, not material
+    the tenant published, so an address a customer typed could reach the allowlist
+    through them. It cannot today, because `verified_qa_lookup` is called from
+    `app.worker.tasks.runtime.retrieve`, not from `agent_tools.retrieve_tool`,
+    which builds its chunks straight from reranked hybrid search. Promotion is
+    also off by the owner's decision of 2026-08-08. **Routing the agent's retrieve
+    through that cache, or adding the lookup to `agent_tools`, widens a security
+    control without touching this file.** If that day comes, filter here on the
+    chunk's provenance rather than trusting the tool name.
+
     Returns one string per retrieved chunk, in retrieval order.
     """
     published: list[str] = []

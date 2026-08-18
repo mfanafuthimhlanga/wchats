@@ -12,8 +12,13 @@ WHY THIS MODULE DRIVES THE REAL CAPTURE PATH rather than hand-building a
 `_attach_retrieve_capture` writes and what `_published_context` reads, and that
 agreement is wiring: it is invisible to a test that constructs its own fixture
 dict (`.dev/reference/260815-wiring-is-invisible-to-behavioural-tests.md`). So
-every case here starts at a real `ToolResultBlock` carrying a real framed
-payload, and asserts on the text `scan_response` actually returns.
+these cases start at a real `ToolResultBlock` carrying a real framed payload,
+and assert on the text `scan_response` actually returns.
+
+**Two do not, and they say so.** The pair under "guards pinned directly" build
+their `tool_calls_log` by hand, because the guards they cover cannot be reached
+by anything the production capture emits. That is stated at those tests rather
+than left for a reader to notice.
 
 The exemption is the risk this change introduces, so most of the module is spent
 proving it cannot be widened: not by an errored retrieve, not by an undecodable
