@@ -48,6 +48,17 @@ capture ──SSE──> response_text, then reads that row back ──> respons
 not in any database. It applies when a tenant DB is next migrated, which is behind `7.32`. Until
 then the write is unobserved, and a capture against an unmigrated tenant will fail on the INSERT.
 
+### `8.1` lands BEFORE the re-capture, or we pay for a third one
+
+The capture is live agent turns against a live tenant. If it runs at k=1 we get a corpus that
+still cannot separate "cannot" from "sometimes", and a third capture becomes necessary the moment
+anyone asks how consistent the agent is. `8.1` makes the capture and the eval run k times and
+report pass@k and reliable@k. It needs nothing from the owner and it is the next code item.
+
+`8.2` (judge temperature 0, Cohen's kappa and Matthews, confidence intervals) and `8.3` (per
+scenario category rather than pooled) are analysis-side and can land after the capture, but before
+anyone reads a number off it.
+
 ### Then the re-capture, once, with everything already closed
 
 The capture now validates itself and exits with the validator's code, so a contaminated run says so
@@ -61,6 +72,7 @@ while the services are still up rather than a day later at scoring time.
 | `7.29` firewall | closed in code |
 | `tool_name: ""` | closed in the capture script |
 | `CAPTURE_TIMEOUT` | closed: default is 300, was 30 against a measured 101s turn |
+| `8.1` k > 1 in the capture | **land it first.** A k=1 corpus buys a third capture |
 | `CONTROL_DB_SYNC_URL` exported for the capture | needed for the chunk read-back. Unset means the run warns, records no chunks, and the validator reports BLIND |
 | widget JWT expiry (`7.23`) | closed: minted per scenario |
 | Voyage throttling (`7.21`) | closed by the credit. Confirm by the ABSENCE of `rerank.voyage_failed_falling_back` in the run |
@@ -197,6 +209,9 @@ before money moves.
 
 ## Read these before trusting a number
 
+- **`260818-llm-eval-fundamentals.md`** — the practice itself, written down so it outlives the
+  session that watched it: capability against consistency, the three levels, trace analysis and
+  saturation, building an aligned judge, judging the judge, RAG retrieval metrics, judge bias.
 - **`260818-eval-practice-gap-analysis.md`** — nine things two eval practitioners do that we do
   not, each checked against the code before being written down. Act on the first one first:
   every scenario runs ONCE, so no number we have separates "cannot" from "sometimes".

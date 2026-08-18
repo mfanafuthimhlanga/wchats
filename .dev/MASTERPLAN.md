@@ -61,6 +61,47 @@ critical path.
   carries `thinking={"type": "disabled"}` (a no-op on Anthropic). Trace:
   `260816-deepseek-seam.md`. Cost telemetry on the SDK path is Anthropic-priced fiction: `7.13`.
 
+## What the eval review changed (2026-08-18)
+
+Two eval walkthroughs were worked through end to end and mapped onto what this system actually runs.
+Fundamentals in `.dev/reference/260818-llm-eval-fundamentals.md`, the gap list in
+`260818-eval-practice-gap-analysis.md`, the queue in BACKLOG section 8. Every gap was checked against
+the code before being filed.
+
+**Nothing below changes the definition of production readiness.** Two agents live on their Vercel
+URLs is still the only bar. What changes is what counts as evidence on the way there, and in what
+order the work happens.
+
+Ordered by how much it moves the plan:
+
+1. **M2 cannot be earned at k=1, so `8.1` goes in front of it.** Every eval scenario currently runs
+   once, which conflates two different failures: a system that CANNOT do the task and one that does
+   it sometimes. M2's claim is consistency, and one pass per scenario cannot support it. A 7/7
+   red-team result at k=1 is silent about the eighth attempt. M2's exit now names reliable@k.
+2. **The improvement loop moves BEFORE launch, not after.** `2.28` (miner) and `2.4` (labelling UI)
+   were scheduled after the finish line. The trace-to-taxonomy loop is the front end of every other
+   eval: read traces, label binary, write reasons, cluster them into failure categories, prioritise
+   by frequency AND severity, stop at saturation. Our twenty scenarios were written from
+   imagination because the system had no traffic; that was correct then and is not the plan now.
+   This is the difference between reaching production and surviving it.
+3. **Every number we quote gains an interval and a segment.** No success rate ships as a bare point
+   estimate, and none ships pooled across scenario categories the corpus already tags
+   (`golden_path`, `edge`, `adversarial`, `out_of_scope`). This is the existing "unknown is never
+   pass" rule one level deeper, and it applies to `7/7`, `20/20` and every eval percentage.
+4. **Judge calibration needs chance correction, not just correlation.** Spearman rho over three
+   pairs cannot carry the claim. Cohen's kappa subtracts agreement by luck; Matthews correlation
+   covers the imbalanced case where kappa collapses on a good judge, which is the shape our corpus
+   has. The judge also ships a confusion matrix rather than one number, because each quadrant names
+   a different fix, including "the product is broken, stop tuning the judge".
+5. **Judges run at temperature 0 and get bias probes.** No temperature is set anywhere in `app` or
+   `tests/evals` today. Verbosity and position bias are both cheaply testable and currently untested.
+6. **M4.5 gains a lever before it starts.** The cheapest eval that answers the question wins:
+   code-based, then a small off-the-shelf model, then a judge. Citation validity is set membership
+   and is currently judged by an LLM.
+7. **Alignment is re-measured on a schedule, because it decays.** Judge-to-human agreement is not
+   established once. Prompts, data and users drift, and nothing currently re-measures it. This is
+   the piece that makes the harness survive production rather than merely launch.
+
 ## The milestones
 
 Order is deliberate: backend and measurement first, cloud before console polish (a polished console
@@ -107,6 +148,11 @@ No `ship` has ever come from real signals (`260815-the-never-executed-class` §"
 
 **Exit:** `run_deployment_checklist.complete recommendation=ship` from real eval + red-team
 signals, observed once, trace recorded.
+
+**AMENDED 2026-08-18 (`8.1`):** the eval and red-team runs above are run at k > 1 and reported as
+reliable@k per scenario category with an interval, not as a single pass. A verdict from one run per
+scenario cannot distinguish a system that cannot do the task from one that does it sometimes, and
+consistency is the entire claim M2 exists to earn.
 
 ### M3 — make the widget and the agent endpoint products
 
