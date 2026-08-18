@@ -399,7 +399,7 @@ found an item, nothing more.
 |---|---|
 | **M1**, one owner action from done | `0.1` (eight scorable rows). `7.29`'s code has landed, so the two gated rows now need only a re-capture, which needs the plaintext tenant API key |
 | **Next code item, ahead of M2** | `7.29` is landed and proven by mutation; only its re-capture is open. Next is `5.17`, unless `7.30` (corpus PII at ingest) is taken first |
-| **M2**, first earned ship | `5.17`, `1.31`, `1.13b` (cost RTX-01 before running it), then the eval and red-team runs themselves |
+| **M2**, first earned ship | **`8.1` first** (a 7/7 at k=1 is not evidence of consistency, and M2's whole claim is consistency), then `5.17`, `1.31`, `1.13b` (cost RTX-01 before running it), then the eval and red-team runs themselves |
 | **M4**, cloud | `0.3`, `0.4`, `1.20`, `7.19`; plus M3's deferred PROD-11 and the BYO-client proof |
 | **M4.5**, unit economics | `7.13` (SDK cost telemetry is Anthropic-priced fiction), `7.22` (rerank ships 6x what it keeps) |
 | **M5**, console polish | `5.4`, `5.5`, `1.19`, `7.27` |

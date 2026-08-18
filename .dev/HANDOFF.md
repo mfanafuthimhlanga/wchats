@@ -197,6 +197,9 @@ before money moves.
 
 ## Read these before trusting a number
 
+- **`260818-eval-practice-gap-analysis.md`** — nine things two eval practitioners do that we do
+  not, each checked against the code before being written down. Act on the first one first:
+  every scenario runs ONCE, so no number we have separates "cannot" from "sometimes".
 - **`260818-green-for-the-wrong-reason.md`** — four checks that were green while the thing they
   guard was broken, found in one session, each with the cheap test that separates them. Read it
   before trusting any negative test, and before writing a mutation proof.
