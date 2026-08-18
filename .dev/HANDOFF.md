@@ -10,7 +10,7 @@ agent live via MCP, both tested on their Vercel URLs. Nothing else counts as don
 
 ## Next move
 
-**One number from the owner, and everything else is code.** How many of the 45 available
+**One number from the owner, and nothing in the harness is open.** How many of the 45 available
 calibration rows will be labelled, twice. Nothing today: the corpus is contaminated, so there is
 nothing to label until the re-capture.
 
@@ -19,18 +19,17 @@ nothing to label until the re-capture.
 | `8.1` k>1 record shape, pass@k | **landed + adversarially reviewed.** 3 BLOCKs and 11 surviving mutants fixed; 12/12 mutations now red |
 | `8.2a` judge temperature | **landed + reviewed.** 3 tautologies fixed |
 | `8.2b` binary label + kappa | **landed + reviewed.** 2 BLOCKs fixed, one of which broke the owner's workflow |
-| **`8.2c` data-derived threshold** | **[code], OPEN, and it gates everything downstream.** `agreement.py` is written and passes 13 tests; nothing calls it yet |
-| **the sheet size** | **[owner] the one open decision.** See "What labelling costs" below |
+| `8.2c` data-derived threshold | **landed + mutation-proved 13/13.** `KAPPA_THRESHOLD` is deleted; two intervals decide. The second pass is its own file, and `--emit-second-pass` writes it |
+| **the sheet size** | **[owner] the one open decision, and now the only one left in the harness.** See "What labelling costs" below |
 | the re-capture at k=5 | **[code], unblocked.** 100 live turns. Seed the LOCAL control DB; `7.32` does not block it |
 | `7.34` chunks, `7.29` firewall | landed; `0017` applied and verified on the live tenant |
 
-### `8.2c` is the gate, and `KAPPA_THRESHOLD = 0.6` is still in the code
+### The gate no longer contains a number anyone chose
 
-The harness currently gates on a constant. **0.6 is a Landis-Koch band boundary: a 1977 rule of
-thumb published with no empirical basis**, so it is not merely unmeasured here, it was never
-measured anywhere. The owner refused it on 2026-08-18.
-
-The replacement is two halves, both derived from the data, and BOTH required:
+`KAPPA_THRESHOLD = 0.6` is deleted. **0.6 was a Landis-Koch band boundary: a 1977 rule of thumb
+published with no empirical basis**, so it was not merely unmeasured here, it was never measured
+anywhere. What decides now is two intervals bootstrapped from the labels themselves, and BOTH are
+required:
 
 ```
 (a) beats chance      judge_kappa_ci_low  > 0
@@ -39,8 +38,25 @@ The replacement is two halves, both derived from the data, and BOTH required:
 
 (b) is the one that matters. **A judge cannot be expected to agree with a human more than that
 human agrees with themself**, so the owner's test-retest kappa IS the scale, and with no ceiling
-measured the harness refuses rather than inventing a number. `agreement.py` implements both;
-`compute_correlation.py` does not call it yet. Plan: `260818-kappa-threshold-from-data.md`.
+measured the harness refuses rather than inventing a number.
+
+**The second pass is a separate FILE, not a `human_verdict_2` column, and the plan said otherwise.**
+A column sits on the same row as the first verdict, so the labeller reads their own answer while
+writing the new one, and the ceiling then measures memory rather than consistency. Trace:
+`260818-kappa-threshold-from-data.md`.
+
+**What the owner runs, in order:**
+
+```
+compute_correlation.py --check              names every missing input; makes no judge call
+    ... label human_scores.csv ...          binary pass/fail, plus the reason in notes
+compute_correlation.py --emit-second-pass   writes human_scores_pass2.csv, shuffled and empty
+    ... label that, WITHOUT opening the first sheet ...
+compute_correlation.py                      the run: judge interval against the ceiling
+```
+
+`--emit-second-pass` refuses to overwrite an existing sheet, and refuses while the first pass is
+unfinished: labelling both in one sitting is one pass copied, not a test-retest.
 
 ### What labelling costs, and what a row is
 
@@ -158,11 +174,11 @@ multiplies the only human step in the system by k, which is why the sequence mat
 1. 8.1 record shape       k runs per scenario              DONE 2026-08-18
 2. 8.2a judge temperature before ANY judging happens       DONE 2026-08-18
 3. 8.2b binary label      before the owner labels anything DONE 2026-08-18
-4. 8.2c the threshold     before any kappa is read         OPEN, and it gates the rest
+4. 8.2c the threshold     before any kappa is read         DONE 2026-08-18
 5. size the sheet         N of 45 rows, spanning categories OWNER: the one open number
 6. capture ONCE at k=5    run 0 of each scenario is the human's row
 7. owner labels run 0     N binary verdicts + N reasons
-8. owner RE-labels blind  the same N, for the ceiling
+8. owner RE-labels blind  the same N, in human_scores_pass2.csv
 9. the gate computes      judge CI against the human ceiling
 ```
 
@@ -182,7 +198,7 @@ while the services are still up rather than a day later at scoring time.
 | Before running | State |
 |---|---|
 | `8.1` k > 1 and the record shape | **landed and adversarially reviewed.** Pass `--runs 5`; a scenario short of 5 is topped up, not skipped |
-| `8.2c` the threshold | **OPEN and it blocks reading the result, not the capture.** The capture can run first; the numbers cannot be read until this lands |
+| `8.2c` the threshold | **landed.** The numbers are readable as soon as both label passes exist |
 | the sheet size | **[owner] OPEN.** It does not block the capture either. Label after |
 | `7.32` control DB credential | **not blocking.** Seed the LOCAL `wchats_control` (alembic 0019) with a tenant and agent row whose `neon_connection_string` is the Fernet-encrypted live tenant URI |
 | plaintext tenant `API_KEY` and `AGENT_ID` | **not blocking.** Both are absent from `.env`, but seeding the local control row means choosing the plaintext |
@@ -333,6 +349,9 @@ before money moves.
 - **`260818-eval-practice-gap-analysis.md`** and the two beside it are findings. This one is a
   warning: **`7.36`, an environment constraint was quoted for eight days and never tested**, and
   it propagated into seven files in one session. Open a socket before repeating a limit.
+- **`260818-the-human-ceiling.md`** - what a judge can be held to, and the three ways collecting
+  the ceiling destroys it. Read before building any labelling surface (`2.4`, `2.28`): the prior
+  verdict must be absent, the order different, and the rater's own prior reasoning off the screen.
 - **`260818-llm-eval-fundamentals.md`** — the practice itself, written down so it outlives the
   session that watched it: capability against consistency, the three levels, trace analysis and
   saturation, building an aligned judge, judging the judge, RAG retrieval metrics, judge bias.
