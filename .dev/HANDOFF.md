@@ -10,31 +10,61 @@ agent live via MCP, both tested on their Vercel URLs. Nothing else counts as don
 
 ## Next move
 
-**One owner action, then M1 closes: score eight rows.** Fill the `human_score` column (1 to 5) in
-`apps/api/tests/evals/calibration/human_scores.csv` — ten rows present, **two of them now marked
-skip** (below), three is the gate's minimum — then run:
+**The corpus cannot be scored. It has to be re-captured, and one decision has to be made first.**
+
+Run this and it says so itself:
 
 ```
-apps\api\.venv\Scripts\python.exe apps\api\tests\evals\calibration\compute_correlation.py
+apps/api/.venv/Scripts/python.exe apps/api/tests/evals/validate_corpus.py
 ```
 
-A scoring sheet pairing each captured answer with the judge's own rubric is published at
-**https://claude.ai/code/artifact/179dc28f-ce9c-45e9-b2f4-ddedbc381dec** (regenerate with the
-scratchpad builder if the corpus is ever re-captured). The scale is the judge's: 1 clear failure,
-3 borderline, 5 clear pass. `--check` reports `20 scenarios / 20 responses / 0 of 3 human scores`,
-**exit 3 = NOT READY**, which is neither pass nor fail. Nothing but a human may fill that column: a
-judge scored against model-written labels measures its agreement with itself. **The scores are
-per-provider** — they calibrate DeepSeek.
+`FATAL 15 rows, BLIND 14 rows, exit 1`. Two independent defects, and the second is the one that
+matters more:
 
-**S-002 and S-003 are still unscorable, and `--check` now says so itself** rather than leaving it in
-this file: it prints `PII-deflected, unscorable : S-002, S-003 (8 scorable row(s) remain)`. Both
-hold the PII firewall's deflection, and scoring a deflection measures the firewall rather than
-grounding. Eight rows is comfortably over the minimum, but **`grounding_fidelity` rests on S-001
-alone** until those two are re-captured.
+1. **Four responses are the PII firewall's deflection** (S-002, S-003, S-005, S-010). Scoring a
+   deflection measures the firewall. `7.29`'s code fix has landed, so a re-capture returns real
+   answers.
+2. **No response carries a retrieved chunk.** `grounding_fidelity`'s rubric requires a claim to be
+   traceable to a chunk *provided in the tool_calls log*, and every entry has `"result": {}`. The
+   rubric's PASS branch is unreachable, so **every grounding verdict must FAIL regardless of the
+   answer**. Every tool call is also named `""`, so the judge cannot see that retrieve was called
+   either, and `run_evals.py` counts escalate and clarify calls by that same name.
 
-**`7.29`'s code has landed** (`952fac0`), so a re-capture would now return real answers. It is
-blocked on two things this machine does not have, `7.32` and the plaintext tenant API key, both in
-the owner table below. **Scoring the eight does not wait for either.**
+**Do not score the current sheet.** Eight rows are readable, but the number that came out would be
+agreement between a human and a judge that cannot see the evidence, on a corpus that has to be
+re-captured anyway.
+
+### The decision that blocks the re-capture: `7.34`
+
+The chunks exist only on the worker's in-process `tool_calls_log`. They are not persisted, not
+emitted over SSE, and SSE is customer-facing so widening it is not an option. Pick one:
+
+| | What it costs | What the corpus then measures |
+|---|---|---|
+| **(a) persist the judge context per turn, capture reads it back** | one write plus a read | the SERVED path, firewall included. **Recommended** |
+| (b) capture through the eval path in-process | nothing, `eval.py` already reads the chunks | a path no customer uses: the eval path sets `pii_firewall_applied=False`, and it collides with `0.4` |
+| (c) capture-only authenticated endpoint | (a)'s write plus new surface | same as (a) |
+
+### Then the re-capture, once, with everything already closed
+
+The capture now validates itself and exits with the validator's code, so a contaminated run says so
+while the services are still up rather than a day later at scoring time.
+
+| Before running | State |
+|---|---|
+| `7.32` control DB credential | **BLOCKING.** Rejected by Neon. Nothing can run until it is refreshed |
+| plaintext tenant `API_KEY` and `AGENT_ID` | **BLOCKING.** Only the key's hash is stored |
+| `7.34` chunk source | **BLOCKING.** The decision above |
+| `7.29` firewall | closed in code |
+| `tool_name: ""` | closed in the capture script |
+| `CAPTURE_TIMEOUT` | closed: default is 300, was 30 against a measured 101s turn |
+| widget JWT expiry (`7.23`) | closed: minted per scenario |
+| Voyage throttling (`7.21`) | closed by the credit. Confirm by the ABSENCE of `rerank.voyage_failed_falling_back` in the run |
+| `ANTHROPIC_API_KEY` exported into `os.environ` | operational, see below |
+| Redis `runtime` queue drained, tenant Neon pre-warmed | operational, see below |
+
+**Re-capture all twenty, not the four.** The unnamed tool calls and missing chunks affect every row,
+not just the deflected ones.
 
 **Then M4.** M4 also carries M3's unmet exit criterion (below).
 

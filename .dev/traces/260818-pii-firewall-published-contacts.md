@@ -160,3 +160,37 @@ count moves from the red run's 2361 passed by the two failures that are now pinn
 added for the deflection dedupe.
 
 Widget and admin were not re-run: this change is backend only and touches no file either reads.
+
+## The corpus is worse than the deflections, and that changes the advice
+
+Asked whether the sheet could now be scored, I said yes for eight rows. That was wrong, and reading
+the rubric is what showed it.
+
+`grounding_fidelity` requires a claim to be traceable to a retrieved chunk **provided in the
+tool_calls log**. Every captured entry carries `"result": {}`, because the capture drives the widget
+SSE and SSE does not carry tool results. **PASS is unreachable and every grounding verdict must FAIL
+whatever the answer says.** The unnamed tool calls forecloses the rubric's other FAIL condition the
+same way, and `run_evals.py` counts escalate and clarify calls by that same name, so those come back
+zero.
+
+So the corpus is not eight-scorable-rows-with-a-caveat. It has to be re-captured in full, and
+scoring it first would produce a real number about nothing.
+
+`validate_corpus.py` now says all of this at capture time: **FATAL 15, BLIND 14, exit 1** against the
+current corpus. `capture_responses.py` runs it before exiting and exits with its code, so a
+contaminated run is known while the services are still up rather than a day later.
+
+**The property that took two attempts.** The blind check first keyed on `tool_name == "retrieve"`,
+which no unnamed call matches, so the unnamed-tool defect masked the missing-chunk defect and fixing
+the first would have revealed the second on the next capture. A validator that reveals one finding
+per run schedules the re-runs it exists to prevent. `_looks_like_retrieve` now also matches an
+unnamed call carrying `input.query`, and the mutation proof is recorded: reverting it to the
+name-only form turns `test_both_defect_classes_are_reported_in_one_run` red, 1 failed of 12,
+restored green.
+
+`CAPTURE_TIMEOUT` also defaulted to 30s against a measured 101s turn. Now 300.
+
+**What is still open is a decision, not a patch (`7.34`).** The untruncated chunks exist only on the
+worker's in-process `tool_calls_log`; `retrieved_context_json` is a Celery task argument and a
+char-count log line, and nothing durable holds it. Widening the SSE payload is not available because
+that stream is the customer's. HANDOFF carries the three options and the recommendation.

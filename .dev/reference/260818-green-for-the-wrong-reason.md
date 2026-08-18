@@ -1,8 +1,11 @@
-# Four ways a gate was green while the thing it guards was broken
+# Five ways a check was green while the thing it guards was broken
 
 One session, 2026-08-18, working on `7.29`. Every one of these passed a check that existed
-specifically to catch it. They are collected here because the shapes recur and each has a cheap
-test that separates a real pass from a green one.
+specifically to catch it. The fifth is the one to read first: it is the only one where the check
+was not merely uninformative but arithmetically incapable of returning its own PASS.
+
+They are collected here because the shapes recur and each has a cheap test that separates a real
+pass from a green one.
 
 ## 1. A guard no production shape can reach
 
@@ -74,11 +77,38 @@ scenario expected an answer (`7.31`).
 **Separator:** a corpus check that only looks for malformed output cannot see a well-formed wrong
 one. List the specific well-formed failures the system can produce, and check for those by value.
 
+## 5. A rubric whose PASS branch cannot be reached by the data it is given
+
+The strongest of the five, because it produces a confident number that is about nothing.
+
+`grounding_fidelity`'s rubric, in full:
+
+> PASS: Every factual claim in the agent response is traceable to a retrieved chunk **provided in
+> the tool_calls log**. FAIL: ... OR the retrieve tool was not called before a factual response.
+
+Every entry in the calibration corpus carries `"result": {}`, because the capture drives the widget
+SSE and SSE does not carry tool results. **No chunk is ever provided.** So PASS is unreachable, FAIL
+is certain, and the verdict is decided by the capture format rather than by the answer. Every tool
+call was also named `""`, which forecloses the rubric's second FAIL condition the same way.
+
+Nothing was broken in the ordinary sense. The judge ran, returned well-formed verdicts, and a
+correlation could have been computed against them. It would have been a real number measuring
+nothing, and it would have been quoted afterwards.
+
+**Separator:** for each verdict a rubric can return, ask what the input would have to contain for
+that branch to fire, then check the data actually contains it. A branch no input can reach is a
+constant wearing a rubric.
+
+**Cheaper still:** count the distinct verdicts a dimension produces across a corpus. One distinct
+value over many rows is either a very consistent system or an unreachable branch, and it costs
+nothing to find out which.
+
 ## The common shape
 
-Every one of the four is a check whose *inputs* moved out from under it: the capture stopped
-producing the shape, the file stopped being empty, the corpus started containing fluent refusals,
-the anchor stopped being unique. None of them is a check that was written carelessly.
+Every one of the five is a check whose *inputs* moved out from under it, or never matched it: the
+capture stopped producing the shape, the file stopped being empty, the corpus started containing
+fluent refusals, the anchor stopped being unique, the tool results were never carried at all. None
+of them is a check that was written carelessly.
 
 So the question that finds this class is not "is this assertion correct?" but **"what would have to
 change for this check to become vacuous, and has it?"**
