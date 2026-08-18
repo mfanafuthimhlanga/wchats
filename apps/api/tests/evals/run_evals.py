@@ -31,7 +31,7 @@ from collections import Counter
 import pytest
 import structlog
 
-from tests.evals import corpus, rates
+from tests.evals import corpus, rates, validate_corpus
 
 log = structlog.get_logger(__name__)
 
@@ -87,6 +87,46 @@ def _load_runs(scenario_id: str) -> list[dict] | None:
     if not response_path.exists():
         return None
     return corpus.load_runs(response_path)
+
+
+def unscorable_reasons(scenario_id: str, run: dict, dimension: str | None = None) -> list[str]:
+    """Why `validate_corpus` says this run cannot be scored, for this dimension.
+
+    The eval harness and the corpus validator used to disagree about the same
+    file. `validate_corpus.py` called S-002 FATAL because its `response_text` is
+    the PII firewall's deflection, and this harness scored it anyway and
+    reported `D5 NEVER passed [S-002]`. That reads as an accusation against the
+    AGENT. It is not: a deflection has no citation block because it is not an
+    answer, and grading it measures the firewall.
+
+    Every check lives in the validator and none is duplicated here. A second
+    copy would go stale the first time the deflection wording changed, and this
+    function would then quietly start grading deflections again.
+
+    `grounding_fidelity` additionally cannot be scored on a BLIND run: its rubric
+    asks whether a claim is traceable to a chunk PROVIDED IN THE TOOL_CALLS LOG,
+    so with no chunk the PASS branch is unreachable and the FAIL is decided by
+    the capture format. That is per dimension, not per row, which is why the
+    other dimensions are still scored on the same run.
+    """
+    reasons = list(validate_corpus.fatal_findings(scenario_id, run))
+    if dimension == "grounding_fidelity":
+        reasons += validate_corpus.blind_findings(scenario_id, run)
+    return reasons
+
+
+def _contamination_failures(unscorable: dict[str, list[str]]) -> list[str]:
+    """The message a contaminated corpus deserves, instead of a dimension failure."""
+    if not unscorable:
+        return []
+    messages = [
+        f"CORPUS CONTAMINATED: {len(unscorable)} scenario(s) carry a run that cannot be "
+        "scored by anyone. These are NOT agent failures and no rate above includes them. "
+        "Re-capture, then run tests/evals/validate_corpus.py until it is clean."
+    ]
+    for sid, reasons in sorted(unscorable.items()):
+        messages.append(f"  {sid}: {reasons[0]}")
+    return messages
 
 
 def _dimension_failures(name: str, outcomes: dict[str, list[bool]],
@@ -264,18 +304,28 @@ def _check_d7() -> tuple[bool | None, str]:
 # ---------------------------------------------------------------------------
 
 
-def collect_deterministic(scenarios: list[dict]) -> tuple[dict, dict, list[str]]:
-    """Run D3, D5 and D6 against EVERY recorded run.
+def collect_deterministic(scenarios: list[dict]) -> dict:
+    """Run D3, D5 and D6 against every SCORABLE run of every scenario.
 
-    Returns (outcomes, reasons, skipped) where `outcomes[dim][scenario_id]` is
-    the list of per-run booleans that pass@k and reliable@k are computed from,
-    and `reasons[dim][scenario_id]` names the failing runs. Separated from the
-    pytest test so the aggregation can be exercised without a captured corpus.
+    A dict rather than a tuple, because the fourth field is the one that was
+    missing and a positional return grows badly:
+
+        outcomes[dim][scenario_id]   per-run booleans, the input to pass@k
+        reasons[dim][scenario_id]    "run N: why it failed", failures only
+        skipped                      scenario ids with no recorded response
+        unscorable[scenario_id]      "run N: why the CORPUS is at fault"
+
+    **A run the validator calls FATAL contributes no outcome at all.** Scoring
+    it would put a corpus defect into a rate about the agent, which is what this
+    harness did to S-002, S-003 and S-005: all three record the PII firewall's
+    deflection, a deflection has no citation block, and D5 reported the agent as
+    NEVER passing.
     """
     dims = ("D3", "D5", "D6")
     checkers = {"D3": _check_d3, "D5": _check_d5, "D6": _check_d6}
     outcomes: dict[str, dict[str, list[bool]]] = {dim: {} for dim in dims}
     reasons: dict[str, dict[str, list[str]]] = {dim: {} for dim in dims}
+    unscorable: dict[str, list[str]] = {}
     skipped: list[str] = []
 
     for scenario in scenarios:
@@ -294,19 +344,36 @@ def collect_deterministic(scenarios: list[dict]) -> tuple[dict, dict, list[str]]
             skipped.append(sid)
             continue
 
+        # Per run, once: the verdict is the same for D3, D5 and D6, since none
+        # of these is the grounding dimension.
+        scorable = []
+        for index, run in enumerate(runs):
+            corpus_faults = unscorable_reasons(sid, run)
+            if corpus_faults:
+                unscorable.setdefault(sid, []).append(f"run {index}: {corpus_faults[0]}")
+                log.info("deterministic_check.unscorable", scenario_id=sid, run=index,
+                         reason=corpus_faults[0])
+                continue
+            scorable.append((index, run))
+
         for dim in dims:
             if dim not in checks:
                 continue
             if dim == "D3" and scenario.get("category") != "adversarial":
                 continue
-            for index, run in enumerate(runs):
+            for index, run in scorable:
                 passed, reason = checkers[dim](scenario, run)
                 outcomes[dim].setdefault(sid, []).append(passed)
                 if not passed:
                     reasons[dim].setdefault(sid, []).append(f"run {index}: {reason}")
                 log.info(dim, scenario_id=sid, run=index, passed=passed, reason=reason)
 
-    return outcomes, reasons, skipped
+    return {
+        "outcomes": outcomes,
+        "reasons": reasons,
+        "skipped": skipped,
+        "unscorable": unscorable,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +392,9 @@ def test_deterministic_dimensions_d5_d6_d7():
     All scenarios with deterministic_checks are processed; others are ignored.
     """
     scenarios = load_scenarios()
-    outcomes, reasons, skipped = collect_deterministic(scenarios)
+    collected = collect_deterministic(scenarios)
+    outcomes, reasons = collected["outcomes"], collected["reasons"]
+    skipped, unscorable = collected["skipped"], collected["unscorable"]
 
     # D7: widget bundle size
     d7_passed, d7_reason = _check_d7()
@@ -337,7 +406,10 @@ def test_deterministic_dimensions_d5_d6_d7():
         assert d7_passed, f"D7 FAILED: {d7_reason}"
 
     # A P0 dimension must hold on every run, so the gate is reliable@k == 1.0.
-    failure_msgs: list[str] = []
+    # Contamination is reported FIRST and separately: a corpus defect and an
+    # agent defect need different people to do different things, and the old
+    # output made one look like the other.
+    failure_msgs = _contamination_failures(unscorable)
     for dim in ("D3", "D5", "D6"):
         failure_msgs += _dimension_failures(dim, outcomes[dim], reasons[dim])
 
@@ -348,7 +420,7 @@ def test_deterministic_dimensions_d5_d6_d7():
     # exercised no scenario and asserted over three empty sets, and both this
     # version and the pre-8.1 one reported that as a pass. A skip is unobserved
     # and reads as unobserved; a pass reads as evidence.
-    if not any(outcomes[dim] for dim in ("D3", "D5", "D6")):
+    if not any(outcomes[dim] for dim in ("D3", "D5", "D6")):  # noqa: SIM102
         pytest.skip(
             f"No recorded response for any of the {len(skipped)} scenario(s) with "
             "deterministic checks. Nothing was measured, so nothing passed - run "
@@ -399,6 +471,7 @@ def test_llm_judged_dimensions_d1_d2_d3_d4_d8():
 
     outcomes: dict[str, dict[str, list[bool]]] = {dim: {} for dim in DIMENSION_BEHAVIOR_MAP}
     reasons: dict[str, dict[str, list[str]]] = {dim: {} for dim in DIMENSION_BEHAVIOR_MAP}
+    unscorable: dict[str, list[str]] = {}
     borderline_count = 0
     skipped_scenarios: list[str] = []
 
@@ -415,6 +488,18 @@ def test_llm_judged_dimensions_d1_d2_d3_d4_d8():
             tool_calls_log = run.get("tool_calls_log", [])
 
             for dim in active_dimensions(scenario):
+                # PER DIMENSION, not per row. A run with no retrieved chunk is
+                # unscorable for grounding_fidelity only: the other dimensions
+                # have their evidence and a judge call is money, so refusing the
+                # whole row would both waste the capture and hide real verdicts.
+                corpus_faults = unscorable_reasons(sid, run, dim)
+                if corpus_faults:
+                    unscorable.setdefault(sid, []).append(
+                        f"run {index}, {dim}: {corpus_faults[0]}"
+                    )
+                    log.info("llm_judge.unscorable", scenario_id=sid, run=index,
+                             dimension=dim, reason=corpus_faults[0])
+                    continue
                 verdict = judge(dim, transcript, tool_calls_log)
                 outcomes[dim].setdefault(sid, []).append(verdict["verdict"] == "PASS")
                 if verdict["verdict"] != "PASS":
@@ -432,7 +517,8 @@ def test_llm_judged_dimensions_d1_d2_d3_d4_d8():
 
     # A P0 dimension must hold on every run, so the gate is reliable@k == 1.0,
     # and a failure says whether the agent CANNOT or only SOMETIMES does.
-    failures: list[str] = []
+    # Contamination is reported first and separately from either.
+    failures = _contamination_failures(unscorable)
     for dim in DIMENSION_BEHAVIOR_MAP:
         agg = rates.aggregate(outcomes[dim])
         if agg["scenarios"]:
@@ -544,9 +630,14 @@ def main() -> None:
 
     print("## Deterministic Checks\n")
 
-    outcomes, reasons, skipped = collect_deterministic(scenarios)
+    collected = collect_deterministic(scenarios)
+    outcomes, reasons = collected["outcomes"], collected["reasons"]
+    skipped, unscorable = collected["skipped"], collected["unscorable"]
+
     for sid in skipped:
         print(f"  SKIP [{sid}]: No recorded response")
+    for sid, why in sorted(unscorable.items()):
+        print(f"  UNSCORABLE [{sid}]: {why[0]}")
 
     labels = {
         "D3": "D3 (injection regex)",
@@ -620,8 +711,21 @@ def main() -> None:
     measured = [labels[dim] for dim, agg in aggregates.items() if agg["scenarios"]]
 
     print()
+    if unscorable:
+        # Said before anything else and in its own words, because a contaminated
+        # corpus and a failing agent need different people to do different
+        # things. This harness used to print the first as the second.
+        print(
+            f"**CORPUS CONTAMINATED: {len(unscorable)} scenario(s) carry a run no one can "
+            f"score ({', '.join(sorted(unscorable))}). Those runs are excluded from every "
+            "rate above and are NOT agent failures. Re-capture them.**"
+        )
+        print()
     if not gate_passed or unreliable or d7_passed is False:
         print("**Result: FAILURES detected - see above for details.**")
+        sys.exit(1)
+    if unscorable:
+        print("**Result: NOT FULLY MEASURED - the corpus has to be re-captured first.**")
         sys.exit(1)
     if not measured:
         # An empty corpus used to print "All checked dimensions PASSED" and exit

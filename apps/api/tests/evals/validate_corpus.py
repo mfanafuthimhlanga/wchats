@@ -63,8 +63,17 @@ _PROVIDER_ERROR = re.compile(
 )
 
 
-def _fatal_findings(sid: str, record: dict) -> list[str]:
-    """Reasons this row cannot be scored by anyone."""
+def fatal_findings(sid: str, record: dict) -> list[str]:
+    """Reasons this row cannot be scored by anyone.
+
+    PUBLIC because `run_evals.py` consumes it. The two modules used to disagree
+    about the same file: this one called S-002 FATAL and unscorable, and the eval
+    harness scored it anyway and reported `D5 NEVER passed [S-002]`, which reads
+    as an accusation against the AGENT when the truth is that the row records the
+    firewall's deflection and cannot be scored by anyone. A harness that grades a
+    row this function rejects is measuring the corpus and reporting it as product
+    quality.
+    """
     findings = []
     text = (record.get("response_text") or "").strip()
     calls = record.get("tool_calls_log") or []
@@ -107,8 +116,14 @@ def _looks_like_retrieve(call: dict) -> bool:
     return not name and "query" in (call.get("input") or {})
 
 
-def _blind_findings(sid: str, record: dict) -> list[str]:
-    """Reasons a judge dimension has no evidence, however good the answer is."""
+def blind_findings(sid: str, record: dict) -> list[str]:
+    """Reasons a judge dimension has no evidence, however good the answer is.
+
+    PUBLIC for the same reason as `fatal_findings`. Every finding here is about
+    `grounding_fidelity` specifically: with no chunk in the tool_calls log its
+    rubric's PASS branch is unreachable, so a FAIL is decided by the capture
+    format rather than by the answer.
+    """
     findings = []
     for call in record.get("tool_calls_log") or []:
         if not _looks_like_retrieve(call):
@@ -161,9 +176,9 @@ def validate(responses_dir: pathlib.Path | None = None) -> dict:
             # The prefix appears only above k=1, so a single-run corpus reads
             # exactly as it did before runs existed.
             where = f"run {index}: " if len(runs) > 1 else ""
-            for reason in _fatal_findings(sid, run):
+            for reason in fatal_findings(sid, run):
                 fatal.setdefault(sid, []).append(where + reason)
-            for reason in _blind_findings(sid, run):
+            for reason in blind_findings(sid, run):
                 blind.setdefault(sid, []).append(where + reason)
 
     return {

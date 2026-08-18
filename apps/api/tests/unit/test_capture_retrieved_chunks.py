@@ -55,9 +55,9 @@ def test_the_corpus_validator_agrees_with_this_shape():
     good = shape_tool_call("retrieve", {"query": "q"}, [CHUNK])
     blind = shape_tool_call("retrieve", {"query": "q"}, None)
     record = {"response_text": "x" * 200, "tool_calls_log": [good]}
-    assert vc._blind_findings("S-101", record) == []
+    assert vc.blind_findings("S-101", record) == []
     record = {"response_text": "x" * 200, "tool_calls_log": [blind]}
-    assert vc._blind_findings("S-101", record), (
+    assert vc.blind_findings("S-101", record), (
         "an absent chunk must be reported, or the corpus passes validation and "
         "fails grounding silently"
     )
