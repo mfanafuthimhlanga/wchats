@@ -114,13 +114,37 @@ were green on the first sweep and both were real gaps rather than harness mistak
 | a one-sided bootstrap returns a number from the surviving resamples | `test_a_nearly_one_sided_corpus_is_also_refused` |
 | a partial second pass is computed over the rows that were finished | `test_a_partial_second_pass_is_refused_rather_than_used` |
 | a MEASURED failure is reported as "not calibrated yet" | `test_a_judge_below_a_perfect_labeller_beats_chance_and_still_fails` |
-| the ceiling is measured over rows the judge never scored | `test_the_same_judge_passes_against_a_labeller_who_is_not_perfect` |
+| the ceiling is measured over rows the judge never scored | NOTHING. See the correction below |
 | the emitter overwrites an existing second-pass sheet | `test_it_refuses_to_overwrite_an_existing_sheet` |
 | the emitter runs while the first pass is unfinished | `test_it_refuses_while_the_first_pass_is_unfinished` |
 | the emitter pre-fills the verdict it is asking for | `test_it_writes_every_row_with_an_empty_verdict` |
 | the emitted sheet keeps the first sheet's order | `test_the_rows_come_back_in_a_different_order` |
 | readiness stops naming the missing ceiling | `test_readiness_names_the_missing_ceiling` |
 | an unlabelled first sheet hides the missing ceiling | `test_an_unlabelled_sheet_names_BOTH_missing_owner_inputs` |
+
+### CORRECTION 2026-08-19: this table overstated, and one row of it is false
+
+Four independent adversarial reviews ran on 2026-08-19. One of them re-derived every mutation here
+and found that **"the ceiling is measured over rows the judge never scored" is GREEN**, across both
+whole test files, when implemented the natural way:
+
+```
+ceiling_pairs_for(judged_rows, second)
+  ->  ceiling_pairs_for([(r["scenario_id"], r["dimension"], r["human_passed"])
+                         for r in parsed["rows"]], second)
+  ->  72 passed
+```
+
+The version run here broke something else and went red for a reason unrelated to the property. The
+row set the ceiling is measured over is the property `ceiling_pairs_for`'s own docstring calls "the
+load-bearing one", and nothing pins it.
+
+**The wider correction: 13 of 13 red measured 13 mutations chosen by the author.** An independent
+sweep of 44 found **11 substantive survivors**, including the entire `_print_gate` reporting surface
+(delete it and 59 tests pass), the 95% in the interval, and both new `readiness` fields. The count
+in this trace is not wrong about what it ran. It is wrong about what it implies.
+
+Plan for the rework: `.dev/plans/260819-calibration-gate-rework.md`.
 
 ### `MAX_UNDEFINED_FRACTION` was pinned by nothing
 
@@ -152,15 +176,21 @@ tests/unit/test_agreement_statistics.py   15 passed
 whole unit suite, restored tree           2574 passed, 13 skipped, 528.7s
 gates.py static, committed tree           green in 5.2s
 gates.py full, committed tree             2575 passed, 13 skipped, 503.2s; target 612.1s, exit 0
-mutations                                 13 of 13 red
+mutations, author's own 13                13 red -- but see the CORRECTION above
+mutations, independent sweep of 44        11 substantive survivors
 ```
 
-## The one number still chosen, named rather than hidden
+## The one number still chosen, and the claim made about it was false
 
-`MAX_UNDEFINED_FRACTION = 0.2` in `agreement.py`. It is a different kind of number from the 0.6 that
-was deleted, and the difference is the direction it fails in: 0.6 decided whether a judge PASSED, so
-choosing it wrong let a judge through. This one decides whether a measurement EXISTS, and choosing it
-wrong makes the harness refuse a corpus it could have read. Nothing passes because of it.
+`MAX_UNDEFINED_FRACTION = 0.2` in `agreement.py`. This section said "Nothing passes because of it."
+**That is false and was measured false on 2026-08-19**: raising it from 0.2 to 0.4 turns a refusal
+into `CALIBRATED`, because `usable=False` forces `calibrated=False`, so the constant gates passes
+through the back door. It is also not the quantity it appears to be: `undefined_fraction` is
+approximately `e^-m` where `m` is the count of minority-label rows, so 0.2 means "at least 2 minority
+rows" at every n.
+
+It was also not the only chosen number. `CONFIDENCE = 0.95` is a second, and half (b) contained a
+third that nobody chose deliberately: see the plan.
 
 ## Still open
 
