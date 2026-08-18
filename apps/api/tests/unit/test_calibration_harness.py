@@ -613,3 +613,80 @@ class TestReadiness:
         calibration_tree([(sid, dim, "") for sid, dim, _ in _FOUR_ROWS])
 
         assert cc.main(["--check"]) == cc.EXIT_NOT_CALIBRATED_YET
+
+
+# ---------------------------------------------------------------------------
+# BACKLOG 8.1 — calibration reads run 0, because run 0 is the row the human scored
+# ---------------------------------------------------------------------------
+
+
+class TestCalibrationReadsRunZero:
+    """A record holds k runs now, and only one of them carries a human label.
+
+    The owner scores one row per (scenario, dimension). Scoring every run would
+    multiply the only human step in the system by k, so the sequence is: capture
+    once at k > 1, the human labels run 0, the judge is calibrated against those
+    labels here, and the calibrated judge scores the rest for reliable@k.
+
+    Reading any other run makes the correlation a comparison between a judge and
+    a human who never saw that text.
+    """
+
+    def _multi_run(self, tmp_path, sid, texts):
+        (tmp_path / "responses" / f"{sid}.json").write_text(
+            json.dumps({
+                "scenario_id": sid,
+                "runs": [{"response_text": t, "tool_calls_log": []} for t in texts],
+            }),
+            encoding="utf-8",
+        )
+
+    def test_the_judge_is_shown_run_zero_not_the_last_run(self, calibration_tree, tmp_path):
+        calibration_tree(_FOUR_ROWS)
+        self._multi_run(tmp_path, "S-101", ["a for S-101", "SECOND RUN", "THIRD RUN"])
+
+        seen: list[str] = []
+
+        def _recording_judge(dimension, transcript, tool_calls_log):
+            seen.append(transcript)
+            return {"dimension": dimension, "verdict": "PASS", "score": 3, "reason": "r"}
+
+        cc.compute_correlation(_recording_judge)
+
+        joined = "\n".join(seen)
+        assert "a for S-101" in joined, "run 0 is the row the human labelled"
+        assert "SECOND RUN" not in joined and "THIRD RUN" not in joined, (
+            "a later run would be correlated against a human score for text nobody saw"
+        )
+
+    def test_a_deflection_in_a_later_run_does_not_block_the_labelled_row(
+        self, calibration_tree, tmp_path
+    ):
+        """Run 0 is scorable, so calibration proceeds.
+
+        A deflection in run 2 is a real finding and validate_corpus.py reports
+        it. It is not a reason to withhold the row the human can actually score.
+        """
+        from app.utils.pii_firewall import PII_DEFLECTION
+
+        calibration_tree(_FOUR_ROWS)
+        self._multi_run(tmp_path, "S-101", ["a for S-101", PII_DEFLECTION])
+
+        assert cc.readiness()["deflected_responses"] == []
+
+    def test_a_deflected_run_zero_is_still_caught(self, calibration_tree, tmp_path):
+        from app.utils.pii_firewall import PII_DEFLECTION
+
+        calibration_tree(_FOUR_ROWS)
+        self._multi_run(tmp_path, "S-101", [PII_DEFLECTION, "a for S-101"])
+
+        assert cc.readiness()["deflected_responses"] == ["S-101"]
+
+    def test_a_pre_8_1_record_still_calibrates(self, calibration_tree):
+        """The files on disk today are single-run and must keep working."""
+        calibration_tree(_FOUR_ROWS)
+        result = cc.compute_correlation(
+            _judge_returning({"S-101": 1, "S-102": 2, "S-103": 4, "S-104": 5})
+        )
+        assert result["status"] == cc.STATUS_CALIBRATED
+        assert result["pairs"] == 4

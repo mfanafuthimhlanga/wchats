@@ -264,13 +264,29 @@ def load_scenario(scenario_id: str) -> dict:
 
 
 def load_response(scenario_id: str) -> dict:
+    """Run 0 of this scenario, and only run 0.
+
+    BACKLOG 8.1. A record now holds k runs. `human_scores.csv` is one row per
+    (scenario, dimension) with no concept of a run, so scoring every run would
+    multiply the only human step in the system by k. The sequence that avoids
+    it: capture once at k > 1, the human scores run 0, the judge is calibrated
+    against those labels here, and the CALIBRATED judge then scores runs 1..k-1
+    for reliable@k. Reversing that order buys nothing and costs k times the
+    labelling.
+
+    Run 0 rather than the last run, because the last run moves under a top-up: a
+    scenario re-captured from 3 to 5 would change the row the human already
+    scored, and the correlation would then be against text nobody labelled.
+    """
+    from tests.evals import corpus  # noqa: PLC0415
+
     path = RESPONSES_DIR / f"{scenario_id}.json"
     if not path.exists():
         raise FileNotFoundError(
             f"No recorded response for {scenario_id}. "
             "Run capture_responses.py first."
         )
-    return json.loads(path.read_text(encoding="utf-8"))
+    return corpus.load_run(path, corpus.RUN_ZERO)
 
 
 def deflected_response_ids(scenario_ids: list[str]) -> list[str]:
@@ -290,6 +306,7 @@ def deflected_response_ids(scenario_ids: list[str]) -> list[str]:
     then report a clean corpus by failing to recognise the deflection.
     """
     from app.utils.pii_firewall import PII_DEFLECTION  # noqa: PLC0415
+    from tests.evals import corpus  # noqa: PLC0415
 
     # Deduped: `scenario_ids` is one entry per ROW, and a scenario scored on two
     # dimensions appears twice. `scorable_rows` counts rows and wants the
@@ -300,8 +317,11 @@ def deflected_response_ids(scenario_ids: list[str]) -> list[str]:
         if not path.exists():
             continue
         try:
-            recorded = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+            # Run 0, because run 0 is the row the human scores. A deflection in
+            # a later run is a real finding, and it is validate_corpus.py's:
+            # here the only question is whether THIS row can be labelled.
+            recorded = corpus.load_run(path, corpus.RUN_ZERO)
+        except (json.JSONDecodeError, corpus.CorpusShapeError):
             continue
         if (recorded.get("response_text") or "").strip() == PII_DEFLECTION:
             deflected.append(sid)
