@@ -263,3 +263,34 @@ class TestErrorsNameTheFile:
         path.write_text("{not json", encoding="utf-8")
         with pytest.raises(corpus.CorpusShapeError, match="S-102.json"):
             corpus.load_runs(path)
+
+
+class TestTheRunIndexIsNotWrapped:
+    """`load_run(path, -1)` must raise, and this is the file that owns the guard.
+
+    The guard existed and was exercised only from `test_eval_run_rates.py`, so a
+    mutation deleting its negative half stayed green across the two modules that
+    describe `corpus.load_run`. A guard tested only from a neighbour is a guard
+    that disappears the day the neighbour is refactored.
+
+    -1 is the run that MOVES under a top-up: a scenario re-captured from 3 to 5
+    changes it, so a caller that meant run 0 and silently got the last one would
+    correlate a judge against text the human never labelled, and nothing would
+    raise.
+    """
+
+    def _record(self, tmp_path: pathlib.Path) -> pathlib.Path:
+        return _write(tmp_path, "S-101.json", corpus.build_record("S-101", [
+            {"response_text": "the row the human scored"},
+            {"response_text": "a later run"},
+        ]))
+
+    @pytest.mark.parametrize("index", [-1, -2, -99])
+    def test_a_negative_index_raises_rather_than_wrapping(self, tmp_path, index):
+        with pytest.raises(corpus.CorpusShapeError, match="run .* was asked for"):
+            corpus.load_run(self._record(tmp_path), index)
+
+    def test_the_last_run_is_not_reachable_by_accident(self, tmp_path):
+        path = self._record(tmp_path)
+        assert corpus.load_run(path, 0)["response_text"] == "the row the human scored"
+        assert corpus.load_run(path, 1)["response_text"] == "a later run"
