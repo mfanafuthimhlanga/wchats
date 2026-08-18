@@ -26,13 +26,17 @@ scratchpad builder if the corpus is ever re-captured). The scale is the judge's:
 judge scored against model-written labels measures its agreement with itself. **The scores are
 per-provider** — they calibrate DeepSeek.
 
-**S-002 and S-003 are unscorable until `7.29` is fixed.** Both returned the PII firewall's
-deflection instead of an answer, and scoring a deflection measures the firewall rather than
-grounding. That leaves eight scorable rows, comfortably over the minimum, but **`grounding_fidelity`
-then rests on S-001 alone** — so re-capture those two after `7.29` and score them to give that
-dimension real weight.
+**S-002 and S-003 are still unscorable, and `--check` now says so itself** rather than leaving it in
+this file: it prints `PII-deflected, unscorable : S-002, S-003 (8 scorable row(s) remain)`. Both
+hold the PII firewall's deflection, and scoring a deflection measures the firewall rather than
+grounding. Eight rows is comfortably over the minimum, but **`grounding_fidelity` rests on S-001
+alone** until those two are re-captured.
 
-**Then `7.29` itself, then M4.** M4 also carries M3's unmet exit criterion (below).
+**`7.29`'s code has landed** (`952fac0`), so a re-capture would now return real answers. It is
+blocked on two things this machine does not have, `7.32` and the plaintext tenant API key, both in
+the owner table below. **Scoring the eight does not wait for either.**
+
+**Then M4.** M4 also carries M3's unmet exit criterion (below).
 
 ## Where things stand
 
@@ -41,7 +45,7 @@ dimension real weight.
 | **M0** merge | **Done.** `main` fast-forwarded 116 commits, battery quoted green |
 | **M1** measurement | **One human step from done.** `7.7` DeepSeek seam, `7.8` Martin battery, E2E-3b verdict, `7.18`/`7.20` Ragas, E2E-6 corpus all landed. Only the Spearman gate remains |
 | **M2** first earned ship | Not started. Needs a real eval run and a 7/7 red-team run |
-| **`7.29`** the firewall | **New, and it outranks M2.** The PII firewall deletes correct answers that quote the tenant's own published contact address. Proven against the live corpus, blocks part of M1's calibration and would hit Mellow on day one (M6) |
+| **`7.29`** the firewall | **Code landed 2026-08-18**, five mutation proofs red, trace `260818-pii-firewall-published-contacts.md`. The deflected corpus files are still on disk, so only the re-capture is open. Four responses were affected, not three, and one was an edge scenario |
 | **M3** widget + endpoint | **Done** (`7.1`-`7.6`, `7.23`), trace `260818-m3-widget-endpoint.md`. **Exit criterion deliberately unmet**: PROD-11 needs a public API base, so it moves to M4 |
 | **M4** cloud | Not started. Absorbs PROD-11, the BYO-client proof and the endpoint doc page |
 | **M4.5** unit economics | Scheduled gate before any UI polish (owner, 2026-08-17) |
@@ -55,6 +59,8 @@ merges; Claude never does (the `PreToolUse` hook enforces it).
 | Item | What it needs |
 |---|---|
 | `0.1 · score-judge-calibration` | **The one thing standing between here and M1 closing.** Three rows minimum in `human_scores.csv` |
+| `7.32 · control-db-credential-stale` | **NEW, and it outranks the rest of this table: no live run can start.** The `.env` control DB credential is rejected by Neon as of 2026-08-18, having worked earlier the same day. Refresh it from the Neon console. Everything below that needs live services is blocked behind it |
+| `7.29` re-capture | `AGENT_ID` and the **plaintext** tenant `API_KEY`, on top of `7.32`. Only the key's hash is stored, so it cannot be recovered here. With both, delete `tests/evals/responses/S-002.json`, `S-003.json`, `S-005.json` and `S-010.json` and run the capture WITHOUT `--overwrite`: it skips files that already exist, so exactly those four re-run, four agent turns of cost |
 | `0.4 · eval-pii-egress` | Decide BEFORE M4 deploys a beat worker: PII firewall on the eval path, or accepted egress named as such. `eval-nightly` fires the first night beat exists |
 | `0.3 · actions-billing-cap` | CI reports nothing until this lifts (M4) |
 | `1.20 · clerk-dev-keys` | A production Clerk instance and its three keys (M4). Also the prime suspect for `1.19` |
@@ -65,21 +71,35 @@ merges; Claude never does (the `PreToolUse` hook enforces it).
 
 ## Gates
 
-Declared in `.dev/gates.json`. **`fast` is a smoke gate, not the definition of done** — the harness
-clamps `timeoutSec` to 170s and cold collection has been measured at 157.9s and 177.8s (`7.19`), so
-the real battery runs detached.
+Declared in `.dev/gates.json`, and **the split changed on 2026-08-18**: it is now by cost of import,
+because that is where the harness's 170s clamp actually bites.
+
+| Target | Steps | Measured |
+|---|---|---|
+| `static` | ruff, import contracts, lizard | 8.4s cold, 3.2s warm. **What the Stop hook runs.** Nothing in it imports app code, so its headroom cannot erode by adding a dependency |
+| `fast` | static + whole-suite collection | 142.5s and growing with the dependency tree, not with the suite |
+| `full` | fast + the unit suite | **693.4s green on 2026-08-18**: suite 547.4s, 2364 passed, 13 skipped, exit 0 |
+
+The old hook gate was whole-suite `--collect-only`. `gates.json` had warned in its own comment that
+a heavy dependency would push it past the clamp and that being killed there reports nothing at all.
+It did, and it was.
 
 ```
-apps/api    .venv\Scripts\python.exe scripts\gates.py full     # ruff (count-pinned) + import-linter
-                                                               # + lizard floors + unit suite
+apps/api    .venv\Scripts\python.exe scripts\gates.py full   # run DETACHED, never from the hook
 apps/admin  npx tsc --noEmit      # ZERO errors; the old known exception was fixed (7.9)
             npm run check:no-dusk-tokens · check:ops-room-wiring (13/13) · test:unit (45)
 apps/widget npm run build         # postbuild: check-size + check-theming-contract + sync-embed
             npm run test:unit     # vitest, new in M3
 ```
 
-Last observed, 2026-08-18: `fast` 62.6s exit 0 · widget 9471 of 20480 gzip bytes · admin all green.
-Backend full battery 2026-08-16: `519.0s, 2284 passed, 13 skipped`.
+Last observed 2026-08-18: widget 9471 of 20480 gzip bytes · admin all green.
+
+**The backend battery was RED for two days and nothing noticed**, because the gate that ran at the
+end of every session imported every module and asserted nothing. Three failures, none from the work
+that found them: two from `7.18`'s Ragas rename reaching a patch target in the never-executed
+integration suite (now pinned, `7.33`), one from the E2E-6 capture filling a directory a test
+asserted was empty. **Run `full` before believing the suite is green**; `static` says nothing about
+behaviour and is not meant to.
 
 **Still not green and not diagnosed:** admin Playwright e2e, 7 failed / 128 passed, all 90s
 timeouts (`1.19`, last run 2026-08-12). **The integration suite stays out of every gate** and must:
@@ -120,6 +140,10 @@ present in `.env` — that has cost four debugging cycles, most recently as a pr
 **The live Neon project `mute-dream-53534177` is deliberately still up** (agent `c14d13a1…`) with a
 real 16-chunk corpus. Every live run uses it. **Delete by id only, never by name pattern.**
 
+**But it cannot be reached right now (`7.32`).** The `.env` control DB credential is rejected, and
+the tenant connection string is decrypted from the control DB, so both are out of reach until the
+credential is refreshed. `NEON_API_KEY` sees only the tenant project, not the control one.
+
 **A crash mid-checklist blocks every later checklist for 60 minutes** (`1.31`); `acks_late`
 redelivery cannot rescue it. Reclaim with
 `UPDATE checklist_runs SET status='failed' WHERE status='running'`.
@@ -139,6 +163,9 @@ before money moves.
 
 ## Read these before trusting a number
 
+- **`260818-green-for-the-wrong-reason.md`** — four checks that were green while the thing they
+  guard was broken, found in one session, each with the cheap test that separates them. Read it
+  before trusting any negative test, and before writing a mutation proof.
 - **`260815-the-never-executed-class.md`** — what the Phase A defects had in common, and the three
   greps that would have found them.
 - **`260815-wiring-is-invisible-to-behavioural-tests.md`** — the class that recurs most. Changes how

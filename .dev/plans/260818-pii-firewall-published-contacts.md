@@ -12,7 +12,9 @@ data. It does not exist to stop it repeating the BUSINESS's own published contac
 address came from. Two of the live corpus's sixteen chunks carry addresses, and chunk 14 is the
 "8. Contact and Escalation" section. Any question whose best chunk is that section is therefore
 unanswerable: retrieval works, the agent composes a correct cited answer, and the firewall replaces
-the whole reply with a deflection. Three of twenty E2E-6 responses came back byte-identical.
+the whole reply with a deflection. Four of twenty E2E-6 responses came back byte-identical: S-002,
+S-003, S-005 and S-010. The row recorded three, and S-010 is an edge scenario rather than a golden
+one, so the blast radius was never confined to the golden path.
 
 The same module already made this call once, for phone numbers: OD-4 excluded a phone detector
 because "a tenant's own published support line is content the agent is supposed to hand out". Email
