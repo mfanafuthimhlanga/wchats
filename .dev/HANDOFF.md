@@ -257,7 +257,7 @@ because that is where the harness's 170s clamp actually bites.
 |---|---|---|
 | `static` | ruff, import contracts, lizard | 8.4s cold, 3.2s warm. **What the Stop hook runs.** Nothing in it imports app code, so its headroom cannot erode by adding a dependency |
 | `fast` | static + whole-suite collection | 142.5s and growing with the dependency tree, not with the suite |
-| `full` | fast + the unit suite | **green 2026-08-18 after both adversarial reviews**: **2559 passed, 13 skipped, 522.2s**, whole target 651.9s, exit 0. The only changes after this run were documentation. A KILLED run reports `FAILED at step 5`, indistinguishable from a real failure until you read the log for an `F` |
+| `full` | fast + the unit suite | **green 2026-08-18 on the tree carrying `8.2c`**: **2575 passed, 13 skipped, 503.2s**, whole target 612.1s, exit 0. Run after the commit, not before it. `static` alone was 5.2s. A KILLED run reports `FAILED at step 5`, indistinguishable from a real failure until you read the log for an `F` |
 
 The old hook gate was whole-suite `--collect-only`. `gates.json` had warned in its own comment that
 a heavy dependency would push it past the clamp and that being killed there reports nothing at all.

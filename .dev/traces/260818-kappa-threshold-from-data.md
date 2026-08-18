@@ -150,6 +150,8 @@ tests/unit/test_calibration_harness.py    59 passed
 tests/unit/test_agreement_threshold.py    13 passed
 tests/unit/test_agreement_statistics.py   15 passed
 whole unit suite, restored tree           2574 passed, 13 skipped, 528.7s
+gates.py static, committed tree           green in 5.2s
+gates.py full, committed tree             2575 passed, 13 skipped, 503.2s; target 612.1s, exit 0
 mutations                                 13 of 13 red
 ```
 
