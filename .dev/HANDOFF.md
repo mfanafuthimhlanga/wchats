@@ -19,7 +19,9 @@ the next unblocked code item is `8.2`'s temperature half.**
 | `7.34` chunks in the corpus | landed, migration `0017` verified locally |
 | `7.29` PII firewall | landed, five mutation proofs |
 | **the re-capture** | **NOT owner-blocked. See "7.32 does not block the capture" below.** Needs `8.2` first (temperature, and the human column's scale) |
-| **`8.2a` judge temperature** | **[code], unblocked, plan written**: `.dev/plans/260818-judge-temperature-zero.md` |
+| **`8.2a` judge temperature** | **landed 2026-08-18.** Nine verdict sites at `temperature=0`; three generators deliberately not |
+| **`8.2b` binary label + kappa** | **landed 2026-08-18.** Gate is Cohen's kappa >= 0.6, superseding AI-SPEC §5.2 |
+| **`8.2c` confidence intervals** | **[code], OPEN, and it gates reading any number**: the harness prints point estimates |
 
 `8.2a` goes before the re-capture rather than after it, because a judge sampling at the provider
 default poisons every number downstream of it including the first calibration run. Measured
@@ -124,10 +126,13 @@ k=5 does **not** buy a shipping claim; the strongest honest sentence is "at leas
 k >= 10 is 200 turns. The top-up is the way out: a scenario that comes back flaky at k=5 goes to
 k=25 for 20 more turns instead of re-capturing twenty.
 
-### The human score column is on the wrong scale, and it is still empty
+### The human score column WAS on the wrong scale. Fixed, and still empty
 
-**Decide this before anyone labels anything.** `human_scores.csv` is `human_score` 1-5, and the
-fundamentals guide §8 is explicit: **"Binary, not a scale. Over a hundred traces a human cannot hold
+**Decided and landed 2026-08-18 (owner).** The sheet now carries an empty `human_verdict`
+column, the gate is Cohen's kappa >= 0.6, and `human_score` is optional. **Label BINARY, and write
+why in `notes`.** What follows is why, kept because the reasoning outlives the change.
+
+The fundamentals guide §8 is explicit: **"Binary, not a scale. Over a hundred traces a human cannot hold
 a 1-5 scale steady."** §9's loop is human-labels-binary, then judge, then measure agreement.
 
 Measured 2026-08-18:
@@ -145,8 +150,10 @@ which AI-SPEC §5.2 chose before this practice was read. It costs three things: 
 no chance correction, and **no confusion matrix**, because kappa and a 2x2 are categorical and
 cannot be built from 1-5 vs 1-5 without collapsing to binary first.
 
-**Moving the gate from Spearman to kappa contradicts AI-SPEC §5.2, so it is an owner decision, not
-a code change.** All ten cells are empty, so it is free now and costs a re-label later.
+Moving the gate from Spearman to kappa contradicts AI-SPEC §5.2. **The owner decided it on
+2026-08-18** ("the spec changes because i pushed back on it"), and all ten cells were still empty,
+so it cost nothing. AI-SPEC has NOT been edited; `compute_correlation.py`'s docstring records the
+supersession.
 
 ### The order, and why it is one capture rather than two
 
@@ -234,7 +241,7 @@ because that is where the harness's 170s clamp actually bites.
 |---|---|---|
 | `static` | ruff, import contracts, lizard | 8.4s cold, 3.2s warm. **What the Stop hook runs.** Nothing in it imports app code, so its headroom cannot erode by adding a dependency |
 | `fast` | static + whole-suite collection | 142.5s and growing with the dependency tree, not with the suite |
-| `full` | fast + the unit suite | **green 2026-08-18 on the `8.1` tree**: `static` 3.4s, suite **2464 passed, 13 skipped, 517.82s**, exit 0. The step order means a killed run reports `FAILED at step 5`, which is indistinguishable from a real failure until you read the log for an `F` |
+| `full` | fast + the unit suite | **green 2026-08-18 on the `8.2` tree**: **2495 passed, 13 skipped, 454.6s**, whole target 534.4s, exit 0. A KILLED run reports `FAILED at step 5`, which is indistinguishable from a real failure until you read the log for an `F` |
 
 The old hook gate was whole-suite `--collect-only`. `gates.json` had warned in its own comment that
 a heavy dependency would push it past the clamp and that being killed there reports nothing at all.
