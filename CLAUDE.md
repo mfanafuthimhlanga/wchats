@@ -30,8 +30,10 @@ A merge into `main` must have all gates green, run for real and observed — nev
 # `uv sync --extra dev` alone would UNINSTALL it — pass both extras.
 uv sync --extra dev --extra pipeline                    # restores .venv if it was disk-cleaned
 .venv/Scripts/python.exe scripts/gates.py full          # ruff (count-pinned baseline) + import-linter
-                                                        # + lizard floors + unit suite. fast mode =
-                                                        # ruff + import-linter + collect-only smoke.
+                                                        # + lizard floors + collection + unit suite.
+                                                        # `static` = the three that never import app
+                                                        # code (8.4s, what the Stop hook runs);
+                                                        # `fast` = static + whole-suite collection.
                                                         # mutmut is dead config on native Windows.
 
 # admin    (apps/admin)

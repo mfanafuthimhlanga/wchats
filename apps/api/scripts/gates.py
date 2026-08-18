@@ -1,7 +1,24 @@
 """Structural gates for apps/api. Standard library only, no dependencies.
 
-    python scripts/gates.py fast    ruff + import contracts + test collection
-    python scripts/gates.py full    the above, plus lizard and the unit suite
+    python scripts/gates.py static  ruff + import contracts + lizard, no imports of app
+    python scripts/gates.py fast    the above, plus whole-suite test collection
+    python scripts/gates.py full    the above, plus the unit suite
+
+`static` exists because of a measured ceiling, not a preference. The Stop hook
+clamps its gate to 170s, and above that the harness kills the hook and the gate
+disappears silently, which reads exactly like a gate that was never declared.
+Test collection imports the whole app: docling pulls transformers and torch, and
+it was measured at 142.5s on 2026-08-18 against 78.8s on 2026-08-15, growing with
+the dependency tree rather than with the suite. It crossed the clamp and the hook
+gate was killed mid-run. `static` runs the three steps that never import app code:
+
+    ruff              1.8s   measured 2026-08-18
+    import contracts  1.4s   measured 2026-08-18
+    complexity        lizard parses, it does not import
+    whole target      8.4s cold, 3.2s warm
+
+That is the hook's gate now. Collection and the suite belong to `fast` and `full`,
+which are run deliberately and detached, not at the end of every session.
 
 Every threshold in this file is a number measured against the tree on 2026-08-15,
 not a target. Each one sits exactly on the worst value the repo already contains,
@@ -130,25 +147,36 @@ def run_ruff():
 
 
 def steps(mode):
-    """Ordered (label, callable) pairs for the requested mode."""
-    fast = [
+    """Ordered (label, callable) pairs for the requested mode.
+
+    The split is by COST OF IMPORT, not by conceptual tidiness. Nothing in
+    `static` imports app code, so its runtime is bounded by the size of the
+    source rather than by the dependency tree; everything after it pays the
+    docling/transformers/torch import once. That is the line the 170s hook clamp
+    actually sits on.
+    """
+    static = [
         ("ruff", run_ruff),
         # lint-imports must be the console script. `python -m importlinter.cli`
         # exits 0 without checking anything, which would make this a silent pass.
         ("import contracts", lambda: run([tool("lint-imports")])),
+        ("complexity", lambda: run([PYTHON, "-m", "lizard", "app"] + LIZARD_FLAGS)),
+    ]
+    if mode == "static":
+        return static
+    fast = static + [
         ("test collection", lambda: run([PYTHON, "-m", "pytest", "tests/unit", "-q", "--collect-only"])),
     ]
     if mode == "fast":
         return fast
     return fast + [
-        ("complexity", lambda: run([PYTHON, "-m", "lizard", "app"] + LIZARD_FLAGS)),
         ("unit tests", lambda: run([PYTHON, "-m", "pytest", "tests/unit", "-q"])),
     ]
 
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
-    if mode not in ("fast", "full"):
+    if mode not in ("static", "fast", "full"):
         print(__doc__)
         return 2
 
