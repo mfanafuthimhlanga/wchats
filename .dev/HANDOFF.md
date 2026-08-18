@@ -18,7 +18,7 @@ the next unblocked code item is `8.2`'s temperature half.**
 | `8.1` k > 1 record shape and pass@k | **landed 2026-08-18**, five mutation proofs, `260818-pass-at-k-corpus-shape.md` |
 | `7.34` chunks in the corpus | landed, migration `0017` verified locally |
 | `7.29` PII firewall | landed, five mutation proofs |
-| **the re-capture** | **[owner]** `7.32` credential, plus the plaintext tenant `API_KEY` |
+| **the re-capture** | **NOT owner-blocked. See "7.32 does not block the capture" below.** Needs `8.2` first (temperature, and the human column's scale) |
 | **`8.2a` judge temperature** | **[code], unblocked, plan written**: `.dev/plans/260818-judge-temperature-zero.md` |
 
 `8.2a` goes before the re-capture rather than after it, because a judge sampling at the provider
@@ -89,6 +89,65 @@ sites read through it; `tests/evals/rates.py` computes the two metrics.
 output rather than implying otherwise: `runs per scenario: k=1 across all 20`, and a standing
 warning under the summary table. Only the re-capture changes that.
 
+### `7.32` does not block the capture, and `0017` is applied to the live tenant
+
+**Measured 2026-08-18 with `apps/api/scripts/probe_environment.py`. Run that script; do not quote
+this table.**
+
+| Check | Result |
+|---|---|
+| Control DB password in `.env` | present in both files, and genuinely rejected: `password authentication failed for user 'neondb_owner'` |
+| `NEON_API_KEY` scope | valid, sees **one** project: `mute-dream-53534177` (us-east-1). The control DB is `ep-falling-glade-ac3zhiqu` in **sa-east-1**, invisible to this key, so it cannot read or reset that password |
+| **Local `wchats_control`** | **UP, alembic 0019 (head), 19 tables** |
+| **Live tenant connection URI** | **retrievable** via `GET /projects/{id}/connection_uri`, pooled or direct |
+| Live tenant corpus | 16 chunks, 2 documents, 54 conversations, 76 messages |
+| **Live tenant migration** | **0016 to 0017 APPLIED and verified 2026-08-18.** `retrieved_chunks` is `jsonb`, nullable, no DEFAULT; 44 existing `tool_calls` rows untouched. Reproduce with `scripts/migrate_tenant.py mute-dream-53534177 --check` |
+| `.env` Redis host (Upstash) | **does not resolve**: `gaierror getaddrinfo failed`. Local Redis answers `+PONG` |
+| `ANTHROPIC_API_KEY` | in `.env`, **NOT exported** into `os.environ` (`1.28`) |
+
+**The capture never needed the Neon control DB.** It needs *a* control DB to decrypt the tenant
+connection string, and there is one on localhost at head. The plaintext tenant `API_KEY` stops
+mattering once a local control row is seeded, because then whoever seeds it chooses the plaintext.
+
+**This file said "BLOCKING, nothing can run until it is refreshed" for a whole session and that was
+never tested.** Same class as `7.36`, one row over. `probe_environment.py` exists so the next
+session runs the check instead of inheriting the sentence.
+
+### `k=5`, and the arithmetic is written down
+
+`.dev/reference/260818-how-much-k-and-why.md`. The fundamentals guide names no k: it gives one floor
+(k > 1) and one warning that five trials is still unstable. Applying its own "quote an interval" rule
+settles it: **k=5 is the smallest k where "never passes" `[0.00, 0.43]` and "always passes"
+`[0.57, 1.00]` do not overlap at 95%.** At k=3 they overlap. k=5 is 100 live agent turns.
+
+k=5 does **not** buy a shipping claim; the strongest honest sentence is "at least 57% reliable", and
+k >= 10 is 200 turns. The top-up is the way out: a scenario that comes back flaky at k=5 goes to
+k=25 for 20 more turns instead of re-capturing twenty.
+
+### The human score column is on the wrong scale, and it is still empty
+
+**Decide this before anyone labels anything.** `human_scores.csv` is `human_score` 1-5, and the
+fundamentals guide §8 is explicit: **"Binary, not a scale. Over a hundred traces a human cannot hold
+a 1-5 scale steady."** §9's loop is human-labels-binary, then judge, then measure agreement.
+
+Measured 2026-08-18:
+
+```
+human_scores.csv    scenario_id,dimension,human_score,notes    10 rows, ALL EMPTY
+judge()             returns BOTH "verdict" (PASS/FAIL) and "score" (1-5)
+run_evals.py        gates on verdict        <- already binary
+compute_correlation correlates on score     <- the only 1-5 consumer
+kappa / matthews    absent from the repo for judge calibration
+```
+
+So the binary signal already exists on the judge side. The 1-5 scale exists only to feed Spearman,
+which AI-SPEC §5.2 chose before this practice was read. It costs three things: noisier labels,
+no chance correction, and **no confusion matrix**, because kappa and a 2x2 are categorical and
+cannot be built from 1-5 vs 1-5 without collapsing to binary first.
+
+**Moving the gate from Spearman to kappa contradicts AI-SPEC §5.2, so it is an owner decision, not
+a code change.** All ten cells are empty, so it is free now and costs a re-label later.
+
 ### The order, and why it is one capture rather than two
 
 `human_scores.csv` is one row per (scenario, dimension) with no concept of a run. Scoring all k
@@ -118,9 +177,9 @@ while the services are still up rather than a day later at scoring time.
 | Before running | State |
 |---|---|
 | `8.1` k > 1 and the record shape | **landed 2026-08-18.** Pass `--runs 5`; a scenario short of 5 is topped up, not skipped |
-| `7.32` control DB credential | **BLOCKING.** Rejected by Neon. Nothing can run until it is refreshed |
-| plaintext tenant `API_KEY` and `AGENT_ID` | **BLOCKING.** Only the key's hash is stored |
-| `7.34` chunk source | decided, landed, and `0017` is verified locally. **The LIVE tenant DB still needs it applied**, or the capture fails on the INSERT |
+| `7.32` control DB credential | **not blocking.** Seed the LOCAL `wchats_control` (alembic 0019) with a tenant and agent row whose `neon_connection_string` is the Fernet-encrypted live tenant URI |
+| plaintext tenant `API_KEY` and `AGENT_ID` | **not blocking.** Both are absent from `.env`, but seeding the local control row means choosing the plaintext |
+| `7.34` chunk source | decided, landed, and **`0017` is APPLIED to the live tenant and verified** (2026-08-18) |
 | `7.29` firewall | closed in code |
 | `tool_name: ""` | closed in the capture script |
 | `CAPTURE_TIMEOUT` | closed: default is 300, was 30 against a measured 101s turn |
@@ -156,7 +215,7 @@ merges; Claude never does (the `PreToolUse` hook enforces it).
 | Item | What it needs |
 |---|---|
 | `0.1 · score-judge-calibration` | **The one thing standing between here and M1 closing.** Three rows minimum in `human_scores.csv` |
-| `7.32 · control-db-credential-stale` | **NEW, and it outranks the rest of this table: no live run can start.** The `.env` control DB credential is rejected by Neon as of 2026-08-18, having worked earlier the same day. Refresh it from the Neon console. Everything below that needs live services is blocked behind it |
+| `7.32 · control-db-credential-stale` | **RE-SCOPED 2026-08-18: it does NOT block the capture.** The credential really is rejected, and `NEON_API_KEY` cannot reach that project to fix it, so refreshing it from the Neon console is still yours. But the local control DB is at head and the tenant URI is retrievable, so nothing waits on this. It blocks only work that must read PRODUCTION control state |
 | `7.29` re-capture | `AGENT_ID` and the **plaintext** tenant `API_KEY`, on top of `7.32`. Only the key's hash is stored, so it cannot be recovered here. With both, delete `tests/evals/responses/S-002.json`, `S-003.json`, `S-005.json` and `S-010.json` and run the capture WITHOUT `--overwrite`: it skips files that already exist, so exactly those four re-run, four agent turns of cost |
 | `0.4 · eval-pii-egress` | Decide BEFORE M4 deploys a beat worker: PII firewall on the eval path, or accepted egress named as such. `eval-nightly` fires the first night beat exists |
 | `0.3 · actions-billing-cap` | CI reports nothing until this lifts (M4) |
