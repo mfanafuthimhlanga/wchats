@@ -1749,8 +1749,8 @@ def run_agent_turn(
             # persisted text (_persist_messages), the cited text (_extract_citations)
             # and the judged text (the validator chord) can never diverge — a single
             # substitution covers all four. The firewall call below takes no flag and
-            # reads no config, so nothing in the response text, the agent soul, or an
-            # ingested document can disable it. Citations are extracted from the deflection
+            # reads no config, so nothing in the response text and nothing in the agent
+            # soul can disable it. Citations are extracted from the deflection
             # when a flag fires, which correctly yields an empty citation list — a
             # deflection cites nothing.
             #

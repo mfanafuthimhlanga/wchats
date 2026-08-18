@@ -217,6 +217,55 @@ def test_the_query_is_not_published_material() -> None:
     assert _served(answer, log) == (PII_DEFLECTION, "email")
 
 
+# ---------------------------------------------------------------------------
+# Two guards pinned directly, because the production capture cannot produce the
+# shape they defend against.
+#
+# The mutation proof said so: deleting the unparsed skip and deleting the
+# tool_name check both left the two end-to-end tests above GREEN.
+# `_attach_retrieve_capture` writes chunks ONLY onto a `retrieve` entry, and it
+# writes `[]` for a payload it could not decode, so neither guard can fire on
+# anything that function produces today. A guard that cannot fail is
+# indistinguishable from a tautology, so the shape is built here by hand.
+#
+# These fixtures deliberately do NOT describe what a turn emits. They pin what
+# must remain true if the capture ever changes: an entry that is not a retrieve,
+# and an entry whose payload could not be read, publish nothing whatever else
+# they carry.
+# ---------------------------------------------------------------------------
+
+
+def test_chunks_attached_to_another_tool_publish_nothing() -> None:
+    log = [
+        {
+            "tool_name": "lookup_structured",
+            "input": {"table": "customers"},
+            "result": "<rows>",
+            agent_module.RETRIEVE_RESULT_IS_ERROR_KEY: False,
+            agent_module.RETRIEVE_CHUNKS_SOURCE_KEY: agent_module.RETRIEVE_CHUNKS_PARSED,
+            agent_module.RETRIEVE_CHUNKS_KEY: [f"customer_email: {CUSTOMER_ADDRESS}"],
+        }
+    ]
+    assert agent_module._published_context(log) == []
+    answer = f"Their address on file is {CUSTOMER_ADDRESS}."
+    assert _served(answer, log) == (PII_DEFLECTION, "email")
+
+
+def test_chunks_from_an_unparsed_capture_publish_nothing() -> None:
+    log = [
+        {
+            "tool_name": "retrieve",
+            "input": {"query": "contact"},
+            "result": "<undecodable>",
+            agent_module.RETRIEVE_RESULT_IS_ERROR_KEY: False,
+            agent_module.RETRIEVE_CHUNKS_SOURCE_KEY: agent_module.RETRIEVE_CHUNKS_UNPARSED,
+            agent_module.RETRIEVE_CHUNKS_KEY: [CONTACT_SECTION],
+        }
+    ]
+    assert agent_module._published_context(log) == []
+    assert _served(GROUNDED_ANSWER, log) == (PII_DEFLECTION, "email")
+
+
 def test_a_corpus_chunk_cannot_switch_the_firewall_off() -> None:
     """T-18-SEC-02 through the real capture: context is data, never instructions."""
     log = _capture(

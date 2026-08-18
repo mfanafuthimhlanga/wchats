@@ -16,9 +16,20 @@ Why synchronous, not a post-hoc judge:
   already out the door. A PII leak cannot wait for a post-hoc judge; it has
   to be caught in the response path itself, which is why ``scan_response``
   is called unconditionally, synchronously, in-line, with no flag and no
-  config read that could switch it off. Nothing in the response text, the
-  agent soul, or an ingested document can reach this function's behaviour —
-  it takes exactly one positional argument (the text) and nothing else.
+  config read that could switch it off. Nothing in the response text and
+  nothing in the agent soul can reach this function's behaviour, and it takes
+  exactly one POSITIONAL argument (the text).
+
+  ONE THING CHANGED HERE ON 2026-08-18 (BACKLOG 7.29), and this paragraph used
+  to deny it: ingested content can now reach the behaviour, in exactly one
+  bounded way. ``published_context`` carries the chunks retrieved for the turn,
+  and an email address found verbatim in them is not treated as a leak. That
+  is the whole of the reach. It cannot disable the module, it cannot suppress
+  a card number or an ID number, and it is read for a set-membership test
+  rather than parsed, so a chunk that issues instructions is inert. What it
+  accepts is the one thing the tenant published for customers to use, and what
+  it costs is that a third party's address arriving inside an ingested
+  document is repeatable (BACKLOG 7.30, accepted, control belongs at ingest).
 
 Detectors (OD-4 — three structurally-validated shapes, regex only):
   - email    — ``local@domain.tld`` with a 2+ character TLD.
@@ -143,7 +154,7 @@ def detect_pii(
     exfiltration: it is the business handing out its own contact details, which
     is the agent's job. This is the same call OD-4 already made for phone numbers
     in this module's docstring, applied to the detector that has the identical
-    property. Three of twenty E2E-6 responses were deflections without it,
+    property. Four of twenty E2E-6 responses were deflections without it,
     including "How can I contact your customer support team?".
 
     The exemption is EMAIL ONLY, and the ordering below is why: an exempted
