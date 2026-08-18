@@ -181,6 +181,100 @@ def _call_chat_and_drain_sse(
 
 
 # ---------------------------------------------------------------------------
+# Retrieved chunks (BACKLOG 7.34)
+#
+# The SSE stream cannot carry these. `agent.tool_result` emits `summary[:200]`,
+# a repr, and that stream is the CUSTOMER's, so widening it would ship corpus
+# content to a browser. The chunks are written to `tool_calls.retrieved_chunks`
+# by the worker instead, and read back here.
+#
+# Without them `grounding_fidelity` cannot return PASS: its rubric asks whether
+# a claim is traceable to a chunk "provided in the tool_calls log", so an absent
+# chunk makes FAIL the only reachable verdict, whatever the answer said.
+# ---------------------------------------------------------------------------
+
+#: Read from the control DB, decrypted per agent. Unset means the merge is
+#: skipped and the corpus is captured BLIND, which validate_corpus.py then says.
+CONTROL_DB_SYNC_URL = os.getenv("CONTROL_DB_SYNC_URL", "")
+
+_LAST_TURN_TOOL_CALLS = """
+    WITH last_turn AS (
+        SELECT id FROM messages
+        WHERE conversation_id = %s AND role = 'assistant'
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+    )
+    SELECT tc.tool_name, tc.arguments, tc.retrieved_chunks
+    FROM tool_calls tc
+    JOIN last_turn lt ON tc.message_id = lt.id
+    ORDER BY tc.created_at, tc.id
+"""
+
+
+def shape_tool_call(tool_name, arguments, retrieved_chunks) -> dict:
+    """One tool_calls row as the corpus records it.
+
+    Separate from the query so the NULL-versus-empty rule is testable on a
+    machine with no PostgreSQL, which is every machine this project runs on.
+
+    NULL becomes an ABSENT result, which validate_corpus.py reports BLIND: the
+    call retrieves nothing, or its capture could not be decoded, and neither is
+    evidence. `[]` becomes `{"chunks": []}`, which is present and empty: a
+    retrieve ran and the corpus matched nothing. A judge shown the second knows
+    the corpus was searched; a judge shown the first knows nothing at all, and
+    BACKLOG 5.16 is the cost of letting it mistake one for the other.
+    """
+    call = {"tool_name": tool_name or "", "input": arguments or {}, "result": {}}
+    if retrieved_chunks is not None:
+        call["result"] = {"chunks": retrieved_chunks}
+    return call
+
+
+def _tenant_conn_str(agent_id: str) -> str | None:
+    """Decrypt this agent's tenant connection string from the control DB."""
+    import psycopg2
+
+    from app.core.security import fernet_decrypt
+
+    with psycopg2.connect(CONTROL_DB_SYNC_URL, connect_timeout=30) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT neon_connection_string FROM agents WHERE id = %s AND deleted_at IS NULL",
+                (agent_id,),
+            )
+            row = cur.fetchone()
+    if not row or not row[0]:
+        return None
+    return fernet_decrypt(bytes(row[0]))
+
+
+def fetch_tool_calls(agent_id: str, conversation_id: str) -> list[dict] | None:
+    """The last assistant turn's tool calls, from the tenant DB. None if unavailable.
+
+    Rebuilt from the DB rather than merged onto the SSE-derived log, because the
+    DB row is what the worker actually recorded: the tool NAME comes from the
+    same write, so a capture-side naming defect cannot survive here the way
+    `payload.get("tool", "")` did.
+
+    `retrieved_chunks` IS NULL and `= []` mean different things and stay
+    different: NULL becomes an absent `result`, which validate_corpus.py reports
+    BLIND, and `[]` becomes `{"chunks": []}`, a retrieve that ran and matched
+    nothing.
+    """
+    import psycopg2
+
+    conn_str = _tenant_conn_str(agent_id)
+    if not conn_str:
+        return None
+    with psycopg2.connect(conn_str, connect_timeout=60) as conn:
+        with conn.cursor() as cur:
+            cur.execute(_LAST_TURN_TOOL_CALLS, (conversation_id,))
+            rows = cur.fetchall()
+
+    return [shape_tool_call(*row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
 # Widget JWT fetch (widget path requires Bearer token)
 # ---------------------------------------------------------------------------
 
@@ -236,6 +330,11 @@ def capture_all(
     # the cost is one extra config call each, and the config route is the
     # cheapest endpoint in the API.
     print(f"Minting widget JWTs per scenario for agent {agent_id}...")
+    if not CONTROL_DB_SYNC_URL:
+        print(
+            "  WARNING: CONTROL_DB_SYNC_URL is unset, so no retrieved chunks will be "
+            "recorded and grounding_fidelity cannot pass on this corpus (BACKLOG 7.34)."
+        )
 
     outcomes: dict[str, str] = {}
 
@@ -278,10 +377,25 @@ def capture_all(
                 conversation_id = result.get("conversation_id")
                 final_response = result
 
+            # BACKLOG 7.34: the DB copy wins when it is available, because it
+            # is what the worker recorded and it is the only place the retrieved
+            # chunks exist. The SSE-derived log is the fallback, and it carries
+            # no chunks, so a run without a reachable DB is captured BLIND and
+            # validate_corpus.py below says so rather than letting it pass.
+            tool_calls_log = final_response.get("tool_calls_log", [])
+            conv_id = final_response.get("conversation_id")
+            if CONTROL_DB_SYNC_URL and conv_id:
+                try:
+                    from_db = fetch_tool_calls(agent_id, str(conv_id))
+                    if from_db is not None:
+                        tool_calls_log = from_db
+                except Exception as exc:
+                    print(f"    WARN {sid}: retrieved chunks unavailable ({exc})")
+
             record = {
                 "scenario_id": sid,
                 "response_text": final_response.get("response_text", ""),
-                "tool_calls_log": final_response.get("tool_calls_log", []),
+                "tool_calls_log": tool_calls_log,
             }
             out_path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
             print(f"    -> written to {out_path.name}")
