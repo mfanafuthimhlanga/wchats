@@ -5,15 +5,23 @@ Iterates all 20 scenarios, calls the live agent per scenario's turns via
 POST /widget/{agent_id}/chat + SSE drain, and writes:
   apps/api/tests/evals/responses/{scenario_id}.json
 
-Format written:
+Format written (BACKLOG 8.1 - k runs per scenario, position is the run index):
   {
     "scenario_id": "S-001",
-    "response_text": "...",
-    "tool_calls_log": [
-      {"tool_name": "retrieve", "input": {...}, "result": {...}},
+    "runs": [
+      {
+        "response_text": "...",
+        "tool_calls_log": [
+          {"tool_name": "retrieve", "input": {...}, "result": {...}},
+          ...
+        ]
+      },
       ...
     ]
   }
+
+Run 0 is the run the human scores and the judge is calibrated against; the
+calibrated judge then scores the rest. See tests/evals/corpus.py.
 
 Required env vars:
   AGENT_BASE_URL  — e.g. http://localhost:8000  (default)
@@ -21,10 +29,21 @@ Required env vars:
   API_KEY         — plaintext X-API-Key for the agent's tenant
 
 Optional:
-  CAPTURE_TIMEOUT — seconds to wait for agent.response SSE event (default 30)
+  CAPTURE_TIMEOUT — seconds to wait for agent.response SSE event (default 300)
+
+Flags:
+  --runs K     capture K runs per scenario (default 1). A scenario already
+               holding K or more is skipped; one holding fewer is TOPPED UP, so
+               a corpus never ends up at 5 for some scenarios and 1 for others.
+  --overwrite  discard every recorded run and capture K fresh ones.
 
 Usage:
-  AGENT_ID=<uuid> API_KEY=<key> python apps/api/tests/evals/capture_responses.py
+  AGENT_ID=<uuid> API_KEY=<key> python apps/api/tests/evals/capture_responses.py --runs 5
+
+COST. Every run is a live agent turn against a live tenant, so --runs 5 over
+twenty scenarios is 100 turns. k=1 is the default for that reason, and it is
+also the k at which pass@k and reliable@k are the same number and neither is
+evidence of anything.
 
 Security (T-04-07-01): Requires AGENT_E2E_ENABLED=1 — same guard as E2E tests.
 """
@@ -41,7 +60,7 @@ import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
-from tests.evals import validate_corpus  # noqa: E402
+from tests.evals import corpus, validate_corpus  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -301,14 +320,76 @@ def _get_widget_jwt(agent_id: str, api_key: str, base_url: str) -> str:
 # Main capture loop
 # ---------------------------------------------------------------------------
 
+def capture_one_run(
+    scenario: dict,
+    agent_id: str,
+    api_key: str,
+    base_url: str,
+    timeout: int,
+) -> dict:
+    """One independent run of a scenario: a fresh conversation, start to finish.
+
+    BACKLOG 8.1. Each run starts with `conversation_id = None` and mints its own
+    widget JWT. A run that continued the previous run's conversation would be
+    turn k+1 of one long session rather than an independent attempt, and
+    reliable@k over those measures the session rather than the agent. The JWT
+    expires 900s after minting (widget.py:178), and k runs cross that window k
+    times sooner than one did.
+    """
+    jwt = _get_widget_jwt(agent_id, api_key, base_url)
+    conversation_id: str | None = None
+    final_response: dict = {}
+
+    for turn in scenario.get("turns", []):
+        if turn.get("role") != "user":
+            continue
+        final_response = _call_chat_and_drain_sse(
+            agent_id=agent_id,
+            api_key=jwt,
+            message=turn["message"],
+            conversation_id=conversation_id,
+            base_url=base_url,
+            timeout=timeout,
+        )
+        conversation_id = final_response.get("conversation_id")
+
+    # BACKLOG 7.34: the DB copy wins when it is available, because it is what the
+    # worker recorded and it is the only place the retrieved chunks exist. The
+    # SSE-derived log is the fallback, and it carries no chunks, so a run without
+    # a reachable DB is captured BLIND and validate_corpus.py says so rather than
+    # letting it pass.
+    tool_calls_log = final_response.get("tool_calls_log", [])
+    conv_id = final_response.get("conversation_id")
+    if CONTROL_DB_SYNC_URL and conv_id:
+        try:
+            from_db = fetch_tool_calls(agent_id, str(conv_id))
+            if from_db is not None:
+                tool_calls_log = from_db
+        except Exception as exc:
+            print(f"    WARN {scenario['id']}: retrieved chunks unavailable ({exc})")
+
+    return {
+        "response_text": final_response.get("response_text", ""),
+        "tool_calls_log": tool_calls_log,
+    }
+
+
 def capture_all(
     agent_id: str,
     api_key: str,
     base_url: str = AGENT_BASE_URL,
     timeout: int = CAPTURE_TIMEOUT,
     overwrite: bool = False,
+    runs: int = 1,
 ) -> dict[str, str]:
-    """Capture responses for all 20 scenarios.
+    """Capture `runs` independent runs of all 20 scenarios.
+
+    A scenario already holding `runs` or more is skipped; one holding fewer is
+    TOPPED UP to `runs` rather than skipped on its file existing. The shipped
+    behaviour skipped on existence, which under k > 1 means "captured at some k,
+    possibly 1", so a --runs 5 pass over a k=1 tree left a corpus that was 5 for
+    some scenarios and 1 for others, and a rate pooled over that is decided by
+    the previous capture rather than by the agent.
 
     Returns dict mapping scenario_id → outcome ("written" | "skipped" | "error: ...").
     """
@@ -326,10 +407,11 @@ def capture_all(
     # A widget JWT expires 900s after minting (widget.py:178). A 20-scenario
     # capture is live agent turns and runs well past that, so a single shared
     # token 401s partway through: observed 2026-08-17, 11 written then 9
-    # consecutive "401 Unauthorized" from S-012 on. Mint per scenario instead;
-    # the cost is one extra config call each, and the config route is the
-    # cheapest endpoint in the API.
-    print(f"Minting widget JWTs per scenario for agent {agent_id}...")
+    # consecutive "401 Unauthorized" from S-012 on. Mint per RUN instead (BACKLOG
+    # 8.1 moved it down from per scenario, because k runs cross the window k
+    # times sooner); the cost is one extra config call each, and the config route
+    # is the cheapest endpoint in the API.
+    print(f"Minting a widget JWT per run for agent {agent_id}, target k={runs}...")
     if not CONTROL_DB_SYNC_URL:
         print(
             "  WARNING: CONTROL_DB_SYNC_URL is unset, so no retrieved chunks will be "
@@ -343,69 +425,77 @@ def capture_all(
         sid = scenario["id"]
         out_path = RESPONSES_DIR / f"{sid}.json"
 
-        if out_path.exists() and not overwrite:
-            print(f"  SKIP {sid}: response file already exists (use --overwrite to replace)")
-            outcomes[sid] = "skipped"
-            continue
-
-        turns = scenario.get("turns", [])
-        if not turns:
+        if not scenario.get("turns"):
             print(f"  SKIP {sid}: no turns defined")
             outcomes[sid] = "skipped"
             continue
 
-        print(f"  Capturing {sid}: {scenario.get('description', '')[:60]}...")
+        recorded: list[dict] = []
+        if out_path.exists() and not overwrite:
+            try:
+                recorded = corpus.load_runs(out_path)
+            except (json.JSONDecodeError, corpus.CorpusShapeError) as exc:
+                print(f"  ERROR {sid}: recorded file unreadable ({exc}). Delete it, or --overwrite.")
+                outcomes[sid] = f"error: unreadable record: {exc}"
+                continue
 
-        try:
-            jwt = _get_widget_jwt(agent_id, api_key, base_url)
-            conversation_id: str | None = None
-            final_response: dict = {}
+        needed = corpus.runs_to_capture(len(recorded), runs, overwrite)
+        if needed == 0:
+            print(f"  SKIP {sid}: {len(recorded)} run(s) recorded, target is {runs}")
+            outcomes[sid] = "skipped"
+            continue
 
-            # Multi-turn: call sequentially; last turn's response is captured
-            for i, turn in enumerate(turns):
-                if turn.get("role") != "user":
-                    continue
-                message = turn["message"]
-                result = _call_chat_and_drain_sse(
-                    agent_id=agent_id,
-                    api_key=jwt,
-                    message=message,
-                    conversation_id=conversation_id,
-                    base_url=base_url,
-                    timeout=timeout,
-                )
-                conversation_id = result.get("conversation_id")
-                final_response = result
+        print(
+            f"  Capturing {sid}: {len(recorded)} of {runs} run(s) recorded, {needed} to go"
+            f" - {scenario.get('description', '')[:50]}"
+        )
 
-            # BACKLOG 7.34: the DB copy wins when it is available, because it
-            # is what the worker recorded and it is the only place the retrieved
-            # chunks exist. The SSE-derived log is the fallback, and it carries
-            # no chunks, so a run without a reachable DB is captured BLIND and
-            # validate_corpus.py below says so rather than letting it pass.
-            tool_calls_log = final_response.get("tool_calls_log", [])
-            conv_id = final_response.get("conversation_id")
-            if CONTROL_DB_SYNC_URL and conv_id:
-                try:
-                    from_db = fetch_tool_calls(agent_id, str(conv_id))
-                    if from_db is not None:
-                        tool_calls_log = from_db
-                except Exception as exc:
-                    print(f"    WARN {sid}: retrieved chunks unavailable ({exc})")
+        captured = [] if overwrite else list(recorded)
+        failure: str | None = None
+        for attempt in range(needed):
+            try:
+                captured.append(capture_one_run(scenario, agent_id, api_key, base_url, timeout))
+                print(f"    run {len(captured) - 1} captured")
+            except Exception as exc:
+                # Partial results are WRITTEN, never discarded. Every run already
+                # captured is a live agent turn that has been paid for, and the
+                # next invocation tops the scenario up from where this one
+                # stopped instead of re-running the turns that succeeded.
+                print(f"  ERROR {sid} on run {len(captured)}: {exc}")
+                failure = str(exc)
+                break
 
-            record = {
-                "scenario_id": sid,
-                "response_text": final_response.get("response_text", ""),
-                "tool_calls_log": tool_calls_log,
-            }
+        if captured:
+            record = corpus.build_record(sid, captured)
             out_path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
-            print(f"    -> written to {out_path.name}")
-            outcomes[sid] = "written"
+            print(f"    -> {len(captured)} run(s) in {out_path.name}")
 
-        except Exception as exc:
-            print(f"  ERROR {sid}: {exc}")
-            outcomes[sid] = f"error: {exc}"
+        outcomes[sid] = f"error: {failure}" if failure else "written"
 
     return outcomes
+
+
+def parse_runs(argv: list[str]) -> int:
+    """Read `--runs K` off the command line. Defaults to 1.
+
+    Refuses a missing, non-integer or non-positive K rather than falling back to
+    1. A silent fallback would spend a full capture and produce a k=1 corpus
+    while its operator believed they had asked for five, and the difference is
+    invisible in the output until someone reads a rate off it.
+    """
+    if "--runs" not in argv:
+        return 1
+    index = argv.index("--runs")
+    if index + 1 >= len(argv):
+        raise ValueError("--runs needs a number, e.g. --runs 5")
+    raw = argv[index + 1]
+    try:
+        runs = int(raw)
+    except ValueError:
+        raise ValueError(f"--runs takes an integer, got {raw!r}") from None
+    if runs < 1:
+        raise ValueError(f"--runs must be at least 1, got {runs}")
+    return runs
 
 
 def main() -> None:
@@ -415,12 +505,23 @@ def main() -> None:
         sys.exit(1)
 
     overwrite = "--overwrite" in sys.argv
+    try:
+        runs = parse_runs(sys.argv)
+    except ValueError as e:
+        print(f"ERROR: {e}")
+        sys.exit(1)
 
     print("W Chats M4 — Eval Response Capture")
     print(f"Agent: {AGENT_ID or '(unset)'}")
     print(f"Base URL: {AGENT_BASE_URL}")
     print(f"Responses dir: {RESPONSES_DIR}")
+    print(f"Runs per scenario (k): {runs}")
     print(f"Overwrite: {overwrite}")
+    if runs == 1:
+        print(
+            "  NOTE: at k=1 pass@k and reliable@k are the same number, so this corpus "
+            "cannot separate a capability failure from a variance one (BACKLOG 8.1)."
+        )
     print()
 
     try:
@@ -428,6 +529,7 @@ def main() -> None:
             agent_id=AGENT_ID,
             api_key=API_KEY,
             overwrite=overwrite,
+            runs=runs,
         )
     except ValueError as e:
         print(f"ERROR: {e}")
