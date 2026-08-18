@@ -165,10 +165,19 @@ threat registers.
 ## Environment constraints (real, and they shape what can be proven)
 
 - **4 GB RAM.** No parallel test workers, small fixtures, one agent at a time in a workflow.
-- **No PostgreSQL server on this machine.** Confirmed repeatedly: the `postgresql-x64-17` service is
-  a stale registration pointing at a deleted binary; nothing listens on 5432-5435. Every
-  `-m integration` harness therefore **skips**, and a skipped gate is *unobserved*, never a pass.
-  `CONTROL_DB_URL` points at live Neon production and is **never** an acceptable substitute.
+- **A local PostgreSQL 17.6 IS running on `localhost:5432`** (binaries `C:\Users\Bantu\pgsql`,
+  cluster `C:\Users\Bantu\pgdata`, pgvector 0.8.1, `fsync=off`, disposable). Databases
+  `wchats_control` and `wchats_tenant_probe`. **CORRECTED 2026-08-18**: this section said "no
+  PostgreSQL server on this machine, confirmed repeatedly" for eight days after `0.2` installed one
+  on 2026-08-10, and that stale sentence was then copied into a migration docstring, its test file,
+  two BACKLOG rows, HANDOFF, a plan and a trace inside a single session before anyone opened a
+  socket. **Test the constraint, do not quote it.**
+  - Migrations CAN be applied and verified here. `run_tenant_migrations(dsn)` against
+    `wchats_tenant_probe` is the production path, and upgrade/downgrade/re-upgrade round trips.
+  - `-m integration` harnesses are still gated behind `INTEGRATION_TESTS_ENABLED` and two modules
+    spend money, so "a server exists" is not "run the integration suite" (`7.36`).
+  - `CONTROL_DB_URL` in `.env` points at live Neon production and is **never** an acceptable
+    substitute for the local cluster.
 - **Toolchains get disk-cleaned.** `apps/api/.venv`, `apps/admin/node_modules`, `apps/widget/node_modules`
   and `.next` have been removed by cleanup passes before. Restore: `uv sync --extra dev` in
   `apps/api`; `pnpm install` for the front ends (the pnpm store survives). Verify a gate can actually

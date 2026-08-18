@@ -39,9 +39,15 @@ Context:
     nothing in app code SELECTs `tool_calls` today. The readers named in
     surrounding comments read `tool_calls_audit`, a different table.
 
-    NOT RUN ON THIS MACHINE. There is no PostgreSQL here, so this migration is
-    written and unverified until it runs against a real tenant DB. That is a gap
-    in the evidence, not a passing gate.
+    APPLIED AND VERIFIED 2026-08-18 against the local `wchats_tenant_probe`
+    cluster, through the production path (`migrations.run_tenant_migrations`):
+    0016 -> 0017, column present as `jsonb`, nullable, no DEFAULT, COMMENT
+    landed, and NULL / `[]` / a populated array all stored and distinguishable.
+    Downgrade to 0016 drops it and re-upgrade restores it.
+
+    The first draft of this docstring said "NOT RUN ON THIS MACHINE, there is no
+    PostgreSQL here". That was quoted from CLAUDE.md, which had been stale since
+    2026-08-10. Nobody opened a socket to check. Test the constraint.
 """
 
 from typing import Sequence, Union

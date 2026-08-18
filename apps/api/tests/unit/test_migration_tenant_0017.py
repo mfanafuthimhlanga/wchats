@@ -15,12 +15,15 @@ and the customer SSE carries a 200-character repr. So the rubric's PASS branch
 was unreachable and every grounding verdict had to FAIL whatever the answer
 said. 0017 is where the chunks get written down.
 
-THIS MIGRATION HAS NOT BEEN APPLIED. There is no PostgreSQL server on this
-machine — every `-m integration` harness skips, and a skip is UNOBSERVED, never
-a pass. No ALTER TABLE in 0017 has executed against any database, here or
-anywhere. The source-level assertions below are the only observed evidence that
-exists for it, so they are written as constraints on what the migration is
-ALLOWED to contain:
+THIS MIGRATION HAS BEEN APPLIED, unlike its siblings' claim. On 2026-08-18 it
+ran against the local `wchats_tenant_probe` cluster through the production path
+and round-tripped: 0016 -> 0017, the column arrives `jsonb` and nullable with no
+DEFAULT, downgrade drops it, re-upgrade restores it.
+
+So the assertions below are no longer the ONLY evidence, and they keep a
+different job: they constrain what the migration is allowed to CONTAIN, which a
+successful apply does not (a migration can apply cleanly and still carry a
+DEFAULT that quietly rewrites history). The constraints:
 
   - additive columns only  — no DROP/RENAME of anything pre-existing
   - nullable only          — no NOT NULL, no DEFAULT, no backfill. NULL and `[]`

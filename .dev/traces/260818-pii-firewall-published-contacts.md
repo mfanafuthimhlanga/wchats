@@ -203,7 +203,7 @@ firewall applied, rather than the eval path that no customer uses.
 
 | Half | State |
 |---|---|
-| migration `0017`, `tool_calls.retrieved_chunks` | written, **never run**. No PostgreSQL here |
+| migration `0017`, `tool_calls.retrieved_chunks` | **applied and verified**, local `wchats_tenant_probe`, upgrade/downgrade/re-upgrade |
 | `_persist_messages` writes the judge rendering | landed, 8 tests, mutation-proven |
 | `capture_responses.py` reads the row back | landed, 6 tests |
 
@@ -221,3 +221,20 @@ The tests cover the two functions that decide what a row stores and what the cor
 INSERT is unobserved and stays that way until a tenant DB is migrated, which is behind `7.32`. A
 capture against an unmigrated tenant fails on the INSERT rather than silently recording nothing,
 which is the right failure but is still a failure someone has to expect.
+
+
+## The constraint nobody tested (7.36)
+
+Everything above about `0017` being permanently unverifiable was wrong, and wrong for an
+instructive reason. CLAUDE.md said "No PostgreSQL server on this machine. Confirmed repeatedly."
+`0.2` had installed PostgreSQL 17.6 on 2026-08-10 and the sentence was never updated.
+
+**The stale sentence was copied into seven places in this one session** before anyone opened a
+socket: the migration's docstring, its test module, two BACKLOG rows, HANDOFF, the plan and this
+trace. Each copy made the claim look better attested than the last.
+
+Checking cost one `Test-NetConnection` and one `psql -l`. `0017` then applied through the
+production path and round-tripped in under a minute.
+
+**The rule this earns: an environment limit is a measurement with a date on it, not a fact.** Quote
+it and you inherit whoever last measured it, however long ago that was.

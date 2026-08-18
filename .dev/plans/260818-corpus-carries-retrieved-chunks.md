@@ -45,9 +45,10 @@ table), so adding a column is additive and breaks no reader.
 
 ## Risks
 
-- **The migration cannot be run here.** No PostgreSQL on this machine, so `0017` is written and
-  unverified until it runs against a real tenant DB. That is a gap in the evidence, not a passing
-  gate, and the trace says so.
+- ~~**The migration cannot be run here.**~~ **FALSE, corrected 2026-08-18 (`7.36`).** A local
+  PostgreSQL 17.6 has been running since 2026-08-10; the risk was written by quoting a stale
+  CLAUDE.md line rather than testing a socket. `0017` applied and round-tripped against
+  `wchats_tenant_probe`. The live tenant still needs it applied before a capture.
 - **The capture gains a DB dependency.** It is an operator script run beside the services and it
   already needs `AGENT_ID` and the tenant API key; it now also needs `CONTROL_DB_SYNC_URL`. It
   degrades loudly rather than silently: no DB reachable means the merge is skipped, and

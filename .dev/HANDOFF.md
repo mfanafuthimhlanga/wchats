@@ -44,20 +44,47 @@ worker turn ──> _persist_messages ──> tool_calls.retrieved_chunks   (mig
 capture ──SSE──> response_text, then reads that row back ──> responses/S-0NN.json
 ```
 
-**Migration `0017` has never run.** There is no PostgreSQL here, so the column exists in a file and
-not in any database. It applies when a tenant DB is next migrated, which is behind `7.32`. Until
-then the write is unobserved, and a capture against an unmigrated tenant will fail on the INSERT.
+**Migration `0017` is applied and verified** (2026-08-18, local `wchats_tenant_probe`, through
+`run_tenant_migrations`): 0016 to 0017, column `jsonb` and nullable with no DEFAULT, NULL and `[]`
+and a populated array all distinguishable in the database, downgrade drops it, re-upgrade restores
+it. **The live tenant still needs migrating before a capture**, or the INSERT fails there.
 
-### `8.1` lands BEFORE the re-capture, or we pay for a third one
+This file previously said the migration could never run here. That was quoting a CLAUDE.md line
+stale since 2026-08-10, and it was wrong: see `7.36`.
 
-The capture is live agent turns against a live tenant. If it runs at k=1 we get a corpus that
-still cannot separate "cannot" from "sometimes", and a third capture becomes necessary the moment
-anyone asks how consistent the agent is. `8.1` makes the capture and the eval run k times and
-report pass@k and reliable@k. It needs nothing from the owner and it is the next code item.
+### `8.1` lands BEFORE the re-capture, and it is bigger than it was first filed
 
-`8.2` (judge temperature 0, Cohen's kappa and Matthews, confidence intervals) and `8.3` (per
-scenario category rather than pooled) are analysis-side and can land after the capture, but before
-anyone reads a number off it.
+The capture is live agent turns against a live tenant. At k=1 the corpus still cannot separate
+"cannot" from "sometimes", so a third capture becomes necessary the moment anyone asks how
+consistent the agent is. Avoiding that is what the whole last round of work was for.
+
+**The row first said "cheap to add: loop k". That was wrong.** The corpus is single-response by
+construction and five call sites across four files key on `responses/{scenario_id}.json` holding one
+`response_text` and one `tool_calls_log`: `capture_responses.py:344` (which also skips on that
+path's existence), `run_evals.py:78`, `compute_correlation.py:267` and `:299`, plus
+`validate_corpus.py`'s glob. **They move together or the corpus silently keeps only the last run**,
+which is a fresh instance of the class this session spent its time naming.
+
+### The order, and why it is one capture rather than two
+
+`human_scores.csv` is one row per (scenario, dimension) with no concept of a run. Scoring all k
+multiplies the only human step in the system by k, which is why the sequence matters:
+
+```
+1. land 8.1              record shape holds k runs        no owner input needed
+2. capture ONCE at k>1   run 0 of each scenario is the human's row
+3. human scores run 0    ten rows, unchanged from today
+4. judge is calibrated   against those human labels, at temperature 0
+5. calibrated judge      scores all k runs -> reliable@k per category, with an interval
+```
+
+**Run 0 carries the human column, so human effort does not multiply and only one capture is
+needed.** Reversing steps 4 and 5 buys nothing and costs k times the labelling.
+
+**Correcting what this file said last:** `8.2` is not simply "after the capture". Its temperature
+half must be set before ANY judging happens, and its kappa half is entangled with step 4 above.
+`8.3` (per scenario category rather than pooled) is genuinely analysis-side and can land last, but
+before anyone reads a number off the corpus.
 
 ### Then the re-capture, once, with everything already closed
 
@@ -66,13 +93,13 @@ while the services are still up rather than a day later at scoring time.
 
 | Before running | State |
 |---|---|
+| `8.1` k > 1 and the record shape | **land it first, and it is not a one-line loop.** A k=1 corpus buys a third capture |
 | `7.32` control DB credential | **BLOCKING.** Rejected by Neon. Nothing can run until it is refreshed |
 | plaintext tenant `API_KEY` and `AGENT_ID` | **BLOCKING.** Only the key's hash is stored |
-| `7.34` chunk source | decided and landed. **Migration `0017` must be applied to the tenant DB first**, or the capture fails on the INSERT |
+| `7.34` chunk source | decided, landed, and `0017` is verified locally. **The LIVE tenant DB still needs it applied**, or the capture fails on the INSERT |
 | `7.29` firewall | closed in code |
 | `tool_name: ""` | closed in the capture script |
 | `CAPTURE_TIMEOUT` | closed: default is 300, was 30 against a measured 101s turn |
-| `8.1` k > 1 in the capture | **land it first.** A k=1 corpus buys a third capture |
 | `CONTROL_DB_SYNC_URL` exported for the capture | needed for the chunk read-back. Unset means the run warns, records no chunks, and the validator reports BLIND |
 | widget JWT expiry (`7.23`) | closed: minted per scenario |
 | Voyage throttling (`7.21`) | closed by the credit. Confirm by the ABSENCE of `rerank.voyage_failed_falling_back` in the run |
@@ -209,6 +236,9 @@ before money moves.
 
 ## Read these before trusting a number
 
+- **`260818-eval-practice-gap-analysis.md`** and the two beside it are findings. This one is a
+  warning: **`7.36`, an environment constraint was quoted for eight days and never tested**, and
+  it propagated into seven files in one session. Open a socket before repeating a limit.
 - **`260818-llm-eval-fundamentals.md`** — the practice itself, written down so it outlives the
   session that watched it: capability against consistency, the three levels, trace analysis and
   saturation, building an aligned judge, judging the judge, RAG retrieval metrics, judge bias.
