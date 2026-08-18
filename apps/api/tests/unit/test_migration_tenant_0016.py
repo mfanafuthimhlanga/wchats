@@ -143,28 +143,15 @@ def test_0016_is_the_sole_child_of_0015_and_the_tree_is_unforked():
     )
 
 
-def test_0016_is_the_tenant_head():
-    """Head IDENTITY, pinned once for the tree rather than inside each
-    revision's parentage test.
-
-    `test_migration_tenant_0015.py` used to assert `heads == {"0015"}`, and this
-    phase relaxed it to `len(heads) == 1` — correctly, because that file's
-    subject is 0015's parentage and a test that names the current tip has to be
-    edited by every subsequent migration, which teaches the next author to edit
-    tests rather than obey them. But relaxing it left NOTHING asserting which
-    revision the tree ends at, and the ignored-new-files control cannot see an
-    assertion getting weaker inside a test that still passes.
-
-    So the claim moves here, to the file the phase owns, stated once: 0016 is
-    the tip. 0017 will move this line and only this line.
-    """
-    revisions = _all_tenant_revisions()
-    parents = {down for down in revisions.values() if down is not None}
-    heads = set(revisions) - parents
-    assert heads == {"0016"}, (
-        f"the tenant head is {sorted(heads)}, not 0016 — if a later revision "
-        "landed, move this assertion to its test file rather than deleting it"
-    )
+# HEAD IDENTITY MOVED to `test_migration_tenant_0017.py` on 2026-08-18.
+#
+# `test_0016_is_the_tenant_head` asserted `heads == {"0016"}` and said in its own
+# docstring that 0017 would move this line and only this line. 0017 landed
+# (BACKLOG 7.34, tool_calls.retrieved_chunks), the battery went red on exactly
+# that assertion, and the instruction was followed rather than the assertion
+# weakened. It is a move and not a deletion: relaxing it to `len(heads) == 1`
+# here would leave nothing naming the tip, and `test_0016_is_the_sole_child_of_
+# 0015_and_the_tree_is_unforked` above already covers the fork case.
 
 
 # ---------------------------------------------------------------------------
