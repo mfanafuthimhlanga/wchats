@@ -528,7 +528,7 @@ def test_llm_judged_dimensions_d1_d2_d3_d4_d8():
                 scenarios=agg["scenarios"],
                 k_min=agg["k_min"],
                 k_max=agg["k_max"],
-                pass_at_k=round(agg["pass_at_k"], 3),
+                pass_at_k=(None if agg["pass_at_k"] is None else round(agg["pass_at_k"], 3)),
                 reliable_at_k=round(agg["reliable_at_k"], 3),
             )
         failures += _dimension_failures(dim, outcomes[dim], reasons[dim])
@@ -678,10 +678,14 @@ def main() -> None:
         if not agg["scenarios"]:
             print(f"| {labels[dim]} | 0 | - | - | - |")
             continue
-        k = str(agg["k_min"]) if agg["k_min"] == agg["k_max"] else f"{agg['k_min']}-{agg['k_max']}"
+        k = str(agg["k_min"]) if not agg["ragged"] else f"{agg['k_min']}-{agg['k_max']}"
+        # pass@k is None on a ragged corpus, because the quantity grows with k on
+        # its own. Printing a dash is the honest cell; printing a number would be
+        # reporting the capture rather than the agent.
+        pass_cell = "n/a" if agg["pass_at_k"] is None else f"{agg['pass_at_k']:.2f}"
         print(
             f"| {labels[dim]} | {agg['scenarios']} | {k} | "
-            f"{agg['pass_at_k']:.2f} | {agg['reliable_at_k']:.2f} |"
+            f"{pass_cell} | {agg['reliable_at_k']:.2f} |"
         )
     if d7_passed is not None:
         cell = "1.00" if d7_passed else "0.00"
@@ -690,13 +694,15 @@ def main() -> None:
         print("| D7 (bundle size) | SKIP | - | - | - |")
 
     ragged = [labels[dim] for dim, agg in aggregates.items()
-              if agg["scenarios"] and agg["k_min"] != agg["k_max"]]
+              if agg["scenarios"] and agg["ragged"]]
     single = [labels[dim] for dim, agg in aggregates.items() if agg["k_max"] == 1]
     print()
     if ragged:
         print(
             f"**RAGGED: {', '.join(ragged)} pool scenarios captured a different number of "
-            "times, so these rates are decided partly by the capture.**"
+            "times. pass@k is NOT REPORTED for these, because it grows with k on its own "
+            "and an average over uneven k describes the capture rather than the agent. "
+            "reliable@k is unbiased at any k and is still shown.**"
         )
     if single:
         print(

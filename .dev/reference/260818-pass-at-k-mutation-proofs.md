@@ -114,27 +114,34 @@ with `PY=.venv/Scripts/python.exe`. Each block: mutate, expect RED, restore, exp
 # M1
 sed -i 's|^    return max(target - present, 0)$|    return max(target, 0)|' tests/evals/corpus.py
 $PY -m pytest tests/unit/test_corpus_runs.py::TestTopUpArithmetic -q
-git checkout HEAD -- apps/api/tests/evals/corpus.py
+git checkout HEAD -- tests/evals/corpus.py
 
 # M2
 sed -i 's|^        for index, run in enumerate(runs):$|        for index, run in enumerate(runs[:1]):|' tests/evals/validate_corpus.py
 $PY -m pytest tests/unit/test_corpus_validator.py::test_a_defect_in_a_later_run_is_found -q
-git checkout HEAD -- apps/api/tests/evals/validate_corpus.py
+git checkout HEAD -- tests/evals/validate_corpus.py
 
 # M3  replace aggregate()'s reliable_at_k line with:
 #     "reliable_at_k": sum(r["passes"] for r in rated.values()) / sum(ks),
 $PY -m pytest "tests/unit/test_pass_at_k.py::TestAcrossScenarios::test_a_ragged_corpus_weights_scenarios_not_runs" -q
-git checkout HEAD -- apps/api/tests/evals/rates.py
+git checkout HEAD -- tests/evals/rates.py
 
 # M4
 sed -i 's|^    return corpus.load_run(path, corpus.RUN_ZERO)$|    return corpus.load_run(path, -1)|' tests/evals/calibration/compute_correlation.py
 $PY -m pytest "tests/unit/test_calibration_harness.py::TestCalibrationReadsRunZero::test_the_judge_is_shown_run_zero_not_the_last_run" -q
-git checkout HEAD -- apps/api/tests/evals/calibration/compute_correlation.py
+git checkout HEAD -- tests/evals/calibration/compute_correlation.py
 
 # M5
 sed -i 's|^            for index, run in enumerate(runs):$|            for index, run in enumerate(runs[:1]):|' tests/evals/run_evals.py
 $PY -m pytest "tests/unit/test_eval_run_rates.py::TestCollection::test_every_run_is_checked_not_just_the_first" -q
-git checkout HEAD -- apps/api/tests/evals/run_evals.py
+git checkout HEAD -- tests/evals/run_evals.py
 ```
 
 Finish with `git status --porcelain` and confirm no source file is left mutated.
+
+**These restore paths are relative to `apps/api`, and that is load-bearing.** The first version of
+this block said "From `apps/api`" and then restored with `git checkout HEAD -- apps/api/tests/...`,
+which errors with `pathspec did not match any file(s) known to git` and **leaves the mutant on
+disk**. An adversarial reviewer running the block verbatim on 2026-08-18 stacked two mutations
+before noticing. A reproduce block that does not restore is worse than no block: it hands the next
+reader a corrupted tree and a green-looking transcript.
