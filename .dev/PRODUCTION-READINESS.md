@@ -132,7 +132,7 @@ refuses anything but a Clerk JWT, so Clerk is load-bearing for more than sign-in
 This is the real gap. Everything here is `RECORD` unless marked otherwise.
 
 - **Every LLM judge is uncalibrated.** `apps/api/tests/evals/calibration/human_scores.csv` holds 10
-  rows with every score cell empty. The harness gates trust at Spearman ≥ 0.75 and **has never run**.
+  rows with every verdict cell empty, and the blind second pass does not exist yet. The harness gates trust on the three-part calibration gate: (a) the judge's bootstrapped kappa interval clears chance, (b1) the owner's own blind re-label clears chance, (b2) the paired difference does not show the owner beating the judge, and **has never run**. Spearman is reported only (8.2b, 8.2c, 8.2d).
   This covers Gatekeeper, Auditor, Strategist, `classify_severity`, and **the Actor gate that runs
   before money moves**. (`0.1 · score-judge-calibration`)
 - **No eval has ever run end to end against a real agent.** (`2.14`, `3.6`)
@@ -323,7 +323,7 @@ Record the observed output for each step, not the intention.
 ### Phase B — the evidence the product is sold on
 
 - **E2E-6 · calibrate the judges.** `0.1`. Capture responses (now possible — Phase A produced a real
-  ingested agent), then the owner scores 10 rows, then run the Spearman gate. **Everything in §3.4
+  ingested agent), then the owner labels the sheet BINARY, then re-labels the same rows blind via `--emit-second-pass`, then run the gate. Both label passes are required: without the second there is no scale and the harness refuses rather than inventing one. **Everything in §3.4
   is downstream of this.** Blocked on `0.7 · model-provider-decision` if there is no Claude balance.
   **Do E2E-3b first.** `5.16`'s fix is unobserved against the API, and calibrating the Auditor on
   responses captured before it is confirmed live measures the cap a second time.

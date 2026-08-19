@@ -127,13 +127,15 @@ calibrated. Nothing deploys on top of unverified measurement.
 - E2E-3b: one live customer turn, `RETRIEVAL_FAITHFULNESS_SAMPLE_RATE=1.0`, read the verdict and
   `judge_context` counters. Settles `5.13`, `5.15`; first verdict under the `5.16` fix.
 - E2E-6: capture the 20 calibration responses (`0.1` prerequisite), owner scores
-  `human_scores.csv`, run the Spearman >= 0.75 gate.
+  `human_scores.csv`, re-label the same rows blind in `human_scores_pass2.csv`, then run
+  the three-part calibration gate: (a) the judge's bootstrapped kappa interval clears chance, (b1) the owner's own blind re-label clears chance, (b2) the paired difference does not show the owner beating the judge.
 - E2E-7 per PRODUCTION-READINESS §4.
 - `0.7` is decided (owner, 2026-08-15): DeepSeek is the default provider for both halves via the
   Anthropic-compatible endpoint. See §Model provider; the work row is `7.7`.
 
 **Exit:** a grounding verdict from a live turn whose reason cites provenance, and calibrated judges
-with the Spearman number recorded.
+with both kappa intervals and the paired difference recorded. Spearman is still reported and
+no longer gates anything (8.2b, 8.2c, 8.2d).
 
 ### M2 — earn the first ship verdict
 
@@ -350,7 +352,7 @@ Wire as `make gates` and `make gates-fast` in the existing `apps/api/Makefile`; 
 | M | What proves the exit, concretely |
 |---|---|
 | M0 | Owner merge; `full` battery quoted green on `main` after |
-| M1 | `7.7` seam: one SDK turn and one judge verdict observed through the DeepSeek endpoint. `7.8` battery: baselines measured and written as floors. E2E-3b: verdict text plus `judge_context` counters verbatim in the trace. Calibration: Spearman at or above 0.75 **observed**, on at least the 10-row floor; below-floor reports `unknown`, never pass |
+| M1 | `7.7` seam: one SDK turn and one judge verdict observed through the DeepSeek endpoint. `7.8` battery: baselines measured and written as floors. E2E-3b: verdict text plus `judge_context` counters verbatim in the trace. Calibration: the three-part calibration gate: (a) the judge's bootstrapped kappa interval clears chance, (b1) the owner's own blind re-label clears chance, (b2) the paired difference does not show the owner beating the judge, **observed**. At least two rows must carry each label or no interval is a measurement; a sheet that cannot support one reports `unknown`, never pass |
 | M2 | The gate observed **refusing** as well as shipping: flip each signal (below-floor eval, open critical finding) and watch the block, then the earned `ship` quoted with job ids. RTX-01 costed before the 7/7 run. Mutation proofs on the `5.17` and `1.31` fixes |
 | M3 | Each `7.1`-`7.6` fix lands red-then-green. PROD-11: snippet pasted on a plain static page, zero hand-edits, working chat, screenshot plus network log. BYO proof: one turn driven by curl and EventSource using only the doc page. Size gate extended to all three shipped files; a contract test pins console snippet == API snippet |
 | M4 | CI green **on a remote runner** quoted (first time, `1.1`). Staging: one grounded answer on a public URL, job id quoted. Beat: the first `eval-nightly` run row observed within 24h of deploy, and the `0.4` decision line recorded before it can fire. §3.7 unknowns closed by observation, not reading |
@@ -397,7 +399,7 @@ JWT_SECRET, UPLOADS_DIR, LOG_LEVEL, SENTRY_DSN, CLERK_JWKS_URL.
   absorbs a debugging phase.
 - **Fargate has never been stood up**; PRODUCTION-READINESS §3.7 lists the operational unknowns. M4
   is the milestone most likely to grow.
-- **Judge calibration can fail its own gate** (Spearman < 0.75); if it does, M1 ends in prompt
+- **Judge calibration can fail its own gate** (the judge's interval includes chance, or the owner beats it); if it does, M1 ends in prompt
   iteration on the judges, and nothing downstream starts until it passes.
 - **The DeepSeek compatibility layer is a third party's implementation of Anthropic's format.**
   Anthropic does not support non-Claude routing, and features the CLI negotiates via beta headers

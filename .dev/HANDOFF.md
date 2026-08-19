@@ -10,21 +10,22 @@ agent live via MCP, both tested on their Vercel URLs. Nothing else counts as don
 
 ## Next move
 
-**One number from the owner, and nothing in the harness is open.** How many of the 45 available
-calibration rows will be labelled, twice. Nothing today: the corpus is contaminated, so there is
-nothing to label until the re-capture.
+**Two things from the owner now.** How many of the 45 available calibration rows will be labelled,
+twice (the sheet size), and whether `--emit-second-pass` may top up an existing sheet (`8.15`).
+Neither is urgent: the corpus is contaminated, so there is nothing to label until the re-capture.
 
 | | State |
 |---|---|
 | `8.1` k>1 record shape, pass@k | **landed + adversarially reviewed.** 3 BLOCKs and 11 surviving mutants fixed; 12/12 mutations now red |
 | `8.2a` judge temperature | **landed + reviewed.** 3 tautologies fixed |
 | `8.2b` binary label + kappa | **landed + reviewed.** 2 BLOCKs fixed, one of which broke the owner's workflow |
-| `8.2c` data-derived threshold | **landed + mutation-proved 13/13.** `KAPPA_THRESHOLD` is deleted; two intervals decide. The second pass is its own file, and `--emit-second-pass` writes it |
+| `8.2c` data-derived threshold | landed, then **half of it was wrong**. See `8.2d` |
+| `8.2d` the rework | **landed 2026-08-19, 24 of 24 mutations red.** Four independent reviews found the replacement threshold was itself a constant nobody chose. The rule is three parts now |
 | **the sheet size** | **[owner] the one open decision, and now the only one left in the harness.** See "What labelling costs" below |
 | the re-capture at k=5 | **[code], unblocked.** 100 live turns. Seed the LOCAL control DB; `7.32` does not block it |
 | `7.34` chunks, `7.29` firewall | landed; `0017` applied and verified on the live tenant |
 
-### The gate no longer contains a number anyone chose
+### The gate, after four adversarial reviews found the first version wrong
 
 `KAPPA_THRESHOLD = 0.6` is deleted. **0.6 was a Landis-Koch band boundary: a 1977 rule of thumb
 published with no empirical basis**, so it was not merely unmeasured here, it was never measured
@@ -32,9 +33,17 @@ anywhere. What decides now is two intervals bootstrapped from the labels themsel
 required:
 
 ```
-(a) beats chance      judge_kappa_ci_low  > 0
-(b) reaches ceiling   judge_kappa_ci_high >= human_kappa_ci_low
+(a)  the judge beats chance    judge_ci_low   > 0
+(b1) your labels set a scale   ceiling_ci_low > 0
+(b2) the judge reaches it      paired difference (ceiling - judge), measured
+                               inside each resample, does not put you above it
 ```
+
+**`8.2c` shipped `(b) judge_high >= ceiling_low` and that was a constant nobody chose.** Against a
+self-consistent labeller it reduces to `judge_high >= 1.000`, which needs 2.5% of resamples to miss
+every judge error row: `e <= 3.68` disagreements **at every n**. Looser than kappa 0.6 below n=18,
+stricter above, and harder the more rows you label. Two reviewers also produced exit-0 CALIBRATED
+from a ceiling whose own interval spanned zero, which is what (b1) now refuses.
 
 (b) is the one that matters. **A judge cannot be expected to agree with a human more than that
 human agrees with themself**, so the owner's test-retest kappa IS the scale, and with no ceiling
@@ -55,8 +64,14 @@ compute_correlation.py --emit-second-pass   writes human_scores_pass2.csv, shuff
 compute_correlation.py                      the run: judge interval against the ceiling
 ```
 
-`--emit-second-pass` refuses to overwrite an existing sheet, and refuses while the first pass is
-unfinished: labelling both in one sitting is one pass copied, not a test-retest.
+`--emit-second-pass` refuses to overwrite an existing sheet, refuses while the first pass is
+unfinished, and refuses a sheet with no rows. **It cannot yet top up a sheet you have already
+emitted, which is `8.15` and the one reviewer BLOCK still open.**
+
+`--check` now names every locally-checkable input before any money is spent: the label balance
+(at least 2 rows must carry each label, derived from `e^-m`), whether `ANTHROPIC_API_KEY` is
+exported into `os.environ` rather than merely in `.env`, and every row either sheet could not
+read, by name.
 
 ### What labelling costs, and what a row is
 
@@ -257,7 +272,7 @@ because that is where the harness's 170s clamp actually bites.
 |---|---|---|
 | `static` | ruff, import contracts, lizard | 8.4s cold, 3.2s warm. **What the Stop hook runs.** Nothing in it imports app code, so its headroom cannot erode by adding a dependency |
 | `fast` | static + whole-suite collection | 142.5s and growing with the dependency tree, not with the suite |
-| `full` | fast + the unit suite | **green 2026-08-18 on the tree carrying `8.2c`**: **2575 passed, 13 skipped, 503.2s**, whole target 612.1s, exit 0. Run after the commit, not before it. `static` alone was 5.2s. A KILLED run reports `FAILED at step 5`, indistinguishable from a real failure until you read the log for an `F` |
+| `full` | fast + the unit suite | **green 2026-08-19 on the tree carrying `8.2d`**: `fast` (ruff, import contracts, lizard, 2625 collected) **157.3s**; unit suite **2612 passed, 13 skipped**, exit 0. The suite figure was 876s here rather than the usual ~510s because reviewer agents were running against the same 4 GB; time it on a quiet machine before treating it as a baseline. A KILLED run reports `FAILED at step 5`, indistinguishable from a real failure until you read the log for an `F` |
 
 The old hook gate was whole-suite `--collect-only`. `gates.json` had warned in its own comment that
 a heavy dependency would push it past the clamp and that being killed there reports nothing at all.
