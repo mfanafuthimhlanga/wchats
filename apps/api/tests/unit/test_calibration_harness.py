@@ -279,11 +279,17 @@ class TestUnscoredIsNotAPass:
             _judge_returning({"S-101": 1, "S-102": 2, "S-103": 4, "S-104": 5})
         )
 
-        assert result["kappa"] == pytest.approx(0.0)
-        assert result["status"] == cc.STATUS_NOT_CALIBRATED
+        # CHANGED 2026-08-19 (8.2d). This asserted kappa == 0.0 and a MEASURED
+        # failure. Both were wrong. With the human's marginal degenerate,
+        # `observed == expected` identically, so 0.0 arrived no matter what the
+        # judge did - it was the absence of a finding wearing the clothes of one,
+        # and the run exited 1, "fix the judge", over a sheet on which no judge
+        # could have scored anything else.
+        assert result["kappa"] is None, "one label on the human side measures nothing"
+        assert result["status"] == cc.STATUS_NOT_CALIBRATED_YET
         assert result["cells"] == {
             "both_pass": 2, "judge_too_harsh": 2, "judge_too_lenient": 0, "both_fail": 0
-        }
+        }, "the matrix is still the diagnostic, and it shows why"
 
     def test_a_judge_that_failed_most_of_its_calls_is_not_calibrated(
         self, calibration_tree
@@ -459,10 +465,15 @@ class TestCalibratedAndUncalibrated:
                               "S-404": 5, "S-405": 1})
         )
 
+        # CHANGED 2026-08-19 (8.2d). This asserted a MEASURED failure, exit 1,
+        # which the exit codes define as "fix the judge". Six rows cannot separate
+        # a coin from a flawless judge: the interval ran from chance to perfect.
+        # That is a statement about the size of the sheet, so it is an absence.
         assert result["kappa"] == pytest.approx(0.25, abs=0.01), "the point estimate"
-        assert result["judge_interval"]["low"] <= 0, "and six rows cannot rule out chance"
-        assert result["gate"]["beats_chance"] is False
-        assert result["status"] == cc.STATUS_NOT_CALIBRATED
+        assert result["judge_interval"]["spans_the_whole_range"] is True
+        assert result["gate"]["beats_chance"] is None, "None, never False"
+        assert result["status"] == cc.STATUS_NOT_CALIBRATED_YET
+        assert any("SIZE of the labelled set" in e for e in result["errors"])
 
     def test_a_judge_that_passes_everything_is_refused(self, calibration_tree):
         """The defect the old gate could not see, and the reason it moved.
@@ -529,10 +540,26 @@ class TestTheHumanColumnIsNeverWritten:
                 referencing.append(path)
 
         # Only the harness and this test may name the file at all.
-        names = sorted(p.name for p in referencing)
-        assert names == ["compute_correlation.py", "test_calibration_harness.py"], (
-            f"a new module references human_scores.csv: {names}"
+        # A RULE, not a list of filenames. The list version was already wrong on
+        # the day it was written: `agreement.py` has to name the second sheet
+        # (its reason string is the one thing a stuck owner reads, and while the
+        # name lived elsewhere that string told them to fill `human_verdict_2`, a
+        # column this project never built), and every new test about the sheets
+        # turned the guard red without anything writing anything.
+        #
+        # What actually matters is that nothing OUTSIDE the calibration package
+        # and its unit tests knows these files exist: not `app/`, not `scripts/`,
+        # not a Celery task, not a seeding helper.
+        allowed = ("tests/evals/calibration", "tests/unit")
+        strangers = [
+            path for path in referencing
+            if not any(part in path.as_posix() for part in allowed)
+        ]
+        assert strangers == [], (
+            f"a module outside the calibration package references a calibration "
+            f"sheet: {[p.as_posix() for p in strangers]}"
         )
+
 
         source = (api_root / "tests/evals/calibration/compute_correlation.py").read_text(
             encoding="utf-8"
@@ -637,7 +664,7 @@ class TestReadiness:
         cc.print_readiness(cc.readiness())
         printed = capsys.readouterr().out
 
-        assert "human verdicts needed are filled in" in printed
+        assert "rows on the sheet carry a verdict" in printed
         assert "HUMAN CEILING" in printed
 
     def test_readiness_flags_a_dimension_the_judge_does_not_have(self, calibration_tree):
@@ -1090,7 +1117,10 @@ class TestTheCeilingIsMeasuredNotChosen:
         assert result["status"] == cc.STATUS_NOT_CALIBRATED_YET, (
             "an unmeasured ceiling is an absence, not a judge failure"
         )
-        assert any("HUMAN CEILING" in e for e in result["errors"])
+        assert any("no second labelling pass" in e for e in result["errors"])
+        assert not any("human_verdict_2" in e for e in result["errors"]), (
+            "the instruction must name the sheet that exists"
+        )
 
     def test_a_partial_second_pass_is_refused_rather_than_used(self, calibration_tree):
         """Three of four rows re-labelled is not a ceiling over four rows.
@@ -1135,7 +1165,7 @@ class TestTheCeilingIsMeasuredNotChosen:
         assert result["gate"]["beats_chance"] is True, "it is clearly not a coin"
         assert result["gate"]["reaches_ceiling"] is False
         assert result["status"] == cc.STATUS_NOT_CALIBRATED
-        assert any("below the human" in e for e in result["errors"])
+        assert any("(b2) FAILED" in e for e in result["errors"])
 
     def test_the_same_judge_passes_against_a_labeller_who_is_not_perfect(
         self, calibration_tree
@@ -1276,3 +1306,354 @@ class TestTheSecondPassSheetIsWrittenEmptyAndBlind:
 
         assert code == cc.EXIT_SECOND_PASS_EMITTED
         assert "WITHOUT opening the first sheet" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# BACKLOG 8.2d - what the owner actually SEES
+# ---------------------------------------------------------------------------
+
+
+class TestWhatTheOwnerActuallySees:
+    """The reporting surface, which until 8.2d was asserted by nothing at all.
+
+    Measured 2026-08-19: making `_print_gate` return before printing anything
+    left 59 tests green. The two intervals, the three verdict lines, the
+    "never measured" versus "not a measurement" distinction and `_half`'s rule
+    that a missing part must never render as a failed one were all unpinned -
+    in the file whose entire stated purpose is that "a reader who cannot see
+    both cannot tell a judge that is wrong from a corpus too small to say".
+
+    These tests drive `main` the way a person runs it and read the output.
+    """
+
+    def _run(self, monkeypatch, capsys, judge_fn):
+        import tests.evals.judge as judge_module
+
+        monkeypatch.setattr(judge_module, "judge", judge_fn)
+        code = cc.main([])
+        return code, capsys.readouterr().out
+
+    def test_a_calibrated_run_shows_all_three_parts_and_their_intervals(
+        self, calibration_tree, monkeypatch, capsys
+    ):
+        calibration_tree(_TWENTY_BALANCED, second_pass="match")
+        code, out = self._run(monkeypatch, capsys, _judge_wrong_about(0))
+
+        assert code == cc.EXIT_CALIBRATED, out
+        assert "(a)  the judge beats chance          yes" in out
+        assert "(b1) your labels set a scale         yes" in out
+        assert "(b2) the judge reaches that scale    yes" in out
+        assert "judge 95% CI" in out and "your ceiling" in out
+        assert "you minus judge" in out, "the paired difference is what (b2) reads"
+
+    def test_a_missing_ceiling_prints_never_measured_and_not_a_failure(
+        self, calibration_tree, monkeypatch, capsys
+    ):
+        """A part that was never measured must not render as a part that failed."""
+        calibration_tree(_TWENTY_BALANCED, second_pass=None)
+        code, out = self._run(monkeypatch, capsys, _judge_wrong_about(0))
+
+        assert code == cc.EXIT_NOT_CALIBRATED_YET, out
+        assert "never measured" in out, "an absent ceiling says so on its own line"
+        assert "(b1) your labels set a scale         not measured" in out
+        assert "(b2) the judge reaches that scale    not measured" in out
+
+        verdict_lines = [
+            line for line in out.splitlines()
+            if line.lstrip().startswith(("(a)", "(b1)", "(b2)")) and "  " in line
+        ]
+        assert len(verdict_lines) == 3, verdict_lines
+        assert not any(line.rstrip().endswith("NO") for line in verdict_lines), (
+            f"nothing failed here, so nothing may print as failed: {verdict_lines}"
+        )
+
+    def test_the_not_yet_headline_does_not_invent_a_cause(
+        self, calibration_tree, monkeypatch, capsys
+    ):
+        """It blamed "one label was used for every row" over a run whose kappa
+        was 1.000 four lines above, and the remedy it named - relabel a scenario
+        the other way - means writing a verdict the owner does not believe."""
+        calibration_tree(_TWENTY_BALANCED, second_pass=None)
+        _code, out = self._run(monkeypatch, capsys, _judge_wrong_about(0))
+
+        assert "NOT CALIBRATED YET" in out
+        assert "one label was used for every row" not in out
+        assert "Label a scenario the other way" not in out
+        assert "no second labelling pass" in out, "it must name the real cause"
+
+    def test_a_run_stopped_at_a_floor_says_not_computed(
+        self, calibration_tree, monkeypatch, capsys
+    ):
+        """`_print_agreement` explained kappa as "one label on both sides" on
+        paths where nothing had been computed, contradicting the matrix three
+        lines above it."""
+        calibration_tree(_FOUR_ROWS, capture={"S-101", "S-102"})
+        _code, out = self._run(
+            monkeypatch, capsys,
+            _judge_returning({"S-101": 1, "S-102": 2, "S-103": 4, "S-104": 5}),
+        )
+
+        assert "one label on both sides" not in out
+        assert "a row or column of the 2x2 is empty" not in out
+
+    def test_unknown_arguments_refuse_before_spending_anything(
+        self, calibration_tree, monkeypatch, capsys
+    ):
+        """`--help`, `-h` and every typo of `--check` used to reach the judge.
+
+        One call per labelled row, then exit 1, which a shell reads as "the judge
+        is not calibrated". A non-specialist's first instinct on an unfamiliar
+        CLI is `--help`.
+        """
+        calibration_tree(_FOUR_ROWS)
+        called: list[str] = []
+
+        import tests.evals.judge as judge_module
+
+        def _never(*args, **kwargs):
+            called.append("spent")
+            raise AssertionError("a judge call was made")
+
+        monkeypatch.setattr(judge_module, "judge", _never)
+
+        for flag in ("--help", "-h", "--chekc", "--check-only", "--emit-secondpass"):
+            code = cc.main([flag])
+            assert code != cc.EXIT_CALIBRATED, flag
+            assert called == [], f"{flag} spent money"
+
+        out = capsys.readouterr().out
+        assert "--emit-second-pass" in out, "the usage text names the real flags"
+
+
+# ---------------------------------------------------------------------------
+# The survivors. Every test below exists because a mutation stayed GREEN
+# through the 2026-08-19 sweep, either the reviewers' or my own.
+# ---------------------------------------------------------------------------
+
+
+class TestTheSecondSheetIsReadHonestly:
+    """Everything the second sheet could not read used to die inside the reader.
+
+    `read_second_pass` computed an `unusable` list and no caller looked at it,
+    so a fully re-labelled sheet whose header a spreadsheet renamed reported as
+    zero rows with no reason given. That is defect F3, fixed on the first sheet
+    in 8.2b and still live one file over until 8.2d.
+    """
+
+    def _pass2(self, tmp_path, lines):
+        path = tmp_path / "human_scores_pass2.csv"
+        path.write_text("scenario_id,dimension,human_verdict\n" + "".join(lines),
+                        encoding="utf-8")
+        return path
+
+    def test_an_unreadable_second_pass_row_reaches_the_reader(
+        self, calibration_tree, tmp_path
+    ):
+        calibration_tree(_FOUR_ROWS, second_pass=None)
+        self._pass2(tmp_path, [
+            "S-101,grounding_fidelity,y\n",
+            "S-102,grounding_fidelity,pass\n",
+            "S-103,grounding_fidelity,pass\n",
+            "S-104,grounding_fidelity,pass\n",
+        ])
+
+        result = cc.compute_correlation(
+            _judge_returning({"S-101": 1, "S-102": 2, "S-103": 4, "S-104": 5})
+        )
+
+        assert any("human_scores_pass2.csv" in e and "'y'" in e for e in result["errors"]), (
+            result["errors"]
+        )
+
+    def test_a_duplicated_row_has_no_verdict_rather_than_the_last_one(
+        self, calibration_tree, tmp_path
+    ):
+        """A copy-pasted row is the most ordinary spreadsheet accident there is.
+
+        It used to overwrite the blind verdict silently, count twice towards
+        "rows re-labelled", and lower the ceiling by a full kappa point.
+        """
+        calibration_tree(_FOUR_ROWS, second_pass=None)
+        self._pass2(tmp_path, [
+            "S-101,grounding_fidelity,fail\n",
+            "S-101,grounding_fidelity,pass\n",
+            "S-102,grounding_fidelity,fail\n",
+            "S-103,grounding_fidelity,pass\n",
+            "S-104,grounding_fidelity,pass\n",
+        ])
+
+        second = cc.read_second_pass()
+
+        assert ("S-101", "grounding_fidelity") not in second["verdicts"], (
+            "neither copy may win"
+        )
+        assert any("appears more than once" in u for u in second["unusable"])
+        assert second["valid"] == 3
+
+    def test_check_names_the_second_sheets_unreadable_rows(
+        self, calibration_tree, tmp_path, capsys
+    ):
+        """The run path and the `--check` path read that list separately, and
+        `--check` is the one the owner runs BEFORE spending anything."""
+        calibration_tree(_FOUR_ROWS, second_pass=None)
+        self._pass2(tmp_path, [
+            "S-101,grounding_fidelity,y\n",
+            "S-102,grounding_fidelity,pass\n",
+        ])
+
+        report = cc.readiness()
+        assert any("'y'" in u for u in report["second_pass_unusable"]), report
+
+        cc.print_readiness(report)
+        printed = capsys.readouterr().out
+        assert "human_scores_pass2.csv" in printed
+        assert "could not be read" in printed
+
+    def test_second_pass_valid_reflects_what_was_read(self, calibration_tree, tmp_path):
+        calibration_tree(_FOUR_ROWS, second_pass=None)
+        self._pass2(tmp_path, [
+            "S-101,grounding_fidelity,pass\n",
+            "S-102,grounding_fidelity,fail\n",
+        ])
+
+        report = cc.readiness()
+
+        assert report["second_pass_valid"] == 2, "a permanently-zero counter passed before"
+        assert report["second_pass_missing_file"] is False
+
+    def test_only_rows_that_pair_with_the_first_sheet_count_as_progress(
+        self, calibration_tree, tmp_path
+    ):
+        """`8 / 6 needed for the ceiling` and READY, over zero pairing rows.
+
+        Reachable by editing the first sheet's ids after emitting the second.
+        """
+        calibration_tree(_FOUR_ROWS, second_pass=None)
+        self._pass2(tmp_path, [
+            "S-901,grounding_fidelity,pass\n",
+            "S-902,grounding_fidelity,fail\n",
+            "S-903,grounding_fidelity,pass\n",
+        ])
+
+        report = cc.readiness()
+
+        assert report["second_pass_valid"] == 3, "three rows were readable"
+        assert report["second_pass_paired"] == 0, "and none of them is a row we judged"
+        assert report["ready_to_calibrate"] is False
+
+
+class TestReadinessChecksWhatItCanCheckLocally:
+    """`--check` said READY while three locally-knowable inputs were missing.
+
+    Each of them is discovered today only after a judge call per labelled row
+    has been paid for.
+    """
+
+    def test_an_unexported_api_key_is_named_and_blocks_ready(
+        self, calibration_tree, monkeypatch
+    ):
+        """Present in `.env` is not enough: the settings loader and the Anthropic
+        client read different places, which CLAUDE.md records costing four
+        debugging cycles."""
+        calibration_tree(_FOUR_ROWS)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        report = cc.readiness()
+        assert report["api_key_exported"] is False
+        assert report["ready_to_calibrate"] is False
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        assert cc.readiness()["api_key_exported"] is True
+
+    def test_a_one_sided_sheet_is_refused_before_the_money_is_spent(
+        self, calibration_tree, monkeypatch
+    ):
+        """Kappa needs both labels, and a resample loses one entirely with
+        probability about e^-m. At m=1 that is 37% of resamples, so the run can
+        only ever report "not a measurement" - which is knowable from the sheet.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        rows = [(f"S-8{i:02d}", "grounding_fidelity", "5") for i in range(6)]
+        calibration_tree(rows)
+
+        report = cc.readiness()
+
+        assert report["label_fail_rows"] == 0
+        assert report["minority_label_rows"] == 0
+        assert report["balance_is_workable"] is False
+        assert report["ready_to_calibrate"] is False
+
+    def test_a_balanced_sheet_is_ready(self, calibration_tree, monkeypatch):
+        """Otherwise the test above would pass for the wrong reason."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        rows = [(f"S-8{i:02d}", "grounding_fidelity", "5" if i < 3 else "1")
+                for i in range(6)]
+        calibration_tree(rows)
+
+        report = cc.readiness()
+
+        assert report["minority_label_rows"] == 3
+        assert report["balance_is_workable"] is True
+        assert report["ready_to_calibrate"] is True
+
+
+class TestEveryReasonReachesTheReader:
+    def test_the_gate_speaks_on_the_undefined_kappa_path_too(
+        self, calibration_tree, monkeypatch
+    ):
+        """That branch rebuilt `errors` from scratch and dropped every gate reason.
+
+        It is the one path where the gate's reason is the ONLY notice that the
+        ceiling is unusable, because `ceiling["missing"]` is empty there.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        rows = [(f"S-9{i:02d}", "grounding_fidelity", "5") for i in range(6)]
+        calibration_tree(rows, second_pass="match")
+
+        result = cc.compute_correlation(
+            _judge_returning({f"S-9{i:02d}": 5 for i in range(6)})
+        )
+
+        assert result["status"] == cc.STATUS_NOT_CALIBRATED_YET
+        assert result["gate"]["reasons"], "the gate had something to say"
+        for reason in result["gate"]["reasons"]:
+            assert reason in result["errors"], "and it must reach the reader"
+
+    def test_the_not_yet_headline_is_followed_by_the_reason(
+        self, calibration_tree, monkeypatch, capsys
+    ):
+        """Printing the reason somewhere else in the output is not the same as
+        printing it under the headline that asks 'why'."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        calibration_tree(_TWENTY_BALANCED, second_pass=None)
+
+        import tests.evals.judge as judge_module
+
+        monkeypatch.setattr(judge_module, "judge", _judge_wrong_about(0))
+        cc.main([])
+        out = capsys.readouterr().out
+
+        _, _, after = out.partition("NOT CALIBRATED YET")
+        assert "no second labelling pass" in after, (
+            "the headline must be followed by what was not measured"
+        )
+
+
+class TestTheEmitterRefusesAnEmptySheet:
+    def test_a_sheet_with_no_rows_emits_nothing(self, calibration_tree, tmp_path):
+        """The docstring lists this as one of three refusals and it had no test.
+
+        Under the mutant, a header-only first sheet produced exit 5 and a
+        header-only second sheet: an emitted artefact standing in for work that
+        does not exist.
+        """
+        calibration_tree(_FOUR_ROWS, second_pass=None)
+        (tmp_path / "human_scores.csv").write_text(
+            "scenario_id,dimension,human_verdict,human_score,notes\n", encoding="utf-8"
+        )
+
+        code, messages = cc.emit_second_pass()
+
+        assert code == cc.EXIT_SETUP_ERROR
+        assert not cc.HUMAN_SCORES_PASS2_CSV.exists()
+        assert any("0 of 0" in m for m in messages), messages

@@ -69,20 +69,59 @@ class TestCohensKappa:
         assert cohens_kappa(_cells(judge_too_harsh=2, judge_too_lenient=2)) == pytest.approx(-1.0)
 
     def test_a_judge_that_passes_everything_scores_zero(self):
-        """The defect that moved the gate.
+        """The defect that moved the gate, and CHANGED ANSWER in 8.2d.
 
         The human failed half the rows; the judge passed all of them. Raw
         agreement is 50%, and Spearman over the underlying 1-5 scores reported
         1.000 because a constant judge ranks in agreement with any rising human.
-        Kappa sees that the judge carries no information and returns 0.
+
+        This used to assert kappa == 0.0. It is NaN now, and the difference
+        matters: with the judge's marginal degenerate, `observed == expected`
+        identically, so 0.0 was arriving no matter which rows the judge passed.
+        0.0 means "measured, and no better than chance" - a finding about the
+        judge. NaN means "this table cannot say" - an absence. Reporting the
+        second as the first is how a lopsided corpus gets blamed on a judge, and
+        it pinned bootstrap lower bounds at zero (four adversarial reviews,
+        2026-08-19).
+
+        The CONCLUSION is unchanged, which is the point: a judge that passes
+        everything is still refused, and `test_a_judge_that_passes_everything_is_refused`
+        in the harness tests still holds.
         """
         cells = confusion([(True, True), (True, True), (False, True), (False, True)])
         assert cells["judge_too_lenient"] == 2
-        assert cohens_kappa(cells) == pytest.approx(0.0)
-        # BACKLOG 8.2c: there is no threshold constant to compare against any
-        # more. 0.0 is the meaning itself - no better than chance - and the gate
-        # refuses it on the interval, in test_agreement_threshold.py.
-        assert cohens_kappa(cells) <= 0.0
+        assert math.isnan(cohens_kappa(cells)), (
+            "a degenerate judge marginal is an absence of evidence, not evidence of chance"
+        )
+
+    def test_a_degenerate_HUMAN_marginal_is_also_undefined(self):
+        """The other side of the same coin, and the one that bites in practice.
+
+        Every human label is `pass` and the judge splits. Kappa was 0.0 here too,
+        for the same arithmetic reason, and the harness reported that as a judge
+        failing to beat chance - exit 1, "fix the judge" - over a sheet on which
+        no judge could have scored anything else.
+        """
+        cells = confusion([(True, True), (True, True), (True, False), (True, False)])
+        assert math.isnan(cohens_kappa(cells))
+
+    def test_exact_arithmetic_leaves_no_dust_at_zero(self):
+        """A mathematically exact 0 must not come back as 2.66e-16.
+
+        `observed` and `expected` reach the same value by different routes. In
+        float that produced 2.664535259100375e-16 on this table, and the gate
+        tests `low > 0`, so half (a) passed on dust: the same corpus returned
+        CALIBRATED at one seed and NOT CALIBRATED at another, both printing
+        `[+0.000, +1.000]`.
+        """
+        cells = {"both_pass": 0, "judge_too_harsh": 5,
+                 "judge_too_lenient": 0, "both_fail": 7}
+        assert math.isnan(cohens_kappa(cells)), "this table's judge marginal is degenerate"
+
+        # And a genuinely balanced chance-level table lands on exactly 0.0.
+        chance = confusion([(True, True), (True, False), (False, True), (False, False)])
+        assert cohens_kappa(chance) == 0.0
+        assert not cohens_kappa(chance) > 0, "no dust may cross the (a) boundary"
 
     def test_total_agreement_on_one_label_is_undefined_not_perfect(self):
         """Both raters passed everything, so a coin agrees just as often.

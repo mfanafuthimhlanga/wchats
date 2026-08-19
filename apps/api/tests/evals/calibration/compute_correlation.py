@@ -109,6 +109,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import pathlib
 import random
 import sys
@@ -119,6 +120,7 @@ from tests.evals.calibration.agreement import (
     cohens_kappa,
     confusion,
     human_ceiling,
+    paired_difference,
 )
 
 # ---------------------------------------------------------------------------
@@ -198,6 +200,17 @@ REQUIRED_COLUMN = "human_verdict"
 # so the status machinery can say "not calibrated yet" rather than "nan".
 MIN_PAIRS = 3
 
+#: How many rows must carry the RARER label before any interval here is a
+#: measurement. Derived, not chosen: a bootstrap resample loses a label entirely
+#: with probability about `e^-m`, so m=1 leaves 37% of resamples uninformative
+#: and m=2 leaves 13%, which is the line `MAX_UNDEFINED_FRACTION` draws.
+#:
+#: It exists because `--check` said "3 of the 3 human verdicts needed" and no
+#: 3-row sheet can produce a usable ceiling at all: the owner labelled exactly
+#: what they were told to, paid for a judge call per row, and got
+#: "not a measurement".
+MIN_MINORITY_ROWS = 2
+
 # The second floor, and the P4 review is why it exists (MIN_PAIRS alone is not
 # enough). A judge that returns verdict='ERROR' on seven of ten labelled rows —
 # Anthropic 529s, a JSON parse failure, judge.py:170-177's score=0 on any
@@ -231,6 +244,20 @@ EXIT_READY_TO_CALIBRATE = 4
 # so it may not share a code with any outcome that did measure something. Four
 # outcomes got four codes for that reason (audit D7); this is the fifth.
 EXIT_SECOND_PASS_EMITTED = 5
+
+#: Everything `main` accepts. Anything else refuses rather than spending money.
+KNOWN_FLAGS = ("--check", "--emit-second-pass")
+
+USAGE = (
+    "compute_correlation.py - calibrate the LLM judge against human labels",
+    "",
+    "  (no arguments)        run the calibration. COSTS one judge call per labelled row.",
+    "  --check               report which inputs are present. No judge calls, no network.",
+    "  --emit-second-pass    write the blind second-pass sheet, shuffled and empty.",
+    "",
+    "Exit codes: 0 calibrated, 1 not calibrated, 2 setup error,",
+    "            3 not calibrated yet, 4 --check ready, 5 second pass emitted.",
+)
 
 STATUS_CALIBRATED = "calibrated"
 STATUS_NOT_CALIBRATED = "not_calibrated"
@@ -448,14 +475,36 @@ def read_second_pass(path: pathlib.Path | None = None) -> dict:
     where `verdicts` maps (scenario_id, dimension) -> bool.
     """
     parsed = read_human_score_rows(path or HUMAN_SCORES_PASS2_CSV)
+
+    # A dict comprehension over the rows was last-wins and silent. A copy-pasted
+    # row is the single most ordinary spreadsheet accident, and it overwrote a
+    # blind verdict, counted twice towards "rows re-labelled", and lowered the
+    # ceiling by a full kappa point with nothing printed.
+    verdicts: dict[tuple[str, str], bool] = {}
+    repeated: set[tuple[str, str]] = set()
+    for row in parsed["rows"]:
+        key = (row["scenario_id"], row["dimension"])
+        if key in verdicts or key in repeated:
+            # Neither copy wins. A row the labeller answered twice has no single
+            # blind verdict, and picking one silently is what made a duplicate
+            # lower the ceiling by a full kappa point with nothing printed.
+            repeated.add(key)
+            verdicts.pop(key, None)
+            continue
+        verdicts[key] = row["human_passed"]
+
+    duplicates = [
+        f"{scenario_id}/{dimension} appears more than once, so it has no single "
+        "blind verdict. Delete the extra row."
+        for scenario_id, dimension in sorted(repeated)
+    ]
+
     return {
-        "verdicts": {
-            (row["scenario_id"], row["dimension"]): row["human_passed"]
-            for row in parsed["rows"]
-        },
+        "verdicts": verdicts,
+        "duplicates": duplicates,
         "attempted": parsed["attempted"],
-        "valid": parsed["valid"],
-        "unusable": parsed["unusable"],
+        "valid": len(verdicts),
+        "unusable": parsed["unusable"] + duplicates,
         "missing_file": parsed["missing_file"],
     }
 
@@ -669,12 +718,41 @@ def readiness() -> dict:
     awaiting_ceiling = parsed["valid"] == 0 or bool(rows_without_second)
     awaiting_owner = parsed["valid"] < MIN_PAIRS or awaiting_ceiling
 
+    # How many rows carry each label. Kappa needs BOTH present, and a resample
+    # loses a label entirely with probability about e^-m where m is the minority
+    # count, so m = 1 gives 37% uninformative resamples and m = 2 gives 13%.
+    # `--check` used to say READY over a sheet that could only ever produce
+    # "not a measurement", after the owner had paid for a judge call per row.
+    passes = sum(1 for r in parsed["rows"] if r["human_passed"])
+    fails = parsed["valid"] - passes
+    minority = min(passes, fails)
+    balance_is_workable = minority >= MIN_MINORITY_ROWS
+
+    # `--check` is documented as saying which inputs are missing, and the run
+    # needs this one. It is read from os.environ, not from .env: the settings
+    # loader and the Anthropic client read different places, which has cost four
+    # debugging cycles in this repo (CLAUDE.md, 1.28).
+    api_key_exported = bool(os.environ.get("ANTHROPIC_API_KEY"))
+
     return {
         "scenarios_present": len(scenario_files),
         "second_pass_valid": second["valid"],
+        "second_pass_unusable": second["unusable"],
         "second_pass_missing_file": second["missing_file"],
+        # Only rows that PAIR with the first sheet count as progress. Counting
+        # every readable row let an edited or re-emitted sheet print
+        # "8 / 6 needed for the ceiling" and READY while zero rows paired.
+        "second_pass_paired": len(
+            [r for r in parsed["rows"]
+             if (r["scenario_id"], r["dimension"]) in second["verdicts"]]
+        ),
         "rows_without_second_verdict": rows_without_second,
         "awaiting_ceiling": awaiting_ceiling,
+        "label_pass_rows": passes,
+        "label_fail_rows": fails,
+        "minority_label_rows": minority,
+        "balance_is_workable": balance_is_workable,
+        "api_key_exported": api_key_exported,
         "deflected_responses": deflected,
         "scorable_rows": scorable_rows,
         "human_scores_attempted": parsed["attempted"],
@@ -687,7 +765,12 @@ def readiness() -> dict:
         "referenced_pairs": referenced,
         "blocking": blocking,
         "awaiting_owner_scores": awaiting_owner,
-        "ready_to_calibrate": not blocking and not awaiting_owner,
+        # A judge run costs a call per row. Every condition here is checkable
+        # locally, so none of them should be discovered after the money is spent.
+        "ready_to_calibrate": (
+            not blocking and not awaiting_owner and balance_is_workable
+            and api_key_exported
+        ),
     }
 
 
@@ -706,10 +789,36 @@ def print_readiness(report: dict) -> int:
     )
     print(f"  recorded responses on disk : {report['responses_present']}")
     print(
-        f"  rows re-labelled blind     : {report['second_pass_valid']} "
+        f"  rows re-labelled blind     : {report['second_pass_paired']} "
         + ("(no second-pass sheet yet)" if report["second_pass_missing_file"] else
            f"/ {report['human_scores_valid']} needed for the ceiling")
     )
+    print(
+        f"  label balance              : {report['label_pass_rows']} pass, "
+        f"{report['label_fail_rows']} fail"
+        + ("" if report["balance_is_workable"] else
+           f"   NOT ENOUGH: {MIN_MINORITY_ROWS} rows must carry each label")
+    )
+    print(
+        "  ANTHROPIC_API_KEY          : "
+        + ("exported" if report["api_key_exported"] else
+           "NOT in os.environ. Present in .env is not enough: the settings "
+           "loader and the Anthropic client read different places (1.28)")
+    )
+
+    # Every row either sheet could not read, by name and with its reason.
+    # These were computed and thrown away, so a sheet whose verdicts read
+    # `y` reported as "0 labelled" and named nothing: defect F3, fixed on
+    # the header axis in 8.2b and still live on the value axis until 8.2d.
+    for label, reasons in (
+        ("human_scores.csv", report["human_scores_unusable"]),
+        (HUMAN_SCORES_PASS2_CSV.name, report["second_pass_unusable"]),
+    ):
+        if reasons:
+            print()
+            print(f"  {label} - {len(reasons)} row(s) could not be read:")
+            for reason in reasons:
+                print(f"    - {reason}")
 
     if report["deflected_responses"]:
         print(
@@ -728,10 +837,10 @@ def print_readiness(report: dict) -> int:
         for item in report["blocking"]:
             print(f"  - {item}")
         print()
-    if report["awaiting_owner_scores"]:
+    if report["human_scores_valid"] < MIN_PAIRS:
         print(
-            f"Awaiting the owner: {report['human_scores_valid']} of the {MIN_PAIRS} human "
-            "verdicts needed are filled in.\n"
+            f"Awaiting the owner: {report['human_scores_valid']} of {report['human_scores_attempted']} rows on the "
+            "sheet carry a verdict. Every row you do not intend to label should be deleted.\n"
             "  Label BINARY - pass or fail - and write WHY in `notes`. A 1-5 score is\n"
             "  optional: a human cannot hold a scale steady across many rows, and the\n"
             "  gate is Cohen's kappa on the binary label.\n"
@@ -866,7 +975,7 @@ def compute_correlation(judge_fn) -> dict:
         # exception. Zero is not a low score, it is the absence of one, and
         # correlating it would move rho with the failure rate of the API.
         if j_score == 0:
-            errors.append(f"{sid}/{dim}: judge returned ERROR — {verdict['reason']}")
+            errors.append(f"{sid}/{dim}: judge returned ERROR: {verdict['reason']}")
             table.append({"scenario_id": sid, "dimension": dim,
                           "human_verdict": row["human_verdict"], "human": h_score,
                           "judge_verdict": None, "judge": None,
@@ -968,17 +1077,37 @@ def compute_correlation(judge_fn) -> dict:
     judge_interval = bootstrap_kappa(binary_pairs)
     second = read_second_pass()
     ceiling = ceiling_pairs_for(judged_rows, second)
-    ceiling_interval = human_ceiling(ceiling["pairs"]) if not ceiling["missing"] else None
+
+    ceiling_interval = None
+    difference_interval = None
+    if not ceiling["missing"]:
+        ceiling_interval = human_ceiling(ceiling["pairs"])
+        # BACKLOG 8.2d. Both sequences are indexed by the same judged rows in the
+        # same order, so one resample drives both and the human's first-pass
+        # label vector cancels. The previous rule compared the two marginal
+        # intervals, which is the overlapping-CI fallacy AND, against a
+        # self-consistent labeller, reduced to "at most 3 disagreements" at any n.
+        difference_interval = paired_difference(binary_pairs, ceiling["pairs"])
 
     if ceiling["missing"]:
         errors = errors + [
             f"{len(ceiling['missing'])} of {pairs} judged row(s) have no blind second "
             f"verdict, so the human ceiling was NOT computed: {', '.join(ceiling['missing'])}. "
-            f"Run `--emit-second-pass`, label {HUMAN_SCORES_PASS2_CSV.name} without "
-            "looking at the first sheet, and run again."
+            f"Add them to {HUMAN_SCORES_PASS2_CSV.name} (it already exists, so "
+            "`--emit-second-pass` will refuse rather than overwrite your labels), then "
+            "run again."
         ]
 
-    gate = calibration_verdict(judge_interval, ceiling_interval)
+    # Everything the second sheet could not read is the owner's to fix, so it
+    # travels with the errors rather than dying inside the reader (BLOCK 4 of the
+    # 2026-08-19 mutation review: this list was computed and discarded, which is
+    # defect F3 reintroduced one file over).
+    if second["unusable"]:
+        errors = errors + [
+            f"{HUMAN_SCORES_PASS2_CSV.name}: {reason}" for reason in second["unusable"]
+        ]
+
+    gate = calibration_verdict(judge_interval, ceiling_interval, difference_interval)
 
     result = {
         "kappa": None if kappa != kappa else kappa,
@@ -987,6 +1116,7 @@ def compute_correlation(judge_fn) -> dict:
         "rho": None if rho != rho else rho,
         "judge_interval": judge_interval,
         "ceiling_interval": ceiling_interval,
+        "difference_interval": difference_interval,
         "gate": gate,
         "scored_pairs": len(human_scores),
         "pairs": pairs,
@@ -1005,10 +1135,10 @@ def compute_correlation(judge_fn) -> dict:
         # branch keeps the specific message, and orders it first.
         result["status"] = STATUS_NOT_CALIBRATED_YET
         result["errors"] = errors + [
-            "Cohen's kappa is undefined: every label on one side is identical, so "
-            "chance agreement is certain and this set cannot measure the judge. "
-            "Label a scenario the other way, or score more rows."
-        ]
+            "Cohen's kappa is undefined: one of the two raters used a single label for "
+            "every row, so the arithmetic forces agreement to equal chance whatever the "
+            "other rater did. Label a scenario the other way, or score more rows."
+        ] + gate["reasons"]
         return result
 
     # A FAILED half is a measurement and reports NOT CALIBRATED. A MISSING half -
@@ -1057,6 +1187,15 @@ def _print_agreement(result: dict) -> None:
     kappa = result.get("kappa")
     mcc = result.get("matthews")
     rho = result.get("rho")
+
+    # A run that stopped at a floor computed NOTHING, and printing "one label on
+    # both sides" over a matrix that plainly shows two labels is worse than
+    # printing nothing: it sends the owner to relabel a sheet that is fine.
+    if result.get("gate") is None:
+        print("  Cohen's kappa   not computed   the run stopped at a floor above")
+        print("  Matthews        not computed")
+        print(f"  {result['pairs']} labelled row(s) produced a verdict pair.")
+        return
     print(f"  Cohen's kappa   {kappa:.3f}   the point estimate; the INTERVAL is the gate"
           if kappa is not None else
           "  Cohen's kappa   undefined   one label on both sides; chance agreement is certain")
@@ -1089,12 +1228,15 @@ def _print_gate(result: dict) -> None:
     print("The gate, derived from these labels and from no constant:")
     print()
     _print_interval("judge 95% CI", result.get("judge_interval"),
-                    "(a) beats chance when this low bound is above 0")
-    _print_interval("human ceiling", result.get("ceiling_interval"),
-                    "(b) the judge's high bound must reach this low bound")
+                    "(a)  above 0 means the judge beats chance")
+    _print_interval("your ceiling", result.get("ceiling_interval"),
+                    "(b1) above 0 means your two passes agree better than chance")
+    _print_interval("you minus judge", result.get("difference_interval"),
+                    "(b2) above 0 ALL THROUGH means you beat the judge")
     print()
-    print(f"  (a) beats chance    {_half(gate['beats_chance'])}")
-    print(f"  (b) reaches ceiling {_half(gate['reaches_ceiling'])}")
+    print(f"  (a)  the judge beats chance          {_half(gate['beats_chance'])}")
+    print(f"  (b1) your labels set a scale         {_half(gate['ceiling_beats_chance'])}")
+    print(f"  (b2) the judge reaches that scale    {_half(gate['reaches_ceiling'])}")
 
 
 def _print_interval(label: str, interval: dict | None, note: str) -> None:
@@ -1183,6 +1325,16 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns the exit code rather than calling sys.exit."""
     args = sys.argv[1:] if argv is None else argv
 
+    # A run costs one judge call per labelled row. `--help`, `-h` and every typo
+    # of `--check` used to fall straight through to that, spend the money, and
+    # exit 1 - which a shell reads as "the judge is not calibrated". Unknown
+    # arguments now refuse before anything is imported or billed.
+    unknown = [a for a in args if a not in KNOWN_FLAGS]
+    if unknown or "--help" in args or "-h" in args:
+        for line in USAGE:
+            print(line)
+        return EXIT_SETUP_ERROR if unknown else EXIT_READY_TO_CALIBRATE
+
     if "--emit-second-pass" in args:
         code, messages = emit_second_pass()
         for message in messages:
@@ -1253,13 +1405,18 @@ def main(argv: list[str] | None = None) -> int:
             result["pairs"] >= MIN_PAIRS and rate is not None and rate >= MIN_PAIR_RATE
         )
         if floors_met:
+            # It used to assert the cause here: "one label was used for every
+            # row". That printed over a run whose kappa was 1.000 four lines
+            # above, and the remedy it named - relabel a scenario the other way -
+            # means writing a verdict the owner does not believe. The gate knows
+            # which part was not measured; say that instead of guessing.
             print(
                 "NOT CALIBRATED YET - every labelled row produced a pair, and the "
-                "measurement still could not be made.\n"
-                "See the errors above: the usual cause is that one label was used for "
-                "every row, which makes\nchance agreement certain and kappa undefined. "
-                "Label a scenario the other way, or label more rows."
+                "measurement still could not be made."
             )
+            for reason in (result.get("gate") or {}).get("reasons", []):
+                print(f"  {reason}")
+
         else:
             print(
                 f"NOT CALIBRATED YET - {result['pairs']} usable pair(s) out of "
