@@ -1,5 +1,7 @@
 # MASTERPLAN — from here to two live agents
 
+**FROZEN 2026-08-22.** The `wayfinder:map` issue on GitHub carries the path now; this file is the record of how it was framed up to M1.
+
 The single ordered path from the current branch to production, for every session between now and
 launch. Milestone plans in `.dev/plans/` decompose these milestones; if a plan conflicts with this
 file, this file wins or gets amended in the same commit.

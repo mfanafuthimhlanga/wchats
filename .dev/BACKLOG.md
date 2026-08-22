@@ -1,5 +1,7 @@
 # BACKLOG — the single ordered list
 
+**FROZEN 2026-08-22.** Open work is a GitHub issue now (`docs/agents/issue-tracker.md`). Rows here are read when an issue or a source comment cites one by number; nothing is added. `0.8 · salvage-or-restart` was decided the same day: refactor in place, `.dev/reference/260822-salvage-or-restart.md`.
+
 **Every open item, with its source.** Written 2026-08-06 because outstanding work had accumulated
 across five files and one temp-directory journal, and "what is next?" could only be answered by
 reading all of them. If an item is not here, it is not tracked.

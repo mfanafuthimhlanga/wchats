@@ -78,15 +78,17 @@ trivial tasks still run solo. Regardless of engine, artifacts persist in `.dev/`
 
 ```
 .dev/
-  BACKLOG.md                         ← THE single ordered list of open work. Read first.
-                                       Rows carry slugs (`5.1 · ops15-server-gap`); the NUMBER is an
-                                       address, not a priority. Use slugs in conversation.
+  BACKLOG.md                         ← FROZEN 2026-08-22. Rows carry slugs
+                                       (`5.1 · ops15-server-gap`); the NUMBER is an address, not a
+                                       priority, and source comments cite rows by number. Read a row
+                                       when an issue or a comment points at it; never add to it.
   HANDOFF.md                         ← current-state snapshot; read at session start
   PRODUCTION-READINESS.md            ← every gap between here and production, plus the ordered
                                        end-to-end validation plan. Claims are marked
                                        OBSERVED / READ / RECORD — never promote a RECORD line to a
                                        decision without re-checking it.
-  plans/     YYMMDD-<slug>.md        ← BEFORE execution: goal, approach, phases, files, risks, tests
+  MASTERPLAN.md                      ← FROZEN 2026-08-22. The wayfinder map issue carries the path now.
+  plans/     YYMMDD-<slug>.md        ← FROZEN 2026-08-22. A spec lives in its issue (`to-spec`).
   traces/    YYMMDD-<slug>.md        ← AFTER execution: what actually changed, decisions, deviations
   workflows/ <name>.workflow.js      ← the orchestration itself, versioned and re-runnable
   reference/ <topic>.md              ← durable findings that outlive one task
@@ -96,10 +98,11 @@ trivial tasks still run solo. Regardless of engine, artifacts persist in `.dev/`
 
 Rules:
 
-- **No execution of a non-trivial task without a plan file first. No task is done without its trace.**
-- **`BACKLOG.md` is the queue and it is maintained transactionally.** A phase that closes an
-  item deletes its row in the same commit that lands the fix; a phase that discovers work adds a
-  row. Outstanding work living only in the tail of a trace or a plan is how it gets lost.
+- **Open work is a GitHub issue; the path is the `wayfinder:map` issue.** A task that closes an
+  issue closes it in the same commit that lands the fix; a task that discovers work opens one.
+  Outstanding work living only in the tail of a trace is how it gets lost.
+- **A spec is the issue body (`to-spec`), and a design decision is an ADR in `docs/adr/`.**
+  No task is done without its trace.
 - **A workflow's tier-2 judgement is extracted to `.dev/reference/` before the session ends.**
   The workflow journal lives in a temp directory and does not survive.
 - When a Workflow runs, copy its script into `.dev/workflows/` so the orchestration is versioned.
@@ -239,3 +242,19 @@ Widget:      Preact (<20 kb gzipped)
   `git commit -F <file>`.
 - Design work follows the Mzansi Design Codex and the GOTHAM system; the repo-root `DESIGN.md` is
   **stale** (it still describes the superseded "Amber Console" direction).
+
+## Agent skills
+
+### Issue tracker
+
+Open work lives in this repo's GitHub Issues, via `gh`. `.dev/BACKLOG.md` is frozen as of
+2026-08-22; its rows are read, never added to, and an issue is opened per row as it enters the
+work. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default labels, unchanged. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` at the root and `docs/adr/`. See `docs/agents/domain.md`.
