@@ -15,11 +15,13 @@ is `.dev/reference/260822-salvage-or-restart.md`; its six changes (cut the eval 
 `ship` path, `app/domain/` with a new import-linter rung, lizard and `inspect.getsource` gates with
 shrinking exemption lists, ADRs replacing plan plus trace, M2 before more M1) are the work.
 
-**The owner runs `/wayfinder` next.** It is user-invoked only. It builds the map issue that
-replaces `MASTERPLAN.md`, from that reference note, `PRODUCTION-READINESS.md`, and
-`.dev/reference/260818-llm-eval-fundamentals.md`. The harness and eval tickets are the ones that
-need the most grilling: validating the harness is the hardest thing in this project, and the
-fundamentals doc is what every such ticket cites.
+**The map is GitHub issue #4, "Map: two Agents live, Bantuson first".** Charted 2026-08-22: 17
+tickets, 8 native blocking edges, 3 research tickets already resolved on `research/*` branches and
+indexed in the map's Decisions so far. `CONTEXT.md` holds the words every ticket uses. Next
+session: `/wayfinder 4`; it takes the first frontier ticket unless one is named, and #5 (run the
+Harness once against the live local Agent) is the one #6 and #19 both wait on. Validating the
+Harness is the hardest thing in this project; every Harness ticket cites
+`.dev/reference/260818-llm-eval-fundamentals.md` and gets the most grilling.
 
 Conventions changed the same day, recorded in `CLAUDE.md` "Agent skills" and `docs/agents/`:
 Matt Pocock's engineering skills are installed under `.agents/skills/`; `BACKLOG.md`,
