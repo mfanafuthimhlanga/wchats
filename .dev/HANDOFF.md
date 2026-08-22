@@ -10,16 +10,21 @@ agent live via MCP, both tested on their Vercel URLs. Nothing else counts as don
 
 ## Next move
 
-**One decision from the owner first: refactor in place or rebuild (`0.8`).** Measured 2026-08-22
-in `.dev/reference/260822-salvage-or-restart.md`. The recommendation there is refactor, and the
-six changes it lists (cut the eval subsystem to one `ship` path, `app/domain/` with a new
-import-linter rung, lizard and `inspect.getsource` gates with shrinking exemption lists, ADRs
-replacing plan plus trace, M2 before more M1) start the moment it is decided. Everything below
-this line was the state on 2026-08-18 and waits behind that decision.
+**Decided 2026-08-22: refactor in place, and the queue moves to GitHub issues.** The measurement
+is `.dev/reference/260822-salvage-or-restart.md`; its six changes (cut the eval subsystem to one
+`ship` path, `app/domain/` with a new import-linter rung, lizard and `inspect.getsource` gates with
+shrinking exemption lists, ADRs replacing plan plus trace, M2 before more M1) are the work.
 
-**Working tree on 2026-08-22:** `CLAUDE.md` is modified and uncommitted, 241 lines deleted and
-7 generic lines added. Nobody in that session made the change. HEAD `d99bad3` has the real file;
-`git checkout -- CLAUDE.md` restores it. Do not commit it as is.
+**The owner runs `/wayfinder` next.** It is user-invoked only. It builds the map issue that
+replaces `MASTERPLAN.md`, from that reference note, `PRODUCTION-READINESS.md`, and
+`.dev/reference/260818-llm-eval-fundamentals.md`. The harness and eval tickets are the ones that
+need the most grilling: validating the harness is the hardest thing in this project, and the
+fundamentals doc is what every such ticket cites.
+
+Conventions changed the same day, recorded in `CLAUDE.md` "Agent skills" and `docs/agents/`:
+Matt Pocock's engineering skills are installed under `.agents/skills/`; `BACKLOG.md`,
+`MASTERPLAN.md` and `plans/` are frozen; `traces/`, `reference/` and `retro.md` carry on.
+Everything below this line was the state on 2026-08-18 and waits behind the map.
 
 **Gates on 2026-08-22, observed:** `gates.py full` exit 0 in 1085.7s, 2612 passed, 13 skipped,
 0 failed. Admin `tsc` 0 errors, `test:unit` 45 passed. Widget 9471 bytes gzipped.
