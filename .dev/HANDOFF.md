@@ -17,11 +17,15 @@ shrinking exemption lists, ADRs replacing plan plus trace, M2 before more M1) ar
 
 **The map is GitHub issue #4, "Map: two Agents live, Bantuson first".** Charted 2026-08-22: 17
 tickets, 8 native blocking edges, 3 research tickets already resolved on `research/*` branches and
-indexed in the map's Decisions so far. `CONTEXT.md` holds the words every ticket uses. Next
-session: `/wayfinder 4`; it takes the first frontier ticket unless one is named, and #5 (run the
-Harness once against the live local Agent) is the one #6 and #19 both wait on. Validating the
-Harness is the hardest thing in this project; every Harness ticket cites
-`.dev/reference/260818-llm-eval-fundamentals.md` and gets the most grilling.
+indexed in the map's Decisions so far. `CONTEXT.md` holds the words every ticket uses.
+
+**#5 closed the same evening: the Harness invoked the Agent for the first time** (run `29754ceb`,
+20 Scenarios, 18 scored, Verdict `block`, eight breakages recorded and none patched, trace
+`.dev/traces/260822-harness-first-run.md`). That unblocks #6, the Harness cut, which is the next
+frontier ticket in map order and a grilling ticket: the owner is in the loop. Two leftovers to
+delete by id only: Neon project `steep-haze-82236017`, tenant `e2e-harness-5-probe` in the local
+control DB. Next session: `/wayfinder 4`. Validating the Harness is the hardest thing in this
+project; every Harness ticket cites `.dev/reference/260818-llm-eval-fundamentals.md`.
 
 Conventions changed the same day, recorded in `CLAUDE.md` "Agent skills" and `docs/agents/`:
 Matt Pocock's engineering skills are installed under `.agents/skills/`; `BACKLOG.md`,
