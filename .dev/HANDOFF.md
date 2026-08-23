@@ -28,9 +28,13 @@ indexed in the map's Decisions so far. `CONTEXT.md` holds the words every ticket
 the label queue and promotion code, and Neon branch isolation are deleted with their tests; the
 task owns the run's numbers; the nightly eval and weekly red-team schedules stay and arm per
 Agent on deploy. Nothing is cut until the spec: the map clears first, then `/to-spec #4`
-(`docs/agents/issue-tracker.md`, "Handoff from the map to work"). Next session: `/wayfinder 4`;
-the frontier in map order is #7 ingestion types, #8 gates, #10 MCP surface, #11 Corpus, #14 host,
-#16 PII egress, #17 re-capture, #22 cost recording. Validating the Harness is the hardest thing
+(`docs/agents/issue-tracker.md`, "Handoff from the map to work").
+
+**#7, ingestion and retrieval types, closed 2026-08-23.** Five frozen types in `app/domain/` on a
+new bottom import-linter rung: `Chunk`, `ChunkMetadata`, `IngestionJob`, `RetrievedContext`,
+`ToolResult`. The `repr` seam between `retrieve_tool` and `agent.py` is replaced by JSON. Next
+session: `/wayfinder 4`; the frontier in map order is #8 gates, #10 MCP surface, #11 Corpus,
+#14 host, #16 PII egress, #17 re-capture, #22 cost recording. Twelve decision tickets remain. Validating the Harness is the hardest thing
 in this project; every Harness ticket cites `.dev/reference/260818-llm-eval-fundamentals.md`.
 
 Conventions changed the same day, recorded in `CLAUDE.md` "Agent skills" and `docs/agents/`:
