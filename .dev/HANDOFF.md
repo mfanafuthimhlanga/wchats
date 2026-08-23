@@ -21,11 +21,17 @@ indexed in the map's Decisions so far. `CONTEXT.md` holds the words every ticket
 
 **#5 closed the same evening: the Harness invoked the Agent for the first time** (run `29754ceb`,
 20 Scenarios, 18 scored, Verdict `block`, eight breakages recorded and none patched, trace
-`.dev/traces/260822-harness-first-run.md`). That unblocks #6, the Harness cut, which is the next
-frontier ticket in map order and a grilling ticket: the owner is in the loop. Two leftovers to
-delete by id only: Neon project `steep-haze-82236017`, tenant `e2e-harness-5-probe` in the local
-control DB. Next session: `/wayfinder 4`. Validating the Harness is the hardest thing in this
-project; every Harness ticket cites `.dev/reference/260818-llm-eval-fundamentals.md`.
+`.dev/traces/260822-harness-first-run.md`). Two leftovers to delete by id only: Neon project
+`steep-haze-82236017`, tenant `e2e-harness-5-probe` in the local control DB.
+
+**#6, the Harness cut, closed 2026-08-23.** The observed path survives; `decision_eval_service.py`,
+the label queue and promotion code, and Neon branch isolation are deleted with their tests; the
+task owns the run's numbers; the nightly eval and weekly red-team schedules stay and arm per
+Agent on deploy. Nothing is cut until the spec: the map clears first, then `/to-spec #4`
+(`docs/agents/issue-tracker.md`, "Handoff from the map to work"). Next session: `/wayfinder 4`;
+the frontier in map order is #7 ingestion types, #8 gates, #10 MCP surface, #11 Corpus, #14 host,
+#16 PII egress, #17 re-capture, #22 cost recording. Validating the Harness is the hardest thing
+in this project; every Harness ticket cites `.dev/reference/260818-llm-eval-fundamentals.md`.
 
 Conventions changed the same day, recorded in `CLAUDE.md` "Agent skills" and `docs/agents/`:
 Matt Pocock's engineering skills are installed under `.agents/skills/`; `BACKLOG.md`,
