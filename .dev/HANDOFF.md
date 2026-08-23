@@ -36,9 +36,13 @@ new bottom import-linter rung: `Chunk`, `ChunkMetadata`, `IngestionJob`, `Retrie
 
 **#8, gates as standards, closed 2026-08-23.** CCN 15 and 60 lines with a per-function baseline
 that fails on unpinned, grown and stale entries; one rule bans tests reading app source as text
-or AST; all in `static`; one test pins the gate. Next session: `/wayfinder 4`; the frontier in
-map order is #10 MCP surface, #11 Corpus, #14 host, #16 PII egress, #17 re-capture, #22 cost
-recording. Eleven decision tickets remain. Validating the Harness is the hardest thing
+or AST; all in `static`; one test pins the gate.
+
+**#10, the MCP surface, closed 2026-08-23.** Fourteen tools over fourteen existing routes, the
+tenant API key as a static bearer header (ADR 0004 when the spec lands), job ids polled through
+`get_job`, served inside FastAPI at `/mcp`, the portfolio embed replaced by `get_embed_snippet`'s
+output. Next session: `/wayfinder 4`; the frontier in map order is #11 Corpus, #14 host,
+#16 PII egress, #17 re-capture, #22 cost recording. Ten decision tickets remain. Validating the Harness is the hardest thing
 in this project; every Harness ticket cites `.dev/reference/260818-llm-eval-fundamentals.md`.
 
 Conventions changed the same day, recorded in `CLAUDE.md` "Agent skills" and `docs/agents/`:
