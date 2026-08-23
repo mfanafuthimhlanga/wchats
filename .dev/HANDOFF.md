@@ -89,10 +89,15 @@ closed.
 Flash-Lite EU because self-preference cannot be blinded, only measured; the Agent leaves the
 `claude_agent_sdk` harness for an owned loop with DB-backed sessions (ADR 0008; Railway's
 ephemeral containers would have broken SDK resume anyway); DeepSeek retires at cutover.
-$1.58 per thousand turns, all-DPA. One ticket remains: #17, the k=5 re-capture (AFK). The map
-closes when it does; then `/to-spec #4`. Note for #17: the re-capture still runs on DeepSeek
-(the current Agent), which is correct; it calibrates the Harness that exists, and Calibration
-re-runs against the Luna Judge identity when the cutover lands. Validating the Harness is the hardest thing
+$1.58 per thousand turns, all-DPA.
+
+**THE MAP IS CLEAR, 2026-08-23.** #17 was carried into the Notes as the last build input: the
+provider decision resequenced it (capture Luna turns after the owned loop lands, before
+labelling, so the owner never labels responses the cutover replaces). Fourteen decisions stand
+in the map's Decisions so far; four build inputs ride in its Notes; the fog holds only Mellow's
+region and M5. **Next move: the owner runs `/to-spec #4`** to collapse the closed map into one
+build plan, then `/to-tickets`, then `/implement` one ticket per session with `/code-review`
+per ticket (`docs/agents/issue-tracker.md`, "Handoff from the map to work"). Validating the Harness is the hardest thing
 in this project; every Harness ticket cites `.dev/reference/260818-llm-eval-fundamentals.md`.
 
 Conventions changed the same day, recorded in `CLAUDE.md` "Agent skills" and `docs/agents/`:
