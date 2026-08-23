@@ -102,7 +102,8 @@ Rules:
   issue closes it in the same commit that lands the fix; a task that discovers work opens one.
   Outstanding work living only in the tail of a trace is how it gets lost.
 - **A spec is the issue body (`to-spec`), and a design decision is an ADR in `docs/adr/`.**
-  No task is done without its trace.
+  No task is done without its trace, and every breakage a trace records is an issue the same day
+  (`docs/agents/issue-tracker.md`, "Handoff from a decision to work").
 - **A workflow's tier-2 judgement is extracted to `.dev/reference/` before the session ends.**
   The workflow journal lives in a temp directory and does not survive.
 - When a Workflow runs, copy its script into `.dev/workflows/` so the orchestration is versioned.
