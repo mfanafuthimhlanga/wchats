@@ -44,11 +44,10 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 - **Claim**: `gh issue edit <n> --add-assignee @me`, the session's first write.
 - **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.
 
-## Handoff from a decision to work
+## Handoff from the map to work
 
-Owner rule, 2026-08-23. A decision ticket that closes hands off in the same session, so nothing a trace observed waits on a later spec remembering it.
+Owner rule, 2026-08-23. The map is decisions only; the spec comes once, after the last decision.
 
-- **A closed decision ticket gets a spec.** The owner runs `/to-spec` in the session that closed it; the spec is an issue labelled `ready-for-agent`, and its body names the map ticket it came from.
-- **The spec gets tickets.** The owner runs `/to-tickets` on that spec; each ticket is blocked by the spec and carries `ready-for-agent`.
-- **Every breakage a trace records becomes a ticket.** A trace written while resolving a map ticket (`.dev/traces/`) lists breakages; each gets one issue the day the trace lands, labelled `needs-triage`, citing the trace and the line. Where a decision ticket is still open on the breakage's subject, the issue is blocked by that decision ticket; otherwise it is blocked by nothing and sits in the triage queue.
-- **The map stays the route.** A spec, a ticket or a breakage that does not lie on the path to the destination in the map's `## Destination` is labelled `ready-for-human` and left; the map does not absorb it. The destination is fixed: two Agents live on their Vercel URLs.
+- **The map clears first.** Every decision ticket on the `wayfinder:map` issue is closed before any spec is written. Implementation waits for the spec; nothing is built on an undecided region.
+- **One spec from the closed map.** The owner runs `/to-spec #<map>` in its own session; the spec collapses the map's linked decisions into one build plan, labelled `ready-for-agent`. Then `/to-tickets` on that spec, `/implement` one ticket per session, `/code-review` per ticket.
+- **Every breakage a trace records becomes an issue the day the trace lands.** A trace written while resolving a map ticket (`.dev/traces/`) lists breakages; each gets one issue labelled `needs-triage`, citing the trace and the line, blocked by the open decision ticket on its subject where one exists. `/to-tickets` absorbs the ones the spec covers; the rest stay ordinary bugs. An item off the route to the destination is labelled `ready-for-human` and left.
