@@ -77,7 +77,13 @@ the 08-22 calibration decision its first code path; red-team k is independent re
 vector. #15, #18 and #21 were carried into the map's Notes as build inputs (mis-typed tasks;
 they unblock the build, not a decision) and closed on the map. Next session: `/wayfinder 4`;
 the frontier is #17 re-capture (AFK), #19 `ship` (the last Harness decision), #34 provider.
-Three decision tickets remain: #19, #34, and #17 as the one live task. Validating the Harness is the hardest thing
+
+**#19, what `ship` means, closed 2026-08-23.** `rule_version=1`: golden gates hard, exploratory
+on a CI with provisional 0.85/0.70 bounds, `ship` refused without calibrated Judges, bias
+measured against golden references, red team k=3 with critical blocking, 90% coverage floor,
+and the checklist sequences eval plus red team then calls `decide()`. The ordering fog is
+closed. Two tickets remain: #17 re-capture (AFK task) and #34 provider. The map closes when
+they do; then `/to-spec #4`. Validating the Harness is the hardest thing
 in this project; every Harness ticket cites `.dev/reference/260818-llm-eval-fundamentals.md`.
 
 Conventions changed the same day, recorded in `CLAUDE.md` "Agent skills" and `docs/agents/`:
