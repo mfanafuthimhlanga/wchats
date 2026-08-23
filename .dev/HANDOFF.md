@@ -82,8 +82,17 @@ the frontier is #17 re-capture (AFK), #19 `ship` (the last Harness decision), #3
 on a CI with provisional 0.85/0.70 bounds, `ship` refused without calibrated Judges, bias
 measured against golden references, red team k=3 with critical blocking, 90% coverage floor,
 and the checklist sequences eval plus red team then calls `decide()`. The ordering fog is
-closed. Two tickets remain: #17 re-capture (AFK task) and #34 provider. The map closes when
-they do; then `/to-spec #4`. Validating the Harness is the hardest thing
+closed.
+
+**#34, the provider, closed 2026-08-23, and it supersedes the DeepSeek decision:** OpenAI
+`gpt-5.6-luna` for the Agent turn, Judges and the direct-API half; a 20% shadow audit on Gemini
+Flash-Lite EU because self-preference cannot be blinded, only measured; the Agent leaves the
+`claude_agent_sdk` harness for an owned loop with DB-backed sessions (ADR 0008; Railway's
+ephemeral containers would have broken SDK resume anyway); DeepSeek retires at cutover.
+$1.58 per thousand turns, all-DPA. One ticket remains: #17, the k=5 re-capture (AFK). The map
+closes when it does; then `/to-spec #4`. Note for #17: the re-capture still runs on DeepSeek
+(the current Agent), which is correct; it calibrates the Harness that exists, and Calibration
+re-runs against the Luna Judge identity when the cutover lands. Validating the Harness is the hardest thing
 in this project; every Harness ticket cites `.dev/reference/260818-llm-eval-fundamentals.md`.
 
 Conventions changed the same day, recorded in `CLAUDE.md` "Agent skills" and `docs/agents/`:
