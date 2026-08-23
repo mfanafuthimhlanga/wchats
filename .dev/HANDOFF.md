@@ -45,9 +45,12 @@ output.
 
 **#11, the Bantuson Corpus, closed 2026-08-23.** The portfolio page plus three project READMEs
 through the real ingestion; nine Scenario categories; an owner-written golden set of about ten
-pairs. Unblocks #12, the finish-line test. Next session: `/wayfinder 4`; the frontier in map
-order is #12 finish-line test, #14 host, #16 PII egress, #17 re-capture, #22 cost recording.
-Nine decision tickets remain. Validating the Harness is the hardest thing
+pairs.
+
+**#12, the Bantuson finish-line test, closed 2026-08-23.** Twenty Gherkin Scenarios written
+before the run, scripted over the widget routes plus five by hand on the live page, all pass,
+one trace. Next session: `/wayfinder 4`; the frontier in map order is #14 host, #16 PII egress,
+#17 re-capture, #22 cost recording. Eight decision tickets remain. Validating the Harness is the hardest thing
 in this project; every Harness ticket cites `.dev/reference/260818-llm-eval-fundamentals.md`.
 
 Conventions changed the same day, recorded in `CLAUDE.md` "Agent skills" and `docs/agents/`:
