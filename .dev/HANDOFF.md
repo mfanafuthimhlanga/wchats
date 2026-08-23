@@ -54,9 +54,16 @@ one trace.
 **#14, where the stack runs, closed 2026-08-23.** Railway, four services plus the Redis plugin,
 one Dockerfile built on push, a $20 hard limit, two environments; Terraform, systemd and Caddy
 deleted (ADR 0005 when the spec lands); R2 or B2 for objects. #15 credentials rewritten to
-match. Next session: `/wayfinder 4`; the frontier in map order is #15 credentials (HITL task),
-#16 PII egress, #17 re-capture, #21 unit economics (blocked by #22), #22 cost recording.
-Seven decision tickets remain. Validating the Harness is the hardest thing
+match.
+
+**#16, PII on the eval path, closed 2026-08-23.** Accepted egress, named (ADR 0006); one seam
+for live and eval turns. The finding that outranks it: DeepSeek's own policy (PRC storage,
+indefinite retention, training by default, no DPA) against POPIA s72. A widget processing
+notice lands with the spec; #33 (research, pricing providers with a DPA against DeepSeek) is
+firing and #34 (the provider decision, before Mellow) waits on it. #35 files the firewall's
+three-category coverage. Next session: `/wayfinder 4`; the frontier in map order is #15
+credentials (HITL task, run it when you have half an hour), #17 re-capture, #22 cost
+recording. Seven decision tickets remain. Validating the Harness is the hardest thing
 in this project; every Harness ticket cites `.dev/reference/260818-llm-eval-fundamentals.md`.
 
 Conventions changed the same day, recorded in `CLAUDE.md` "Agent skills" and `docs/agents/`:
