@@ -49,8 +49,14 @@ pairs.
 
 **#12, the Bantuson finish-line test, closed 2026-08-23.** Twenty Gherkin Scenarios written
 before the run, scripted over the widget routes plus five by hand on the live page, all pass,
-one trace. Next session: `/wayfinder 4`; the frontier in map order is #14 host, #16 PII egress,
-#17 re-capture, #22 cost recording. Eight decision tickets remain. Validating the Harness is the hardest thing
+one trace.
+
+**#14, where the stack runs, closed 2026-08-23.** Railway, four services plus the Redis plugin,
+one Dockerfile built on push, a $20 hard limit, two environments; Terraform, systemd and Caddy
+deleted (ADR 0005 when the spec lands); R2 or B2 for objects. #15 credentials rewritten to
+match. Next session: `/wayfinder 4`; the frontier in map order is #15 credentials (HITL task),
+#16 PII egress, #17 re-capture, #21 unit economics (blocked by #22), #22 cost recording.
+Seven decision tickets remain. Validating the Harness is the hardest thing
 in this project; every Harness ticket cites `.dev/reference/260818-llm-eval-fundamentals.md`.
 
 Conventions changed the same day, recorded in `CLAUDE.md` "Agent skills" and `docs/agents/`:
