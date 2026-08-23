@@ -61,9 +61,16 @@ for live and eval turns. The finding that outranks it: DeepSeek's own policy (PR
 indefinite retention, training by default, no DPA) against POPIA s72. A widget processing
 notice lands with the spec; #33 (research, pricing providers with a DPA against DeepSeek) is
 firing and #34 (the provider decision, before Mellow) waits on it. #35 files the firewall's
-three-category coverage. Next session: `/wayfinder 4`; the frontier in map order is #15
-credentials (HITL task, run it when you have half an hour), #17 re-capture, #22 cost
-recording. Seven decision tickets remain. Validating the Harness is the hardest thing
+three-category coverage. #33 closed the same day: Mistral Small 4 has a DPA at 0.36x DeepSeek
+with the Judge included; #34 (the provider decision) is on the frontier.
+
+**#22, cost and served model, closed 2026-08-23.** One client factory with a response hook,
+a frozen `ModelCall` per call, a `model_calls` ledger per tenant with a daily rollup, tokens
+stored and dollars derived from a versioned price table in CAT. Unblocks #31 Harness types
+and #21 unit economics. Next session: `/wayfinder 4`; the frontier in map order is #15
+credentials (HITL), #17 re-capture (AFK), #21 unit economics (task, needs a public URL),
+#31 Harness types, #34 provider. Five decision tickets remain: #31, #34, then #19 `ship`
+behind #31, plus the two tasks #18 labelling and #21. Validating the Harness is the hardest thing
 in this project; every Harness ticket cites `.dev/reference/260818-llm-eval-fundamentals.md`.
 
 Conventions changed the same day, recorded in `CLAUDE.md` "Agent skills" and `docs/agents/`:
