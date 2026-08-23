@@ -41,8 +41,13 @@ or AST; all in `static`; one test pins the gate.
 **#10, the MCP surface, closed 2026-08-23.** Fourteen tools over fourteen existing routes, the
 tenant API key as a static bearer header (ADR 0004 when the spec lands), job ids polled through
 `get_job`, served inside FastAPI at `/mcp`, the portfolio embed replaced by `get_embed_snippet`'s
-output. Next session: `/wayfinder 4`; the frontier in map order is #11 Corpus, #14 host,
-#16 PII egress, #17 re-capture, #22 cost recording. Ten decision tickets remain. Validating the Harness is the hardest thing
+output.
+
+**#11, the Bantuson Corpus, closed 2026-08-23.** The portfolio page plus three project READMEs
+through the real ingestion; nine Scenario categories; an owner-written golden set of about ten
+pairs. Unblocks #12, the finish-line test. Next session: `/wayfinder 4`; the frontier in map
+order is #12 finish-line test, #14 host, #16 PII egress, #17 re-capture, #22 cost recording.
+Nine decision tickets remain. Validating the Harness is the hardest thing
 in this project; every Harness ticket cites `.dev/reference/260818-llm-eval-fundamentals.md`.
 
 Conventions changed the same day, recorded in `CLAUDE.md` "Agent skills" and `docs/agents/`:
