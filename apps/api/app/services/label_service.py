@@ -372,7 +372,7 @@ def record_human_label(
     from and stays true after the answer is written by someone else; a mined
     failure that the owner answers stays `source='mined'` and becomes
     `label_trust_tier='human_authored'`. Fusing the two is the defect
-    `eval_service.label_trust_tier()` exists to prevent.
+    alembic_tenant 0016's separate label column exists to prevent.
 
     Args:
         conn: An open psycopg2 connection. This function does NOT commit or

@@ -678,8 +678,8 @@ class TestGetEvalRunResults:
     async def test_passed_flag_false_when_gated_score_below_threshold(self):
         """passed=False when a GATED metric falls below its threshold.
 
-        D-21 LOCKED gates on exactly two metrics — faithfulness AND
-        answer_relevancy (D-21 LOCKED).
+        D-21 LOCKED gates on exactly two metrics, faithfulness AND
+        answer_relevancy.
         Here answer_relevancy = 0.79 < EVAL_RELEVANCY_THRESHOLD (0.90).
         """
         fake_tenant = _make_fake_tenant()

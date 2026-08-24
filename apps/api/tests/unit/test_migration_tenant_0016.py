@@ -268,9 +268,9 @@ def test_upgrade_is_strictly_additive_and_nullable(forbidden):
     `labelled_at` would stamp a labelling time onto every row that was never
     labelled, and a DEFAULT on `label_trust_tier` would assert a human on every
     row a model wrote. The honest value for "did a human label this?" on a row
-    that predates human labelling is NULL, and NULL is what
-    a NULL there reads as "no claim — fall back to the
-    origin's tier".
+    that predates human labelling is NULL, and a reader takes a NULL there as
+    "no claim about who wrote this answer" rather than as a claim that a human
+    did.
 
     "CHECK" and "DROP CONSTRAINT" are NOT on this list, unlike 0015's version of
     this test — see test_the_only_check_is_on_the_new_column and
@@ -498,11 +498,12 @@ def test_the_source_check_is_not_touched():
     QUESTION came from, and a human-flavoured source value would fuse origin
     into label — the exact collapse the label column exists to prevent, and the
     failure the label hierarchy exists to prevent.
-    Second, and customer-facing: the verified_qa trust gate reads
-    `source`, so a schema-allowed source that resolves to a human tier would
-    open the `verified_qa` write that `retrieval_service.verified_qa_lookup`
-    serves to real customers AHEAD of retrieval. The owner settled that
-    eval-only on 2026-08-08.
+    Second, and customer-facing. `retrieval_service.verified_qa_lookup` serves
+    `verified_qa` rows to real customers AHEAD of retrieval. ADR 0003 deleted the
+    promotion writer and the resolver that read `source` to tier a row, so
+    nothing widens that path today, and a schema-allowed source carrying a human
+    flavour is what would reopen it the day a promotion writer returns. The owner
+    settled that eval-only on 2026-08-08.
     """
     mod = _load_migration()
     combined = _sql_only(mod.upgrade) + _sql_only(mod.downgrade)

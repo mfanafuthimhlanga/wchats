@@ -126,43 +126,12 @@ def _fake_ragas_instructor_llm():
     return _FakeInstructorLLM()
 
 
-def _with_source_tier(monkeypatch, source: str, tier: str) -> None:
-    """Register a hypothetical scenario source at *tier* for one test.
-
-    `SCENARIO_SOURCE_TRUST_TIER` is a `MappingProxyType` since the D6 P3 review
-    (finding 4) — it is one of the locks on the customer-facing verified_qa
-    write, and as a plain dict any module in the process could open it with a
-    single subscript assignment. `setitem` therefore raises, and a test that
-    needs a promotable tier rebinds the whole mapping instead.
-    """
-    from app.services import eval_service
-
-    monkeypatch.setattr(
-        eval_service,
-        "SCENARIO_SOURCE_TRUST_TIER",
-        MappingProxyType({**eval_service.SCENARIO_SOURCE_TRUST_TIER, source: tier}),
-    )
-
-
-def _with_promotion_enabled(monkeypatch) -> None:
-    """Flip the decision flag for one test, the same way and for the same
-    reason as `_with_source_tier` above."""
-    from app.services import eval_service
-
-    monkeypatch.setattr(
-        eval_service,
-        "VERIFIED_QA_PROMOTION_DECISION",
-        MappingProxyType(
-            {**eval_service.VERIFIED_QA_PROMOTION_DECISION, "enabled": True}
-        ),
-    )
-
 # ---------------------------------------------------------------------------
 # The scenario sources the SCHEMA allows, parsed from migration 0011 itself.
 #
-# Hardcoding this list here would let the schema and the trust table drift
-# apart silently, which is the exact failure mode the trust table exists to
-# prevent: an unclassified source reaching the customer-serving cache.
+# Hardcoding the list here would let it drift from the CHECK constraint silently,
+# so it is read out of the migration. test_label_provenance and
+# test_migration_tenant_0016 parse the same way for the same reason.
 # ---------------------------------------------------------------------------
 _MIGRATION_0011 = os.path.normpath(
     os.path.join(
@@ -429,8 +398,8 @@ class TestScoringTouchesNoDatabase:
         )
         for forbidden in ("psycopg2", "conn_str", "connect("):
             assert forbidden not in body, (
-                f"run_ragas_eval references {forbidden!r} — scoring must open "
-                "no connection at all"
+                f"run_ragas_eval references {forbidden!r}, so scoring is not "
+                "opening the zero connections it must open"
             )
 
 

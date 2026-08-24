@@ -61,7 +61,6 @@ from app.worker.tasks.runtime import eval as mod
 _EVAL_PY = Path(mod.__file__).with_suffix(".py")
 
 PRODUCTION = "postgresql://production/tenant"
-BRANCH = "postgresql://neon-branch/tenant"
 
 #: The seam every caller of the customer agent must go through (P1).
 SEAM = "build_agent_options"
@@ -1550,9 +1549,6 @@ def task_wired(monkeypatch):
 
     monkeypatch.setattr(mod, "mine_production_scenarios", lambda *a, **kw: [])
     monkeypatch.setattr(mod, "store_scenarios", lambda *a, **kw: None)
-    monkeypatch.setattr(mod, "create_branch", lambda p, n: ("branch-1", BRANCH))
-    monkeypatch.setattr(mod, "delete_branch", lambda p, b: None)
-    monkeypatch.setattr(mod, "wait_for_neon_ready", lambda c: None)
     monkeypatch.setattr(mod, "write_eval_results", lambda *a, **kw: None)
     monkeypatch.setattr(mod, "update_eval_run_status", lambda *a, **kw: None)
     monkeypatch.setattr(
@@ -1629,8 +1625,9 @@ def test_the_run_records_that_the_agent_was_invoked(task_wired):
     run_id, patch_dict, conn_str = task_wired["patched"][0]
     assert run_id == result["run_id"]
     assert conn_str == PRODUCTION, (
-        "the provenance was written somewhere other than production — the Neon "
-        "branch is deleted in `finally` and takes the claim with it (audit D2)"
+        "the provenance was written somewhere other than production, so the "
+        "run record and the claim about it live in different databases "
+        "(audit D2)"
     )
     assert patch_dict["agent_invoked"] is True
     assert patch_dict["scored_response_source"] == "agent_response"

@@ -16,17 +16,18 @@ PRODUCTION below.
 
 verified_qa promotion is not performed by this task at all.
 
-WHAT HOLDS IT SHUT IS THREE THINGS, AND THIS PARAGRAPH USED TO NAME ONE (D6 P3
+WHAT HOLDS IT SHUT IS TWO THINGS, AND THIS PARAGRAPH USED TO NAME ONE (D6 P3
 review, finding 6). It said "disabled behind eval_service's label trust
-hierarchy", which was the whole answer before D6. Strongest first —
+hierarchy", which was the whole answer before D6. Strongest first.
 
-    0. NO CODE. No promotion writer exists in this tree (ADR 0003); the
+    0. NO CODE. No promotion writer exists in this tree (ADR 0003), so the
        `promoted: 0` this task returns is a literal, not a result. Pinned by
        TestPromotionIsUnreachableFromTheTask below.
     1. THE DECISION. `VERIFIED_QA_PROMOTION_DECISION["enabled"]` is False, the
        owner's settled eval-only decision of 2026-08-08.
 
-The decision — with its reason — is recorded on the run in `eval_runs.config`
+The decision carries its reason, and both are recorded on the run in
+`eval_runs.config`
 and returned as `promotion_enabled` / `promotion_disabled_reason`, so the
 disablement is a statement in the record rather than an absence a later reader
 has to infer.
@@ -613,7 +614,7 @@ def run_eval_suite_beat(self) -> dict:
 )
 def run_eval_suite(self, agent_id: str) -> dict:
     """Per-agent eval run. Records the run on production and scores without
-    touching tenant data. Receives agent_id str — no conn_str in args
+    touching tenant data. Receives agent_id str and no conn_str in args
     (CTL-08 / D-18).
 
     Sequence:
@@ -632,7 +633,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
            except: mark failed on PRODUCTION.
 
     No verified_qa promotion happens here. See the module docstring for the
-    three locks and eval_service.VERIFIED_QA_PROMOTION_DECISION for the
+    two locks and eval_service.VERIFIED_QA_PROMOTION_DECISION for the
     recorded reason.
 
     A HUMAN-LABELLED ROW CHANGES NOTHING ABOUT THAT (D6 P3). Labelling makes a
@@ -782,7 +783,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
     # report; averaging them would throw away exactly the property the split
     # exists to create.
     #
-    # `reference_answer != ''` survives in BOTH queries. It is the empty-label
+    # `reference_answer != ''` survives in ALL THREE queries. It is the empty-label
     # exclusion that makes an unlabelled row (a mined production failure, an
     # owner-filed failing trace — see bench.NO_GROUND_TRUTH) inert to this
     # selector by construction, and it is pinned across module boundaries by
@@ -1162,8 +1163,8 @@ def run_eval_suite(self, agent_id: str) -> dict:
             # predates migration 0014 — not that it has no golden rows.
             "dataset_column_available": dataset_column_available,
             "golden_set_present": composition["golden_set_present"],
-            # Always 0 — a literal, not a result: no promotion writer exists
-            # in this build, and behind that the decision flag. The key is kept
+            # Always 0. A literal, not a result. No promotion writer exists
+            # in this build, and behind that sits the decision flag. The key is kept
             # so a caller reading it sees the zero rather than a missing key it
             # might treat as "not measured". `promotion_enabled` below is what
             # distinguishes this zero from an ENABLED run that promoted nothing.

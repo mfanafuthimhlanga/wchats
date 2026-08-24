@@ -3,8 +3,8 @@ D6 P1 — the trust tier that nothing could produce, and the wall around it.
 
 `eval_service.LABEL_TRUST_TIERS` has declared `human_verified` (2) and
 `human_authored` (3) since D5, and nothing in the system could produce either:
-the only tier resolver was `SCENARIO_SOURCE_TRUST_TIER`, which maps every
-scenario source the schema allows to `model_generated` or `customer_negative`.
+the only tier resolver mapped every scenario source the schema allows to
+`model_generated` or `customer_negative`.
 So `VERIFIED_QA_MIN_TRUST_TIER = "human_verified"` gated on a tier no row could
 carry, and the customer-facing verified-answer path was dead code by
 construction.
@@ -87,8 +87,9 @@ EVAL_SERVICE_PATH = os.path.normpath(os.path.join(SERVICES_DIR, "eval_service.py
 # and `/widget/jobs/{job_id}/events` as **no auth**, plus `agent_chat.py`,
 # `query.py`, and `evals.py`'s generic `_query_tenant_db_sync`. Nothing under
 # app/api references the writer today, so the tree was clean and the CLAIM was
-# what was wrong. The region is now one named module — the one P2 is
-# contracted to put the labelling route in.
+# what was wrong. The region is now one named module. ADR 0003 deleted the
+# labelling route, so nothing occupies the region, and any route that drives the
+# writer again has to live in this module or turn R2 red.
 LABEL_WRITER_CALLER = os.path.normpath(os.path.join(APP_DIR, "api", "v1", "evals.py"))
 
 # The complexity gate names every function over its standard as data.
@@ -639,11 +640,10 @@ class TestR2ImportBoundary:
     def test_the_boundary_detector_does_not_fire_on_prose(self, tmp_path):
         """A docstring that names the writer is not a route to the writer.
 
-        `eval_service.label_trust_tier`'s docstring explains that
-        `record_human_label` refuses an empty answer — which is exactly the kind
-        of sentence the read path should contain, and exactly the sentence the
-        strengthened string arm flagged as a boundary violation on its first
-        run. Prose is not reachability; a bare string expression is bound to
+        A read-path module whose docstring explains that `record_human_label`
+        refuses an empty answer is carrying exactly the kind of sentence it
+        should, and exactly the sentence the strengthened string arm flagged as a
+        boundary violation on its first run. Prose is not reachability; a bare string expression is bound to
         `__doc__` and cannot be imported through.
         """
         path = tmp_path / "prose.py"

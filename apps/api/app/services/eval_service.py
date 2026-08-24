@@ -28,34 +28,31 @@ A run must end in a terminal state on production or it never happened.
 Trust tiers and verified_qa promotion (D5 / the label hierarchy)
 ---------------------------------------------------------------
 `verified_qa` rows are served to real customers by retrieval_service's
-verified_qa_lookup BEFORE hybrid search, at 0.93 cosine similarity. Promotion
-used to write any scenario clearing 0.90/0.90 — including a `source='generated'`
-row whose "reference answer" was written by Haiku, and a `source='production'`
-row whose answer is the one a human FLAGGED AS FAILING. Only the branch write
-(above) stopped those rows reaching customers, by accident.
+verified_qa_lookup BEFORE hybrid search, at 0.93 cosine similarity. An earlier
+build promoted any scenario clearing 0.90/0.90 into that table. That admitted a
+`source='generated'` row whose "reference answer" was written by Haiku, and a
+`source='production'` row whose answer is the one a human FLAGGED AS FAILING.
+Those rows reached no customer only because the promotion write landed on a
+throwaway Neon branch the task then deleted.
 
-Promotion is therefore gated on the label trust hierarchy below and is
-UNREACHABLE for every scenario source the shipped schema allows. That is a
-deliberate disablement recorded on each run in `eval_runs.config`, not an
-oversight.
+ADR 0003 deleted that writer. Nothing in this build promotes anything into
+`verified_qa`, so the table keeps its reader (retrieval_service's
+verified_qa_lookup) and gains no new rows.
 
-THE SECOND HALF OF THAT PARAGRAPH USED TO SAY "re-enabling it is a decision that
-needs human-verified labels behind it", AND D6 MADE IT STALE. The system can now
-produce a `human_authored` label — rank 3, which clears the minimum — through
-one Clerk-authenticated labelling route. What holds promotion shut is no longer
-an absent producer: it is three things, named strongest first above
-LABEL_TRUST_TIERS (no caller, the resolver, the decision flag). A reader who
-takes the old sentence at face value will conclude the door is held by an
-absence and that opening it is safe once labels exist.
+WHAT HOLDS PROMOTION SHUT IS TWO THINGS, named strongest first above
+LABEL_TRUST_TIERS. No promotion writer exists, and
+VERIFIED_QA_PROMOTION_DECISION reads false and is recorded on every run, which
+makes the disablement a statement in the run record rather than an absence a
+later reader has to infer.
 
 Design notes:
 - All Ragas imports use the 0.4.x path (ragas.metrics.collections) — CLAUDE.md constraint.
 - Dataset field is 'reference' (renamed from the old 0.3.x name in 0.4.x).
 - LLM wrapper uses InstructorLLM(instructor.from_anthropic(Anthropic())) — 0.4.x collections requirement.
 - All DB writes use psycopg2 try/finally/close pattern matching retrieval_service.py.
-- verified_qa promotion writes source='sandbox_test', promoted_by='system' (D-22) —
-  retained for the day a promotable trust tier exists; unreachable today.
-- question_vector populated via Voyage embed at promotion time (D-23).
+- No verified_qa promotion writer exists in this build. D-22's
+  source='sandbox_test' / promoted_by='system' and D-23's question_vector say
+  what a future writer would owe, not what any code here does.
 """
 
 from __future__ import annotations
@@ -142,7 +139,7 @@ _METRIC_ASCORE_ARGS: Mapping[str, tuple[str, ...]] = MappingProxyType({
 #    that invoked nothing, is the tautology with a newer comment.
 #
 # 2. SCORING TOUCHES NO DATABASE. run_ragas_eval executes no statement against
-#    anything — it takes rows already in memory and calls the judge API.
+#    anything. It takes rows already in memory and calls the judge API.
 #
 #    P2 does not change this. The agent turns happen in eval.py BEFORE scoring
 #    and they read the tenant's PRODUCTION connection string, because retrieval
@@ -215,9 +212,11 @@ CONNECT_TIMEOUT_S = 5
 #
 # THIS PARAGRAPH USED TO READ "nothing in the shipped system produces tier >=
 # human_verified yet: there is no correction UI", AND D6 MADE IT FALSE.
-# `label_service.record_human_label` — reachable from the labelling route in
-# app/api/v1/evals.py, and only behind a Clerk session — stamps `human_authored`,
-# rank 3, which CLEARS VERIFIED_QA_MIN_TRUST_TIER (rank 2) outright.
+# `label_service.record_human_label` stamps `human_authored`, rank 3, which
+# CLEARS VERIFIED_QA_MIN_TRUST_TIER (rank 2) outright. ADR 0003 then deleted the
+# Clerk-authenticated route that drove it, so the writer ships with no caller,
+# and the tier it stamps still clears the minimum the day a console feature
+# calls it.
 #
 # The old argument was that promotion is "unreachable BY CONSTRUCTION rather than
 # by an `if False`, and becomes reachable the moment a genuinely human-verified
@@ -228,19 +227,21 @@ CONNECT_TIMEOUT_S = 5
 # paragraph was proud of not having is VERIFIED_QA_PROMOTION_DECISION["enabled"]
 # below.
 #
-# TWO LOCKS, strongest first:
-#   LOCK ZERO, NO CODE — no promotion writer exists in this tree at all
+# TWO LOCKS, strongest first.
+#   LOCK ZERO, NO CODE. No promotion writer exists in this tree at all
 #       (ADR 0003). `run_eval_suite` returns a hardcoded `promoted: 0`. This is
-#       the load-bearing lock; the decision below is defence in depth behind it.
-#   the DECISION — `enabled: False`, recorded with its reason on every run, so
+#       the load-bearing lock, and the decision below is defence in depth behind
+#       it.
+#   the DECISION. `enabled: False`, recorded with its reason on every run, so
 #       the disablement is a statement in the record rather than an absence a
 #       later reader has to infer.
 #
-# Both are process-local: neither is recorded in any database, and a second
-# process running a different build carries its own copy. The two constants
-# below are `MappingProxyType` so that `X["enabled"] = True` raises rather than
-# lifting a lock for the life of a process; rebinding the module attribute still
-# works, and is pinned absent by test_label_downstream.py's mutation scan.
+# Both locks are process-local. Neither is recorded in any database, and a
+# second process running a different build carries its own copy.
+# VERIFIED_QA_PROMOTION_DECISION below is a `MappingProxyType` so that
+# `X["enabled"] = True` raises rather than lifting the lock for the life of a
+# process. Rebinding the module attribute still works, and is pinned absent by
+# test_label_downstream.py's mutation scan.
 LABEL_TRUST_TIERS: dict[str, int] = {
     "unknown": -1,
     "model_generated": 0,
@@ -248,30 +249,6 @@ LABEL_TRUST_TIERS: dict[str, int] = {
     "human_verified": 2,
     "human_authored": 3,
 }
-
-# eval_scenarios.source -> trust tier. The key set must stay in step with the
-# widened CHECK constraint in alembic_tenant 0011
-# (source IN ('generated', 'mined', 'production', 'red_team')); a new source
-# value that lands without a tier here resolves to 'unknown' and is refused.
-#
-# READ-ONLY AT RUNTIME (D6 P3 review, finding 4). This mapping is one of the two
-# things holding the customer-facing promotion write shut, and until this commit
-# it was a plain dict that any module in the process could open with a single
-# `SCENARIO_SOURCE_TRUST_TIER["mined"] = "human_authored"` — a strictly more
-# dangerous surface than the label writer, which carries four independent
-# restrictions. `MappingProxyType` makes that assignment raise `TypeError`.
-SCENARIO_SOURCE_TRUST_TIER: Mapping[str, str] = MappingProxyType({
-    # scenario_service.generate_eval_suite_for_agent — Haiku wrote the answer.
-    "generated": "model_generated",
-    # scenario_service.mine_production_scenarios — a production failure, stored
-    # with reference_answer='' because no ground truth exists for it.
-    "mined": "customer_negative",
-    # bench.promote_trace_to_scenario — an owner FILED this trace as failing.
-    # The agent turn attached to it is a known-BAD answer, not a label.
-    "production": "customer_negative",
-    # red_team.py finding containment — an attack that succeeded.
-    "red_team": "customer_negative",
-})
 
 # The minimum tier a scenario must carry before its answer may be written into
 # verified_qa, which retrieval_service serves to customers ahead of retrieval.
@@ -299,10 +276,10 @@ PROMOTION_DISABLED_REFUSAL = "promotion_disabled:eval_only"
 # absence a reader has to infer is bad; a stale statement a reader will believe
 # is worse.
 #
-# READ-ONLY AT RUNTIME, for the same reason SCENARIO_SOURCE_TRUST_TIER is: this
-# was a plain dict, so `VERIFIED_QA_PROMOTION_DECISION["enabled"] = True` from
-# any module in the process opened the customer-facing write for the life of
-# that process, with no pin anywhere watching for it. `dict(...)` on a
+# READ-ONLY AT RUNTIME (D6 P3 review, finding 4). This was a plain dict, so
+# `VERIFIED_QA_PROMOTION_DECISION["enabled"] = True` from any module in the
+# process opened the customer-facing write for the life of that process, with no
+# pin anywhere watching for it. `dict(...)` on a
 # MappingProxyType still yields a fresh plain dict, so build_eval_run_config's
 # copy semantics are unchanged.
 VERIFIED_QA_PROMOTION_DECISION: Mapping[str, object] = MappingProxyType({
@@ -343,16 +320,16 @@ VERIFIED_QA_PROMOTION_DECISION: Mapping[str, object] = MappingProxyType({
 # ---------------------------------------------------------------------------
 # The tier a LABEL carries — which is not the tier its QUESTION's origin earns
 # ---------------------------------------------------------------------------
-# SCENARIO_SOURCE_TRUST_TIER above answers "where did this QUESTION come from?".
-# It is the only tier resolver that existed, and it is why LABEL_TRUST_TIERS
-# declared human_verified and human_authored that nothing could produce: there
-# was no source value a human could occupy without also claiming to be the
-# question's origin.
+# `eval_scenarios.source` answers "where did this QUESTION come from?". Until
+# migration 0016 a tier could be resolved from nothing else, which is why
+# LABEL_TRUST_TIERS declared human_verified and human_authored that nothing could
+# produce. No source value let a human occupy a tier without also claiming to be
+# the question's origin.
 #
 # A mined production failure whose answer the owner then writes by hand is
 # `customer_negative` in ORIGIN and `human_authored` in LABEL, at the same time,
 # and both statements are true. Collapsing them into one column is how a
-# model_generated string ends up admitted on a human tier — the failure
+# model_generated string ends up admitted on a human tier, which is the failure
 # the label hierarchy exists to prevent. So the label carries its own tier, in
 # alembic_tenant 0016's `label_trust_tier` column, and the row's `source` keeps
 # meaning exactly what it meant before.
@@ -368,21 +345,23 @@ LABEL_TIER_COLUMN = "label_trust_tier"
 
 # The nightly selector's ONLY label predicate, spelled once for the whole system.
 # `run_eval_suite` filters on exactly this text in all three of its scenario
-# queries; `evals.py`'s labelling queue is its negation; and `label_service`'s
-# UPDATE is scoped by that same negation so the write cannot reach a row the
-# queue never offered.
+# queries, and `label_service`'s UPDATE is scoped by the same predicate's
+# negation, so a label write cannot reach a row the selector already counts as
+# answered.
 #
-# It lives HERE rather than in either consumer because the two consumers are on
-# opposite sides of an import wall: `label_service` may not import `app.api`
-# (R2), and `app/api/v1/evals.py` is not something a service may depend on. This
-# module is the one both already import, so one spelling can serve all three
-# without inverting a dependency.
+# ADR 0003 deleted the third consumer. `evals.py` carried a labelling queue built
+# on that same negation, and the predicate lives HERE rather than in any one
+# consumer because the consumers sit on opposite sides of an import wall.
+# `label_service` may not import `app.api` (R2), and a service may not be a
+# dependency of `app/api/v1/evals.py`. This module is the one every consumer
+# already imports, which is still why one spelling serves them all.
 #
 # Kept honest across the module boundary by
-# test_the_queue_selects_exactly_what_the_eval_selector_excludes, which reads
-# this constant back out of `inspect.getsource(run_eval_suite)`: if the task ever
-# stops filtering on it, "unlabelled" and "will never be scored" have come apart
-# and that test is what makes it audible.
+# test_the_selector_is_the_only_thing_standing_between_the_two_states in
+# tests/unit/test_label_downstream.py, which reads this constant back out of
+# `inspect.getsource(run_eval_suite)`. If the task ever stops filtering on it,
+# "unlabelled" and "will never be scored" have come apart, and that test is what
+# makes it audible.
 SELECTOR_ELIGIBILITY_PREDICATE = "reference_answer != ''"
 
 

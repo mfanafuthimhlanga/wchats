@@ -30,18 +30,18 @@ worth nothing until three separate claims are true and pinned:
 THE THIRD CLAIM IS THE ONE THAT CHANGED SHAPE IN D6, AND IT IS WHY THIS FILE
 EXISTS RATHER THAN A COMMENT. Before D6, promotion was unreachable because
 `VERIFIED_QA_MIN_TRUST_TIER = 'human_verified'` sat above the ceiling of
-anything the system could produce — a fact about the world, needing no flag.
+anything the system could produce, a fact about the world needing no flag.
 D6 built a producer of `human_authored`, rank 3, which clears that minimum. So
-the old guarantee is spent, and what holds the door now is THREE things, listed
-strongest first — the first draft of this file named two and left out the one
-carrying the load (D6 P3 review, finding 4):
+the old guarantee is spent, and what holds the door now is TWO things, listed
+strongest first. The first draft of this file named the weaker one and left out
+the one carrying the load (D6 P3 review, finding 4).
 
-    LOCK ZERO    — no promotion code exists at all. `run_eval_suite` returns a
-                   literal `promoted: 0`, and there is no writer behind it that
-                   a decision could enable.
-    the DECISION  — `VERIFIED_QA_PROMOTION_DECISION["enabled"]` is False, and it
-                    is recorded with its reason on every run, so the
-                    disablement is a statement in the record.
+    LOCK ZERO     No promotion code exists at all. `run_eval_suite` returns a
+                  literal `promoted: 0`, and there is no writer behind it that
+                  a decision could enable.
+    the DECISION  `VERIFIED_QA_PROMOTION_DECISION["enabled"]` is False, and it
+                  is recorded with its reason on every run, so the
+                  disablement is a statement in the record.
 
 The decision lives in mutable module state, which is why `eval_service` holds it
 as a `MappingProxyType` and why `TestTheLocksAreNotOneAssignmentAway` scans for
@@ -73,33 +73,6 @@ from app.services import deployment_service
 from app.services import eval_service
 from app.worker.tasks.runtime import eval as mod
 
-
-def _with_source_tier(monkeypatch, source: str, tier: str) -> None:
-    """Register a hypothetical scenario source at *tier* for one test.
-
-    `SCENARIO_SOURCE_TRUST_TIER` is a `MappingProxyType`, so `setitem` raises —
-    that is the point of it (D6 P3 review, finding 4: the lock used to be a
-    plain module dict any code in the process could open with one assignment).
-    A test that needs a promotable tier replaces the whole mapping instead,
-    which monkeypatch reverses by rebinding, not by mutating shared state.
-    """
-    monkeypatch.setattr(
-        eval_service,
-        "SCENARIO_SOURCE_TRUST_TIER",
-        MappingProxyType({**eval_service.SCENARIO_SOURCE_TRUST_TIER, source: tier}),
-    )
-
-
-def _with_promotion_enabled(monkeypatch) -> None:
-    """Flip the decision flag for one test, the same way and for the same
-    reason as `_with_source_tier` above."""
-    monkeypatch.setattr(
-        eval_service,
-        "VERIFIED_QA_PROMOTION_DECISION",
-        MappingProxyType(
-            {**eval_service.VERIFIED_QA_PROMOTION_DECISION, "enabled": True}
-        ),
-    )
 
 PRODUCTION = "postgresql://production/tenant"
 
@@ -391,9 +364,9 @@ class TestALabelledRowEntersTheEval:
         """The predicate that makes the "before" state above real.
 
         The two runs differ only in whether one row carries an answer, and that
-        is not a property of the fixture — it is the predicate BOTH selectors
-        filter on, spelled once in eval_service and asserted here to still be
-        the thing eval.py filters on. If the task stopped filtering on it, the
+        is not a property of the fixture. It is the predicate every one of the
+        task's three scenario queries filters on, spelled once in eval_service
+        and asserted here to still be the thing eval.py filters on. If the task stopped filtering on it, the
         `_before` fixture would be modelling an exclusion the task no longer
         performs, and every count above would be arithmetic about nothing.
         """
@@ -863,7 +836,7 @@ class TestALabelChangesWhatTheDeployGateReads:
 # ---------------------------------------------------------------------------
 
 
-_LOCK_CONSTANTS = ("SCENARIO_SOURCE_TRUST_TIER", "VERIFIED_QA_PROMOTION_DECISION")
+_LOCK_CONSTANTS = ("VERIFIED_QA_PROMOTION_DECISION",)
 
 
 def _app_python_files() -> list[str]:
@@ -920,15 +893,14 @@ def _lock_mutations(path: str) -> list[str]:
 class TestTheLocksAreNotOneAssignmentAway:
     """D6 P3 review, finding 4.
 
-    Both locks were plain module-level dicts read at call time, so ANY module in
-    the process could lift both with two lines —
+    The lock was a plain module-level dict read at call time, so ANY module in
+    the process could lift it with one line,
 
         eval_service.VERIFIED_QA_PROMOTION_DECISION["enabled"] = True
-        eval_service.SCENARIO_SOURCE_TRUST_TIER["mined"] = "human_authored"
 
-    — for the life of that process, with nothing in the tree watching. Four call
-    sites already performed exactly that mutation via `monkeypatch.setitem`, so
-    the shape was idiomatic and discoverable. Meanwhile the label WRITER, a
+    for the life of that process, with nothing in the tree watching. Call sites
+    already performed exactly that mutation via `monkeypatch.setitem`, so the
+    shape was idiomatic and discoverable. Meanwhile the label WRITER, a
     strictly less dangerous surface, carries four independently-pinned
     restrictions plus a route-level credential guard.
 
@@ -941,7 +913,7 @@ class TestTheLocksAreNotOneAssignmentAway:
         for name in _LOCK_CONSTANTS:
             constant = getattr(eval_service, name)
             assert isinstance(constant, MappingProxyType), (
-                f"{name} is a {type(constant).__name__} — one assignment from "
+                f"{name} is a {type(constant).__name__}, so one assignment from "
                 "any module in the process lifts a lock on a customer-facing "
                 "write for the life of that process"
             )

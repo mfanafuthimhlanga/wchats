@@ -15,7 +15,7 @@ passed against the defect.
 
 No live PostgreSQL exists on this machine, so every DB boundary is a double:
 psycopg2.connect, the control-DB session and eval_service's writers. Nothing
-here proves a live database accepts the SQL — that is integration territory and
+here proves a live database accepts the SQL. That is integration territory, and
 it SKIPS, which is unobserved, never a pass.
 """
 
@@ -166,8 +166,8 @@ def wired(monkeypatch):
     }
 
     # D1/P2: the agent invocation is doubled here so these tests keep testing
-    # what they were written to test — which connection string each write opens
-    # — rather than accidentally exercising a live SDK
+    # what they were written to test, which is which connection string each
+    # write opens, rather than accidentally exercising a live SDK
     # turn against a MagicMock agent row. The scenarios that come back carry an
     # `agent_response` that is deliberately NOT the reference answer, so any
     # test in this module that starts scoring self-answers fails loudly.
@@ -297,7 +297,7 @@ class TestPersistenceSplit:
         result = _run()
 
         assert wired["results"] == [PRODUCTION], (
-            "eval_results were not written to production — that is audit "
+            "eval_results were not written to production, which is audit "
             "defect D2"
         )
         assert len(wired["ragas"]) == 1
