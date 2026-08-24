@@ -25,8 +25,8 @@ Three of the four steps are baselines rather than ceilings. RUFF_BASELINE,
 LIZARD_BASELINE and SOURCE_ASSERTION_BASELINE each hold what the tree contains
 today, and each fails three ways: on something new, on something that grew, and on
 an entry that has gone stale. Entries come out as the code improves. Entries never
-go in. tests/unit/test_gates.py holds a snapshot of the two per-item baselines and
-fails on an addition.
+go in. tests/unit/test_gates.py holds a snapshot of all three baselines and fails on
+an addition.
 
 Tightening a threshold is a deliberate act: move it down, watch the gate go red,
 fix the code, move it down again. Never raise one to make a red gate green.
@@ -69,6 +69,8 @@ PYTHON = tool("python") if os.path.exists(tool("python")) else sys.executable
 #     app/services/agent_tools.py:33:1: I001 Import block is un-sorted or un-formatted
 #     app/worker/tasks/pipeline/chunk.py:45:1: I001 Import block is un-sorted or un-formatted
 #     Found 2 errors. [*] 2 fixable with the `--fix` option.
+#
+# tests/unit/test_gates.py snapshots this dict and goes red on an addition.
 RUFF_BASELINE = {
     ("app/services/agent_tools.py", "I001"): 1,
     ("app/worker/tasks/pipeline/chunk.py", "I001"): 1,
@@ -326,7 +328,7 @@ ASSIGNMENT = re.compile(r"^\s*([A-Za-z_]\w*)\s*(?::[^=\n]+)?=(?!=)", re.M)
 FOR_TARGET = re.compile(r"\bfor\s+([A-Za-z_]\w*)\s+in\b")
 PARAMETRIZE_ARG = re.compile(r"""parametrize\s*\(\s*['"]([A-Za-z_]\w*)['"]""")
 
-# A binding carries app-source-ness onward only when it is PATH shaped. Without this
+# A binding carries app source onward only when it is PATH shaped. Without this
 # guard the fixpoint leaks through `tree = ast.parse(path.read_text(...))` and every
 # generic loop name in the file, node and alias and target, becomes app-bound.
 PATH_SHAPED = re.compile(
@@ -397,67 +399,119 @@ def run_ruff():
 
 
 def parse_lizard_warnings(output):
-    """(file, function) -> (ccn, length) for every warning line lizard printed."""
+    """(file, function) -> (ccn, length) per warning line, and the keys lizard repeated.
+
+    Lizard prints one line per function, so a repeated key means two functions in one
+    file share a name. The first reading wins and the key goes into the second list,
+    because merging the two readings would let a new offender hide under the other's pin.
+    """
     found = {}
+    duplicates = []
     for line in output.splitlines():
         match = LIZARD_WARNING.match(line.strip())
         if not match:
             continue
         key = (match.group("file").replace("\\", "/"), match.group("function"))
-        ccn = int(match.group("ccn"))
-        length = int(match.group("length"))
-        # Lizard prints one line per function, so a repeated key means two functions in
-        # one file share a name. Keep the worse of each number and pin against that.
         if key in found:
-            ccn = max(ccn, found[key][0])
-            length = max(length, found[key][1])
-        found[key] = (ccn, length)
-    return found
+            duplicates.append(key)
+            continue
+        found[key] = (int(match.group("ccn")), int(match.group("length")))
+    return found, duplicates
+
+
+def parser_missed_warnings(returncode, found):
+    """True when lizard warned about something and this parser read none of it.
+
+    Lizard exits 1 when it warns about at least one function and 0 when it warns about
+    none, both measured 2026-08-24. A nonzero exit with nothing parsed therefore means
+    the warning line changed shape, and the gate would read an empty result as a pass.
+    """
+    return returncode != 0 and not found
+
+
+def duplicate_failures(duplicates):
+    """Failure lines for keys lizard printed twice. Empty means pass."""
+    if not duplicates:
+        return []
+    keys = sorted(set(duplicates))
+    lines = [
+        "complexity: %d (file, function) key(s) came back twice from one lizard run." % len(keys),
+        "Two functions in that file share a name, so one of them reads as the other and",
+        "hides under its pin. Bring one under the standard, or rename it:",
+    ]
+    for key in keys:
+        lines.append("  %s  %s" % key)
+    return lines
+
+
+def complexity_unpinned_lines(unpinned, found):
+    """Failure lines for functions over the standard that the baseline does not name."""
+    if not unpinned:
+        return []
+    lines = [
+        "complexity: %d function(s) over the standard and not in the baseline." % len(unpinned),
+        "Bring each one under the standard. Never add it to LIZARD_BASELINE:",
+    ]
+    for key in unpinned:
+        lines.append("  %s  %s  ccn %d, length %d" % (key + found[key]))
+    return lines
+
+
+def complexity_grown_lines(grown, found, baseline):
+    """Failure lines for pinned functions that measure worse than their pin."""
+    if not grown:
+        return []
+    lines = ["complexity: %d pinned function(s) grew past the baseline:" % len(grown)]
+    for key in grown:
+        lines.append(
+            "  %s  %s  pinned ccn %d length %d, found ccn %d length %d"
+            % (key + baseline[key] + found[key])
+        )
+    return lines
+
+
+def complexity_stale_lines(stale, found, baseline):
+    """Failure lines for pinned functions that measure better than their pin."""
+    if not stale:
+        return []
+    lines = [
+        "complexity: %d baseline entry(ies) are stale. Lower the pinned" % len(stale),
+        "numbers, or delete the entry, in LIZARD_BASELINE in scripts/gates.py so",
+        "the smaller number is what the tree is held to:",
+    ]
+    for key in stale:
+        observed = found.get(key)
+        shown = "gone" if observed is None else "ccn %d length %d" % observed
+        lines.append("  %s  %s  pinned ccn %d length %d, found %s" % (key + baseline[key] + (shown,)))
+    return lines
 
 
 def complexity_failures(found, baseline):
     """Failure lines for one lizard reading against a baseline. Empty means pass."""
-    failures = []
-
     unpinned = sorted(key for key in found if key not in baseline)
-    if unpinned:
-        failures.append(
-            "complexity: %d function(s) over the standard and not in the baseline." % len(unpinned)
-        )
-        failures.append("Bring each one under the standard. Never add it to LIZARD_BASELINE:")
-        for key in unpinned:
-            failures.append("  %s  %s  ccn %d, length %d" % (key + found[key]))
-
     grown = sorted(
         key
         for key in baseline
         if key in found and (found[key][0] > baseline[key][0] or found[key][1] > baseline[key][1])
     )
-    if grown:
-        failures.append("complexity: %d pinned function(s) grew past the baseline:" % len(grown))
-        for key in grown:
-            failures.append(
-                "  %s  %s  pinned ccn %d length %d, found ccn %d length %d"
-                % (key + baseline[key] + found[key])
-            )
-
+    # A function whose ccn rose while its length fell is reported once, as growth. The
+    # two remedies contradict each other, and fixing the growth is what makes the shrunk
+    # dimension stale on a later run.
     stale = sorted(
         key
         for key in baseline
-        if key not in found or found[key][0] < baseline[key][0] or found[key][1] < baseline[key][1]
+        if key not in grown
+        and (
+            key not in found
+            or found[key][0] < baseline[key][0]
+            or found[key][1] < baseline[key][1]
+        )
     )
-    if stale:
-        failures.append("complexity: %d baseline entry(ies) are stale. Lower the pinned" % len(stale))
-        failures.append("numbers, or delete the entry, in LIZARD_BASELINE in scripts/gates.py so")
-        failures.append("the smaller number is what the tree is held to:")
-        for key in stale:
-            observed = found.get(key)
-            shown = "gone" if observed is None else "ccn %d length %d" % observed
-            failures.append(
-                "  %s  %s  pinned ccn %d length %d, found %s" % (key + baseline[key] + (shown,))
-            )
-
-    return failures
+    return (
+        complexity_unpinned_lines(unpinned, found)
+        + complexity_grown_lines(grown, found, baseline)
+        + complexity_stale_lines(stale, found, baseline)
+    )
 
 
 def run_complexity():
@@ -468,17 +522,14 @@ def run_complexity():
     output = result.stdout + result.stderr
     print(output, end="", flush=True)
 
-    found = parse_lizard_warnings(output)
+    found, duplicates = parse_lizard_warnings(output)
 
-    # Lizard exits 1 when it warns about at least one function and 0 when it warns about
-    # none, both measured 2026-08-24. A nonzero exit with nothing parsed therefore means
-    # the warning line changed shape, and this gate would read an empty result as a pass.
-    if result.returncode != 0 and not found:
+    if parser_missed_warnings(result.returncode, found):
         print("\ncomplexity: lizard exited %d and this parser read 0 warning(s)." % result.returncode)
         print("The output format changed. Fix LIZARD_WARNING in scripts/gates.py.")
         return 1
 
-    failures = complexity_failures(found, LIZARD_BASELINE)
+    failures = duplicate_failures(duplicates) + complexity_failures(found, LIZARD_BASELINE)
     if failures:
         print("")
         for line in failures:
@@ -489,53 +540,58 @@ def run_complexity():
     return 0
 
 
+def scan_line(line, quote, depth):
+    """The open quote and bracket depth left after reading one physical line."""
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if quote:
+            if char == "\\":
+                index += 2
+                continue
+            if line.startswith(quote, index):
+                index += len(quote)
+                quote = None
+                continue
+            index += 1
+            continue
+        opened = False
+        for candidate in ('"""', "'''", '"', "'"):
+            if line.startswith(candidate, index):
+                quote = candidate
+                index += len(candidate)
+                opened = True
+                break
+        if opened:
+            continue
+        if char == "#":
+            break
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(0, depth - 1)
+        index += 1
+    if quote in ('"', "'"):
+        quote = None  # a single-quoted literal cannot cross a physical line
+    return quote, depth
+
+
 def logical_statements(text):
-    """(first line number, joined text, line numbers) per statement, joined on brackets.
+    """One joined string per statement, holding physical lines open across brackets.
 
     A read split across physical lines shows its target only once the lines are joined,
     so the source-assertion matcher works on statements rather than on lines.
     """
-    out, buf, nums, depth = [], [], [], 0
+    out, buf, depth = [], [], 0
     quote = None
-    for number, line in enumerate(text.splitlines(), 1):
+    for line in text.splitlines():
         buf.append(line)
-        nums.append(number)
-        index = 0
-        while index < len(line):
-            char = line[index]
-            if quote:
-                if char == "\\":
-                    index += 2
-                    continue
-                if line.startswith(quote, index):
-                    index += len(quote)
-                    quote = None
-                    continue
-                index += 1
-                continue
-            opened = False
-            for candidate in ('"""', "'''", '"', "'"):
-                if line.startswith(candidate, index):
-                    quote = candidate
-                    index += len(candidate)
-                    opened = True
-                    break
-            if opened:
-                continue
-            if char == "#":
-                break
-            if char in "([{":
-                depth += 1
-            elif char in ")]}":
-                depth = max(0, depth - 1)
-            index += 1
-        if quote in ('"', "'"):
-            quote = None  # a single-quoted literal cannot cross a physical line
+        quote, depth = scan_line(line, quote, depth)
         if depth == 0 and quote is None and not line.rstrip().endswith("\\"):
-            out.append((nums[0], "\n".join(buf), list(nums)))
-            buf, nums = [], []
+            out.append("\n".join(buf))
+            buf = []
     if buf:
-        out.append((nums[0], "\n".join(buf), list(nums)))
+        out.append("\n".join(buf))
     return out
 
 
@@ -556,9 +612,11 @@ def mentions_any(statement, names):
 def app_path_names(statements):
     """Names bound to an app-source path anywhere in one file, to a fixpoint."""
     names = set()
-    for _pass in range(6):
+    grew = True
+    # A pass only ever adds names, and the file holds finitely many, so this terminates.
+    while grew:
         grew = False
-        for _start, statement, _numbers in statements:
+        for statement in statements:
             if not (has_app_marker(statement) or mentions_any(statement, names)):
                 continue
             bound = set()
@@ -574,29 +632,33 @@ def app_path_names(statements):
                 if name not in names:
                     names.add(name)
                     grew = True
-        if not grew:
-            break
     return names
 
 
 def source_assertion_sites(text):
-    """How many times one test file reads app source as text or as a syntax tree."""
+    """How many times one test file reads app source as text or as a syntax tree.
+
+    A pattern written inside a line comment is prose about the gate, not a read, so
+    every count drops the comment first. Marker collection still reads the whole line,
+    because a commented-out path is still a path this file knows about.
+    """
     sites = 0
     for line in text.splitlines():
-        if "getsource" in line:
+        code = line.split("#", 1)[0]
+        if "getsource" in code:
             sites += 1
-        if "ast.parse" in line:
+        if "ast.parse" in code:
             sites += 1
 
     statements = logical_statements(text)
     names = app_path_names(statements)
-    for _start, statement, _numbers in statements:
+    for statement in statements:
         if "read_text(" not in statement:
             continue
         if not (has_app_marker(statement) or mentions_any(statement, names)):
             continue
         for line in statement.splitlines():
-            if "read_text(" in line:
+            if "read_text(" in line.split("#", 1)[0]:
                 sites += 1
     return sites
 

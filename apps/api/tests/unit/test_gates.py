@@ -1,4 +1,4 @@
-"""Pins the standards the static gate enforces and the never-add rule on both baselines.
+"""Pins the standards the static gate enforces and the never-add rule on all three baselines.
 
 scripts/ is not a package, so this loads gates.py by path.
 
@@ -27,18 +27,23 @@ gates = load_gates()
 
 
 def test_lizard_flags_pin_the_standard():
-    """CCN 15, 60 lines, 11 parameters, warnings only."""
-    flags = gates.LIZARD_FLAGS
-    assert flags[flags.index("-C") + 1] == "15"
-    assert flags[flags.index("-L") + 1] == "60"
-    assert flags[flags.index("-a") + 1] == "11"
-    assert "--warnings_only" in flags
+    """CCN 15, 60 lines, 11 parameters, warnings only, in that order and nothing else.
+
+    The whole list is the assertion. Lizard honours the LAST value of a repeated flag,
+    so checking each flag's first occurrence would pass an appended `-C 99`.
+    """
+    assert gates.LIZARD_FLAGS == ["-C", "15", "-L", "60", "-a", "11", "--warnings_only"]
 
 
-# The two snapshots below are the baselines as measured on 2026-08-24. The assertions
+# The three snapshots below are the baselines as measured on 2026-08-24. The assertions
 # that read them accept a smaller value and a missing key, and reject a new key or a
 # larger value. Shrinking a baseline therefore needs no edit here. Growing one cannot
 # happen without editing this file, which is the point.
+
+PINNED_RUFF = {
+    ("app/services/agent_tools.py", "I001"): 1,
+    ("app/worker/tasks/pipeline/chunk.py", "I001"): 1,
+}
 
 PINNED_LIZARD = {
     ("app/api/deps.py", "get_current_tenant"): (19, 120),
@@ -224,6 +229,13 @@ PINNED_SOURCE = {
 }
 
 
+def test_ruff_baseline_only_shrinks():
+    """Every pinned violation is in the snapshot, at or below its snapshot count."""
+    for key, count in gates.RUFF_BASELINE.items():
+        assert key in PINNED_RUFF, "%s was added to RUFF_BASELINE" % (key,)
+        assert count <= PINNED_RUFF[key], "%s was raised to %d" % (key, count)
+
+
 def test_lizard_baseline_only_shrinks():
     """Every pinned function is in the snapshot, at or below its snapshot numbers."""
     for key, (ccn, length) in gates.LIZARD_BASELINE.items():
@@ -242,8 +254,15 @@ def test_source_assertion_baseline_only_shrinks():
 
 COMPLEXITY_PIN = {("app/one.py", "f"): (10, 20)}
 
+# The unpinned case carries the pinned function EXACTLY at its pin alongside the new
+# offender. Leaving it out would let the stale branch fail that case on its own, and the
+# case would pass with the unpinned branch deleted.
 COMPLEXITY_CASES = [
-    ("a function over the standard that nothing pins", {("app/two.py", "g"): (16, 61)}, True),
+    (
+        "a function over the standard that nothing pins",
+        {("app/one.py", "f"): (10, 20), ("app/two.py", "g"): (16, 61)},
+        True,
+    ),
     ("a pinned function whose ccn grew", {("app/one.py", "f"): (11, 20)}, True),
     ("a pinned function whose length grew", {("app/one.py", "f"): (10, 21)}, True),
     ("a pinned function lizard no longer warns about", {}, True),
@@ -258,10 +277,23 @@ def test_complexity_failures(label, found, expect_failure):
     assert bool(gates.complexity_failures(found, COMPLEXITY_PIN)) is expect_failure
 
 
+def test_a_mixed_regression_reports_the_growth_alone():
+    """ccn up and length down reports growth only, so one remedy reaches the reader."""
+    failures = gates.complexity_failures({("app/one.py", "f"): (11, 19)}, COMPLEXITY_PIN)
+    report = "\n".join(failures)
+    assert "grew past the baseline" in report
+    assert "stale" not in report
+
+
 SOURCE_PIN = {"tests/unit/test_one.py": 3}
 
+# The unpinned case carries the pinned file EXACTLY at its count, for the same reason.
 SOURCE_CASES = [
-    ("a test file with sites that nothing pins", {"tests/unit/test_two.py": 1}, True),
+    (
+        "a test file with sites that nothing pins",
+        {"tests/unit/test_one.py": 3, "tests/unit/test_two.py": 1},
+        True,
+    ),
     ("a pinned file whose count grew", {"tests/unit/test_one.py": 4}, True),
     ("a pinned file whose count shrank", {"tests/unit/test_one.py": 2}, True),
     ("a pinned file with no sites left", {}, True),
@@ -275,42 +307,93 @@ def test_source_assertion_failures(label, found, expect_failure):
     assert bool(gates.source_assertion_failures(found, SOURCE_PIN)) is expect_failure
 
 
+# One warning line as lizard printed it on 2026-08-24, backslashes and all.
+LIZARD_LINE = (
+    r"app\api\v1\agents.py:154: warning: patch_agent has 32 NLOC, 13 CCN, "
+    r"227 token, 3 PARAM, 61 length, 0 ND"
+)
+PATCH_AGENT = ("app/api/v1/agents.py", "patch_agent")
+
+
+def test_parse_lizard_warnings_reads_a_measured_line():
+    """The measured line yields its key with the path separators normalised."""
+    found, duplicates = gates.parse_lizard_warnings(LIZARD_LINE)
+    assert found == {PATCH_AGENT: (13, 61)}
+    assert duplicates == []
+
+
+def test_parse_lizard_warnings_survives_a_dropped_nd_field():
+    """The trailing ND field is not anchored, so a lizard that drops it still parses."""
+    found, duplicates = gates.parse_lizard_warnings(LIZARD_LINE.replace(", 0 ND", ""))
+    assert found == {PATCH_AGENT: (13, 61)}
+    assert duplicates == []
+
+
+def test_parse_lizard_warnings_ignores_a_line_it_cannot_read():
+    """A line that is not a warning contributes nothing."""
+    found, duplicates = gates.parse_lizard_warnings("lizard is thinking about it")
+    assert found == {}
+    assert duplicates == []
+
+
+def test_two_functions_sharing_a_name_cannot_hide_under_one_pin():
+    """A repeated key is reported, and the gate arithmetic refuses the reading."""
+    twice = LIZARD_LINE + "\n" + LIZARD_LINE.replace(":154:", ":900:").replace("13 CCN", "27 CCN")
+    found, duplicates = gates.parse_lizard_warnings(twice)
+    assert duplicates == [PATCH_AGENT]
+    assert found == {PATCH_AGENT: (13, 61)}
+    report = "\n".join(gates.duplicate_failures(duplicates))
+    assert "app/api/v1/agents.py" in report
+    assert "patch_agent" in report
+
+
+def test_a_broken_parser_is_not_a_pass():
+    """Lizard warning about something this parser cannot read has to fail the gate."""
+    assert gates.parser_missed_warnings(1, {}) is True
+    assert gates.parser_missed_warnings(1, {PATCH_AGENT: (13, 61)}) is False
+    assert gates.parser_missed_warnings(0, {}) is False
+
+
 # Fragments, not whole patterns. See the module docstring.
 READ = "read_" "text"
 REFLECT = "get" "source"
 PARSE = "ast." "parse"
-EOL = chr(10)
 
 SITE_CASES = [
     (
         "a read through a quoted app path",
-        'body = pathlib.Path("app/services/sse.py").' + READ + '(encoding="utf-8")' + EOL,
+        'body = pathlib.Path("app/services/sse.py").' + READ + '(encoding="utf-8")\n',
         1,
     ),
     (
         "a fixture read under tmp_path",
-        'body = (tmp_path / "fixture.json").' + READ + "()" + EOL,
+        'body = (tmp_path / "fixture.json").' + READ + "()\n",
         0,
     ),
     (
         "a read through a name bound to an app path",
-        'root = pathlib.Path("app")' + EOL + 'body = (root / "services" / "sse.py").' + READ + "()" + EOL,
+        'root = pathlib.Path("app")\nbody = (root / "services" / "sse.py").' + READ + "()\n",
         1,
     ),
     (
         "a test file reading its own location",
-        "here = pathlib.Path(__file__)" + EOL + "body = here." + READ + "()" + EOL,
+        "here = pathlib.Path(__file__)\nbody = here." + READ + "()\n",
         0,
     ),
     (
         "source reflection",
-        "text = inspect." + REFLECT + "(target)" + EOL,
+        "text = inspect." + REFLECT + "(target)\n",
         1,
     ),
     (
         "a parse of source text into a tree",
-        "tree = " + PARSE + "(payload)" + EOL,
+        "tree = " + PARSE + "(payload)\n",
         1,
+    ),
+    (
+        "a pattern named in a line comment",
+        "# never " + PARSE + " the app source in a test\n",
+        0,
     ),
 ]
 
