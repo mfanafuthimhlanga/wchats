@@ -9,27 +9,33 @@ PITFALLS.md §2 — Table Flattening:
     HybridChunker. This is a first-class design decision, not a post-hoc patch.
 
 PITFALLS.md §11 — Indirect Prompt Injection (Sanitization Layer):
-    All chunk text — whether produced by HybridChunker.contextualize() (text path) or
-    by table.export_to_markdown() (table path) — passes through sanitize_chunk_text()
-    before being added to the returned list. The sanitized text is what gets stored in
-    the tenant chunks table. This ensures injection markers never reach the DB.
+    All chunk content, whether produced by HybridChunker.contextualize() (text path)
+    or by table.export_to_markdown() (table path), passes through
+    sanitize_chunk_text() before a Chunk is built from it. The sanitized string is
+    what gets stored in the tenant chunks table, so injection markers never reach
+    the DB.
 
 Function signature:
-    chunk_document(doc, document_id) → list[dict]
+    chunk_document(doc, document_id) -> tuple[Chunk, ...]
 
-Each dict has keys: id, text, ordinal, is_table, token_count.
+Chunk (app/domain/chunk.py) carries document_id, ordinal, content, token_count and
+is_table, and derives `id` from (document_id, ordinal) in its own constructor. This
+service issues the ordinal and nothing else, so the ING-05 idempotency contract no
+longer depends on one function remembering to pass the same counter twice. The
+return is a tuple because a caller that appends to it would be adding a chunk whose
+ordinal came from no counter at all.
 """
 
 import structlog
 
-from app.domain.chunk_id import deterministic_chunk_id
+from app.domain.chunk import Chunk
 from app.utils.sanitize import sanitize_chunk_text
 
 log = structlog.get_logger(__name__)
 
 
-def chunk_document(doc, document_id: str) -> list[dict]:
-    """Produce an ordered list of chunk dicts from a DoclingDocument.
+def chunk_document(doc, document_id: str) -> tuple[Chunk, ...]:
+    """Produce ordered Chunks from a DoclingDocument.
 
     Two-path strategy (order: text path first, then table path appended):
 
@@ -38,33 +44,31 @@ def chunk_document(doc, document_id: str) -> list[dict]:
         chunk, skip it if any doc_item is a TableItem instance (table content handled
         separately below). Otherwise, call chunker.contextualize(chunk) — NOT
         the heading-breadcrumb-enriched string — to get the embed string, then apply
-        sanitize_chunk_text() before appending.
+        sanitize_chunk_text() before building the Chunk.
 
     Table path:
         For each table in doc.tables, call table.export_to_markdown(doc=doc).
         Apply sanitize_chunk_text() on the Markdown output. One chunk per table.
 
-    Both paths share a single monotonic ordinal counter. Chunk IDs are derived via
-    deterministic_chunk_id(document_id, ordinal) — uuid5 that is stable across
-    reruns (PITFALLS.md §8 / ING-05 idempotency contract).
+    Both paths share a single monotonic ordinal counter, and Chunk derives each id
+    from (document_id, ordinal) as a uuid5, stable across reruns (PITFALLS.md §8 /
+    ING-05 idempotency contract).
 
     Args:
         doc:         DoclingDocument returned by docling_service.parse_document().
         document_id: String UUID of the document row in the tenant documents table.
 
     Returns:
-        Ordered list of dicts, each with keys:
-            id          — str UUID (deterministic_chunk_id result)
-            text        — str (sanitized; ready to write into chunks.content)
-            ordinal     — int (zero-indexed, monotonic across text + table chunks)
-            is_table    — bool (True for table path, False for HybridChunker output)
-            token_count — int (approximation: len(text.split()); replace with
-                          proper tokenizer in M3 if token budget matters)
+        Ordered tuple of Chunk. `content` is sanitized and ready for chunks.content;
+        `ordinal` is zero-indexed and monotonic across text then table chunks;
+        `is_table` is True for the table path; `token_count` is an approximation
+        (len(content.split())). Replace with a proper tokenizer in M3 if the token
+        budget starts to matter.
     """
     from docling.chunking import HybridChunker  # lazy — only available in pipeline worker
     from docling_core.types.doc import TableItem  # noqa: F811
     chunker = HybridChunker(max_tokens=512, merge_peers=True)
-    chunks: list[dict] = []
+    chunks: list[Chunk] = []
     ordinal = 0
 
     # -------------------------------------------------------------------------
@@ -83,19 +87,18 @@ def chunk_document(doc, document_id: str) -> list[dict]:
 
         # contextualize() prepends heading breadcrumbs — the correct embed string.
         # Calling the raw attribute on the chunk (without context) must NOT be used here (PITFALLS.md §1).
-        text = sanitize_chunk_text(chunker.contextualize(chunk))
-        if not text:
+        content = sanitize_chunk_text(chunker.contextualize(chunk))
+        if not content:
             continue
 
-        chunk_id = deterministic_chunk_id(document_id, ordinal)
         chunks.append(
-            {
-                "id": str(chunk_id),
-                "text": text,
-                "ordinal": ordinal,
-                "is_table": False,
-                "token_count": len(text.split()),
-            }
+            Chunk(
+                document_id=document_id,
+                ordinal=ordinal,
+                content=content,
+                token_count=len(content.split()),
+                is_table=False,
+            )
         )
         ordinal += 1
 
@@ -107,19 +110,18 @@ def chunk_document(doc, document_id: str) -> list[dict]:
         if not md.strip():
             continue
 
-        text = sanitize_chunk_text(md)
-        if not text:
+        content = sanitize_chunk_text(md)
+        if not content:
             continue
 
-        chunk_id = deterministic_chunk_id(document_id, ordinal)
         chunks.append(
-            {
-                "id": str(chunk_id),
-                "text": text,
-                "ordinal": ordinal,
-                "is_table": True,
-                "token_count": len(text.split()),
-            }
+            Chunk(
+                document_id=document_id,
+                ordinal=ordinal,
+                content=content,
+                token_count=len(content.split()),
+                is_table=True,
+            )
         )
         ordinal += 1
 
@@ -127,6 +129,6 @@ def chunk_document(doc, document_id: str) -> list[dict]:
         "chunking_service.complete",
         document_id=document_id,
         chunk_count=len(chunks),
-        table_count=sum(1 for c in chunks if c["is_table"]),
+        table_count=sum(1 for c in chunks if c.is_table),
     )
-    return chunks
+    return tuple(chunks)

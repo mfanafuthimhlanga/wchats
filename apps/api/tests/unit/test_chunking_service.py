@@ -1,6 +1,12 @@
 """
 Unit tests for app.services.chunking_service.chunk_document — ING-03, ING-04, ING-05.
 
+chunk_document returns `tuple[Chunk, ...]` (ticket #42). It emitted
+`list[dict]` with a "text" key until 2026-08-24; the field is `content` now,
+named for the column it is written into, and `id` is derived by the Chunk
+constructor rather than by this service. The content strings and token counts
+these tests assert are the ones the dict version produced, unchanged.
+
 Tests:
   1. test_text_path_skips_chunks_with_table_items  — TableItem chunks are excluded from text path
   2. test_table_chunk_produces_markdown            — tables go through Markdown path only
@@ -9,6 +15,7 @@ Tests:
   5. test_text_path_uses_contextualize_not_chunk_text   — contextualize() called, not chunk.text
   6. test_sanitize_strips_injection_in_table_path  — sanitize_chunk_text applied to table Markdown
   7. test_empty_text_chunks_are_skipped            — whitespace-only context strings are excluded
+  8. test_returns_chunks_carrying_the_document_id  (the return type and its document_id)
 
 Patch target: docling.chunking.HybridChunker (the class — patch its return value's
 .chunk and .contextualize methods). NOT app.services.chunking_service.HybridChunker:
@@ -140,14 +147,17 @@ def test_text_path_skips_chunks_with_table_items():
 
     # Only the non-table chunk should appear
     assert len(chunks) == 1, f"Expected 1 chunk, got {len(chunks)}"
-    assert chunks[0]["is_table"] is False
-    # The stored text is from contextualize() (prefixed with "Ctx: "),
+    assert chunks[0].is_table is False
+    # The stored content is from contextualize() (prefixed with "Ctx: "),
     # NOT the bare chunk.text value "raw-text-do-not-use" on its own.
-    assert chunks[0]["text"] != "raw-text-do-not-use", (
+    assert chunks[0].content != "raw-text-do-not-use", (
         "chunk.text was used directly instead of chunker.contextualize()"
     )
     # Verify contextualize() was called (mock adds "Ctx: " prefix)
-    assert chunks[0]["text"].startswith("Ctx: ")
+    assert chunks[0].content.startswith("Ctx: ")
+    # The exact string and count the dict version produced for this input.
+    assert chunks[0].content == "Ctx: raw-text-do-not-use"
+    assert chunks[0].token_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -170,9 +180,11 @@ def test_table_chunk_produces_markdown():
         chunks = chunk_document(mock_doc, "doc-uuid-002")
 
     assert len(chunks) == 1, f"Expected 1 table chunk, got {len(chunks)}"
-    assert chunks[0]["is_table"] is True
+    assert chunks[0].is_table is True
     # Must contain Markdown table markers
-    assert "|" in chunks[0]["text"], "Expected Markdown table markers in chunk text"
+    assert "|" in chunks[0].content, "Expected Markdown table markers in chunk content"
+    assert chunks[0].content == "| A | B |\n|---|---|\n| 1 | 2 |"
+    assert chunks[0].token_count == 11
     # export_to_markdown must have been called with doc=
     mock_table.export_to_markdown.assert_called_once_with(doc=mock_doc)
 
@@ -199,7 +211,7 @@ def test_chunks_have_deterministic_ids():
 
     assert len(chunks_first) == 1
     assert len(chunks_second) == 1
-    assert chunks_first[0]["id"] == chunks_second[0]["id"], (
+    assert chunks_first[0].id == chunks_second[0].id, (
         "Chunk IDs must be deterministic across calls with the same document_id"
     )
 
@@ -232,11 +244,18 @@ def test_ordinals_are_monotonic_across_text_then_table():
         chunks = chunk_document(mock_doc, "doc-uuid-004")
 
     assert len(chunks) == 3, f"Expected 3 chunks (2 text + 1 table), got {len(chunks)}"
-    ordinals = [c["ordinal"] for c in chunks]
+    ordinals = [c.ordinal for c in chunks]
     assert ordinals == [0, 1, 2], f"Expected ordinals [0, 1, 2], got {ordinals}"
-    assert chunks[0]["is_table"] is False
-    assert chunks[1]["is_table"] is False
-    assert chunks[2]["is_table"] is True
+    assert chunks[0].is_table is False
+    assert chunks[1].is_table is False
+    assert chunks[2].is_table is True
+    # Contents and counts the dict version produced, position by position.
+    assert [c.content for c in chunks] == [
+        "Heading A\n\nContent A",
+        "Heading B\n\nContent B",
+        "| Col |\n|---|\n| val |",
+    ]
+    assert [c.token_count for c in chunks] == [4, 4, 7]
 
 
 # ---------------------------------------------------------------------------
@@ -263,13 +282,13 @@ def test_text_path_uses_contextualize_not_chunk_text():
         chunks = chunk_document(mock_doc, "doc-uuid-005")
 
     assert len(chunks) == 1
-    # The chunk text must start with the heading breadcrumb from contextualize()
-    assert chunks[0]["text"].startswith("## Heading"), (
-        f"Expected chunk text to start with '## Heading' (from contextualize), "
-        f"but got: {chunks[0]['text']!r}"
+    # The chunk content must start with the heading breadcrumb from contextualize()
+    assert chunks[0].content.startswith("## Heading"), (
+        f"Expected chunk content to start with '## Heading' (from contextualize), "
+        f"but got: {chunks[0].content!r}"
     )
-    # chunk.text raw value must NOT appear in the stored text
-    assert "raw-do-not-use" not in chunks[0]["text"]
+    # chunk.text raw value must NOT appear in the stored content
+    assert "raw-do-not-use" not in chunks[0].content
 
 
 # ---------------------------------------------------------------------------
@@ -294,8 +313,8 @@ def test_sanitize_strips_injection_in_table_path():
         chunks = chunk_document(mock_doc, "doc-uuid-006")
 
     assert len(chunks) == 1
-    assert "System:" not in chunks[0]["text"], (
-        "Injection marker 'System:' must be stripped from table chunk text"
+    assert "System:" not in chunks[0].content, (
+        "Injection marker 'System:' must be stripped from table chunk content"
     )
 
 
@@ -320,6 +339,37 @@ def test_empty_text_chunks_are_skipped():
 
         chunks = chunk_document(mock_doc, "doc-uuid-007")
 
-    assert chunks == [], (
-        "Expected empty list when all contextualize() outputs are whitespace"
+    assert chunks == (), (
+        "Expected an empty tuple when all contextualize() outputs are whitespace"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 8: the return type, and the document_id every chunk carries
+# ---------------------------------------------------------------------------
+
+
+def test_returns_chunks_carrying_the_document_id():
+    """chunk_document returns a tuple of Chunk, each stamped with the document.
+
+    The tuple is what stops a caller appending to the chunker's output and
+    landing a chunk whose ordinal no counter ever issued.
+    """
+    chunk_a = _make_text_chunk("content-a", has_table_item=False)
+    mock_chunker = _make_mock_chunker(chunks_to_return=[chunk_a])
+    mock_table = MagicMock()
+    mock_table.export_to_markdown.return_value = "| Col |\n|---|\n| val |"
+    mock_doc = _make_mock_doc(tables=[mock_table])
+
+    with patch("docling.chunking.HybridChunker") as mock_cls:
+        mock_cls.return_value = mock_chunker
+
+        from app.services.chunking_service import chunk_document
+
+        chunks = chunk_document(mock_doc, "doc-uuid-008")
+
+    from app.domain.chunk import Chunk
+
+    assert isinstance(chunks, tuple), f"Expected a tuple, got {type(chunks).__name__}"
+    assert all(isinstance(c, Chunk) for c in chunks)
+    assert [c.document_id for c in chunks] == ["doc-uuid-008", "doc-uuid-008"]

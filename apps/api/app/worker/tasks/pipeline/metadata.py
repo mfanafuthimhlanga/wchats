@@ -4,6 +4,40 @@ generate_metadata — Celery task: Haiku metadata + entity extraction per chunk.
 Position in M2 chain (3rd of 4):
     parse_documents → chunk_documents → generate_metadata → embed_and_migrate
 
+Layout:
+    generate_metadata    the task, one tenant connection, the document loop, the
+                         wholly-failed rule below
+    _enrich_document     one document: fetch, Layer 3 pre-check, enrich, emit
+    _pending_chunks      Layer 3 idempotency pre-check
+    _enrich_pending      the batch loop, one ChunkMetadata per enriched chunk
+    _persist_enrichment  one chunk's writes, committed
+    _refuse_a_run_that_enriched_nothing
+                         the wholly-failed rule itself, called once per run
+    _fail_the_job        the failure mechanism shared with the other pipeline tasks
+    MetadataEnrichmentFailed
+                         what the wholly-failed rule raises, so Celery records
+                         FAILURE and the chain stops
+
+THE WHOLLY-FAILED RULE (issue #23):
+    A run that processed chunks and produced ZERO ChunkMetadata does not report
+    succeeded. It marks the job failed with a reason naming chunks_seen and
+    chunks_enriched, emits job.failed, and raises so Celery records FAILURE and
+    the chain stops instead of embedding chunks that have no metadata.
+
+    Observed 2026-08-22: batch_extraction_failed on all three documents,
+    chunks_enriched=0, job status succeeded. The failure was invisible to the
+    SSE stream, to the job row, and to the embed step that ran next.
+
+    chunks_seen counts the chunks a run took responsibility for enriching, the
+    pending set, after the Layer 3 pre-check. Zero of them is not a failure: an
+    empty document, and a document whose chunks are all already enriched, both
+    succeed. Partial enrichment also succeeds, with the counts recorded as
+    before; a re-run re-attempts the chunks that missed.
+
+    No retry. Every batch already exhausted the tenacity retries inside
+    enrich_chunks_batch, and a total failure is a configuration wall (a missing
+    or rejected ANTHROPIC_API_KEY, for instance) that a fourth attempt only bills.
+
 Layer 3 idempotency (SELECT COUNT(*) pre-check):
     Before calling Haiku for a chunk, the task checks whether a chunk_metadata row
     already exists for that chunk_id. If it does, the chunk is skipped — no Haiku
@@ -48,12 +82,14 @@ Cost design (batched Haiku calls):
     (e.g. a fatal ValidationError or a size mismatch) is logged and the batch is
     skipped — it does not abort the whole document. Those chunks simply have no
     metadata row, and a future re-run re-attempts them (Layer 3 skips only chunks
-    that DID succeed).
+    that DID succeed). When EVERY batch takes that path the run enriched nothing,
+    which is the wholly-failed rule above.
 
 Event emission order (CONTEXT.md §SSE Event Vocabulary):
     metadata.started  ← emitted per document (before the batch loop)
     metadata.progress ← emitted after each batch ({processed, total})
     metadata.complete ← emitted per document (after all chunks processed)
+    job.failed        ← terminal, only on the wholly-failed path
 
 Return value (chain contract):
     {"tenant_id": str, "agent_id": str, "job_id": str, "document_ids": list[str]}
@@ -72,6 +108,7 @@ Threat mitigations (T-02-04):
 """
 
 import ssl
+from datetime import datetime, timezone
 
 import psycopg2
 import redis as redis_lib
@@ -80,7 +117,9 @@ import structlog
 from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt, require_ciphertext
+from app.domain.chunk_metadata import ChunkMetadata
 from app.models.agent import Agent
+from app.models.job import Job
 from app.services.events import emit
 from app.services.metadata_service import BATCH_SIZE, enrich_chunks_batch
 from app.worker.celery_app import celery_app
@@ -93,6 +132,184 @@ _ssl_opts: dict = {"ssl_cert_reqs": ssl.CERT_NONE} if _url_clean.startswith("red
 _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
 
 
+class MetadataEnrichmentFailed(RuntimeError):
+    """Every chunk the run took responsibility for failed enrichment (issue #23).
+
+    Raised after the job has been marked failed, so Celery records the task as
+    FAILURE and the chain stops rather than forwarding a success dict to
+    embed_and_migrate.
+    """
+
+
+def _persist_enrichment(tenant_conn, enrichment: ChunkMetadata) -> None:
+    """Write one chunk's metadata and entities, then commit.
+
+    Entity dedup: ON CONFLICT (normalized, type) DO UPDATE SET name so the
+    human-readable name reflects the most recent occurrence, while the canonical
+    normalized form stays the dedup key (T-02-04-02). The chunk_entities link
+    uses ON CONFLICT DO NOTHING so a retry cannot duplicate a pair.
+
+    The commit is per-chunk, which is what Layer 3 retry granularity rests on:
+    a worker killed mid-batch leaves already-written chunks skippable.
+    """
+    with tenant_conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO chunk_metadata (chunk_id, summary, keywords, questions)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (chunk_id) DO UPDATE
+                SET summary   = EXCLUDED.summary,
+                    keywords  = EXCLUDED.keywords,
+                    questions = EXCLUDED.questions
+            """,
+            (
+                enrichment.chunk_id,
+                enrichment.summary,
+                enrichment.keywords,
+                enrichment.questions,
+            ),
+        )
+        for entity in enrichment.entities:
+            cur.execute(
+                """
+                INSERT INTO entities (name, type, normalized)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (normalized, type) DO UPDATE
+                    SET name = EXCLUDED.name
+                RETURNING id
+                """,
+                (entity.name, entity.type, entity.normalized),
+            )
+            entity_id = cur.fetchone()[0]
+            cur.execute(
+                """
+                INSERT INTO chunk_entities (chunk_id, entity_id)
+                VALUES (%s, %s)
+                ON CONFLICT DO NOTHING
+                """,
+                (enrichment.chunk_id, entity_id),
+            )
+    tenant_conn.commit()
+
+
+def _pending_chunks(tenant_conn, chunk_rows) -> list[tuple]:
+    """The (chunk_id, content) pairs that have no chunk_metadata row yet.
+
+    Layer 3 idempotency: an already-enriched chunk costs no Haiku call and no
+    re-billing (T-02-04-03). Stays on the main thread because psycopg2 is not
+    thread-safe.
+    """
+    pending: list[tuple] = []
+    for chunk_id, content in chunk_rows:
+        with tenant_conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM chunk_metadata WHERE chunk_id = %s",
+                (chunk_id,),
+            )
+            if cur.fetchone()[0] > 0:
+                log.info("generate_metadata.already_enriched", chunk_id=str(chunk_id))
+                continue
+        pending.append((chunk_id, content))
+    return pending
+
+
+def _enrich_pending(tenant_conn, db, job_id: str, pending: list[tuple]) -> int:
+    """Enrich and persist the pending chunks; return how many records landed.
+
+    One Haiku call per BATCH_SIZE chunks. The model returns per-chunk results in
+    submission order, and this function zips them back to chunk_ids by index,
+    never by id. The model never sees an id. A ChunkMetadata exists only for a
+    chunk that came back, so the return value counts real records, not attempts.
+    """
+    enriched = 0
+    for batch_start in range(0, len(pending), BATCH_SIZE):
+        batch = pending[batch_start : batch_start + BATCH_SIZE]
+        try:
+            results = enrich_chunks_batch([content for _, content in batch])
+        except Exception as exc:
+            # One bad batch does not abort the document. Every batch taking this
+            # path is what the wholly-failed rule catches.
+            log.warning(
+                "generate_metadata.batch_extraction_failed",
+                batch_start=batch_start,
+                batch_size=len(batch),
+                error=str(exc),
+            )
+            continue
+
+        for (chunk_id, _content), meta in zip(batch, results):
+            _persist_enrichment(
+                tenant_conn,
+                ChunkMetadata(
+                    chunk_id=chunk_id,
+                    summary=meta.summary,
+                    keywords=meta.keywords,
+                    questions=meta.questions,
+                    entities=meta.entities,
+                ),
+            )
+            enriched += 1
+
+        emit(job_id, "metadata.progress", {"processed": enriched, "total": len(pending)}, db, _redis)
+    return enriched
+
+
+def _enrich_document(tenant_conn, db, job_id: str, doc_id: str) -> tuple[int, int]:
+    """Enrich one document's chunks; return (chunks_seen, chunks_enriched).
+
+    chunks_seen is the pending count, the chunks this run took responsibility
+    for, after Layer 3 has skipped the ones already enriched. The caller sums
+    both numbers across documents and reads the wholly-failed rule off them.
+    """
+    with tenant_conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, content FROM chunks WHERE document_id = %s ORDER BY ordinal",
+            (doc_id,),
+        )
+        chunk_rows = cur.fetchall()
+
+    emit(job_id, "metadata.started", {"document_id": doc_id, "chunk_count": len(chunk_rows)}, db, _redis)
+
+    pending = _pending_chunks(tenant_conn, chunk_rows)
+    enriched = _enrich_pending(tenant_conn, db, job_id, pending)
+
+    emit(job_id, "metadata.complete", {"document_id": doc_id}, db, _redis)
+    log.info("generate_metadata.complete", document_id=doc_id, chunks_enriched=enriched)
+    return len(pending), enriched
+
+
+def _refuse_a_run_that_enriched_nothing(db, job_id: str, seen: int, enriched: int) -> None:
+    """Issue #23's rule, in one place: chunks processed, none enriched, no success.
+
+    Returns quietly when the run took on no chunks at all (an empty document, or
+    every chunk already enriched), and when at least one ChunkMetadata landed.
+    Otherwise it fails the job and raises, so Celery records FAILURE and
+    embed_and_migrate never runs over chunks with no metadata.
+    """
+    if seen == 0 or enriched > 0:
+        return
+    reason = f"generate_metadata enriched nothing: chunks_seen={seen}, chunks_enriched={enriched}"
+    log.error("generate_metadata.nothing_enriched", chunks_seen=seen, chunks_enriched=enriched)
+    _fail_the_job(db, job_id, reason)
+    raise MetadataEnrichmentFailed(reason)
+
+
+def _fail_the_job(db, job_id: str, reason: str) -> None:
+    """Mark the job failed and emit the terminal job.failed event.
+
+    The same mechanism provision, migrations and embed use: the job row carries
+    the reason, and job.failed is what the SSE stream and the admin ingest page
+    treat as terminal.
+    """
+    job = db.get(Job, job_id)
+    if job is not None:
+        job.status = "failed"
+        job.error = reason
+        job.finished_at = datetime.now(timezone.utc)
+        db.commit()
+    emit(job_id, "job.failed", {"error": reason}, db, _redis)
+
+
 @celery_app.task(
     bind=True,
     acks_late=True,
@@ -101,241 +318,61 @@ _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
     queue="pipeline",
 )
 def generate_metadata(self, result: dict) -> dict:
-    """Enrich chunks with Haiku metadata + entities; link via chunk_entities.
-
-    Receives the result dict from chunk_documents, iterates all chunks per document,
-    applies Layer 3 idempotency (skip chunks already in chunk_metadata), calls Haiku
-    once per batch of BATCH_SIZE unprocessed chunks, UPSERTs chunk_metadata, UPSERTs
-    entities by (normalized, type), and links chunk_entities.
+    """Enrich every chunk that has no metadata yet; link entities via chunk_entities.
 
     Args:
-        result: Return value from chunk_documents —
-                {"tenant_id": str, "agent_id": str, "job_id": str, "document_ids": list[str]}.
-                Connection strings are NEVER in this dict (CLAUDE.md non-negotiable rule).
+        result: {"tenant_id", "agent_id", "job_id", "document_ids"} from
+                chunk_documents. Connection strings are NEVER in this dict.
 
     Returns:
-        {"tenant_id": str, "agent_id": str, "job_id": str, "document_ids": list[str]}
-        Forwarded unchanged to embed_and_migrate in the Celery chain.
+        The same four keys, forwarded unchanged to embed_and_migrate.
+
+    Raises:
+        MetadataEnrichmentFailed: chunks were processed and none were enriched.
     """
-    # ------------------------------------------------------------------
-    # Extract result dict keys — defensive validation
-    # ------------------------------------------------------------------
     tenant_id = result.get("tenant_id")
     agent_id = result.get("agent_id")
     job_id = result.get("job_id")
     document_ids = result.get("document_ids")
 
     # Spelled as an `or` chain rather than `not all([...])` so the type checker
-    # narrows the four Optionals for the rest of the function.  Logically
-    # identical to the previous `not all([tenant_id, agent_id, job_id,
-    # document_ids is not None])`: falsy id, or a missing document_ids key.
+    # narrows the four Optionals for the rest of the function.
     if not tenant_id or not agent_id or not job_id or document_ids is None:
-        log.error(
-            "generate_metadata.invalid_result_dict",
-            keys=list(result.keys()),
-        )
+        log.error("generate_metadata.invalid_result_dict", keys=list(result.keys()))
         return result
 
+    # The chain contract, built once: every exit hands back these four keys and
+    # nothing else, so no connection string can leave with them (T-02-04-01).
+    forwarded = {"tenant_id": tenant_id, "agent_id": agent_id, "job_id": job_id, "document_ids": document_ids}
+
     with get_sync_db() as db:
-        # ------------------------------------------------------------------
-        # Fetch agent from control DB — needed for tenant connection string
-        # ------------------------------------------------------------------
         agent = db.get(Agent, agent_id)
         if agent is None:
             log.error("generate_metadata.agent_not_found", agent_id=agent_id)
-            return {
-                "tenant_id": tenant_id,
-                "agent_id": agent_id,
-                "job_id": job_id,
-                "document_ids": document_ids,
-            }
+            return forwarded
 
-        # ------------------------------------------------------------------
-        # Decrypt POOLED connection string — DML only, pooled URI is correct
-        # (T-02-04-01: conn_str never logged)
-        # ------------------------------------------------------------------
-        conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
-
-        # ------------------------------------------------------------------
-        # Open tenant DB connection for DML writes
-        # ------------------------------------------------------------------
+        # POOLED connection string, DML only. Never logged (T-02-04-01).
+        conn_str = fernet_decrypt(
+            require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string")
+        )
         tenant_conn = psycopg2.connect(conn_str)
+        chunks_seen = 0
+        chunks_enriched = 0
         try:
             for doc_id in document_ids:
-                # ----------------------------------------------------------
-                # Fetch all chunks for this document in ordinal order
-                # ----------------------------------------------------------
-                with tenant_conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT id, content FROM chunks WHERE document_id = %s ORDER BY ordinal",
-                        (doc_id,),
-                    )
-                    chunk_rows = cur.fetchall()
-
-                chunk_count = len(chunk_rows)
-
-                # Emit metadata.started for this document
-                emit(
-                    job_id,
-                    "metadata.started",
-                    {"document_id": doc_id, "chunk_count": chunk_count},
-                    db,
-                    _redis,
-                )
-
-                # ----------------------------------------------------------
-                # Pass 1 (serial, main thread): Layer 3 idempotency pre-check.
-                # SELECT COUNT(*) FROM chunk_metadata for each chunk to decide
-                # which chunks need a Haiku call. Already-enriched chunks are
-                # skipped here (no Haiku call, no re-billing — T-02-04-03).
-                # This must stay on the main thread: psycopg2 is not thread-safe.
-                # ----------------------------------------------------------
-                pending: list[tuple] = []  # (chunk_id, content) needing enrichment
-                for chunk_id, content in chunk_rows:
-                    with tenant_conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT COUNT(*) FROM chunk_metadata WHERE chunk_id = %s",
-                            (chunk_id,),
-                        )
-                        if cur.fetchone()[0] > 0:
-                            log.info(
-                                "generate_metadata.already_enriched",
-                                chunk_id=str(chunk_id),
-                            )
-                            continue
-                    pending.append((chunk_id, content))
-
-                # ----------------------------------------------------------
-                # Pass 2: batch Haiku calls (BATCH_SIZE chunks per call) then
-                # serial DB writes. Each batch is one Haiku call returning
-                # per-chunk results in submission order; results are zipped back
-                # to chunk_ids by index (NOT by ID — the model has no IDs).
-                #
-                # All DB access stays on the main thread because the single
-                # psycopg2 connection/cursor is not thread-safe (T-02-04-06:
-                # content never logged; only chunk_id/document_id). Per-chunk
-                # commit preserves Layer 3 retry granularity.
-                # ----------------------------------------------------------
-                processed = 0
-                for batch_start in range(0, len(pending), BATCH_SIZE):
-                    batch = pending[batch_start : batch_start + BATCH_SIZE]
-                    batch_texts = [content for _, content in batch]
-
-                    try:
-                        results = enrich_chunks_batch(batch_texts)
-                    except Exception as exc:
-                        # Partial-failure tolerance: one batch's failure (fatal
-                        # ValidationError after retries, size mismatch, etc.) must
-                        # NOT abort the whole document. Log and skip — a future
-                        # re-run re-attempts these chunks (Layer 3 only skips
-                        # chunks that succeeded).
-                        log.warning(
-                            "generate_metadata.batch_extraction_failed",
-                            batch_start=batch_start,
-                            batch_size=len(batch),
-                            error=str(exc),
-                        )
-                        continue  # skip this batch, don't abort the document
-
-                    for (chunk_id, _content), meta in zip(batch, results):
-                        with tenant_conn.cursor() as cur:
-                            # ------------------------------------------
-                            # UPSERT chunk_metadata (ON CONFLICT (chunk_id) DO UPDATE)
-                            # ------------------------------------------
-                            cur.execute(
-                                """
-                                INSERT INTO chunk_metadata (chunk_id, summary, keywords, questions)
-                                VALUES (%s, %s, %s, %s)
-                                ON CONFLICT (chunk_id) DO UPDATE
-                                    SET summary   = EXCLUDED.summary,
-                                        keywords  = EXCLUDED.keywords,
-                                        questions = EXCLUDED.questions
-                                """,
-                                (chunk_id, meta.summary, meta.keywords, meta.questions),
-                            )
-
-                            # ------------------------------------------
-                            # UPSERT entities + link chunk_entities
-                            #
-                            # Entity dedup: ON CONFLICT (normalized, type) DO UPDATE
-                            # SET name so the human-readable name reflects the most
-                            # recent occurrence; the canonical normalized form is the
-                            # dedup key (T-02-04-02).
-                            #
-                            # chunk_entities link: ON CONFLICT DO NOTHING prevents
-                            # duplicate (chunk_id, entity_id) pairs on retry.
-                            # ------------------------------------------
-                            for entity in meta.entities:
-                                cur.execute(
-                                    """
-                                    INSERT INTO entities (name, type, normalized)
-                                    VALUES (%s, %s, %s)
-                                    ON CONFLICT (normalized, type) DO UPDATE
-                                        SET name = EXCLUDED.name
-                                    RETURNING id
-                                    """,
-                                    (entity.name, entity.type, entity.normalized),
-                                )
-                                entity_id = cur.fetchone()[0]
-                                cur.execute(
-                                    """
-                                    INSERT INTO chunk_entities (chunk_id, entity_id)
-                                    VALUES (%s, %s)
-                                    ON CONFLICT DO NOTHING
-                                    """,
-                                    (chunk_id, entity_id),
-                                )
-
-                        # Commit per-chunk: partial-progress safety on retry
-                        # (Layer 3 design). If the worker is killed mid-batch,
-                        # the SELECT COUNT(*) guard on the next retry skips
-                        # already-committed chunks.
-                        tenant_conn.commit()
-                        processed += 1
-
-                    # Emit progress after each batch (each batch IS ~BATCH_SIZE chunks).
-                    emit(
-                        job_id,
-                        "metadata.progress",
-                        {"processed": processed, "total": len(pending)},
-                        db,
-                        _redis,
-                    )
-
-                # Emit metadata.complete for this document
-                emit(
-                    job_id,
-                    "metadata.complete",
-                    {"document_id": doc_id},
-                    db,
-                    _redis,
-                )
-
-                log.info(
-                    "generate_metadata.complete",
-                    document_id=doc_id,
-                    chunks_enriched=processed,
-                )
-
+                seen, enriched = _enrich_document(tenant_conn, db, job_id, doc_id)
+                chunks_seen += seen
+                chunks_enriched += enriched
         except Exception as exc:
-            # Best-effort rollback on unexpected error
             try:
                 tenant_conn.rollback()
             except Exception:
                 pass
-            log.error(
-                "generate_metadata.unexpected_error",
-                error_type=type(exc).__name__,
-                error=str(exc),
-            )
+            log.error("generate_metadata.unexpected_error", error_type=type(exc).__name__, error=str(exc))
             raise self.retry(exc=exc, countdown=2**self.request.retries)
         finally:
             tenant_conn.close()
 
-    # T-02-04-01: Return only chain-forwarding keys — no connection string
-    return {
-        "tenant_id": tenant_id,
-        "agent_id": agent_id,
-        "job_id": job_id,
-        "document_ids": document_ids,
-    }
+        _refuse_a_run_that_enriched_nothing(db, job_id, chunks_seen, chunks_enriched)
+
+    return forwarded

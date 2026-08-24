@@ -4,7 +4,8 @@ Verifies the idempotency contract:
   - Same (document_id, ordinal) always produces the same UUID.
   - Different ordinals produce different UUIDs.
   - Different document IDs produce different UUIDs.
-  - The namespace constant is pinned to uuid.NAMESPACE_URL.
+  - The UUID is uuid5 over CHUNK_UUID_NAMESPACE and "{document_id}:{ordinal}".
+    tests/unit/test_chunk_type.py pins the namespace VALUE (uuid.NAMESPACE_DNS).
 
 conftest.py has already set the required env vars at module level.
 chunk_id.py imports only stdlib, so env setup is not strictly needed here,
@@ -66,8 +67,11 @@ class TestDeterministicChunkId:
     def test_uses_correct_namespace(self):
         """The UUID must equal uuid5(CHUNK_UUID_NAMESPACE, 'doc-uuid-123:0').
 
-        This pins the implementation to the declared namespace constant and
-        verifies the name string format ('{document_id}:{ordinal}').
+        The expected value comes from the same constant the implementation
+        reads, so this checks the name string format ('{document_id}:{ordinal}')
+        and nothing about the namespace value. Changing CHUNK_UUID_NAMESPACE
+        leaves this test green. tests/unit/test_chunk_type.py carries the UUID
+        literals that pin the value.
         """
         expected = uuid.uuid5(CHUNK_UUID_NAMESPACE, "doc-uuid-123:0")
         result = deterministic_chunk_id("doc-uuid-123", 0)

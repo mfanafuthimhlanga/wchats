@@ -10,10 +10,17 @@ deterministically from (document_id, ordinal). This ensures that:
      so in-flight writes are idempotent.
 
 Security note (T-02-01-02 — Tampering):
-  CHUNK_UUID_NAMESPACE is a module-level constant pinned to uuid.NAMESPACE_URL.
+  CHUNK_UUID_NAMESPACE is a module-level constant holding
+  6ba7b810-9dad-11d1-80b4-00c04fd430c8, which is `uuid.NAMESPACE_DNS`.
   Changing this constant across deployments would orphan every existing chunk ID
   stored in tenant DBs — all downstream reads (retrieval, evals, red team) would
   silently break. NEVER rotate or modify CHUNK_UUID_NAMESPACE after first deploy.
+
+  These three lines said NAMESPACE_URL until 2026-08-24, when the literal UUIDs
+  in tests/unit/test_chunk_type.py measured the value for the first time. Only
+  the prose was wrong. Correcting the VALUE to NAMESPACE_URL
+  (6ba7b811-9dad-11d1-80b4-00c04fd430c8) rekeys every chunk row that exists,
+  which is what the paragraph above forbids.
 
 PITFALLS.md §8 — Why Not uuid4:
   uuid4() is random per call. On task retry a new random UUID would be generated,
@@ -23,8 +30,9 @@ PITFALLS.md §8 — Why Not uuid4:
 
 import uuid
 
-# Namespace for W Chats chunk IDs.
-# This is uuid.NAMESPACE_URL (RFC 4122 well-known namespace).
+# Namespace for W Chats chunk IDs. This value is uuid.NAMESPACE_DNS, one of the
+# RFC 4122 well-known namespaces. It is written out rather than imported so the
+# bytes are visible at the point a reader would think about changing them.
 # VALUE MUST NEVER CHANGE ACROSS DEPLOYMENTS — see module docstring above.
 CHUNK_UUID_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 
