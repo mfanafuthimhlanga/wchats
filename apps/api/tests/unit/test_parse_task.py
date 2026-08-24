@@ -5,8 +5,15 @@ Tests:
   1. test_parse_documents_acks_late       — acks_late=True, max_retries=3, default_retry_delay=5
   2. test_parse_documents_no_conn_string_in_signature — signature has no conn/password params
   3. test_parse_documents_idempotency_skips_parsed_doc — Layer 1 guard fires, parse_document NOT called
-  4. test_parse_documents_returns_chain_dict — return value matches chain contract
-  5. test_parse_documents_emits_event_sequence — ingestion.started → parsing.started → parsing.complete
+  4. test_parse_documents_hands_on_the_job_it_built: IngestionJob in, its wire form out
+  5. test_parse_documents_refuses_an_empty_id_at_the_source: the head validates once,
+     in the type
+  6. test_parse_documents_emits_event_sequence: ingestion.started, then parsing.started,
+     then parsing.complete
+
+parse_documents is the chain's HEAD (ticket #43): it takes the four ids as task
+arguments from the upload route, builds the IngestionJob, and returns that job's
+wire form. The three hops after it take the wire form and give it back.
 
 Patch targets are symbols imported into app.worker.tasks.pipeline.parse, NOT
 the original module paths (e.g. patch app.worker.tasks.pipeline.parse.fernet_decrypt,
@@ -40,6 +47,10 @@ os.environ.setdefault("VOYAGE_API_KEY", "test_voyage")
 import inspect
 from contextlib import contextmanager
 from unittest.mock import MagicMock
+
+import pytest
+
+from app.domain.ingestion_job import IngestionJob
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -182,13 +193,9 @@ def test_parse_documents_idempotency_skips_parsed_doc(monkeypatch):
     # parse_document must NOT have been called (idempotency guard)
     mock_parse.assert_not_called()
 
-    # Return value must match chain contract
-    assert result == {
-        "tenant_id": "t1",
-        "agent_id": "a1",
-        "job_id": "j1",
-        "document_ids": ["d1"],
-    }
+    # The early exit hands on the same job as the full path, read as the type
+    # rather than as four key spellings.
+    assert IngestionJob.from_dict(result) == IngestionJob("t1", "a1", "j1", ["d1"])
 
 
 # ---------------------------------------------------------------------------
@@ -196,8 +203,13 @@ def test_parse_documents_idempotency_skips_parsed_doc(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_documents_returns_chain_dict(monkeypatch):
-    """parse_documents returns the expected chain dict after parsing a pending document.
+def test_parse_documents_hands_on_the_job_it_built(monkeypatch):
+    """The head builds an IngestionJob from its four arguments and sends its wire form.
+
+    Two assertions, and they say different things. The first reads the return
+    value as the type, so the chain contract is what the next hop can construct.
+    The second pins the wire form itself, because Celery serialises JSON and the
+    dict on the broker is the one the chain has always sent.
 
     P13-06: file-source branch now reads bytes from S3 via storage_service.get_bytes
     and parses via parse_document_from_bytes — no local-disk read.
@@ -249,16 +261,54 @@ def test_parse_documents_returns_chain_dict(monkeypatch):
     # The happy-path (pending → parsed) does not exercise retry logic.
     result = parse_documents.run("t1", "a1", "j1", [doc_id])
 
-    assert result == {
-        "tenant_id": "t1",
-        "agent_id": "a1",
-        "job_id": "j1",
-        "document_ids": [doc_id],
-    }
+    job = IngestionJob("t1", "a1", "j1", [doc_id])
+    assert IngestionJob.from_dict(result) == job
+    assert result == job.to_dict()
 
 
 # ---------------------------------------------------------------------------
-# Test 5: Correct event emission order
+# Test 5: The head refuses a job it cannot name
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("position", [0, 1, 2])
+def test_parse_documents_refuses_an_empty_id_at_the_source(monkeypatch, position):
+    """An empty tenant_id, agent_id or job_id stops the chain at its head.
+
+    The three hops downstream have always refused such a dict and returned it
+    unchanged. The head never checked, so an empty job_id reached emit() and
+    published every event of the run to a channel nobody is subscribed to. The
+    ids are the type's to validate now, and the head is where they enter.
+    """
+    mock_db = MagicMock()
+    mock_db.get.return_value = _make_mock_agent("a1")
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = _make_mock_cursor_for_parsed_doc("d1")
+
+    monkeypatch.setattr(
+        "app.worker.tasks.pipeline.parse.get_sync_db",
+        _make_sync_db_context(mock_db),
+    )
+    monkeypatch.setattr(
+        "app.worker.tasks.pipeline.parse.fernet_decrypt", lambda _: "fake-conn-str"
+    )
+    monkeypatch.setattr(
+        "app.worker.tasks.pipeline.parse.psycopg2.connect", lambda conn_str: mock_conn
+    )
+    monkeypatch.setattr("app.worker.tasks.pipeline.parse.emit", MagicMock())
+
+    from app.worker.tasks.pipeline.parse import parse_documents
+
+    args = ["t1", "a1", "j1"]
+    args[position] = ""
+
+    with pytest.raises(ValueError):
+        parse_documents.run(*args, ["d1"])
+
+
+# ---------------------------------------------------------------------------
+# Test 6: Correct event emission order
 # ---------------------------------------------------------------------------
 
 

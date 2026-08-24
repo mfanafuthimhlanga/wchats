@@ -21,7 +21,9 @@ Event emission order (CONTEXT.md §SSE Event Vocabulary):
     parsing.complete    ← emitted per document (after successful Docling parse)
 
 Return value (CLAUDE.md / chain contract):
-    {"tenant_id": str, "agent_id": str, "job_id": str, "document_ids": list[str]}
+    IngestionJob(tenant_id, agent_id, job_id, document_ids).to_dict(), the four ids
+    Celery carries as JSON. This task is the chain's HEAD: it takes the ids as task
+    arguments from the upload route and builds the job the other three hops receive.
     Connection strings are NEVER returned — they stay encrypted in the control DB.
 
 Threat mitigations:
@@ -55,6 +57,7 @@ from app.core.security import fernet_decrypt, require_ciphertext
 # AttributeError when the attribute is absent. Deleting the import turns those four
 # green tests red — observed: 1 failed, 4 passed on that file with the name removed.
 from app.domain.docling_service import parse_document, parse_document_from_bytes  # noqa: F401
+from app.domain.ingestion_job import IngestionJob
 from app.models.agent import Agent
 from app.services import storage_service
 from app.services.events import emit
@@ -107,10 +110,19 @@ def parse_documents(
         document_ids: List of document UUID strings to process.
 
     Returns:
-        {"tenant_id": str, "agent_id": str, "job_id": str, "document_ids": list[str]}
-        Passed as the ``result`` argument to chunk_documents in the Celery chain.
-        Connection strings are NEVER included in the return value.
+        The IngestionJob's wire form, the dict passed as the ``result`` argument
+        to chunk_documents in the Celery chain. Connection strings are NEVER
+        included in the return value; the type has no field one could occupy.
+
+    Raises:
+        ValueError: one of the three ids is empty. The head is where the ids
+            enter the chain, so it is where they are checked.
     """
+    # The chain's head builds the job the other three hops receive (ticket #43).
+    # Construction is the validation the downstream tasks used to spell one
+    # `or` chain each, and every exit below hands back this same job.
+    job = IngestionJob(tenant_id, agent_id, job_id, document_ids)
+
     with get_sync_db() as db:
         # ------------------------------------------------------------------
         # Fetch agent from control DB — needed for tenant connection string
@@ -118,12 +130,7 @@ def parse_documents(
         agent = db.get(Agent, agent_id)
         if agent is None:
             log.error("parse_documents.agent_not_found", agent_id=agent_id)
-            return {
-                "tenant_id": tenant_id,
-                "agent_id": agent_id,
-                "job_id": job_id,
-                "document_ids": document_ids,
-            }
+            return job.to_dict()
 
         # ------------------------------------------------------------------
         # Decrypt POOLED connection string from control DB (NOT the direct one).
@@ -147,6 +154,7 @@ def parse_documents(
             cursor = tenant_conn.cursor()
 
             # Pre-check: count documents not yet parsed to gate ingestion.started emit
+            # The list, not the job's tuple: psycopg2 makes a list an array, a tuple a record.
             cursor.execute(
                 "SELECT COUNT(*) FROM documents WHERE id = ANY(%s::uuid[]) "
                 "AND NOT (parse_status = 'parsed' AND source_hash IS NOT NULL)",
@@ -160,12 +168,7 @@ def parse_documents(
                     job_id=job_id,
                     document_count=len(document_ids),
                 )
-                return {
-                    "tenant_id": tenant_id,
-                    "agent_id": agent_id,
-                    "job_id": job_id,
-                    "document_ids": document_ids,
-                }
+                return job.to_dict()
 
             # Only emit ingestion.started on the first attempt — retries skip it
             # to avoid duplicate events in the SSE stream (acks_late retries re-enter here).
@@ -341,10 +344,5 @@ def parse_documents(
             if tenant_conn is not None:
                 tenant_conn.close()
 
-    # T-02-02-01: Return only chain-forwarding keys — no connection string
-    return {
-        "tenant_id": tenant_id,
-        "agent_id": agent_id,
-        "job_id": job_id,
-        "document_ids": document_ids,
-    }
+    # T-02-02-01: the job's four ids and nothing else, never a connection string
+    return job.to_dict()
