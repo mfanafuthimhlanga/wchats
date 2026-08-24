@@ -62,6 +62,7 @@ if "claude_agent_sdk" not in sys.modules:
     sys.modules["claude_agent_sdk"] = _make_fake_sdk()
 
 import app.services.agent_tools as agent_tools  # noqa: E402
+from app.domain.retrieved_context import RetrievedChunk, RetrievedContext  # noqa: E402
 
 
 def _run(coro):
@@ -99,47 +100,48 @@ def _fn(tool_obj):
 # ---------------------------------------------------------------------------
 
 
+QUERY = "test query"
+
+
+def _context(strategy: str, rows: list[tuple]) -> RetrievedContext:
+    """(chunk_id, document_id, content, score) rows, ranked in the order given."""
+    return RetrievedContext(
+        query=QUERY,
+        chunks=tuple(
+            RetrievedChunk(chunk_id, document_id, content, score, position)
+            for position, (chunk_id, document_id, content, score) in enumerate(
+                rows, start=1
+            )
+        ),
+        strategy=strategy,
+    )
+
+
 def _build_fixture():
-    fused = [
-        {
-            "chunk_id": "c1", "content": "A" * 400, "document_id": "d1",
-            "rrf_score": 0.9, "cosine_score": 0.8, "bm25_score": 0.5,
-            "vector_rank": 1, "bm25_rank": 2,
-        },
-        {
-            "chunk_id": "c2", "content": "B" * 400, "document_id": "d1",
-            "rrf_score": 0.8, "cosine_score": 0.7, "bm25_score": 0.6,
-            "vector_rank": 2, "bm25_rank": 1,
-        },
-        {
-            "chunk_id": "c3", "content": "C" * 400, "document_id": "d2",
-            "rrf_score": 0.5, "cosine_score": 0.4, "bm25_score": 0.3,
-            "vector_rank": 3, "bm25_rank": 3,
-        },
-        {
-            "chunk_id": "c4", "content": "D" * 400, "document_id": "d2",
-            "rrf_score": 0.3, "cosine_score": 0.2, "bm25_score": 0.1,
-            "vector_rank": 4, "bm25_rank": 4,
-        },
-    ]
-    bm25_candidates = [
-        {"chunk_id": "c2", "content": "B" * 400, "document_id": "d1", "bm25_score": 0.6, "rank": 1},
-        {"chunk_id": "c1", "content": "A" * 400, "document_id": "d1", "bm25_score": 0.5, "rank": 2},
-    ]
-    vector_candidates = [
-        {"chunk_id": "c1", "content": "A" * 400, "document_id": "d1", "cosine_score": 0.8, "rank": 1},
-        {"chunk_id": "c2", "content": "B" * 400, "document_id": "d1", "cosine_score": 0.7, "rank": 2},
-    ]
+    fused = _context("rrf", [
+        ("c1", "d1", "A" * 400, 0.9),
+        ("c2", "d1", "B" * 400, 0.8),
+        ("c3", "d2", "C" * 400, 0.5),
+        ("c4", "d2", "D" * 400, 0.3),
+    ])
+    bm25_candidates = _context("bm25", [
+        ("c2", "d1", "B" * 400, 0.6),
+        ("c1", "d1", "A" * 400, 0.5),
+    ])
+    vector_candidates = _context("vector", [
+        ("c1", "d1", "A" * 400, 0.8),
+        ("c2", "d1", "B" * 400, 0.7),
+    ])
     rrf_result = {
         "fused": fused,
         "vector_candidates": vector_candidates,
         "bm25_candidates": bm25_candidates,
     }
-    reranked = [
-        dict(fused[3], rerank_score=0.95),  # c4 -> promoted to #1
-        dict(fused[0], rerank_score=0.85),  # c1
-        dict(fused[2], rerank_score=0.6),   # c3
-    ]
+    reranked = _context("rerank", [
+        ("c4", "d2", "D" * 400, 0.95),  # c4 -> promoted to #1
+        ("c1", "d1", "A" * 400, 0.85),  # c1
+        ("c3", "d2", "C" * 400, 0.6),   # c3
+    ])
     return rrf_result, reranked
 
 
@@ -321,12 +323,16 @@ def test_retrieve_tool_metrics_handles_empty_candidates():
     agent_tools._conversation_id_var.set("conv-empty-5")
     agent_tools._job_id_var.set("job-empty-5")
 
-    empty_rrf = {"fused": [], "vector_candidates": [], "bm25_candidates": []}
+    empty_rrf = {
+        "fused": _context("rrf", []),
+        "vector_candidates": _context("vector", []),
+        "bm25_candidates": _context("bm25", []),
+    }
 
     with (
         patch("app.services.agent_tools.embed_query", return_value=[0.1] * 1024),
         patch("app.services.agent_tools.rrf_fuse", return_value=empty_rrf),
-        patch("app.services.agent_tools.rerank", return_value=[]),
+        patch("app.services.agent_tools.rerank", return_value=_context("rerank", [])),
         patch("app.services.agent_tools.write_retrieval_metrics") as mock_write,
     ):
         result = _run(_fn(agent_tools.retrieve_tool)({"query": "no results anywhere"}))

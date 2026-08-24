@@ -189,8 +189,7 @@ def retrieve_and_rank(self, job_id: str, agent_id: str, query: str) -> dict:
             # D-27: cache miss — fall through to hybrid search (existing code unchanged)
 
             # --------------------------------------------------------------
-            # RRF fusion — single CTE returns fused + individual candidates
-            # rrf_fuse() returns dict: {"fused", "vector_candidates", "bm25_candidates"}
+            # RRF fusion: one CTE, a RetrievedContext under each of three keys
             # --------------------------------------------------------------
             rrf_result = rrf_fuse(conn_str, query_vector, query, strategy)
             fused = rrf_result["fused"]
@@ -200,13 +199,13 @@ def retrieve_and_rank(self, job_id: str, agent_id: str, query: str) -> dict:
             log.info(
                 "retrieve_and_rank.searching_complete",
                 job_id=job_id,
-                fused_count=len(fused),
-                vector_count=len(vector_cands),
-                bm25_count=len(bm25_cands),
+                fused_count=len(fused.chunks),
+                vector_count=len(vector_cands.chunks),
+                bm25_count=len(bm25_cands.chunks),
             )
 
             # EVENT 3: query.searching — RRF results ready
-            emit(job_id, "query.searching", {"fused_count": len(fused)}, db, _redis)
+            emit(job_id, "query.searching", {"fused_count": len(fused.chunks)}, db, _redis)
 
             # --------------------------------------------------------------
             # Rerank — Voyage rerank-2 primary, Cohere rerank-english-v3.0 fallback
@@ -216,14 +215,14 @@ def retrieve_and_rank(self, job_id: str, agent_id: str, query: str) -> dict:
             log.info(
                 "retrieve_and_rank.reranking_complete",
                 job_id=job_id,
-                reranked_count=len(reranked),
+                reranked_count=len(reranked.chunks),
             )
 
             # EVENT 4: query.reranking — reranked candidate count
             emit(
                 job_id,
                 "query.reranking",
-                {"reranked_count": len(reranked)},
+                {"reranked_count": len(reranked.chunks)},
                 db,
                 _redis,
             )
@@ -235,7 +234,8 @@ def retrieve_and_rank(self, job_id: str, agent_id: str, query: str) -> dict:
 
             payload = {
                 "query": query,
-                "results": reranked,
+                # emit() writes this to job_events as JSON, so the wire form.
+                "results": reranked.to_json()["chunks"],
                 "trace": trace,
                 "strategy_used": strategy.model_dump(),
             }
@@ -252,7 +252,7 @@ def retrieve_and_rank(self, job_id: str, agent_id: str, query: str) -> dict:
                 "retrieve_and_rank.complete",
                 job_id=job_id,
                 agent_id=agent_id,
-                reranked_count=len(reranked),
+                reranked_count=len(reranked.chunks),
             )
 
         except Exception as exc:

@@ -3,6 +3,11 @@ Unit tests for retrieval_service primitives.
 
 All external dependencies (psycopg2, voyageai, cohere) are mocked so these
 tests run without any live DB or API.
+
+Ticket #44: the search, fusion and rerank functions return RetrievedContext, so
+the assertions read fields rather than dict keys. Each engine's own number
+arrives as `chunk.score` under the `strategy` that names the engine, and
+`chunk.rank` is its 1-based position in that ranking.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.domain.retrieved_context import RetrievedChunk, RetrievedContext
 from app.services.retrieval_service import (
     RetrievalStrategy,
     bm25_search,
@@ -109,7 +115,7 @@ class TestVectorSearch:
         return mock_conn
 
     @patch("app.services.retrieval_service.psycopg2")
-    def test_returns_cosine_scored_dicts(self, mock_psycopg2):
+    def test_returns_a_vector_context(self, mock_psycopg2):
         import uuid
         chunk_id = uuid.uuid4()
         doc_id = uuid.uuid4()
@@ -118,22 +124,25 @@ class TestVectorSearch:
         ])
         mock_psycopg2.connect.return_value = mock_conn
 
-        results = vector_search("conn://fake", [0.1] * 10, vector_k=5)
+        context = vector_search("conn://fake", [0.1] * 10, 5, "refund policy")
 
-        assert len(results) == 1
-        r = results[0]
-        assert r["chunk_id"] == str(chunk_id)
-        assert r["content"] == "some content"
-        assert r["document_id"] == str(doc_id)
-        assert r["cosine_score"] == 0.92
-        assert r["rank"] == 1
+        assert isinstance(context, RetrievedContext)
+        assert context.query == "refund policy"
+        assert context.strategy == "vector"
+        assert len(context.chunks) == 1
+        chunk = context.chunks[0]
+        assert chunk.chunk_id == str(chunk_id)
+        assert chunk.content == "some content"
+        assert chunk.document_id == str(doc_id)
+        assert chunk.score == 0.92  # the cosine score, under the one name
+        assert chunk.rank == 1
 
     @patch("app.services.retrieval_service.psycopg2")
     def test_connection_closed_in_finally(self, mock_psycopg2):
         mock_conn = self._make_psycopg2_mock([])
         mock_psycopg2.connect.return_value = mock_conn
 
-        vector_search("conn://fake", [0.1], vector_k=3)
+        vector_search("conn://fake", [0.1], 3, "q")
 
         mock_conn.close.assert_called_once()
 
@@ -148,7 +157,7 @@ class TestVectorSearch:
         mock_psycopg2.connect.return_value = mock_conn
 
         with pytest.raises(RuntimeError):
-            vector_search("conn://fake", [0.1], vector_k=3)
+            vector_search("conn://fake", [0.1], 3, "q")
 
         mock_conn.close.assert_called_once()
 
@@ -168,7 +177,7 @@ class TestBM25Search:
         return mock_conn
 
     @patch("app.services.retrieval_service.psycopg2")
-    def test_returns_bm25_scored_dicts(self, mock_psycopg2):
+    def test_returns_a_bm25_context(self, mock_psycopg2):
         import uuid
         chunk_id = uuid.uuid4()
         doc_id = uuid.uuid4()
@@ -177,15 +186,18 @@ class TestBM25Search:
         ])
         mock_psycopg2.connect.return_value = mock_conn
 
-        results = bm25_search("conn://fake", "keyword", bm25_k=5)
+        context = bm25_search("conn://fake", "keyword", bm25_k=5)
 
-        assert len(results) == 1
-        r = results[0]
-        assert r["chunk_id"] == str(chunk_id)
-        assert r["content"] == "keyword content"
-        assert r["document_id"] == str(doc_id)
-        assert r["bm25_score"] == 0.45
-        assert r["rank"] == 1
+        assert isinstance(context, RetrievedContext)
+        assert context.query == "keyword"
+        assert context.strategy == "bm25"
+        assert len(context.chunks) == 1
+        chunk = context.chunks[0]
+        assert chunk.chunk_id == str(chunk_id)
+        assert chunk.content == "keyword content"
+        assert chunk.document_id == str(doc_id)
+        assert chunk.score == 0.45  # the ts_rank_cd score, under the one name
+        assert chunk.rank == 1
 
     @patch("app.services.retrieval_service.psycopg2")
     def test_connection_closed_in_finally(self, mock_psycopg2):
@@ -211,10 +223,13 @@ class TestRRFFuse:
         mock_conn.cursor.return_value = mock_cur
         return mock_conn
 
+    def _empty(self, strategy: str) -> RetrievedContext:
+        return RetrievedContext(query="query", chunks=(), strategy=strategy)
+
     @patch("app.services.retrieval_service.bm25_search")
     @patch("app.services.retrieval_service.vector_search")
     @patch("app.services.retrieval_service.psycopg2")
-    def test_returns_three_key_dict(self, mock_psycopg2, mock_vec, mock_bm25):
+    def test_returns_three_contexts_one_per_engine(self, mock_psycopg2, mock_vec, mock_bm25):
         import uuid
         cid = uuid.uuid4()
         did = uuid.uuid4()
@@ -222,43 +237,56 @@ class TestRRFFuse:
             (cid, "content", did, 0.032, 0.9, 0.4, 1, 2),
         ])
         mock_psycopg2.connect.return_value = mock_conn
-        mock_vec.return_value = [{"chunk_id": str(cid), "content": "c", "document_id": str(did), "cosine_score": 0.9, "rank": 1}]
-        mock_bm25.return_value = [{"chunk_id": str(cid), "content": "c", "document_id": str(did), "bm25_score": 0.4, "rank": 1}]
+        mock_vec.return_value = RetrievedContext(
+            query="query",
+            chunks=(RetrievedChunk(str(cid), str(did), "c", 0.9, 1),),
+            strategy="vector",
+        )
+        mock_bm25.return_value = RetrievedContext(
+            query="query",
+            chunks=(RetrievedChunk(str(cid), str(did), "c", 0.4, 1),),
+            strategy="bm25",
+        )
 
         strategy = RetrievalStrategy()
         result = rrf_fuse("conn://fake", [0.1] * 10, "query", strategy)
 
-        assert "fused" in result
-        assert "vector_candidates" in result
-        assert "bm25_candidates" in result
+        assert set(result) == {"fused", "vector_candidates", "bm25_candidates"}
+        assert result["fused"].strategy == "rrf"
+        assert result["vector_candidates"].strategy == "vector"
+        assert result["bm25_candidates"].strategy == "bm25"
+        assert result["vector_candidates"].chunks[0].score == 0.9
+        assert result["bm25_candidates"].chunks[0].score == 0.4
 
     @patch("app.services.retrieval_service.bm25_search")
     @patch("app.services.retrieval_service.vector_search")
     @patch("app.services.retrieval_service.psycopg2")
-    def test_fused_row_structure(self, mock_psycopg2, mock_vec, mock_bm25):
+    def test_fused_chunk_carries_the_rrf_score_and_its_position(
+        self, mock_psycopg2, mock_vec, mock_bm25
+    ):
+        """The per-engine columns stay in the SQL; the chunk carries one score."""
         import uuid
         cid = uuid.uuid4()
         did = uuid.uuid4()
         mock_conn = self._make_psycopg2_mock([
             (cid, "content text", did, 0.032522, 0.9, 0.4, 1, 2),
+            (uuid.uuid4(), "second", did, 0.016393, None, 0.2, None, 1),
         ])
         mock_psycopg2.connect.return_value = mock_conn
-        mock_vec.return_value = []
-        mock_bm25.return_value = []
+        mock_vec.return_value = self._empty("vector")
+        mock_bm25.return_value = self._empty("bm25")
 
         strategy = RetrievalStrategy()
         result = rrf_fuse("conn://fake", [0.1], "query", strategy)
 
-        assert len(result["fused"]) == 1
-        row = result["fused"][0]
-        assert row["chunk_id"] == str(cid)
-        assert row["content"] == "content text"
-        assert row["document_id"] == str(did)
-        assert "rrf_score" in row
-        assert "cosine_score" in row
-        assert "bm25_score" in row
-        assert "vector_rank" in row
-        assert "bm25_rank" in row
+        fused = result["fused"]
+        assert fused.query == "query"
+        assert len(fused.chunks) == 2
+        assert fused.chunks[0].chunk_id == str(cid)
+        assert fused.chunks[0].content == "content text"
+        assert fused.chunks[0].document_id == str(did)
+        assert fused.chunks[0].score == 0.032522
+        assert [chunk.rank for chunk in fused.chunks] == [1, 2]
 
     @patch("app.services.retrieval_service.bm25_search")
     @patch("app.services.retrieval_service.vector_search")
@@ -281,15 +309,20 @@ class TestRRFFuse:
 
 class TestRerank:
     def _make_candidates(self, n=3):
-        return [
-            {
-                "chunk_id": f"chunk-{i}",
-                "content": f"content {i}",
-                "document_id": f"doc-{i}",
-                "rrf_score": 0.03 - i * 0.001,
-            }
-            for i in range(n)
-        ]
+        return RetrievedContext(
+            query="query",
+            chunks=tuple(
+                RetrievedChunk(
+                    chunk_id=f"chunk-{i}",
+                    document_id=f"doc-{i}",
+                    content=f"content {i}",
+                    score=0.03 - i * 0.001,
+                    rank=i + 1,
+                )
+                for i in range(n)
+            ),
+            strategy="rrf",
+        )
 
     def _make_reranking_result(self, index: int, score: float):
         r = MagicMock()
@@ -320,8 +353,10 @@ class TestRerank:
             top_k=2,
             truncation=True,
         )
-        assert len(result) == 2
-        assert result[0]["rerank_score"] == 0.95
+        assert result.strategy == "rerank"
+        assert result.query == "my query"
+        assert len(result.chunks) == 2
+        assert result.chunks[0].score == 0.95
 
     @patch("app.services.retrieval_service._get_vo")
     def test_rerank_threshold_filters_results(self, mock_get_vo):
@@ -339,8 +374,8 @@ class TestRerank:
 
         result = rerank("query", candidates, strategy)
 
-        assert len(result) == 1
-        assert result[0]["rerank_score"] == 0.95
+        assert len(result.chunks) == 1
+        assert result.chunks[0].score == 0.95
 
     @patch("app.services.retrieval_service._cohere_rerank")
     @patch("app.services.retrieval_service._get_vo")
@@ -349,7 +384,11 @@ class TestRerank:
         mock_vo.rerank.side_effect = RuntimeError("Voyage API down")
         mock_get_vo.return_value = mock_vo
 
-        cohere_result = [{"chunk_id": "c0", "content": "x", "document_id": "d0", "rerank_score": 0.7}]
+        cohere_result = RetrievedContext(
+            query="query",
+            chunks=(RetrievedChunk("c0", "d0", "x", 0.7, 1),),
+            strategy="rerank",
+        )
         mock_cohere_rerank.return_value = cohere_result
 
         candidates = self._make_candidates(2)
@@ -378,11 +417,14 @@ class TestRerank:
 
         result = rerank("query", candidates, strategy)
 
-        scores = [r["rerank_score"] for r in result]
+        scores = [chunk.score for chunk in result.chunks]
         assert scores == sorted(scores, reverse=True)
+        assert [chunk.rank for chunk in result.chunks] == [1, 2, 3], (
+            "rank is the position in the reranked order, not the position it arrived in"
+        )
 
     @patch("app.services.retrieval_service._get_vo")
-    def test_rerank_score_added_to_dict(self, mock_get_vo):
+    def test_the_rerank_score_replaces_the_fusion_score(self, mock_get_vo):
         mock_vo = MagicMock()
         reranking = MagicMock()
         reranking.results = [self._make_reranking_result(0, 0.88)]
@@ -394,10 +436,26 @@ class TestRerank:
 
         result = rerank("q", candidates, strategy)
 
-        assert "rerank_score" in result[0]
-        assert result[0]["rerank_score"] == 0.88
-        # Original keys preserved
-        assert result[0]["chunk_id"] == "chunk-0"
+        assert result.chunks[0].score == 0.88
+        # Identity and text carried through from the fused candidate.
+        assert result.chunks[0].chunk_id == "chunk-0"
+        assert result.chunks[0].document_id == "doc-0"
+        assert result.chunks[0].content == "content 0"
+
+    @patch("app.services.retrieval_service._get_vo")
+    def test_the_candidates_passed_in_are_not_changed(self, mock_get_vo):
+        """The context is frozen, so reranking builds a new one."""
+        mock_vo = MagicMock()
+        reranking = MagicMock()
+        reranking.results = [self._make_reranking_result(0, 0.88)]
+        mock_vo.rerank.return_value = reranking
+        mock_get_vo.return_value = mock_vo
+
+        candidates = self._make_candidates(1)
+        rerank("q", candidates, RetrievalStrategy(final_k=1))
+
+        assert candidates.chunks[0].score == 0.03
+        assert candidates.strategy == "rrf"
 
 
 # ---------------------------------------------------------------------------
@@ -406,14 +464,23 @@ class TestRerank:
 
 class TestBuildTrace:
     def _make_cands(self, n=2, content_len=300):
-        return [
-            {
-                "chunk_id": f"c{i}",
-                "content": "x" * content_len,
-                "document_id": f"d{i}",
-            }
-            for i in range(n)
-        ]
+        return RetrievedContext(
+            query="query",
+            chunks=tuple(
+                RetrievedChunk(
+                    chunk_id=f"c{i}",
+                    document_id=f"d{i}",
+                    content="x" * content_len,
+                    score=0.5,
+                    rank=i + 1,
+                )
+                for i in range(n)
+            ),
+            strategy="rrf",
+        )
+
+    def _empty(self):
+        return RetrievedContext(query="query", chunks=(), strategy="rrf")
 
     def test_returns_four_key_dict(self):
         trace = build_trace(
@@ -430,42 +497,57 @@ class TestBuildTrace:
     def test_content_truncated_to_200_chars(self):
         trace = build_trace(
             vector_candidates=self._make_cands(1, content_len=500),
-            bm25_candidates=[],
-            fused_candidates=[],
-            reranked_candidates=[],
+            bm25_candidates=self._empty(),
+            fused_candidates=self._empty(),
+            reranked_candidates=self._empty(),
         )
         assert len(trace["vector_candidates"][0]["content"]) == 200
 
     def test_short_content_not_truncated(self):
         trace = build_trace(
             vector_candidates=self._make_cands(1, content_len=50),
-            bm25_candidates=[],
-            fused_candidates=[],
-            reranked_candidates=[],
+            bm25_candidates=self._empty(),
+            fused_candidates=self._empty(),
+            reranked_candidates=self._empty(),
         )
         assert len(trace["vector_candidates"][0]["content"]) == 50
 
     def test_custom_max_content(self):
         trace = build_trace(
             vector_candidates=self._make_cands(1, content_len=300),
-            bm25_candidates=[],
-            fused_candidates=[],
-            reranked_candidates=[],
+            bm25_candidates=self._empty(),
+            fused_candidates=self._empty(),
+            reranked_candidates=self._empty(),
             max_content=100,
         )
         assert len(trace["vector_candidates"][0]["content"]) == 100
 
+    def test_a_trace_row_carries_the_chunk_fields(self):
+        trace = build_trace(
+            vector_candidates=self._make_cands(1, content_len=10),
+            bm25_candidates=self._empty(),
+            fused_candidates=self._empty(),
+            reranked_candidates=self._empty(),
+        )
+        assert trace["vector_candidates"][0] == {
+            "chunk_id": "c0",
+            "document_id": "d0",
+            "content": "x" * 10,
+            "score": 0.5,
+            "rank": 1,
+        }
+
     def test_original_candidates_not_mutated(self):
         cands = self._make_cands(1, content_len=400)
-        original_content = cands[0]["content"]
+        original_content = cands.chunks[0].content
         build_trace(
             vector_candidates=cands,
-            bm25_candidates=[],
-            fused_candidates=[],
-            reranked_candidates=[],
+            bm25_candidates=self._empty(),
+            fused_candidates=self._empty(),
+            reranked_candidates=self._empty(),
         )
-        # The original list should be unchanged
-        assert cands[0]["content"] == original_content
+        # Truncation writes a copy; the context it read stays whole.
+        assert cands.chunks[0].content == original_content
 
 
 # ---------------------------------------------------------------------------

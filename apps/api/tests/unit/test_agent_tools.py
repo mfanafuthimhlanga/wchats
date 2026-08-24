@@ -109,6 +109,41 @@ def _fn(tool_obj):
     return getattr(tool_obj, "handler", tool_obj)
 
 
+def _long_chunk_context(content: str, n: int = 20):
+    """20 fused chunks sharing one long body, the truncation fixture."""
+    from app.domain.retrieved_context import RetrievedChunk, RetrievedContext
+
+    return RetrievedContext(
+        query="test query",
+        chunks=tuple(
+            RetrievedChunk(
+                chunk_id=str(i),
+                document_id="doc-1",
+                content=content,
+                score=0.9 - i * 0.01,
+                rank=i + 1,
+            )
+            for i in range(n)
+        ),
+        strategy="rrf",
+    )
+
+
+def _rrf_result(fused):
+    """The three-key dict rrf_fuse returns, with both candidate lists empty."""
+    from app.domain.retrieved_context import RetrievedContext
+
+    return {
+        "fused": fused,
+        "vector_candidates": RetrievedContext(
+            query=fused.query, chunks=(), strategy="vector"
+        ),
+        "bm25_candidates": RetrievedContext(
+            query=fused.query, chunks=(), strategy="bm25"
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Test 1: lookup_structured rejects non-allowlisted table
 # ---------------------------------------------------------------------------
@@ -165,26 +200,15 @@ def test_retrieve_truncates_to_max_chunks():
 
     # Produce 20 chunks with 5000-char content each.
     long_content = "x" * 5000
-    fake_chunks = [
-        {
-            "chunk_id": str(i),
-            "content": long_content,
-            "document_id": "doc-1",
-            "rrf_score": 0.9 - i * 0.01,
-        }
-        for i in range(20)
-    ]
+    fake_context = _long_chunk_context(long_content)
+    fake_chunks = fake_context.chunks
 
-    fake_rrf_result = {
-        "fused": fake_chunks,
-        "vector_candidates": [],
-        "bm25_candidates": [],
-    }
+    fake_rrf_result = _rrf_result(fake_context)
 
     with (
         patch("app.services.agent_tools.embed_query", return_value=[0.1] * 1024),
         patch("app.services.agent_tools.rrf_fuse", return_value=fake_rrf_result),
-        patch("app.services.agent_tools.rerank", return_value=fake_chunks),
+        patch("app.services.agent_tools.rerank", return_value=fake_context),
         # OPS-05/06 (21-03): retrieve_tool now writes a retrieval_metrics row;
         # patch it out so this test never attempts a real DB connection.
         patch("app.services.agent_tools.write_retrieval_metrics"),
@@ -221,26 +245,15 @@ def test_retrieve_tool_data_wrapper():
     # Same 5000-char-content fixture as test_retrieve_truncates_to_max_chunks
     # so the truncation path is genuinely exercised alongside the framing.
     long_content = "x" * 5000
-    fake_chunks = [
-        {
-            "chunk_id": str(i),
-            "content": long_content,
-            "document_id": "doc-1",
-            "rrf_score": 0.9 - i * 0.01,
-        }
-        for i in range(20)
-    ]
+    fake_context = _long_chunk_context(long_content)
+    fake_chunks = fake_context.chunks
 
-    fake_rrf_result = {
-        "fused": fake_chunks,
-        "vector_candidates": [],
-        "bm25_candidates": [],
-    }
+    fake_rrf_result = _rrf_result(fake_context)
 
     with (
         patch("app.services.agent_tools.embed_query", return_value=[0.1] * 1024),
         patch("app.services.agent_tools.rrf_fuse", return_value=fake_rrf_result),
-        patch("app.services.agent_tools.rerank", return_value=fake_chunks),
+        patch("app.services.agent_tools.rerank", return_value=fake_context),
         patch("app.services.agent_tools.write_retrieval_metrics"),
     ):
         result = _run(_fn(agent_tools.retrieve_tool)({"query": "test query", "filters": []}))
@@ -270,6 +283,107 @@ def test_retrieve_tool_data_wrapper():
     assert len(citations) == min(len(fake_chunks), MAX_CHUNKS)
     for citation in citations:
         assert set(citation.keys()) == {"document_name", "section"}
+
+
+# ---------------------------------------------------------------------------
+# Test 3c: ticket #44, the model-facing string, pinned byte for byte.
+#
+# retrieve_tool renders the retrieved chunks as the repr of a list of dicts,
+# and app/worker/tasks/runtime/agent.py reads that string back with
+# ast.literal_eval. #44 puts RetrievedContext at the retrieval seam and leaves
+# the repr where it is, so the two sides still meet. The literal below was
+# captured from the code as it stood before that change, with a retrieval
+# result carrying exactly the fields RetrievedChunk names.
+# ---------------------------------------------------------------------------
+
+PINNED_MODEL_FACING_CHUNKS = (
+    "[{'chunk_id': 'c1', 'document_id': 'd1', 'content': 'Unopened bags, 14 days.', "
+    "'score': 0.95, 'rank': 1}, {'chunk_id': 'c2', 'document_id': 'd2', 'content': "
+    "'Refunds take 5 days.', 'score': 0.8, 'rank': 2}]"
+)
+
+
+def _pinned_retrieval():
+    """The fixed retrieval result the pin is measured against."""
+    from app.domain.retrieved_context import RetrievedChunk, RetrievedContext
+
+    query = "what is the return window?"
+    chunks = (
+        RetrievedChunk(
+            chunk_id="c1",
+            document_id="d1",
+            content="Unopened bags, 14 days.",
+            score=0.95,
+            rank=1,
+        ),
+        RetrievedChunk(
+            chunk_id="c2",
+            document_id="d2",
+            content="Refunds take 5 days.",
+            score=0.8,
+            rank=2,
+        ),
+    )
+    fused = RetrievedContext(query=query, chunks=chunks, strategy="rrf")
+    reranked = RetrievedContext(query=query, chunks=chunks, strategy="rerank")
+    rrf_result = {
+        "fused": fused,
+        "vector_candidates": RetrievedContext(query=query, chunks=(), strategy="vector"),
+        "bm25_candidates": RetrievedContext(query=query, chunks=(), strategy="bm25"),
+    }
+    return query, rrf_result, reranked
+
+
+def test_retrieve_tool_model_string_is_byte_for_byte_the_pinned_repr():
+    """A fixed retrieval result renders the exact string it rendered before #44."""
+    agent_tools._retrieve_call_count_var.set(0)
+    query, rrf_result, reranked = _pinned_retrieval()
+
+    with (
+        patch("app.services.agent_tools.embed_query", return_value=[0.1] * 8),
+        patch("app.services.agent_tools.rrf_fuse", return_value=rrf_result),
+        patch("app.services.agent_tools.rerank", return_value=reranked),
+        patch("app.services.agent_tools.write_retrieval_metrics"),
+    ):
+        result = _run(_fn(agent_tools.retrieve_tool)({"query": query}))
+
+    text = result["content"][0]["text"]
+    header_end = text.index(agent_tools.RETRIEVED_CONTEXT_HEADER) + len(
+        agent_tools.RETRIEVED_CONTEXT_HEADER
+    )
+    body = text[header_end:text.rindex(agent_tools.RETRIEVED_CONTEXT_FOOTER)]
+
+    assert body.strip() == PINNED_MODEL_FACING_CHUNKS
+    assert text == agent_tools._frame_retrieved_context(PINNED_MODEL_FACING_CHUNKS)
+
+
+def test_retrieve_tool_model_string_still_parses_the_way_agent_py_parses_it():
+    """ast.literal_eval is the parser on the other side; it must still read this."""
+    import ast
+
+    agent_tools._retrieve_call_count_var.set(0)
+    query, rrf_result, reranked = _pinned_retrieval()
+
+    with (
+        patch("app.services.agent_tools.embed_query", return_value=[0.1] * 8),
+        patch("app.services.agent_tools.rrf_fuse", return_value=rrf_result),
+        patch("app.services.agent_tools.rerank", return_value=reranked),
+        patch("app.services.agent_tools.write_retrieval_metrics"),
+    ):
+        result = _run(_fn(agent_tools.retrieve_tool)({"query": query}))
+
+    text = result["content"][0]["text"]
+    header_end = text.index(agent_tools.RETRIEVED_CONTEXT_HEADER) + len(
+        agent_tools.RETRIEVED_CONTEXT_HEADER
+    )
+    body = text[header_end:text.rindex(agent_tools.RETRIEVED_CONTEXT_FOOTER)]
+
+    records = ast.literal_eval(body.strip())
+    assert [record["content"] for record in records] == [
+        "Unopened bags, 14 days.",
+        "Refunds take 5 days.",
+    ]
+    assert [record["document_id"] for record in records] == ["d1", "d2"]
 
 
 def test_frame_retrieved_context_idempotent_safe():
@@ -602,9 +716,12 @@ def test_retrieve_tool_logs_warning_on_unused_filters():
         patch("app.services.agent_tools.embed_query", return_value=[0.1] * 1024),
         patch(
             "app.services.agent_tools.rrf_fuse",
-            return_value={"fused": [], "vector_candidates": [], "bm25_candidates": []},
+            return_value=_rrf_result(_long_chunk_context("body", n=0)),
         ),
-        patch("app.services.agent_tools.rerank", return_value=[]),
+        patch(
+            "app.services.agent_tools.rerank",
+            return_value=_long_chunk_context("body", n=0),
+        ),
         # OPS-05/06 (21-03): retrieve_tool now writes a retrieval_metrics row;
         # patch it out so this test never attempts a real DB connection.
         patch("app.services.agent_tools.write_retrieval_metrics"),

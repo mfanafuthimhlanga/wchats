@@ -10,19 +10,28 @@ Implements:
   - rerank: Voyage rerank-2 primary; Cohere rerank-english-v3.0 fallback
   - build_trace: Assemble truncated candidate trace for query.complete payload
 
+What every search here returns (ticket #44, issue #7):
+  RetrievedContext. Four engines run in this module and each names its number
+  differently: cosine_score, bm25_score, rrf_score, rerank_score, with
+  vector_rank and bm25_rank alongside. Those names stay inside these functions
+  and inside the SQL. A caller receives one score and one rank per chunk, under
+  the `strategy` that says which engine ranked them.
+
 Design decisions:
   - psycopg2 connections use try/finally/close pattern (NOT context manager `with`) to match
     embed.py precedent and avoid implicit transaction wrapping on the connection object.
   - k=60 is a SQL literal, NOT a parameter — locked per CONTEXT.md.
   - Cohere import is lazy (inside _cohere_rerank body) — cohere is a fallback dependency only.
-  - rrf_fuse returns a dict with three keys: "fused", "vector_candidates", "bm25_candidates"
-    so Plan 03 (retrieve_and_rank task) can include all three in the trace without re-querying.
+  - rrf_fuse returns a dict with three keys: "fused", "vector_candidates", "bm25_candidates",
+    one RetrievedContext each, so the retrieve_and_rank task can trace all three
+    without re-querying.
 
 Uses only native Postgres tsvector + ts_rank_cd for BM25 (no deprecated Neon extensions).
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Optional
 
 import psycopg2
@@ -30,6 +39,7 @@ import structlog
 from pydantic import BaseModel, ConfigDict
 
 from app.core.config import settings
+from app.domain.retrieved_context import RetrievedChunk, RetrievedContext
 from app.services.embedding_service import _get_vo
 
 log = structlog.get_logger(__name__)
@@ -159,10 +169,59 @@ def verified_qa_lookup(
 
 
 # ---------------------------------------------------------------------------
+# Row readers
+# ---------------------------------------------------------------------------
+
+def _chunk_from_row(row) -> RetrievedChunk:
+    """Read one candidate row: (chunk_id, content, document_id, score, rank).
+
+    vector_search and bm25_search select those five columns in that order, so
+    one reader serves both and the two cannot drift apart. The score column is
+    read with `float(...)` and no fallback: both queries compute it arithmetically
+    over rows they matched, so a NULL there is a defect worth raising rather than
+    a zero worth ranking.
+    """
+    return RetrievedChunk(
+        chunk_id=str(row[0]),
+        document_id=str(row[2]),
+        content=row[1],
+        score=float(row[3]),
+        rank=int(row[4]),
+    )
+
+
+def _empty_context(query_text: str, strategy: str) -> RetrievedContext:
+    """A context that ran and matched nothing, which is a whole answer."""
+    return RetrievedContext(query=query_text, chunks=(), strategy=strategy)
+
+
+def _fused_chunk(row, position: int) -> RetrievedChunk:
+    """Read one fused CTE row at its position in the fused order.
+
+    The CTE selects cosine_score, bm25_score, vector_rank and bm25_rank
+    alongside the RRF score. Those four belong to the two engines that fed the
+    fusion and are read off their own contexts, so the fused chunk carries the
+    RRF score and where the fusion put it.
+    """
+    return RetrievedChunk(
+        chunk_id=str(row[0]),
+        document_id=str(row[2]),
+        content=row[1],
+        score=float(row[3]),
+        rank=position,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Vector search (pgvector HNSW)
 # ---------------------------------------------------------------------------
 
-def vector_search(conn_str: str, query_vector: list[float], vector_k: int) -> list[dict]:
+def vector_search(
+    conn_str: str,
+    query_vector: list[float],
+    vector_k: int,
+    query_text: str,
+) -> RetrievedContext:
     """Execute pgvector HNSW cosine search against tenant embeddings.
 
     Uses the HNSW index `embeddings_vector_hnsw_idx` created in
@@ -173,9 +232,13 @@ def vector_search(conn_str: str, query_vector: list[float], vector_k: int) -> li
         conn_str: Decrypted tenant DB connection string.
         query_vector: 1024-dim float vector from embed_query().
         vector_k: Number of top candidates to return.
+        query_text: The raw user query, carried onto the context. The vector
+            alone cannot say what was asked, and every reader of the context
+            needs the question the chunks answer.
 
     Returns:
-        List of dicts: chunk_id (str), content, document_id (str), cosine_score, rank.
+        RetrievedContext with strategy "vector". Each chunk carries the cosine
+        similarity as `score` and its HNSW position as `rank`.
     """
     log.debug("vector_search.start", vector_k=vector_k)
 
@@ -199,23 +262,18 @@ def vector_search(conn_str: str, query_vector: list[float], vector_k: int) -> li
     finally:
         conn.close()
 
-    return [
-        {
-            "chunk_id": str(row[0]),
-            "content": row[1],
-            "document_id": str(row[2]),
-            "cosine_score": float(row[3]) if row[3] is not None else None,
-            "rank": row[4],
-        }
-        for row in rows
-    ]
+    return RetrievedContext(
+        query=query_text,
+        chunks=tuple(_chunk_from_row(row) for row in rows),
+        strategy="vector",
+    )
 
 
 # ---------------------------------------------------------------------------
 # BM25 search (native tsvector + ts_rank_cd only — no deprecated Neon extensions)
 # ---------------------------------------------------------------------------
 
-def bm25_search(conn_str: str, query_text: str, bm25_k: int) -> list[dict]:
+def bm25_search(conn_str: str, query_text: str, bm25_k: int) -> RetrievedContext:
     """Execute native PostgreSQL BM25 search using tsvector + ts_rank_cd.
 
     Uses the GIN index `chunks_content_tsv_idx ON chunks USING GIN
@@ -230,7 +288,8 @@ def bm25_search(conn_str: str, query_text: str, bm25_k: int) -> list[dict]:
         bm25_k: Number of top candidates to return.
 
     Returns:
-        List of dicts: chunk_id (str), content, document_id (str), bm25_score, rank.
+        RetrievedContext with strategy "bm25". Each chunk carries the
+        ts_rank_cd score as `score` and its position in that ranking as `rank`.
     """
     log.debug("bm25_search.start", bm25_k=bm25_k)
 
@@ -255,16 +314,11 @@ def bm25_search(conn_str: str, query_text: str, bm25_k: int) -> list[dict]:
     finally:
         conn.close()
 
-    return [
-        {
-            "chunk_id": str(row[0]),
-            "content": row[1],
-            "document_id": str(row[2]),
-            "bm25_score": float(row[3]) if row[3] is not None else None,
-            "rank": row[4],
-        }
-        for row in rows
-    ]
+    return RetrievedContext(
+        query=query_text,
+        chunks=tuple(_chunk_from_row(row) for row in rows),
+        strategy="bm25",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -331,10 +385,10 @@ def rrf_fuse(
         strategy: Per-tenant retrieval config (vector_k, bm25_k, final_k).
 
     Returns:
-        Dict with three keys:
-          "fused"             — list[dict] from the CTE (top final_k by RRF score)
-          "vector_candidates" — list[dict] from vector_search (top vector_k by cosine)
-          "bm25_candidates"   — list[dict] from bm25_search (top bm25_k by ts_rank_cd)
+        Dict with three keys, one RetrievedContext each:
+          "fused"             the CTE result, top final_k by RRF score
+          "vector_candidates" vector_search, top vector_k by cosine
+          "bm25_candidates"   bm25_search, top bm25_k by ts_rank_cd
     """
     log.debug(
         "rrf_fuse.start",
@@ -358,26 +412,22 @@ def rrf_fuse(
     finally:
         conn.close()
 
-    fused_rows = [
-        {
-            "chunk_id": str(row[0]),
-            "content": row[1],
-            "document_id": str(row[2]),
-            "rrf_score": float(row[3]) if row[3] is not None else None,
-            "cosine_score": float(row[4]) if row[4] is not None else None,
-            "bm25_score": float(row[5]) if row[5] is not None else None,
-            "vector_rank": row[6],
-            "bm25_rank": row[7],
-        }
-        for row in rows
-    ]
+    # The CTE orders by rrf_score DESC, so position in `rows` is the fused rank.
+    fused = RetrievedContext(
+        query=query_text,
+        chunks=tuple(
+            _fused_chunk(row, position)
+            for position, row in enumerate(rows, start=1)
+        ),
+        strategy="rrf",
+    )
 
     # Fetch individual candidate lists separately for trace inclusion
-    vector_cands = vector_search(conn_str, query_vector, strategy.vector_k)
+    vector_cands = vector_search(conn_str, query_vector, strategy.vector_k, query_text)
     bm25_cands = bm25_search(conn_str, query_text, strategy.bm25_k)
 
     return {
-        "fused": fused_rows,
+        "fused": fused,
         "vector_candidates": vector_cands,
         "bm25_candidates": bm25_cands,
     }
@@ -451,8 +501,9 @@ def rrf_fuse_with_expansion(
         strategy:      Per-tenant retrieval config.
 
     Returns:
-        Dict with keys "fused", "vector_candidates", "bm25_candidates" —
-        same shape as rrf_fuse.
+        Dict with keys "fused", "vector_candidates", "bm25_candidates", the
+        same shape as rrf_fuse. The two candidate contexts are empty here: a
+        merge across variants has no one per-engine ranking to report.
     """
     if not strategy.query_expansion:
         return rrf_fuse(conn_str, query_vector, query_text, strategy)
@@ -469,33 +520,30 @@ def rrf_fuse_with_expansion(
             variants, model="voyage-3", input_type="query"
         ).embeddings
 
-    # Merge RRF results across all variants
-    all_fused: dict[str, dict] = {}
+    # Merge RRF results across all variants, keeping each chunk's best score
+    all_fused: dict[str, RetrievedChunk] = {}
     for variant_text, variant_vector in zip(variants, all_embeddings):
         result = rrf_fuse(conn_str, variant_vector, variant_text, strategy)
-        for chunk in result["fused"]:
-            chunk_id = chunk["chunk_id"]
-            existing_score = all_fused.get(chunk_id, {}).get("rrf_score")
-            new_score = chunk.get("rrf_score")
-            if chunk_id not in all_fused:
-                all_fused[chunk_id] = chunk
-            else:
-                # Keep highest rrf_score (treat None as -inf)
-                existing = existing_score if existing_score is not None else float("-inf")
-                incoming = new_score if new_score is not None else float("-inf")
-                if incoming > existing:
-                    all_fused[chunk_id] = chunk
+        for chunk in result["fused"].chunks:
+            best = all_fused.get(chunk.chunk_id)
+            if best is None or chunk.score > best.score:
+                all_fused[chunk.chunk_id] = chunk
 
-    merged = sorted(
-        all_fused.values(),
-        key=lambda r: (r["rrf_score"] if r["rrf_score"] is not None else float("-inf")),
-        reverse=True,
-    )[: strategy.final_k]
+    merged = sorted(all_fused.values(), key=lambda c: c.score, reverse=True)
 
     return {
-        "fused": merged,
-        "vector_candidates": [],
-        "bm25_candidates": [],
+        # Renumbered: the rank a chunk arrived with is one variant's ranking,
+        # and the merged order is the ranking this function reports.
+        "fused": RetrievedContext(
+            query=query_text,
+            chunks=tuple(
+                replace(chunk, rank=position)
+                for position, chunk in enumerate(merged[: strategy.final_k], start=1)
+            ),
+            strategy="rrf",
+        ),
+        "vector_candidates": _empty_context(query_text, "vector"),
+        "bm25_candidates": _empty_context(query_text, "bm25"),
     }
 
 
@@ -503,11 +551,34 @@ def rrf_fuse_with_expansion(
 # Rerank — Voyage primary, Cohere fallback
 # ---------------------------------------------------------------------------
 
+def _reranked_context(
+    query_text: str,
+    candidates: RetrievedContext,
+    scored: list[tuple[float, int]],
+) -> RetrievedContext:
+    """Build the reranked context from (score, candidate index) pairs.
+
+    Sorted here rather than at each call site so the Voyage path and the Cohere
+    path cannot disagree about the order they hand back. `rank` is the position
+    in THIS ranking, so it renumbers from 1 and no longer reports where the
+    chunk sat in the fusion that produced it.
+    """
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return RetrievedContext(
+        query=query_text,
+        chunks=tuple(
+            replace(candidates.chunks[index], score=score, rank=position)
+            for position, (score, index) in enumerate(scored, start=1)
+        ),
+        strategy="rerank",
+    )
+
+
 def _cohere_rerank(
     query_text: str,
-    candidates: list[dict],
+    candidates: RetrievedContext,
     strategy: RetrievalStrategy,
-) -> list[dict]:
+) -> RetrievedContext:
     """Cohere rerank fallback. Only called when Voyage rerank raises.
 
     Lazy import of `cohere` keeps it optional at module load time — cohere is
@@ -516,11 +587,12 @@ def _cohere_rerank(
 
     Args:
         query_text: The raw user query string.
-        candidates: Fused candidates list (dicts with at least "content" key).
+        candidates: The fused context to reorder.
         strategy: Per-tenant retrieval config (final_k, rerank_threshold).
 
     Returns:
-        List of candidate dicts with "rerank_score" key added, sorted descending.
+        RetrievedContext with strategy "rerank", carrying the relevance score
+        as `score`, sorted descending. Results below rerank_threshold are gone.
 
     Raises:
         RuntimeError: If COHERE_API_KEY is not set.
@@ -534,33 +606,28 @@ def _cohere_rerank(
     response = co.rerank(
         model="rerank-english-v3.0",
         query=query_text,
-        documents=[c["content"] for c in candidates],
+        documents=[chunk.content for chunk in candidates.chunks],
         top_n=strategy.final_k,
     )
 
-    results: list[dict] = []
-    for r in response.results:
-        score = r.relevance_score
-        if score >= strategy.rerank_threshold:
-            chunk = dict(candidates[r.index])
-            chunk["rerank_score"] = score
-            results.append(chunk)
-
-    results.sort(key=lambda x: x["rerank_score"], reverse=True)
-    return results
+    scored = [
+        (r.relevance_score, r.index)
+        for r in response.results
+        if r.relevance_score >= strategy.rerank_threshold
+    ]
+    return _reranked_context(query_text, candidates, scored)
 
 
 def rerank(
     query_text: str,
-    candidates: list[dict],
+    candidates: RetrievedContext,
     strategy: RetrievalStrategy,
-) -> list[dict]:
+) -> RetrievedContext:
     """Rerank candidates with Voyage rerank-2; fall back to Cohere on exception.
 
     Primary (Voyage):
       - model="rerank-2", top_k=strategy.final_k, truncation=True
       - Filters results below strategy.rerank_threshold
-      - Returns sorted list with "rerank_score" key added to each dict
 
     Fallback (Cohere):
       - Triggered on any Voyage exception
@@ -568,32 +635,30 @@ def rerank(
 
     Args:
         query_text: The raw user query string.
-        candidates: Fused candidates (typically rrf_fuse()["fused"]).
+        candidates: The fused context (typically rrf_fuse()["fused"]).
         strategy: Per-tenant retrieval config.
 
     Returns:
-        List of candidate dicts with "rerank_score" key, sorted descending by score.
-        Results below rerank_threshold are excluded.
+        RetrievedContext with strategy "rerank", carrying the relevance score
+        as `score` and the new position as `rank`, sorted descending. Results
+        below rerank_threshold are excluded. The context passed in is frozen
+        and comes back unchanged.
     """
     try:
         reranking = _get_vo().rerank(
             query=query_text,
-            documents=[c["content"] for c in candidates],
+            documents=[chunk.content for chunk in candidates.chunks],
             model="rerank-2",
             top_k=strategy.final_k,
             truncation=True,
         )
 
-        results: list[dict] = []
-        for r in reranking.results:
-            score = r.relevance_score
-            if score >= strategy.rerank_threshold:
-                chunk = dict(candidates[r.index])
-                chunk["rerank_score"] = score
-                results.append(chunk)
-
-        results.sort(key=lambda x: x["rerank_score"], reverse=True)
-        return results
+        scored = [
+            (r.relevance_score, r.index)
+            for r in reranking.results
+            if r.relevance_score >= strategy.rerank_threshold
+        ]
+        return _reranked_context(query_text, candidates, scored)
 
     except Exception as exc:
         log.warning("rerank.voyage_failed_falling_back", error_type=type(exc).__name__)
@@ -605,10 +670,10 @@ def rerank(
 # ---------------------------------------------------------------------------
 
 def build_trace(
-    vector_candidates: list[dict],
-    bm25_candidates: list[dict],
-    fused_candidates: list[dict],
-    reranked_candidates: list[dict],
+    vector_candidates: RetrievedContext,
+    bm25_candidates: RetrievedContext,
+    fused_candidates: RetrievedContext,
+    reranked_candidates: RetrievedContext,
     max_content: int = 200,
 ) -> dict:
     """Build the retrieval trace dict for the query.complete SSE payload.
@@ -616,6 +681,11 @@ def build_trace(
     Truncates `content` to max_content chars in all trace copies to keep the
     SSE payload compact. Full content lives in the top-level `results` field
     of the query.complete payload (assembled by the Celery task).
+
+    Each section reports its own engine's number under `score`, because the
+    section name says which engine produced it: `score` inside
+    vector_candidates is the cosine similarity, inside bm25_candidates it is
+    the ts_rank_cd value, and inside fused_candidates it is the RRF score.
 
     Args:
         vector_candidates: Top vector_k from HNSW search.
@@ -626,15 +696,15 @@ def build_trace(
 
     Returns:
         Dict with keys: vector_candidates, bm25_candidates, fused_candidates,
-        reranked_candidates — each a list of dicts with truncated content.
+        reranked_candidates. Each is a list of chunk dicts with truncated
+        content. The contexts read are frozen and are not changed.
     """
-    def _truncate(candidates: list[dict]) -> list[dict]:
+    def _truncate(context: RetrievedContext) -> list[dict]:
         result = []
-        for c in candidates:
-            copy = dict(c)
-            if copy.get("content") and len(copy["content"]) > max_content:
-                copy["content"] = copy["content"][:max_content]
-            result.append(copy)
+        for chunk in context.chunks:
+            row = chunk.to_json()
+            row["content"] = row["content"][:max_content]
+            result.append(row)
         return result
 
     return {

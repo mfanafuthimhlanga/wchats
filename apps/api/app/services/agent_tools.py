@@ -39,6 +39,7 @@ import math
 import re
 import ssl
 from contextvars import ContextVar
+from dataclasses import replace
 from typing import Any, Literal
 
 import psycopg2
@@ -54,6 +55,7 @@ from app.domain.context_frame import (
     RETRIEVED_CONTEXT_HEADER as _RETRIEVED_CONTEXT_HEADER,
 )
 from app.domain.context_frame import frame_retrieved_context as _frame_context
+from app.domain.retrieved_context import RetrievedContext
 from app.services.retrieval_metrics_service import write_retrieval_metrics
 from app.services.retrieval_service import (
     RetrievalStrategy,
@@ -405,6 +407,21 @@ def _frame_retrieved_context(chunks_text: str) -> str:
     return _frame_context(chunks_text)
 
 
+def _cap_for_the_agent(context: RetrievedContext) -> RetrievedContext:
+    """The MAX_CHUNKS chunks the agent sees, each cut to CHUNK_CONTENT_CHAR_LIMIT.
+
+    A new context rather than a rewrite: the record is frozen, and retrieve_tool's
+    metrics still read the full-length chunks rerank returned.
+    """
+    return replace(
+        context,
+        chunks=tuple(
+            replace(chunk, content=chunk.content[:CHUNK_CONTENT_CHAR_LIMIT])
+            for chunk in context.chunks[:MAX_CHUNKS]
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tool 1: retrieve
 # ---------------------------------------------------------------------------
@@ -533,24 +550,17 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     rrf_result: dict = await loop.run_in_executor(
         None, lambda: rrf_fuse(conn_str, query_vector, query, strategy)
     )
-    reranked: list[dict] = await loop.run_in_executor(
+    reranked: RetrievedContext = await loop.run_in_executor(
         None, lambda: rerank(query, rrf_result["fused"], strategy)
     )
 
-    # Truncate to MAX_CHUNKS and cap content at CHUNK_CONTENT_CHAR_LIMIT chars each.
-    chunks = reranked[:MAX_CHUNKS]
-    for chunk in chunks:
-        if (
-            isinstance(chunk.get("content"), str)
-            and len(chunk["content"]) > CHUNK_CONTENT_CHAR_LIMIT
-        ):
-            chunk["content"] = chunk["content"][:CHUNK_CONTENT_CHAR_LIMIT]
+    retrieved = _cap_for_the_agent(reranked)
+    chunks = retrieved.chunks
 
+    # Every citation says "general": `section` is not a field of a retrieved
+    # chunk, and none of the dicts before it carried the key either.
     citations = [
-        {
-            "document_name": chunk.get("document_id", "unknown"),
-            "section": chunk.get("section", "general"),
-        }
+        {"document_name": chunk.document_id or "unknown", "section": "general"}
         for chunk in chunks
     ]
 
@@ -574,23 +584,26 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     # exactly what makes "reranker lift" a meaningful, honest number
     # (21-DOMAIN-NOTES.md §3).
     # -------------------------------------------------------------------
-    fused_list: list[dict] = rrf_result.get("fused") or []
-    bm25_candidates: list[dict] = rrf_result.get("bm25_candidates") or []
-    vector_candidates: list[dict] = rrf_result.get("vector_candidates") or []
+    # Each context reports its own engine's number as `score`, so the four
+    # top-score reads below are the same four numbers the dict keys named.
+    fused_list = rrf_result["fused"].chunks
+    bm25_candidates = rrf_result["bm25_candidates"].chunks
+    vector_candidates = rrf_result["vector_candidates"].chunks
 
-    bm25_top_score = bm25_candidates[0]["bm25_score"] if bm25_candidates else None
-    vector_top_score = vector_candidates[0]["cosine_score"] if vector_candidates else None
-    rrf_top_score = fused_list[0]["rrf_score"] if fused_list else None
-    rerank_top_score = reranked[0].get("rerank_score") if reranked else None
+    bm25_top_score = bm25_candidates[0].score if bm25_candidates else None
+    vector_top_score = vector_candidates[0].score if vector_candidates else None
+    rrf_top_score = fused_list[0].score if fused_list else None
+    rerank_top_score = reranked.chunks[0].score if reranked.chunks else None
     reranker_lift = (
         rerank_top_score - bm25_top_score
         if rerank_top_score is not None and bm25_top_score is not None
         else None
     )
 
-    # 1-indexed position of each chunk in the pre-rerank RRF fusion ranking.
-    fused_rank_by_chunk_id = {c["chunk_id"]: idx + 1 for idx, c in enumerate(fused_list)}
-    returned_chunk_ids = [c["chunk_id"] for c in chunks]
+    # 1-indexed position of each chunk in the pre-rerank RRF fusion ranking,
+    # which is the rank rrf_fuse already stamped on every fused chunk.
+    fused_rank_by_chunk_id = {c.chunk_id: c.rank for c in fused_list}
+    returned_chunk_ids = [c.chunk_id for c in chunks]
     k = len(returned_chunk_ids)
 
     cited_chunk_rank = (
@@ -610,17 +623,17 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     # final returned set, else 0) applied over the pre-rerank fused order.
     _ndcg_window = fused_list[:10]
     dcg = sum(
-        (1.0 if c["chunk_id"] in returned_chunk_ids else 0.0) / math.log2(idx + 2)
+        (1.0 if c.chunk_id in returned_chunk_ids else 0.0) / math.log2(idx + 2)
         for idx, c in enumerate(_ndcg_window)
     )
     ideal_hits = min(k, 10)
     idcg = sum(1.0 / math.log2(idx + 2) for idx in range(ideal_hits))
     ndcg_at_10 = (dcg / idcg) if idcg > 0 else None
 
-    retrieved_tokens = sum(len(c.get("content", "") or "") for c in chunks) // 4
+    retrieved_tokens = sum(len(c.content) for c in chunks) // 4
     ctx_window_utilization = retrieved_tokens / CONTEXT_WINDOW_BUDGET
 
-    total_fused_tokens = sum(len(c.get("content", "") or "") for c in fused_list) // 4
+    total_fused_tokens = sum(len(c.content) for c in fused_list) // 4
     carried_never_cited_tokens = max(total_fused_tokens - retrieved_tokens, 0)
     compaction_ratio = (
         retrieved_tokens / total_fused_tokens if total_fused_tokens > 0 else None
@@ -675,10 +688,11 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     # sanitize_chunk_text at ingest is complementary rather than superseded — this
     # is the retrieval-time layer, that is the admit-time layer, against the same
     # indirect-prompt-injection threat.
-    return {
-        "content": [{"type": "text", "text": _frame_retrieved_context(str(chunks))}],
-        "_citations": citations,
-    }
+    # THE REPR SEAM. app/worker/tasks/runtime/agent.py reads this string back with
+    # ast.literal_eval, so the text stays the repr of a list of chunk dicts and
+    # `to_json` decides those keys and their order. The owned-loop ticket replaces it.
+    model_text = _frame_retrieved_context(str(retrieved.to_json()["chunks"]))
+    return {"content": [{"type": "text", "text": model_text}], "_citations": citations}
 
 
 # ---------------------------------------------------------------------------

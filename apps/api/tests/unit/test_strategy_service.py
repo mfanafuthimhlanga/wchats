@@ -24,6 +24,7 @@ os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 
 from unittest.mock import MagicMock, patch
 
+from app.domain.retrieved_context import RetrievedChunk, RetrievedContext
 from app.services.retrieval_service import (
     RetrievalStrategy,
     _expand_query,
@@ -215,9 +216,13 @@ def test_expansion_calls_rrf_fuse_per_variant():
 
     # Canned fused result returned by each rrf_fuse call
     fake_fused_result = {
-        "fused": [{"chunk_id": "c1", "rrf_score": 0.9, "content": "x"}],
-        "vector_candidates": [],
-        "bm25_candidates": [],
+        "fused": RetrievedContext(
+            query="q",
+            chunks=(RetrievedChunk("c1", "d1", "x", 0.9, 1),),
+            strategy="rrf",
+        ),
+        "vector_candidates": RetrievedContext(query="q", chunks=(), strategy="vector"),
+        "bm25_candidates": RetrievedContext(query="q", chunks=(), strategy="bm25"),
     }
 
     # EMBEDDING_PROVIDER defaults to "bedrock" (P13-02 seam, config.py). Without
@@ -251,3 +256,5 @@ def test_expansion_calls_rrf_fuse_per_variant():
 
     # Result shape must match rrf_fuse contract
     assert set(result.keys()) == {"fused", "vector_candidates", "bm25_candidates"}
+    assert result["fused"].strategy == "rrf"
+    assert [chunk.chunk_id for chunk in result["fused"].chunks] == ["c1"]
