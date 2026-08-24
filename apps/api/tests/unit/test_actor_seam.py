@@ -237,6 +237,78 @@ class TestVerdictParsing:
         assert rationale == expected_rationale
         api_mock.assert_called_once()
 
+    def test_haiku_call_sends_thinking_disabled(self):
+        """The forced tool_choice must ship with thinking off.
+
+        Observed 2026-08-16: DeepSeek's Anthropic-format endpoint — the default
+        provider via ANTHROPIC_BASE_URL — rejects a forced tool_choice with
+        HTTP 400 "Thinking mode does not support this tool_choice" unless
+        thinking is explicitly disabled. The parameter is inert on the real
+        Anthropic API, so the flag is provider-neutral.
+        """
+        block = _make_tool_use_block("approve", "Aligned.")
+        api_mock = MagicMock(return_value=_make_api_response(block))
+
+        from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
+
+        with (
+            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
+            patch(f"{_MODULE}._langfuse", None),
+        ):
+            asyncio.run(
+                call_actor_gate(
+                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, ""
+                )
+            )
+
+        call_kwargs = api_mock.call_args[1]
+        # Precondition: with no forced tool_choice there is nothing to disable
+        # thinking for, and the assertion below would pin an unrelated call.
+        assert call_kwargs.get("tool_choice", {}).get("type") == "tool"
+        assert call_kwargs.get("thinking") == {"type": "disabled"}, (
+            f"the Actor gate sent thinking={call_kwargs.get('thinking')!r}; the default "
+            "provider returns HTTP 400 on a forced tool_choice without it, so the gate "
+            "raises instead of returning a verdict in production"
+        )
+
+    def test_haiku_call_sends_temperature_zero(self):
+        """BACKLOG 8.2a. The highest-stakes judge in the system samples at 0.
+
+        `call_actor_gate` runs SYNCHRONOUSLY before money moves. Until 8.2a every
+        judge here sampled at whatever the provider defaults to, so the same
+        proposed action could be approved on one call and refused on the next
+        with nothing in the code, the conversation or the arguments having
+        changed. Judgement is the one task that wants no creativity.
+
+        Some verdict variance survives temperature 0 anyway, from batching and
+        hardware nondeterminism. That is an argument for sampling a high-stakes
+        verdict more than once, not for leaving the temperature unset.
+
+        An earlier version put that at 3 to 8 percent, which is quoted from a talk and has never been measured in this system (BACKLOG 8.11).
+        """
+        block = _make_tool_use_block("approve", "Aligned.")
+        api_mock = MagicMock(return_value=_make_api_response(block))
+
+        from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
+
+        with (
+            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
+            patch(f"{_MODULE}._langfuse", None),
+        ):
+            asyncio.run(
+                call_actor_gate(
+                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, ""
+                )
+            )
+
+        call_kwargs = api_mock.call_args[1]
+        assert call_kwargs.get("temperature") == 0, (
+            f"the Actor gate sent temperature={call_kwargs.get('temperature')!r}. A gate "
+            "that runs before money moves may not sample its verdict."
+        )
+
     def test_haiku_approve_verdict(self):
         """Explicit test name for approve verdict (test discovery compatibility)."""
         block = _make_tool_use_block("approve", "Aligned.")

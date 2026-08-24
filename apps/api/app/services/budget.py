@@ -21,6 +21,12 @@ import time
 
 from redis.asyncio import Redis
 
+# F4: Estimated per-turn Anthropic cost (conservative upper bound for Haiku 4.5).
+# It lives beside the ceiling it is charged against rather than on a route, because
+# both chat routes charge the same tenant budget and a second copy of this number
+# would be a second, silently different ceiling (BACKLOG 7.4).
+ESTIMATED_TURN_COST_USD = 0.01
+
 
 async def check_and_increment_budget(
     tenant_id: str, cost_usd: float, redis: Redis, ceiling_usd: float

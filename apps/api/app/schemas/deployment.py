@@ -48,3 +48,16 @@ class ApproveDeploymentResponse(BaseModel):
     deployed: bool
     agent_id: str
     iframe_snippet: str
+
+
+class EmbedSnippetResponse(BaseModel):
+    """The embed tag, served so the console can render what the API generated.
+
+    BACKLOG 7.1. `snippet` is the same string `approve-deployment` returns as
+    `iframe_snippet`, from the same generator — the field name differs because
+    this route is a plain read of an agent's embed tag, available before and
+    after approval, not the result of approving anything.
+    """
+
+    agent_id: str
+    snippet: str

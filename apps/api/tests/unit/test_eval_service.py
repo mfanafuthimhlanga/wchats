@@ -47,11 +47,83 @@ import re
 import uuid
 from contextlib import contextmanager
 from types import MappingProxyType
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pandas as pd
 import psycopg2
 import pytest
+from ragas.embeddings.base import BaseRagasEmbedding
+from ragas.llms.base import InstructorBaseRagasLLM
+from ragas.metrics.collections.answer_relevancy.util import AnswerRelevanceOutput
+from ragas.metrics.collections.context_precision.util import ContextPrecisionOutput
+from ragas.metrics.collections.context_recall.util import (
+    ContextRecallClassification,
+    ContextRecallOutput,
+)
+from ragas.metrics.collections.faithfulness.util import (
+    NLIStatementOutput,
+    StatementFaithfulnessAnswer,
+    StatementGeneratorOutput,
+)
+
+# ---------------------------------------------------------------------------
+# Real-ragas doubles (7.18)
+#
+# Collections metrics validate their components at construction: anything that
+# is not an InstructorBaseRagasLLM / BaseRagasEmbedding is rejected outright, so
+# a MagicMock never reaches the scoring code. These two subclass the real bases
+# and replace only the network hop.
+# ---------------------------------------------------------------------------
+
+# One statement, supported, attributed — every metric scores 1.0 off this.
+_CANNED_JUDGE_OUTPUTS = {
+    StatementGeneratorOutput: lambda: StatementGeneratorOutput(
+        statements=["the only claim"]
+    ),
+    NLIStatementOutput: lambda: NLIStatementOutput(
+        statements=[
+            StatementFaithfulnessAnswer(
+                statement="the only claim", reason="canned", verdict=1
+            )
+        ]
+    ),
+    AnswerRelevanceOutput: lambda: AnswerRelevanceOutput(
+        question="What is the return policy?", noncommittal=0
+    ),
+    ContextPrecisionOutput: lambda: ContextPrecisionOutput(reason="canned", verdict=1),
+    ContextRecallOutput: lambda: ContextRecallOutput(
+        classifications=[
+            ContextRecallClassification(
+                statement="the only claim", reason="canned", attributed=1
+            )
+        ]
+    ),
+}
+
+
+class _FakeInstructorLLM(InstructorBaseRagasLLM):
+    def generate(self, prompt, response_model):
+        raise AssertionError(
+            "collections metrics must reach the LLM through agenerate()"
+        )
+
+    async def agenerate(self, prompt, response_model):
+        return _CANNED_JUDGE_OUTPUTS[response_model]()
+
+
+class _FakeRagasEmbedding(BaseRagasEmbedding):
+    """Stands in for _VoyageRagasEmbedding. One fixed unit vector, so
+    AnswerRelevancy's cosine similarity is exactly 1.0."""
+
+    def embed_text(self, text: str, **kwargs) -> list[float]:
+        return [1.0, 0.0, 0.0]
+
+    async def aembed_text(self, text: str, **kwargs) -> list[float]:
+        return [1.0, 0.0, 0.0]
+
+
+def _fake_ragas_instructor_llm():
+    return _FakeInstructorLLM()
 
 
 def _with_source_tier(monkeypatch, source: str, tier: str) -> None:
@@ -172,61 +244,35 @@ def _recording_connect(cursor, conn_strings: list[str]):
 class TestRunRagasEval:
     """Tests for the Ragas 0.4.x harness (run_ragas_eval)."""
 
-    @patch("app.services.eval_service.evaluate")
-    @patch("app.services.eval_service.EvaluationDataset")
-    @patch("app.services.eval_service.ContextRecall")
-    @patch("app.services.eval_service.ContextPrecision")
-    @patch("app.services.eval_service.AnswerRelevancy")
-    @patch("app.services.eval_service.Faithfulness")
-    @patch("app.services.eval_service.InstructorLLM")
-    @patch("app.services.eval_service.instructor")
-    @patch("app.services.eval_service.anthropic")
-    def test_run_ragas_eval_builds_dataset(
-        self,
-        mock_anthropic,
-        mock_instructor,
-        mock_llm_cls,
-        mock_faithfulness,
-        mock_answer_relevancy,
-        mock_context_precision,
-        mock_context_recall,
-        mock_dataset_cls,
-        mock_evaluate,
-    ):
-        """EvaluationDataset.from_list is called with 'reference' key (D-02 LOCKED).
-        evaluate() is called with a metrics list of length 4 (D-04 LOCKED).
+    def test_run_ragas_eval_builds_dataset(self, monkeypatch):
+        """EvaluationDataset.from_list is called with 'reference' key (D-02 LOCKED),
+        and the four metrics (D-04 LOCKED) each produce a real score.
+
+        This test used to mock `evaluate`, `EvaluationDataset` and all four
+        metric classes, which is exactly how the harness shipped with a scoring
+        call ragas rejects (7.18). Nothing in ragas is mocked here: the real
+        EvaluationDataset validates the samples, the real metrics run, and only
+        the two network hops — the judge LLM and Voyage — are canned.
         """
+        from ragas import EvaluationDataset
+
+        from app.services import eval_service
         from app.services.eval_service import run_ragas_eval
 
-        # Build a fake DataFrame with 4 metric columns
-        df = pd.DataFrame([
-            {
-                "faithfulness": 0.95,
-                "answer_relevancy": 0.92,
-                "context_precision": 0.88,
-                "context_recall": 0.85,
-            }
-        ])
+        from_list_calls = []
+        real_from_list = EvaluationDataset.from_list
 
-        mock_results = MagicMock()
-        mock_results.to_pandas.return_value = df
-        mock_evaluate.return_value = mock_results
+        class _SpyDataset:
+            @staticmethod
+            def from_list(samples):
+                from_list_calls.append(samples)
+                return real_from_list(samples)
 
-        mock_dataset = MagicMock()
-        mock_dataset_cls.from_list.return_value = mock_dataset
-
-        # LLM wrapper mock — Ragas metric classes also mocked so they don't
-        # validate the InstructorLLM type at construction time
-        mock_llm_instance = MagicMock()
-        mock_llm_cls.return_value = mock_llm_instance
-        mock_instructor.from_anthropic.return_value = MagicMock()
-        mock_anthropic.Anthropic.return_value = MagicMock()
-
-        # Metric instances returned by the mocked constructors
-        mock_faithfulness.return_value = MagicMock()
-        mock_answer_relevancy.return_value = MagicMock()
-        mock_context_precision.return_value = MagicMock()
-        mock_context_recall.return_value = MagicMock()
+        monkeypatch.setattr(eval_service, "EvaluationDataset", _SpyDataset)
+        monkeypatch.setattr(
+            eval_service, "_build_instructor_llm", _fake_ragas_instructor_llm
+        )
+        monkeypatch.setattr(eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding)
 
         scenarios = [
             {
@@ -241,9 +287,8 @@ class TestRunRagasEval:
         result = run_ragas_eval(scenarios)
 
         # D-02 LOCKED: from_list must receive 'reference' key (not 'ground_truths')
-        assert mock_dataset_cls.from_list.called, "EvaluationDataset.from_list was not called"
-        call_args = mock_dataset_cls.from_list.call_args
-        samples_list = call_args[0][0]  # positional first arg
+        assert from_list_calls, "EvaluationDataset.from_list was not called"
+        samples_list = from_list_calls[0]
         assert len(samples_list) == 1
         assert "reference" in samples_list[0], (
             "D-02 violation: EvaluationDataset.from_list sample missing 'reference' key"
@@ -253,16 +298,67 @@ class TestRunRagasEval:
         )
         assert samples_list[0]["reference"] == "Items can be returned within 30 days."
 
-        # D-04 LOCKED: evaluate() called with 4 metrics (4 constructors each called once)
-        assert mock_evaluate.called, "evaluate() was not called"
-        assert mock_faithfulness.called, "Faithfulness metric not instantiated"
-        assert mock_answer_relevancy.called, "AnswerRelevancy metric not instantiated"
-        assert mock_context_precision.called, "ContextPrecision metric not instantiated"
-        assert mock_context_recall.called, "ContextRecall metric not instantiated"
+        # D-04 LOCKED: all four metrics scored, none of them unknown.
+        assert result["scores"], "no scenario was scored"
+        for metric in ("faithfulness", "answer_relevancy", "context_precision",
+                       "context_recall"):
+            assert result["scores"][0][metric] is not None, (
+                f"{metric} came back unknown against a metric that cannot fail here"
+            )
+            assert result["means"][metric] is not None
 
-        # Return structure
-        assert "scores" in result
-        assert "means" in result
+    def test_built_metrics_are_instances_not_classes(self):
+        """Every element of the metrics list is a constructed metric object,
+        and none of them is a legacy `ragas.metrics.base.Metric`.
+
+        The second half is the one that fell over live: ragas/evaluation.py:133
+        raises "All metrics must be initialised metric objects" for anything
+        failing `isinstance(m, Metric)`, and collections metrics fail it while
+        being perfectly initialised. That is why this harness scores through
+        ascore() and never through evaluate().
+        """
+        from ragas.metrics.base import Metric, SimpleBaseMetric
+
+        from app.services.eval_service import _build_ragas_metrics
+
+        metrics = _build_ragas_metrics(
+            _fake_ragas_instructor_llm(), _FakeRagasEmbedding()
+        )
+
+        assert len(metrics) == 4
+        for metric in metrics:
+            assert not isinstance(metric, type), f"{metric!r} is a class, not an instance"
+            assert isinstance(metric, SimpleBaseMetric)
+            assert not isinstance(metric, Metric), (
+                f"{type(metric).__name__} is now a legacy ragas Metric"
+            )
+
+    def test_instructor_llm_wraps_an_async_client(self, monkeypatch):
+        """Collections metrics only ever await agenerate(), and
+        InstructorLLM.agenerate raises TypeError on a synchronous client."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+
+        from app.services.eval_service import _build_instructor_llm
+
+        assert _build_instructor_llm().is_async is True
+
+    def test_instructor_llm_disables_thinking(self, monkeypatch):
+        """7.20: instructor forces `tool_choice={"type": "tool"}` on every
+        structured call, and the DeepSeek Anthropic-format endpoint 400s a
+        forced tool_choice under thinking mode. The kwarg has to survive as far
+        as the dict InstructorLLM.agenerate splats into messages.create, which
+        is what _map_provider_params() returns.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+
+        from app.services.eval_service import _build_instructor_llm
+
+        llm = _build_instructor_llm()
+
+        assert llm._map_provider_params()["thinking"] == {"type": "disabled"}, (
+            "thinking is not disabled on the metric LLM; the forced tool_choice "
+            "instructor adds will 400 on the DeepSeek endpoint"
+        )
 
     def test_run_ragas_eval_empty_scenarios_returns_empty(self):
         """run_ragas_eval returns empty scores/means when no valid scenarios given.
@@ -2036,17 +2132,6 @@ class TestRunRagasEvalAttribution:
     partial judge return — the one state in which its attribution was wrong.
     """
 
-    _RAGAS_PATCHES = (
-        "EvaluationDataset",
-        "instructor",
-        "anthropic",
-        "InstructorLLM",
-        "Faithfulness",
-        "AnswerRelevancy",
-        "ContextPrecision",
-        "ContextRecall",
-    )
-
     def _scenarios(self, n):
         return [
             {
@@ -2061,7 +2146,7 @@ class TestRunRagasEvalAttribution:
         ]
 
     def _judged(self, scenarios, indices, with_keys=True, faithfulness=None):
-        """A to_pandas() frame for the rows the judge actually returned."""
+        """A frame of the rows the judge actually returned."""
         rows = []
         for i in indices:
             row = {
@@ -2077,13 +2162,21 @@ class TestRunRagasEvalAttribution:
         return pd.DataFrame(rows)
 
     def _run(self, monkeypatch, scenarios, frame):
-        class _Result:
-            def to_pandas(self):
-                return frame
+        """Real dataset, real metric objects, judge replaced at _score_samples.
 
-        for name in self._RAGAS_PATCHES:
-            monkeypatch.setattr(eval_service, name, MagicMock())
-        monkeypatch.setattr(eval_service, "evaluate", lambda **kw: _Result())
+        The seam is the scoring loop rather than the judge client, because a
+        partial return is a shortfall of ROWS: these tests exist to drive
+        attribution when the judge answers for fewer samples than were sent.
+        """
+
+        async def _fake_score_samples(metrics, samples):  # noqa: ARG001
+            return frame.to_dict("records")
+
+        monkeypatch.setattr(
+            eval_service, "_build_instructor_llm", _fake_ragas_instructor_llm
+        )
+        monkeypatch.setattr(eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding)
+        monkeypatch.setattr(eval_service, "_score_samples", _fake_score_samples)
         return eval_service.run_ragas_eval(scenarios)
 
     def test_a_partial_return_does_not_hand_the_golden_row_a_foreign_score(

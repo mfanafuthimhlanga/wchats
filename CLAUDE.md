@@ -6,7 +6,6 @@ goes live.
 
 **`.planning/PROJECT.md` is the source of truth** for product context, requirements, and the decision
 log. `.planning/` as a whole is a **frozen archive** as of 2026-08-05 — see "The archive" below.
-Read `.dev/HANDOFF.md` first in every session.
 
 ## Branching Model
 
@@ -29,10 +28,15 @@ A merge into `main` must have all gates green, run for real and observed — nev
 # CHANGED 2026-08-13: docling IS installed now, so nothing is excluded any more.
 # `uv sync --extra dev` alone would UNINSTALL it — pass both extras.
 uv sync --extra dev --extra pipeline                    # restores .venv if it was disk-cleaned
-.venv/Scripts/python.exe -m pytest tests/unit -q
+.venv/Scripts/python.exe scripts/gates.py full          # ruff (count-pinned baseline) + import-linter
+                                                        # + lizard floors + collection + unit suite.
+                                                        # `static` = the three that never import app
+                                                        # code (8.4s, what the Stop hook runs);
+                                                        # `fast` = static + whole-suite collection.
+                                                        # mutmut is dead config on native Windows.
 
 # admin    (apps/admin)
-npx tsc --noEmit          # ONE known pre-existing error: tests/reduced-motion.spec.ts:18. Zero new.
+npx tsc --noEmit          # exit 0, zero errors (the reduced-motion known error was fixed 2026-08-16)
 npm run check:no-dusk-tokens      # exit 0
 npm run check:ops-room-wiring     # exit 0  (11/11)
 npm run test:unit                 # 45, browserless
@@ -59,11 +63,12 @@ is the feedback loop working.
 absence pin, or fail-closed path: mutate the guard, observe red, restore from `HEAD`
 unconditionally, observe green. Record the observed output, not the intention.
 
-## Session Start
+## Session handoffs
 
-**If `.dev/HANDOFF.md` exists, read it FIRST.** It is the terse current-state handoff: what is in
-flight, what is blocked and on what, what the next move is. Update it when you pause; archive it
-into `.dev/traces/` when its queue is consumed.
+Handoffs are conversation-scoped, not repo files (owner, 2026-08-24). End a substantive session
+with `/handoff`; it writes to the OS temp directory as `wchats-handoff-*.md`, and the SessionStart
+hook injects the newest one automatically, alongside the open GitHub issue frontier. Repo state
+lives in issues, `CONTEXT.md`, ADRs and traces, never in a handoff.
 
 ## Execution Workflow & Persistent Artifacts
 
@@ -73,15 +78,16 @@ trivial tasks still run solo. Regardless of engine, artifacts persist in `.dev/`
 
 ```
 .dev/
-  BACKLOG.md                         ← THE single ordered list of open work. Read first.
-                                       Rows carry slugs (`5.1 · ops15-server-gap`); the NUMBER is an
-                                       address, not a priority. Use slugs in conversation.
-  HANDOFF.md                         ← current-state snapshot; read at session start
+  BACKLOG.md                         ← FROZEN 2026-08-22. Rows carry slugs
+                                       (`5.1 · ops15-server-gap`); the NUMBER is an address, not a
+                                       priority, and source comments cite rows by number. Read a row
+                                       when an issue or a comment points at it; never add to it.
   PRODUCTION-READINESS.md            ← every gap between here and production, plus the ordered
                                        end-to-end validation plan. Claims are marked
                                        OBSERVED / READ / RECORD — never promote a RECORD line to a
                                        decision without re-checking it.
-  plans/     YYMMDD-<slug>.md        ← BEFORE execution: goal, approach, phases, files, risks, tests
+  MASTERPLAN.md                      ← FROZEN 2026-08-22. The wayfinder map issue carries the path now.
+  plans/     YYMMDD-<slug>.md        ← FROZEN 2026-08-22. A spec lives in its issue (`to-spec`).
   traces/    YYMMDD-<slug>.md        ← AFTER execution: what actually changed, decisions, deviations
   workflows/ <name>.workflow.js      ← the orchestration itself, versioned and re-runnable
   reference/ <topic>.md              ← durable findings that outlive one task
@@ -91,20 +97,24 @@ trivial tasks still run solo. Regardless of engine, artifacts persist in `.dev/`
 
 Rules:
 
-- **No execution of a non-trivial task without a plan file first. No task is done without its trace.**
-- **`BACKLOG.md` is the queue and it is maintained transactionally.** A phase that closes an
-  item deletes its row in the same commit that lands the fix; a phase that discovers work adds a
-  row. Outstanding work living only in the tail of a trace or a plan is how it gets lost.
+- **Open work is a GitHub issue; the path is the `wayfinder:map` issue.** A task that closes an
+  issue closes it in the same commit that lands the fix; a task that discovers work opens one.
+  Outstanding work living only in the tail of a trace is how it gets lost.
+- **The map decides; one spec follows the last decision (`/to-spec #4`); a design decision is an
+  ADR in `docs/adr/`.** No task is done without its trace, and every breakage a trace records is
+  an issue the same day (`docs/agents/issue-tracker.md`, "Handoff from the map to work").
 - **A workflow's tier-2 judgement is extracted to `.dev/reference/` before the session ends.**
   The workflow journal lives in a temp directory and does not survive.
 - When a Workflow runs, copy its script into `.dev/workflows/` so the orchestration is versioned.
 - Plans and traces are **terse working documents** — bullets, file lists, decisions. The GSD habit of
   600-word narrative paragraphs per plan is what `.planning/` became; do not reproduce it here.
-- **Model discipline: every subagent runs the session model.** Never set `model:` in a Workflow
-  `agent()` call or pass `model` to the Agent tool — omitting it inherits the resolved session model,
-  which is the only reliable way to pin it (`opus`/`sonnet` aliases are not version guarantees). Do
-  not spawn named specialist agents whose definitions pin a model in frontmatter; use
-  `general-purpose` or the default workflow subagent.
+- **Model discipline (owner, 2026-08-15): execution runs on Opus, judgement stays on the session
+  model.** Implementation subagents pass `model: 'opus'` and get small, bounded briefs with the
+  exact files and the exact exit check named — the practice audit's Opus frustrations were all
+  wide-brief frustrations. Orchestration, verification passes and reviews inherit the session
+  model (omit `model`; the alias is not a version guarantee, so pin judgement to the resolved
+  session model by omission). Do not spawn named specialist agents whose definitions pin a model
+  in frontmatter; use `general-purpose` or the default workflow subagent.
 - **The one exception: the tier-2 judge runs `model: 'fable'`.** Once per milestone, before the
   merge. It reads a **bounded artifact only** — the diff, the implementers' claims, the tier-1
   findings — assembled by a session-model collector, and never explores the tree. Its question is not
@@ -158,10 +168,19 @@ threat registers.
 ## Environment constraints (real, and they shape what can be proven)
 
 - **4 GB RAM.** No parallel test workers, small fixtures, one agent at a time in a workflow.
-- **No PostgreSQL server on this machine.** Confirmed repeatedly: the `postgresql-x64-17` service is
-  a stale registration pointing at a deleted binary; nothing listens on 5432-5435. Every
-  `-m integration` harness therefore **skips**, and a skipped gate is *unobserved*, never a pass.
-  `CONTROL_DB_URL` points at live Neon production and is **never** an acceptable substitute.
+- **A local PostgreSQL 17.6 IS running on `localhost:5432`** (binaries `C:\Users\Bantu\pgsql`,
+  cluster `C:\Users\Bantu\pgdata`, pgvector 0.8.1, `fsync=off`, disposable). Databases
+  `wchats_control` and `wchats_tenant_probe`. **CORRECTED 2026-08-18**: this section said "no
+  PostgreSQL server on this machine, confirmed repeatedly" for eight days after `0.2` installed one
+  on 2026-08-10, and that stale sentence was then copied into a migration docstring, its test file,
+  two BACKLOG rows, HANDOFF, a plan and a trace inside a single session before anyone opened a
+  socket. **Test the constraint, do not quote it.**
+  - Migrations CAN be applied and verified here. `run_tenant_migrations(dsn)` against
+    `wchats_tenant_probe` is the production path, and upgrade/downgrade/re-upgrade round trips.
+  - `-m integration` harnesses are still gated behind `INTEGRATION_TESTS_ENABLED` and two modules
+    spend money, so "a server exists" is not "run the integration suite" (`7.36`).
+  - `CONTROL_DB_URL` in `.env` points at live Neon production and is **never** an acceptable
+    substitute for the local cluster.
 - **Toolchains get disk-cleaned.** `apps/api/.venv`, `apps/admin/node_modules`, `apps/widget/node_modules`
   and `.next` have been removed by cleanup passes before. Restore: `uv sync --extra dev` in
   `apps/api`; `pnpm install` for the front ends (the pnpm store survives). Verify a gate can actually
@@ -223,3 +242,19 @@ Widget:      Preact (<20 kb gzipped)
   `git commit -F <file>`.
 - Design work follows the Mzansi Design Codex and the GOTHAM system; the repo-root `DESIGN.md` is
   **stale** (it still describes the superseded "Amber Console" direction).
+
+## Agent skills
+
+### Issue tracker
+
+Open work lives in this repo's GitHub Issues, via `gh`. `.dev/BACKLOG.md` is frozen as of
+2026-08-22; its rows are read, never added to, and an issue is opened per row as it enters the
+work. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default labels, unchanged. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` at the root and `docs/adr/`. See `docs/agents/domain.md`.

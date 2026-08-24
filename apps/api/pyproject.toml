@@ -72,6 +72,10 @@ dev = [
     # has never once run a test.
     "pytest-cov>=5.0",
     "respx==0.23.1",
+    "ruff==0.16.3",
+    "lizard>=1.23.0",
+    "import-linter>=2.13",
+    "mutmut>=3.7.0",
 ]
 
 [tool.pytest.ini_options]
@@ -98,6 +102,53 @@ target-version = "py312"
 # and printed a warning on every single invocation, including in CI.
 select = ["E", "F", "I"]
 ignore = ["E501"]
+
+# Both contracts below were measured against the tree before they were written, and
+# each was observed to go BROKEN under a deliberate mutation and KEPT again after
+# restore. Neither is a target: they pin the structure that already holds.
+[tool.importlinter]
+root_package = "app"
+
+[[tool.importlinter.contracts]]
+# Direction measured from the 444 real dependencies, not chosen: every observed edge
+# already runs down this list and not one runs up. app.models, app.core and app.utils
+# import no sibling at all, so they sit together on the bottom rung.
+# Observed 2026-08-15: KEPT. Mutation `app.services.storage_service -> app.api.deps`
+# turned it BROKEN, naming that exact import.
+name = "app layers run one way"
+type = "layers"
+layers = [
+    "app.main",
+    "app.api",
+    "app.worker",
+    "app.schemas",
+    "app.services",
+    "app.models | app.core | app.utils",
+]
+
+[[tool.importlinter.contracts]]
+# app.services is skipped because it is cyclic TODAY and this gate may not fail on
+# arrival. Four import pairs form those cycles, measured 2026-08-15:
+#   app.services:               agent_tools -> transactional
+#                               embedding_service -> bedrock_embedding_service
+#                               red_team_service -> red_team_probe
+#   app.services.transactional: provider_adapter -> adapters
+# Delete the skip once those four are gone; the contract then covers the whole tree.
+# Observed 2026-08-15: KEPT. Mutation `app.worker.celery_app -> app.worker.tasks`
+# turned it BROKEN, naming app.worker.
+name = "no import cycles outside app.services"
+type = "acyclic_siblings"
+ancestors = ["app"]
+skip_descendants = ["app.services"]
+
+[tool.mutmut]
+# Configured so a mutation run is reproducible elsewhere; it is NOT a gate here.
+# mutmut 3.7.0 refuses to start on native Windows (it exits 1 on any argument,
+# including --version, gating on sys.platform before parsing). On this 4 GB box a
+# full run is out of reach regardless. Run it under WSL or Linux CI, differentially.
+paths_to_mutate = "app/"
+tests_dir = "tests/unit/"
+runner = "python -m pytest tests/unit -x -q --no-header -p no:cacheprovider"
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]

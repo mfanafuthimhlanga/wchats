@@ -1,5 +1,7 @@
 # MASTERPLAN — from here to two live agents
 
+**FROZEN 2026-08-22.** The `wayfinder:map` issue on GitHub carries the path now; this file is the record of how it was framed up to M1.
+
 The single ordered path from the current branch to production, for every session between now and
 launch. Milestone plans in `.dev/plans/` decompose these milestones; if a plan conflicts with this
 file, this file wins or gets amended in the same commit.
@@ -56,6 +58,51 @@ critical path.
 - **Proof before spend.** The seam counts as landed only when one Agent SDK turn and one
   direct-API judge call have been observed returning verdicts through the endpoint (`7.7`).
   Anthropic remains available per-environment by unsetting `ANTHROPIC_BASE_URL`.
+- **Proven 2026-08-16, with one seam fact every judge depends on:** the endpoint runs claude-*
+  aliases in thinking mode, which rejects forced `tool_choice`; every forced-tool call therefore
+  carries `thinking={"type": "disabled"}` (a no-op on Anthropic). Trace:
+  `260816-deepseek-seam.md`. Cost telemetry on the SDK path is Anthropic-priced fiction: `7.13`.
+
+## What the eval review changed (2026-08-18)
+
+Two eval walkthroughs were worked through end to end and mapped onto what this system actually runs.
+Fundamentals in `.dev/reference/260818-llm-eval-fundamentals.md`, the gap list in
+`260818-eval-practice-gap-analysis.md`, the queue in BACKLOG section 8. Every gap was checked against
+the code before being filed.
+
+**Nothing below changes the definition of production readiness.** Two agents live on their Vercel
+URLs is still the only bar. What changes is what counts as evidence on the way there, and in what
+order the work happens.
+
+Ordered by how much it moves the plan:
+
+1. **M2 cannot be earned at k=1, so `8.1` goes in front of it.** Every eval scenario currently runs
+   once, which conflates two different failures: a system that CANNOT do the task and one that does
+   it sometimes. M2's claim is consistency, and one pass per scenario cannot support it. A 7/7
+   red-team result at k=1 is silent about the eighth attempt. M2's exit now names reliable@k.
+2. **The improvement loop moves BEFORE launch, not after.** `2.28` (miner) and `2.4` (labelling UI)
+   were scheduled after the finish line. The trace-to-taxonomy loop is the front end of every other
+   eval: read traces, label binary, write reasons, cluster them into failure categories, prioritise
+   by frequency AND severity, stop at saturation. Our twenty scenarios were written from
+   imagination because the system had no traffic; that was correct then and is not the plan now.
+   This is the difference between reaching production and surviving it.
+3. **Every number we quote gains an interval and a segment.** No success rate ships as a bare point
+   estimate, and none ships pooled across scenario categories the corpus already tags
+   (`golden_path`, `edge`, `adversarial`, `out_of_scope`). This is the existing "unknown is never
+   pass" rule one level deeper, and it applies to `7/7`, `20/20` and every eval percentage.
+4. **Judge calibration needs chance correction, not just correlation.** Spearman rho over three
+   pairs cannot carry the claim. Cohen's kappa subtracts agreement by luck; Matthews correlation
+   covers the imbalanced case where kappa collapses on a good judge, which is the shape our corpus
+   has. The judge also ships a confusion matrix rather than one number, because each quadrant names
+   a different fix, including "the product is broken, stop tuning the judge".
+5. **Judges run at temperature 0 and get bias probes.** No temperature is set anywhere in `app` or
+   `tests/evals` today. Verbosity and position bias are both cheaply testable and currently untested.
+6. **M4.5 gains a lever before it starts.** The cheapest eval that answers the question wins:
+   code-based, then a small off-the-shelf model, then a judge. Citation validity is set membership
+   and is currently judged by an LLM.
+7. **Alignment is re-measured on a schedule, because it decays.** Judge-to-human agreement is not
+   established once. Prompts, data and users drift, and nothing currently re-measures it. This is
+   the piece that makes the harness survive production rather than merely launch.
 
 ## The milestones
 
@@ -82,13 +129,15 @@ calibrated. Nothing deploys on top of unverified measurement.
 - E2E-3b: one live customer turn, `RETRIEVAL_FAITHFULNESS_SAMPLE_RATE=1.0`, read the verdict and
   `judge_context` counters. Settles `5.13`, `5.15`; first verdict under the `5.16` fix.
 - E2E-6: capture the 20 calibration responses (`0.1` prerequisite), owner scores
-  `human_scores.csv`, run the Spearman >= 0.75 gate.
+  `human_scores.csv`, re-label the same rows blind in `human_scores_pass2.csv`, then run
+  the three-part calibration gate: (a) the judge's bootstrapped kappa interval clears chance, (b1) the owner's own blind re-label clears chance, (b2) the paired difference does not show the owner beating the judge.
 - E2E-7 per PRODUCTION-READINESS §4.
 - `0.7` is decided (owner, 2026-08-15): DeepSeek is the default provider for both halves via the
   Anthropic-compatible endpoint. See §Model provider; the work row is `7.7`.
 
 **Exit:** a grounding verdict from a live turn whose reason cites provenance, and calibrated judges
-with the Spearman number recorded.
+with both kappa intervals and the paired difference recorded. Spearman is still reported and
+no longer gates anything (8.2b, 8.2c, 8.2d).
 
 ### M2 — earn the first ship verdict
 
@@ -104,9 +153,22 @@ No `ship` has ever come from real signals (`260815-the-never-executed-class` §"
 **Exit:** `run_deployment_checklist.complete recommendation=ship` from real eval + red-team
 signals, observed once, trace recorded.
 
+**AMENDED 2026-08-18 (`8.1`):** the eval and red-team runs above are run at k > 1 and reported as
+reliable@k per scenario category with an interval, not as a single pass. A verdict from one run per
+scenario cannot distinguish a system that cannot do the task from one that does it sometimes, and
+consistency is the entire claim M2 exists to earn.
+
 ### M3 — make the widget and the agent endpoint products
 
-The two runtime surfaces both customers will use. All defects here are located (rows `7.1`-`7.6`).
+The two runtime surfaces both customers will use. All defects here are located (rows `7.1`-`7.6`,
+plus `7.23`, which joined on 2026-08-17: the widget session dies at 15 minutes and the customer
+sees an error, found by the E2E-6 capture rather than by reading).
+
+**One authorisation recorded, because it changes a workspace's shape:** `apps/widget` had NO test
+infrastructure, so its behaviour could only ever be verified by "the build passed". vitest is
+authorised there as a devDependency (devDeps do not touch the 20480-byte gzip budget) for the
+401-retry test, and a theming-contract check joins the repo's existing check-script idiom.
+Untestable behaviour is the defect shape this project keeps paying for.
 
 - One embed-snippet generator: the API's (currently omits `data-api` and produces a widget that
   cannot talk to anything); console renders what the API returns.
@@ -140,6 +202,42 @@ doc page.
 
 **Exit:** a staging agent, provisioned in the cloud, answers a grounded question on a public URL.
 
+### M4.5 — unit economics, end to end (owner, 2026-08-17)
+
+**Gate between a validated backend and any UI work.** The backend is provable by then and the cloud
+bill is real, so this is the last moment the numbers can be measured rather than estimated, and the
+first moment they are all observable. Deliverable: one costing document with measured inputs, plus
+the levers ranked by what they save.
+
+Measure per unit, never per month, so the model scales without being rewritten:
+
+- **Per interaction, split by agent type.** A support turn (agent call + Gatekeeper + Auditor +
+  Strategist + retrieval + rerank) and a transactional turn (all of that plus the Actor gate per
+  mutating attempt, IDV, and provider API calls) have different shapes and must be priced apart.
+  The Auditor is the one to watch: it now receives the full retrieved context, up to 80,000 chars.
+- **Per flywheel cycle.** Nightly eval (per scenario x per metric, including the Ragas judge and
+  the embedding wrapper), weekly red team (attackers are Sonnet-class and multi-turn), scenario
+  mining, calibration re-runs. These are the costs that recur without a customer interaction, so
+  they set the floor under an idle tenant.
+- **Per tenant, fixed.** Neon project, ingestion at signup, storage, the share of Fargate/Redis/S3
+  a tenant occupies. This is what a free trial actually costs.
+- **Infra, fixed.** The M4 stack: three-plus ECS services, the beat worker, Redis, S3, CloudFront,
+  Langfuse, Clerk production.
+
+Two rules for the exercise, both learned the hard way here:
+
+- **Measure from token counts, never from the SDK's `total_cost_usd`** — it is priced against
+  Anthropic tables while calls go to DeepSeek (`7.13`), so it is fiction at the exact moment it
+  looks authoritative.
+- **Report `unknown` for anything not observed.** A costing that quietly fills gaps with plausible
+  numbers is the measurement-honesty failure this project already has a rule about.
+
+Known input at time of writing: retrieval/rerank modelled at ~$0.0015 per interaction, dominated by
+shipping ~30 chunks to keep 5 (`7.22`, the lever). Everything else is unmeasured.
+
+**Exit:** a costing document whose every headline number traces to an observed measurement, the
+per-tenant monthly floor stated, and the top three cost levers named with their measured saving.
+
 ### M5 — console polish, mockup first
 
 UI is where the owner's taste is the deciding input, and it comes after the backend is provable.
@@ -159,16 +257,37 @@ explained by an established cause.
 
 The founding promise, run for real: a business owner completes signup to deploy through the UI.
 
-- **[owner]** Stripe test-mode account + restricted key for Mellow; seeded as the tenant's
-  `integration_credentials` row through the console (INT-01 path). Set `STRIPE_TEST_MODE_ENABLED`
-  ceremony only for the live-gate test.
+- Step 0: the Paystack adapter (`7.10`). Paystack is the SA-default provider (owner decision
+  2026-08-15, rationale in `.dev/reference/260815-sa-payment-provider-decision.md`: T+1 settlement
+  and free payouts against Stripe direct's ~T+7 and uncertain SA availability). Mirrors
+  `stripe_adapter.py`'s three operations; idempotency rides the unique transaction `reference`
+  plus the platform's own `idempotency.py` for refund dedup, because Paystack has no native
+  idempotency header. The Stripe adapter stays for future international tenants and
+  `test_stripe_live` parks with it.
+- The rails, decided (owner, 2026-08-15): **three rails, one provider.**
+  1. **Paystack card** is the agent's automation rail: refunds, subscriptions, payment links, all
+     API-driven.
+  2. **Instant EFT is an optional extra delivered as a Paystack channel** (`channels:
+     ["card", "eft"]` covers Pay with Bank and Capitec Pay), never a second provider. PayFast was
+     evaluated and rejected for the agent surface: its refunds are dashboard-driven, which breaks
+     `issue_refund` automation.
+  3. **The static FNB account stays, agent-served, human-approved** (`7.11`): the agent hands the
+     bank details to customers who choose manual EFT; the order is created awaiting proof of
+     payment; the customer uploads the POP with the order; it lands in a console queue that
+     **Mellow approves, never the agent** — the approval route accepts a Clerk JWT only, the same
+     machine-credential refusal the label route already enforces (`4.7`), so the exclusion is
+     structural, not prompted. Refunds on this rail likewise route through
+     `pending_confirmations` for the owner to execute.
+- **[owner]** Paystack account + test-mode secret key for Mellow; seeded as the tenant's
+  `integration_credentials` row through the console (INT-01 path). Verify the actual settlement
+  terms at signup, before promising Mellow anything.
 - Provision the Mellow tenant and agent entirely via UI. Ingest the Mellow corpus (product and
   policy docs from `../mellows-earth-elements`). Eval, red team, checklist, approve: the gate earns
   its second ship, this time on a real business corpus.
 - Embed the widget on the Mellow Vercel site; run the live test: grounded product answers plus one
-  transactional action (refund or order via Stripe test mode) passing the IDV + Actor + envelope
-  chain. First live provider call in the project's history (`test_stripe_live` gate finally
-  exercised).
+  transactional action (refund or order via Paystack test mode) passing the IDV + Actor + envelope
+  chain — the first live provider call in the project's history, and the shop's first real payment
+  rail (today's checkout is a static EFT instruction block).
 
 **Exit:** the owner's test on the Mellow Vercel URL passes, recorded with job ids and the audit rows
 of the transactional action.
@@ -235,12 +354,12 @@ Wire as `make gates` and `make gates-fast` in the existing `apps/api/Makefile`; 
 | M | What proves the exit, concretely |
 |---|---|
 | M0 | Owner merge; `full` battery quoted green on `main` after |
-| M1 | `7.7` seam: one SDK turn and one judge verdict observed through the DeepSeek endpoint. `7.8` battery: baselines measured and written as floors. E2E-3b: verdict text plus `judge_context` counters verbatim in the trace. Calibration: Spearman at or above 0.75 **observed**, on at least the 10-row floor; below-floor reports `unknown`, never pass |
+| M1 | `7.7` seam: one SDK turn and one judge verdict observed through the DeepSeek endpoint. `7.8` battery: baselines measured and written as floors. E2E-3b: verdict text plus `judge_context` counters verbatim in the trace. Calibration: the three-part calibration gate: (a) the judge's bootstrapped kappa interval clears chance, (b1) the owner's own blind re-label clears chance, (b2) the paired difference does not show the owner beating the judge, **observed**. At least two rows must carry each label or no interval is a measurement; a sheet that cannot support one reports `unknown`, never pass |
 | M2 | The gate observed **refusing** as well as shipping: flip each signal (below-floor eval, open critical finding) and watch the block, then the earned `ship` quoted with job ids. RTX-01 costed before the 7/7 run. Mutation proofs on the `5.17` and `1.31` fixes |
 | M3 | Each `7.1`-`7.6` fix lands red-then-green. PROD-11: snippet pasted on a plain static page, zero hand-edits, working chat, screenshot plus network log. BYO proof: one turn driven by curl and EventSource using only the doc page. Size gate extended to all three shipped files; a contract test pins console snippet == API snippet |
 | M4 | CI green **on a remote runner** quoted (first time, `1.1`). Staging: one grounded answer on a public URL, job id quoted. Beat: the first `eval-nightly` run row observed within 24h of deploy, and the `0.4` decision line recorded before it can fire. §3.7 unknowns closed by observation, not reading |
 | M5 | Mockup gate: owner eyes, the one deliberately manual gate. Src gate: adversarial UX review on **rendered pixels** with computed contrast ratios (a code-only pass may not report PASS); admin e2e green or every red tied to an established cause; zero new tsc errors |
-| M6 | The acceptance script is written **before** the run as Gherkin: grounded cited answer; refund through IDV, Actor and envelope with audit rows plus the Stripe test-mode object id; and one **refusal observed** (over-ceiling amount denied), because an enforcement chain never seen refusing is unobserved. Every step driven through the UI only |
+| M6 | The acceptance script is written **before** the run as Gherkin: grounded cited answer; refund through IDV, Actor and envelope with audit rows plus the Paystack test-mode refund reference; one **refusal observed** (over-ceiling amount denied), because an enforcement chain never seen refusing is unobserved; one manual-EFT order with POP traversing the queue to a Mellow approval; and one agent-credential approval attempt on that queue **observed refused** |
 | M7 | MCP conformance: tool list typed, statelessness proven by replaying a call on a fresh connection, the approve journey exercised as MRTR. The Bantuson agent's full lifecycle recorded as MCP tool calls; live URL test same shape as M6 minus the transactional half |
 
 The Layer 2 data-science gates bind M1 and M2 specifically: sample-size floors, `unknown` never
@@ -272,7 +391,7 @@ JWT_SECRET, UPLOADS_DIR, LOG_LEVEL, SENTRY_DSN, CLERK_JWKS_URL.
 | `LANGFUSE_*` (3 names) | M4 | observability; config fields exist |
 | Clerk production instance (3 names) | M4 | current keys are the dev instance (`1.20`) |
 | `SMTP_HOST/FROM/OWNER_EMAIL` | M4, optional | digest only |
-| **Stripe: absent everywhere** | M6 | no platform Stripe field exists in `config.py` by design; needed as (a) Mellow's tenant `integration_credentials` restricted key, (b) `STRIPE_TEST_API_KEY` + `STRIPE_TEST_CHARGE_ID` for the live gate test |
+| **Paystack: absent everywhere** | M6 | the SA-default provider; no platform payment field exists in `config.py` by design. Needed as (a) Mellow's tenant `integration_credentials` test-mode key, (b) the env names the `7.10` live-gate test declares. The Stripe names (`STRIPE_TEST_API_KEY`, `STRIPE_TEST_CHARGE_ID`) park with the Stripe adapter for a future international tenant |
 
 ## Risks that can move the plan
 
@@ -282,7 +401,7 @@ JWT_SECRET, UPLOADS_DIR, LOG_LEVEL, SENTRY_DSN, CLERK_JWKS_URL.
   absorbs a debugging phase.
 - **Fargate has never been stood up**; PRODUCTION-READINESS §3.7 lists the operational unknowns. M4
   is the milestone most likely to grow.
-- **Judge calibration can fail its own gate** (Spearman < 0.75); if it does, M1 ends in prompt
+- **Judge calibration can fail its own gate** (the judge's interval includes chance, or the owner beats it); if it does, M1 ends in prompt
   iteration on the judges, and nothing downstream starts until it passes.
 - **The DeepSeek compatibility layer is a third party's implementation of Anthropic's format.**
   Anthropic does not support non-Claude routing, and features the CLI negotiates via beta headers

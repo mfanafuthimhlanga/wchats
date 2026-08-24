@@ -25,8 +25,13 @@ import {
  * PRESERVED VERBATIM (non-regression, UI-SPEC S9): the real
  * `POST/GET /checklist-runs`, `POST .../acknowledge`,
  * `POST /approve-deployment` and `GET/POST /widget-config` endpoints the
- * prior dusk build already consumed. The embed snippet's CDN/API base env
- * vars and iframe query-string shape are unchanged.
+ * prior dusk build already consumed.
+ *
+ * CHANGED 2026-08-17 (BACKLOG 7.1): the embed snippet is read from
+ * `GET /embed-snippet`, not composed here from `NEXT_PUBLIC_WCHATS_*`. Two
+ * generators for one tag meant the string the owner copied was not the string
+ * the API believed it had issued, and the console's own API-base default was
+ * the empty string — a widget that renders and cannot reach anything.
  *
  * MUST-FIX 4 (UI-SPEC S6.8 / S10 anti-pattern S10.8): deploy.html's `.rig`
  * "Test the gate" simulate/clear buttons are prototype-only instrumentation
@@ -226,17 +231,14 @@ const DEFAULT_CONFIG: WidgetConfig = {
   },
 }
 
-const WIDGET_CDN_BASE = process.env.NEXT_PUBLIC_WCHATS_WIDGET_CDN || 'https://widget.wchats.app'
-const WIDGET_API_BASE = process.env.NEXT_PUBLIC_WCHATS_API_BASE || ''
-
-function EMBED_SNIPPET(id: string): string {
-  return (
-    '<script src="' + WIDGET_CDN_BASE + '/widget.js"' +
-    ' data-agent="' + id + '"' +
-    ' data-api="' + WIDGET_API_BASE + '"' +
-    ' async></script>'
-  )
-}
+// The embed tag is NOT built here. It is read from
+// GET /api/v1/agents/{id}/embed-snippet (BACKLOG 7.1). This page used to
+// compose its own from NEXT_PUBLIC_WCHATS_WIDGET_CDN and
+// NEXT_PUBLIC_WCHATS_API_BASE while the API returned a different one from
+// approve-deployment, so the tag the owner copied was not the tag the platform
+// believed it had issued — and the API base defaulted to the empty string,
+// which the loader treats as warn-and-continue. One generator now, server-side,
+// configured by WIDGET_CDN_BASE / PUBLIC_API_BASE. See `embedSnippetQuery`.
 
 // The three real appearance modes (WidgetConfigUpdate.appearance, non-regression).
 const APPEARANCE_OPTIONS: {
@@ -2388,10 +2390,34 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
     },
   })
 
+  // ---- Embed snippet — READ from the API, never composed here (BACKLOG
+  // 7.1). The tag names a CDN host and an API origin, both of which are
+  // deployment configuration the server holds and the browser does not.
+  // A failed read renders as a failed read: this page has no fallback
+  // snippet to fall back to, and inventing one is how the two generators
+  // diverged in the first place. --------------------------------------
+  const embedSnippetQuery = useQuery({
+    queryKey: ['embed-snippet', id],
+    queryFn: async () => {
+      const token = await getToken()
+      if (!token) throw new Error('Not authenticated')
+      const r = await fetch(`${apiBase}/api/v1/agents/${id}/embed-snippet`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const data = (await r.json()) as { agent_id: string; snippet: string }
+      return data.snippet
+    },
+    enabled: isLoaded && !!isSignedIn,
+    staleTime: 60_000,
+  })
+  const embedSnippet = embedSnippetQuery.data ?? null
+
   // ---- Embed copy — Clipboard API with an execCommand fallback for
   // insecure/file:// contexts (UI-SPEC S6.8). --------------------------
   const handleCopyEmbed = () => {
-    const text = EMBED_SNIPPET(id)
+    const text = embedSnippet
+    if (!text) return
     const flip = () => {
       setCopyStatus('copied')
       setTimeout(() => setCopyStatus('idle'), 1500)
@@ -2904,14 +2930,26 @@ export default function DeployPage({ params }: { params: Promise<{ id: string }>
               <span className="mono stamp">one tag, before the closing body</span>
             </div>
             <div className="embed-row">
-              <code className="well" id="snippet">{EMBED_SNIPPET(id)}</code>
-              <Btn variant="ghost" onClick={handleCopyEmbed} aria-describedby="embed-label">
+              <code className="well" id="snippet">
+                {embedSnippet
+                  ? embedSnippet
+                  : embedSnippetQuery.isError
+                    ? 'The embed tag could not be read from the server.'
+                    : 'Reading the embed tag…'}
+              </code>
+              <Btn
+                variant="ghost"
+                onClick={handleCopyEmbed}
+                disabled={!embedSnippet}
+                aria-describedby="embed-label"
+              >
                 {copyStatus === 'copied' ? 'Copied' : 'Copy'}
               </Btn>
             </div>
             <p className="help">
-              The widget loads on its own, after your page has painted. It adds nothing to your
-              first render.
+              {embedSnippetQuery.isError
+                ? 'Reload the page to try again. Nothing is wrong with your agent — this is the console failing to reach the API.'
+                : 'The widget loads on its own, after your page has painted. It adds nothing to your first render.'}
             </p>
           </section>
 

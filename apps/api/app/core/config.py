@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     # postgresql:// — for Celery sync engine and Alembic CLI
     CONTROL_DB_SYNC_URL: str
 
+    # Per-tenant Neon projects scale to zero. A suspended endpoint takes roughly
+    # 8-20s to wake, so at the previous hardcoded 5s the FIRST message after
+    # about five idle minutes could not reach a woken endpoint at all: psycopg2
+    # spends this budget on each address the host resolves to, every one of them
+    # timed out, and the turn died (observed on three live jobs, 2026-08-16).
+    # 30s covers the wake. Note the per-address multiplication when tuning it:
+    # a genuinely unreachable host costs this value once per resolved address.
+    TENANT_DB_CONNECT_TIMEOUT_S: int = 30
+
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
     # WR-04: disable TLS certificate verification for rediss:// connections.
@@ -212,6 +221,27 @@ class Settings(BaseSettings):
     BLAST_RADIUS_WARN_SINGLE_CENTS: int = 50000    # R500.00 platform-default single-action warning
     BLAST_RADIUS_WARN_HOURLY_CENTS: int = 200000   # R2000.00 platform-default hourly-aggregate warning
     BLAST_RADIUS_OBSERVED_WINDOW_DAYS: int = 7     # rolling window the observed blast-radius figures cover
+
+    # The two hosts the embed snippet names (BACKLOG 7.1). The snippet is the
+    # one artifact a customer pastes into their own site, so both halves of it
+    # are deployment configuration, not code:
+    #   WIDGET_CDN_BASE  where widget.js and its index.html are served from
+    #   PUBLIC_API_BASE  the origin the loader's data-api points the widget at
+    # PUBLIC_API_BASE defaults to the local uvicorn address because that is the
+    # only value that is true on a fresh checkout.
+    #
+    # THE DEFAULT IS REFUSED WHEN ENVIRONMENT == "production" — see
+    # deployment_service._make_iframe_snippet, which raises rather than emitting
+    # a snippet, exactly as storage_service._get_s3() refuses S3_ENDPOINT_URL
+    # there. The loader only warns when the API base is EMPTY
+    # (apps/widget/embed/widget.js), so a non-empty localhost value is silent:
+    # the snippet renders on the customer's site and every visitor's browser
+    # calls its own machine, with nothing in the console to say so, and
+    # http://localhost is a potentially-trustworthy origin so an https page does
+    # not even mixed-content block it. A base that cannot be reached from a
+    # visitor's browser must fail to issue a snippet, not issue a dead one.
+    WIDGET_CDN_BASE: str = "https://widget.wchats.app"
+    PUBLIC_API_BASE: str = "http://localhost:8000"
 
     def __repr__(self) -> str:  # T-01-01, T-01-02: never leak field values
         return f"Settings(LOG_LEVEL={self.LOG_LEVEL!r})"

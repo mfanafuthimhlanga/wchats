@@ -25,22 +25,29 @@ no-op once retrieval_metrics.faithfulness is non-NULL for that row.
 Security (CLAUDE.md rule 4): task args are (agent_id, job_id) ONLY. conn_str
 is decrypted at runtime from the control DB, never in task args/logs.
 
-Ragas import (CRITICAL — pre-existing infra bug, not a regression):
-    `import ragas` currently fails in this environment: ragas.llms.base ->
-    langchain_community.chat_models.vertexai raises ModuleNotFoundError. This
-    is confirmed pre-existing (see apps/api/tests/unit/test_metrics_routes.py's
-    PRE-EXISTING INFRA NOTE and eval_service.py's own top-level ragas import,
-    which has the identical problem). To keep THIS module importable at
-    Celery worker startup (celery_app.py's `include=[...]` list imports every
-    task module eagerly), all ragas/instructor/anthropic imports here are
-    LAZY — confined inside `_compute_ragas_faithfulness()`, never at module
-    top-level. Unit tests stub `_compute_ragas_faithfulness` directly and
-    never exercise the real Ragas call path (deferred to a live-verification
-    gate per RESEARCH.md's Validation Architecture section).
+Ragas import:
+    `import ragas` pulls langchain, datasets and pandas — seconds of import
+    time. To keep THIS module cheap at Celery worker startup (celery_app.py's
+    `include=[...]` list imports every task module eagerly), all
+    ragas/instructor/anthropic imports here are LAZY, confined inside
+    `_build_instructor_llm()` / `_build_faithfulness_metrics()`, never at
+    module top-level.
+
+Ragas 0.4.x scoring shape (7.18 — this task returned faithfulness=None on the
+first live turn ever sampled):
+    `ragas.metrics.collections.Faithfulness` descends from SimpleBaseMetric,
+    NOT from `ragas.metrics.base.Metric`, so `ragas.evaluate()` rejects it at
+    evaluation.py:133 with "All metrics must be initialised metric objects" —
+    a message about the class hierarchy, not about instantiation. Collections
+    metrics are scored directly: `await metric.ascore(...) -> MetricResult`,
+    which is the API CLAUDE.md rule 4 names. The LLM must wrap an ASYNC
+    Anthropic client: collections metrics only ever call `llm.agenerate()`,
+    and InstructorLLM.agenerate raises TypeError on a sync client.
 """
 
 from __future__ import annotations
 
+import asyncio
 import random
 
 import psycopg2
@@ -202,51 +209,104 @@ def _fetch_turn_context(db, job_id: str) -> tuple[str, list, str | None, list[st
 # ---------------------------------------------------------------------------
 
 
+def _build_instructor_llm():
+    """Build the InstructorLLM the collections metrics score through.
+
+    The client is `anthropic.AsyncAnthropic`, not `anthropic.Anthropic`.
+    Collections metrics await `llm.agenerate(...)` exclusively, and
+    InstructorLLM.agenerate raises
+    TypeError("Cannot use agenerate() with a synchronous client") whenever its
+    client is sync — which is what `instructor.from_anthropic(Anthropic())`
+    produces (InstructorLLM.is_async is False for it).
+
+    `thinking={"type": "disabled"}` is 7.20. Instructor's Anthropic TOOLS
+    handler forces `tool_choice={"type": "tool", ...}` on every structured call
+    (instructor/v2/providers/anthropic/handlers.py:392), and the DeepSeek
+    Anthropic-format endpoint 400s a forced tool_choice unless thinking is
+    explicitly off — the same failure the six judge call sites already fix.
+    The seam is InstructorLLM's `**kwargs`: they are merged into `model_args`
+    (ragas/llms/base.py:772), passed through unchanged for the anthropic
+    provider (:803), and splatted into `client.chat.completions.create()` by
+    agenerate (:1109), which instructor forwards to `messages.create`. The flag
+    is a no-op on real Anthropic, so it is provider-neutral.
+    """
+    import anthropic
+    import instructor
+    from ragas.llms import InstructorLLM
+
+    client = instructor.from_anthropic(anthropic.AsyncAnthropic())
+    return InstructorLLM(
+        client=client,
+        model=HAIKU_MODEL,
+        provider="anthropic",
+        thinking={"type": "disabled"},
+        # BACKLOG 8.2a. Same **kwargs seam as `thinking`: merged into
+        # `model_args` (ragas/llms/base.py:772), passed through unchanged for the
+        # anthropic provider (:803), splatted into the client call by agenerate
+        # (:1109). Ragas metrics ARE judges, so they get the same temperature as
+        # every other verdict in the system.
+        #
+        # CORRECTED 2026-08-18 by adversarial review: this site was NOT sampling
+        # at the provider default before 8.2a. ragas 0.4.3's InstructorModelArgs
+        # defaults to `temperature=0.01, top_p=0.1` whenever `model_args is None`,
+        # which is how this is constructed, and 0.01 was measured on the wire. So
+        # the change here is 0.01 -> 0, not "unset -> 0", and the 8.2a commit's
+        # "every LLM call sampled at whatever the provider defaults to" was false
+        # for 2 of the 9 sites.
+        #
+        # STILL OPEN and deliberately not changed here: ragas also sends
+        # `top_p: 0.1` alongside, and Anthropic's guidance is to set temperature
+        # OR top_p, not both. Changing it changes retrieval-eval behaviour and
+        # wants its own measurement. BACKLOG 8.10.
+        temperature=0,
+    )
+
+
+def _build_faithfulness_metrics(llm) -> list:
+    """The metric list this task scores through: constructed INSTANCES.
+
+    Unlike eval_service's offline harness, no ground-truth `reference` is
+    available for live traffic, so only the reference-free Faithfulness metric
+    is computed — it checks response claims against retrieved_contexts, not
+    against a ground-truth answer.
+    """
+    from ragas.metrics.collections import Faithfulness
+
+    return [Faithfulness(llm=llm)]
+
+
 def _compute_ragas_faithfulness(
     question: str, response_text: str, contexts: list[str]
 ) -> float | None:
     """Compute a single-turn Ragas 0.4.x Faithfulness score.
 
-    Mirrors eval_service.run_ragas_eval's InstructorLLM/Faithfulness call
-    shape (D-01/D-04 LOCKED conventions: ragas.metrics.collections, an
-    InstructorLLM wrapping instructor.from_anthropic(anthropic.Anthropic())).
-    Unlike eval_service's offline harness, no ground-truth `reference` is
-    available for live traffic, so only the reference-free Faithfulness
-    metric is computed (it checks response claims against retrieved_contexts,
-    not against a ground-truth answer).
+    Scores through `metric.ascore(...) -> MetricResult` rather than
+    `ragas.evaluate()`; see the module docstring for why evaluate() cannot take
+    a collections metric.
 
     Never raises: any failure (import, API, parsing) is caught, logged, and
     returns None — a faithfulness-scoring failure must never fail or retry
     the sampled analytics task's other work (citation_coverage still writes).
     """
-    if not contexts or not response_text:
+    if not contexts or not response_text or not question:
         return None
 
     try:
-        import anthropic
-        import instructor
-        from ragas import EvaluationDataset, evaluate
-        from ragas.llms import InstructorLLM
-        from ragas.metrics.collections import Faithfulness
-    except Exception as exc:  # noqa: BLE001 — pre-existing infra bug, see module docstring
+        llm = _build_instructor_llm()
+        metrics = _build_faithfulness_metrics(llm)
+    except Exception as exc:  # noqa: BLE001 — import or client construction
         log.warning("run_retrieval_faithfulness.ragas_import_failed", error=str(exc))
         return None
 
     try:
-        dataset = EvaluationDataset.from_list([
-            {
-                "user_input": question,
-                "response": response_text,
-                "retrieved_contexts": contexts,
-            }
-        ])
-        _anthropic_client = instructor.from_anthropic(anthropic.Anthropic())
-        llm = InstructorLLM(client=_anthropic_client, model=HAIKU_MODEL, provider="anthropic")
-        results = evaluate(dataset=dataset, metrics=[Faithfulness(llm=llm)], llm=llm)  # type: ignore[list-item,arg-type]  # ragas 0.4.x accepts these at runtime
-        df = results.to_pandas()  # type: ignore[union-attr]  # ragas 0.4.x accepts these at runtime; installed stubs are narrower
-        if "faithfulness" not in df.columns or len(df) == 0:
-            return None
-        raw = df["faithfulness"].iloc[0]
+        result = asyncio.run(
+            metrics[0].ascore(
+                user_input=question,
+                response=response_text,
+                retrieved_contexts=contexts,
+            )
+        )
+        raw = result.value
         return float(raw) if raw is not None and raw == raw else None  # raw == raw: NaN check
     except Exception as exc:  # noqa: BLE001 — never fail the task on a Ragas/API error
         log.warning("run_retrieval_faithfulness.ragas_call_failed", error=str(exc))

@@ -103,6 +103,8 @@ def generate_scenarios_from_chunks(chunks: list[dict], n: int = 5) -> list[dict]
         ],
         tools=[SCENARIO_TOOL],  # type: ignore[call-overload] # anthropic/agent-sdk stubs are narrower than the runtime contract
         tool_choice={"type": "tool", "name": "submit_scenarios"},
+        # Forced tool_choice 400s on the DeepSeek endpoint unless thinking is off.
+        thinking={"type": "disabled"},
     )
 
     chunk_contents = [c["content"] for c in chunks[:5]]

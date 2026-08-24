@@ -17,8 +17,44 @@ observed judge call. MASTERPLAN §Model provider carries the mechanism and the f
 (the Martin test-quality battery, never applied in this repo) also lands inside M1; the
 per-milestone proof map is MASTERPLAN §How work is verified.
 
-**Then run E2E-3b on that provider: one live customer turn, and read the grounding verdict it
-produces.**
+**E2E-3b is DONE (2026-08-16, trace `260816-e2e3b-verdict.md`): the first grounded verdict under
+full context — `grounded 1.0`, 7/7 spans supported, each quoting real chunk content;
+`judge_context calls=2 chunks=10 empty=0 unparsed=0 errored=0 chars=8528`; `citation_coverage=0.5`
+(first non-NULL ever, closes `5.13`/`5.15`). The whole judge chain ran on DeepSeek.** The one
+defect it surfaced: Ragas metrics passed as classes not instances (`7.18`), so `faithfulness` is
+still None.
+
+**M3 IS DONE (2026-08-18, trace `260818-m3-widget-endpoint.md`)** — `7.1`-`7.6` and `7.23` closed,
+every fix mutation-proved, all gates green, widget at 9471 of 20480 gzip bytes. **Its exit criterion
+is NOT met and that is deliberate: PROD-11 (paste the snippet on a plain external page and watch a
+real conversation work) needs a public API base and a served widget, so it moves to M4** along with
+the BYO-client curl+EventSource proof and the endpoint doc page. Follow-ups `7.24`-`7.28` are filed,
+none blocking.
+
+**E2E-6 IS WAITING ON THE OWNER, AND ON NOTHING ELSE.** The Voyage Tier 1 credit landed, the
+corpus captured 20/20 clean (trace `260817-e2e6-corpus-captured.md`), and
+`compute_correlation.py --check` reports `20 scenarios / 20 responses / 0 of 3 human scores`,
+exit 3 = NOT READY, which is neither pass nor fail. **The one remaining step is the owner filling
+the `human_score` column (1-5) in `apps/api/tests/evals/calibration/human_scores.csv`** - three
+rows minimum, ten present. Nothing else may fill it; a judge scored against model-written labels
+measures its agreement with itself. Then run `compute_correlation.py` for the Spearman >= 0.75
+gate. Scores are per-provider: these calibrate DeepSeek.
+
+*Historical, kept because the failure mode recurs:* **E2E-6 was BLOCKED, and the blocker was a
+credential, not code** (trace
+`260817-e2e6-capture-blocked.md`). `7.18` is fixed and landed. The capture then ran 6 scenarios and
+was stopped: **Voyage has no payment method, so the account is capped at 3 RPM / 10K TPM** (`7.21`,
+owner action at dashboard.voyageai.com). Every retrieval embeds a query and every turn reranks, so
+the capture throttles - and rerank **falls back to unranked results with only a warning**, which is
+how a calibration set gets built on quietly degraded retrieval. The four captured files were
+deleted for exactly that reason; the capture script skips existing files, so leaving them would
+have poisoned the set silently.
+
+**Order to resume E2E-6:** (1) owner adds the Voyage payment method; (2) `7.20` lands - the Ragas
+judge's live round trip hits the same thinking-mode 400 `7.7` fixed, from inside instructor, which
+is the boundary `7.18` explicitly left unproven; (3) re-capture all 20 from empty; (4) owner scores
+`human_scores.csv`; (5) Spearman gate, per-provider on DeepSeek. Run recipe (overrides, pre-warm
+probe) is in `260816-e2e3b-attempt.md`.
 
 `5.16` was fixed today, so the Auditor is now handed every retrieved chunk untruncated instead of
 1800 chars. **No live turn has produced a verdict that way.** The only grounding verdict ever

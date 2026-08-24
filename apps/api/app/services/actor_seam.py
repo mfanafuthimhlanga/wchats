@@ -208,6 +208,15 @@ async def call_actor_gate(
     t0 = time.time()
 
     response = ANTHROPIC_CLIENT.messages.create(
+        # BACKLOG 8.2a. Judgement is the one task that wants no creativity, and
+        # every judge in this system sampled at the provider default until now.
+        # Some verdict variance survives temperature 0 anyway, from batching and
+        # hardware nondeterminism, which is why a high-stakes verdict eventually
+        # wants more than one sample. (An earlier version of this comment put
+        # that at "3-8%". That number is QUOTED from a talk and has never been
+        # measured in this system, and CLAUDE.md's own rule is to test a
+        # constraint rather than repeat it. BACKLOG 8.11 measures it.)
+        temperature=0,
         model=HAIKU_MODEL,
         max_tokens=512,
         system=(
@@ -254,6 +263,8 @@ async def call_actor_gate(
             },
         }],
         tool_choice={"type": "tool", "name": "submit_verdict"},
+        # Forced tool_choice 400s on the DeepSeek endpoint unless thinking is off.
+        thinking={"type": "disabled"},
     )
 
     latency_ms = int((time.time() - t0) * 1000)

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import math
 from typing import Literal
+from urllib.parse import urlsplit
 
 import psycopg2
 import structlog
@@ -380,12 +381,66 @@ def build_report_tools(result_container: dict) -> list:
 # iframe snippet helper
 # ---------------------------------------------------------------------------
 
+# Hosts that resolve to the machine running the browser, not to this API. A
+# snippet carrying one of these is dead on every visitor's device.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0", ""})
+
+
+class SnippetNotConfigured(RuntimeError):
+    """PUBLIC_API_BASE is unusable, so no embed tag can be issued.
+
+    Mirrors storage_service.StorageNotConfigured: a missing or local-only
+    configuration is an unavailable service, and callers translate this to 503
+    rather than letting a dead snippet reach a customer's clipboard.
+    """
+
 
 def _make_iframe_snippet(agent_id: str) -> str:
-    """Return the embeddable widget script tag for the given agent."""
+    """Return the embeddable widget script tag for the given agent.
+
+    BACKLOG 7.1. This is the ONLY generator of that tag. It used to hardcode
+    `https://widget.wchats.app` and emit no `data-api` at all, while the console
+    computed a second, different snippet of its own and rendered that instead.
+    The loader treats a missing API base as warn-and-continue
+    (`apps/widget/embed/widget.js`), so the tag this function returned produced
+    a widget that painted on the customer's site and could not reach anything.
+
+    Both hosts now come from `Settings` — see `WIDGET_CDN_BASE` /
+    `PUBLIC_API_BASE`, documented in both `.env.example` files. Trailing
+    slashes are stripped so a base configured as `https://api.example.com/`
+    cannot yield `https://api.example.com//`.
+
+    PUBLIC_API_BASE defaults to `http://localhost:8000`, and the loader only
+    warns when the API base is EMPTY — so the default is silent in a way the
+    old empty-string default was not: no console signal, and no mixed-content
+    block either, because http://localhost is potentially-trustworthy. It is
+    therefore REFUSED outright when ENVIRONMENT == "production", the same way
+    storage_service._get_s3() refuses S3_ENDPOINT_URL there. Refusing to issue
+    a snippet is recoverable; a customer pasting one that calls their own
+    visitors' machines is not.
+
+    Raises:
+        SnippetNotConfigured: ENVIRONMENT is production and PUBLIC_API_BASE is
+            empty or points at a loopback host.
+    """
+    cdn_base = settings.WIDGET_CDN_BASE.rstrip("/")
+    api_base = settings.PUBLIC_API_BASE.strip().rstrip("/")
+
+    if settings.ENVIRONMENT == "production":
+        host = urlsplit(api_base).hostname or "" if api_base else ""
+        if not api_base or host in _LOOPBACK_HOSTS:
+            raise SnippetNotConfigured(
+                f"PUBLIC_API_BASE is {api_base!r} while ENVIRONMENT=production. "
+                "The embed snippet would tell every visitor's browser to call "
+                "its own machine, and the loader does not warn about a "
+                "non-empty base. Set PUBLIC_API_BASE to the public origin this "
+                "API is reachable at."
+            )
+
     return (
-        f'<script src="https://widget.wchats.app/widget.js" '
-        f'data-agent="{agent_id}" async></script>'
+        f'<script src="{cdn_base}/widget.js" '
+        f'data-agent="{agent_id}" '
+        f'data-api="{api_base}" async></script>'
     )
 
 

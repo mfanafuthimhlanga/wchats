@@ -1,6 +1,7 @@
 import { h } from 'preact'
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { loadConfig, sendChat } from './api.js'
+import { applyTheming } from './theming.js'
 import { startSSEStream } from './sse.js'
 import { DisclosureBar } from './components/DisclosureBar.jsx'
 import { MessageBubble } from './components/MessageBubble.jsx'
@@ -26,8 +27,7 @@ export function Widget({ agentId, apiBase }) {
 
   useEffect(() => {
     loadConfig(apiBase, agentId).then(cfg => {
-      Object.entries(cfg.theming).forEach(([k, v]) =>
-        document.documentElement.style.setProperty(`--${k.replace(/_/g, '-')}`, v))
+      applyTheming(cfg.theming, document.documentElement)
       if (cfg.agent_name) setAgentName(cfg.agent_name)
     }).catch(() => {
       // Config load failure is non-fatal — widget stays in idle with default greeting

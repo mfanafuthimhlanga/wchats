@@ -24,7 +24,9 @@ SSE event sequence:
     agent.tool_result   ← each MCP tool result observed in stream
     agent.escalated     ← (optional) escalate_to_human ToolUseBlock detected
     agent.response      ← terminal event with text, citations, conversation_id
-    agent.failed        ← only on final retry exhaustion
+    agent.failed        ← terminal failure only (retries exhausted). Payload
+                          carries error_type beside error, because str() of
+                          several exceptions on this path is empty (BACKLOG 1.30).
 
 Queue: runtime (CLAUDE.md non-negotiable: both Celery queues always present)
 """
@@ -76,7 +78,7 @@ from app.services.agent_tools import (
 from app.services.escalation import send_escalation_email
 from app.services.events import emit
 from app.services.prompt_version_service import resolve_prompt_version
-from app.utils.pii_firewall import scan_response
+from app.utils.pii_firewall import detect_pii, scan_response
 from app.worker.celery_app import celery_app
 from app.worker.tasks.runtime.retrieval_eval import run_retrieval_faithfulness
 from app.worker.tasks.runtime.validators import run_auditor, run_gatekeeper, run_strategist
@@ -543,6 +545,65 @@ def _judge_retrieved_context(tool_calls_log: list[dict]) -> tuple[list[str], int
     return contexts, counts
 
 
+def _published_context(tool_calls_log: list[dict]) -> list[str]:
+    """What the TENANT published, for the PII firewall's exemption (BACKLOG 7.29).
+
+    The firewall stops the agent leaking a CUSTOMER's personal data. It is not
+    meant to stop it repeating the BUSINESS's own published contact details, and
+    it was doing exactly that: three of twenty E2E-6 responses came back as the
+    deflection, because the best-matching chunk was the corpus's "Contact and
+    Escalation" section and a correct answer quotes the address in it.
+
+    A THIRD RENDERING OF ONE PARSE, joining `_retrieved_chunk_texts` (what the
+    eval scores) and `_judge_chunk_record` (what the Auditor judges). It differs
+    from `_judge_retrieved_context` in the two places that decide whether an
+    exemption is safe, so it cannot borrow that function:
+
+        content only   RETRIEVE_CHUNKS_KEY, not RETRIEVE_JUDGE_CHUNKS_KEY. The
+                       judge needs provenance; an allowlist needs the smallest
+                       surface that answers the question.
+        unparsed -> nothing   the judge falls back to the audit `result` repr
+                       because it has no "unscorable" verdict. The firewall does
+                       have one: contribute nothing, and today's behaviour (no
+                       exemption, deflect) is what happens. Fail closed.
+
+    WHAT IS DELIBERATELY NOT IN HERE, because each would be a bypass:
+
+        the framed payload   it echoes the retrieve QUERY, so a customer who
+                             types their own address into the chat would see it
+                             come back exempted
+        the customer message and history   the same bypass, one step shorter
+        the agent soul       `pii_firewall`'s stated property is that nothing in
+                             the soul reaches its behaviour (T-18-SEC-02)
+        errored retrieves    `retrieve_tool` returns its DoS-guard refusal as
+                             ordinary text with is_error set, and a refusal is
+                             not published material
+
+    THE ONE THING THAT WOULD WIDEN THIS SILENTLY, checked 2026-08-18 and clear:
+    `verified_qa`. Those rows are answers derived from CONVERSATIONS, not material
+    the tenant published, so an address a customer typed could reach the allowlist
+    through them. It cannot today, because `verified_qa_lookup` is called from
+    `app.worker.tasks.runtime.retrieve`, not from `agent_tools.retrieve_tool`,
+    which builds its chunks straight from reranked hybrid search. Promotion is
+    also off by the owner's decision of 2026-08-08. **Routing the agent's retrieve
+    through that cache, or adding the lookup to `agent_tools`, widens a security
+    control without touching this file.** If that day comes, filter here on the
+    chunk's provenance rather than trusting the tool name.
+
+    Returns one string per retrieved chunk, in retrieval order.
+    """
+    published: list[str] = []
+    for tc in tool_calls_log:
+        if tc.get("tool_name") != "retrieve" or "result" not in tc:
+            continue
+        if tc.get(RETRIEVE_RESULT_IS_ERROR_KEY):
+            continue
+        if tc.get(RETRIEVE_CHUNKS_SOURCE_KEY) == RETRIEVE_CHUNKS_UNPARSED:
+            continue
+        published.extend(str(c) for c in (tc.get(RETRIEVE_CHUNKS_KEY) or []) if c)
+    return published
+
+
 def _dispatch_validation_chain(
     *,
     agent_id: str,
@@ -785,6 +846,42 @@ def _resolve_turn_prompt_version(
         return None, None, False
 
 
+def _persisted_chunks(tc: dict) -> str | None:
+    """The judge chunks to store for one tool call, or None for SQL NULL.
+
+    BACKLOG 7.34. `grounding_fidelity` asks whether a claim is traceable to a
+    chunk "provided in the tool_calls log", and until this column existed nothing
+    outside the worker could provide one, so the rubric's PASS branch was
+    unreachable and every grounding verdict had to FAIL.
+
+    RETRIEVE_JUDGE_CHUNKS_KEY, not RETRIEVE_CHUNKS_KEY: the reader is a judge
+    asked whether a claim is SUPPORTED, and BACKLOG 5.18 is the finding that a
+    claim naming a document or a section cannot be supported by a context that
+    contains neither. Ragas wants the content-only rendering and reads it
+    elsewhere; one parse, two renderings, one reader each.
+
+    NULL AND `[]` ARE DIFFERENT OBSERVATIONS and this function is where they
+    stay apart:
+
+        None  this call retrieves nothing, or its capture could not be decoded,
+              or the retrieve errored and its "refusal" text is not evidence
+        []    a retrieve ran and the corpus matched nothing
+
+    Collapsing them is BACKLOG 5.16 one level down: an empty context makes every
+    claim unsupported, so reporting a decode failure as "retrieved nothing"
+    manufactures an ungrounded verdict about the decoder rather than the answer.
+    """
+    if tc.get("tool_name") != "retrieve":
+        return None
+    if tc.get(RETRIEVE_RESULT_IS_ERROR_KEY):
+        return None
+    if tc.get(RETRIEVE_CHUNKS_SOURCE_KEY) == RETRIEVE_CHUNKS_UNPARSED:
+        return None
+    if RETRIEVE_JUDGE_CHUNKS_KEY not in tc:
+        return None
+    return json.dumps(tc.get(RETRIEVE_JUDGE_CHUNKS_KEY) or [])
+
+
 def _persist_messages(
     conn,
     conv_id: str,
@@ -832,8 +929,9 @@ def _persist_messages(
         for tc in tool_calls_log:
             cur.execute(
                 """
-                INSERT INTO tool_calls (id, message_id, tool_name, arguments, result, created_at)
-                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, NOW())
+                INSERT INTO tool_calls
+                    (id, message_id, tool_name, arguments, result, retrieved_chunks, created_at)
+                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, NOW())
                 """,
                 (
                     str(uuid.uuid4()),
@@ -841,6 +939,11 @@ def _persist_messages(
                     tc.get("tool_name", ""),
                     json.dumps(tc.get("input", {})),
                     json.dumps(tc.get("result", {})),
+                    # BACKLOG 7.34. `result` is unchanged beside it: that column
+                    # is the 1800-char audit repr, and one column holding either
+                    # a repr or a chunk list depending on when the row was
+                    # written gets read as whichever the reader had in mind.
+                    _persisted_chunks(tc),
                 ),
             )
     conn.commit()
@@ -1403,6 +1506,25 @@ async def _run_sdk_turn(
 # Celery task
 # ---------------------------------------------------------------------------
 
+#: Retry countdown for a tenant-DB connect that failed while the endpoint was
+#: waking. The generic countdown in the handler below is ``2 ** retries`` — 1s
+#: then 2s — which is shorter than a per-tenant Neon project's cold start, so a
+#: wake-triggered retry on that schedule fires while the endpoint is still
+#: suspended and burns the whole retry budget without ever reaching a live
+#: endpoint.
+#:
+#: The value is set by arithmetic, not by picking a point in the 8-20s wake
+#: window. ``max_retries=2`` buys three attempts and therefore only TWO
+#: countdown gaps, and a refusal from a suspended endpoint can come back fast
+#: rather than consuming its connect budget, so the attempts themselves may
+#: contribute nothing. Cumulative delay before the FINAL attempt is
+#: ``2 * countdown``, and that product is what has to clear the top of the wake
+#: window — not the countdown itself. At 8s it is 16s, which leaves a 17-20s
+#: wake exhausting all three attempts; at 10s it is 20s, which covers the
+#: ceiling. Changing max_retries changes this number.
+TENANT_WAKE_RETRY_COUNTDOWN_S = 10
+
+
 @celery_app.task(
     bind=True,
     acks_late=True,
@@ -1496,8 +1618,18 @@ def run_agent_turn(
         # (agent.neon_connection_string) — PgBouncer transaction-mode
         # compatible: no named prepared statements, no SET session vars.
         # Closed in finally even when _run_sdk_turn raises.
-        tenant_conn = psycopg2.connect(conn_str, connect_timeout=5)
+        #
+        # The connect is INSIDE the try. It used to sit outside it, and a
+        # suspended endpoint is the NORMAL state of a tenant DB idle for ~5
+        # minutes — so the first message of every conversation landed on a
+        # psycopg2.OperationalError that escaped this task's own except entirely:
+        # no retry, no agent.failed, zero job_events, and a widget waiting on a
+        # job that had already died. Observed on three live jobs, 2026-08-16.
+        tenant_conn = None
         try:
+            tenant_conn = psycopg2.connect(
+                conn_str, connect_timeout=settings.TENANT_DB_CONNECT_TIMEOUT_S
+            )
             # --------------------------------------------------------------
             # EVENT 1: agent.thinking — confirms task is running for this agent
             # --------------------------------------------------------------
@@ -1670,11 +1802,20 @@ def run_agent_turn(
             # persisted text (_persist_messages), the cited text (_extract_citations)
             # and the judged text (the validator chord) can never diverge — a single
             # substitution covers all four. The firewall call below takes no flag and
-            # reads no config, so nothing in the response text, the agent soul, or an
-            # ingested document can disable it. Citations are extracted from the deflection
+            # reads no config, so nothing in the response text and nothing in the agent
+            # soul can disable it. Citations are extracted from the deflection
             # when a flag fires, which correctly yields an empty citation list — a
             # deflection cites nothing.
-            filtered_text, pii_detector = scan_response(response_text)
+            #
+            # BACKLOG 7.29: the firewall is given what the tenant PUBLISHED this
+            # turn, so an answer quoting the business's own contact address is no
+            # longer deleted. Email only; card and SA ID have no exemption path.
+            # The list is read for one set-membership test and never interpreted,
+            # so a chunk that instructs the firewall off does nothing.
+            published = _published_context(tool_calls_log)
+            filtered_text, pii_detector = scan_response(
+                response_text, published_context=published
+            )
             if pii_detector is not None:
                 log.warning(
                     "pii_firewall.response_deflected",
@@ -1683,6 +1824,19 @@ def run_agent_turn(
                     conversation_id=str(local_conversation_id),
                     detector=pii_detector,
                     original_length=len(response_text),
+                    published_chunks=len(published),
+                )
+            elif published and detect_pii(response_text) is not None:
+                # Passed only BECAUSE the address was published. Logged so the
+                # exemption is observable rather than silent: this is the one
+                # line that tells a later reader an address left the system on
+                # the strength of the corpus, and which turn it was.
+                log.info(
+                    "pii_firewall.published_contact_allowed",
+                    job_id=job_id,
+                    agent_id=agent_id,
+                    conversation_id=str(local_conversation_id),
+                    published_chunks=len(published),
                 )
             response_text = filtered_text
 
@@ -1815,11 +1969,49 @@ def run_agent_turn(
                 "run_agent_turn.failed",
                 job_id=job_id,
                 agent_id=agent_id,
-                error=str(exc),
+                error_type=type(exc).__name__,
+                error=str(exc) or repr(exc),
             )
 
-            # On final retry exhaustion, mark job failed and emit failure event
+            # On final retry exhaustion: emit the failure event, then mark the
+            # job failed. TWO separate sessions and two separate try blocks,
+            # deliberately.
+            #
+            # agent.failed is the only thing the widget ever sees when a turn
+            # dies, and the job-status write beside it is bookkeeping the ops
+            # room reads later. Sharing one try/except-pass ranked them the
+            # wrong way round: a raise from get_sync_db(), from db2.get(), or
+            # from db2.commit() reached the same bare `except` and took the
+            # customer's signal down with the bookkeeping. So the emission goes
+            # FIRST and owns its own failure boundary.
             if self.request.retries >= self.max_retries:
+                # error_type rides beside error because str() of several
+                # exceptions on this path is EMPTY — TimeoutError and a bare
+                # psycopg2.OperationalError both render as "" — and
+                # {"error": ""} names nothing (BACKLOG 1.30).
+                try:
+                    with get_sync_db() as db_event:
+                        emit(
+                            job_id,
+                            "agent.failed",
+                            {
+                                "error_type": type(exc).__name__,
+                                "error": str(exc) or repr(exc),
+                            },
+                            db_event,
+                            _redis,
+                        )
+                except Exception as emit_exc:
+                    # Nothing left to tell the customer with. Logged rather than
+                    # passed, because a silent failure here is the defect this
+                    # whole branch exists to close.
+                    log.error(
+                        "run_agent_turn.failed_event_not_emitted",
+                        job_id=job_id,
+                        error_type=type(emit_exc).__name__,
+                        error=str(emit_exc) or repr(emit_exc),
+                    )
+
                 try:
                     with get_sync_db() as db2:
                         job2 = db2.get(Job, job_id)
@@ -1827,22 +2019,23 @@ def run_agent_turn(
                             job2.status = "failed"
                             job2.finished_at = datetime.now(timezone.utc)
                             db2.commit()
-                            emit(
-                                job_id,
-                                "agent.failed",
-                                {"error": str(exc)},
-                                db2,
-                                _redis,
-                            )
                 except Exception:
                     pass
             else:
-                countdown = 2 ** self.request.retries
+                # An OperationalError is overwhelmingly the tenant endpoint
+                # waking rather than a defect, and the wake outlasts the generic
+                # exponential countdown, so it retries on the wake window.
+                if isinstance(exc, psycopg2.OperationalError):
+                    countdown = TENANT_WAKE_RETRY_COUNTDOWN_S
+                else:
+                    countdown = 2 ** self.request.retries
                 raise self.retry(exc=exc, countdown=countdown)
         finally:
             # PROD-05: close the single pooled tenant-DB connection.
             # Runs even when _run_sdk_turn raises or self.retry() re-raises,
-            # preventing connection leaks on the exception paths.
-            tenant_conn.close()
+            # preventing connection leaks on the exception paths. None only when
+            # the connect above is what failed — nothing to close then.
+            if tenant_conn is not None:
+                tenant_conn.close()
 
     return {}

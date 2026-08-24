@@ -191,6 +191,15 @@ def run_strategist(signals_json: str, result_container: dict) -> None:
     try:
         client = anthropic.Anthropic()
         response = client.messages.create(
+            # BACKLOG 8.2a. Judgement is the one task that wants no creativity, and
+            # every judge in this system sampled at the provider default until now.
+            # Some verdict variance survives temperature 0 anyway, from batching and
+            # hardware nondeterminism, which is why a high-stakes verdict eventually
+            # wants more than one sample. (An earlier version of this comment put
+            # that at "3-8%". That number is QUOTED from a talk and has never been
+            # measured in this system, and CLAUDE.md's own rule is to test a
+            # constraint rather than repeat it. BACKLOG 8.11 measures it.)
+            temperature=0,
             model=SONNET_MODEL,
             max_tokens=500,
             system=_STRATEGIST_SYSTEM_PROMPT,

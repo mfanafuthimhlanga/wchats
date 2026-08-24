@@ -36,7 +36,7 @@ from app.models.agent import Agent
 # ---------------------------------------------------------------------------
 
 
-def _make_ready_agent() -> Agent:
+def _make_ready_agent(widget_config: dict | None = None) -> Agent:
     agent = MagicMock(spec=Agent)
     agent.id = uuid4()
     agent.tenant_id = uuid4()
@@ -44,6 +44,9 @@ def _make_ready_agent() -> Agent:
     agent.status = "ready"
     agent.deleted_at = None
     agent.neon_connection_string = b"fake-encrypted-bytes"
+    # migration 0009 defaults the JSONB column to {} — a MagicMock attribute here
+    # would be truthy and would not be a real dict.
+    agent.widget_config = widget_config if widget_config is not None else {}
     return agent
 
 
@@ -368,6 +371,54 @@ class TestWidgetJobEvents:
         finally:
             app.dependency_overrides.clear()
 
+    async def test_events_stream_uses_the_customer_terminal_set(self):
+        """BACKLOG 7.3 — the public widget stream must close itself on agent.response.
+
+        The route, not the generator, chooses the terminal set; a route wired to the
+        default set would still hold a slot for 120s after the answer.
+        """
+        from app.models.job import Job
+        from app.services.sse import CUSTOMER_TERMINAL_EVENTS
+
+        job_id = uuid4()
+
+        mock_job = MagicMock(spec=Job)
+        mock_job.id = job_id
+        mock_job.agent_id = uuid4()
+
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_job
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        app.dependency_overrides[get_async_db] = lambda: mock_db
+        app.dependency_overrides[get_async_redis] = lambda: _make_mock_redis()
+
+        async def _noop_generator(*args, **kwargs):
+            return
+            yield
+
+        try:
+            with patch(
+                "app.api.v1.widget.event_generator", side_effect=_noop_generator
+            ) as mock_gen, \
+                 patch("app.api.v1.widget._acquire_sse_slot", return_value=True), \
+                 patch("app.api.v1.widget._release_sse_slot", new_callable=AsyncMock):
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    async with client.stream(
+                        "GET", f"/widget/jobs/{job_id}/events"
+                    ) as response:
+                        await response.aread()
+        finally:
+            app.dependency_overrides.clear()
+
+        mock_gen.assert_called_once()
+        assert (
+            mock_gen.call_args.kwargs.get("terminal_events") is CUSTOMER_TERMINAL_EVENTS
+        ), f"widget SSE route wired to the wrong terminal set: {mock_gen.call_args}"
+
 
 # ---------------------------------------------------------------------------
 # Test 8: OPTIONS /widget/{id}/config returns 204 with CORS headers
@@ -465,6 +516,96 @@ class TestWidgetConfigRateLimitF2:
 
         # IP-B with count=1 should succeed — rate limit not exceeded
         assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# BACKLOG 7.2a — GET /config serves the tenant's stored widget_config
+# ---------------------------------------------------------------------------
+
+
+async def _get_config_body(agent):
+    """GET /widget/{agent.id}/config against *agent*, returning the parsed body."""
+    mock_db, _ = _make_mock_db_with_agent(agent)
+    mock_redis = _make_mock_redis(incr_return_value=1)
+
+    app.dependency_overrides[get_async_db] = lambda: mock_db
+    app.dependency_overrides[get_async_redis] = lambda: mock_redis
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/widget/{agent.id}/config")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    return response.json()
+
+
+class TestWidgetConfigServesStoredConfig:
+    async def test_stored_widget_config_is_served(self):
+        """A saved widget_config reaches the widget instead of the hardcoded palette.
+
+        Before 7.2a the route returned a literal dict and never read the column that
+        POST /agents/{id}/widget-config writes, so tenant branding was inert.
+        """
+        stored = {
+            "appearance": "slide-out-panel",
+            "launcher_shape": "square",
+            "colors": {"header_bg": "#123456", "widget_bg": "#ABCDEF"},
+            "typography": {"font_family": "Georgia", "font_custom_url": None},
+        }
+        body = await _get_config_body(_make_ready_agent(widget_config=stored))
+
+        assert body["theming"]["header_bg"] == "#123456"
+        assert body["theming"]["widget_bg"] == "#ABCDEF"
+        assert body["theming"]["font_family"] == "Georgia"
+        assert body["theming"]["appearance"] == "slide-out-panel"
+        assert body["theming"]["launcher_shape"] == "square"
+        # The hardcoded palette must not leak through beside the stored one
+        assert "primary_color" not in body["theming"]
+
+    async def test_theming_is_flat_so_every_value_is_a_css_value(self):
+        """No nested block survives — the widget assigns each entry to a CSS variable."""
+        stored = {
+            "colors": {"header_bg": "#123456"},
+            "typography": {"font_family": "Inter", "font_custom_url": None},
+        }
+        body = await _get_config_body(_make_ready_agent(widget_config=stored))
+
+        assert all(
+            not isinstance(v, (dict, list)) for v in body["theming"].values()
+        ), f"nested value would render as [object Object]: {body['theming']}"
+        # Nulls are dropped rather than serialised as "None"
+        assert "font_custom_url" not in body["theming"]
+
+    async def test_empty_widget_config_falls_back_to_defaults(self):
+        """An unset column (migration 0009 default {}) still returns the old palette."""
+        body = await _get_config_body(_make_ready_agent(widget_config={}))
+
+        from app.api.v1.widget import DEFAULT_THEMING
+        assert body["theming"] == DEFAULT_THEMING
+
+    async def test_null_widget_config_falls_back_to_defaults(self):
+        """A NULL column behaves the same as an empty one."""
+        agent = _make_ready_agent()
+        agent.widget_config = None
+        body = await _get_config_body(agent)
+
+        from app.api.v1.widget import DEFAULT_THEMING
+        assert body["theming"] == DEFAULT_THEMING
+
+
+class TestWidgetConfigAgentNameContract:
+    async def test_config_returns_agent_name_alongside_name(self):
+        """The widget reads cfg.agent_name; the schema only ever declared `name`.
+
+        Both are returned — dropping `name` would break the existing consumers.
+        """
+        body = await _get_config_body(_make_ready_agent())
+
+        assert body["agent_name"] == "Test Agent"
+        assert body["name"] == "Test Agent"
 
 
 # ---------------------------------------------------------------------------

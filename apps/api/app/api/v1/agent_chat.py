@@ -8,6 +8,9 @@ Security:
     - Requires X-API-Key on all routes (get_current_tenant dependency).
     - Agent validated by Agent.id AND Agent.tenant_id — T-02-06-01 pattern.
     - Agent must have status == 'ready' before dispatch.
+    - Rate limit: 60 turns/min per agent_id, shared implementation with the widget
+      route (app.services.rate_limit), own bucket prefix.
+    - Budget: tenant daily ceiling enforced before dispatch (app.services.budget).
     - conversation_id ownership validated against tenant DB (T-04-04-05).
     - message text is NEVER logged (T-04-03-05).
     - conn_str is decrypted at runtime, NEVER passed in task args (CLAUDE.md rule 4).
@@ -23,7 +26,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_tenant
+from app.api.deps import get_async_redis, get_current_tenant
+from app.core.config import settings
 from app.core.database import get_async_db
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
@@ -35,10 +39,18 @@ from app.schemas.agent_chat import (
     ConversationListItem,
     ConversationListResponse,
 )
+from app.services.budget import ESTIMATED_TURN_COST_USD, check_and_increment_budget
+from app.services.rate_limit import check_agent_turn_rate_limit
 from app.worker.tasks.runtime.agent import run_agent_turn
 
 log = structlog.get_logger(__name__)
 router = APIRouter(tags=["agent_chat"])
+
+# Redis key namespace for this route's turn ceiling. Deliberately NOT the widget
+# route's "rate" prefix: an integration driving the API must not be able to starve
+# the tenant's live widget customers out of their 60/min, or be starved by them
+# (BACKLOG 7.4 — same reasoning the feedback route already keys separately).
+_CHAT_RATE_LIMIT_PREFIX = "rate:apichat"
 
 
 # ---------------------------------------------------------------------------
@@ -87,12 +99,24 @@ async def post_agent_chat(
     body: AgentChatRequest,
     db: AsyncSession = Depends(get_async_db),
     tenant: Tenant = Depends(get_current_tenant),
+    redis_client=Depends(get_async_redis),
 ) -> AgentChatResponse:
     """Accept a user message and dispatch an agent turn job.
 
     Validates agent ownership and readiness, optionally validates
     conversation_id ownership, creates a Job row in the control DB,
     dispatches run_agent_turn to the runtime queue, and returns 202 Accepted.
+
+    Rate limit: 60 turns/min per agent_id. Budget: tenant daily ceiling
+    (settings.TENANT_DAILY_BUDGET_USD). Both ceilings match POST /widget/{id}/chat
+    in value — an authenticated caller spends the tenant's Anthropic key exactly as
+    a widget visitor does (BACKLOG 7.4).
+
+    The ORDER differs deliberately. The widget route rate-limits first because a
+    visitor has no tenant identity to check. Here the caller does, and agent_id is
+    a public identifier, so ownership is established before anything is charged to
+    the agent's bucket: otherwise any valid API key could drain a foreign tenant's
+    window.
 
     Security: body.message is NEVER logged (T-04-03-05).
 
@@ -102,6 +126,8 @@ async def post_agent_chat(
     Raises:
         404 if agent not found or not owned by the authenticated tenant.
         409 if agent is not in status == 'ready'.
+        429 if the agent's 60/min turn ceiling is exceeded, or the tenant's daily
+            budget is exhausted.
         403 if conversation_id provided but does not belong to this agent.
     """
     # ------------------------------------------------------------------
@@ -122,6 +148,31 @@ async def post_agent_chat(
         raise HTTPException(
             status_code=409,
             detail=f"Agent is not ready (status={agent.status})",
+        )
+
+    # ------------------------------------------------------------------
+    # 1b. Rate limit: 60 turns/min per agent_id — AFTER the ownership check.
+    #
+    #     The bucket is keyed by agent_id, and agent_id is public: it is in the
+    #     embed snippet every visitor downloads and in the unauthenticated
+    #     GET /widget/{agent_id}/config. Counting a request before establishing
+    #     that the caller owns the agent therefore lets ANY valid API key spend
+    #     a victim tenant's 60/min — 61 requests, 61 404s, and the victim's own
+    #     integration is 429'd for the rest of the window. That is the exact
+    #     starvation the separate bucket exists to prevent, aimed cross-tenant.
+    #
+    #     Guarding first would not have saved a database round trip in any case:
+    #     Depends(get_current_tenant) has already run a SELECT against the
+    #     control DB plus an argon2 verify before this function body starts
+    #     (app/api/deps.py). "Before any DB access" was never true here.
+    # ------------------------------------------------------------------
+    if not await check_agent_turn_rate_limit(
+        _CHAT_RATE_LIMIT_PREFIX, str(agent_id), redis_client
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded",
+            headers={"Retry-After": "60"},
         )
 
     # ------------------------------------------------------------------
@@ -151,6 +202,25 @@ async def post_agent_chat(
     db.add(job)
     await db.commit()
     await db.refresh(job)
+
+    # ------------------------------------------------------------------
+    # 3b. Budget guard — tenant daily ceiling, checked BEFORE dispatching the
+    #     Celery task. Placed after the job row for step-for-step parity with
+    #     POST /widget/{id}/chat: one shape for both routes is what stops the two
+    #     ceilings drifting apart again.
+    # ------------------------------------------------------------------
+    budget_ok = await check_and_increment_budget(
+        str(tenant.id),
+        ESTIMATED_TURN_COST_USD,
+        redis_client,
+        settings.TENANT_DAILY_BUDGET_USD,
+    )
+    if not budget_ok:
+        raise HTTPException(
+            status_code=429,
+            detail="Daily usage limit reached. Please try again tomorrow.",
+            headers={"Retry-After": "3600"},
+        )
 
     # ------------------------------------------------------------------
     # 4. Dispatch run_agent_turn to runtime queue.

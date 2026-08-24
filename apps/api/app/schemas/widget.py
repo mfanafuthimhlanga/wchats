@@ -18,10 +18,17 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class WidgetConfigResponse(BaseModel):
-    """Response for GET /widget/{agent_id}/config — consumed by the embedded widget."""
+    """Response for GET /widget/{agent_id}/config — consumed by the embedded widget.
+
+    ``name`` and ``agent_name`` carry the same value. The widget reads ``cfg.agent_name``
+    (apps/widget/src/Widget.jsx) while this schema only ever declared ``name``, so the
+    header fell back to the empty default on every load (BACKLOG 7.2a). ``name`` stays
+    because the admin preview and the OpenAPI contract already depend on it.
+    """
 
     agent_id: UUID
     name: str
+    agent_name: str
     theming: dict
     jwt: str
 

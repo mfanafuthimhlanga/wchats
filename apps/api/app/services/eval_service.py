@@ -63,6 +63,7 @@ Design notes:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import uuid
@@ -71,9 +72,11 @@ from types import MappingProxyType
 
 import anthropic
 import instructor
+import pandas as pd
 import psycopg2
 import structlog
-from ragas import EvaluationDataset, evaluate
+from ragas import EvaluationDataset
+from ragas.embeddings.base import BaseRagasEmbedding
 from ragas.llms import InstructorLLM
 
 # ---------------------------------------------------------------------------
@@ -90,7 +93,7 @@ from sqlalchemy import text as sa_text
 
 from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db
-from app.services.embedding_service import _get_vo
+from app.services.embedding_service import EMBEDDING_MODEL, _get_vo
 
 log = structlog.get_logger(__name__)
 
@@ -103,6 +106,17 @@ HAIKU_MODEL = "claude-haiku-4-5"
 # Note: Ragas 0.4.x collections metrics require an InstructorLLM at construction time.
 # Metrics are therefore instantiated inside run_ragas_eval(), not at module level.
 # The four metrics used are: Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall (D-04)
+
+# The kwargs each collections metric's ascore() takes. They differ per metric —
+# AnswerRelevancy sees no contexts at all, ContextPrecision/ContextRecall score
+# against `reference` rather than `response` — and passing the wrong set raises
+# TypeError, so the mapping is data rather than four hand-written call sites.
+_METRIC_ASCORE_ARGS: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "faithfulness": ("user_input", "response", "retrieved_contexts"),
+    "answer_relevancy": ("user_input", "response"),
+    "context_precision": ("user_input", "reference", "retrieved_contexts"),
+    "context_recall": ("user_input", "retrieved_contexts", "reference"),
+})
 
 
 # ---------------------------------------------------------------------------
@@ -1224,6 +1238,136 @@ def summarise_run_validity(
 # ---------------------------------------------------------------------------
 # Task 1: Ragas evaluation harness
 # ---------------------------------------------------------------------------
+#
+# Why this harness calls metric.ascore() and never ragas.evaluate() (7.18):
+#   The four collections metrics descend from SimpleBaseMetric, NOT from
+#   `ragas.metrics.base.Metric`. `evaluate()` rejects anything failing
+#   `isinstance(m, Metric)` at ragas/evaluation.py:133 with "All metrics must
+#   be initialised metric objects" — a message about the class hierarchy that
+#   reads like a message about instantiation. Every metric here was already an
+#   instance; the call itself was the wrong door. `ascore() -> MetricResult` is
+#   the door CLAUDE.md rule 4 names.
+
+
+class _VoyageRagasEmbedding(BaseRagasEmbedding):
+    """Ragas 0.4.x modern embedding over the same Voyage client the corpus uses.
+
+    AnswerRelevancy is the only one of the four metrics that needs embeddings,
+    and it takes them as a REQUIRED positional argument — `AnswerRelevancy(llm=llm)`
+    raises TypeError before any scoring happens. Ragas ships openai / google /
+    huggingface / litellm providers and no Voyage one, so this adapter exists to
+    keep relevancy scored in the same vector space the corpus was embedded in
+    (voyage-3, pinned by embedding_service). Scoring it through a different
+    embedding model would measure the model swap, not the answer.
+    """
+
+    def embed_text(self, text: str, **kwargs) -> list[float]:  # noqa: ARG002
+        result = _get_vo().embed([text], model=EMBEDDING_MODEL, input_type="query")
+        return result.embeddings[0]
+
+    async def aembed_text(self, text: str, **kwargs) -> list[float]:  # noqa: ARG002
+        # The Voyage SDK client is sync; a thread keeps it off the event loop
+        # that Ragas' async metric pipeline is running on.
+        return await asyncio.to_thread(self.embed_text, text)
+
+
+def _build_instructor_llm() -> InstructorLLM:
+    """Build the InstructorLLM the collections metrics score through.
+
+    The client is `anthropic.AsyncAnthropic`, not `anthropic.Anthropic`.
+    Collections metrics await `llm.agenerate(...)` exclusively, and
+    InstructorLLM.agenerate raises
+    TypeError("Cannot use agenerate() with a synchronous client") whenever its
+    client is sync — which is what `instructor.from_anthropic(Anthropic())`
+    produces (InstructorLLM.is_async is False for it).
+
+    `thinking={"type": "disabled"}` is 7.20. Instructor's Anthropic TOOLS
+    handler forces `tool_choice={"type": "tool", ...}` on every structured call
+    (instructor/v2/providers/anthropic/handlers.py:392), and the DeepSeek
+    Anthropic-format endpoint 400s a forced tool_choice unless thinking is
+    explicitly off — the same failure the six judge call sites already fix.
+    The seam is InstructorLLM's `**kwargs`: they are merged into `model_args`
+    (ragas/llms/base.py:772), passed through unchanged for the anthropic
+    provider (:803), and splatted into `client.chat.completions.create()` by
+    agenerate (:1109), which instructor forwards to `messages.create`. The flag
+    is a no-op on real Anthropic, so it is provider-neutral.
+    """
+    client = instructor.from_anthropic(anthropic.AsyncAnthropic())
+    return InstructorLLM(
+        client=client,
+        model=HAIKU_MODEL,
+        provider="anthropic",
+        thinking={"type": "disabled"},
+        # BACKLOG 8.2a. Same **kwargs seam as `thinking`: merged into
+        # `model_args` (ragas/llms/base.py:772), passed through unchanged for the
+        # anthropic provider (:803), splatted into the client call by agenerate
+        # (:1109). Ragas metrics ARE judges, so they get the same temperature as
+        # every other verdict in the system.
+        #
+        # CORRECTED 2026-08-18 by adversarial review: this site was NOT sampling
+        # at the provider default before 8.2a. ragas 0.4.3's InstructorModelArgs
+        # defaults to `temperature=0.01, top_p=0.1` whenever `model_args is None`,
+        # which is how this is constructed, and 0.01 was measured on the wire. So
+        # the change here is 0.01 -> 0, not "unset -> 0", and the 8.2a commit's
+        # "every LLM call sampled at whatever the provider defaults to" was false
+        # for 2 of the 9 sites.
+        #
+        # STILL OPEN and deliberately not changed here: ragas also sends
+        # `top_p: 0.1` alongside, and Anthropic's guidance is to set temperature
+        # OR top_p, not both. Changing it changes retrieval-eval behaviour and
+        # wants its own measurement. BACKLOG 8.10.
+        temperature=0,
+    )
+
+
+def _build_ragas_metrics(llm, embeddings) -> list:
+    """The four M6 metrics (D-04 LOCKED) as constructed INSTANCES.
+
+    Order matches METRIC_KEYS. Each metric's `.name` is the column it writes,
+    which is what binds this list to _METRIC_ASCORE_ARGS and to METRIC_KEYS.
+    """
+    return [
+        Faithfulness(llm=llm),
+        AnswerRelevancy(llm=llm, embeddings=embeddings),
+        ContextPrecision(llm=llm),
+        ContextRecall(llm=llm),
+    ]
+
+
+async def _score_samples(metrics: list, samples: list) -> list[dict]:
+    """Score every validated sample against every metric, one row per sample.
+
+    A metric that raises for one sample yields None for that cell and nothing
+    else: a failed measurement is `unknown`, never a zero, and never a reason to
+    lose the three metrics that did return. The row carries user_input and
+    reference because attribute_returned_rows matches on that pair.
+    """
+    rows: list[dict] = []
+    for sample in samples:
+        row: dict = {
+            "user_input": sample.user_input,
+            "reference": sample.reference,
+        }
+        for metric in metrics:
+            kwargs = {
+                name: getattr(sample, name)
+                for name in _METRIC_ASCORE_ARGS[metric.name]
+            }
+            try:
+                value = (await metric.ascore(**kwargs)).value
+            except Exception as exc:  # noqa: BLE001 — one metric, one sample
+                log.warning(
+                    "run_ragas_eval.metric_failed",
+                    metric=metric.name,
+                    error=str(exc),
+                )
+                value = None
+            row[metric.name] = (
+                float(value) if value is not None and value == value else None  # NaN check
+            )
+        rows.append(row)
+    return rows
+
 
 def run_ragas_eval(scenarios: list[dict]) -> dict:
     """Run Ragas 0.4.x evaluation over a list of eval scenarios.
@@ -1299,22 +1443,15 @@ def run_ragas_eval(scenarios: list[dict]) -> dict:
 
     log.info("run_ragas_eval.start", scenario_count=len(samples))
 
+    # EvaluationDataset is the schema check, and it is load-bearing: the loop
+    # below reads the SAMPLES IT VALIDATED, not the dicts handed to it, so a
+    # sample Ragas would reject never reaches a metric.
     dataset = EvaluationDataset.from_list(samples)
 
-    # Ragas 0.4.x requires InstructorLLM (InstructorBaseRagasLLM) for collections metrics.
-    # Build the LLM wrapper at call time (not module level) — metrics are instantiated here.
-    _anthropic_client = instructor.from_anthropic(anthropic.Anthropic())
-    llm = InstructorLLM(client=_anthropic_client, model=HAIKU_MODEL, provider="anthropic")
-    metrics = [
-        Faithfulness(llm=llm),
-        AnswerRelevancy(llm=llm),  # type: ignore[call-arg]  # ragas 0.4.x accepts these at runtime; installed stubs are narrower
-        ContextPrecision(llm=llm),
-        ContextRecall(llm=llm),
-    ]
+    llm = _build_instructor_llm()
+    metrics = _build_ragas_metrics(llm, _VoyageRagasEmbedding())
 
-    results = evaluate(dataset=dataset, metrics=metrics, llm=llm)  # type: ignore[arg-type]  # ragas 0.4.x accepts these at runtime; installed stubs are narrower
-
-    df = results.to_pandas()  # type: ignore[union-attr]  # ragas 0.4.x accepts these at runtime; installed stubs are narrower
+    df = pd.DataFrame(asyncio.run(_score_samples(metrics, list(dataset.samples))))
 
     # Build per-scenario score dicts. The metric names come from the one
     # METRIC_KEYS tuple rather than a local literal list: audit D3 is a second

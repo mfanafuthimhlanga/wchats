@@ -7,9 +7,18 @@ static host and the one-line snippet works.
 embed/
 ├── widget.js        ← loader the customer pastes (reads data-agent / data-api, injects launcher + iframe)
 ├── index.html       ← iframe host page (loads the bundle, reads ?agent_id=&api=)
-├── widget.iife.js   ← built Preact widget (17.8 KB)  [from `pnpm --filter wchats-widget build`]
-└── widget.css       ← widget styles
+├── widget.iife.js   ← built Preact widget, written here by the build (24.7 KB raw, 9.4 KB gzipped
+│                      against a 20,480-byte gzipped budget)
+└── widget.css       ← built widget styles, written here by the build (6.6 KB raw)
 ```
+
+`widget.iife.js` and `widget.css` are build output: `npm run build` copies them from `dist/`
+and `npm run check:embed-sync` fails if the two folders ever differ. Do not edit them here.
+
+`apps/admin/public/wchats/` is the second copy of these four files, and it is the one the
+production deploy actually uploads (`deploy/README.md` step 4, `deploy/terraform` widget
+bucket). The same build step and the same gate keep it in step with this folder, so a change
+here cannot ship without reaching there. Edit the loaders here; never there.
 
 ## Paste-in snippet
 
@@ -28,8 +37,8 @@ embed/
 
 ## Deploy
 
-1. Rebuild the bundle if the widget source changed: `pnpm --filter wchats-widget build`,
-   then `cp ../dist/widget.iife.js ../dist/widget.css .`
+1. Rebuild if the widget source changed: `npm run build` in `apps/widget`. It refreshes
+   `widget.iife.js` and `widget.css` here, so no copy step is needed.
 2. Publish this folder under a stable path on a static host (e.g. Vercel `public/wchats/`,
    or S3 + CloudFront). All four files must sit in the same folder.
 3. Ensure the API host allows the embedding origin — widget routes already send

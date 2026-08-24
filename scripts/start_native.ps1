@@ -21,8 +21,14 @@ $Root = Split-Path $PSScriptRoot -Parent
 $ApiDir = Join-Path $Root "apps\api"
 $Env:PYTHONPATH = $ApiDir
 
-# Load .env into this process so child processes inherit it
-foreach ($line in Get-Content (Join-Path $Root ".env")) {
+# Load env into this process so child processes inherit it. apps/api/.env WINS when it
+# exists, matching app/core/config.py::_find_env_file - exporting the root file while
+# pydantic loads the api one is a silent split-brain (BACKLOG 1.28's trap, provider edition:
+# direct-API clients read os.environ and would bill a different provider than Settings).
+$envFile = Join-Path $ApiDir ".env"
+if (-not (Test-Path $envFile)) { $envFile = Join-Path $Root ".env" }
+Write-Host "Exporting env from: $envFile"
+foreach ($line in Get-Content $envFile) {
     if ($line -match "^\s*#" -or $line -notmatch "=") { continue }
     $key, $val = $line -split "=", 2
     [System.Environment]::SetEnvironmentVariable($key.Trim(), $val.Trim(), "Process")

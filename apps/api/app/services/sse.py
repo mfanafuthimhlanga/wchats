@@ -25,6 +25,9 @@ Why DB-poll + pub/sub wakeup (not pure pub/sub):
 Terminal events:
     job.complete — chain completed successfully
     job.failed   — chain failed; agent.status = "failed"
+
+    A stream's terminal set is a property of the STREAM, not of the event log, so
+    it is a parameter. See CUSTOMER_TERMINAL_EVENTS below.
 """
 
 import asyncio
@@ -40,6 +43,39 @@ from sse_starlette.sse import ServerSentEvent
 from app.models.job_event import JobEvent
 
 TERMINAL_EVENTS = frozenset({"job.complete", "job.failed"})
+
+# The customer-facing stream (GET /widget/jobs/{job_id}/events) is finished the moment
+# the answer — or the failure — has been delivered. Before this existed the server kept
+# yielding keepalives to the 120s hard cap after `agent.response`, and only the widget
+# calling es.close() ended it; a third-party client held a socket for two minutes per
+# turn and sat on one of the 50 per-agent SSE slots (BACKLOG 7.3).
+#
+# WHY A PER-STREAM SET rather than either alternative:
+#
+#   * Adding "agent.response" to TERMINAL_EVENTS itself would also truncate
+#     GET /jobs/{job_id}/events, the AUTHENTICATED admin stream. run_agent_turn
+#     dispatches the judge chain AFTER emitting agent.response, so gatekeeper.complete,
+#     auditor.complete and strategist.complete all land on the SAME job_id afterwards.
+#     The admin stream is the only place those verdicts are ever watched live; a global
+#     terminal set would make them unreachable there.
+#
+#   * A distinct terminal marker emitted after agent.response occupies the same position
+#     in created_at order, so it truncates a late-join replay at exactly the same point
+#     as this does — it buys nothing — while costing a job_events row per turn, a new
+#     event type every client must learn to ignore, and a worker code path that runs
+#     after the answer is already served and can therefore fail after success.
+#
+# What this does NOT change:
+#   * The judge chain's writes. emit() is a DB commit plus a fire-and-forget
+#     redis.publish(); a channel with no subscriber is a no-op, so closing the customer
+#     stream cannot affect gatekeeper/auditor/strategist persistence.
+#   * Late-join replay. Phase 1 still replays the full history in created_at order. Only
+#     the stop condition differs, and stopping the CUSTOMER stream at the customer's
+#     answer is the intent — it is what apps/widget/src/sse.js already does client-side.
+#
+# agent.failed rides along because it is the same defect on the failure path and the
+# widget already treats it as terminal too.
+CUSTOMER_TERMINAL_EVENTS = TERMINAL_EVENTS | {"agent.response", "agent.failed"}
 
 # Maximum seconds to wait for a pub/sub wake-up before doing a DB poll anyway.
 # Keeps the stream alive during low-traffic jobs and catches any missed pub/sub.
@@ -60,14 +96,18 @@ async def event_generator(
     job_id: UUID,
     db: AsyncSession,
     redis_client,
+    terminal_events: frozenset[str] = TERMINAL_EVENTS,
 ) -> AsyncGenerator[ServerSentEvent, None]:
     """Async generator for job SSE events.
 
     Args:
-        request:      FastAPI Request — used to detect client disconnection.
-        job_id:       UUID of the job to stream events for.
-        db:           Async SQLAlchemy session for DB queries.
-        redis_client: Async Redis client for pub/sub wake-up signal.
+        request:         FastAPI Request — used to detect client disconnection.
+        job_id:          UUID of the job to stream events for.
+        db:              Async SQLAlchemy session for DB queries.
+        redis_client:    Async Redis client for pub/sub wake-up signal.
+        terminal_events: Event types that close THIS stream. Defaults to the job
+                         lifecycle set; the customer widget stream passes
+                         CUSTOMER_TERMINAL_EVENTS.
 
     Yields:
         ServerSentEvent with event= (event_type) and data= (JSON payload).
@@ -96,7 +136,7 @@ async def event_generator(
                 event=evt.event_type,
                 id=str(evt.id),
             )
-            if evt.event_type in TERMINAL_EVENTS:
+            if evt.event_type in terminal_events:
                 return
 
         # ------------------------------------------------------------------
@@ -140,7 +180,7 @@ async def event_generator(
                     event=evt.event_type,
                     id=str(evt.id),
                 )
-                if evt.event_type in TERMINAL_EVENTS:
+                if evt.event_type in terminal_events:
                     terminal_seen = True
 
             if terminal_seen:

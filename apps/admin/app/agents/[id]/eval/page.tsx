@@ -611,7 +611,7 @@ export default function EvalPage({
         <>
           <EmptyState
             heading="No eval runs yet"
-            body="Your agent is evaluated automatically each night. Run a check now to see how it performs."
+            body="You run an eval when you want one. Start a check to see how your agent performs against its scenarios."
           />
           <button
             type="button"

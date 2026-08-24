@@ -140,6 +140,15 @@ def call_gatekeeper(question: str, response_text: str) -> GatekeeperVerdict:
         ValueError: If no tool_use block is returned by the judge.
     """
     response = ANTHROPIC_CLIENT.messages.create(
+        # BACKLOG 8.2a. Judgement is the one task that wants no creativity, and
+        # every judge in this system sampled at the provider default until now.
+        # Some verdict variance survives temperature 0 anyway, from batching and
+        # hardware nondeterminism, which is why a high-stakes verdict eventually
+        # wants more than one sample. (An earlier version of this comment put
+        # that at "3-8%". That number is QUOTED from a talk and has never been
+        # measured in this system, and CLAUDE.md's own rule is to test a
+        # constraint rather than repeat it. BACKLOG 8.11 measures it.)
+        temperature=0,
         model=HAIKU_MODEL,
         max_tokens=512,
         system=(
@@ -183,6 +192,11 @@ def call_gatekeeper(question: str, response_text: str) -> GatekeeperVerdict:
             },
         }],
         tool_choice={"type": "tool", "name": "submit_verdict"},
+        # The default provider is now DeepSeek's Anthropic-format endpoint, which
+        # rejects a forced tool_choice with HTTP 400 "Thinking mode does not support
+        # this tool_choice" unless thinking is explicitly off. A judge is one forced
+        # verdict call and never needs to think; the flag is a no-op on Anthropic.
+        thinking={"type": "disabled"},
     )
     for block in response.content:
         if block.type == "tool_use" and block.name == "submit_verdict":
@@ -212,6 +226,15 @@ def call_auditor(
         ValueError: If no tool_use block is returned by the judge.
     """
     response = ANTHROPIC_CLIENT.messages.create(
+        # BACKLOG 8.2a. Judgement is the one task that wants no creativity, and
+        # every judge in this system sampled at the provider default until now.
+        # Some verdict variance survives temperature 0 anyway, from batching and
+        # hardware nondeterminism, which is why a high-stakes verdict eventually
+        # wants more than one sample. (An earlier version of this comment put
+        # that at "3-8%". That number is QUOTED from a talk and has never been
+        # measured in this system, and CLAUDE.md's own rule is to test a
+        # constraint rather than repeat it. BACKLOG 8.11 measures it.)
+        temperature=0,
         model=HAIKU_MODEL,
         # BACKLOG 5.14. 512 was enough only while the Auditor received an EMPTY
         # retrieved_context (5.11) — an empty citation_spans array costs almost
@@ -300,6 +323,8 @@ def call_auditor(
             },
         }],
         tool_choice={"type": "tool", "name": "submit_verdict"},
+        # Forced tool_choice 400s on the DeepSeek endpoint unless thinking is off.
+        thinking={"type": "disabled"},
     )
     # BACKLOG 5.14: check for truncation BEFORE validating. A tool call cut off
     # at the ceiling arrives as a partial dict, and model_validate then reports
@@ -352,6 +377,15 @@ def call_strategist(
     donot_str = "\n".join(f"- {item}" for item in soul_donot_list) if soul_donot_list else "(none specified)"
 
     response = ANTHROPIC_CLIENT.messages.create(
+        # BACKLOG 8.2a. Judgement is the one task that wants no creativity, and
+        # every judge in this system sampled at the provider default until now.
+        # Some verdict variance survives temperature 0 anyway, from batching and
+        # hardware nondeterminism, which is why a high-stakes verdict eventually
+        # wants more than one sample. (An earlier version of this comment put
+        # that at "3-8%". That number is QUOTED from a talk and has never been
+        # measured in this system, and CLAUDE.md's own rule is to test a
+        # constraint rather than repeat it. BACKLOG 8.11 measures it.)
+        temperature=0,
         model=HAIKU_MODEL,
         max_tokens=512,
         system=(
@@ -410,6 +444,8 @@ def call_strategist(
             },
         }],
         tool_choice={"type": "tool", "name": "submit_verdict"},
+        # Forced tool_choice 400s on the DeepSeek endpoint unless thinking is off.
+        thinking={"type": "disabled"},
     )
     for block in response.content:
         if block.type == "tool_use" and block.name == "submit_verdict":

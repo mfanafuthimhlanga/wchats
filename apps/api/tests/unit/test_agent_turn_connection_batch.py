@@ -117,6 +117,7 @@ _CANNED_SDK_RESULT_NO_SESSION = {
 
 def test_first_turn_opens_exactly_one_tenant_connection():
     """PROD-05: run_agent_turn (first turn) must call psycopg2.connect exactly once."""
+    from app.core.config import settings
     from app.worker.tasks.runtime.agent import run_agent_turn
 
     job_id = str(uuid.uuid4())
@@ -155,7 +156,8 @@ def test_first_turn_opens_exactly_one_tenant_connection():
     )
     # Must use the pooled connection string (not a direct string)
     assert mock_connect.call_args == call(
-        "postgresql://pooled-host/tenant", connect_timeout=5
+        "postgresql://pooled-host/tenant",
+        connect_timeout=settings.TENANT_DB_CONNECT_TIMEOUT_S,
     ), f"Unexpected connect args: {mock_connect.call_args}"
 
     # Connection must be closed in the finally block
