@@ -6,7 +6,6 @@ goes live.
 
 **`.planning/PROJECT.md` is the source of truth** for product context, requirements, and the decision
 log. `.planning/` as a whole is a **frozen archive** as of 2026-08-05 — see "The archive" below.
-Read `.dev/HANDOFF.md` first in every session.
 
 ## Branching Model
 
@@ -64,11 +63,12 @@ is the feedback loop working.
 absence pin, or fail-closed path: mutate the guard, observe red, restore from `HEAD`
 unconditionally, observe green. Record the observed output, not the intention.
 
-## Session Start
+## Session handoffs
 
-**If `.dev/HANDOFF.md` exists, read it FIRST.** It is the terse current-state handoff: what is in
-flight, what is blocked and on what, what the next move is. Update it when you pause; archive it
-into `.dev/traces/` when its queue is consumed.
+Handoffs are conversation-scoped, not repo files (owner, 2026-08-24). End a substantive session
+with `/handoff`; it writes to the OS temp directory as `wchats-handoff-*.md`, and the SessionStart
+hook injects the newest one automatically, alongside the open GitHub issue frontier. Repo state
+lives in issues, `CONTEXT.md`, ADRs and traces, never in a handoff.
 
 ## Execution Workflow & Persistent Artifacts
 
@@ -82,7 +82,6 @@ trivial tasks still run solo. Regardless of engine, artifacts persist in `.dev/`
                                        (`5.1 · ops15-server-gap`); the NUMBER is an address, not a
                                        priority, and source comments cite rows by number. Read a row
                                        when an issue or a comment points at it; never add to it.
-  HANDOFF.md                         ← current-state snapshot; read at session start
   PRODUCTION-READINESS.md            ← every gap between here and production, plus the ordered
                                        end-to-end validation plan. Claims are marked
                                        OBSERVED / READ / RECORD — never promote a RECORD line to a
