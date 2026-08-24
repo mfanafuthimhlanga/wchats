@@ -194,7 +194,7 @@ def test_the_retrieved_context_reaches_the_judge_framed():
     Asserts the SAME string the agent gets, imported from the one place it is
     defined, so a second copy cannot drift away from the control it enforces.
     """
-    from app.utils.context_frame import (
+    from app.domain.context_frame import (
         RETRIEVED_CONTEXT_FOOTER,
         RETRIEVED_CONTEXT_HEADER,
     )

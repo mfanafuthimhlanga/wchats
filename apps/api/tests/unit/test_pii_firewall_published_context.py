@@ -34,7 +34,7 @@ import sys
 import pytest
 
 from app.services.agent_tools import _frame_retrieved_context
-from app.utils.pii_firewall import PII_DEFLECTION, scan_response
+from app.domain.pii_firewall import PII_DEFLECTION, scan_response
 from app.worker.tasks.runtime import agent as agent_module
 
 #: The live tenant's published support address, and the section it sits in.

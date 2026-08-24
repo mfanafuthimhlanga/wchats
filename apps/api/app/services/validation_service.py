@@ -17,7 +17,7 @@ import structlog
 from langfuse import Langfuse
 from pydantic import BaseModel, field_validator
 
-from app.utils.context_frame import frame_retrieved_context
+from app.domain.context_frame import frame_retrieved_context
 
 log = structlog.get_logger(__name__)
 

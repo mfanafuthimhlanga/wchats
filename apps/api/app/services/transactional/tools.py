@@ -70,6 +70,15 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from app.core.database import get_sync_db
+from app.domain.transactional_schemas import (
+    BookSlotInput,
+    CancelOrderInput,
+    ConfirmActionInput,
+    IssueRefundInput,
+    PlaceOrderInput,
+    UpdateCustomerRecordInput,
+    UpdateSubscriptionInput,
+)
 from app.models.pending_confirmation import PendingConfirmation
 from app.services.actor_seam import call_actor_gate
 from app.services.transactional.audit import write_audit_row
@@ -90,15 +99,6 @@ from app.services.transactional.idempotency import (
 )
 from app.services.transactional.provider_adapter import get_adapter_for_skill
 from app.services.transactional.registry import TOOL_REGISTRY
-from app.services.transactional.schemas import (
-    BookSlotInput,
-    CancelOrderInput,
-    ConfirmActionInput,
-    IssueRefundInput,
-    PlaceOrderInput,
-    UpdateCustomerRecordInput,
-    UpdateSubscriptionInput,
-)
 
 log = structlog.get_logger(__name__)
 

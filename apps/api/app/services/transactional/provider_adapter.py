@@ -42,14 +42,7 @@ from uuid import uuid4
 import structlog
 
 from app.core.config import settings
-from app.services.transactional.credential_service import (
-    CredentialDecryptionError,
-    CredentialHandle,
-    ProviderNotConfiguredError,
-    _derive_tenant_fernet,
-    _fetch_credential_config,
-)
-from app.services.transactional.schemas import (
+from app.domain.transactional_schemas import (
     BookSlotInput,
     BookSlotOutput,
     CancelOrderInput,
@@ -62,6 +55,13 @@ from app.services.transactional.schemas import (
     UpdateCustomerRecordOutput,
     UpdateSubscriptionInput,
     UpdateSubscriptionOutput,
+)
+from app.services.transactional.credential_service import (
+    CredentialDecryptionError,
+    CredentialHandle,
+    ProviderNotConfiguredError,
+    _derive_tenant_fernet,
+    _fetch_credential_config,
 )
 
 

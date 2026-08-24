@@ -595,7 +595,7 @@ def deflected_response_ids(scenario_ids: list[str]) -> list[str]:
     would go stale the first time the wording changes, and this function would
     then report a clean corpus by failing to recognise the deflection.
     """
-    from app.utils.pii_firewall import PII_DEFLECTION  # noqa: PLC0415
+    from app.domain.pii_firewall import PII_DEFLECTION  # noqa: PLC0415
     from tests.evals import corpus  # noqa: PLC0415
 
     # Deduped: `scenario_ids` is one entry per ROW, and a scenario scored on two

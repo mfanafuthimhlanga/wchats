@@ -145,7 +145,7 @@ def _reservation(state: str, result: dict | None = None):
 
 
 def _refund_adapter() -> MagicMock:
-    from app.services.transactional.schemas import IssueRefundOutput
+    from app.domain.transactional_schemas import IssueRefundOutput
 
     adapter = MagicMock()
     adapter.issue_refund = AsyncMock(
@@ -390,7 +390,7 @@ def test_the_refund_fixture_actually_reaches_the_dispatcher():
     Pinning the fixture against the schema directly means the day a field is
     renamed, THIS fails by name rather than four others failing silently.
     """
-    from app.services.transactional.schemas import IssueRefundInput
+    from app.domain.transactional_schemas import IssueRefundInput
 
     validated = IssueRefundInput(**_valid_refund_args())
     assert validated.refund_amount_cents == 4500
@@ -1091,7 +1091,7 @@ def test_every_skill_fixture_actually_validates(skill):
     nothing. Writing five more fixtures is five more chances to do it — and
     `place_order` did, omitting `amount_cents`, caught here.
     """
-    from app.services.transactional.schemas import (
+    from app.domain.transactional_schemas import (
         BookSlotInput,
         CancelOrderInput,
         IssueRefundInput,

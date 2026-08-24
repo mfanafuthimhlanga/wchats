@@ -66,6 +66,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_tenant
 from app.core.database import get_async_db
+from app.domain.transactional_schemas import SKILL_INPUT_MODELS
 from app.models.agent import Agent
 from app.models.tenant import Tenant
 from app.schemas.pending_confirmation import (
@@ -74,7 +75,6 @@ from app.schemas.pending_confirmation import (
     PendingConfirmationResponse,
 )
 from app.services.transactional.audit import write_audit_row
-from app.services.transactional.schemas import SKILL_INPUT_MODELS
 
 router = APIRouter(tags=["pending-confirmations"])
 log = structlog.get_logger(__name__)

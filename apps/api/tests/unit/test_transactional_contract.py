@@ -42,7 +42,7 @@ from app.services.transactional.registry import (
 # ---------------------------------------------------------------------------
 # Task 1: Schema tests
 # ---------------------------------------------------------------------------
-from app.services.transactional.schemas import (
+from app.domain.transactional_schemas import (
     BookSlotInput,
     BookSlotOutput,
     CancelOrderInput,

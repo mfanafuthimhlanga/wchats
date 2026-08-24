@@ -41,7 +41,6 @@ def test_lizard_flags_pin_the_standard():
 # happen without editing this file, which is the point.
 
 PINNED_RUFF = {
-    ("app/services/agent_tools.py", "I001"): 1,
     ("app/worker/tasks/pipeline/chunk.py", "I001"): 1,
 }
 

@@ -38,7 +38,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
-from app.utils.pii_firewall import PII_DEFLECTION  # noqa: E402
+from app.domain.pii_firewall import PII_DEFLECTION  # noqa: E402
 from tests.evals import corpus  # noqa: E402
 
 RESPONSES_DIR = pathlib.Path(__file__).parent / "responses"

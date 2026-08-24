@@ -56,7 +56,7 @@ from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.services.chunking_service import chunk_document
 from app.services import storage_service
-from app.services.docling_service import parse_document_from_bytes
+from app.domain.docling_service import parse_document_from_bytes
 from app.services.events import emit
 from app.worker.celery_app import celery_app
 

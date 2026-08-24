@@ -6,7 +6,7 @@ extra. Nothing in this repo has ever executed them. That was survivable while th
 skip was read as "unexecuted", but it stopped being survivable once the tests were
 also *wrong*: all seven chunking tests patched
 `app.services.chunking_service.HybridChunker` and the third docling test patched
-`app.services.docling_service.DocumentStream`, neither of which exists. Both
+`app.domain.docling_service.DocumentStream`, neither of which exists. Both
 services import those names inside the function body, since docling ships only in
 the pipeline worker image. So in every environment where docling IS installed the
 eight tests raised `AttributeError` at patch time, and in every environment where
@@ -140,7 +140,7 @@ def test_the_patch_target_guard_rejects_the_regression_it_exists_to_catch():
     app_imports = _imported_names_in_app()
 
     chunker = _unresolved_reason("app.services.chunking_service.HybridChunker", app_imports)
-    stream = _unresolved_reason("app.services.docling_service.DocumentStream", app_imports)
+    stream = _unresolved_reason("app.domain.docling_service.DocumentStream", app_imports)
 
     assert chunker is not None and "has no attribute 'HybridChunker'" in chunker
     assert stream is not None and "has no attribute 'DocumentStream'" in stream

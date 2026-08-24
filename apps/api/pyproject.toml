@@ -113,6 +113,8 @@ root_package = "app"
 # Direction measured from the 444 real dependencies, not chosen: every observed edge
 # already runs down this list and not one runs up. app.models, app.core and app.utils
 # import no sibling at all, so they sit together on the bottom rung.
+# app.domain is the rung below all of them: frozen types and pure logic, importing the
+# standard library, third-party packages and its domain siblings and nothing above.
 # Observed 2026-08-15: KEPT. Mutation `app.services.storage_service -> app.api.deps`
 # turned it BROKEN, naming that exact import.
 name = "app layers run one way"
@@ -124,6 +126,7 @@ layers = [
     "app.schemas",
     "app.services",
     "app.models | app.core | app.utils",
+    "app.domain",
 ]
 
 [[tool.importlinter.contracts]]

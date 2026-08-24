@@ -51,7 +51,7 @@ import pytest
 
 from app.services.transactional import confirmation_resolution as cr
 from app.services.transactional.idempotency import Reservation
-from app.services.transactional.schemas import IssueRefundOutput
+from app.domain.transactional_schemas import IssueRefundOutput
 
 # ---------------------------------------------------------------------------
 # Fixtures / constants

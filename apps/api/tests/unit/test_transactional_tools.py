@@ -133,7 +133,7 @@ def _mock_gate_block(rationale: str = "blocked by policy") -> AsyncMock:
 
 def _mock_adapter(message: str = "Order placed [STUB]") -> MagicMock:
     """Minimal mock adapter whose place_order returns a PlaceOrderOutput."""
-    from app.services.transactional.schemas import PlaceOrderOutput  # noqa: PLC0415
+    from app.domain.transactional_schemas import PlaceOrderOutput  # noqa: PLC0415
 
     adapter = MagicMock()
     adapter.place_order = AsyncMock(

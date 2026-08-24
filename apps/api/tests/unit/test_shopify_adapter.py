@@ -54,7 +54,7 @@ async def test_issue_refund_calls_refund_create() -> None:
     """
     from app.services.transactional.adapters.shopify_adapter import ShopifyAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.services.transactional.schemas import IssueRefundInput
+    from app.domain.transactional_schemas import IssueRefundInput
 
     handle = CredentialHandle(_raw=json.dumps({"access_token": "shpat_test_abc"}))
     adapter = ShopifyAdapter(
@@ -152,7 +152,7 @@ async def test_place_order_calls_order_create() -> None:
     """
     from app.services.transactional.adapters.shopify_adapter import ShopifyAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.services.transactional.schemas import PlaceOrderInput
+    from app.domain.transactional_schemas import PlaceOrderInput
 
     handle = CredentialHandle(_raw=json.dumps({"access_token": "shpat_test_xyz"}))
     adapter = ShopifyAdapter(
@@ -228,7 +228,7 @@ async def test_shop_url_from_constructor() -> None:
     """
     from app.services.transactional.adapters.shopify_adapter import ShopifyAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.services.transactional.schemas import IssueRefundInput
+    from app.domain.transactional_schemas import IssueRefundInput
 
     constructor_shop_url = "secure-store.myshopify.com"
     raw_token = "shpat_secure_token_xyz"
@@ -294,7 +294,7 @@ async def test_cancel_order_calls_order_cancel() -> None:
     """
     from app.services.transactional.adapters.shopify_adapter import ShopifyAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.services.transactional.schemas import CancelOrderInput
+    from app.domain.transactional_schemas import CancelOrderInput
 
     handle = CredentialHandle(_raw=json.dumps({"access_token": "shpat_cancel_token"}))
     adapter = ShopifyAdapter(
@@ -362,7 +362,7 @@ async def test_unsupported_methods_raise() -> None:
     """
     from app.services.transactional.adapters.shopify_adapter import ShopifyAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.services.transactional.schemas import (
+    from app.domain.transactional_schemas import (
         BookSlotInput,
         UpdateCustomerRecordInput,
         UpdateSubscriptionInput,

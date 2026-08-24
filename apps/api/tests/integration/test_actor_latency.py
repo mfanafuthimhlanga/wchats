@@ -233,7 +233,7 @@ def test_actor_total_added_latency_within_budget():
         ),
     ):
         # Configure adapter mock to return a fast stub result
-        from app.services.transactional.schemas import PlaceOrderOutput
+        from app.domain.transactional_schemas import PlaceOrderOutput
 
         mock_adapter = AsyncMock()
         mock_adapter.place_order = AsyncMock(

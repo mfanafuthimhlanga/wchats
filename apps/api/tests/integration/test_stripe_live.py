@@ -125,7 +125,7 @@ def test_stripe_live_refund_and_idempotency_replay():
     """
     import asyncio
 
-    from app.services.transactional.schemas import IssueRefundInput
+    from app.domain.transactional_schemas import IssueRefundInput
 
     if not _STRIPE_TEST_CHARGE_ID:
         pytest.skip(

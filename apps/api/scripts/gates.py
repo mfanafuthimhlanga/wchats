@@ -72,7 +72,6 @@ PYTHON = tool("python") if os.path.exists(tool("python")) else sys.executable
 #
 # tests/unit/test_gates.py snapshots this dict and goes red on an addition.
 RUFF_BASELINE = {
-    ("app/services/agent_tools.py", "I001"): 1,
     ("app/worker/tasks/pipeline/chunk.py", "I001"): 1,
 }
 
