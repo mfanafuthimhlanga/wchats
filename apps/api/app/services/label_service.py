@@ -122,19 +122,23 @@ WHAT THE FOUR RESTRICTIONS DO NOT COVER, AND WHAT P2 OWES
     the hierarchy worth the secrecy of an API key rather than any
     human-in-the-loop property. The credential is the only evidence about the
     caller that survives a process boundary, so the check has to live at the auth
-    layer: `get_credential_kind` reports which credential resolved, and
-    `label_eval_scenario` refuses anything but a Clerk JWT with a 403. That is a
-    restriction on the ROUTE, not on this module, and it is recorded here because
-    this is where a reader comes to find out what "human_authored" is worth.
+    layer: `get_credential_kind` reports which credential resolved, and any route
+    driving this writer must refuse anything but a Clerk JWT with a 403. That is
+    a restriction on the ROUTE, not on this module, and it is recorded here
+    because this is where a reader comes to find out what "human_authored" is
+    worth.
+
+    NO ROUTE DRIVES THIS WRITER TODAY. The labelling queue and its POST were
+    deleted by ADR 0003; this module is the writer with no caller until a
+    console feature asks for one.
 
 WHAT THIS MODULE DOES NOT DO
     It does not promote anything into `verified_qa`. A human label improves what
     the eval can measure; it reaches no customer. That is the owner's settled
     decision of 2026-08-08 (`.dev/plans/260808-d6-labelling-loop.md`), and
     `eval_service.VERIFIED_QA_PROMOTION_DECISION` carries the disablement and
-    its reason onto every run. `is_promotable_to_verified_qa` still gates on
-    `source`, still returns False for every source the schema allows, and this
-    module does not change a row's `source`.
+    its reason onto every run. No promotion writer exists in this build at all,
+    and this module does not change a row's `source`.
 
     It opens no connection and holds no connection string. The caller passes an
     already-open psycopg2 connection and owns the transaction, matching

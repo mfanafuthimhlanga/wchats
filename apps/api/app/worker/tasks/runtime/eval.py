@@ -1,51 +1,29 @@
 """M6 eval tasks — nightly eval suite, per-agent Ragas eval, scenario generation.
 
 All tasks: acks_late=True, runtime queue, no conn_str in args (CTL-08).
-Neon branch created per eval run, deleted in finally block (D-10).
 Ragas 0.4.x only — D-01 through D-04.
 
 Where each write lands
 ----------------------
-D-10 ("never evaluate against production") is correct for tenant data and was
-over-applied to the run's own results: `eval_results`, the terminal `eval_runs`
-status and the verified_qa promotion were all written to the Neon branch that
-this task then deletes in `finally`. Production consequently never learned that
-any run finished — a successful run left status='running' forever, and
-`eval_results` never existed on production at all.
-
 An eval result is an OBSERVATION ABOUT a run, not tenant data. So:
 
     scenario read / eval_runs / results  -> conn_str         (PRODUCTION)
     scoring (run_ragas_eval)             -> no database at all
-    branch deletion in finally           -> unchanged, every path
 
-The middle line is the correction to an earlier version of this docstring,
-which said scoring ran against `branch_conn_str`. It does not, and never did:
 run_ragas_eval scores rows that are already in memory against the judge API and
-never referenced the connection string it was handed. The scenario rows
-themselves are read from PRODUCTION below. So no statement in this task is ever
-issued against the eval branch.
-
-The branch is still created and still deleted in `finally`, because D-10 has to
-be in place the day this eval starts invoking retrieval or the agent against
-tenant data. What changed is that its ABSENCE is no longer fatal while
-eval_service.EVAL_SCORING_REQUIRES_BRANCH is False: a degraded Neon endpoint
-used to abandon a whole night's measurement over a resource nothing reads.
+opens no connection at all. The scenario rows themselves are read from
+PRODUCTION below.
 
 verified_qa promotion is not performed by this task at all.
 
 WHAT HOLDS IT SHUT IS THREE THINGS, AND THIS PARAGRAPH USED TO NAME ONE (D6 P3
 review, finding 6). It said "disabled behind eval_service's label trust
-hierarchy", which was the whole answer before D6 and is now the weakest third of
-it: D6 gave the system a producer of `human_authored` labels, rank 3, which
-CLEARS `VERIFIED_QA_MIN_TRUST_TIER`. Strongest first —
+hierarchy", which was the whole answer before D6. Strongest first —
 
-    0. NO CALLER. `promote_to_verified_qa` is invoked from nowhere under `app/`;
-       the `promoted: 0` this task returns is a literal, not a result. Pinned by
+    0. NO CODE. No promotion writer exists in this tree (ADR 0003); the
+       `promoted: 0` this task returns is a literal, not a result. Pinned by
        TestPromotionIsUnreachableFromTheTask below.
-    1. THE RESOLVER. `select_promotion_candidates` gates on `eval_scenarios.
-       source` — where the QUESTION came from — which labelling never writes.
-    2. THE DECISION. `VERIFIED_QA_PROMOTION_DECISION["enabled"]` is False, the
+    1. THE DECISION. `VERIFIED_QA_PROMOTION_DECISION["enabled"]` is False, the
        owner's settled eval-only decision of 2026-08-08.
 
 The decision — with its reason — is recorded on the run in `eval_runs.config`
@@ -130,7 +108,6 @@ from app.services.eval_service import (
     AGENT_INVOCATION_MEASURED,
     DATASET_GOLDEN,
     EVAL_RUN_IDEMPOTENCY_SLACK_S,
-    EVAL_SCORING_REQUIRES_BRANCH,
     EXPLORATORY_SAMPLE_SIZE,
     VERIFIED_QA_PROMOTION_DECISION,
     build_eval_run_config,
@@ -145,7 +122,6 @@ from app.services.eval_service import (
     update_eval_run_status,
     write_eval_results,
 )
-from app.services.neon import create_branch, delete_branch, wait_for_neon_ready
 from app.services.scenario_service import (
     generate_eval_suite_for_agent,
     mine_production_scenarios,
@@ -160,11 +136,10 @@ def _mark_failed_on_production(run_id: str, conn_str: str, agent_id: str) -> Non
     """Best-effort terminal 'failed' status write on PRODUCTION.
 
     A run must end in a terminal state on production or it never happened —
-    but the write itself must never derail the two things that matter more on
-    an already-failing path: deleting the Neon branch (the `finally` below)
-    and the caller's `self.retry`. An unguarded raise here would skip
-    `raise self.retry(...)` entirely, so the task would die instead of
-    retrying, and the failure would be attributed to the status write rather
+    but the write itself must never derail what matters more on an
+    already-failing path: the caller's `self.retry`. An unguarded raise here
+    would skip `raise self.retry(...)` entirely, so the task would die instead
+    of retrying, and the failure would be attributed to the status write rather
     than to whatever actually broke.
 
     A failure here is logged at error level rather than swallowed quietly: it
@@ -637,9 +612,9 @@ def run_eval_suite_beat(self) -> dict:
     name="app.worker.tasks.runtime.eval.run_eval_suite",
 )
 def run_eval_suite(self, agent_id: str) -> dict:
-    """Per-agent eval run. Records the run on production, creates and deletes a
-    Neon branch (D-10), and scores without touching either. Receives agent_id
-    str — no conn_str in args (CTL-08 / D-18).
+    """Per-agent eval run. Records the run on production and scores without
+    touching tenant data. Receives agent_id str — no conn_str in args
+    (CTL-08 / D-18).
 
     Sequence:
         1. Idempotency guard — skip if a 'running' eval_run for this agent
@@ -650,16 +625,11 @@ def run_eval_suite(self, agent_id: str) -> dict:
            production scenarios.
         4. Collect the configuration tuple, then insert the eval_run row on
            PRODUCTION with it (status='running').
-        5. Create the Neon branch. Readiness is probed only if scoring is going
-           to connect to it, and a branch that cannot be created is fatal only
-           then — see EVAL_SCORING_REQUIRES_BRANCH and the block comment below.
-        6. try: INVOKE THE AGENT once per valid scenario (recorded side effects)
+        5. try: INVOKE THE AGENT once per valid scenario (recorded side effects)
                 → patch the observation onto the run's config on PRODUCTION
                 → run Ragas eval over the rows that answered (no database)
                 → write results to PRODUCTION → mark complete on PRODUCTION.
            except: mark failed on PRODUCTION.
-           finally: delete the Neon branch if one was created (D-10 — always
-                runs, even on exception).
 
     No verified_qa promotion happens here. See the module docstring for the
     three locks and eval_service.VERIFIED_QA_PROMOTION_DECISION for the
@@ -720,7 +690,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
         {"run_id", "scenario_count", "attempted", "valid", "scored", "datasets",
          "dataset_column_available", "golden_set_present", "promoted",
          "config_recorded", "promotion_enabled", "promotion_disabled_reason",
-         "branch_isolation", "agent_invoked", "agent_invocation",
+         "agent_invoked", "agent_invocation",
          "invocation_recorded"}                                  on success.
         {"status": "already_running"}                            on idempotent skip.
         {"status": "no_scenarios", "run_id", "run_recorded", "attempted",
@@ -751,7 +721,6 @@ def run_eval_suite(self, agent_id: str) -> dict:
 
         # Decrypt conn_str at runtime — never stored, never passed as arg (CTL-08)
         conn_str = fernet_decrypt(agent.neon_connection_string)
-        neon_project_id = agent.neon_project_id
 
     # Check eval_runs table on tenant DB for a recent running run.
     #
@@ -1043,75 +1012,10 @@ def run_eval_suite(self, agent_id: str) -> dict:
             return {}
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
 
-    # ------------------------------------------------------------------
-    # Step 6 — Neon branch (D-10 LOCKED), then scoring in try/finally.
-    #
-    # The branch exists so an eval can never mutate tenant data. Nothing in
-    # this build connects to it: run_ragas_eval scores rows already in memory
-    # against the judge API, and the scenario rows were read from production
-    # above. So the branch is isolation held IN RESERVE, and this block says
-    # which of the two it is instead of asserting the one that is false.
-    #
-    # P2 DID NOT CHANGE THAT, and the reason is worth stating because it is the
-    # obvious place to be wrong. The agent turns below run against the tenant's
-    # PRODUCTION connection string, not the branch, and they must: `retrieve`
-    # has to see the corpus the customer is served, and a branch is a copy taken
-    # at run start. What stops those turns writing is RECORDED MODE (BACKLOG
-    # 2.5) — the retrieval_metrics row, the escalation marker and mail, and the
-    # six mutating skills' ProviderAdapter calls are all suppressed and recorded
-    # at the tool layer. Two independent mechanisms for two different jobs:
-    # the branch would isolate a WRITE, recorded mode prevents one. Pointing the
-    # agent at the branch instead would swap a real measurement for a measurement
-    # against a snapshot, and would still not stop the ProviderAdapter, which is
-    # outside the database entirely.
-    #
-    #   * It is still created and still deleted in `finally`, so the guarantee
-    #     is already in place the day scoring starts issuing statements.
-    #   * A branch that cannot be created or readied no longer abandons the
-    #     run. Abandoning it threw away a night's measurement — on production,
-    #     which is reachable — over a resource nothing reads.
-    #   * The readiness probe only runs when something is going to connect.
-    #     Waiting for an endpoint nobody opens is cost and failure surface
-    #     with no signal in it.
-    #
-    # eval_service.EVAL_SCORING_REQUIRES_BRANCH is the single switch: flip it
-    # in the same edit that gives scoring a database, and both the probe and
-    # the fatal failure come back, because then the branch really is what
-    # stands between the eval and production tenant data.
-    #
-    # Acquisition sits INSIDE the try/finally rather than before it. Previously
-    # it had its own try/except that returned, so a branch that was created and
-    # then failed its readiness probe leaked: the `finally` belonged to the
-    # block that was never entered. Every path after create_branch returns an
-    # id now reaches the deletion below.
-    # ------------------------------------------------------------------
-    branch_id_for_finally: str | None = None
-    branch_isolation = "provisioned_unused"
     # Set the moment the first SDK turn could have run. A retry after that point
     # re-invokes the whole set — see the `except` below.
     agent_was_invoked = False
     try:
-        try:
-            branch_id_for_finally, branch_conn_str = create_branch(
-                neon_project_id, f"eval-{run_id}"
-            )
-            if EVAL_SCORING_REQUIRES_BRANCH:
-                wait_for_neon_ready(branch_conn_str)
-        except Exception as branch_exc:
-            log.error(
-                "run_eval_suite.branch_create_failed",
-                agent_id=agent_id,
-                run_id=run_id,
-                error=str(branch_exc),
-                scoring_requires_branch=EVAL_SCORING_REQUIRES_BRANCH,
-            )
-            if EVAL_SCORING_REQUIRES_BRANCH:
-                raise
-            # Scoring needs no branch, so the run continues and says on the way
-            # out that it ran without one — a reader must never have to guess
-            # whether isolation was in force.
-            branch_isolation = "unavailable"
-
         # Filter scenarios — reference_answer already required by the SQL query above,
         # but double-check here for safety. This is the VALID set: rows that
         # were fetched and carry a label, i.e. the rows that can be scored at
@@ -1231,7 +1135,6 @@ def run_eval_suite(self, agent_id: str) -> dict:
             config_recorded=config_recorded,
             promoted=0,
             promotion_enabled=VERIFIED_QA_PROMOTION_DECISION["enabled"],
-            branch_isolation=branch_isolation,
             agent_invoked=provenance["agent_invoked"],
             invocation_status=invocation["status"],
             invocation_responded=invocation["responded"],
@@ -1259,12 +1162,11 @@ def run_eval_suite(self, agent_id: str) -> dict:
             # predates migration 0014 — not that it has no golden rows.
             "dataset_column_available": dataset_column_available,
             "golden_set_present": composition["golden_set_present"],
-            # Always 0 — a literal, not a result: this task never calls
-            # promote_to_verified_qa (lock zero), and behind that the resolver
-            # gate and the decision flag. The key is kept so a caller reading it
-            # sees the zero rather than a missing key it might treat as "not
-            # measured". `promotion_enabled` below is what distinguishes this
-            # zero from an ENABLED run that promoted nothing.
+            # Always 0 — a literal, not a result: no promotion writer exists
+            # in this build, and behind that the decision flag. The key is kept
+            # so a caller reading it sees the zero rather than a missing key it
+            # might treat as "not measured". `promotion_enabled` below is what
+            # distinguishes this zero from an ENABLED run that promoted nothing.
             "promoted": 0,
             "config_recorded": config_recorded,
             # THE FLAG TRAVELS WITH THE PROSE. `promoted: 0` and a reason string
@@ -1276,10 +1178,6 @@ def run_eval_suite(self, agent_id: str) -> dict:
             # so the boolean is stated beside the count it explains.
             "promotion_enabled": VERIFIED_QA_PROMOTION_DECISION["enabled"],
             "promotion_disabled_reason": VERIFIED_QA_PROMOTION_DECISION["reason"],
-            # 'provisioned_unused' — a branch exists and no statement ran
-            # against it; 'unavailable' — Neon could not give us one and the
-            # run scored anyway. Never absent, so the state is always readable.
-            "branch_isolation": branch_isolation,
             # --- audit D1: did this run measure the agent? ------------------
             # The gate-facing conjunction (the agent produced the scored
             # responses AND enough rows answered to be a measurement), and
@@ -1309,7 +1207,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # itself, and no field on the run expressing that. Losing one night's
         # scores to a judge outage is the cheaper failure by two orders of
         # magnitude, and tonight's beat repeats tomorrow. Retries before the
-        # first turn (an insert failure, a branch failure) are unaffected and
+        # first turn (an insert failure) are unaffected and
         # still cost nothing.
         if agent_was_invoked:
             log.error(
@@ -1326,21 +1224,6 @@ def run_eval_suite(self, agent_id: str) -> dict:
         if self.request.retries >= self.max_retries:
             return {}
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
-
-    finally:
-        # D-10 LOCKED: always delete the Neon branch, even on exception.
-        # None means create_branch itself failed, so there is nothing to
-        # delete — not a path that may skip deletion for any other reason.
-        if branch_id_for_finally is not None:
-            try:
-                delete_branch(neon_project_id, branch_id_for_finally)
-            except Exception as del_exc:
-                log.warning(
-                    "run_eval_suite.branch_delete_failed",
-                    agent_id=agent_id,
-                    run_id=run_id,
-                    error=str(del_exc),
-                )
 
 
 # ---------------------------------------------------------------------------

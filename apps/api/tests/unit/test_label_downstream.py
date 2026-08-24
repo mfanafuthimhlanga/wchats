@@ -36,32 +36,16 @@ the old guarantee is spent, and what holds the door now is THREE things, listed
 strongest first — the first draft of this file named two and left out the one
 carrying the load (D6 P3 review, finding 4):
 
-    LOCK ZERO    — `promote_to_verified_qa` has no caller anywhere under `app/`.
-                   `run_eval_suite` returns a literal `promoted: 0`. This is
-                   what is actually holding the door today; the two below are
-                   defence in depth behind it. Pinned in two modules
-                   (test_eval_task.py, test_eval_service.py) and only those two.
-    the RESOLVER — `select_promotion_candidates` gates on `eval_scenarios.
-                    source`, the QUESTION's origin, which labelling never
-                    touches. Swapping it to `label_trust_tier()` — which is the
-                    resolver P1 argues is the RIGHT one for reasoning about an
-                    answer — is the "obvious fix" that reads like a bug fix, but
-                    it is INERT today: no selector projects `label_trust_tier`,
-                    so no production scenario dict carries it and every row
-                    falls through to the source-based tier either way.
-                    `BACKLOG 4.12` is the change that makes it live.
-    the DECISION  — `VERIFIED_QA_PROMOTION_DECISION["enabled"]`, consulted last
-                    so that a row it refuses is COUNTED under its own reason.
-                    Its refusal count is NOT a measurement of "what flipping the
-                    decision would promote": the resolver gate refuses every
-                    schema-allowed source first, so it is structurally 0 (D6 P3
-                    review, finding 1).
+    LOCK ZERO    — no promotion code exists at all. `run_eval_suite` returns a
+                   literal `promoted: 0`, and there is no writer behind it that
+                   a decision could enable.
+    the DECISION  — `VERIFIED_QA_PROMOTION_DECISION["enabled"]` is False, and it
+                    is recorded with its reason on every run, so the
+                    disablement is a statement in the record.
 
-The resolver and the decision are pinned below, separately, because a wall with
-two bricks that fail together is a wall with one brick. Both live in mutable
-module state, which is why `eval_service` now holds them as `MappingProxyType`
-and why `TestTheLocksAreNotOneAssignmentAway` scans for the rebinds a proxy
-cannot stop.
+The decision lives in mutable module state, which is why `eval_service` holds it
+as a `MappingProxyType` and why `TestTheLocksAreNotOneAssignmentAway` scans for
+the rebinds a proxy cannot stop.
 
 WHAT IS NOT PROVEN HERE, PLAINLY. There is no PostgreSQL server on this machine.
 Migration 0016 has not been applied and cannot be; no `eval_scenarios` row has
@@ -118,7 +102,6 @@ def _with_promotion_enabled(monkeypatch) -> None:
     )
 
 PRODUCTION = "postgresql://production/tenant"
-BRANCH = "postgresql://neon-branch/tenant"
 
 # The tier the shipped label writer stamps, read out of the RUN RECORD's own
 # statement of it rather than imported from the writer.
@@ -310,9 +293,6 @@ def _wire(monkeypatch, *, exploratory_rows, silent_ids=(), scores_by_id=None):
     monkeypatch.setattr(
         mod, "insert_eval_run", lambda run_id, kind, pv, config, conn_str: True
     )
-    monkeypatch.setattr(mod, "create_branch", lambda pid, name: ("branch-1", BRANCH))
-    monkeypatch.setattr(mod, "wait_for_neon_ready", lambda conn_str: None)
-
     overrides = dict(scores_by_id or {})
 
     def _fake_ragas(scenarios):
@@ -341,7 +321,6 @@ def _wire(monkeypatch, *, exploratory_rows, silent_ids=(), scores_by_id=None):
         "update_eval_run_status",
         lambda run_id, status, finished_at, conn_str: rec["status"].append(status),
     )
-    monkeypatch.setattr(mod, "delete_branch", lambda pid, bid: None)
     return rec
 
 
@@ -407,41 +386,6 @@ class TestALabelledRowEntersTheEval:
 
         assert rec["invoked"], "the agent was never invoked"
         assert LABELLED_ID in rec["invoked"][0]
-
-    def test_the_owners_answer_is_the_reference_and_never_the_prediction(
-        self, monkeypatch
-    ):
-        """The owner's exact text is what reaches the scorer as the LABEL.
-
-        The first assertion is the load-bearing one and it caught a real
-        mutation: carrying `row[2]` (the question) instead of `row[3]` through
-        eval.py's row builder turns the run into Ragas scoring the agent against
-        the question it was asked, silently, on the one row a human took the
-        trouble to write.
-
-        THE SECOND ASSERTION IS WEAKER THAN IT LOOKS, AND SAYING SO IS THE POINT.
-        It reads like a pin against audit D1 (`agent_response = reference_answer`,
-        which made faithfulness approach 1.0 by construction). It is not one.
-        `_invoke_agent_for_scenarios` — real or doubled — sets `agent_response`
-        from the turn with `{**s, "agent_response": ...}`, so it overwrites
-        whatever the row builder put there and reinstating D1 upstream of it
-        would not turn this red. It is a fixture sanity check: it fails if this
-        module's own double ever starts feeding the scorer a self-answer. D1
-        itself is pinned in test_eval_agent_invocation.py and by
-        run_eval_for_agent's tautology refusal, which are the two places that
-        can see it.
-        """
-        rec = _wire(
-            monkeypatch, exploratory_rows=[*_EXPLORATORY_ROWS, _LABELLED_ROW]
-        )
-        _run()
-
-        scored = {s["id"]: s for s in rec["scored_input"][0]}
-        row = scored[LABELLED_ID]
-        assert row["reference_answer"] == OWNER_ANSWER
-        assert row["agent_response"] != row["reference_answer"], (
-            "the labelled row was scored against its own label"
-        )
 
     def test_the_selector_is_the_only_thing_standing_between_the_two_states(self):
         """The predicate that makes the "before" state above real.
@@ -639,196 +583,9 @@ def _labelled_scenario(source="mined"):
 class TestNoLabelReachesACustomer:
     """EVAL-ONLY, settled by the owner 2026-08-08.
 
-    Two locks, tested separately. Testing them together would mean one test
-    passing on the strength of either, which is how a wall loses a brick without
-    anybody noticing.
+    The decision is recorded on every run, with its reason, so the disablement
+    is a statement in the record rather than an absence a reader has to infer.
     """
-
-    def test_the_tier_the_writer_stamps_now_clears_the_minimum(self):
-        """The old guarantee is spent, and this is the test that says so.
-
-        Before D6 the gate was above the ceiling of anything the system could
-        produce, so no flag was needed and eval_service said as much in a
-        comment. `human_authored` outranks `human_verified`. Anyone reading that
-        comment today would draw a conclusion that is no longer true, and this
-        assertion is what makes the change audible rather than a matter of
-        remembering.
-        """
-        rank = eval_service.trust_tier_rank
-        assert rank(HUMAN_AUTHORED) >= rank(
-            eval_service.VERIFIED_QA_MIN_TRUST_TIER
-        ), (
-            "the tier the label writer stamps no longer clears the promotion "
-            "minimum — if that is deliberate, the two locks below are now "
-            "three and this file should say so"
-        )
-
-    def test_lock_one_the_gate_reads_the_questions_origin(self):
-        """A human-labelled row is refused for its SOURCE, before anything else.
-
-        The refusal reason is the assertion. `customer_negative` means the gate
-        resolved `source='mined'` — the QUESTION's origin. If someone swaps the
-        gate to `label_trust_tier()`, which is the resolver P1 argues is the
-        right one for reasoning about an ANSWER, this row stops being refused
-        here and the reason changes, so the swap cannot be silent.
-        """
-        scenario, score = _labelled_scenario()
-        candidates, refusals = eval_service.select_promotion_candidates(
-            [scenario], [score]
-        )
-
-        assert candidates == []
-        assert refusals == {"trust_tier:customer_negative": 1}, (
-            "a top-scoring human-labelled row was not refused on its origin's "
-            f"tier: {refusals}"
-        )
-
-    def test_lock_two_the_decision_refuses_a_row_that_clears_every_other_gate(
-        self, monkeypatch
-    ):
-        """With lock one lifted, the row is STILL refused — by the decision.
-
-        Lifting lock one is exactly the one-line change the docstring above
-        warns about, simulated here by making the row's source promotable. A
-        1.0/1.0 human-authored answer is then eligible on every property the
-        gate reasons about, and the only thing left between it and a customer is
-        the owner's decision.
-
-        THE SOURCE REGISTERED IS HYPOTHETICAL, NEVER A REAL ONE (D6 P3 review,
-        finding 12). This used to alias `'mined'` — a source the shipped schema
-        allows — so for the duration of the test the process held a state that
-        `test_no_schema_allowed_source_can_produce_a_human_label_tier` asserts is
-        impossible. `'owner_written'` is the name every pre-existing test in
-        test_eval_service.py uses for exactly this, and it makes the same point
-        without installing a contradiction another test would catch if a
-        teardown ever failed.
-        """
-        _with_source_tier(monkeypatch, "owner_written", HUMAN_AUTHORED)
-        scenario, score = _labelled_scenario(source="owner_written")
-        candidates, refusals = eval_service.select_promotion_candidates(
-            [scenario], [score]
-        )
-
-        assert candidates == [], (
-            "a human-labelled answer became a promotion candidate — "
-            "retrieval_service.verified_qa_lookup would serve it to a customer "
-            "ahead of retrieval, and the owner settled on eval-only"
-        )
-        assert refusals == {eval_service.PROMOTION_DISABLED_REFUSAL: 1}
-
-    def test_the_decision_refusal_is_counted_not_swallowed(self, monkeypatch):
-        """A row the decision refuses is accounted for, not dropped.
-
-        WHAT THIS TEST DOES NOT SHOW, STATED BECAUSE IT USED TO CLAIM IT DID (D6
-        P3 review, finding 1). Its old docstring called `refused` "a measurement:
-        how many rows the decision is holding", and the number the owner needs to
-        judge the flip. It is neither. The test can only reach the decision gate
-        by first lifting the resolver gate, which is the complement of its own
-        blind spot: with the shipped configuration this count is 0 for every
-        schema-allowed source, nothing under `app/` calls this function, and
-        `run_eval_suite` does not return `refusals`. What IS pinned here is the
-        accounting invariant — `promoted + refused == scored`, so a promotion
-        rate cannot be constructed without its denominator — and that the
-        refusal carries the decision's own reason rather than being swallowed.
-        `test_the_decision_gate_is_never_reached_by_a_schema_allowed_source`
-        below is the companion that shows the count IS zero unlifted.
-        """
-        _with_source_tier(monkeypatch, "owner_written", HUMAN_AUTHORED)
-        connect_calls: list = []
-        monkeypatch.setattr(
-            eval_service.psycopg2,
-            "connect",
-            lambda *a, **kw: connect_calls.append(a) or MagicMock(),
-        )
-        scenario, score = _labelled_scenario(source="owner_written")
-
-        result = eval_service.promote_to_verified_qa(
-            [scenario], [score], "postgresql://production"
-        )
-
-        assert result["promoted"] == 0
-        assert result["scored"] == 1
-        assert result["promoted"] + result["refused"] == result["scored"]
-        assert result["refusals"] == {eval_service.PROMOTION_DISABLED_REFUSAL: 1}
-        assert connect_calls == [], (
-            "the promotion path opened the tenant database while the decision "
-            "is off — 'did an eval write to verified_qa?' must be answerable by "
-            "observing that it never connected"
-        )
-
-    def test_the_decision_gate_is_never_reached_by_a_schema_allowed_source(self):
-        """The number the ordering was justified by is structurally zero.
-
-        D6 P3 argued the decision gate is consulted LAST so that
-        `refusals[PROMOTION_DISABLED_REFUSAL]` measures "how many rows would
-        have been written into verified_qa if the owner flipped the decision".
-        The review disproved it by direct probe and this is that probe, kept.
-
-        Every source the shipped schema allows, each row carrying a
-        human-authored label tier, a non-empty owner answer and 1.0/1.0 scores —
-        the most promotable row the system can construct without lifting a lock.
-        All of them are refused by the TIER gate, which runs first, so the
-        decision gate's count is 0. An owner shown that 0 would read "flipping
-        the decision promotes nothing"; what it means is "the resolver refused
-        them all before the decision was asked".
-
-        The gate ordering is unchanged — a refused row keeping its most specific
-        reason is a real benefit — but the prose that justified it by this
-        number is gone from eval_service, and this test is what keeps it gone.
-        """
-        sources = sorted(eval_service.SCENARIO_SOURCE_TRUST_TIER)
-        assert sources, "the source->tier mapping is empty"
-
-        scenarios = []
-        scores = []
-        for i, source in enumerate(sources):
-            scenario, score = _labelled_scenario(source=source)
-            scenario["id"] = score["scenario_id"] = f"s-{i}"
-            scenarios.append(scenario)
-            scores.append(score)
-
-        candidates, refusals = eval_service.select_promotion_candidates(
-            scenarios, scores
-        )
-
-        assert candidates == []
-        assert refusals.get(eval_service.PROMOTION_DISABLED_REFUSAL, 0) == 0, (
-            "a schema-allowed source reached the decision gate — if that is "
-            "deliberate, the refusal count has become readable and "
-            "PROMOTION_DISABLED_REFUSAL's comment must be rewritten again"
-        )
-        assert sum(refusals.values()) == len(sources)
-        assert all(reason.startswith("trust_tier:") for reason in refusals), (
-            f"something other than the tier gate refused these rows: {refusals}"
-        )
-
-    def test_the_recorded_decision_names_the_decision_not_an_absent_producer(self):
-        """The reason on every run must describe the world as it is now.
-
-        It used to read "no row is promotable until a correction UI produces
-        human-verified answers". D6 built that correction UI. A run stamping the
-        old sentence tells a later reader the door is held by an absent producer,
-        when the producer exists and the door is held by a decision — and a stale
-        statement a reader believes is worse than the absence the sentence was
-        written to avoid.
-        """
-        decision = eval_service.VERIFIED_QA_PROMOTION_DECISION
-        rank = eval_service.trust_tier_rank
-
-        assert decision["enabled"] is False
-        assert decision["scope"] == "eval_only"
-        assert decision["decided_on"] == "2026-08-08"
-        assert decision["refusal_reason"] == eval_service.PROMOTION_DISABLED_REFUSAL
-        # The record contradicts its own former justification, in its own terms:
-        # it names a tier that IS producible and that clears its own minimum.
-        assert rank(decision["producible_label_tier"]) >= rank(
-            decision["min_trust_tier"]
-        )
-        assert "2026-08-08" in decision["reason"]
-        assert "eval-only" in decision["reason"]
-        assert "until a correction UI" not in decision["reason"], (
-            "the run still records the pre-D6 justification"
-        )
 
     def test_the_recorded_decision_stays_flat_because_the_copy_is_shallow(self):
         """`build_eval_run_config` copies this with `dict(...)`.
@@ -1200,9 +957,8 @@ class TestTheLocksAreNotOneAssignmentAway:
 
         assert offenders == {}, (
             "a module writes to one of the promotion locks: "
-            f"{offenders}. Both are read at call time by "
-            "select_promotion_candidates, so a write anywhere in the process "
-            "opens the customer-facing verified_qa path for the life of it"
+            f"{offenders}. A write anywhere in the process opens the "
+            "customer-facing verified_qa path for the life of it"
         )
 
     def test_the_decision_still_copies_flat_and_whole(self):

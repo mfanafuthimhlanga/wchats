@@ -679,7 +679,7 @@ class TestGetEvalRunResults:
         """passed=False when a GATED metric falls below its threshold.
 
         D-21 LOCKED gates on exactly two metrics — faithfulness AND
-        answer_relevancy (see promote_to_verified_qa in eval_service.py).
+        answer_relevancy (D-21 LOCKED).
         Here answer_relevancy = 0.79 < EVAL_RELEVANCY_THRESHOLD (0.90).
         """
         fake_tenant = _make_fake_tenant()
