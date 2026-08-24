@@ -95,8 +95,13 @@ $1.58 per thousand turns, all-DPA.
 provider decision resequenced it (capture Luna turns after the owned loop lands, before
 labelling, so the owner never labels responses the cutover replaces). Fourteen decisions stand
 in the map's Decisions so far; four build inputs ride in its Notes; the fog holds only Mellow's
-region and M5. **Next move: the owner runs `/to-spec #4`** to collapse the closed map into one
-build plan, then `/to-tickets`, then `/implement` one ticket per session with `/code-review`
+region and M5. **The spec is published: issue #37, "Spec: two Agents live, Bantuson first", `ready-for-agent`
+(2026-08-24).** It collapses the fourteen decisions, carries the four build inputs and absorbs
+the breakage issues; ADRs 0003 to 0008 are written as part of the build. Testing seams, owner-
+confirmed: `decide()` pure, the model-client factory with a fake transport, `run_agent_turn`
+shared by live and eval, `run_eval_suite` to a frozen `EvalResult`, ingestion at `IngestionJob`,
+routes via the existing TestClient pattern, and the gate pinned by its own test. **Next move:
+the owner runs `/to-tickets #37`**, then `/implement` one ticket per session with `/code-review`
 per ticket (`docs/agents/issue-tracker.md`, "Handoff from the map to work"). Validating the Harness is the hardest thing
 in this project; every Harness ticket cites `.dev/reference/260818-llm-eval-fundamentals.md`.
 
