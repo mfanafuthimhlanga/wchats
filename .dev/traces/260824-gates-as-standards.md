@@ -83,3 +83,23 @@ comparator fails exactly the unpinned case (`1 failed, 27 passed`), restored gre
 
 `static gates passed in 6.6s.` at c9a7757 (ruff, import contracts, complexity, source
 assertions). The 20s ceiling in the acceptance criteria holds with 13s to spare.
+
+## Collision found by the full tier
+
+`gates.py full` at c9a7757: 2 failed, 2638 passed, 13 skipped in 572.07s. Both failures
+in `TestR2ImportBoundary` (test_label_provenance.py): its detector flags any string
+constant naming `label_service` or `record_human_label`, and the baseline entry
+`("app/services/label_service.py", "record_human_label"): (6, 120)` sits in gates.py and
+in the test snapshot as data.
+
+Fix: `_writer_hits` excuses only the string-constant arm for exactly
+`scripts/gates.py` and `tests/unit/test_gates.py`; imports, names and attributes stay
+watched. Mutation proof observed: `import app.services.label_service` appended to
+gates.py reds R2 naming the import; a from-import appended to test_gates.py reds the
+tests-side pin with both hits named; restored from HEAD, `TestR2ImportBoundary`
+18 passed.
+
+Operative fact for later baselines: any guard that scans the tree for a module name as a
+string will collide with a baseline that pins that module's functions. The excuse
+pattern above is the resolution; a blanket file skip blinds the import arm and a split
+string is undone by the next re-measure.
