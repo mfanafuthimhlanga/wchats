@@ -63,6 +63,7 @@ if "claude_agent_sdk" not in sys.modules:
 
 import app.services.agent_tools as agent_tools  # noqa: E402
 from app.domain.retrieved_context import RetrievedChunk, RetrievedContext  # noqa: E402
+from app.services.retrieval_service import RrfFusion  # noqa: E402
 
 
 def _run(coro):
@@ -132,11 +133,11 @@ def _build_fixture():
         ("c1", "d1", "A" * 400, 0.8),
         ("c2", "d1", "B" * 400, 0.7),
     ])
-    rrf_result = {
-        "fused": fused,
-        "vector_candidates": vector_candidates,
-        "bm25_candidates": bm25_candidates,
-    }
+    rrf_result = RrfFusion(
+        fused=fused,
+        vector_candidates=vector_candidates,
+        bm25_candidates=bm25_candidates,
+    )
     reranked = _context("rerank", [
         ("c4", "d2", "D" * 400, 0.95),  # c4 -> promoted to #1
         ("c1", "d1", "A" * 400, 0.85),  # c1
@@ -323,11 +324,11 @@ def test_retrieve_tool_metrics_handles_empty_candidates():
     agent_tools._conversation_id_var.set("conv-empty-5")
     agent_tools._job_id_var.set("job-empty-5")
 
-    empty_rrf = {
-        "fused": _context("rrf", []),
-        "vector_candidates": _context("vector", []),
-        "bm25_candidates": _context("bm25", []),
-    }
+    empty_rrf = RrfFusion(
+        fused=_context("rrf", []),
+        vector_candidates=_context("vector", []),
+        bm25_candidates=_context("bm25", []),
+    )
 
     with (
         patch("app.services.agent_tools.embed_query", return_value=[0.1] * 1024),

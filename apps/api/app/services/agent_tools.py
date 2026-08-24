@@ -59,6 +59,7 @@ from app.domain.retrieved_context import RetrievedContext
 from app.services.retrieval_metrics_service import write_retrieval_metrics
 from app.services.retrieval_service import (
     RetrievalStrategy,
+    RrfFusion,
     embed_query,
     rerank,
     rrf_fuse,
@@ -408,10 +409,11 @@ def _frame_retrieved_context(chunks_text: str) -> str:
 
 
 def _cap_for_the_agent(context: RetrievedContext) -> RetrievedContext:
-    """The MAX_CHUNKS chunks the agent sees, each cut to CHUNK_CONTENT_CHAR_LIMIT.
+    """The MAX_CHUNKS chunks the Agent sees, each cut to CHUNK_CONTENT_CHAR_LIMIT.
 
-    A new context rather than a rewrite: the record is frozen, and retrieve_tool's
-    metrics still read the full-length chunks rerank returned.
+    A new context rather than a rewrite, because the record is frozen. The
+    context passed in stays whole, and retrieve_tool goes on reading it for the
+    reranked top score it writes to retrieval_metrics.
     """
     return replace(
         context,
@@ -547,17 +549,17 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     )
     # conn_str and strategy are locals captured from the async body — safe for
     # executor threads (no ContextVar.get() calls inside the lambdas).
-    rrf_result: dict = await loop.run_in_executor(
+    rrf_result: RrfFusion = await loop.run_in_executor(
         None, lambda: rrf_fuse(conn_str, query_vector, query, strategy)
     )
     reranked: RetrievedContext = await loop.run_in_executor(
-        None, lambda: rerank(query, rrf_result["fused"], strategy)
+        None, lambda: rerank(query, rrf_result.fused, strategy)
     )
 
     retrieved = _cap_for_the_agent(reranked)
     chunks = retrieved.chunks
 
-    # Every citation says "general": `section` is not a field of a retrieved
+    # Every citation says "general". `section` is not a field of a retrieved
     # chunk, and none of the dicts before it carried the key either.
     citations = [
         {"document_name": chunk.document_id or "unknown", "section": "general"}
@@ -585,10 +587,10 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     # (21-DOMAIN-NOTES.md §3).
     # -------------------------------------------------------------------
     # Each context reports its own engine's number as `score`, so the four
-    # top-score reads below are the same four numbers the dict keys named.
-    fused_list = rrf_result["fused"].chunks
-    bm25_candidates = rrf_result["bm25_candidates"].chunks
-    vector_candidates = rrf_result["vector_candidates"].chunks
+    # top-score reads below are the four numbers the field names promise.
+    fused_list = rrf_result.fused.chunks
+    bm25_candidates = rrf_result.bm25_candidates.chunks
+    vector_candidates = rrf_result.vector_candidates.chunks
 
     bm25_top_score = bm25_candidates[0].score if bm25_candidates else None
     vector_top_score = vector_candidates[0].score if vector_candidates else None

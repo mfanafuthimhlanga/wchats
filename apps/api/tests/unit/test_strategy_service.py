@@ -28,6 +28,7 @@ from app.domain.retrieved_context import RetrievedChunk, RetrievedContext
 from app.services.retrieval_service import (
     RetrievalStrategy,
     _expand_query,
+    RrfFusion,
     rrf_fuse_with_expansion,
 )
 from app.services.strategy_service import (
@@ -214,16 +215,16 @@ def test_expansion_calls_rrf_fuse_per_variant():
         metadata_filters=[],
     )
 
-    # Canned fused result returned by each rrf_fuse call
-    fake_fused_result = {
-        "fused": RetrievedContext(
+    # Canned fusion returned by each rrf_fuse call
+    fake_fused_result = RrfFusion(
+        fused=RetrievedContext(
             query="q",
             chunks=(RetrievedChunk("c1", "d1", "x", 0.9, 1),),
             strategy="rrf",
         ),
-        "vector_candidates": RetrievedContext(query="q", chunks=(), strategy="vector"),
-        "bm25_candidates": RetrievedContext(query="q", chunks=(), strategy="bm25"),
-    }
+        vector_candidates=RetrievedContext(query="q", chunks=(), strategy="vector"),
+        bm25_candidates=RetrievedContext(query="q", chunks=(), strategy="bm25"),
+    )
 
     # EMBEDDING_PROVIDER defaults to "bedrock" (P13-02 seam, config.py). Without
     # this pin, rrf_fuse_with_expansion takes the Bedrock branch, ignores the
@@ -254,7 +255,9 @@ def test_expansion_calls_rrf_fuse_per_variant():
     # rrf_fuse should be called once per variant (3 variants → 3 calls)
     assert mock_rrf_fuse.call_count == 3
 
-    # Result shape must match rrf_fuse contract
-    assert set(result.keys()) == {"fused", "vector_candidates", "bm25_candidates"}
-    assert result["fused"].strategy == "rrf"
-    assert [chunk.chunk_id for chunk in result["fused"].chunks] == ["c1"]
+    # The merge reports the same three named fields rrf_fuse reports
+    assert isinstance(result, RrfFusion)
+    assert result.fused.strategy == "rrf"
+    assert [chunk.chunk_id for chunk in result.fused.chunks] == ["c1"]
+    assert result.vector_candidates.chunks == ()
+    assert result.bm25_candidates.chunks == ()

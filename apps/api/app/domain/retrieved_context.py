@@ -14,20 +14,19 @@ WHY ONE SCORE AND ONE RANK
     them is in scope.
 
 WHY THE JSON IS SEPARATE FROM THE DATACLASS
-    `to_json` is the wire form, and `str()` over it is still what the customer
-    agent reads as a tool result. Its key ORDER is therefore part of the shape,
+    `to_json` is the wire form, and `str()` over it is still what the Agent
+    reads as a tool result. Its key ORDER is therefore part of the shape,
     which is why it is written out rather than taken from `dataclasses.asdict`.
 
-    `from_json` IGNORES KEYS IT DOES NOT KNOW, matching IngestionJob.from_dict:
-    a payload written by another revision still reads. What it refuses is a
-    payload it cannot read as a context at all. A missing `chunks` key must
-    raise rather than build an empty context, because "this retrieval found
-    nothing" is an observation a grounding judge acts on and "this payload could
-    not be read" is not.
+    `from_json` IGNORES KEYS IT DOES NOT KNOW, so a payload written by another
+    revision still reads. What it refuses is a payload it cannot read as a
+    context at all. A missing `chunks` key must raise rather than build an empty
+    context, because "this retrieval found nothing" is an observation a
+    grounding Judge acts on and "this payload could not be read" is not.
 
 WHY chunks IS A TUPLE
     The record is frozen, so what it holds is immutable too. An empty tuple is a
-    whole context: a retrieval that matched nothing ran and reported.
+    whole context. A retrieval that matched nothing ran and reported.
 
 Rung: `app.domain` imports the standard library, third-party packages and its
 domain siblings. This module imports the standard library only.
@@ -39,7 +38,16 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-_CHUNK_KEYS = ("chunk_id", "document_id", "content", "score", "rank")
+# What a chunk key is allowed to arrive as on the wire. `score` takes an int
+# too, because JSON writes 1.0 as 1 and that is the same number.
+_CHUNK_TYPES: dict[str, tuple[type, ...]] = {
+    "chunk_id": (str,),
+    "document_id": (str,),
+    "content": (str,),
+    "score": (int, float),
+    "rank": (int,),
+}
+_CHUNK_KEYS = tuple(_CHUNK_TYPES)
 _CONTEXT_KEYS = ("query", "strategy", "chunks")
 
 
@@ -59,7 +67,9 @@ class RetrievedChunk:
     Args:
         chunk_id:    String UUID of the row in the tenant `chunks` table.
         document_id: String UUID of the document the passage came from.
-        content:     The passage text, as the agent and the judges read it.
+        content:     The passage text, as the Agent and the Judges read it.
+                     `chunks.content` is TEXT NOT NULL in the tenant schema
+                     (alembic_tenant 0001), so every row carries a str.
         score:       The ranking number of the engine named by the context's
                      `strategy`. Comparable within one context, never across two.
         rank:        1-based position in that same ranking.
@@ -70,6 +80,13 @@ class RetrievedChunk:
     content: str
     score: float
     rank: int
+
+    def __post_init__(self) -> None:
+        # psycopg2 reads a NUMERIC column as a Decimal and json.dumps refuses
+        # one, so the record normalises to the two builtins the wire form
+        # writes. object.__setattr__ is how a frozen dataclass sets a field.
+        object.__setattr__(self, "score", float(self.score))
+        object.__setattr__(self, "rank", int(self.rank))
 
     def to_json(self) -> dict[str, Any]:
         """The five keys, in the order the wire form pins."""
@@ -85,18 +102,31 @@ class RetrievedChunk:
     def from_json(cls, payload: Any) -> RetrievedChunk:
         """Read one chunk, refusing anything this type cannot name.
 
+        Presence is not shape. A string where `score` belongs survives every
+        key check and reaches the Agent as a string, so the type of each
+        field is read here as well as its presence.
+
         Raises:
-            InvalidRetrievedContext: not a mapping, or a field is absent.
+            InvalidRetrievedContext: not a mapping, a field is absent, or a
+                field arrived as a type this chunk cannot hold.
         """
         if not isinstance(payload, Mapping):
             raise InvalidRetrievedContext(
-                f"a chunk reads as a mapping of {len(_CHUNK_KEYS)} keys, got "
+                f"a chunk reads as a mapping of {len(_CHUNK_TYPES)} keys, got "
                 f"{type(payload).__name__}"
             )
-        missing = [key for key in _CHUNK_KEYS if key not in payload]
+        missing = [key for key in _CHUNK_TYPES if key not in payload]
         if missing:
             raise InvalidRetrievedContext(f"chunk is missing {', '.join(missing)}")
-        return cls(**{key: payload[key] for key in _CHUNK_KEYS})
+        for key, allowed in _CHUNK_TYPES.items():
+            value = payload[key]
+            # bool passes isinstance(value, int), and True is not a rank.
+            if isinstance(value, bool) or not isinstance(value, allowed):
+                names = " or ".join(one.__name__ for one in allowed)
+                raise InvalidRetrievedContext(
+                    f"chunk {key} reads as {names}, got {type(value).__name__}"
+                )
+        return cls(**{key: payload[key] for key in _CHUNK_TYPES})
 
 
 @dataclass(frozen=True)
@@ -112,7 +142,8 @@ class RetrievedContext:
                   "rrf" and "rerank" are what retrieval_service produces.
 
     Raises:
-        TypeError: chunks is neither a list nor a tuple.
+        TypeError: chunks is neither a list nor a tuple, or one element of it
+            is not a RetrievedChunk.
     """
 
     query: str
@@ -123,11 +154,24 @@ class RetrievedContext:
 
     def __post_init__(self) -> None:
         if not isinstance(self.chunks, (list, tuple)):
-            # A string is the expensive case: tuple("abc") raises nothing and
+            # A string is the expensive case. tuple("abc") raises nothing and
             # builds three chunks that name no chunk.
             raise TypeError(
                 "RetrievedContext needs chunks as a list or a tuple, got "
                 f"{type(self.chunks).__name__}"
+            )
+        wrong = [
+            type(element).__name__
+            for element in self.chunks
+            if not isinstance(element, RetrievedChunk)
+        ]
+        if wrong:
+            # A dict of the right five keys is the near miss. It reads as a
+            # chunk everywhere a reader only indexes it, and `element.content`
+            # raises AttributeError deep inside the framer instead.
+            raise TypeError(
+                "RetrievedContext needs every chunk to be a RetrievedChunk, got "
+                + ", ".join(wrong)
             )
         # object.__setattr__ is how a frozen dataclass normalises a field.
         object.__setattr__(self, "chunks", tuple(self.chunks))

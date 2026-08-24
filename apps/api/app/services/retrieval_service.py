@@ -22,16 +22,16 @@ Design decisions:
     embed.py precedent and avoid implicit transaction wrapping on the connection object.
   - k=60 is a SQL literal, NOT a parameter — locked per CONTEXT.md.
   - Cohere import is lazy (inside _cohere_rerank body) — cohere is a fallback dependency only.
-  - rrf_fuse returns a dict with three keys: "fused", "vector_candidates", "bm25_candidates",
-    one RetrievedContext each, so the retrieve_and_rank task can trace all three
-    without re-querying.
+  - rrf_fuse returns an RrfFusion, one RetrievedContext under each of three named
+    fields (fused, vector_candidates, bm25_candidates), so the retrieve_and_rank
+    task traces all three without re-querying.
 
 Uses only native Postgres tsvector + ts_rank_cd for BM25 (no deprecated Neon extensions).
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Optional
 
 import psycopg2
@@ -112,11 +112,11 @@ def verified_qa_lookup(
 ) -> Optional[dict]:
     """Check verified_qa for a cached answer matching the query via cosine similarity.
 
-    Called BEFORE hybrid search (D-24). On hit: update last_used_at + use_count
-    (D-26); return dict. On miss: return None (D-27).
-
-    Uses psycopg2 try/finally/close pattern (NOT context manager `with conn:`) to
-    match the existing vector_search and bm25_search patterns in this module.
+    Called BEFORE hybrid search (D-24). A hit updates last_used_at and use_count
+    (D-26) and returns a dict. A miss returns None (D-27). A dict rather than a
+    RetrievedContext, because a hit is one verified answer a human already
+    approved, not a ranking of passages. Connections follow the psycopg2
+    try/finally/close pattern, matching vector_search and bm25_search here.
 
     Args:
         conn_str:     Decrypted tenant DB connection string.
@@ -177,7 +177,7 @@ def _chunk_from_row(row) -> RetrievedChunk:
 
     vector_search and bm25_search select those five columns in that order, so
     one reader serves both and the two cannot drift apart. The score column is
-    read with `float(...)` and no fallback: both queries compute it arithmetically
+    read with `float(...)` and no fallback. Both queries compute it arithmetically
     over rows they matched, so a NULL there is a defect worth raising rather than
     a zero worth ranking.
     """
@@ -362,21 +362,40 @@ FROM fused ORDER BY rrf_score DESC LIMIT %(final_k)s
 """
 
 
+@dataclass(frozen=True)
+class RrfFusion:
+    """One RRF run: the fused ranking, and the two rankings that fed it.
+
+    Named fields rather than a dict, so a caller that misspells one gets an
+    AttributeError at the line that reads it. Local to this module because it
+    is retrieval's own composite, not a type the rest of the platform names.
+
+    Args:
+        fused:             The CTE result, top final_k by RRF score.
+        vector_candidates: vector_search, top vector_k by cosine.
+        bm25_candidates:   bm25_search, top bm25_k by ts_rank_cd.
+    """
+
+    fused: RetrievedContext
+    vector_candidates: RetrievedContext
+    bm25_candidates: RetrievedContext
+
+
 def rrf_fuse(
     conn_str: str,
     query_vector: list[float],
     query_text: str,
     strategy: RetrievalStrategy,
-) -> dict:
-    """Execute the full RRF CTE as a single query and return fused + individual candidates.
+) -> RrfFusion:
+    """Run the full RRF CTE as one query, with both candidate lists alongside.
 
-    Also calls vector_search() and bm25_search() separately so the retrieve_and_rank
-    task (Plan 03) can include full candidate lists in the query.complete trace without
-    re-executing the individual searches.
+    vector_search() and bm25_search() run separately as well, so the
+    retrieve_and_rank task traces all three rankings in query.complete without
+    re-executing either search.
 
-    k=60 is a SQL literal in _RRF_SQL — it is NOT passed as a parameter (locked per
-    CONTEXT.md). The FULL OUTER JOIN + COALESCE pattern handles chunks that appear in
-    one search but not the other.
+    k=60 is a SQL literal in _RRF_SQL and is never passed as a parameter
+    (locked per CONTEXT.md). The FULL OUTER JOIN plus COALESCE pattern handles
+    a chunk that one search matched and the other did not.
 
     Args:
         conn_str: Decrypted tenant DB connection string.
@@ -385,10 +404,7 @@ def rrf_fuse(
         strategy: Per-tenant retrieval config (vector_k, bm25_k, final_k).
 
     Returns:
-        Dict with three keys, one RetrievedContext each:
-          "fused"             the CTE result, top final_k by RRF score
-          "vector_candidates" vector_search, top vector_k by cosine
-          "bm25_candidates"   bm25_search, top bm25_k by ts_rank_cd
+        RrfFusion, one RetrievedContext under each of its three fields.
     """
     log.debug(
         "rrf_fuse.start",
@@ -423,14 +439,13 @@ def rrf_fuse(
     )
 
     # Fetch individual candidate lists separately for trace inclusion
-    vector_cands = vector_search(conn_str, query_vector, strategy.vector_k, query_text)
-    bm25_cands = bm25_search(conn_str, query_text, strategy.bm25_k)
-
-    return {
-        "fused": fused,
-        "vector_candidates": vector_cands,
-        "bm25_candidates": bm25_cands,
-    }
+    return RrfFusion(
+        fused=fused,
+        vector_candidates=vector_search(
+            conn_str, query_vector, strategy.vector_k, query_text
+        ),
+        bm25_candidates=bm25_search(conn_str, query_text, strategy.bm25_k),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -481,18 +496,18 @@ def rrf_fuse_with_expansion(
     query_vector: list[float],
     query_text: str,
     strategy: RetrievalStrategy,
-) -> dict:
+) -> RrfFusion:
     """RRF fusion with optional query expansion (M9).
 
-    When strategy.query_expansion is False, delegates directly to rrf_fuse
-    (passthrough — no performance cost).
+    When strategy.query_expansion is False, this hands straight to rrf_fuse and
+    costs nothing.
 
     When True:
       1. Generate up to 2 alternative query phrasings via Claude Haiku.
       2. Batch-embed ALL variants in a single Voyage call (NOT 3 sequential calls).
       3. Run rrf_fuse for each (variant, variant_vector) pair.
-      4. Merge results keeping the highest rrf_score per chunk_id.
-      5. Return top final_k results in the same shape as rrf_fuse.
+      4. Merge the fused chunks, keeping each chunk_id at its highest score.
+      5. Return the top final_k under the same three fields rrf_fuse returns.
 
     Args:
         conn_str:      Decrypted tenant DB connection string.
@@ -501,9 +516,9 @@ def rrf_fuse_with_expansion(
         strategy:      Per-tenant retrieval config.
 
     Returns:
-        Dict with keys "fused", "vector_candidates", "bm25_candidates", the
-        same shape as rrf_fuse. The two candidate contexts are empty here: a
-        merge across variants has no one per-engine ranking to report.
+        RrfFusion, the same three fields rrf_fuse returns. Both candidate
+        contexts are empty here. A merge across variants has no one per-engine
+        ranking to report.
     """
     if not strategy.query_expansion:
         return rrf_fuse(conn_str, query_vector, query_text, strategy)
@@ -524,17 +539,17 @@ def rrf_fuse_with_expansion(
     all_fused: dict[str, RetrievedChunk] = {}
     for variant_text, variant_vector in zip(variants, all_embeddings):
         result = rrf_fuse(conn_str, variant_vector, variant_text, strategy)
-        for chunk in result["fused"].chunks:
+        for chunk in result.fused.chunks:
             best = all_fused.get(chunk.chunk_id)
             if best is None or chunk.score > best.score:
                 all_fused[chunk.chunk_id] = chunk
 
     merged = sorted(all_fused.values(), key=lambda c: c.score, reverse=True)
 
-    return {
-        # Renumbered: the rank a chunk arrived with is one variant's ranking,
+    return RrfFusion(
+        # Renumbered. The rank a chunk arrived with is one variant's ranking,
         # and the merged order is the ranking this function reports.
-        "fused": RetrievedContext(
+        fused=RetrievedContext(
             query=query_text,
             chunks=tuple(
                 replace(chunk, rank=position)
@@ -542,9 +557,9 @@ def rrf_fuse_with_expansion(
             ),
             strategy="rrf",
         ),
-        "vector_candidates": _empty_context(query_text, "vector"),
-        "bm25_candidates": _empty_context(query_text, "bm25"),
-    }
+        vector_candidates=_empty_context(query_text, "vector"),
+        bm25_candidates=_empty_context(query_text, "bm25"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -552,7 +567,6 @@ def rrf_fuse_with_expansion(
 # ---------------------------------------------------------------------------
 
 def _reranked_context(
-    query_text: str,
     candidates: RetrievedContext,
     scored: list[tuple[float, int]],
 ) -> RetrievedContext:
@@ -561,11 +575,12 @@ def _reranked_context(
     Sorted here rather than at each call site so the Voyage path and the Cohere
     path cannot disagree about the order they hand back. `rank` is the position
     in THIS ranking, so it renumbers from 1 and no longer reports where the
-    chunk sat in the fusion that produced it.
+    chunk sat in the fusion that produced it. The query comes off `candidates`,
+    which is the query the reranked context has to report.
     """
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return RetrievedContext(
-        query=query_text,
+        query=candidates.query,
         chunks=tuple(
             replace(candidates.chunks[index], score=score, rank=position)
             for position, (score, index) in enumerate(scored, start=1)
@@ -615,7 +630,7 @@ def _cohere_rerank(
         for r in response.results
         if r.relevance_score >= strategy.rerank_threshold
     ]
-    return _reranked_context(query_text, candidates, scored)
+    return _reranked_context(candidates, scored)
 
 
 def rerank(
@@ -635,7 +650,7 @@ def rerank(
 
     Args:
         query_text: The raw user query string.
-        candidates: The fused context (typically rrf_fuse()["fused"]).
+        candidates: The fused context (typically rrf_fuse(...).fused).
         strategy: Per-tenant retrieval config.
 
     Returns:
@@ -658,7 +673,7 @@ def rerank(
             for r in reranking.results
             if r.relevance_score >= strategy.rerank_threshold
         ]
-        return _reranked_context(query_text, candidates, scored)
+        return _reranked_context(candidates, scored)
 
     except Exception as exc:
         log.warning("rerank.voyage_failed_falling_back", error_type=type(exc).__name__)
@@ -678,14 +693,18 @@ def build_trace(
 ) -> dict:
     """Build the retrieval trace dict for the query.complete SSE payload.
 
+    A dict rather than a named record, because this trace IS the diagnostic
+    section of an SSE payload and its keys are the wire the admin console reads.
+
     Truncates `content` to max_content chars in all trace copies to keep the
     SSE payload compact. Full content lives in the top-level `results` field
     of the query.complete payload (assembled by the Celery task).
 
     Each section reports its own engine's number under `score`, because the
-    section name says which engine produced it: `score` inside
+    section name says which engine produced it. `score` inside
     vector_candidates is the cosine similarity, inside bm25_candidates it is
-    the ts_rank_cd value, and inside fused_candidates it is the RRF score.
+    the ts_rank_cd value, inside fused_candidates it is the RRF score, and
+    inside reranked_candidates it is the reranker's relevance score.
 
     Args:
         vector_candidates: Top vector_k from HNSW search.

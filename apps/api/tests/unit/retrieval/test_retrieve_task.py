@@ -17,6 +17,7 @@ import uuid
 from unittest.mock import MagicMock, patch
 
 from app.domain.retrieved_context import RetrievedChunk, RetrievedContext
+from app.services.retrieval_service import RrfFusion
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -220,11 +221,11 @@ def test_retrieve_and_rank_happy_path():
         patch("app.worker.tasks.runtime.retrieve.embed_query", return_value=fake_vector),
         # D-27: verified_qa_lookup returns None (cache miss) — falls through to hybrid search
         patch("app.worker.tasks.runtime.retrieve.verified_qa_lookup", return_value=None),
-        patch("app.worker.tasks.runtime.retrieve.rrf_fuse", return_value={
-            "fused": fake_fused,
-            "vector_candidates": fake_vector_cands,
-            "bm25_candidates": fake_bm25_cands,
-        }),
+        patch("app.worker.tasks.runtime.retrieve.rrf_fuse", return_value=RrfFusion(
+            fused=fake_fused,
+            vector_candidates=fake_vector_cands,
+            bm25_candidates=fake_bm25_cands,
+        )),
         patch("app.worker.tasks.runtime.retrieve.rerank", return_value=fake_reranked),
         patch("app.worker.tasks.runtime.retrieve.build_trace", return_value=fake_trace),
         patch("app.worker.tasks.runtime.retrieve.emit", side_effect=fake_emit),
@@ -401,11 +402,11 @@ def test_retrieve_and_rank_verified_qa_lookup_called_with_threshold():
         patch("app.worker.tasks.runtime.retrieve.fernet_decrypt", return_value="postgresql://tenant"),
         patch("app.worker.tasks.runtime.retrieve.embed_query", return_value=fake_vector),
         patch("app.worker.tasks.runtime.retrieve.verified_qa_lookup", mock_lookup),
-        patch("app.worker.tasks.runtime.retrieve.rrf_fuse", return_value={
-            "fused": _empty("rrf"),
-            "vector_candidates": _empty("vector"),
-            "bm25_candidates": _empty("bm25"),
-        }),
+        patch("app.worker.tasks.runtime.retrieve.rrf_fuse", return_value=RrfFusion(
+            fused=_empty("rrf"),
+            vector_candidates=_empty("vector"),
+            bm25_candidates=_empty("bm25"),
+        )),
         patch("app.worker.tasks.runtime.retrieve.rerank", return_value=_empty("rerank")),
         patch("app.worker.tasks.runtime.retrieve.build_trace", return_value={}),
         patch("app.worker.tasks.runtime.retrieve.emit"),

@@ -110,7 +110,7 @@ PINNED_LIZARD = {
     ("app/services/red_team_service.py", "run_value_bound_evasion_agent"): (17, 149),
     ("app/services/red_team_service.py", "seed_poisoned_chunk"): (2, 75),
     ("app/services/redteam_programme_service.py", "read_programme"): (16, 99),
-    ("app/services/retrieval_service.py", "rrf_fuse"): (3, 69),
+    ("app/services/retrieval_service.py", "rrf_fuse"): (3, 65),
     ("app/services/retrieval_service.py", "rrf_fuse_with_expansion"): (8, 69),
     ("app/services/retrieval_service.py", "verified_qa_lookup"): (3, 61),
     ("app/services/scenario_service.py", "generate_eval_suite_for_agent"): (7, 68),

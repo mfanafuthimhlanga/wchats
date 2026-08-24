@@ -19,6 +19,7 @@ import pytest
 from app.domain.retrieved_context import RetrievedChunk, RetrievedContext
 from app.services.retrieval_service import (
     RetrievalStrategy,
+    RrfFusion,
     bm25_search,
     build_trace,
     embed_query,
@@ -163,7 +164,7 @@ class TestVectorSearch:
 
 
 # ---------------------------------------------------------------------------
-# bm25_search — uses tsvector ts_rank_cd, returns bm25_score
+# bm25_search, native tsvector ts_rank_cd, reported as a bm25 context
 # ---------------------------------------------------------------------------
 
 class TestBM25Search:
@@ -210,7 +211,7 @@ class TestBM25Search:
 
 
 # ---------------------------------------------------------------------------
-# rrf_fuse — returns dict with 3 keys; RRF math via full CTE mock
+# rrf_fuse returns an RrfFusion of three contexts. RRF math via the full CTE mock.
 # ---------------------------------------------------------------------------
 
 class TestRRFFuse:
@@ -251,12 +252,11 @@ class TestRRFFuse:
         strategy = RetrievalStrategy()
         result = rrf_fuse("conn://fake", [0.1] * 10, "query", strategy)
 
-        assert set(result) == {"fused", "vector_candidates", "bm25_candidates"}
-        assert result["fused"].strategy == "rrf"
-        assert result["vector_candidates"].strategy == "vector"
-        assert result["bm25_candidates"].strategy == "bm25"
-        assert result["vector_candidates"].chunks[0].score == 0.9
-        assert result["bm25_candidates"].chunks[0].score == 0.4
+        assert result.fused.strategy == "rrf"
+        assert result.vector_candidates.strategy == "vector"
+        assert result.bm25_candidates.strategy == "bm25"
+        assert result.vector_candidates.chunks[0].score == 0.9
+        assert result.bm25_candidates.chunks[0].score == 0.4
 
     @patch("app.services.retrieval_service.bm25_search")
     @patch("app.services.retrieval_service.vector_search")
@@ -279,7 +279,7 @@ class TestRRFFuse:
         strategy = RetrievalStrategy()
         result = rrf_fuse("conn://fake", [0.1], "query", strategy)
 
-        fused = result["fused"]
+        fused = result.fused
         assert fused.query == "query"
         assert len(fused.chunks) == 2
         assert fused.chunks[0].chunk_id == str(cid)
@@ -287,6 +287,26 @@ class TestRRFFuse:
         assert fused.chunks[0].document_id == str(did)
         assert fused.chunks[0].score == 0.032522
         assert [chunk.rank for chunk in fused.chunks] == [1, 2]
+
+    @patch("app.services.retrieval_service.bm25_search")
+    @patch("app.services.retrieval_service.vector_search")
+    @patch("app.services.retrieval_service.psycopg2")
+    def test_the_three_contexts_arrive_under_named_fields(
+        self, mock_psycopg2, mock_vec, mock_bm25
+    ):
+        """A field a caller misspells is an AttributeError at the call, not a KeyError."""
+        mock_psycopg2.connect.return_value = self._make_psycopg2_mock([])
+        mock_vec.return_value = self._empty("vector")
+        mock_bm25.return_value = self._empty("bm25")
+
+        result = rrf_fuse("conn://fake", [0.1], "query", RetrievalStrategy())
+
+        assert isinstance(result, RrfFusion)
+        assert result.fused.strategy == "rrf"
+        assert result.vector_candidates.strategy == "vector"
+        assert result.bm25_candidates.strategy == "bm25"
+        with pytest.raises(TypeError):
+            result["fused"]
 
     @patch("app.services.retrieval_service.bm25_search")
     @patch("app.services.retrieval_service.vector_search")
@@ -308,9 +328,9 @@ class TestRRFFuse:
 # ---------------------------------------------------------------------------
 
 class TestRerank:
-    def _make_candidates(self, n=3):
+    def _make_candidates(self, n=3, query="query"):
         return RetrievedContext(
-            query="query",
+            query=query,
             chunks=tuple(
                 RetrievedChunk(
                     chunk_id=f"chunk-{i}",
@@ -341,7 +361,7 @@ class TestRerank:
         mock_vo.rerank.return_value = reranking
         mock_get_vo.return_value = mock_vo
 
-        candidates = self._make_candidates(2)
+        candidates = self._make_candidates(2, query="my query")
         strategy = RetrievalStrategy(final_k=2, rerank_threshold=0.0)
 
         result = rerank("my query", candidates, strategy)
@@ -354,7 +374,8 @@ class TestRerank:
             truncation=True,
         )
         assert result.strategy == "rerank"
-        assert result.query == "my query"
+        # The reranked context reports the query its candidates were found for.
+        assert result.query == candidates.query == "my query"
         assert len(result.chunks) == 2
         assert result.chunks[0].score == 0.95
 

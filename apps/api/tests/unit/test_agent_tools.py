@@ -109,8 +109,15 @@ def _fn(tool_obj):
     return getattr(tool_obj, "handler", tool_obj)
 
 
+def _empty_fused_context():
+    """A fused context that matched nothing, which retrieve_tool still renders."""
+    from app.domain.retrieved_context import RetrievedContext
+
+    return RetrievedContext(query="test query", chunks=(), strategy="rrf")
+
+
 def _long_chunk_context(content: str, n: int = 20):
-    """20 fused chunks sharing one long body, the truncation fixture."""
+    """n fused chunks sharing one long body, the truncation fixture."""
     from app.domain.retrieved_context import RetrievedChunk, RetrievedContext
 
     return RetrievedContext(
@@ -130,18 +137,19 @@ def _long_chunk_context(content: str, n: int = 20):
 
 
 def _rrf_result(fused):
-    """The three-key dict rrf_fuse returns, with both candidate lists empty."""
+    """The RrfFusion rrf_fuse returns, with both candidate lists empty."""
     from app.domain.retrieved_context import RetrievedContext
+    from app.services.retrieval_service import RrfFusion
 
-    return {
-        "fused": fused,
-        "vector_candidates": RetrievedContext(
+    return RrfFusion(
+        fused=fused,
+        vector_candidates=RetrievedContext(
             query=fused.query, chunks=(), strategy="vector"
         ),
-        "bm25_candidates": RetrievedContext(
+        bm25_candidates=RetrievedContext(
             query=fused.query, chunks=(), strategy="bm25"
         ),
-    }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -291,9 +299,13 @@ def test_retrieve_tool_data_wrapper():
 # retrieve_tool renders the retrieved chunks as the repr of a list of dicts,
 # and app/worker/tasks/runtime/agent.py reads that string back with
 # ast.literal_eval. #44 puts RetrievedContext at the retrieval seam and leaves
-# the repr where it is, so the two sides still meet. The literal below was
-# captured from the code as it stood before that change, with a retrieval
-# result carrying exactly the fields RetrievedChunk names.
+# the repr where it is, so the two sides still meet.
+#
+# The literal below is the NEW contract, written by hand from the five keys
+# RetrievedChunk names. It is not what the code emitted before #44: that string
+# carried nine keys, and neither `score` nor `rank` was among them. What holds
+# the two sides together is the literal_eval test beside this one, which proves
+# the parser on the other side still reads the string this pin fixes.
 # ---------------------------------------------------------------------------
 
 PINNED_MODEL_FACING_CHUNKS = (
@@ -326,16 +338,11 @@ def _pinned_retrieval():
     )
     fused = RetrievedContext(query=query, chunks=chunks, strategy="rrf")
     reranked = RetrievedContext(query=query, chunks=chunks, strategy="rerank")
-    rrf_result = {
-        "fused": fused,
-        "vector_candidates": RetrievedContext(query=query, chunks=(), strategy="vector"),
-        "bm25_candidates": RetrievedContext(query=query, chunks=(), strategy="bm25"),
-    }
-    return query, rrf_result, reranked
+    return query, _rrf_result(fused), reranked
 
 
 def test_retrieve_tool_model_string_is_byte_for_byte_the_pinned_repr():
-    """A fixed retrieval result renders the exact string it rendered before #44."""
+    """A fixed retrieval result renders the pinned string, key for key."""
     agent_tools._retrieve_call_count_var.set(0)
     query, rrf_result, reranked = _pinned_retrieval()
 
@@ -716,11 +723,11 @@ def test_retrieve_tool_logs_warning_on_unused_filters():
         patch("app.services.agent_tools.embed_query", return_value=[0.1] * 1024),
         patch(
             "app.services.agent_tools.rrf_fuse",
-            return_value=_rrf_result(_long_chunk_context("body", n=0)),
+            return_value=_rrf_result(_empty_fused_context()),
         ),
         patch(
             "app.services.agent_tools.rerank",
-            return_value=_long_chunk_context("body", n=0),
+            return_value=_empty_fused_context(),
         ),
         # OPS-05/06 (21-03): retrieve_tool now writes a retrieval_metrics row;
         # patch it out so this test never attempts a real DB connection.

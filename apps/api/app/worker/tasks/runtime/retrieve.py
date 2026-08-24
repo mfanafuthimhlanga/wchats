@@ -189,12 +189,12 @@ def retrieve_and_rank(self, job_id: str, agent_id: str, query: str) -> dict:
             # D-27: cache miss — fall through to hybrid search (existing code unchanged)
 
             # --------------------------------------------------------------
-            # RRF fusion: one CTE, a RetrievedContext under each of three keys
+            # RRF fusion: one CTE, a RetrievedContext under each of three fields
             # --------------------------------------------------------------
             rrf_result = rrf_fuse(conn_str, query_vector, query, strategy)
-            fused = rrf_result["fused"]
-            vector_cands = rrf_result["vector_candidates"]
-            bm25_cands = rrf_result["bm25_candidates"]
+            fused = rrf_result.fused
+            vector_cands = rrf_result.vector_candidates
+            bm25_cands = rrf_result.bm25_candidates
 
             log.info(
                 "retrieve_and_rank.searching_complete",
