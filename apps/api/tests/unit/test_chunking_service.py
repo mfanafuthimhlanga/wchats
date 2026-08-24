@@ -15,7 +15,7 @@ Tests:
   5. test_text_path_uses_contextualize_not_chunk_text   — contextualize() called, not chunk.text
   6. test_sanitize_strips_injection_in_table_path  — sanitize_chunk_text applied to table Markdown
   7. test_empty_text_chunks_are_skipped            — whitespace-only context strings are excluded
-  8. test_returns_chunks_carrying_the_document_id  — the return type and its document_id
+  8. test_returns_chunks_carrying_the_document_id  (the return type and its document_id)
 
 Patch target: docling.chunking.HybridChunker (the class — patch its return value's
 .chunk and .contextualize methods). NOT app.services.chunking_service.HybridChunker:
@@ -342,7 +342,6 @@ def test_empty_text_chunks_are_skipped():
     assert chunks == (), (
         "Expected an empty tuple when all contextualize() outputs are whitespace"
     )
-
 
 
 # ---------------------------------------------------------------------------

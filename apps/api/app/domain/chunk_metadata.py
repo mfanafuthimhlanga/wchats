@@ -1,4 +1,4 @@
-"""ChunkMetadata — what enrichment produced for one chunk (ticket #42, issues #7, #23).
+"""ChunkMetadata, what enrichment produced for one chunk (ticket #42, issues #7, #23).
 
 WHY A TYPE RATHER THAN THE LOOSE KEYS IT REPLACES
     The enrichment step read `meta.summary`, `meta.keywords`, `meta.questions`
@@ -20,7 +20,7 @@ WHY chunk_id IS A PARAMETER, UNLIKE Chunk.id
 WHY A FROZEN STDLIB DATACLASS
     Same reasoning as Chunk: this validates nothing and is constructed only by
     our own task, from a response pydantic has already validated. Five fields,
-    all required, no defaults — a record that exists is a chunk that was enriched.
+    all required, no defaults. A record that exists is a chunk that was enriched.
 
 Rung: `app.domain` imports the standard library, third-party packages and its
 domain siblings. This module imports the standard library only.
@@ -38,7 +38,7 @@ class ChunkMetadata:
     """The enrichment of one chunk, as the task holds it before it is persisted.
 
     Args:
-        chunk_id:  The `chunks.id` this describes — the value `Chunk.id` computes.
+        chunk_id:  The `chunks.id` this describes, the value `Chunk.id` computes.
         summary:   One or two sentences covering the chunk.
         keywords:  Noun-phrase keywords, written to `chunk_metadata.keywords`.
         questions: Hypothetical questions this chunk answers.

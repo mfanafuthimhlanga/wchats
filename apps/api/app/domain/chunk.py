@@ -1,4 +1,4 @@
-"""Chunk — the record the chunker emits and the pipeline persists (ticket #42, issue #7).
+"""Chunk, the record the chunker emits and the pipeline persists (ticket #42, issue #7).
 
 WHY THE ID IS NOT A CONSTRUCTOR PARAMETER
     `deterministic_chunk_id(document_id, ordinal)` is the ING-05 idempotency

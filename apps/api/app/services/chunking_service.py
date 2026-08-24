@@ -9,8 +9,8 @@ PITFALLS.md §2 — Table Flattening:
     HybridChunker. This is a first-class design decision, not a post-hoc patch.
 
 PITFALLS.md §11 — Indirect Prompt Injection (Sanitization Layer):
-    All chunk content — whether produced by HybridChunker.contextualize() (text path)
-    or by table.export_to_markdown() (table path) — passes through
+    All chunk content, whether produced by HybridChunker.contextualize() (text path)
+    or by table.export_to_markdown() (table path), passes through
     sanitize_chunk_text() before a Chunk is built from it. The sanitized string is
     what gets stored in the tenant chunks table, so injection markers never reach
     the DB.
@@ -51,7 +51,7 @@ def chunk_document(doc, document_id: str) -> tuple[Chunk, ...]:
         Apply sanitize_chunk_text() on the Markdown output. One chunk per table.
 
     Both paths share a single monotonic ordinal counter, and Chunk derives each id
-    from (document_id, ordinal) — uuid5, stable across reruns (PITFALLS.md §8 /
+    from (document_id, ordinal) as a uuid5, stable across reruns (PITFALLS.md §8 /
     ING-05 idempotency contract).
 
     Args:
@@ -62,7 +62,7 @@ def chunk_document(doc, document_id: str) -> tuple[Chunk, ...]:
         Ordered tuple of Chunk. `content` is sanitized and ready for chunks.content;
         `ordinal` is zero-indexed and monotonic across text then table chunks;
         `is_table` is True for the table path; `token_count` is an approximation
-        (len(content.split())) — replace with a proper tokenizer in M3 if the token
+        (len(content.split())). Replace with a proper tokenizer in M3 if the token
         budget starts to matter.
     """
     from docling.chunking import HybridChunker  # lazy — only available in pipeline worker

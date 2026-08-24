@@ -8,10 +8,10 @@ Tests:
   4. test_generate_metadata_calls_enrich_when_no_existing_metadata        — enrich_chunks_batch called once with ["the content"]
   5. test_generate_metadata_upserts_entities_with_on_conflict_normalized_type — entity UPSERT SQL shape
   6. test_generate_metadata_emits_event_sequence                          — metadata.started then metadata.complete
-  7. test_wholly_failed_enrichment_fails_the_job                          — issue #23: 0 enriched is not a success
-  8. test_partial_enrichment_still_succeeds_and_reports_its_counts        — 1 of 11 enriched still completes
-  9. test_a_document_with_no_chunks_still_succeeds                        — nothing to enrich is not a failure
- 10. test_enriched_chunks_reach_persistence_as_chunk_metadata             — typed records at the persistence seam
+  7. test_wholly_failed_enrichment_fails_the_job                          (issue #23, 0 enriched is not a success)
+  8. test_partial_enrichment_still_succeeds_and_reports_its_counts        (1 of 11 enriched still completes)
+  9. test_a_document_with_no_chunks_still_succeeds                        (nothing to enrich is not a failure)
+ 10. test_enriched_chunks_reach_persistence_as_chunk_metadata             (typed records at the persistence seam)
 
 Patch targets are symbols imported into app.worker.tasks.pipeline.metadata, NOT
 the original module paths (e.g. patch app.worker.tasks.pipeline.metadata.fernet_decrypt,
@@ -502,7 +502,7 @@ def test_wholly_failed_enrichment_fails_the_job(monkeypatch):
 
     Observed 2026-08-22: batch_extraction_failed on all three documents,
     chunks_enriched=0, and the job still reported succeeded, so the failure was
-    invisible to everyone downstream — the SSE stream, the job row, and the
+    invisible to everyone downstream: the SSE stream, the job row, and the
     embed step that ran next over chunks with no metadata.
 
     The counts travel with the failure. "Enriched nothing" and "had nothing to
@@ -554,9 +554,9 @@ def test_wholly_failed_enrichment_fails_the_job(monkeypatch):
 
 
 def test_partial_enrichment_still_succeeds_and_reports_its_counts(monkeypatch):
-    """One batch of 10 fails, the 11th chunk enriches: the job succeeds and says 1 of 11.
+    """One batch of 10 fails, the 11th chunk enriches, and the job says 1 of 11.
 
-    Partial-failure tolerance is deliberate — a re-run re-attempts the missing
+    Partial-failure tolerance is deliberate. A re-run re-attempts the missing
     chunks, and Layer 3 skips the ones that landed. Only the wholly-failed
     outcome changed in issue #23.
     """
@@ -628,7 +628,7 @@ def test_enriched_chunks_reach_persistence_as_chunk_metadata(monkeypatch):
     """The persistence seam receives one ChunkMetadata per enriched chunk, fields intact.
 
     The model returns per-chunk results in submission order and the task zips
-    them back to chunk_ids by index, never by id — the model never sees an id.
+    them back to chunk_ids by index, never by id. The model never sees an id.
     Reading the records at the seam is what proves the zip lined up: a summary
     landing on the wrong chunk_id is a mispairing this assertion catches and a
     call count cannot.

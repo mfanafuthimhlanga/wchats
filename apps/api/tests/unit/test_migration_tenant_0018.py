@@ -1,12 +1,12 @@
-"""Tests for TENANT migration 0018 — chunks.is_table (ticket #42, issue #7).
+"""Tests for TENANT migration 0018, chunks.is_table (ticket #42, issue #7).
 
 Named test_migration_tenant_0018 rather than test_migration_0018 for the same
-reason as its 0014-0017 siblings: the CONTROL-DB tree numbers its revisions
-independently and a reader who assumes one tree will look in the wrong
+reason as its 0014-0017 siblings. The CONTROL-DB tree numbers its revisions
+independently, so a reader who assumes one tree will look in the wrong
 directory.
 
-What the migration is for: chunking_service computes is_table on every chunk —
-True for a table serialised as Markdown, False for HybridChunker text — and the
+What the migration is for: chunking_service computes is_table on every chunk
+(True for a table serialised as Markdown, False for HybridChunker text), and the
 INSERT in app/worker/tasks/pipeline/chunk.py listed five columns, none of them
 is_table. The flag reached the log line counting how many tables a document had
 and nothing else, so retrieval could not tell a table from prose. 0018 is the
@@ -53,7 +53,7 @@ _TESTS_DIR = os.path.dirname(__file__)
 VERSIONS_DIR = os.path.normpath(
     os.path.join(_TESTS_DIR, "../../alembic_tenant/versions")
 )
-MIGRATION_FILE = os.path.join(VERSIONS_DIR, "0018_chunk_is_table.py")
+MIGRATION_FILE = os.path.join(VERSIONS_DIR, "0018_chunks_is_table.py")
 
 
 def _load_migration():
@@ -131,7 +131,7 @@ def test_0018_is_the_sole_child_of_0017_and_the_tree_is_unforked():
     parents = [down for down in revisions.values() if down is not None]
     heads = set(revisions) - set(parents)
     assert len(heads) == 1, (
-        f"the tenant tree is forked — expected a single head, got {sorted(heads)}"
+        f"the tenant tree is forked. Expected a single head, got {sorted(heads)}"
     )
 
 
@@ -142,7 +142,7 @@ def test_0018_is_the_tenant_head():
     this line and only this line, and it caught 0018 landing: the battery went
     red on the 0017 head assertion the first time this migration existed.
     Moving it is the instruction the test itself gives, and it is not the same
-    as deleting it — relaxing it to `len(heads) == 1` would leave nothing
+    as deleting it. Relaxing it to `len(heads) == 1` would leave nothing
     asserting which revision the tree ends at, and an assertion getting weaker
     inside a test that still passes is invisible.
 
@@ -152,7 +152,7 @@ def test_0018_is_the_tenant_head():
     parents = {down for down in revisions.values() if down is not None}
     heads = set(revisions) - parents
     assert heads == {"0018"}, (
-        f"the tenant head is {sorted(heads)}, not 0018 — if a later revision "
+        f"the tenant head is {sorted(heads)}, not 0018. If a later revision "
         "landed, move this assertion to its test file rather than deleting it"
     )
 
@@ -207,7 +207,7 @@ def test_upgrade_adds_exactly_one_column():
 def test_upgrade_is_strictly_additive(forbidden):
     """No backfill, no destructive statement. The DEFAULT does the filling."""
     assert forbidden not in _executed("upgrade"), (
-        f"0018 upgrade must not contain {forbidden!r} — it adds a column and "
+        f"0018 upgrade must not contain {forbidden!r}. It adds a column and "
         "nothing else"
     )
 

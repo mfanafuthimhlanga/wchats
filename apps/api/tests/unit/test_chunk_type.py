@@ -1,4 +1,4 @@
-"""Unit tests for app.domain.chunk.Chunk — the frozen chunk record (ticket #42, issue #7).
+"""Unit tests for app.domain.chunk.Chunk, the frozen chunk record (ticket #42, issue #7).
 
 The type removes one failure mode: a chunk whose id disagrees with the position
 it claims. `id` is derived inside the constructor from (document_id, ordinal)

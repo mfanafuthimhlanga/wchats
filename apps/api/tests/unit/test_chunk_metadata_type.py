@@ -73,7 +73,7 @@ def test_the_field_set_is_the_five_the_enrichment_step_produces():
 
 
 def test_the_chunk_id_is_kept_as_given():
-    """Unlike Chunk.id, chunk_id is supplied — the row it belongs to already exists."""
+    """Unlike Chunk.id, chunk_id is supplied. The row it belongs to already exists."""
     assert _metadata(chunk_id=OTHER_CHUNK).chunk_id == OTHER_CHUNK
 
 
@@ -95,7 +95,7 @@ def test_every_field_is_required(omitted):
 
 
 def test_no_entities_is_a_whole_record():
-    """A chunk naming nobody is still enriched — an empty list, never a missing one."""
+    """A chunk naming nobody is still enriched. The list is empty, never missing."""
     assert _metadata(entities=[]).entities == []
 
 

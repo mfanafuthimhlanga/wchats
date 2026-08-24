@@ -7,7 +7,7 @@ Tests:
   3. test_chunk_documents_upserts_with_on_conflict       — INSERT INTO chunks ... ON CONFLICT + UPDATE chunk_count
   4. test_chunk_documents_emits_event_sequence           — chunking.started then chunking.complete
   5. test_chunk_documents_returns_chain_dict_unmodified  — output matches input result dict
-  6. test_chunk_documents_persists_is_table              — is_table reaches the INSERT parameters
+  6. test_chunk_documents_persists_is_table              (is_table reaches the INSERT parameters)
 
 Patch targets are symbols imported into app.worker.tasks.pipeline.chunk, NOT the
 original module paths (e.g. patch app.worker.tasks.pipeline.chunk.fernet_decrypt,
@@ -394,7 +394,7 @@ def test_chunk_documents_returns_chain_dict_unmodified(monkeypatch):
 def test_chunk_documents_persists_is_table(monkeypatch):
     """The table flag the chunker computed is written into the chunks row.
 
-    It was computed and dropped until 2026-08-24: chunk_document set it on every
+    It was computed and dropped until 2026-08-24. chunk_document set it on every
     chunk and the INSERT listed five columns, none of them is_table. Retrieval
     could not tell a Markdown table from prose, so the flag existed only in the
     log line counting how many there were.

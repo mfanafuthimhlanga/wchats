@@ -5,13 +5,18 @@ Position in M2 chain (3rd of 4):
     parse_documents → chunk_documents → generate_metadata → embed_and_migrate
 
 Layout:
-    generate_metadata    the task — one tenant connection, the document loop, the
+    generate_metadata    the task, one tenant connection, the document loop, the
                          wholly-failed rule below
     _enrich_document     one document: fetch, Layer 3 pre-check, enrich, emit
     _pending_chunks      Layer 3 idempotency pre-check
     _enrich_pending      the batch loop, one ChunkMetadata per enriched chunk
     _persist_enrichment  one chunk's writes, committed
+    _refuse_a_run_that_enriched_nothing
+                         the wholly-failed rule itself, called once per run
     _fail_the_job        the failure mechanism shared with the other pipeline tasks
+    MetadataEnrichmentFailed
+                         what the wholly-failed rule raises, so Celery records
+                         FAILURE and the chain stops
 
 THE WHOLLY-FAILED RULE (issue #23):
     A run that processed chunks and produced ZERO ChunkMetadata does not report
@@ -23,7 +28,7 @@ THE WHOLLY-FAILED RULE (issue #23):
     chunks_enriched=0, job status succeeded. The failure was invisible to the
     SSE stream, to the job row, and to the embed step that ran next.
 
-    chunks_seen counts the chunks a run took responsibility for enriching — the
+    chunks_seen counts the chunks a run took responsibility for enriching, the
     pending set, after the Layer 3 pre-check. Zero of them is not a failure: an
     empty document, and a document whose chunks are all already enriched, both
     succeed. Partial enrichment also succeeds, with the counts recorded as
@@ -191,7 +196,7 @@ def _pending_chunks(tenant_conn, chunk_rows) -> list[tuple]:
     """The (chunk_id, content) pairs that have no chunk_metadata row yet.
 
     Layer 3 idempotency: an already-enriched chunk costs no Haiku call and no
-    re-billing (T-02-04-03). Stays on the main thread — psycopg2 is not
+    re-billing (T-02-04-03). Stays on the main thread because psycopg2 is not
     thread-safe.
     """
     pending: list[tuple] = []
@@ -212,9 +217,9 @@ def _enrich_pending(tenant_conn, db, job_id: str, pending: list[tuple]) -> int:
     """Enrich and persist the pending chunks; return how many records landed.
 
     One Haiku call per BATCH_SIZE chunks. The model returns per-chunk results in
-    submission order and they are zipped back to chunk_ids by index, never by id
-    — the model never sees an id. A ChunkMetadata exists only for a chunk that
-    came back, so the return value is a count of real records, not of attempts.
+    submission order, and this function zips them back to chunk_ids by index,
+    never by id. The model never sees an id. A ChunkMetadata exists only for a
+    chunk that came back, so the return value counts real records, not attempts.
     """
     enriched = 0
     for batch_start in range(0, len(pending), BATCH_SIZE):
@@ -252,7 +257,7 @@ def _enrich_pending(tenant_conn, db, job_id: str, pending: list[tuple]) -> int:
 def _enrich_document(tenant_conn, db, job_id: str, doc_id: str) -> tuple[int, int]:
     """Enrich one document's chunks; return (chunks_seen, chunks_enriched).
 
-    chunks_seen is the pending count — the chunks this run took responsibility
+    chunks_seen is the pending count, the chunks this run took responsibility
     for, after Layer 3 has skipped the ones already enriched. The caller sums
     both numbers across documents and reads the wholly-failed rule off them.
     """
@@ -276,10 +281,10 @@ def _enrich_document(tenant_conn, db, job_id: str, doc_id: str) -> tuple[int, in
 def _refuse_a_run_that_enriched_nothing(db, job_id: str, seen: int, enriched: int) -> None:
     """Issue #23's rule, in one place: chunks processed, none enriched, no success.
 
-    Returns quietly when the run has nothing to answer for — no chunks taken on
-    (an empty document, or every chunk already enriched), or at least one
-    ChunkMetadata produced. Otherwise it fails the job and raises, so Celery
-    records FAILURE and embed_and_migrate never runs over chunks with no metadata.
+    Returns quietly when the run took on no chunks at all (an empty document, or
+    every chunk already enriched), and when at least one ChunkMetadata landed.
+    Otherwise it fails the job and raises, so Celery records FAILURE and
+    embed_and_migrate never runs over chunks with no metadata.
     """
     if seen == 0 or enriched > 0:
         return
@@ -346,7 +351,7 @@ def generate_metadata(self, result: dict) -> dict:
             log.error("generate_metadata.agent_not_found", agent_id=agent_id)
             return forwarded
 
-        # POOLED connection string — DML only. Never logged (T-02-04-01).
+        # POOLED connection string, DML only. Never logged (T-02-04-01).
         conn_str = fernet_decrypt(
             require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string")
         )

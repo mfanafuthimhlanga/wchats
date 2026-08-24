@@ -1,4 +1,4 @@
-"""Tenant DB v18 migration — chunks.is_table (ticket #42, issue #7).
+"""Tenant DB v18 migration for chunks.is_table (ticket #42, issue #7).
 
 Revision ID: 0018
 Revises: 0017
@@ -8,8 +8,8 @@ Context:
     path each chunk came from: True for a table serialised as Markdown by
     `table.export_to_markdown()`, False for HybridChunker text. That flag was
     computed on every chunk since M2 and then dropped. The INSERT in
-    `app/worker/tasks/pipeline/chunk.py` listed five columns — id, document_id,
-    ordinal, content, token_count — and the flag reached only the log line that
+    `app/worker/tasks/pipeline/chunk.py` listed five columns (id, document_id,
+    ordinal, content, token_count), and the flag reached only the log line that
     counts how many tables a document had.
 
     So nothing downstream could tell a table from prose. Retrieval ranks a

@@ -275,8 +275,8 @@ def chunk_documents(self, result: dict) -> dict:
                                     ordinal     = EXCLUDED.ordinal,
                                     is_table    = EXCLUDED.is_table
                             """,
-                            # Column order above. chunk.id is the uuid5 Chunk
-                            # derived, rendered as text for psycopg2.
+                            # Column order above. chunk.id is the uuid5 the Chunk
+                            # constructor derived, rendered as text for psycopg2.
                             (
                                 str(chunk.id), doc_id, chunk.ordinal,
                                 chunk.content, chunk.token_count, chunk.is_table,
