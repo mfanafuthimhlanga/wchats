@@ -134,7 +134,7 @@ LIZARD_BASELINE = {
     ("app/services/bench_service.py", "grade_trace"): (5, 66),
     ("app/services/bench_service.py", "list_failing_traces"): (8, 87),
     ("app/services/capability_service.py", "validate_tighten_only"): (31, 154),
-    ("app/services/chunking_service.py", "chunk_document"): (10, 102),
+    ("app/services/chunking_service.py", "chunk_document"): (10, 98),
     ("app/services/deployment_service.py", "_agent_not_invoked_warning"): (3, 76),
     ("app/services/deployment_service.py", "_eval_summary"): (5, 69),
     ("app/services/deployment_service.py", "_fetch_blast_radius_sync"): (11, 147),

@@ -7,10 +7,16 @@ Tests:
   3. test_chunk_documents_upserts_with_on_conflict       — INSERT INTO chunks ... ON CONFLICT + UPDATE chunk_count
   4. test_chunk_documents_emits_event_sequence           — chunking.started then chunking.complete
   5. test_chunk_documents_returns_chain_dict_unmodified  — output matches input result dict
+  6. test_chunk_documents_persists_is_table              — is_table reaches the INSERT parameters
 
 Patch targets are symbols imported into app.worker.tasks.pipeline.chunk, NOT the
 original module paths (e.g. patch app.worker.tasks.pipeline.chunk.fernet_decrypt,
 not app.core.security.fernet_decrypt).
+
+The stubs that stand in for chunk_document return real `Chunk` objects (ticket
+#42), not the dicts the service emitted until 2026-08-24. A stub dict would keep
+passing while the task read `chunk["text"]` off a frozen dataclass and raised in
+the worker, which is the whole reason the seam is typed.
 """
 
 import base64
@@ -40,6 +46,8 @@ os.environ.setdefault("VOYAGE_API_KEY", "test_voyage")
 import inspect
 from contextlib import contextmanager
 from unittest.mock import MagicMock
+
+from app.domain.chunk import Chunk
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -179,15 +187,15 @@ def test_chunk_documents_upserts_with_on_conflict(monkeypatch):
     )
 
     # Mock chunk_document to return one chunk dict
-    mock_chunks = [
-        {
-            "id": "c1",
-            "text": "hello world",
-            "ordinal": 0,
-            "is_table": False,
-            "token_count": 2,
-        }
-    ]
+    mock_chunks = (
+        Chunk(
+            document_id="d1",
+            ordinal=0,
+            content="hello world",
+            token_count=2,
+            is_table=False,
+        ),
+    )
     monkeypatch.setattr(
         "app.worker.tasks.pipeline.chunk.chunk_document",
         lambda doc, doc_id: mock_chunks,
@@ -270,15 +278,15 @@ def test_chunk_documents_emits_event_sequence(monkeypatch):
         lambda content, source_uri: mock_doc,
     )
 
-    mock_chunks = [
-        {
-            "id": "c1",
-            "text": "hello",
-            "ordinal": 0,
-            "is_table": False,
-            "token_count": 1,
-        }
-    ]
+    mock_chunks = (
+        Chunk(
+            document_id="d1",
+            ordinal=0,
+            content="hello",
+            token_count=1,
+            is_table=False,
+        ),
+    )
     monkeypatch.setattr(
         "app.worker.tasks.pipeline.chunk.chunk_document",
         lambda doc, doc_id: mock_chunks,
@@ -349,9 +357,11 @@ def test_chunk_documents_returns_chain_dict_unmodified(monkeypatch):
     )
     monkeypatch.setattr(
         "app.worker.tasks.pipeline.chunk.chunk_document",
-        lambda doc, doc_id: [
-            {"id": "c1", "text": "t", "ordinal": 0, "is_table": False, "token_count": 1}
-        ],
+        lambda doc, doc_id: (
+            Chunk(
+                document_id="d1", ordinal=0, content="t", token_count=1, is_table=False
+            ),
+        ),
     )
     monkeypatch.setattr(
         "app.worker.tasks.pipeline.chunk.emit",
@@ -374,3 +384,81 @@ def test_chunk_documents_returns_chain_dict_unmodified(monkeypatch):
         f"Return value must match input result dict for chain forwarding.\n"
         f"Expected: {input_result}\nGot: {output}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 6: is_table reaches the INSERT parameters
+# ---------------------------------------------------------------------------
+
+
+def test_chunk_documents_persists_is_table(monkeypatch):
+    """The table flag the chunker computed is written into the chunks row.
+
+    It was computed and dropped until 2026-08-24: chunk_document set it on every
+    chunk and the INSERT listed five columns, none of them is_table. Retrieval
+    could not tell a Markdown table from prose, so the flag existed only in the
+    log line counting how many there were.
+    """
+    mock_db = MagicMock()
+    mock_agent = _make_mock_agent()
+    mock_db.get.return_value = mock_agent
+
+    sql_records = []
+    mock_conn, mock_cursor, sql_records = _make_mock_tenant_conn(sql_records)
+
+    monkeypatch.setattr(
+        "app.worker.tasks.pipeline.chunk.get_sync_db",
+        _make_sync_db_context(mock_db),
+    )
+    monkeypatch.setattr(
+        "app.worker.tasks.pipeline.chunk.fernet_decrypt",
+        lambda _: "fake-conn",
+    )
+    monkeypatch.setattr(
+        "app.worker.tasks.pipeline.chunk.psycopg2.connect",
+        lambda _: mock_conn,
+    )
+    monkeypatch.setattr(
+        "app.worker.tasks.pipeline.chunk.storage_service.get_bytes",
+        lambda key: b"%PDF-1.4 stub bytes",
+    )
+    monkeypatch.setattr(
+        "app.worker.tasks.pipeline.chunk.parse_document_from_bytes",
+        lambda content, source_uri: MagicMock(),
+    )
+
+    prose = Chunk(
+        document_id="d1", ordinal=0, content="prose", token_count=1, is_table=False
+    )
+    table = Chunk(
+        document_id="d1", ordinal=1, content="| a |", token_count=2, is_table=True
+    )
+    monkeypatch.setattr(
+        "app.worker.tasks.pipeline.chunk.chunk_document",
+        lambda doc, doc_id: (prose, table),
+    )
+    monkeypatch.setattr("app.worker.tasks.pipeline.chunk.emit", MagicMock())
+
+    from app.worker.tasks.pipeline.chunk import chunk_documents
+
+    chunk_documents.run(
+        {"tenant_id": "t", "agent_id": "a", "job_id": "j", "document_ids": ["d1"]},
+    )
+
+    inserts = [
+        (sql, params) for sql, params in sql_records if "INSERT INTO chunks" in sql
+    ]
+    assert len(inserts) == 2, (
+        f"Expected one INSERT per chunk, got {len(inserts)}"
+    )
+
+    for sql, _ in inserts:
+        assert "is_table" in sql, (
+            "the INSERT column list must name is_table: " + sql
+        )
+
+    # The flag lands per chunk, in the order the chunker issued them, and the id
+    # is the one Chunk derived rather than anything the task invented.
+    assert [params[-1] for _, params in inserts] == [False, True]
+    assert [params[0] for _, params in inserts] == [str(prose.id), str(table.id)]
+    assert [params[2] for _, params in inserts] == [0, 1]

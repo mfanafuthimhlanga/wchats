@@ -51,6 +51,10 @@ VERIFIED_COLUMNS = {
     # capture recorded nothing and `[]` means a retrieve ran and matched nothing.
     # A DEFAULT would collapse the two, and BACKLOG 5.16 is the cost of that.
     "0017": ("tool_calls", "retrieved_chunks", "jsonb", "YES", None),
+    # Ticket #42. NOT NULL with DEFAULT false is the opposite call from 0017 and
+    # for the opposite reason: a chunk came from the table path or it did not,
+    # there is no third observation, and false is what every pre-0018 row means.
+    "0018": ("chunks", "is_table", "boolean", "NO", "false"),
 }
 
 

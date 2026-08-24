@@ -267,19 +267,19 @@ def chunk_documents(self, result: dict) -> dict:
                     for chunk in chunks:
                         cur.execute(
                             """
-                            INSERT INTO chunks (id, document_id, ordinal, content, token_count)
-                            VALUES (%s, %s, %s, %s, %s)
+                            INSERT INTO chunks (id, document_id, ordinal, content, token_count, is_table)
+                            VALUES (%s, %s, %s, %s, %s, %s)
                             ON CONFLICT (id) DO UPDATE
                                 SET content     = EXCLUDED.content,
                                     token_count = EXCLUDED.token_count,
-                                    ordinal     = EXCLUDED.ordinal
+                                    ordinal     = EXCLUDED.ordinal,
+                                    is_table    = EXCLUDED.is_table
                             """,
+                            # Column order above. chunk.id is the uuid5 Chunk
+                            # derived, rendered as text for psycopg2.
                             (
-                                chunk["id"],
-                                doc_id,
-                                chunk["ordinal"],
-                                chunk["text"],
-                                chunk["token_count"],
+                                str(chunk.id), doc_id, chunk.ordinal,
+                                chunk.content, chunk.token_count, chunk.is_table,
                             ),
                         )
 

@@ -142,26 +142,16 @@ def test_0017_is_the_sole_child_of_0016_and_the_tree_is_unforked():
     )
 
 
-def test_0017_is_the_tenant_head():
-    """Head IDENTITY, moved here from `test_migration_tenant_0016.py`.
-
-    That file's version of this test said in its own docstring that 0017 would
-    move this line and only this line, and it caught 0017 landing: the battery
-    went red on `heads == {"0016"}` the first time the migration existed. Moving
-    it is the instruction the test itself gives, and it is deliberately not the
-    same as deleting it — relaxing this to `len(heads) == 1` would leave nothing
-    asserting which revision the tree ends at, and an assertion getting weaker
-    inside a test that still passes is invisible.
-
-    0018 moves this line and only this line.
-    """
-    revisions = _all_tenant_revisions()
-    parents = {down for down in revisions.values() if down is not None}
-    heads = set(revisions) - parents
-    assert heads == {"0017"}, (
-        f"the tenant head is {sorted(heads)}, not 0017 — if a later revision "
-        "landed, move this assertion to its test file rather than deleting it"
-    )
+# Head IDENTITY lives in tests/unit/test_migration_tenant_0018.py.
+#
+# `test_0017_is_the_tenant_head` stood here, asserting `heads == {"0017"}`, with
+# a docstring saying 0018 would move this line and only this line. On 2026-08-24
+# it went red the first time 0018 existed, which is the whole point of it, and it
+# moved as instructed rather than being relaxed or deleted. The assertion above,
+# that the tree has one head and 0016 has one child, stays here and is about a
+# different failure.
+#
+# 0019 moves it again, out of the 0018 file.
 
 
 # ---------------------------------------------------------------------------
