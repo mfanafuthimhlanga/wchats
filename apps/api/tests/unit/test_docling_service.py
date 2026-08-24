@@ -1,5 +1,5 @@
 """
-Unit tests for app.domain.docling_service — Wave 2 (ING-01, ING-02).
+Unit tests for app.domain.docling_service, Wave 2 (ING-01, ING-02).
 
 Tests:
   1. parse_document raises RuntimeError when ConversionStatus != SUCCESS

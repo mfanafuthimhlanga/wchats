@@ -110,7 +110,7 @@ def _is_confirm_action_shaped(arguments: dict | None) -> bool:
       - The Actor gate's require_human verdict stores the FULL validated
         arguments for the target mutating skill — always including
         `idempotency_key` (required on every one of the six mutating Input
-        models; `transactional/schemas.py`), never `action_reference` (no
+        models; `app/domain/transactional_schemas.py`), never `action_reference` (no
         mutating Input model defines that field at all).
       - confirm_action_tool stores ONLY `{"action_reference": <str>}`
         (tools.py:949) against `skill=<target mutating skill>` — never the

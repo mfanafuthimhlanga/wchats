@@ -1,4 +1,4 @@
-"""Unit tests for app.domain.pii_firewall — SEC-01 output PII firewall.
+"""Unit tests for app.domain.pii_firewall, SEC-01 output PII firewall.
 
 No app config import is required by pii_firewall.py (stdlib re only), so the
 os.environ.setdefault preamble used elsewhere in this suite is unnecessary

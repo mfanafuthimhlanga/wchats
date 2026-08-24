@@ -6,7 +6,8 @@ extra. Nothing in this repo has ever executed them. That was survivable while th
 skip was read as "unexecuted", but it stopped being survivable once the tests were
 also *wrong*: all seven chunking tests patched
 `app.services.chunking_service.HybridChunker` and the third docling test patched
-`app.domain.docling_service.DocumentStream`, neither of which exists. Both
+`app.services.docling_service.DocumentStream` (the module's home before the domain
+package), neither of which exists. Both
 services import those names inside the function body, since docling ships only in
 the pipeline worker image. So in every environment where docling IS installed the
 eight tests raised `AttributeError` at patch time, and in every environment where

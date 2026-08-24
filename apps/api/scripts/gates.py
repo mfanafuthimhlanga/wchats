@@ -52,13 +52,13 @@ def tool(name):
 
 PYTHON = tool("python") if os.path.exists(tool("python")) else sys.executable
 
-# ruff check app exits 1 today on two pre-existing I001s, so it cannot be the gate
-# as-is. Those two are pinned by COUNT: (file, rule) -> how many times that rule may
+# ruff check app exits 1 today on one pre-existing I001, so it cannot be the gate
+# as-is. It is pinned by COUNT: (file, rule) -> how many times that rule may
 # fire in that file. The gate fails three ways.
 #
 #   - a (file, rule) pair that is not on this list appears
 #   - a pinned pair fires MORE times than its count, e.g. a second I001 in
-#     agent_tools.py, which is a new violation wearing an already-pinned name
+#     chunk.py, which is a new violation wearing an already-pinned name
 #   - a pinned pair fires FEWER times, or stops firing: the line is stale, so lower
 #     it or delete it and the gate holds the tree to the smaller number
 #

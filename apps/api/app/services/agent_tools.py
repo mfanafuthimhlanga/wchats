@@ -142,7 +142,7 @@ CHUNK_CONTENT_CHAR_LIMIT: int = MAX_CHUNK_TOKENS * 4  # 2000 chars
 # retrieval-time framing are two independent layers against the same threat.
 # ---------------------------------------------------------------------------
 
-# BACKLOG 5.19: the strings moved to app.domain.context_frame so the grounding
+# BACKLOG 5.19: the strings moved to context_frame (now app.domain.context_frame) so the grounding
 # judge can frame its own context without importing this module (the whole
 # retrieval stack) onto the validator path. Re-exported here because this is
 # where every existing reader and test looks for them, and because a second copy

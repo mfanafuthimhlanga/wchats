@@ -1,5 +1,5 @@
 """
-domain.transactional_schemas — Typed Pydantic v2 input/output models for all 7 transactional tools.
+domain.transactional_schemas. Typed Pydantic v2 input/output models for all 7 transactional tools.
 
 14 models total:
   Mutating (6 tools × 2 = 12):

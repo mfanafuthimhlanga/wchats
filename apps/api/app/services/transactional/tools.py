@@ -485,7 +485,7 @@ async def _execute_transactional_tool(
     recorded: bool = _side_effects_var.get() == "recorded"
 
     # The idempotency key is MODEL-SUPPLIED (every mutating Input model in
-    # schemas.py declares it) and models produce deterministic ones —
+    # transactional_schemas.py declares it) and models produce deterministic ones —
     # "refund-ORD-9001", "order-12345-refund". Two consequences, both real, both
     # closed by giving recorded mode its own keyspace:
     #   * an eval scenario mined from a production conversation can hit the key a
@@ -1030,7 +1030,7 @@ async def _execute_transactional_tool(
         # on (agent_id, skill, arguments->>'action_reference'). This branch
         # stores raw_args — the target skill's FULL validated arguments —
         # which never contains an "action_reference" key (no mutating Input
-        # model in schemas.py defines that field; only ConfirmActionInput
+        # model in transactional_schemas.py defines that field; only ConfirmActionInput
         # does). arguments->>'action_reference' is therefore always NULL for
         # a require_human row, and Postgres never treats two NULLs as equal
         # for a unique index, so that index silently never dedupes this
