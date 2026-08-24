@@ -103,3 +103,6 @@ Operative fact for later baselines: any guard that scans the tree for a module n
 string will collide with a baseline that pins that module's functions. The excuse
 pattern above is the resolution; a blanket file skip blinds the import arm and a split
 string is undone by the next re-measure.
+
+After the fix, observed at 4c3fac0: `full gates passed in 605.2s.`, exit 0,
+2640 unit tests green.
