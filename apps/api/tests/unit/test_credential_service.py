@@ -110,7 +110,7 @@ def test_no_credential_in_tool_schema() -> None:
     from app.services.transactional.registry import TOOL_REGISTRY
 
     # Pydantic Input model map — import the Input schemas directly
-    from app.services.transactional.schemas import (
+    from app.domain.transactional_schemas import (
         BookSlotInput,
         CancelOrderInput,
         IssueRefundInput,

@@ -78,7 +78,7 @@ from app.api.v1 import pending_confirmations as pc
 from app.main import app
 from app.models.agent import Agent
 from app.models.tenant import Tenant
-from app.services.transactional.schemas import SKILL_INPUT_MODELS
+from app.domain.transactional_schemas import SKILL_INPUT_MODELS
 
 MUTATING_SKILL = "issue_refund"
 assert MUTATING_SKILL in SKILL_INPUT_MODELS

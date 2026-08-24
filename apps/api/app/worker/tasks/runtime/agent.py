@@ -61,6 +61,7 @@ from sqlalchemy import text as sa_text
 from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt, require_ciphertext
+from app.domain.pii_firewall import detect_pii, scan_response
 from app.models.agent import Agent
 from app.models.job import Job
 from app.models.prompt_version import PromptVersion
@@ -78,7 +79,6 @@ from app.services.agent_tools import (
 from app.services.escalation import send_escalation_email
 from app.services.events import emit
 from app.services.prompt_version_service import resolve_prompt_version
-from app.utils.pii_firewall import detect_pii, scan_response
 from app.worker.celery_app import celery_app
 from app.worker.tasks.runtime.retrieval_eval import run_retrieval_faithfulness
 from app.worker.tasks.runtime.validators import run_auditor, run_gatekeeper, run_strategist

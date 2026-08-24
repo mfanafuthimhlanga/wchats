@@ -185,7 +185,7 @@ def _make_mock_adapter(result_message: str = "Refund processed") -> MagicMock:
     assertion below would have no secret to look for.
     """
     from app.services.transactional.credential_service import CredentialHandle  # noqa: PLC0415
-    from app.services.transactional.schemas import IssueRefundOutput  # noqa: PLC0415
+    from app.domain.transactional_schemas import IssueRefundOutput  # noqa: PLC0415
 
     adapter = MagicMock()
     handle = CredentialHandle(_raw=_CREDENTIAL_CANARY)
@@ -256,7 +256,7 @@ def test_dispatcher_success_with_mocked_adapter(db_session):
       - The credential/handle never appears in the audit arguments or result
       - The returned dict has no is_error
     """
-    from app.services.transactional.schemas import IssueRefundInput  # noqa: PLC0415
+    from app.domain.transactional_schemas import IssueRefundInput  # noqa: PLC0415
 
     agent_id_str = str(uuid4())
     idem_key = f"e2e-int02-success-{uuid4()}"
@@ -440,7 +440,7 @@ def test_dispatcher_provider_not_configured_releases_idempotency(db_session):
       - The idempotency row is NOT in 'completed' state (released / absent)
     """
     from app.services.transactional.credential_service import ProviderNotConfiguredError  # noqa: PLC0415
-    from app.services.transactional.schemas import IssueRefundInput  # noqa: PLC0415
+    from app.domain.transactional_schemas import IssueRefundInput  # noqa: PLC0415
 
     agent_id_str = str(uuid4())
     idem_key = f"e2e-int02-unconfigured-{uuid4()}"

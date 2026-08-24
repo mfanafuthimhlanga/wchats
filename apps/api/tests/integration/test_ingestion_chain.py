@@ -992,8 +992,8 @@ def test_chain_no_conn_strings_logged(
     metadata_mock = _build_metadata_mock()
 
     with (
-        patch("app.services.docling_service.parse_document", return_value=mock_doc),
-        patch("app.services.docling_service.parse_document_from_bytes", return_value=mock_doc),
+        patch("app.domain.docling_service.parse_document", return_value=mock_doc),
+        patch("app.domain.docling_service.parse_document_from_bytes", return_value=mock_doc),
         # See the note at the other three sites: the name lives on docling.chunking,
         # not on the service module that imports it at call time.
         patch("docling.chunking.HybridChunker") as mock_chunker_cls,

@@ -714,7 +714,7 @@ class TestReadiness:
         twenty E2E-6 responses passed as clean and were only found while someone
         read them. Scoring one measures the firewall rather than the judge.
         """
-        from app.utils.pii_firewall import PII_DEFLECTION
+        from app.domain.pii_firewall import PII_DEFLECTION
 
         calibration_tree(_FOUR_ROWS)
         (tmp_path / "responses" / "S-101.json").write_text(
@@ -735,7 +735,7 @@ class TestReadiness:
         )
 
     def test_deflections_below_the_minimum_block(self, calibration_tree, tmp_path):
-        from app.utils.pii_firewall import PII_DEFLECTION
+        from app.domain.pii_firewall import PII_DEFLECTION
 
         calibration_tree(_FOUR_ROWS)
         for sid in ("S-101", "S-102"):
@@ -758,7 +758,7 @@ class TestReadiness:
         self, calibration_tree, tmp_path
     ):
         """`scorable_rows` counts rows; `deflected_responses` names scenarios."""
-        from app.utils.pii_firewall import PII_DEFLECTION
+        from app.domain.pii_firewall import PII_DEFLECTION
 
         calibration_tree([
             ("S-101", "grounding_fidelity", "4"),
@@ -892,7 +892,7 @@ class TestCalibrationReadsRunZero:
         A deflection in run 2 is a real finding and validate_corpus.py reports
         it. It is not a reason to withhold the row the human can actually score.
         """
-        from app.utils.pii_firewall import PII_DEFLECTION
+        from app.domain.pii_firewall import PII_DEFLECTION
 
         calibration_tree(_FOUR_ROWS)
         self._multi_run(tmp_path, "S-101", ["a for S-101", PII_DEFLECTION])
@@ -900,7 +900,7 @@ class TestCalibrationReadsRunZero:
         assert cc.readiness()["deflected_responses"] == []
 
     def test_a_deflected_run_zero_is_still_caught(self, calibration_tree, tmp_path):
-        from app.utils.pii_firewall import PII_DEFLECTION
+        from app.domain.pii_firewall import PII_DEFLECTION
 
         calibration_tree(_FOUR_ROWS)
         self._multi_run(tmp_path, "S-101", [PII_DEFLECTION, "a for S-101"])
@@ -1036,7 +1036,7 @@ class TestADeflectionNeverEntersTheGate:
     """F11. `deflected_response_ids` was advisory: readiness called it, the gate did not."""
 
     def test_a_labelled_deflection_is_excluded_from_the_matrix(self, calibration_tree, tmp_path):
-        from app.utils.pii_firewall import PII_DEFLECTION
+        from app.domain.pii_firewall import PII_DEFLECTION
 
         calibration_tree(_FOUR_ROWS)
         (tmp_path / "responses" / "S-101.json").write_text(

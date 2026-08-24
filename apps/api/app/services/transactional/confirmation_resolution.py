@@ -94,6 +94,7 @@ from uuid import uuid4
 import structlog
 from pydantic import ValidationError
 
+from app.domain.transactional_schemas import SKILL_INPUT_MODELS
 from app.services.transactional.audit import write_audit_row
 from app.services.transactional.enforcement import (
     apply_rate_and_constraint_checks,
@@ -104,7 +105,6 @@ from app.services.transactional.idempotency import (
     release_idempotency,
     reserve_idempotency,
 )
-from app.services.transactional.schemas import SKILL_INPUT_MODELS
 from app.services.transactional.tools import _execute_adapter_and_audit
 
 log = structlog.get_logger(__name__)

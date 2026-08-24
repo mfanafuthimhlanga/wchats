@@ -101,7 +101,7 @@ async def test_book_slot() -> None:
     from app.services.transactional.adapters.calendly_adapter import (
         CALENDLY_API_BASE,
     )
-    from app.services.transactional.schemas import BookSlotInput
+    from app.domain.transactional_schemas import BookSlotInput
 
     adapter = _make_adapter()
     args = BookSlotInput(
@@ -178,7 +178,7 @@ async def test_unknown_service_type_raises() -> None:
     Calendly API (which would reject it or book the wrong event type). The error
     is raised before any HTTP call so the dispatcher can audit it as a config error.
     """
-    from app.services.transactional.schemas import BookSlotInput
+    from app.domain.transactional_schemas import BookSlotInput
 
     adapter = _make_adapter()  # config_data has "consultation" and "demo" only
     args = BookSlotInput(
@@ -227,7 +227,7 @@ async def test_unsupported_methods_raise() -> None:
 
     The dispatcher's except Exception handler returns is_error=True for unsupported calls.
     """
-    from app.services.transactional.schemas import (
+    from app.domain.transactional_schemas import (
         CancelOrderInput,
         IssueRefundInput,
         PlaceOrderInput,

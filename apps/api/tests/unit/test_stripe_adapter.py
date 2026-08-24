@@ -59,7 +59,7 @@ async def test_issue_refund_idempotency_key() -> None:
     """
     from app.services.transactional.adapters.stripe_adapter import StripeAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.services.transactional.schemas import IssueRefundInput
+    from app.domain.transactional_schemas import IssueRefundInput
 
     handle = CredentialHandle(_raw=json.dumps({"api_key": "sk_test_xxx"}))
     adapter = StripeAdapter(handle=handle, currency_code="USD")
@@ -112,7 +112,7 @@ async def test_currency_from_config_not_args() -> None:
     """
     from app.services.transactional.adapters.stripe_adapter import StripeAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.services.transactional.schemas import IssueRefundInput
+    from app.domain.transactional_schemas import IssueRefundInput
 
     handle = CredentialHandle(_raw=json.dumps({"api_key": "sk_test_zzz"}))
     # Configured with ZAR (South African Rand) — deliberately non-default to show
@@ -158,7 +158,7 @@ async def test_update_subscription() -> None:
     """
     from app.services.transactional.adapters.stripe_adapter import StripeAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.services.transactional.schemas import UpdateSubscriptionInput
+    from app.domain.transactional_schemas import UpdateSubscriptionInput
 
     handle = CredentialHandle(_raw=json.dumps({"api_key": "sk_test_sub"}))
     adapter = StripeAdapter(handle=handle, currency_code="USD")
@@ -217,7 +217,7 @@ async def test_sync_offloaded() -> None:
 
     from app.services.transactional.adapters.stripe_adapter import StripeAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.services.transactional.schemas import IssueRefundInput
+    from app.domain.transactional_schemas import IssueRefundInput
 
     handle = CredentialHandle(_raw=json.dumps({"api_key": "sk_test_async"}))
     adapter = StripeAdapter(handle=handle, currency_code="GBP")
@@ -275,7 +275,7 @@ async def test_place_order_checkout_session() -> None:
     """
     from app.services.transactional.adapters.stripe_adapter import StripeAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.services.transactional.schemas import PlaceOrderInput
+    from app.domain.transactional_schemas import PlaceOrderInput
 
     handle = CredentialHandle(_raw=json.dumps({"api_key": "sk_test_order"}))
     adapter = StripeAdapter(handle=handle, currency_code="EUR")
@@ -360,7 +360,7 @@ async def test_unsupported_methods_raise() -> None:
     """
     from app.services.transactional.adapters.stripe_adapter import StripeAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.services.transactional.schemas import (
+    from app.domain.transactional_schemas import (
         BookSlotInput,
         CancelOrderInput,
         UpdateCustomerRecordInput,

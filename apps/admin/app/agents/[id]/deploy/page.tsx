@@ -322,7 +322,7 @@ function readCents(v: unknown): number | null {
 }
 
 // ACT-07 — 22-UI-SPEC.md § Surface 2's headline table, copied verbatim from
-// the six real Input models (apps/api/app/services/transactional/schemas.py).
+// the six real Input models (apps/api/app/domain/transactional_schemas.py).
 // Every field referenced here is a real, typed field on the matching model —
 // none invented. A seventh mutating skill with no entry here falls through to
 // the generic fallback below, not to raw JSON.

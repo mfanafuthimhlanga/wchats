@@ -112,7 +112,12 @@ root_package = "app"
 [[tool.importlinter.contracts]]
 # Direction measured from the 444 real dependencies, not chosen: every observed edge
 # already runs down this list and not one runs up. app.models, app.core and app.utils
-# import no sibling at all, so they sit together on the bottom rung.
+# import no sibling at all, so they sit together on one rung.
+# app.domain is the rung below all of them. Its modules import the standard library,
+# third-party packages and domain siblings, nothing above.
+# Observed 2026-08-24: KEPT. Mutation `app.domain.chunk_id -> app.models` turned it
+# BROKEN, naming that edge; app.services, app.worker, app.api and app.core each did
+# the same.
 # Observed 2026-08-15: KEPT. Mutation `app.services.storage_service -> app.api.deps`
 # turned it BROKEN, naming that exact import.
 name = "app layers run one way"
@@ -124,6 +129,7 @@ layers = [
     "app.schemas",
     "app.services",
     "app.models | app.core | app.utils",
+    "app.domain",
 ]
 
 [[tool.importlinter.contracts]]

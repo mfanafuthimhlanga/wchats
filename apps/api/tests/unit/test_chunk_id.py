@@ -25,7 +25,7 @@ os.environ.setdefault("ADMIN_KEY", "test_admin_key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test_anthropic_key")
 os.environ.setdefault("VOYAGE_API_KEY", "test_voyage_key")
 
-from app.utils.chunk_id import CHUNK_UUID_NAMESPACE, deterministic_chunk_id
+from app.domain.chunk_id import CHUNK_UUID_NAMESPACE, deterministic_chunk_id
 
 
 class TestDeterministicChunkId:

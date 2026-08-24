@@ -85,7 +85,7 @@ async def test_issue_refund() -> None:
     - Returns IssueRefundOutput(status="refunded")
     - refund_id is populated from the WooCommerce API response 'id' field
     """
-    from app.services.transactional.schemas import IssueRefundInput
+    from app.domain.transactional_schemas import IssueRefundInput
 
     adapter = _make_adapter()
     args = IssueRefundInput(
@@ -142,7 +142,7 @@ async def test_place_order() -> None:
     - The JSON body contains billing.email from args.customer_email
     - Returns PlaceOrderOutput with an order_id populated from the API response
     """
-    from app.services.transactional.schemas import PlaceOrderInput
+    from app.domain.transactional_schemas import PlaceOrderInput
 
     adapter = _make_adapter()
     args = PlaceOrderInput(
@@ -212,7 +212,7 @@ async def test_cancel_order() -> None:
     - The JSON body has status="cancelled"
     - Returns CancelOrderOutput(status in {"cancelled","pending_cancellation"})
     """
-    from app.services.transactional.schemas import CancelOrderInput
+    from app.domain.transactional_schemas import CancelOrderInput
 
     adapter = _make_adapter()
     args = CancelOrderInput(
@@ -285,7 +285,7 @@ async def test_unsupported_methods_raise() -> None:
     WooCommerce does not support subscription management or slot booking.
     The dispatcher's except Exception handler returns is_error=True.
     """
-    from app.services.transactional.schemas import (
+    from app.domain.transactional_schemas import (
         BookSlotInput,
         UpdateCustomerRecordInput,
         UpdateSubscriptionInput,

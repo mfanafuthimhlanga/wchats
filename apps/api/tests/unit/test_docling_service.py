@@ -1,17 +1,17 @@
 """
-Unit tests for app.services.docling_service — Wave 2 (ING-01, ING-02).
+Unit tests for app.domain.docling_service, Wave 2 (ING-01, ING-02).
 
 Tests:
   1. parse_document raises RuntimeError when ConversionStatus != SUCCESS
   2. parse_document returns result.document on SUCCESS
   3. parse_document_from_bytes wraps content in DocumentStream correctly
 
-Tests 1 and 2 patch `app.services.docling_service._converter` (the module-level
+Tests 1 and 2 patch `app.domain.docling_service._converter` (the module-level
 singleton) rather than the import path of DocumentConverter itself — this ensures
 the patch targets the object that the module functions actually call.
 
 Test 3 patches `docling.datamodel.base_models.DocumentStream`, not
-`app.services.docling_service.DocumentStream`. The service imports DocumentStream
+`app.domain.docling_service.DocumentStream`. The service imports DocumentStream
 inside parse_document_from_bytes (docling_service.py:98) because docling ships only
 in the pipeline worker, so the service module has no such attribute and patching it
 raises AttributeError. Because that import runs at call time, patching the name on
@@ -82,9 +82,9 @@ def test_parse_document_raises_on_failure(monkeypatch):
     mock_conv = MagicMock()
     mock_conv.convert.return_value = mock_result
 
-    monkeypatch.setattr("app.services.docling_service._converter", mock_conv)
+    monkeypatch.setattr("app.domain.docling_service._converter", mock_conv)
 
-    from app.services.docling_service import parse_document
+    from app.domain.docling_service import parse_document
 
     with pytest.raises(RuntimeError) as exc_info:
         parse_document(Path("/fake.pdf"))
@@ -103,9 +103,9 @@ def test_parse_document_returns_document_on_success(monkeypatch):
     mock_conv = MagicMock()
     mock_conv.convert.return_value = mock_result
 
-    monkeypatch.setattr("app.services.docling_service._converter", mock_conv)
+    monkeypatch.setattr("app.domain.docling_service._converter", mock_conv)
 
-    from app.services.docling_service import parse_document
+    from app.domain.docling_service import parse_document
 
     result = parse_document(Path("/some/document.pdf"))
     assert result is sentinel_doc
@@ -122,7 +122,7 @@ def test_parse_document_from_bytes_uses_document_stream(monkeypatch):
     mock_conv = MagicMock()
     mock_conv.convert.return_value = mock_result
 
-    monkeypatch.setattr("app.services.docling_service._converter", mock_conv)
+    monkeypatch.setattr("app.domain.docling_service._converter", mock_conv)
 
     # Patch DocumentStream on its source module: the service does a call-time
     # `from docling.datamodel.base_models import DocumentStream`, so the service
@@ -131,7 +131,7 @@ def test_parse_document_from_bytes_uses_document_stream(monkeypatch):
         mock_stream_instance = MagicMock()
         mock_ds_cls.return_value = mock_stream_instance
 
-        from app.services.docling_service import parse_document_from_bytes
+        from app.domain.docling_service import parse_document_from_bytes
 
         result = parse_document_from_bytes(b"fake-pdf-bytes", "name.pdf")
 

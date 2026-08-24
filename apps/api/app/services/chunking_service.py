@@ -22,7 +22,7 @@ Each dict has keys: id, text, ordinal, is_table, token_count.
 
 import structlog
 
-from app.utils.chunk_id import deterministic_chunk_id
+from app.domain.chunk_id import deterministic_chunk_id
 from app.utils.sanitize import sanitize_chunk_text
 
 log = structlog.get_logger(__name__)

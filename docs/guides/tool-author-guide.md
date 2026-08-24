@@ -25,7 +25,7 @@ needs to add across the four files that together define a transactional tool.
 
 A new mutating skill touches three files:
 
-- `apps/api/app/services/transactional/schemas.py` — the typed `Input`/`Output`
+- `apps/api/app/domain/transactional_schemas.py` — the typed `Input`/`Output`
   Pydantic pair for the skill.
 - `apps/api/app/services/transactional/registry.py` — the `TransactionalToolDef`
   entry describing the skill's flags and A2A metadata.
@@ -195,6 +195,6 @@ path does not exist yet.
 - `docs/adr/0002-agent-tool-and-provisioning-strategy.md`
 - `apps/api/app/services/transactional/tools.py`
 - `apps/api/app/services/transactional/registry.py`
-- `apps/api/app/services/transactional/schemas.py`
+- `apps/api/app/domain/transactional_schemas.py`
 - `apps/api/app/services/transactional/provider_adapter.py`
 - `docs/guides/integration-provider-guide.md`

@@ -66,6 +66,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_tenant
 from app.core.database import get_async_db
+from app.domain.transactional_schemas import SKILL_INPUT_MODELS
 from app.models.agent import Agent
 from app.models.tenant import Tenant
 from app.schemas.pending_confirmation import (
@@ -74,7 +75,6 @@ from app.schemas.pending_confirmation import (
     PendingConfirmationResponse,
 )
 from app.services.transactional.audit import write_audit_row
-from app.services.transactional.schemas import SKILL_INPUT_MODELS
 
 router = APIRouter(tags=["pending-confirmations"])
 log = structlog.get_logger(__name__)
@@ -110,7 +110,7 @@ def _is_confirm_action_shaped(arguments: dict | None) -> bool:
       - The Actor gate's require_human verdict stores the FULL validated
         arguments for the target mutating skill — always including
         `idempotency_key` (required on every one of the six mutating Input
-        models; `transactional/schemas.py`), never `action_reference` (no
+        models; `app/domain/transactional_schemas.py`), never `action_reference` (no
         mutating Input model defines that field at all).
       - confirm_action_tool stores ONLY `{"action_reference": <str>}`
         (tools.py:949) against `skill=<target mutating skill>` — never the

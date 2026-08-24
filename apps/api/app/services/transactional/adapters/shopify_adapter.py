@@ -44,9 +44,7 @@ import json
 import shopify
 import structlog
 
-from app.services.transactional.credential_service import CredentialHandle
-from app.services.transactional.provider_adapter import ProviderAdapter
-from app.services.transactional.schemas import (
+from app.domain.transactional_schemas import (
     BookSlotInput,
     BookSlotOutput,
     CancelOrderInput,
@@ -60,6 +58,8 @@ from app.services.transactional.schemas import (
     UpdateSubscriptionInput,
     UpdateSubscriptionOutput,
 )
+from app.services.transactional.credential_service import CredentialHandle
+from app.services.transactional.provider_adapter import ProviderAdapter
 
 log = structlog.get_logger(__name__)
 

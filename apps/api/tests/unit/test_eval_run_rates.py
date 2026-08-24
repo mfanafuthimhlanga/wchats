@@ -25,7 +25,7 @@ import pathlib
 
 import pytest
 
-from app.utils.pii_firewall import PII_DEFLECTION
+from app.domain.pii_firewall import PII_DEFLECTION
 from tests.evals import run_evals
 
 CITED = (
