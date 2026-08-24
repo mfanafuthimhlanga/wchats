@@ -31,7 +31,7 @@ os.environ.setdefault("VOYAGE_API_KEY", "test_voyage_key")
 
 import pytest  # noqa: E402
 
-from app.domain.ingestion_job import IngestionJob  # noqa: E402
+from app.domain.ingestion_job import IngestionJob, InvalidJobDict  # noqa: E402
 
 TENANT = "11111111-1111-4111-8111-111111111111"
 AGENT = "22222222-2222-4222-8222-222222222222"
@@ -223,3 +223,59 @@ def test_from_dict_refuses_a_dict_whose_id_is_empty(key):
     payload[key] = ""
     with pytest.raises(ValueError):
         IngestionJob.from_dict(payload)
+
+
+# ---------------------------------------------------------------------------
+# What the chain edge may swallow, and what it may not
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", [42, "abc", 3.5, {"a": 1}])
+def test_document_ids_of_the_wrong_shape_is_a_type_error(value):
+    """A document_ids that is not a list or a tuple fails loudly, every time.
+
+    `tuple(42)` raised TypeError and the chain edge caught it beside the missing
+    key case, so an upstream shape bug logged one line and reported SUCCESS.
+    `tuple("abc")` was worse and raised nothing at all, turning one string into
+    three document ids that name no document.
+
+    TypeError sits outside InvalidJobDict, and InvalidJobDict is the only
+    exception the edge swallows.
+    """
+    payload = _job().to_dict()
+    payload["document_ids"] = value
+    with pytest.raises(TypeError) as exc:
+        IngestionJob.from_dict(payload)
+    assert "document_ids" in str(exc.value)
+
+
+@pytest.mark.parametrize("key", ["tenant_id", "agent_id", "job_id", "document_ids"])
+def test_a_missing_key_raises_invalid_job_dict(key):
+    """The one failure the edge is allowed to swallow.
+
+    A chain re-dispatched mid-flight can deliver a dict from a different revision
+    of the pipeline. That dict passes through; a wrong-shaped one does not.
+    """
+    payload = _job().to_dict()
+    del payload[key]
+    with pytest.raises(InvalidJobDict):
+        IngestionJob.from_dict(payload)
+
+
+@pytest.mark.parametrize("key", ["tenant_id", "agent_id", "job_id"])
+def test_an_empty_id_raises_invalid_job_dict(key):
+    payload = _job().to_dict()
+    payload[key] = ""
+    with pytest.raises(InvalidJobDict):
+        IngestionJob.from_dict(payload)
+
+
+def test_document_ids_of_none_raises_invalid_job_dict():
+    """None is the fourth clause of the guard the three tasks used to spell."""
+    with pytest.raises(InvalidJobDict):
+        _job(document_ids=None)
+
+
+def test_invalid_job_dict_is_a_value_error():
+    """Every caller that already catches ValueError keeps catching this one."""
+    assert issubclass(InvalidJobDict, ValueError)

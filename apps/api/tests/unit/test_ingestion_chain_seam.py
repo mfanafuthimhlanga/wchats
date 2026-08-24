@@ -1,4 +1,4 @@
-"""The four ingestion hops, driven in sequence, on the seam they now share (ticket #43, AC3).
+"""The five ingestion hops, driven in sequence, on the seam they now share (ticket #43, AC3).
 
 Every other test in this repo drives one hop with its own hand-built input. That
 is what let the four-id dict be described four different ways in four docstrings
@@ -7,15 +7,17 @@ while nothing checked that hop N's output is something hop N+1 can read.
 This file feeds each hop what the previous hop actually returned:
 
     parse_documents → chunk_documents → generate_metadata → embed_and_migrate
+    → synthesize_retrieval_strategy
 
-and reads two things off the run. First, the job survives all four hops: the dict
+and reads two things off the run. First, the job survives every hop. The dict
 that comes out the far end builds the IngestionJob that went into the first hop.
-Second, the work still happens: the chunk rows, the metadata rows, the embedding
+Second, the work still happens. The chunk rows, the metadata rows, the embedding
 rows and the SSE events are the same ones each hop's own test asserts, and every
 event in the run carries the one job_id.
 
-The outside edges are faked: S3, Docling, the Haiku call, Voyage, and both
-databases. What is real is the four task functions and the seam between them.
+The outside edges all answer from here. S3, Docling, the Haiku call, Voyage, the
+Strategist and both databases are faked. What is real is the five task functions
+and the seam between them.
 """
 
 import base64
@@ -64,8 +66,10 @@ CHUNK_ID = deterministic_chunk_id(DOCUMENT, 0)
 class _Cursor:
     """A psycopg2 cursor stand-in that records SQL and answers from two queues.
 
-    Every hop uses `with conn.cursor() as cur` except parse_documents, which
-    holds a bare cursor across its Docling call, so this supports both.
+    Every hop that opens a tenant connection uses `with conn.cursor() as cur`
+    except parse_documents, which holds a bare cursor across its Docling call, so
+    this supports both. synthesize_retrieval_strategy reads its corpus signals
+    through strategy_service instead, and the fixture fakes that whole.
     """
 
     def __init__(self, fetchone=(), fetchall=()):
@@ -102,11 +106,11 @@ def _connection(cursor):
 def _fake_psycopg2(connect):
     """A per-hop stand-in for the psycopg2 module.
 
-    All four task modules hold the same psycopg2 module object, so patching
-    `<task module>.psycopg2.connect` for one hop patches it for all four and the
-    last hop patched wins. Each hop gets its own module stand-in instead,
-    carrying the two other attributes the tasks read: parse catches
-    psycopg2.OperationalError, embed reads psycopg2.extensions for AUTOCOMMIT.
+    The four task modules that use psycopg2 hold the same module object, so
+    patching `<task module>.psycopg2.connect` for one hop patches it for all four
+    and the last hop patched wins. Each hop gets its own module stand-in instead,
+    carrying the two other attributes the tasks read. parse catches
+    psycopg2.OperationalError, and embed reads psycopg2.extensions for AUTOCOMMIT.
     """
     return SimpleNamespace(
         connect=connect,
@@ -130,7 +134,7 @@ def _sync_db(db):
 
 
 class _Run:
-    """One drive of the chain: what crossed each join, and what each hop wrote."""
+    """One drive of the chain. What crossed each join, and what each hop wrote."""
 
     def __init__(self):
         self.joins = {}
@@ -138,13 +142,13 @@ class _Run:
         self.cursors = {}
 
     def record_emit(self, job_id, event_type, payload, db, redis_client):
-        """Stands in for emit() in all four hops, so the run has one event list."""
+        """Stands in for emit() in every hop, so the run has one event list."""
         self.events.append((job_id, event_type))
 
 
 @pytest.fixture
 def run(monkeypatch):
-    """Fake every outside edge of all four hops; leave the four task functions real."""
+    """Fake every outside edge of all five hops; leave the five task functions real."""
     state = _Run()
     job_row = MagicMock()
     job_row.status = "running"
@@ -220,16 +224,35 @@ def run(monkeypatch):
         embed_chunks=lambda texts: [[0.1] * 1024 for _ in texts],
     )
 
+    # strategy opens no tenant cursor. It reads corpus signals through
+    # strategy_service and calls the Strategist over the direct Anthropic API,
+    # and both of those are the fakes below. run_strategist leaves the container
+    # empty, so the task validates its way to the RetrievalStrategy defaults.
+    _patch(
+        "strategy",
+        _fetch_corpus_signals_sync=lambda agent_id, conn_str: {
+            "chunk_count": 1,
+            "doc_count": 1,
+            "avg_chunk_len": 300.0,
+            "max_chunk_len": 600,
+            "table_ratio": 0.0,
+            "entity_count": 0,
+            "doc_types": {"pdf": 1},
+        },
+        run_strategist=lambda signals_json, container: None,
+    )
+
     state.job_row = job_row
     return state
 
 
 def _drive(state):
-    """Run the four hops, each on what the previous hop returned. Return the last dict."""
+    """Run the five hops, each on what the previous hop returned. Return the last dict."""
     from app.worker.tasks.pipeline.chunk import chunk_documents
     from app.worker.tasks.pipeline.embed import embed_and_migrate
     from app.worker.tasks.pipeline.metadata import generate_metadata
     from app.worker.tasks.pipeline.parse import parse_documents
+    from app.worker.tasks.pipeline.strategy import synthesize_retrieval_strategy
 
     handed_on = parse_documents.run(JOB.tenant_id, JOB.agent_id, JOB.job_id, [DOCUMENT])
 
@@ -237,6 +260,7 @@ def _drive(state):
         ("parse to chunk", chunk_documents),
         ("chunk to metadata", generate_metadata),
         ("metadata to embed", embed_and_migrate),
+        ("embed to strategy", synthesize_retrieval_strategy),
     ):
         # What crossed this join is what the previous hop returned, never rebuilt here.
         state.joins[name] = handed_on
@@ -250,12 +274,13 @@ def _drive(state):
 # ---------------------------------------------------------------------------
 
 
-def test_the_job_survives_all_four_hops(run):
+def test_the_job_survives_every_hop(run):
     """What comes out of the last hop builds the job that went into the first.
 
-    Each hop reads its input with IngestionJob.from_dict and writes its output
-    with to_dict, so a hop that dropped a document id, rebuilt the job from
-    something else, or renamed a key on the wire breaks this equality.
+    parse takes the four ids as arguments at the head of the chain. Every hop
+    after it reads its input with IngestionJob.from_dict, and all five write
+    their output with to_dict, so a hop that dropped a document id, rebuilt the
+    job from something else, or renamed a key on the wire breaks this equality.
     """
     handed_on = _drive(run)
 
@@ -264,9 +289,9 @@ def test_the_job_survives_all_four_hops(run):
 
 
 def test_every_join_carries_the_same_job(run):
-    """At each of the three joins, the dict on the wire is the job.
+    """At each of the four joins, the dict on the wire is the job.
 
-    Read one join at a time this is hop N's output being hop N+1's input, which
+    Read one join at a time, this is hop N's output being hop N+1's input, which
     is the thing no single hop's own tests can see.
     """
     _drive(run)
@@ -275,26 +300,64 @@ def test_every_join_carries_the_same_job(run):
         "parse to chunk": JOB,
         "chunk to metadata": JOB,
         "metadata to embed": JOB,
+        "embed to strategy": JOB,
     }
 
 
 def test_the_cores_hand_the_type_along_without_the_wire(run):
-    """The four cores compose on the type itself, with no dict between them.
+    """The four cores below the head compose on the type itself, with no dict between them.
 
     The edges convert because Celery serialises JSON. Underneath, this is one
-    function per hop taking an IngestionJob and returning one, and the chain is
-    those four composed.
+    function per hop taking an IngestionJob and returning one, and the tail of
+    the chain is those four composed.
     """
     from app.worker.tasks.pipeline.chunk import chunk_documents
     from app.worker.tasks.pipeline.embed import embed_and_migrate
     from app.worker.tasks.pipeline.metadata import generate_metadata
+    from app.worker.tasks.pipeline.strategy import synthesize_retrieval_strategy
 
     job = JOB
-    for task in (chunk_documents, generate_metadata, embed_and_migrate):
+    for task in (
+        chunk_documents,
+        generate_metadata,
+        embed_and_migrate,
+        synthesize_retrieval_strategy,
+    ):
         job = task.run.__wrapped__(task, job)
         assert isinstance(job, IngestionJob)
 
     assert job == JOB
+
+
+def test_the_edge_logs_under_the_cores_own_module(monkeypatch):
+    """job_in_job_out names its logger after the hop, never after chain_edge.
+
+    An operator greps `app.worker.tasks.pipeline.chunk` for a stuck job, so a
+    line filed under `app.worker.tasks.pipeline.chain_edge` is a line they never
+    find. structlog's capture_logs replaces the whole processor chain and the
+    captured entry carries no logger name, so this asks the decorator which name
+    it built the logger with rather than reading one off a line.
+    """
+    import structlog
+
+    from app.worker.tasks.pipeline import chain_edge
+
+    original = structlog.get_logger
+    asked = []
+
+    def _record(name):
+        asked.append(name)
+        return original(name)
+
+    monkeypatch.setattr(structlog, "get_logger", _record)
+
+    def core(self, job):
+        return job
+
+    core.__module__ = "app.worker.tasks.pipeline.chunk"
+    chain_edge.job_in_job_out(core)
+
+    assert asked == ["app.worker.tasks.pipeline.chunk"]
 
 
 # ---------------------------------------------------------------------------
@@ -303,9 +366,9 @@ def test_the_cores_hand_the_type_along_without_the_wire(run):
 
 
 def test_each_hop_writes_the_rows_its_own_test_asserts(run):
-    """The four hops persist what they persist, driven from one job.
+    """Each hop persists what it persists, driven from one job.
 
-    Read as one run this says something the per-hop tests cannot: the document
+    Read as one run this says something the per-hop tests cannot. The document
     id parse marked parsed is the one chunk wrote chunks for, and the chunk id
     those chunks carry is the one metadata and embed wrote rows against.
     """
@@ -335,7 +398,10 @@ def test_the_run_emits_one_job_ids_worth_of_events_start_to_finish(run):
     """Every event of the run carries the job_id the head was given.
 
     An empty or mismatched job_id publishes to a channel nobody is subscribed
-    to, which is silent: the ingest page simply never updates.
+    to, which is silent. The ingest page simply never updates.
+
+    embed closes the job row and emits job.complete, and strategy runs after it,
+    so strategy.synthesized ends the run rather than job.complete.
     """
     _drive(run)
 
@@ -343,19 +409,20 @@ def test_the_run_emits_one_job_ids_worth_of_events_start_to_finish(run):
 
     event_types = [event_type for _, event_type in run.events]
     assert event_types[0] == "ingestion.started"
-    assert event_types[-1] == "job.complete"
+    assert event_types[-1] == "strategy.synthesized"
     for expected in (
         "parsing.complete",
         "chunking.complete",
         "metadata.complete",
         "embedding.complete",
         "ingestion.complete",
+        "job.complete",
     ):
         assert expected in event_types, f"{expected} missing from {event_types}"
 
 
 def test_the_job_row_is_marked_complete(run):
-    """The terminal hop closes the control DB job row, as it does on its own."""
+    """embed closes the control DB job row, as it does on its own."""
     _drive(run)
 
     assert run.job_row.status == "complete"

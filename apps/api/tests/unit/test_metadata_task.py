@@ -65,7 +65,7 @@ JOB = IngestionJob(tenant_id="t", agent_id="a", job_id="j", document_ids=["d1"])
 def _core(task):
     """The task's core, the half that takes an IngestionJob and returns one.
 
-    The Celery task is the edge: it takes the wire dict, builds the job, and
+    The Celery task is the edge. It takes the wire dict, builds the job, and
     sends the returned job back out as a dict. functools.wraps puts the core on
     the edge as __wrapped__, so a test can hold the typed seam directly.
     """

@@ -11,7 +11,14 @@ This task runs after embedding is complete. It:
 3. Validates the result via RetrievalStrategy.model_validate (Pydantic).
 4. Writes agent.retrieval_strategy to the control DB.
 5. Emits 'strategy.synthesized' SSE event.
-6. Returns the result dict unchanged (chain pass-through).
+6. Returns the same IngestionJob it received (chain pass-through).
+
+Chain contract:
+    job_in_job_out (chain_edge.py) builds the job from the wire dict at the
+    task's edge and sends the returned job back out as one, so Celery still
+    carries the four keys as JSON and the body works in the type. This hop read
+    the dict with its own `result.get("agent_id")` guard until 2026-08-24, which
+    is one more place a renamed key would have turned into a silent no-op.
 
 Idempotency:
     - Skips synthesis if agent.retrieval_strategy is already set AND
@@ -38,11 +45,13 @@ import structlog
 from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
+from app.domain.ingestion_job import IngestionJob
 from app.models.agent import Agent
 from app.services.events import emit
 from app.services.retrieval_service import RetrievalStrategy
 from app.services.strategy_service import _fetch_corpus_signals_sync, run_strategist
 from app.worker.celery_app import celery_app
+from app.worker.tasks.pipeline.chain_edge import job_in_job_out
 
 log = structlog.get_logger(__name__)
 
@@ -59,11 +68,12 @@ _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
     default_retry_delay=10,
     queue="pipeline",
 )
-def synthesize_retrieval_strategy(self, result: dict) -> dict:
+@job_in_job_out
+def synthesize_retrieval_strategy(self, job: IngestionJob) -> IngestionJob:
     """Synthesize an optimized retrieval strategy from corpus signals.
 
     This is the fifth task in the M3 ingestion chain. It:
-    1. Extracts IDs from the result dict forwarded by embed_and_migrate.
+    1. Reads agent_id and job_id off the job embed_and_migrate returned.
     2. Checks idempotency — skips if strategy already set and resynthesis not flagged.
     3. Fetches corpus signals from the tenant DB via psycopg2.
     4. Calls the Strategist Agent SDK loop (60s timeout).
@@ -72,29 +82,23 @@ def synthesize_retrieval_strategy(self, result: dict) -> dict:
     7. Emits 'strategy.synthesized' SSE event.
 
     Args:
-        result: Return value from embed_and_migrate —
-                {"tenant_id": str, "agent_id": str, "job_id": str, "document_ids": list[str]}.
-                Connection strings are NEVER in this dict (CLAUDE.md non-negotiable rule).
+        job: The IngestionJob the chain carries. Connection strings are NEVER on
+             it (CLAUDE.md non-negotiable rule); the type has no field for one.
+             Construction has already refused an empty agent_id or job_id, which
+             is the guard this task used to spell for itself.
 
     Returns:
-        {"tenant_id": str, "agent_id": str, "job_id": str, "document_ids": list[str]}
-        Chain pass-through format (no connection strings).
+        The same job, unchanged. job_in_job_out converts both ends, so the broker
+        still sees the four keys it has always seen.
     """
     # ------------------------------------------------------------------
-    # Step 1 — Extract result dict keys (defensive validation)
+    # Step 1. Read the two ids this task uses
     # ------------------------------------------------------------------
-    # tenant_id and document_ids are deliberately not read here: this task returns
-    # `result` verbatim, so the chain contract is preserved by pass-through rather
-    # than by re-assembling the dict. Binding them was dead code (F841).
-    agent_id = result.get("agent_id")
-    job_id = result.get("job_id")
-
-    if not agent_id:
-        log.error(
-            "synthesize_retrieval_strategy.invalid_result_dict",
-            keys=list(result.keys()),
-        )
-        return result
+    # tenant_id and document_ids are deliberately not read here. This task returns
+    # the job it was handed, so the chain contract is preserved by pass-through
+    # rather than by re-assembling it. Binding them was dead code (F841).
+    agent_id = job.agent_id
+    job_id = job.job_id
 
     # ------------------------------------------------------------------
     # Step 2 — Idempotency guard + conn_str fetch in ONE get_sync_db() block
@@ -108,7 +112,7 @@ def synthesize_retrieval_strategy(self, result: dict) -> dict:
                     "synthesize_retrieval_strategy.agent_not_found",
                     agent_id=agent_id,
                 )
-                return result
+                return job
             if (
                 agent.retrieval_strategy
                 and agent.retrieval_strategy != {}
@@ -118,13 +122,13 @@ def synthesize_retrieval_strategy(self, result: dict) -> dict:
                     "synthesize_retrieval_strategy.idempotent_skip",
                     agent_id=agent_id,
                 )
-                return result
+                return job
             if not agent.neon_connection_string:
                 log.error(
                     "synthesize_retrieval_strategy.no_conn_str",
                     agent_id=agent_id,
                 )
-                return result
+                return job
             conn_str = fernet_decrypt(agent.neon_connection_string)
     except Exception as exc:
         log.error(
@@ -194,8 +198,8 @@ def synthesize_retrieval_strategy(self, result: dict) -> dict:
                 agent.retrieval_strategy = strategy.model_dump()
                 agent.strategy_resynthesis_flagged = False
                 db.commit()
-            if job_id:
-                emit(job_id, "strategy.synthesized", {"agent_id": agent_id}, db, _redis)
+            # job_id is never empty. IngestionJob refuses to exist without one.
+            emit(job_id, "strategy.synthesized", {"agent_id": agent_id}, db, _redis)
     except Exception as exc:
         log.error(
             "synthesize_retrieval_strategy.db_write_failed",
@@ -211,4 +215,4 @@ def synthesize_retrieval_strategy(self, result: dict) -> dict:
     # ------------------------------------------------------------------
     log.info("synthesize_retrieval_strategy.complete", agent_id=agent_id)
 
-    return result
+    return job

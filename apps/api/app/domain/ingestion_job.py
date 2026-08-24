@@ -23,6 +23,18 @@ WHY THE WIRE IS STILL A DICT
     the pipeline may carry more than these four keys, and a hop that refused it
     would strand a job that is otherwise complete.
 
+WHICH FAILURE THE CHAIN EDGE MAY SWALLOW
+    InvalidJobDict names one case, the dict an older revision of the pipeline
+    sent. A key is missing, or one of the three ids is empty. job_in_job_out
+    logs that one and hands the dict back, because a job the operator can still
+    recover should not die on it.
+
+    Every other failure is a bug upstream and raises straight past the edge. A
+    document_ids that is present and is not a list or a tuple is a TypeError,
+    which is what `tuple(42)` already raised while the edge was swallowing it.
+    A string is the case that made the swallow expensive, because `tuple("abc")`
+    raises nothing and builds three document ids that name no document.
+
 WHY document_ids IS A TUPLE
     The record is frozen, so what it holds is immutable too: the list a caller
     passes in is copied, and a later append to that list cannot reach a job that
@@ -41,11 +53,22 @@ domain siblings. This module imports the standard library only.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields
 from typing import Any
 
 _REQUIRED_IDS = ("tenant_id", "agent_id", "job_id")
+
+
+class InvalidJobDict(ValueError):
+    """A wire dict written by a different revision of the pipeline.
+
+    A key is missing, or one of the three ids is empty. job_in_job_out catches
+    this name and only this name, logs `<task>.invalid_result_dict`, and returns
+    the dict untouched. Every other construction failure reaches the task.
+
+    A ValueError, so callers that already catch ValueError keep catching it.
+    """
 
 
 @dataclass(frozen=True)
@@ -62,23 +85,35 @@ class IngestionJob:
                       copied; the job holds a tuple. Empty is allowed.
 
     Raises:
-        ValueError: any of the three ids is empty, or document_ids is None.
+        InvalidJobDict: any of the three ids is empty, or document_ids is None.
+                        The chain edge swallows this one.
+        TypeError:      document_ids is present and is neither a list nor a
+                        tuple. The chain edge lets this one through.
     """
 
     tenant_id: str
     agent_id: str
     job_id: str
-    document_ids: tuple[str, ...]
+    # The init input, not what the record holds. __post_init__ copies whatever
+    # sequence it is handed into a tuple, and every caller hands it a list.
+    document_ids: Sequence[str]
 
     def __post_init__(self) -> None:
         for name in _REQUIRED_IDS:
             if not getattr(self, name):
-                raise ValueError(
+                raise InvalidJobDict(
                     f"IngestionJob needs a {name}, got {getattr(self, name)!r}"
                 )
         if self.document_ids is None:
-            raise ValueError(
+            raise InvalidJobDict(
                 "IngestionJob needs document_ids, got None. An empty list is a whole job."
+            )
+        if not isinstance(self.document_ids, (list, tuple)):
+            # Outside InvalidJobDict on purpose. The edge lets this one through
+            # and the task fails, which is what an upstream shape bug deserves.
+            raise TypeError(
+                "IngestionJob needs document_ids as a list or a tuple, got "
+                f"{type(self.document_ids).__name__}"
             )
         # object.__setattr__ is how a frozen dataclass normalises a field.
         object.__setattr__(self, "document_ids", tuple(self.document_ids))
@@ -96,9 +131,8 @@ class IngestionJob:
     def from_dict(cls, mapping: Mapping[str, Any]) -> IngestionJob:
         """Read a job off the wire, ignoring any key this type does not name.
 
-        A missing key reads as absent and fails construction, which is the same
-        outcome the tasks reached by asking `result.get(...)` and testing the
-        answer.
+        A missing key reads as absent and raises InvalidJobDict, which is the
+        same outcome the tasks reached by asking `result.get(...)` and testing
+        the answer.
         """
         return cls(**{field.name: mapping.get(field.name) for field in fields(cls)})
-

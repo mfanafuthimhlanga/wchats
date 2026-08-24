@@ -50,6 +50,7 @@ import inspect
 from contextlib import contextmanager
 from unittest.mock import MagicMock
 
+import pytest
 from structlog.testing import capture_logs
 
 from app.domain.chunk import Chunk
@@ -65,7 +66,7 @@ JOB = IngestionJob(tenant_id="t", agent_id="a", job_id="j", document_ids=["d1"])
 def _core(task):
     """The task's core, the half that takes an IngestionJob and returns one.
 
-    The Celery task is the edge: it takes the wire dict, builds the job, and
+    The Celery task is the edge. It takes the wire dict, builds the job, and
     sends the returned job back out as a dict. functools.wraps puts the core on
     the edge as __wrapped__, so a test can hold the typed seam directly.
     """
@@ -406,7 +407,7 @@ def test_the_edge_round_trips_the_job_through_the_wire_dict(monkeypatch):
 def test_a_result_dict_the_job_cannot_be_built_from_is_returned_unchanged(monkeypatch):
     """A dict missing an id is logged and handed straight back, with no work done.
 
-    This is defensive and it predates the type: a chain re-dispatched mid-flight
+    This is defensive and it predates the type. A chain re-dispatched mid-flight
     can deliver a dict from a different revision of the pipeline. The rule used
     to be an `or` chain at the top of this task, one of three identical copies.
     It is construction now, and the edge is where it is caught, so the event and
@@ -432,6 +433,34 @@ def test_a_result_dict_the_job_cannot_be_built_from_is_returned_unchanged(monkey
     assert opened == [], "the task reached the control DB with an unusable result dict"
     assert [entry["event"] for entry in logs] == ["chunk_documents.invalid_result_dict"]
     assert logs[0]["keys"] == ["tenant_id", "job_id", "document_ids"]
+
+
+def test_a_result_dict_whose_document_ids_is_not_a_list_fails_the_task(monkeypatch):
+    """A wrong-shaped document_ids is an upstream bug, so the task raises.
+
+    The pass-through above is for a dict an older revision of the pipeline sent,
+    and only for that. `{"document_ids": 42}` used to land in the same branch:
+    tuple(42) raised TypeError, the edge logged one line, and Celery recorded
+    SUCCESS on a job that ingested nothing. A string was quieter still, because
+    tuple("abc") builds three document ids that name no document.
+    """
+    from app.worker.tasks.pipeline.chunk import chunk_documents
+
+    opened = []
+
+    @contextmanager
+    def _record_open():
+        opened.append("get_sync_db")
+        yield MagicMock()
+
+    monkeypatch.setattr("app.worker.tasks.pipeline.chunk.get_sync_db", _record_open)
+
+    payload = {"tenant_id": "t", "agent_id": "a", "job_id": "j", "document_ids": 42}
+
+    with pytest.raises(TypeError):
+        chunk_documents.run(payload)
+
+    assert opened == [], "the task reached the control DB with an unusable result dict"
 
 
 # ---------------------------------------------------------------------------

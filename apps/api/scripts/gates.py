@@ -198,7 +198,7 @@ LIZARD_BASELINE = {
     ("app/worker/tasks/pipeline/provision.py", "provision_neon"): (21, 224),
     ("app/worker/tasks/pipeline/reembed.py", "reembed_corpus"): (13, 177),
     ("app/worker/tasks/pipeline/staleness.py", "compute_index_staleness_summary"): (11, 77),
-    ("app/worker/tasks/pipeline/strategy.py", "synthesize_retrieval_strategy"): (17, 153),
+    ("app/worker/tasks/pipeline/strategy.py", "synthesize_retrieval_strategy"): (15, 147),
     ("app/worker/tasks/runtime/agent.py", "_judge_retrieved_context"): (11, 99),
     ("app/worker/tasks/runtime/agent.py", "_persist_messages"): (2, 73),
     ("app/worker/tasks/runtime/agent.py", "_record_tool_result"): (10, 100),
