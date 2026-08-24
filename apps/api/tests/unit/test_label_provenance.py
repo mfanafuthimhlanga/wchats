@@ -92,6 +92,16 @@ EVAL_SERVICE_PATH = os.path.normpath(os.path.join(SERVICES_DIR, "eval_service.py
 # contracted to put the labelling route in.
 LABEL_WRITER_CALLER = os.path.normpath(os.path.join(APP_DIR, "api", "v1", "evals.py"))
 
+# The complexity gate names every function over its standard as data.
+# `scripts/gates.py` pins ("app/services/label_service.py", "record_human_label")
+# in LIZARD_BASELINE, and `tests/unit/test_gates.py` snapshots the same dict, so
+# both files hold string constants naming the module and the symbol. Neither
+# imports app code, and a path string in a file with no app imports cannot reach
+# the writer, so `_writer_hits` excuses the string arm for exactly these two
+# files and keeps every other arm watched. An import in either still fails R2.
+GATES_SCRIPT_PATH = os.path.normpath(os.path.join(SCRIPTS_DIR, "gates.py"))
+GATES_TEST_PATH = os.path.normpath(os.path.join(API_ROOT, "tests", "unit", "test_gates.py"))
+
 _MIGRATION_0011 = os.path.normpath(
     os.path.join(API_ROOT, "alembic_tenant/versions/0011_eval_scenarios_provenance.py")
 )
@@ -593,6 +603,15 @@ def _references_label_writer(path: str) -> list[str]:
     return hits
 
 
+def _writer_hits(path: str) -> list[str]:
+    """`_references_label_writer`, with the string arm excused for the two
+    gate-baseline files. See the comment above GATES_SCRIPT_PATH."""
+    hits = _references_label_writer(path)
+    if os.path.normpath(path) in (GATES_SCRIPT_PATH, GATES_TEST_PATH):
+        hits = [hit for hit in hits if not hit.startswith("string containing")]
+    return hits
+
+
 def _imports_the_api_layer(path: str) -> list[str]:
     """Imports of `app.api` (or a submodule of it) in *path*."""
     hits: list[str] = []
@@ -633,7 +652,7 @@ class TestR2ImportBoundary:
         for path in _scanned_source_files():
             if path in (LABEL_SERVICE_PATH, LABEL_WRITER_CALLER):
                 continue
-            hits = _references_label_writer(path)
+            hits = _writer_hits(path)
             if hits:
                 offenders[os.path.relpath(path, API_ROOT)] = hits
 
@@ -680,7 +699,7 @@ class TestR2ImportBoundary:
         for path in _python_files(TESTS_DIR):
             if os.path.normpath(os.path.abspath(path)) == allowed:
                 continue
-            hits = _references_label_writer(path)
+            hits = _writer_hits(path)
             if hits:
                 offenders[os.path.relpath(path, API_ROOT)] = hits
 
