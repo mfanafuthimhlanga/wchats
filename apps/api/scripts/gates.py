@@ -193,7 +193,6 @@ LIZARD_BASELINE = {
     ("app/services/validation_service.py", "call_strategist"): (8, 106),
     ("app/worker/tasks/pipeline/chunk.py", "chunk_documents"): (19, 243),
     ("app/worker/tasks/pipeline/embed.py", "embed_and_migrate"): (19, 296),
-    ("app/worker/tasks/pipeline/metadata.py", "generate_metadata"): (17, 239),
     ("app/worker/tasks/pipeline/migrations.py", "apply_migrations"): (6, 124),
     ("app/worker/tasks/pipeline/parse.py", "parse_documents"): (17, 257),
     ("app/worker/tasks/pipeline/provision.py", "provision_neon"): (21, 224),

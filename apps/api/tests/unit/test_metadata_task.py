@@ -8,6 +8,10 @@ Tests:
   4. test_generate_metadata_calls_enrich_when_no_existing_metadata        — enrich_chunks_batch called once with ["the content"]
   5. test_generate_metadata_upserts_entities_with_on_conflict_normalized_type — entity UPSERT SQL shape
   6. test_generate_metadata_emits_event_sequence                          — metadata.started then metadata.complete
+  7. test_wholly_failed_enrichment_fails_the_job                          — issue #23: 0 enriched is not a success
+  8. test_partial_enrichment_still_succeeds_and_reports_its_counts        — 1 of 11 enriched still completes
+  9. test_a_document_with_no_chunks_still_succeeds                        — nothing to enrich is not a failure
+ 10. test_enriched_chunks_reach_persistence_as_chunk_metadata             — typed records at the persistence seam
 
 Patch targets are symbols imported into app.worker.tasks.pipeline.metadata, NOT
 the original module paths (e.g. patch app.worker.tasks.pipeline.metadata.fernet_decrypt,
@@ -40,6 +44,7 @@ os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "50")
 # ---------------------------------------------------------------------------
 
 import inspect
+import uuid
 from contextlib import contextmanager
 from unittest.mock import MagicMock
 
@@ -421,3 +426,262 @@ def test_generate_metadata_emits_event_sequence(monkeypatch):
         assert job_id_arg == "j", (
             f"Expected job_id='j' but got {job_id_arg!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Enrichment visibility (ticket #42 slice 2, issue #23)
+#
+# The task used to read the enrichment straight off the model's parsed response
+# and pass it to an INSERT, so nothing in it held the idea "this chunk was
+# enriched". Tests 7-10 read the counts that idea makes countable, and test 10
+# reads the ChunkMetadata records themselves at the persistence seam.
+# ---------------------------------------------------------------------------
+
+CHUNK_ONE = uuid.UUID("94a95541-fb48-5918-9a19-2a9e3932b380")
+
+
+def _make_mock_db(mock_agent, mock_job):
+    """Mock Session answering db.get(Agent, ...) and db.get(Job, ...) separately.
+
+    The task looks up both models on one session, and the wholly-failed path
+    writes to the Job, so the two cannot be the same mock.
+    """
+    mock_db = MagicMock()
+    mock_db.get.side_effect = (
+        lambda model, _id: mock_job if model.__name__ == "Job" else mock_agent
+    )
+    return mock_db
+
+
+def _capture_emit(events):
+    """emit() stand-in appending (event_type, payload) to the given list."""
+
+    def _emit(job_id, event_type, payload, db, redis_client):
+        events.append((event_type, payload))
+
+    return _emit
+
+
+def _patch_task_seams(monkeypatch, mock_db, mock_conn, enrich, emit_fn):
+    """Point the task's four outside edges at fakes: control DB, tenant DB, Haiku, events."""
+    module = "app.worker.tasks.pipeline.metadata."
+    monkeypatch.setattr(module + "get_sync_db", _make_sync_db_context(mock_db))
+    monkeypatch.setattr(module + "fernet_decrypt", lambda _: "fake-conn")
+    monkeypatch.setattr(module + "psycopg2.connect", lambda _: mock_conn)
+    monkeypatch.setattr(module + "enrich_chunks_batch", enrich)
+    monkeypatch.setattr(module + "emit", emit_fn)
+
+
+def _run_task(document_ids=("d1",)):
+    """Run the task and report how it ended, as ("returned", dict) or ("raised", exc).
+
+    A run that enriched nothing stops the chain by raising, so the way it ended
+    is part of what these tests read, not just the value handed back.
+    """
+    from app.worker.tasks.pipeline.metadata import generate_metadata
+
+    payload = {
+        "tenant_id": "t",
+        "agent_id": "a",
+        "job_id": "j",
+        "document_ids": list(document_ids),
+    }
+    try:
+        return "returned", generate_metadata.run(payload)
+    except Exception as exc:
+        return "raised", exc
+
+
+# ---------------------------------------------------------------------------
+# Test 7: chunks processed, none enriched -> the job is failed, not succeeded
+# ---------------------------------------------------------------------------
+
+
+def test_wholly_failed_enrichment_fails_the_job(monkeypatch):
+    """Issue #23: every batch failed, so no metadata exists, so the job is not a success.
+
+    Observed 2026-08-22: batch_extraction_failed on all three documents,
+    chunks_enriched=0, and the job still reported succeeded, so the failure was
+    invisible to everyone downstream — the SSE stream, the job row, and the
+    embed step that ran next over chunks with no metadata.
+
+    The counts travel with the failure. "Enriched nothing" and "had nothing to
+    enrich" are different outcomes and only the numbers separate them.
+    """
+    mock_agent = _make_mock_agent()
+    mock_job = MagicMock()
+    mock_db = _make_mock_db(mock_agent, mock_job)
+
+    mock_cursor = _MockCursor(fetchone_sequence=[(0,)])
+    mock_cursor.fetchall_result = [(CHUNK_ONE, "the content")]
+    mock_conn = _make_mock_tenant_conn(mock_cursor)
+
+    events = []
+    _patch_task_seams(
+        monkeypatch,
+        mock_db,
+        mock_conn,
+        MagicMock(side_effect=RuntimeError("model refused the batch")),
+        _capture_emit(events),
+    )
+
+    outcome, value = _run_task()
+
+    assert outcome == "raised", (
+        "The task reported success after enriching 0 of 1 chunk. A run that "
+        "produced no metadata must not forward the chain."
+    )
+    reason = str(value)
+    assert "chunks_seen=1" in reason, f"reason does not name chunks_seen: {reason!r}"
+    assert "chunks_enriched=0" in reason, f"reason does not name chunks_enriched: {reason!r}"
+
+    assert mock_job.status == "failed", f"job status is {mock_job.status!r}"
+    assert "chunks_seen=1" in str(mock_job.error), f"job.error is {mock_job.error!r}"
+
+    failed = [payload for event_type, payload in events if event_type == "job.failed"]
+    assert len(failed) == 1, (
+        "Expected one job.failed event, the terminal event both the SSE stream and "
+        f"the admin ingest page watch for, but got event types {[e for e, _ in events]}"
+    )
+    assert "chunks_enriched=0" in str(failed[0].get("error")), (
+        f"job.failed payload does not carry the counts: {failed[0]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 8: some chunks enriched -> today's behaviour, with today's counts
+# ---------------------------------------------------------------------------
+
+
+def test_partial_enrichment_still_succeeds_and_reports_its_counts(monkeypatch):
+    """One batch of 10 fails, the 11th chunk enriches: the job succeeds and says 1 of 11.
+
+    Partial-failure tolerance is deliberate — a re-run re-attempts the missing
+    chunks, and Layer 3 skips the ones that landed. Only the wholly-failed
+    outcome changed in issue #23.
+    """
+    from app.services.metadata_service import ChunkMetadataAndEntities
+
+    mock_agent = _make_mock_agent()
+    mock_job = MagicMock()
+    mock_db = _make_mock_db(mock_agent, mock_job)
+
+    chunk_rows = [(uuid.uuid5(uuid.NAMESPACE_DNS, f"c{n}"), f"content {n}") for n in range(11)]
+    mock_cursor = _MockCursor(fetchone_sequence=[(0,)] * 11)
+    mock_cursor.fetchall_result = chunk_rows
+    mock_conn = _make_mock_tenant_conn(mock_cursor)
+
+    enriched = ChunkMetadataAndEntities(summary="s", keywords=["k"], questions=["q?"], entities=[])
+    mock_enrich = MagicMock(side_effect=[RuntimeError("first batch refused"), [enriched]])
+
+    events = []
+    _patch_task_seams(monkeypatch, mock_db, mock_conn, mock_enrich, _capture_emit(events))
+
+    outcome, value = _run_task()
+
+    assert outcome == "returned", f"Partial enrichment must not fail the job: {value!r}"
+    assert value["document_ids"] == ["d1"], f"chain dict not forwarded: {value!r}"
+    assert [payload for event_type, payload in events if event_type == "job.failed"] == []
+
+    progress = [payload for event_type, payload in events if event_type == "metadata.progress"]
+    assert progress == [{"processed": 1, "total": 11}], (
+        f"Expected one progress event reading 1 of 11 but got {progress!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 9: no chunks to enrich -> success, because nothing failed
+# ---------------------------------------------------------------------------
+
+
+def test_a_document_with_no_chunks_still_succeeds(monkeypatch):
+    """An empty document enriches nothing and fails nothing.
+
+    The wholly-failed rule counts the chunks a run took responsibility for. Zero
+    of them is not a failure, which is what separates this from test 7.
+    """
+    mock_agent = _make_mock_agent()
+    mock_job = MagicMock()
+    mock_db = _make_mock_db(mock_agent, mock_job)
+
+    mock_cursor = _MockCursor()
+    mock_cursor.fetchall_result = []
+    mock_conn = _make_mock_tenant_conn(mock_cursor)
+
+    mock_enrich = MagicMock()
+    events = []
+    _patch_task_seams(monkeypatch, mock_db, mock_conn, mock_enrich, _capture_emit(events))
+
+    outcome, value = _run_task()
+
+    assert outcome == "returned", f"An empty document must not fail the job: {value!r}"
+    assert mock_enrich.call_count == 0
+    assert [event_type for event_type, _ in events] == ["metadata.started", "metadata.complete"]
+
+
+# ---------------------------------------------------------------------------
+# Test 10: what reaches persistence is a ChunkMetadata carrying the chunk's id
+# ---------------------------------------------------------------------------
+
+
+def test_enriched_chunks_reach_persistence_as_chunk_metadata(monkeypatch):
+    """The persistence seam receives one ChunkMetadata per enriched chunk, fields intact.
+
+    The model returns per-chunk results in submission order and the task zips
+    them back to chunk_ids by index, never by id — the model never sees an id.
+    Reading the records at the seam is what proves the zip lined up: a summary
+    landing on the wrong chunk_id is a mispairing this assertion catches and a
+    call count cannot.
+    """
+    from app.domain.chunk_metadata import ChunkMetadata
+    from app.services.metadata_service import ChunkMetadataAndEntities, EntityExtraction
+
+    mock_agent = _make_mock_agent()
+    mock_job = MagicMock()
+    mock_db = _make_mock_db(mock_agent, mock_job)
+
+    chunk_two = uuid.uuid5(uuid.NAMESPACE_DNS, "second")
+    mock_cursor = _MockCursor(fetchone_sequence=[(0,), (0,)])
+    mock_cursor.fetchall_result = [(CHUNK_ONE, "first content"), (chunk_two, "second content")]
+    mock_conn = _make_mock_tenant_conn(mock_cursor)
+
+    acme = EntityExtraction(name="Acme Corp", type="product", normalized="acme corp")
+    first = ChunkMetadataAndEntities(
+        summary="first summary", keywords=["one"], questions=["first?"], entities=[acme]
+    )
+    second = ChunkMetadataAndEntities(
+        summary="second summary", keywords=["two"], questions=["second?"], entities=[]
+    )
+
+    persisted = []
+    _patch_task_seams(
+        monkeypatch,
+        mock_db,
+        mock_conn,
+        MagicMock(return_value=[first, second]),
+        _capture_emit([]),
+    )
+    monkeypatch.setattr(
+        "app.worker.tasks.pipeline.metadata._persist_enrichment",
+        lambda conn, enrichment: persisted.append(enrichment),
+    )
+
+    outcome, value = _run_task()
+
+    assert outcome == "returned", f"{value!r}"
+    assert persisted == [
+        ChunkMetadata(
+            chunk_id=CHUNK_ONE,
+            summary="first summary",
+            keywords=["one"],
+            questions=["first?"],
+            entities=[acme],
+        ),
+        ChunkMetadata(
+            chunk_id=chunk_two,
+            summary="second summary",
+            keywords=["two"],
+            questions=["second?"],
+            entities=[],
+        ),
+    ], f"persisted records: {persisted!r}"
