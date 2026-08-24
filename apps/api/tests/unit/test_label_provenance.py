@@ -3,8 +3,8 @@ D6 P1 — the trust tier that nothing could produce, and the wall around it.
 
 `eval_service.LABEL_TRUST_TIERS` has declared `human_verified` (2) and
 `human_authored` (3) since D5, and nothing in the system could produce either:
-the only tier resolver was `SCENARIO_SOURCE_TRUST_TIER`, which maps every
-scenario source the schema allows to `model_generated` or `customer_negative`.
+the only tier resolver mapped every scenario source the schema allows to
+`model_generated` or `customer_negative`.
 So `VERIFIED_QA_MIN_TRUST_TIER = "human_verified"` gated on a tier no row could
 carry, and the customer-facing verified-answer path was dead code by
 construction.
@@ -16,10 +16,9 @@ This file covers the two halves of closing that:
    production failure the owner then answers by hand is `customer_negative` in
    origin and `human_authored` in label, simultaneously, and both statements are
    true. Collapsing them into one column is how a model-written string ends up
-   admitted on a human tier — the failure `promotable_answer`'s docstring
-   already warns about. `eval_service.label_trust_tier()` keeps them apart, and
-   its fallback direction is pinned: it can downgrade a label to its origin's
-   tier, and it can never manufacture a human claim out of an origin.
+   admitted on a human tier. `eval_scenarios.label_trust_tier` keeps them
+   apart: it carries the label's own claim, and the row's `source` keeps
+   meaning exactly what it meant before.
 
 2. NO MODEL MAY EVER WRITE AT A HUMAN TIER — STRUCTURALLY.
    A trust tier is a claim about who wrote a string, and it is worth exactly the
@@ -88,8 +87,9 @@ EVAL_SERVICE_PATH = os.path.normpath(os.path.join(SERVICES_DIR, "eval_service.py
 # and `/widget/jobs/{job_id}/events` as **no auth**, plus `agent_chat.py`,
 # `query.py`, and `evals.py`'s generic `_query_tenant_db_sync`. Nothing under
 # app/api references the writer today, so the tree was clean and the CLAIM was
-# what was wrong. The region is now one named module — the one P2 is
-# contracted to put the labelling route in.
+# what was wrong. The region is now one named module. ADR 0003 deleted the
+# labelling route, so nothing occupies the region, and any route that drives the
+# writer again has to live in this module or turn R2 red.
 LABEL_WRITER_CALLER = os.path.normpath(os.path.join(APP_DIR, "api", "v1", "evals.py"))
 
 # The complexity gate names every function over its standard as data.
@@ -289,24 +289,6 @@ def _no_ambient_agent_context():
 
 
 class TestLabelTierVocabulary:
-    def test_the_human_tiers_are_the_two_the_hierarchy_already_declared(self):
-        """HUMAN_LABEL_TIERS names tiers LABEL_TRUST_TIERS already ranks.
-
-        A human tier that the hierarchy does not rank would resolve through
-        trust_tier_rank's default to `unknown` — a label asserting a human and
-        ranking below a model's output.
-        """
-        from app.services.eval_service import (
-            HUMAN_LABEL_TIERS,
-            LABEL_TRUST_TIERS,
-            trust_tier_rank,
-        )
-
-        assert set(HUMAN_LABEL_TIERS) <= set(LABEL_TRUST_TIERS)
-        assert HUMAN_LABEL_TIERS == ("human_verified", "human_authored")
-        for tier in HUMAN_LABEL_TIERS:
-            assert trust_tier_rank(tier) > trust_tier_rank("customer_negative")
-
     def test_the_column_name_is_declared_once_and_matches_the_migration(self):
         from app.services.eval_service import LABEL_TIER_COLUMN
 
@@ -320,91 +302,6 @@ class TestLabelTierVocabulary:
         ) as fh:
             assert f"ADD COLUMN IF NOT EXISTS {LABEL_TIER_COLUMN} TEXT" in fh.read()
 
-    def test_an_unlabelled_row_falls_back_to_its_origins_tier(self):
-        """NULL means "nobody claimed anything", which is every row today."""
-        from app.services.eval_service import label_trust_tier, scenario_trust_tier
-
-        for source in SCHEMA_ALLOWED_SOURCES:
-            row = {"source": source, "reference_answer": "x"}
-            assert label_trust_tier(row) == scenario_trust_tier(source)
-            assert label_trust_tier({**row, "label_trust_tier": None}) == (
-                scenario_trust_tier(source)
-            )
-
-    def test_a_human_label_outranks_the_questions_origin(self):
-        """The case the column exists for.
-
-        A mined production failure is `customer_negative` in origin. Once the
-        owner writes the answer, the LABEL is human_authored — and the row's
-        `source` still says 'mined', because that is still where the question
-        came from. Both facts survive.
-        """
-        from app.services.eval_service import (
-            is_human_labelled,
-            label_trust_tier,
-            scenario_trust_tier,
-            trust_tier_rank,
-        )
-
-        row = {
-            "source": "mined",
-            "reference_answer": "We refund within 14 days of delivery.",
-            "label_trust_tier": "human_authored",
-        }
-        assert label_trust_tier(row) == "human_authored"
-        assert is_human_labelled(row) is True
-        assert row["source"] == "mined"
-        assert scenario_trust_tier(row["source"]) == "customer_negative"
-        assert trust_tier_rank(label_trust_tier(row)) > trust_tier_rank(
-            scenario_trust_tier(row["source"])
-        )
-
-    @pytest.mark.parametrize(
-        "value",
-        ["model_generated", "customer_negative", "unknown", "HUMAN_AUTHORED", "human", 7],
-    )
-    def test_a_value_the_check_forbids_fails_closed_to_unknown(self, value):
-        """0016's CHECK admits only NULL or a human tier in that column.
-
-        Anything else means the column was written by something that bypassed
-        both the service layer and the database constraint, and a provenance
-        nobody can account for is worth less than one that has been accounted
-        for and found untrustworthy. So it resolves to `unknown`, which ranks
-        BELOW model_generated — never to the source's tier, which would silently
-        launder a corrupt value back into a plausible one.
-        """
-        from app.services.eval_service import label_trust_tier, trust_tier_rank
-
-        row = {"source": "mined", "label_trust_tier": value}
-        assert label_trust_tier(row) == "unknown"
-        assert trust_tier_rank(label_trust_tier(row)) < trust_tier_rank(
-            "model_generated"
-        )
-
-    @pytest.mark.parametrize("source", SCHEMA_ALLOWED_SOURCES)
-    def test_no_schema_allowed_source_can_produce_a_human_label_tier(self, source):
-        """The guard that makes label_trust_tier()'s fallback safe.
-
-        The fallback reads the origin's tier when the label claims nothing. That
-        is only sound while no origin can resolve to a human tier — otherwise
-        `source` would be back to deciding what a label is worth, which is the
-        collapse this whole column exists to prevent, reintroduced through the
-        one branch that looks harmless.
-        """
-        from app.services.eval_service import is_human_labelled, label_trust_tier
-
-        row = {"source": source, "reference_answer": "x"}
-        assert label_trust_tier(row) not in ("human_verified", "human_authored")
-        assert is_human_labelled(row) is False
-
-    def test_a_row_predating_0016_is_not_human_labelled(self):
-        """No `label_trust_tier` key at all — the shape every row selected from
-        a pre-0016 tenant DB has."""
-        from app.services.eval_service import is_human_labelled
-
-        assert is_human_labelled({"source": "generated"}) is False
-        assert is_human_labelled({}) is False
-
     def test_is_human_label_tier_rejects_everything_else(self):
         from app.services.eval_service import is_human_label_tier
 
@@ -412,91 +309,6 @@ class TestLabelTierVocabulary:
         assert is_human_label_tier("human_verified") is True
         for value in (None, "", "model_generated", "customer_negative", "unknown"):
             assert is_human_label_tier(value) is False
-
-    def test_a_human_tier_over_an_empty_answer_fails_closed(self):
-        """A human claim about a string that is not there resolves to `unknown`.
-
-        `record_human_label` refuses an empty answer and 0016's CHECK refuses to
-        store the pair, so no shipped path creates this row — but a downgrade
-        and re-upgrade, a partial restore, or a direct write can, and the
-        resolver must not then assert that a human authored an empty string.
-        Such a row is also excluded from the eval by `WHERE reference_answer !=
-        ''`, so the claim would hang on a row nothing ever scores.
-        """
-        from app.services.eval_service import (
-            is_human_labelled,
-            label_trust_tier,
-            trust_tier_rank,
-        )
-
-        for answer in ("", "   ", None):
-            row = {
-                "source": "mined",
-                "reference_answer": answer,
-                "label_trust_tier": "human_authored",
-            }
-            assert label_trust_tier(row) == "unknown"
-            assert is_human_labelled(row) is False
-            assert trust_tier_rank(label_trust_tier(row)) < trust_tier_rank(
-                "model_generated"
-            )
-
-    def test_a_projection_without_the_answer_column_is_not_downgraded(self):
-        """The check above applies to a PRESENT-and-empty answer only.
-
-        A caller that selected `id, source, label_trust_tier` and no
-        `reference_answer` has not told us the answer is empty — it has told us
-        nothing about the answer. Downgrading there would make the resolver's
-        verdict depend on the caller's SELECT list, which is the kind of
-        action-at-a-distance that gets discovered in production.
-        """
-        from app.services.eval_service import is_human_labelled, label_trust_tier
-
-        row = {"source": "mined", "label_trust_tier": "human_authored"}
-        assert label_trust_tier(row) == "human_authored"
-        assert is_human_labelled(row) is True
-
-    def test_a_mapping_that_is_not_a_scenario_never_reads_as_human_labelled(self):
-        """The decision-eval namespace collision, pinned from both sides.
-
-        `decision_eval_service` published `label_trust_tier: 'human_authored'`
-        on every `DecisionFixture` and on its run report, meaning "these
-        fixtures were hand-written". Handed to `label_trust_tier()` — which
-        reads its key off any mapping — all 23 of them resolved as
-        `is_human_labelled() is True`: a human-authorship claim about a
-        `reference_answer` those objects do not have, and about a `source` they
-        do not have either. Observed by execution during the P1 review; no
-        caller did it, and nothing structural stopped one.
-
-        Two fixes, and this asserts the one that does not depend on every other
-        module choosing a different spelling: a mapping with neither `source`
-        nor `reference_answer` is not an eval scenario and gets `unknown`.
-        """
-        from app.services.eval_service import is_human_labelled, label_trust_tier
-
-        not_a_scenario = {
-            "case_id": "confirm-order-01",
-            "label_trust_tier": "human_authored",
-        }
-        assert label_trust_tier(not_a_scenario) == "unknown"
-        assert is_human_labelled(not_a_scenario) is False
-
-    def test_the_decision_eval_no_longer_spells_the_column_name(self):
-        """The other half of the same fix, asserted against the real module."""
-        import dataclasses
-
-        from app.services import decision_eval_service as des
-        from app.services.eval_service import is_human_labelled
-
-        assert not hasattr(des, "FIXTURE_LABEL_TRUST_TIER")
-        assert des.FIXTURE_LABEL_PROVENANCE == "human_authored"
-
-        fixtures = des.build_decision_fixtures()
-        assert fixtures, "the decision fixture set is empty"
-        for fixture in fixtures:
-            row = dataclasses.asdict(fixture)
-            assert "label_trust_tier" not in row
-            assert is_human_labelled(row) is False
 
 
 # ---------------------------------------------------------------------------
@@ -814,14 +626,13 @@ class TestR2ImportBoundary:
     ):
         """The negative control. Reading and ranking a label tier is what most
         of the codebase legitimately does; only WRITING one is walled off, so a
-        detector that fired on `label_trust_tier` would push the next author
+        detector that fired on a tier READ would push the next author
         into weakening it rather than obeying it."""
         path = tmp_path / "innocent.py"
         path.write_text(
-            "from app.services.eval_service import label_trust_tier, "
-            "is_human_labelled\n"
+            "from app.services.eval_service import is_human_label_tier\n"
             "def f(row):\n"
-            "    return label_trust_tier(row), is_human_labelled(row)\n",
+            "    return is_human_label_tier(row.get('tier'))\n",
             encoding="utf-8",
         )
         assert _references_label_writer(str(path)) == []
@@ -829,11 +640,10 @@ class TestR2ImportBoundary:
     def test_the_boundary_detector_does_not_fire_on_prose(self, tmp_path):
         """A docstring that names the writer is not a route to the writer.
 
-        `eval_service.label_trust_tier`'s docstring explains that
-        `record_human_label` refuses an empty answer — which is exactly the kind
-        of sentence the read path should contain, and exactly the sentence the
-        strengthened string arm flagged as a boundary violation on its first
-        run. Prose is not reachability; a bare string expression is bound to
+        A read-path module whose docstring explains that `record_human_label`
+        refuses an empty answer is carrying exactly the kind of sentence it
+        should, and exactly the sentence the strengthened string arm flagged as a
+        boundary violation on its first run. Prose is not reachability; a bare string expression is bound to
         `__doc__` and cannot be imported through.
         """
         path = tmp_path / "prose.py"
@@ -980,8 +790,7 @@ def _label_column_mentions(path: str) -> list[str]:
     is an AST walk rather than a text search: prose is not reachability. A bare
     string expression statement is bound to `__doc__` and cannot be handed to
     `cur.execute`, and a module that must explain why it does NOT name a label
-    column has to be able to say the words. `decision_eval_service` is exactly
-    that module.
+    column has to be able to say the words.
 
     Its own blind spot is the mirror image of the statement scan's: a column
     name assembled from fragments (`"label" + "_trust_tier"`) spells nothing
@@ -1526,8 +1335,8 @@ class TestRecordHumanLabel:
 
     def test_the_row_that_does_not_exist_is_reported_not_raised(self):
         """rowcount 0 is an outcome the caller counts, not an exception it
-        catches — the same shape as select_promotion_candidates' refusals, so a
-        labelling rate can never be built without its denominator.
+        catches, so a labelling rate can never be built without its
+        denominator.
 
         And zero rows now has TWO causes, because the UPDATE is scoped to an
         unlabelled row: the id is absent from this database, or it is present and
@@ -1618,60 +1427,12 @@ class TestRecordHumanLabel:
 
 
 class TestP1OpenedNoCustomerFacingDoor:
-    def test_a_human_labelled_scenario_is_still_not_promoted_to_verified_qa(self):
-        """The settled decision of 2026-08-08 is eval-only: a label improves
-        what the eval can measure and reaches no customer.
-
-        `verified_qa` rows are served by `retrieval_service.verified_qa_lookup`
-        AHEAD of hybrid search, so one mistyped label would be answered to a
-        real customer with no eval between the typo and them. This pins that
-        adding the human tier did not, by itself, open that write — a top-scoring
-        human-labelled row is still refused.
-
-        THE ASSERTION IS THE REFUSAL REASON, NOT THE COUNT (D6 P3 review,
-        finding 6). It used to read `sum(refusals.values()) == 1`, which after
-        P3 added the decision gate was satisfied by EITHER lock. The review
-        deleted the resolver gate outright and this test stayed green with the
-        exact lock its docstring claims to pin entirely removed. `customer_negative`
-        is `source='mined'` resolved — the QUESTION's origin — so the assertion
-        now fails if the gate is swapped to the label's tier, which is the
-        one-line change it exists to catch.
-        """
-        from app.services.eval_service import select_promotion_candidates
-
-        scenario = {
-            "id": "s1",
-            "source": "mined",
-            "question": "Do you refund?",
-            "reference_answer": "Yes, within 14 days.",
-            "label_trust_tier": "human_authored",
-        }
-        score = {
-            "scenario_id": "s1",
-            "faithfulness": 1.0,
-            "answer_relevancy": 1.0,
-        }
-
-        candidates, refusals = select_promotion_candidates([scenario], [score])
-        assert candidates == []
-        assert refusals == {"trust_tier:customer_negative": 1}, (
-            "a top-scoring human-labelled row was not refused on the tier of "
-            f"its QUESTION's origin: {refusals}"
-        )
-
     def test_the_promotion_decision_is_still_recorded_as_disabled(self):
         from app.services.eval_service import VERIFIED_QA_PROMOTION_DECISION
 
         assert VERIFIED_QA_PROMOTION_DECISION["enabled"] is False
         assert VERIFIED_QA_PROMOTION_DECISION["reason"]
 
-    @pytest.mark.parametrize("source", SCHEMA_ALLOWED_SOURCES)
-    def test_no_source_became_promotable(self, source):
-        """0016 added no scenario source, so 0011's list is still the whole
-        list and none of it clears the gate."""
-        from app.services.eval_service import is_promotable_to_verified_qa
-
-        assert is_promotable_to_verified_qa(source) is False
 
     def test_the_label_write_does_not_reach_verified_qa(self):
         from app.services import label_service

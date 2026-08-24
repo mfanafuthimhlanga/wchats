@@ -3,7 +3,7 @@ Unit tests for app.worker.tasks.runtime.eval.run_eval_suite (measurement-layer P
 
 The task had no unit coverage at all, which is how audit defect D2 survived: the
 task wrote `eval_results`, the terminal `eval_runs` status and the verified_qa
-promotion to a Neon branch it then deleted in `finally`, so a successful run was
+promotion somewhere other than production, so a successful run was
 indistinguishable from a hung one and `eval_results` never existed on production
 for evals.py's LEFT JOIN to find.
 
@@ -13,20 +13,10 @@ the same SQL, to the same table names, and both "succeed". A test that mocked
 eval_service wholesale and asserted "write_eval_results was called" would have
 passed against the defect.
 
-The other half is the Neon branch. An earlier version of this module asserted
-that "scoring runs against the branch" by checking that the branch connection
-string was HANDED to run_ragas_eval — which never referenced it. Passing an
-argument is not using it, and a test that pins an unused argument pins nothing.
-The tests below pin the opposite property: no statement is issued against the
-branch anywhere in this task, and therefore a branch Neon cannot give us does
-not abandon a run whose every write targets a reachable production endpoint.
-Both directions of that switch are exercised, because a tolerance that is never
-observed to become strict again is indistinguishable from an absent guard.
-
 No live PostgreSQL exists on this machine, so every DB boundary is a double:
-psycopg2.connect, the control-DB session, the Neon branch API and eval_service's
-writers. Nothing here proves a live database accepts the SQL — that is
-integration territory and it SKIPS, which is unobserved, never a pass.
+psycopg2.connect, the control-DB session and eval_service's writers. Nothing
+here proves a live database accepts the SQL. That is integration territory, and
+it SKIPS, which is unobserved, never a pass.
 """
 
 from __future__ import annotations
@@ -41,7 +31,6 @@ import pytest
 from app.worker.tasks.runtime import eval as mod
 
 PRODUCTION = "postgresql://production/tenant"
-BRANCH = "postgresql://neon-branch/tenant"
 
 
 # ---------------------------------------------------------------------------
@@ -172,15 +161,13 @@ def wired(monkeypatch):
         "invoked": [],
         "config_patched": [],
         "ragas": [],
-        "readiness": [],
         "results": [],
         "status": [],
-        "deleted": [],
     }
 
     # D1/P2: the agent invocation is doubled here so these tests keep testing
-    # what they were written to test — which connection string each write opens
-    # and what the branch does — rather than accidentally exercising a live SDK
+    # what they were written to test, which is which connection string each
+    # write opens, rather than accidentally exercising a live SDK
     # turn against a MagicMock agent row. The scenarios that come back carry an
     # `agent_response` that is deliberately NOT the reference answer, so any
     # test in this module that starts scoring self-answers fails loudly.
@@ -257,17 +244,6 @@ def wired(monkeypatch):
             rec["inserted"].append((kind, pv, config, conn_str)) or True
         ),
     )
-    monkeypatch.setattr(
-        mod,
-        "create_branch",
-        lambda project_id, name: ("branch-1", BRANCH),
-    )
-    monkeypatch.setattr(
-        mod,
-        "wait_for_neon_ready",
-        lambda conn_str: rec["readiness"].append(conn_str),
-    )
-
     def _fake_ragas(*args, **kwargs):
         # Recorded as (args, kwargs) rather than as a named connection string:
         # the property under test is that scoring is handed NO connection at
@@ -288,12 +264,6 @@ def wired(monkeypatch):
             (status, conn_str)
         ),
     )
-    monkeypatch.setattr(
-        mod,
-        "delete_branch",
-        lambda project_id, branch_id: rec["deleted"].append((project_id, branch_id)),
-    )
-
     return rec
 
 
@@ -303,9 +273,8 @@ def _run(agent_id="agent-1", retries=0):
     Celery's `self.retry()` outside a worker re-raises the original exception
     rather than scheduling anything, so the failure-path tests below run at
     retries == max_retries: the task takes its `return {}` exhaustion branch and
-    the assertions can be about what the `finally` did rather than about which
-    exception escaped. `test_retry_path_still_deletes_the_branch` covers
-    retries=0, where the exception does escape.
+    the assertions can be about what the task recorded rather than about which
+    exception escaped.
     """
     mod.run_eval_suite.push_request(retries=retries)
     try:
@@ -328,8 +297,8 @@ class TestPersistenceSplit:
         result = _run()
 
         assert wired["results"] == [PRODUCTION], (
-            "eval_results were written to the Neon branch this task deletes in "
-            "`finally` — that is audit defect D2"
+            "eval_results were not written to production, which is audit "
+            "defect D2"
         )
         assert len(wired["ragas"]) == 1
         args, kwargs = wired["ragas"][0]
@@ -337,11 +306,6 @@ class TestPersistenceSplit:
             "scoring was handed something besides the scenarios — the only "
             "thing it ever needed, and the argument it used to be given and "
             "never read was a connection string"
-        )
-        assert BRANCH not in str(args), (
-            "the branch connection string reached run_ragas_eval, which issues "
-            "no statement against it — an argument that is passed and never "
-            "used is a false isolation claim, not isolation"
         )
         assert result["run_id"]
 
@@ -376,9 +340,8 @@ class TestPersistenceSplit:
         assert composition["golden_set_present"] is True
         assert composition["dataset_column_available"] is True
 
-    def test_config_is_collected_against_production_not_the_branch(self, wired):
-        """The corpus figure must describe the live corpus, and the branch does
-        not exist yet at collection time."""
+    def test_config_is_collected_against_production(self, wired):
+        """The corpus figure must describe the live corpus."""
         _run()
         assert wired["config_built"] == [PRODUCTION]
 
@@ -391,49 +354,9 @@ class TestPersistenceSplit:
         assert result["config_recorded"] is False
 
 
-# ---------------------------------------------------------------------------
-# D-10 — the branch is deleted on every path
-# ---------------------------------------------------------------------------
 
 
-class TestBranchDeletion:
-
-    def test_branch_is_deleted_on_success(self, wired):
-        _run()
-        assert wired["deleted"] == [("neon-project-1", "branch-1")]
-
-    def test_branch_is_deleted_when_scoring_raises(self, wired, monkeypatch):
-        monkeypatch.setattr(
-            mod,
-            "run_ragas_eval",
-            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("ragas exploded")),
-        )
-        assert _run(retries=EXHAUSTED) == {}
-        assert wired["deleted"] == [("neon-project-1", "branch-1")], (
-            "the Neon branch leaked on the failure path — D-10 requires deletion "
-            "on every path, and a leaked branch is a live copy of tenant data"
-        )
-        assert ("failed", PRODUCTION) in wired["status"]
-
-    def test_retry_path_still_deletes_the_branch(self, wired, monkeypatch):
-        """retries < max_retries: `self.retry` propagates out of the task and the
-        `finally` is the only thing standing between that and a leaked branch.
-
-        Driven by a failure BEFORE the first agent turn, because that is the only
-        remaining retrying path — see
-        test_a_failure_after_the_invocation_does_not_re_buy_sixty_sdk_turns.
-        """
-        from celery.exceptions import Retry
-
-        monkeypatch.setattr(
-            mod,
-            "_invoke_agent_for_scenarios",
-            lambda **kw: (_ for _ in ()).throw(RuntimeError("SDK unavailable")),
-        )
-        with pytest.raises((Retry, RuntimeError)):
-            _run(retries=0)
-
-        assert wired["deleted"] == [("neon-project-1", "branch-1")]
+class TestRetryAfterTheInvocation:
 
     def test_a_failure_after_the_invocation_does_not_re_buy_sixty_sdk_turns(
         self, wired, monkeypatch
@@ -470,85 +393,9 @@ class TestBranchDeletion:
             "the run must still reach a terminal state on production — not "
             "retrying is not the same as not finishing"
         )
-        assert wired["deleted"] == [("neon-project-1", "branch-1")]
         assert len(wired["invoked"]) == 1, (
             f"the agent was invoked {len(wired['invoked'])} times for one dispatch"
         )
-
-    def test_branch_is_deleted_when_the_production_result_write_raises(
-        self, wired, monkeypatch
-    ):
-        """The new production write is inside the try, so it must not be able to
-        strand a branch."""
-        def _boom(run_id, scores, conn_str):
-            raise RuntimeError("production unreachable")
-
-        monkeypatch.setattr(mod, "write_eval_results", _boom)
-        assert _run(retries=EXHAUSTED) == {}
-        assert wired["deleted"] == [("neon-project-1", "branch-1")]
-
-    def test_branch_is_deleted_even_if_marking_failed_also_raises(
-        self, wired, monkeypatch
-    ):
-        """Two failures at once — scoring AND the terminal status write. The
-        branch must still go, and the task must still return rather than dying
-        on the second exception."""
-        monkeypatch.setattr(
-            mod,
-            "run_ragas_eval",
-            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("ragas exploded")),
-        )
-
-        def _status_boom(*args, **kwargs):
-            raise RuntimeError("production unreachable")
-
-        monkeypatch.setattr(mod, "update_eval_run_status", _status_boom)
-
-        result = _run(retries=EXHAUSTED)
-
-        assert wired["deleted"] == [("neon-project-1", "branch-1")]
-        assert result == {}, (
-            "a failure in the terminal-status write must not escape the except "
-            "block — it would skip the retry/exhaustion branch entirely"
-        )
-
-    def test_nothing_is_deleted_when_the_branch_was_never_created(
-        self, wired, monkeypatch
-    ):
-        """delete_branch(project, None) would be a call against a branch id
-        that does not exist; the `finally` skips only this case."""
-        monkeypatch.setattr(
-            mod,
-            "create_branch",
-            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("neon down")),
-        )
-        _run()
-
-        assert wired["deleted"] == [], "no branch was created, so none is deleted"
-
-    def test_branch_is_deleted_when_the_readiness_probe_fails(
-        self, wired, monkeypatch
-    ):
-        """create_branch succeeded, then the probe raised.
-
-        This path used to leak the branch outright: acquisition had its own
-        try/except that returned, so the `finally` holding delete_branch
-        belonged to a block that was never entered. A leaked eval branch is a
-        full live copy of tenant data left running on Neon.
-        """
-        monkeypatch.setattr(mod, "EVAL_SCORING_REQUIRES_BRANCH", True)
-        monkeypatch.setattr(
-            mod,
-            "wait_for_neon_ready",
-            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("endpoint suspended")),
-        )
-
-        assert _run(retries=EXHAUSTED) == {}
-        assert wired["deleted"] == [("neon-project-1", "branch-1")], (
-            "the branch was created and then leaked when its readiness probe "
-            "failed — D-10 requires deletion on every path"
-        )
-        assert ("failed", PRODUCTION) in wired["status"]
 
 
 # ---------------------------------------------------------------------------
@@ -562,124 +409,6 @@ class TestPromotionIsUnreachableFromTheTask:
         result = _run()
         assert result["promoted"] == 0
         assert result["promotion_disabled_reason"]
-
-    def test_module_does_not_import_or_call_promote_to_verified_qa(self):
-        """Absence pin. The promotion call site is what turns a repaired
-        write-back into a path that serves an operator-flagged failure to real
-        customers via retrieval_service.verified_qa_lookup, so its absence from
-        this module is a property worth pinning rather than assuming."""
-        source = inspect.getsource(mod)
-        code = "\n".join(
-            line for line in source.splitlines() if not line.strip().startswith("#")
-        )
-        # The docstring names it in prose; only executable references matter.
-        body = code.split('"""', 2)[-1]
-        assert "promote_to_verified_qa(" not in body, (
-            "run_eval_suite calls promote_to_verified_qa — with results now "
-            "durable, that path can reach the customer-serving verified_qa cache"
-        )
-
-    def test_nothing_at_all_targets_the_branch(self, wired):
-        """Every recorded connection string, in one assertion."""
-        _run()
-
-        branch_writes = [c for c in wired["results"] if c == BRANCH]
-        branch_status = [s for s in wired["status"] if s[1] == BRANCH]
-        branch_inserts = [i for i in wired["inserted"] if i[3] == BRANCH]
-        branch_scoring = [c for c in wired["ragas"] if BRANCH in str(c)]
-
-        assert branch_writes == []
-        assert branch_status == []
-        assert branch_inserts == []
-        assert branch_scoring == []
-
-
-# ---------------------------------------------------------------------------
-# The Neon branch — isolation held in reserve, not isolation in use
-# ---------------------------------------------------------------------------
-
-
-class TestBranchIsIsolationHeldInReserve:
-    """No statement is issued against the branch, so its absence is survivable.
-
-    The failing input these tests were written from: Neon degraded (endpoint
-    suspended, control-plane 5xx). Every one of this task's writes targets
-    production, which is reachable; the scenarios were read from production
-    too. Abandoning the run there threw away a night's measurement over a
-    resource nothing reads, and did it twice more on retry.
-
-    The tolerance is not unconditional — it is exactly as wide as
-    eval_service.EVAL_SCORING_REQUIRES_BRANCH, and the tests below drive both
-    of its positions.
-    """
-
-    def test_scoring_declares_that_it_needs_no_branch(self):
-        from app.services import eval_service
-
-        assert eval_service.EVAL_SCORING_REQUIRES_BRANCH is False
-
-    def test_branch_failure_does_not_abandon_a_run_that_reads_no_branch(
-        self, wired, monkeypatch
-    ):
-        monkeypatch.setattr(
-            mod,
-            "create_branch",
-            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("neon 503")),
-        )
-
-        result = _run()
-
-        assert result["run_id"], "the run was abandoned over an unused resource"
-        assert result["branch_isolation"] == "unavailable", (
-            "a run that scored without branch isolation must say so — a reader "
-            "must never have to guess whether isolation was in force"
-        )
-        assert wired["results"] == [PRODUCTION]
-        assert ("complete", PRODUCTION) in wired["status"]
-        assert ("failed", PRODUCTION) not in wired["status"]
-
-    def test_branch_failure_is_fatal_once_scoring_needs_the_branch(
-        self, wired, monkeypatch
-    ):
-        """The other position of the switch.
-
-        When scoring does issue statements, the branch is the only thing
-        standing between an eval and production tenant data, and losing it must
-        stop the run rather than silently score against production.
-        """
-        monkeypatch.setattr(mod, "EVAL_SCORING_REQUIRES_BRANCH", True)
-        monkeypatch.setattr(
-            mod,
-            "create_branch",
-            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("neon 503")),
-        )
-
-        assert _run(retries=EXHAUSTED) == {}
-        assert ("failed", PRODUCTION) in wired["status"]
-        assert wired["results"] == [], "a run with no isolation still scored"
-
-    def test_readiness_is_not_probed_while_nothing_connects_to_the_branch(
-        self, wired
-    ):
-        """A readiness wait for an endpoint nobody opens is cost and failure
-        surface with no signal in it — it is the expensive half of the branch."""
-        _run()
-        assert wired["readiness"] == []
-
-    def test_readiness_is_probed_once_scoring_needs_the_branch(
-        self, wired, monkeypatch
-    ):
-        monkeypatch.setattr(mod, "EVAL_SCORING_REQUIRES_BRANCH", True)
-        _run()
-        assert wired["readiness"] == [BRANCH]
-
-    def test_the_branch_is_still_created_and_deleted(self, wired):
-        """Held in reserve means held, not dropped: D-10 has to be in place the
-        day scoring starts issuing statements, and a branch that is created
-        without being deleted is worse than no branch."""
-        result = _run()
-        assert result["branch_isolation"] == "provisioned_unused"
-        assert wired["deleted"] == [("neon-project-1", "branch-1")]
 
 
 # ---------------------------------------------------------------------------
@@ -712,9 +441,8 @@ class TestTaskContract:
 
         assert _run() == {"status": "already_running"}
         assert wired["inserted"] == []
-        assert wired["deleted"] == []
 
-    def test_no_scenarios_returns_before_creating_a_branch(self, wired, monkeypatch):
+    def test_no_scenarios_returns_early(self, wired, monkeypatch):
         conn = MagicMock()
         cursor = _Cursor()
         conn.cursor.return_value = cursor
@@ -727,7 +455,6 @@ class TestTaskContract:
         assert result["attempted"] == 0
         assert result["valid"] == 0
         assert result["scored"] == 0
-        assert wired["deleted"] == [], "no branch should have been created"
 
     def test_an_empty_run_is_still_recorded_terminally(self, wired, monkeypatch):
         """A run that covered nothing still happened (P2 review).

@@ -51,15 +51,19 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 # returns the same `Tenant` either way and used to report nothing about which
 # path ran, so a route could not tell a person from an automation.
 #
-# For almost every route that is fine: they authorise an ACCOUNT to act on its
-# own data. It is not fine for exactly one route. `POST .../label` stamps
+# For almost every route that is fine, because they authorise an ACCOUNT to act
+# on its own data. It stops being fine for any route that stamps
 # `eval_scenarios.label_trust_tier = 'human_authored'`, a claim about WHO WROTE a
-# string, and `VERIFIED_QA_MIN_TRUST_TIER` is defined over that hierarchy. If a
-# machine credential can produce that tier, then `human_authored` means "whoever
-# holds an API key said so", and label_service's four restrictions — which bind
-# in-process Celery and ContextVar state — cannot see an out-of-process caller at
-# all. The credential is the only evidence about the caller that survives the
-# process boundary, so it is the only place that check can live.
+# string, over which `VERIFIED_QA_MIN_TRUST_TIER` is defined. If a machine
+# credential can produce that tier, then `human_authored` means "whoever holds an
+# API key said so", and label_service's four restrictions bind in-process Celery
+# and ContextVar state, so they cannot see an out-of-process caller at all. The
+# credential is the only evidence about the caller that survives the process
+# boundary, so it is the only place that check can live.
+#
+# ADR 0003 deleted the one route that stamped it (`POST .../label`). This
+# reporter stays because the tier survives, and the console feature that brings
+# the labelling route back inherits the same obligation.
 CREDENTIAL_CLERK_JWT = "clerk_jwt"
 CREDENTIAL_API_KEY = "api_key"
 # Nothing recorded a credential. Reached only when `get_current_tenant` is
