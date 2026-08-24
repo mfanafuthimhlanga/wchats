@@ -3,7 +3,10 @@ Unit tests for generate_metadata Celery task — ING-06.
 
 Tests:
   1. test_generate_metadata_acks_late                                    — acks_late=True, max_retries=3
-  2. test_generate_metadata_signature                                     — (self, result) only; no conn/api_key param
+  2. test_generate_metadata_signature: the typed core seam, no conn/api_key param
+  2b. test_generate_metadata_takes_the_job_and_gives_the_same_job_back: IngestionJob in,
+      IngestionJob out
+  2c. test_a_result_dict_the_job_cannot_be_built_from_is_returned_unchanged
   3. test_layer_3_idempotency_skips_haiku_when_metadata_exists           — Layer 3 fires; enrich_chunks_batch NOT called
   4. test_generate_metadata_calls_enrich_when_no_existing_metadata        — enrich_chunks_batch called once with ["the content"]
   5. test_generate_metadata_upserts_entities_with_on_conflict_normalized_type — entity UPSERT SQL shape
@@ -48,9 +51,25 @@ import uuid
 from contextlib import contextmanager
 from unittest.mock import MagicMock
 
+from structlog.testing import capture_logs
+
+from app.domain.ingestion_job import IngestionJob
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+JOB = IngestionJob(tenant_id="t", agent_id="a", job_id="j", document_ids=["d1"])
+
+
+def _core(task):
+    """The task's core, the half that takes an IngestionJob and returns one.
+
+    The Celery task is the edge: it takes the wire dict, builds the job, and
+    sends the returned job back out as a dict. functools.wraps puts the core on
+    the edge as __wrapped__, so a test can hold the typed seam directly.
+    """
+    return task.run.__wrapped__
 
 
 def _make_sync_db_context(mock_db):
@@ -135,21 +154,20 @@ def test_generate_metadata_acks_late():
 
 
 def test_generate_metadata_signature():
-    """Task signature must be (result: dict) — no conn or api_key parameter.
+    """The core seam is IngestionJob in, IngestionJob out, and no conn or api_key (#43).
 
-    Note: Celery bind=True exposes .run as a bound method. inspect.signature()
-    on .run does NOT include 'self' in the returned parameters (it is already
-    bound). This mirrors the chunk_documents pattern (02-03 decision).
+    inspect.signature follows __wrapped__ past the Celery edge that converts the
+    wire dict, so what it reports is the typed seam the task body works in.
     """
     from app.worker.tasks.pipeline.metadata import generate_metadata
 
     sig = inspect.signature(generate_metadata.run)
-    param_names = list(sig.parameters)
 
-    # Celery bind=True: .run may or may not expose 'self' depending on Celery version
-    assert param_names == ["self", "result"] or param_names == ["result"], (
-        f"Expected ['result'] (or ['self', 'result']) but got {param_names}"
+    assert list(sig.parameters) == ["job"], (
+        f"Expected the core seam ['job'] but got {list(sig.parameters)}"
     )
+    assert sig.parameters["job"].annotation is IngestionJob
+    assert sig.return_annotation is IngestionJob
 
     sig_str = str(sig).lower()
     assert "conn" not in sig_str, (
@@ -158,6 +176,56 @@ def test_generate_metadata_signature():
     assert "api_key" not in sig_str, (
         f"Signature contains 'api_key' — API keys must not be in task args: {sig}"
     )
+
+
+def test_generate_metadata_takes_the_job_and_gives_the_same_job_back(monkeypatch):
+    """The hop forwards the job it was handed, as the type rather than four keys."""
+    from app.worker.tasks.pipeline.metadata import generate_metadata
+
+    mock_cursor = _MockCursor(fetchone_sequence=[(1,)])
+    mock_cursor.fetchall_result = [("c1", "content")]
+    mock_db = _make_mock_db(_make_mock_agent(), MagicMock())
+    _patch_task_seams(
+        monkeypatch,
+        mock_db,
+        _make_mock_tenant_conn(mock_cursor),
+        MagicMock(),
+        _capture_emit([]),
+    )
+
+    handed_on = _core(generate_metadata)(generate_metadata, JOB)
+
+    assert isinstance(handed_on, IngestionJob)
+    assert handed_on == JOB
+
+
+def test_a_result_dict_the_job_cannot_be_built_from_is_returned_unchanged(monkeypatch):
+    """A dict missing an id is logged and handed straight back, with no work done.
+
+    Defensive, and older than the type: a chain re-dispatched mid-flight can
+    deliver a dict from a different revision of the pipeline. The `or` chain that
+    used to do this here is gone; construction refuses the dict and the edge
+    logs the same event.
+    """
+    from app.worker.tasks.pipeline.metadata import generate_metadata
+
+    opened = []
+
+    @contextmanager
+    def _record_open():
+        opened.append("get_sync_db")
+        yield MagicMock()
+
+    monkeypatch.setattr("app.worker.tasks.pipeline.metadata.get_sync_db", _record_open)
+
+    payload = {"tenant_id": "t", "agent_id": "a", "job_id": "j"}
+
+    with capture_logs() as logs:
+        output = generate_metadata.run(payload)
+
+    assert output == payload
+    assert opened == [], "the task reached the control DB with an unusable result dict"
+    assert [entry["event"] for entry in logs] == ["generate_metadata.invalid_result_dict"]
 
 
 # ---------------------------------------------------------------------------

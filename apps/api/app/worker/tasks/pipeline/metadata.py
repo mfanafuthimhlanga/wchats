@@ -59,8 +59,8 @@ Entity deduplication design:
     duplicate (chunk_id, entity_id) pairs from being created on retry.
 
 Connection string security (CLAUDE.md non-negotiable rule):
-    The tenant DB connection string is NEVER in the task arguments. The result dict
-    from chunk_documents carries only {tenant_id, agent_id, job_id, document_ids}.
+    The tenant DB connection string is NEVER in the task arguments. The IngestionJob
+    from chunk_documents carries the four ids and has no field for anything else.
     The connection string is fetched from the control DB by agent_id and decrypted
     with fernet_decrypt() at runtime.
 
@@ -92,12 +92,16 @@ Event emission order (CONTEXT.md §SSE Event Vocabulary):
     job.failed        ← terminal, only on the wholly-failed path
 
 Return value (chain contract):
-    {"tenant_id": str, "agent_id": str, "job_id": str, "document_ids": list[str]}
+    The same IngestionJob it received. job_in_job_out (chain_edge.py) builds the job
+    from the wire dict at the task's edge and sends the returned job back out as one,
+    so Celery still carries the four keys as JSON and the body works in the type.
+    A dict the job cannot be built from is logged as generate_metadata.invalid_result_dict
+    and returned unchanged, which is what the `or` chain here used to do.
     Connection strings are NEVER returned.
 
 Threat mitigations (T-02-04):
-    T-02-04-01: Task signature is (self, result: dict); ANTHROPIC_API_KEY read from
-                env at module init by anthropic.Anthropic() in metadata_service.
+    T-02-04-01: Task signature is (self, job: IngestionJob); ANTHROPIC_API_KEY read
+                from env at module init by anthropic.Anthropic() in metadata_service.
     T-02-04-02: Haiku response validated by Pydantic via client.messages.parse();
                 malformed responses raise ValidationError and the chunk is skipped.
                 Literal entity types prevent arbitrary type injection.
@@ -118,11 +122,13 @@ from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.domain.chunk_metadata import ChunkMetadata
+from app.domain.ingestion_job import IngestionJob
 from app.models.agent import Agent
 from app.models.job import Job
 from app.services.events import emit
 from app.services.metadata_service import BATCH_SIZE, enrich_chunks_batch
 from app.worker.celery_app import celery_app
+from app.worker.tasks.pipeline.chain_edge import job_in_job_out
 
 log = structlog.get_logger(__name__)
 
@@ -301,11 +307,13 @@ def _fail_the_job(db, job_id: str, reason: str) -> None:
     the reason, and job.failed is what the SSE stream and the admin ingest page
     treat as terminal.
     """
-    job = db.get(Job, job_id)
-    if job is not None:
-        job.status = "failed"
-        job.error = reason
-        job.finished_at = datetime.now(timezone.utc)
+    # job_row, not job: `job` is the IngestionJob the chain carries, and this is
+    # the control DB row. Same two names embed.py uses.
+    job_row = db.get(Job, job_id)
+    if job_row is not None:
+        job_row.status = "failed"
+        job_row.error = reason
+        job_row.finished_at = datetime.now(timezone.utc)
         db.commit()
     emit(job_id, "job.failed", {"error": reason}, db, _redis)
 
@@ -317,39 +325,30 @@ def _fail_the_job(db, job_id: str, reason: str) -> None:
     default_retry_delay=5,
     queue="pipeline",
 )
-def generate_metadata(self, result: dict) -> dict:
+@job_in_job_out
+def generate_metadata(self, job: IngestionJob) -> IngestionJob:
     """Enrich every chunk that has no metadata yet; link entities via chunk_entities.
 
     Args:
-        result: {"tenant_id", "agent_id", "job_id", "document_ids"} from
-                chunk_documents. Connection strings are NEVER in this dict.
+        job: The IngestionJob chunk_documents forwarded. Connection strings are
+             NEVER on it; the type has no field for one (T-02-04-01).
 
     Returns:
-        The same four keys, forwarded unchanged to embed_and_migrate.
+        The same job, forwarded to embed_and_migrate. job_in_job_out converts
+        both ends, so the broker still sees the four keys as JSON.
 
     Raises:
         MetadataEnrichmentFailed: chunks were processed and none were enriched.
     """
-    tenant_id = result.get("tenant_id")
-    agent_id = result.get("agent_id")
-    job_id = result.get("job_id")
-    document_ids = result.get("document_ids")
-
-    # Spelled as an `or` chain rather than `not all([...])` so the type checker
-    # narrows the four Optionals for the rest of the function.
-    if not tenant_id or not agent_id or not job_id or document_ids is None:
-        log.error("generate_metadata.invalid_result_dict", keys=list(result.keys()))
-        return result
-
-    # The chain contract, built once: every exit hands back these four keys and
-    # nothing else, so no connection string can leave with them (T-02-04-01).
-    forwarded = {"tenant_id": tenant_id, "agent_id": agent_id, "job_id": job_id, "document_ids": document_ids}
+    agent_id = job.agent_id
+    job_id = job.job_id
+    document_ids = job.document_ids
 
     with get_sync_db() as db:
         agent = db.get(Agent, agent_id)
         if agent is None:
             log.error("generate_metadata.agent_not_found", agent_id=agent_id)
-            return forwarded
+            return job
 
         # POOLED connection string, DML only. Never logged (T-02-04-01).
         conn_str = fernet_decrypt(
@@ -375,4 +374,4 @@ def generate_metadata(self, result: dict) -> dict:
 
         _refuse_a_run_that_enriched_nothing(db, job_id, chunks_seen, chunks_enriched)
 
-    return forwarded
+    return job

@@ -11,8 +11,8 @@ Layer 2 idempotency (ON CONFLICT DO UPDATE):
     duplicate rows. This is Layer 2 of the 4-layer idempotency contract.
 
 Connection string security (CLAUDE.md non-negotiable rule):
-    The tenant DB connection string is NEVER in the task arguments. The result dict from
-    parse_documents carries only {tenant_id, agent_id, job_id, document_ids}. The
+    The tenant DB connection string is NEVER in the task arguments. The IngestionJob
+    from parse_documents carries the four ids and has no field for anything else. The
     connection string is fetched from the control DB by agent_id and decrypted with
     fernet_decrypt() at runtime — never passed through Celery broker.
 
@@ -28,7 +28,11 @@ Event emission order (CONTEXT.md §SSE Event Vocabulary):
     chunking.complete ← emitted per document (after successful chunk write)
 
 Return value (chain contract):
-    {"tenant_id": str, "agent_id": str, "job_id": str, "document_ids": list[str]}
+    The same IngestionJob it received. job_in_job_out (chain_edge.py) builds the job
+    from the wire dict at the task's edge and sends the returned job back out as one,
+    so Celery still carries the four keys as JSON and the body works in the type.
+    A dict the job cannot be built from is logged as chunk_documents.invalid_result_dict
+    and returned unchanged, which is what the `or` chain here used to do.
     Connection strings are NEVER returned.
 
 Threat mitigations:
@@ -37,8 +41,9 @@ Threat mitigations:
     T-02-03-02: structlog calls reference document_id, chunk_count only — never chunk content
                 or connection strings.
     T-02-03-03: uuid5 IDs + ON CONFLICT DO UPDATE — retry-safe upsert; no chunk-row leak.
-    T-02-03-04: task signature is (self, result: dict) — no connection string or API key.
-                Verified by test_chunk_documents_signature_takes_only_result_dict.
+    T-02-03-04: task signature is (self, job: IngestionJob), carrying no connection
+                string and no API key. Verified by
+                test_chunk_documents_signature_carries_no_connection_string.
     T-02-03-06: httpx.get(timeout=30) for URL re-fetch — same DoS mitigation as parse_documents.
 """
 
@@ -57,8 +62,10 @@ from app.models.agent import Agent
 from app.services.chunking_service import chunk_document
 from app.services import storage_service
 from app.domain.docling_service import parse_document_from_bytes
+from app.domain.ingestion_job import IngestionJob
 from app.services.events import emit
 from app.worker.celery_app import celery_app
+from app.worker.tasks.pipeline.chain_edge import job_in_job_out
 
 log = structlog.get_logger(__name__)
 
@@ -85,41 +92,25 @@ _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
     default_retry_delay=5,
     queue="pipeline",
 )
-def chunk_documents(self, result: dict) -> dict:
+@job_in_job_out
+def chunk_documents(self, job: IngestionJob) -> IngestionJob:
     """Chunk parsed documents using the two-path strategy (text + table Markdown).
 
-    Receives the result dict from parse_documents, re-parses each document via Docling,
+    Receives the job parse_documents built, re-parses each document via Docling,
     splits into chunks via chunking_service.chunk_document(), and UPSERTs each chunk row
     into the tenant chunks table using ON CONFLICT (id) DO UPDATE (Layer 2 idempotency).
 
     Args:
-        result: Return value from parse_documents —
-                {"tenant_id": str, "agent_id": str, "job_id": str, "document_ids": list[str]}.
-                Connection strings are NEVER in this dict (CLAUDE.md non-negotiable rule).
+        job: The IngestionJob the chain carries. Connection strings are NEVER on it
+             (CLAUDE.md non-negotiable rule); the type has no field for one.
 
     Returns:
-        {"tenant_id": str, "agent_id": str, "job_id": str, "document_ids": list[str]}
-        Forwarded unchanged to generate_metadata in the Celery chain.
+        The same job, forwarded to generate_metadata in the Celery chain.
+        job_in_job_out converts both ends, so the broker still sees a dict.
     """
-    # ------------------------------------------------------------------
-    # Extract result dict keys — defensive validation
-    # ------------------------------------------------------------------
-    tenant_id = result.get("tenant_id")
-    agent_id = result.get("agent_id")
-    job_id = result.get("job_id")
-    document_ids = result.get("document_ids")
-
-    # Spelled as an `or` chain rather than `not all([...])` so the type checker
-    # narrows the four Optionals for the rest of the function.  Logically
-    # identical to the previous `not all([tenant_id, agent_id, job_id,
-    # document_ids is not None])`: falsy id, or a missing document_ids key.
-    if not tenant_id or not agent_id or not job_id or document_ids is None:
-        log.error(
-            "chunk_documents.invalid_result_dict",
-            keys=list(result.keys()),
-        )
-        # Return result unchanged — defensive; chain may have been re-dispatched mid-flight
-        return result
+    agent_id = job.agent_id
+    job_id = job.job_id
+    document_ids = job.document_ids
 
     with get_sync_db() as db:
         # ------------------------------------------------------------------
@@ -128,12 +119,7 @@ def chunk_documents(self, result: dict) -> dict:
         agent = db.get(Agent, agent_id)
         if agent is None:
             log.error("chunk_documents.agent_not_found", agent_id=agent_id)
-            return {
-                "tenant_id": tenant_id,
-                "agent_id": agent_id,
-                "job_id": job_id,
-                "document_ids": document_ids,
-            }
+            return job
 
         # ------------------------------------------------------------------
         # Decrypt POOLED connection string — DML only, pooled URI is correct
@@ -321,10 +307,5 @@ def chunk_documents(self, result: dict) -> dict:
             if tenant_conn is not None:
                 tenant_conn.close()
 
-    # T-02-03-04: Return only chain-forwarding keys — no connection string
-    return {
-        "tenant_id": tenant_id,
-        "agent_id": agent_id,
-        "job_id": job_id,
-        "document_ids": document_ids,
-    }
+    # T-02-03-04: the job's four ids and nothing else, never a connection string
+    return job

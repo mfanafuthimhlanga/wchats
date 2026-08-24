@@ -1,0 +1,361 @@
+"""The four ingestion hops, driven in sequence, on the seam they now share (ticket #43, AC3).
+
+Every other test in this repo drives one hop with its own hand-built input. That
+is what let the four-id dict be described four different ways in four docstrings
+while nothing checked that hop N's output is something hop N+1 can read.
+
+This file feeds each hop what the previous hop actually returned:
+
+    parse_documents → chunk_documents → generate_metadata → embed_and_migrate
+
+and reads two things off the run. First, the job survives all four hops: the dict
+that comes out the far end builds the IngestionJob that went into the first hop.
+Second, the work still happens: the chunk rows, the metadata rows, the embedding
+rows and the SSE events are the same ones each hop's own test asserts, and every
+event in the run carries the one job_id.
+
+The outside edges are faked: S3, Docling, the Haiku call, Voyage, and both
+databases. What is real is the four task functions and the seam between them.
+"""
+
+import base64
+import os
+
+# ---------------------------------------------------------------------------
+# Environment setup, MUST run before any `from app` import (pydantic-settings)
+# ---------------------------------------------------------------------------
+os.environ.setdefault(
+    "NEON_ENCRYPTION_KEY", base64.urlsafe_b64encode(os.urandom(32)).decode()
+)
+os.environ.setdefault("NEON_API_KEY", "test_neon")
+os.environ.setdefault("CONTROL_DB_URL", "postgresql+asyncpg://user:pass@localhost/testdb")
+os.environ.setdefault("CONTROL_DB_SYNC_URL", "postgresql://user:pass@localhost/testdb")
+os.environ.setdefault("ADMIN_KEY", "test_admin")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test_anthropic")
+os.environ.setdefault("VOYAGE_API_KEY", "test_voyage")
+
+# ---------------------------------------------------------------------------
+# Imports (after env setup)
+# ---------------------------------------------------------------------------
+
+from contextlib import contextmanager  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+from unittest.mock import MagicMock  # noqa: E402
+
+import psycopg2  # noqa: E402
+import pytest  # noqa: E402
+
+from app.domain.chunk import Chunk  # noqa: E402
+from app.domain.chunk_id import deterministic_chunk_id  # noqa: E402
+from app.domain.ingestion_job import IngestionJob  # noqa: E402
+
+DOCUMENT = "44444444-4444-4444-8444-444444444444"
+JOB = IngestionJob(
+    tenant_id="11111111-1111-4111-8111-111111111111",
+    agent_id="22222222-2222-4222-8222-222222222222",
+    job_id="33333333-3333-4333-8333-333333333333",
+    document_ids=[DOCUMENT],
+)
+# The id chunk_documents will derive for the first chunk of that document, so the
+# rows metadata and embed are fed are the rows chunk_documents wrote.
+CHUNK_ID = deterministic_chunk_id(DOCUMENT, 0)
+
+
+class _Cursor:
+    """A psycopg2 cursor stand-in that records SQL and answers from two queues.
+
+    Every hop uses `with conn.cursor() as cur` except parse_documents, which
+    holds a bare cursor across its Docling call, so this supports both.
+    """
+
+    def __init__(self, fetchone=(), fetchall=()):
+        self.executed = []
+        self._one = list(fetchone)
+        self._all = list(fetchall)
+
+    def execute(self, sql, params=None):
+        self.executed.append((str(sql), params))
+
+    def fetchone(self):
+        return self._one.pop(0) if self._one else None
+
+    def fetchall(self):
+        return self._all.pop(0) if self._all else []
+
+    def sql_naming(self, fragment):
+        return [sql for sql, _ in self.executed if fragment in sql]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def _connection(cursor):
+    """A psycopg2 connection stand-in handing out one cursor."""
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+    return conn
+
+
+def _fake_psycopg2(connect):
+    """A per-hop stand-in for the psycopg2 module.
+
+    All four task modules hold the same psycopg2 module object, so patching
+    `<task module>.psycopg2.connect` for one hop patches it for all four and the
+    last hop patched wins. Each hop gets its own module stand-in instead,
+    carrying the two other attributes the tasks read: parse catches
+    psycopg2.OperationalError, embed reads psycopg2.extensions for AUTOCOMMIT.
+    """
+    return SimpleNamespace(
+        connect=connect,
+        OperationalError=psycopg2.OperationalError,
+        extensions=psycopg2.extensions,
+    )
+
+
+def _control_db(job_row):
+    """A control DB session answering db.get(Agent, ...) and db.get(Job, ...)."""
+    agent = MagicMock()
+    agent.neon_connection_string = b"encrypted-conn"
+    db = MagicMock()
+    db.get.side_effect = lambda model, _id: job_row if model.__name__ == "Job" else agent
+    return db
+
+
+@contextmanager
+def _sync_db(db):
+    yield db
+
+
+class _Run:
+    """One drive of the chain: what crossed each join, and what each hop wrote."""
+
+    def __init__(self):
+        self.joins = {}
+        self.events = []
+        self.cursors = {}
+
+    def record_emit(self, job_id, event_type, payload, db, redis_client):
+        """Stands in for emit() in all four hops, so the run has one event list."""
+        self.events.append((job_id, event_type))
+
+
+@pytest.fixture
+def run(monkeypatch):
+    """Fake every outside edge of all four hops; leave the four task functions real."""
+    state = _Run()
+    job_row = MagicMock()
+    job_row.status = "running"
+
+    state.cursors["parse"] = _Cursor(
+        # the un-parsed pre-check, then the document row
+        fetchone=[(1,), (f"{DOCUMENT}.pdf", "pdf", None, "pending")]
+    )
+    state.cursors["chunk"] = _Cursor(fetchone=[(f"{DOCUMENT}.pdf", "pdf", "parsed", None)])
+    state.cursors["metadata"] = _Cursor(
+        fetchone=[(0,)],  # Layer 3: no chunk_metadata row yet
+        fetchall=[[(CHUNK_ID, "the chunk content")]],
+    )
+    state.cursors["embed"] = _Cursor(fetchall=[[(CHUNK_ID, "the chunk content")]])
+    state.cursors["reindex"] = _Cursor()
+
+    document = MagicMock()
+    document.pages = {1: MagicMock()}
+
+    def _patch(hop, **extra):
+        module = f"app.worker.tasks.pipeline.{hop}."
+        monkeypatch.setattr(module + "get_sync_db", lambda: _sync_db(_control_db(job_row)))
+        monkeypatch.setattr(module + "fernet_decrypt", lambda _: "fake-conn-str")
+        monkeypatch.setattr(module + "emit", state.record_emit)
+        for name, value in extra.items():
+            monkeypatch.setattr(module + name, value)
+
+    # parse: one tenant connection, reopened after the Docling call, plus S3.
+    _patch(
+        "parse",
+        psycopg2=_fake_psycopg2(lambda _: _connection(state.cursors["parse"])),
+        parse_document_from_bytes=lambda content, source_uri: document,
+    )
+    monkeypatch.setattr("app.services.storage_service.get_bytes", lambda key: b"%PDF-1.4 stub")
+    # parse sleeps 1s after ingestion.started so an SSE client can subscribe. The
+    # wait is real behaviour and irrelevant to the seam, so it costs nothing here.
+    monkeypatch.setattr("app.worker.tasks.pipeline.parse.time.sleep", lambda seconds: None)
+
+    _patch(
+        "chunk",
+        psycopg2=_fake_psycopg2(lambda _: _connection(state.cursors["chunk"])),
+        parse_document_from_bytes=lambda content, source_uri: document,
+        chunk_document=lambda doc, doc_id: (
+            Chunk(
+                document_id=doc_id,
+                ordinal=0,
+                content="the chunk content",
+                token_count=3,
+                is_table=False,
+            ),
+        ),
+    )
+
+    from app.services.metadata_service import ChunkMetadataAndEntities
+
+    _patch(
+        "metadata",
+        psycopg2=_fake_psycopg2(lambda _: _connection(state.cursors["metadata"])),
+        enrich_chunks_batch=lambda contents: [
+            ChunkMetadataAndEntities(
+                summary="a summary", keywords=["k"], questions=["q?"], entities=[]
+            )
+            for _ in contents
+        ],
+    )
+
+    embed_connections = iter(
+        [state.cursors["embed"], state.cursors["reindex"], state.cursors["reindex"]]
+    )
+    _patch(
+        "embed",
+        psycopg2=_fake_psycopg2(lambda _: _connection(next(embed_connections))),
+        embed_chunks=lambda texts: [[0.1] * 1024 for _ in texts],
+    )
+
+    state.job_row = job_row
+    return state
+
+
+def _drive(state):
+    """Run the four hops, each on what the previous hop returned. Return the last dict."""
+    from app.worker.tasks.pipeline.chunk import chunk_documents
+    from app.worker.tasks.pipeline.embed import embed_and_migrate
+    from app.worker.tasks.pipeline.metadata import generate_metadata
+    from app.worker.tasks.pipeline.parse import parse_documents
+
+    handed_on = parse_documents.run(JOB.tenant_id, JOB.agent_id, JOB.job_id, [DOCUMENT])
+
+    for name, task in (
+        ("parse to chunk", chunk_documents),
+        ("chunk to metadata", generate_metadata),
+        ("metadata to embed", embed_and_migrate),
+    ):
+        # What crossed this join is what the previous hop returned, never rebuilt here.
+        state.joins[name] = handed_on
+        handed_on = task.run(handed_on)
+
+    return handed_on
+
+
+# ---------------------------------------------------------------------------
+# The seam
+# ---------------------------------------------------------------------------
+
+
+def test_the_job_survives_all_four_hops(run):
+    """What comes out of the last hop builds the job that went into the first.
+
+    Each hop reads its input with IngestionJob.from_dict and writes its output
+    with to_dict, so a hop that dropped a document id, rebuilt the job from
+    something else, or renamed a key on the wire breaks this equality.
+    """
+    handed_on = _drive(run)
+
+    assert IngestionJob.from_dict(handed_on) == JOB
+    assert handed_on == JOB.to_dict()
+
+
+def test_every_join_carries_the_same_job(run):
+    """At each of the three joins, the dict on the wire is the job.
+
+    Read one join at a time this is hop N's output being hop N+1's input, which
+    is the thing no single hop's own tests can see.
+    """
+    _drive(run)
+
+    assert {name: IngestionJob.from_dict(payload) for name, payload in run.joins.items()} == {
+        "parse to chunk": JOB,
+        "chunk to metadata": JOB,
+        "metadata to embed": JOB,
+    }
+
+
+def test_the_cores_hand_the_type_along_without_the_wire(run):
+    """The four cores compose on the type itself, with no dict between them.
+
+    The edges convert because Celery serialises JSON. Underneath, this is one
+    function per hop taking an IngestionJob and returning one, and the chain is
+    those four composed.
+    """
+    from app.worker.tasks.pipeline.chunk import chunk_documents
+    from app.worker.tasks.pipeline.embed import embed_and_migrate
+    from app.worker.tasks.pipeline.metadata import generate_metadata
+
+    job = JOB
+    for task in (chunk_documents, generate_metadata, embed_and_migrate):
+        job = task.run.__wrapped__(task, job)
+        assert isinstance(job, IngestionJob)
+
+    assert job == JOB
+
+
+# ---------------------------------------------------------------------------
+# The work still happens
+# ---------------------------------------------------------------------------
+
+
+def test_each_hop_writes_the_rows_its_own_test_asserts(run):
+    """The four hops persist what they persist, driven from one job.
+
+    Read as one run this says something the per-hop tests cannot: the document
+    id parse marked parsed is the one chunk wrote chunks for, and the chunk id
+    those chunks carry is the one metadata and embed wrote rows against.
+    """
+    _drive(run)
+
+    assert run.cursors["parse"].sql_naming("UPDATE documents SET parse_status = 'parsed'")
+    assert run.cursors["chunk"].sql_naming("INSERT INTO chunks")
+    assert run.cursors["metadata"].sql_naming("INSERT INTO chunk_metadata")
+    assert run.cursors["embed"].sql_naming("INSERT INTO embeddings")
+    assert run.cursors["reindex"].sql_naming("REINDEX INDEX CONCURRENTLY")
+
+    chunk_insert = [
+        params for sql, params in run.cursors["chunk"].executed if "INSERT INTO chunks" in sql
+    ]
+    assert chunk_insert[0][0] == str(CHUNK_ID), (
+        "the chunk id written by chunk_documents is not the one metadata and embed "
+        "then wrote rows against"
+    )
+
+    embed_insert = [
+        params for sql, params in run.cursors["embed"].executed if "INSERT INTO embeddings" in sql
+    ]
+    assert embed_insert[0][0] == str(CHUNK_ID)
+
+
+def test_the_run_emits_one_job_ids_worth_of_events_start_to_finish(run):
+    """Every event of the run carries the job_id the head was given.
+
+    An empty or mismatched job_id publishes to a channel nobody is subscribed
+    to, which is silent: the ingest page simply never updates.
+    """
+    _drive(run)
+
+    assert [job_id for job_id, _ in run.events] == [JOB.job_id] * len(run.events)
+
+    event_types = [event_type for _, event_type in run.events]
+    assert event_types[0] == "ingestion.started"
+    assert event_types[-1] == "job.complete"
+    for expected in (
+        "parsing.complete",
+        "chunking.complete",
+        "metadata.complete",
+        "embedding.complete",
+        "ingestion.complete",
+    ):
+        assert expected in event_types, f"{expected} missing from {event_types}"
+
+
+def test_the_job_row_is_marked_complete(run):
+    """The terminal hop closes the control DB job row, as it does on its own."""
+    _drive(run)
+
+    assert run.job_row.status == "complete"

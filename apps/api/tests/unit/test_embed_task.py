@@ -3,7 +3,10 @@ Unit tests for embed_and_migrate Celery task — ING-07, ING-09.
 
 Tests:
   1. test_embed_and_migrate_acks_late                           — acks_late=True, max_retries=3, default_retry_delay=5
-  2. test_embed_and_migrate_signature                           — (self, result); no conn/api_key param
+  2. test_embed_and_migrate_signature: the typed core seam, no conn/api_key param
+  2b. test_embed_and_migrate_takes_the_job_and_gives_the_same_job_back: IngestionJob in,
+      IngestionJob out
+  2c. test_a_result_dict_the_job_cannot_be_built_from_is_returned_unchanged
   3. test_embed_and_migrate_calls_voyage_via_service            — embed_chunks called with chunk texts
   4. test_embed_and_migrate_upserts_with_on_conflict_chunk_id   — SQL shape: INSERT INTO embeddings + ON CONFLICT (chunk_id) DO UPDATE
   5. test_embed_and_migrate_runs_reindex_concurrently           — REINDEX SQL + AUTOCOMMIT isolation set before execute
@@ -45,9 +48,25 @@ from contextlib import contextmanager
 from datetime import datetime
 from unittest.mock import MagicMock
 
+from structlog.testing import capture_logs
+
+from app.domain.ingestion_job import IngestionJob
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+JOB = IngestionJob(tenant_id="t", agent_id="a", job_id="j", document_ids=["d1"])
+
+
+def _core(task):
+    """The task's core, the half that takes an IngestionJob and returns one.
+
+    The Celery task is the edge: it takes the wire dict, builds the job, and
+    sends the returned job back out as a dict. functools.wraps puts the core on
+    the edge as __wrapped__, so a test can hold the typed seam directly.
+    """
+    return task.run.__wrapped__
 
 
 def _make_sync_db_context(mock_db):
@@ -162,10 +181,8 @@ def _build_standard_mocks(chunks=None):
     return mock_db, mock_dml_conn, mock_reindex_conn, dml_cursor, reindex_cursor, mock_embed, mock_emit, mock_job
 
 
-def _run_task_with_mocks(monkeypatch, mock_db, mock_dml_conn, mock_reindex_conn, mock_embed, mock_emit):
-    """Patch all external dependencies and invoke embed_and_migrate.run()."""
-    from app.worker.tasks.pipeline.embed import embed_and_migrate
-
+def _patch_task_seams(monkeypatch, mock_db, mock_dml_conn, mock_reindex_conn, mock_embed, mock_emit):
+    """Point embed_and_migrate's outside edges at fakes; return the connect() record."""
     connect_calls = []
 
     def _psycopg2_connect(conn_str):
@@ -199,9 +216,18 @@ def _run_task_with_mocks(monkeypatch, mock_db, mock_dml_conn, mock_reindex_conn,
         mock_emit,
     )
 
-    embed_and_migrate.run(
-        {"tenant_id": "t", "agent_id": "a", "job_id": "j", "document_ids": ["d1"]},
+    return connect_calls
+
+
+def _run_task_with_mocks(monkeypatch, mock_db, mock_dml_conn, mock_reindex_conn, mock_embed, mock_emit):
+    """Patch all external dependencies and invoke embed_and_migrate.run()."""
+    from app.worker.tasks.pipeline.embed import embed_and_migrate
+
+    connect_calls = _patch_task_seams(
+        monkeypatch, mock_db, mock_dml_conn, mock_reindex_conn, mock_embed, mock_emit
     )
+
+    embed_and_migrate.run(JOB.to_dict())
 
     return connect_calls
 
@@ -230,19 +256,21 @@ def test_embed_and_migrate_acks_late():
 
 
 def test_embed_and_migrate_signature():
-    """Task signature must be (self, result) — no conn, api_key, or connection string parameter.
+    """The core seam is IngestionJob in, IngestionJob out (ticket #43).
 
     This enforces CLAUDE.md rule 4: connection strings NEVER in Celery task args.
+    inspect.signature follows __wrapped__ past the Celery edge that converts the
+    wire dict, so what it reports is the typed seam the task body works in.
     """
     from app.worker.tasks.pipeline.embed import embed_and_migrate
 
     sig = inspect.signature(embed_and_migrate.run)
-    param_names = list(sig.parameters)
 
-    # Celery bind=True: .run may or may not expose 'self' depending on Celery version
-    assert param_names == ["self", "result"] or param_names == ["result"], (
-        f"Expected ['result'] (or ['self', 'result']) but got {param_names}"
+    assert list(sig.parameters) == ["job"], (
+        f"Expected the core seam ['job'] but got {list(sig.parameters)}"
     )
+    assert sig.parameters["job"].annotation is IngestionJob
+    assert sig.return_annotation is IngestionJob
 
     sig_str = str(sig).lower()
     assert "conn" not in sig_str, (
@@ -251,6 +279,50 @@ def test_embed_and_migrate_signature():
     assert "api_key" not in sig_str, (
         f"Signature contains 'api_key' — API keys must not be in task args: {sig}"
     )
+
+
+def test_embed_and_migrate_takes_the_job_and_gives_the_same_job_back(monkeypatch):
+    """The terminal hop returns the job it was handed, as the type rather than four keys."""
+    from app.worker.tasks.pipeline.embed import embed_and_migrate
+
+    mock_db, mock_dml_conn, mock_reindex_conn, _, _, mock_embed, mock_emit, _ = _build_standard_mocks()
+    _patch_task_seams(
+        monkeypatch, mock_db, mock_dml_conn, mock_reindex_conn, mock_embed, mock_emit
+    )
+
+    handed_on = _core(embed_and_migrate)(embed_and_migrate, JOB)
+
+    assert isinstance(handed_on, IngestionJob)
+    assert handed_on == JOB
+
+
+def test_a_result_dict_the_job_cannot_be_built_from_is_returned_unchanged(monkeypatch):
+    """A dict missing an id is logged and handed straight back, with no work done.
+
+    Defensive, and older than the type: a chain re-dispatched mid-flight can
+    deliver a dict from a different revision of the pipeline. The `or` chain that
+    used to do this here is gone; construction refuses the dict and the edge
+    logs the same event.
+    """
+    from app.worker.tasks.pipeline.embed import embed_and_migrate
+
+    opened = []
+
+    @contextmanager
+    def _record_open():
+        opened.append("get_sync_db")
+        yield MagicMock()
+
+    monkeypatch.setattr("app.worker.tasks.pipeline.embed.get_sync_db", _record_open)
+
+    payload = {"tenant_id": "t", "agent_id": "", "job_id": "j", "document_ids": ["d1"]}
+
+    with capture_logs() as logs:
+        output = embed_and_migrate.run(payload)
+
+    assert output == payload
+    assert opened == [], "the task reached the control DB with an unusable result dict"
+    assert [entry["event"] for entry in logs] == ["embed_and_migrate.invalid_result_dict"]
 
 
 # ---------------------------------------------------------------------------

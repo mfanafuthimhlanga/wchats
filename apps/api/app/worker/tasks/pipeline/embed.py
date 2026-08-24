@@ -34,13 +34,23 @@ Important: agent.status is NOT modified in M2. Only job.status moves to
 — that is an M1-only behaviour. M2 assumes agent is already 'ready'.
 
 Connection string security (CLAUDE.md non-negotiable rule):
-    The tenant DB connection string is NEVER in the task arguments. The result dict
-    from generate_metadata carries only {tenant_id, agent_id, job_id, document_ids}.
+    The tenant DB connection string is NEVER in the task arguments. The IngestionJob
+    from generate_metadata carries the four ids and has no field for anything else.
     The connection string is fetched from the control DB by agent_id and decrypted
     with fernet_decrypt() at runtime.
 
+Return value (chain contract):
+    The same IngestionJob it received. job_in_job_out (chain_edge.py) builds the job
+    from the wire dict at the task's edge and sends the returned job back out as one,
+    so Celery still carries the four keys as JSON and the body works in the type.
+    A dict the job cannot be built from is logged as embed_and_migrate.invalid_result_dict
+    and returned unchanged, which is what the `or` chain here used to do.
+
+    Two names that used to be one: `job` is the IngestionJob the chain carries, and
+    `job_row` is the control DB Job row this task marks complete.
+
 Threat mitigations (T-02-05):
-    T-02-05-01: Task signature is (self, result: dict); VOYAGE_API_KEY read from
+    T-02-05-01: Task signature is (self, job: IngestionJob); VOYAGE_API_KEY read from
                 env at module init by voyageai.Client() in embedding_service.
     T-02-05-02: EMBEDDING_MODEL = "voyage-3" is a pinned module constant; prevents
                 drift. embeddings.model column stores the model string for auditability.
@@ -63,11 +73,13 @@ import structlog
 from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt, require_ciphertext
+from app.domain.ingestion_job import IngestionJob
 from app.models.agent import Agent
 from app.models.job import Job
 from app.services.embedding_service import EMBEDDING_MODEL, embed_chunks
 from app.services.events import emit
 from app.worker.celery_app import celery_app
+from app.worker.tasks.pipeline.chain_edge import job_in_job_out
 
 log = structlog.get_logger(__name__)
 
@@ -84,7 +96,8 @@ _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
     default_retry_delay=5,
     queue="pipeline",
 )
-def embed_and_migrate(self, result: dict) -> dict:
+@job_in_job_out
+def embed_and_migrate(self, job: IngestionJob) -> IngestionJob:
     """Embed chunks, upsert into tenant embeddings table, REINDEX HNSW, emit terminal events.
 
     This is the fourth and final task in the M2 ingestion chain. It:
@@ -95,32 +108,16 @@ def embed_and_migrate(self, result: dict) -> dict:
     5. Emits terminal SSE events and sets job.status = 'complete'.
 
     Args:
-        result: Return value from generate_metadata —
-                {"tenant_id": str, "agent_id": str, "job_id": str, "document_ids": list[str]}.
-                Connection strings are NEVER in this dict (CLAUDE.md non-negotiable rule).
+        job: The IngestionJob generate_metadata forwarded. Connection strings are
+             NEVER on it; the type has no field for one (CLAUDE.md rule 1).
 
     Returns:
-        {"tenant_id": str, "agent_id": str, "job_id": str, "document_ids": list[str]}
-        Chain-forwarding format (no connection strings).
+        The same job, the chain's last hop handing back what it was given.
+        job_in_job_out converts both ends, so the broker still sees a dict.
     """
-    # ------------------------------------------------------------------
-    # Extract result dict keys — defensive validation
-    # ------------------------------------------------------------------
-    tenant_id = result.get("tenant_id")
-    agent_id = result.get("agent_id")
-    job_id = result.get("job_id")
-    document_ids = result.get("document_ids")
-
-    # Spelled as an `or` chain rather than `not all([...])` so the type checker
-    # narrows the four Optionals for the rest of the function.  Logically
-    # identical to the previous `not all([tenant_id, agent_id, job_id,
-    # document_ids is not None])`: falsy id, or a missing document_ids key.
-    if not tenant_id or not agent_id or not job_id or document_ids is None:
-        log.error(
-            "embed_and_migrate.invalid_result_dict",
-            keys=list(result.keys()),
-        )
-        return result
+    agent_id = job.agent_id
+    job_id = job.job_id
+    document_ids = job.document_ids
 
     with get_sync_db() as db:
         # ------------------------------------------------------------------
@@ -129,25 +126,15 @@ def embed_and_migrate(self, result: dict) -> dict:
         agent = db.get(Agent, agent_id)
         if agent is None:
             log.error("embed_and_migrate.agent_not_found", agent_id=agent_id)
-            return {
-                "tenant_id": tenant_id,
-                "agent_id": agent_id,
-                "job_id": job_id,
-                "document_ids": document_ids,
-            }
+            return job
 
         # ------------------------------------------------------------------
         # Fetch job from control DB — idempotent exit if already complete
         # ------------------------------------------------------------------
-        job = db.get(Job, job_id)
-        if job is None:
+        job_row = db.get(Job, job_id)
+        if job_row is None:
             log.info("embed_and_migrate.job_not_found", job_id=job_id)
-            return {
-                "tenant_id": tenant_id,
-                "agent_id": agent_id,
-                "job_id": job_id,
-                "document_ids": document_ids,
-            }
+            return job
 
         # ------------------------------------------------------------------
         # Decrypt POOLED connection string — DML only, pooled URI is correct
@@ -317,8 +304,8 @@ def embed_and_migrate(self, result: dict) -> dict:
             )
 
             # Update job row — agent.status is NOT touched in M2 (M1-only behaviour)
-            job.status = "complete"
-            job.finished_at = datetime.now(timezone.utc)
+            job_row.status = "complete"
+            job_row.finished_at = datetime.now(timezone.utc)
             db.commit()
 
             emit(
@@ -358,9 +345,9 @@ def embed_and_migrate(self, result: dict) -> dict:
             # silently completed.
             if self.request.retries >= self.max_retries:
                 try:
-                    job.status = "failed"
-                    job.error = str(exc)
-                    job.finished_at = datetime.now(timezone.utc)
+                    job_row.status = "failed"
+                    job_row.error = str(exc)
+                    job_row.finished_at = datetime.now(timezone.utc)
                     db.commit()
                     emit(job_id, "job.failed", {"error": str(exc)}, db, _redis)
                 except Exception:
@@ -374,9 +361,4 @@ def embed_and_migrate(self, result: dict) -> dict:
         finally:
             tenant_conn.close()
 
-    return {
-        "tenant_id": tenant_id,
-        "agent_id": agent_id,
-        "job_id": job_id,
-        "document_ids": document_ids,
-    }
+    return job
