@@ -100,9 +100,12 @@ region and M5. **The spec is published: issue #37, "Spec: two Agents live, Bantu
 the breakage issues; ADRs 0003 to 0008 are written as part of the build. Testing seams, owner-
 confirmed: `decide()` pure, the model-client factory with a fake transport, `run_agent_turn`
 shared by live and eval, `run_eval_suite` to a frozen `EvalResult`, ingestion at `IngestionJob`,
-routes via the existing TestClient pattern, and the gate pinned by its own test. **Next move:
-the owner runs `/to-tickets #37`**, then `/implement` one ticket per session with `/code-review`
-per ticket (`docs/agents/issue-tracker.md`, "Handoff from the map to work"). Validating the Harness is the hardest thing
+routes via the existing TestClient pattern, and the gate pinned by its own test. **The tickets are published: #38 to #60,
+23 tracer bullets with native blocking edges**, `ready-for-agent`, each citing its parent spec
+#37 and its map decision. The frontier (no open blockers): #38 gates, #39 the Harness cut,
+#40 the domain package, #41 owner credentials (HITL), #56 the MCP server. **Next move:
+`/implement` one ticket per session, `/clear` between, `/code-review` per ticket.** The golden
+floor amendment (2026-08-24) lives as a comment on map ticket #19 and in spec #37. Validating the Harness is the hardest thing
 in this project; every Harness ticket cites `.dev/reference/260818-llm-eval-fundamentals.md`.
 
 Conventions changed the same day, recorded in `CLAUDE.md` "Agent skills" and `docs/agents/`:
