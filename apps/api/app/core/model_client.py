@@ -31,11 +31,11 @@ WHERE A PURPOSE GOES
     it takes the provider as an argument and defaults to whatever the base url
     says, which is the Anthropic-format endpoint. Nine call sites migrated in
     #47 send `messages.create` and `messages.parse` bodies and read Anthropic
-    content blocks back, and `openai.OpenAI` has no `.messages` at all (checked
+    content blocks back, and `OpenAI` has no `.messages` at all (checked
     against the installed openai 2.45.0). Naming their purpose is what makes each
     one countable and separable today; moving them to the route's provider is a
-    rewrite of the request and the response at every one of them, and it is the
-    rest of this ticket rather than a construction change.
+    rewrite of the request and the response at every one of them, and issue #76
+    carries that work rather than this construction change.
 
     `make_instructor_client` applies the route's model and reasoning effort as
     instructor defaults, which a call site can still override per call. In the
@@ -52,6 +52,13 @@ WHY THE PROVIDER SDKS ARE IMPORTED HERE AND NOWHERE ELSE
     a provider, and a grep that answers "who builds a client?" honestly. The cost
     is measured. `import openai` takes about 3.3s and `import anthropic` about
     1.9s on this machine, paid once per process that reaches this module.
+
+    Each one is bound to a private name, so this module exposes no provider SDK
+    attribute of its own. Plain `import openai` here would make
+    `from app.core.model_client import openai` a working line, and the whole SDK
+    would reach a call site with no hook on it while the import contract still
+    reported three kept and zero broken. The contract reads real import edges,
+    and that edge runs to this module rather than to the package.
 
 WHAT ONE RESPONSE BECOMES
     One `ModelCall`, frozen, holding the four token counts the provider reported,
@@ -100,13 +107,14 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from types import MappingProxyType
 from typing import Protocol
 from urllib.parse import urlparse
 
-import anthropic
+import anthropic as _anthropic
 import httpx
-import instructor
-import openai
+import instructor as _instructor
+import openai as _openai
 import psycopg2
 import structlog
 
@@ -119,10 +127,10 @@ Recorder = Callable[[ModelCall], None]
 Clock = Callable[[], datetime]
 #: What `make_client` hands back. Which one depends on the provider, and both
 #: carry the same ledger hook on the httpx client underneath.
-ProviderClient = anthropic.Anthropic | openai.OpenAI
+ProviderClient = _anthropic.Anthropic | _openai.OpenAI
 #: What `make_instructor_client` hands back. `AsyncInstructor` is the one Ragas
 #: accepts, because `InstructorLLM.agenerate` refuses a synchronous client.
-InstructorClient = instructor.Instructor | instructor.AsyncInstructor
+InstructorClient = _instructor.Instructor | _instructor.AsyncInstructor
 
 
 class LedgerCursor(Protocol):
@@ -196,6 +204,12 @@ class CallContext:
     so nothing reads ambient state and a test injects what it likes. It holds no
     connection string and has no field that could hold one (project rule 1).
 
+    `LedgerContext` below is the other half of the pair, and the two differ on
+    one question. This one names a purpose and holds no recorder, because the
+    client it was built for makes calls for that one purpose. That one holds the
+    recorder and names no purpose, because a call site naming its purpose per
+    call needs everything except the purpose handed to it.
+
     Args:
         purpose:   what the calls are for, the key a rollup groups by.
         tenant_id: UUID string of the tenant billed for them.
@@ -235,7 +249,12 @@ class LedgerContext:
     job_id: str | None = None
 
     def client(self, purpose: str, **kwargs) -> ProviderClient:
-        """A factory client for one purpose, billed to these ids."""
+        """A factory client for one purpose, billed to these ids.
+
+        Raises whatever `make_client` raises, including on a purpose the routing
+        table does not hold and on a judge purpose, which belongs to
+        `instructor_client` because its route names a reasoning effort.
+        """
         return make_client(
             purpose,
             tenant_id=self.tenant_id,
@@ -296,6 +315,19 @@ class UnsupportedProvider(ValueError):
     """A route names a provider this factory has no client for."""
 
 
+class EffortNeedsInstructor(ValueError):
+    """A raw client was asked for a purpose whose route names a reasoning effort.
+
+    The OpenAI SDK takes default headers and a default query and no default body
+    parameter, so a raw client sends no effort and every call site would have to
+    repeat it. `make_instructor_client` stores the route's effort as an instructor
+    default instead, and instructor fills it into each call that did not name it.
+    A judge built on the raw path would bill under a judge purpose while running
+    at whatever effort the provider picks, which is not the figure decision #34
+    priced.
+    """
+
+
 OPENAI_PROVIDER = "openai"
 LUNA_MODEL = "gpt-5.6-luna"
 
@@ -305,14 +337,14 @@ LUNA_MODEL = "gpt-5.6-luna"
 #: needs the provider's exception classes at a site the import contract now keeps
 #: the provider package out of. Both SDKs' pairs are listed rather than the
 #: current provider's, so a site that moves provider keeps retrying the same two
-#: failures instead of quietly retrying none. Every other error stays fatal: an
-#: authentication error and a schema violation both hit the same wall on retry
+#: failures instead of quietly retrying none. Every other error stays fatal. An
+#: authentication error and a schema violation both hit the same wall on retry,
 #: and burn budget doing it.
 TRANSIENT_ERRORS: tuple[type[Exception], ...] = (
-    anthropic.RateLimitError,
-    anthropic.APITimeoutError,
-    openai.RateLimitError,
-    openai.APITimeoutError,
+    _anthropic.RateLimitError,
+    _anthropic.APITimeoutError,
+    _openai.RateLimitError,
+    _openai.APITimeoutError,
 )
 
 # Effort `none` is the figure decision #34 priced, $0.62 per thousand turns for a
@@ -333,7 +365,13 @@ _LUNA = ModelRoute(OPENAI_PROVIDER, LUNA_MODEL)
 #: Decision #34 routes all of them to one provider under one DPA. The SDK
 #: Agent-turn path is not here. It stays on DeepSeek until the owned loop lands
 #: (#48), and it never comes through this factory.
-PURPOSE_ROUTES: Mapping[str, ModelRoute] = {
+#:
+#: A read-only view, because each `ModelRoute` is frozen and the dict holding
+#: them was not. Rebinding a key at import time would send a purpose to a model
+#: nobody chose, and every reader downstream would report the new one as the
+#: model that ran. A test injects a different table through `route_for`'s
+#: `routes` argument instead.
+PURPOSE_ROUTES: Mapping[str, ModelRoute] = MappingProxyType({
     # The Ragas metrics, one purpose each, so a rollup shows which dimension
     # spent the money and a calibration figure names the Judge it measured.
     "judge_faithfulness": _JUDGE,
@@ -359,7 +397,7 @@ PURPOSE_ROUTES: Mapping[str, ModelRoute] = {
     "strategist": _LUNA,
     "gatekeeper": _LUNA,
     "auditor": _LUNA,
-}
+})
 
 
 def route_for(purpose: str, routes: Mapping[str, ModelRoute] = PURPOSE_ROUTES) -> ModelRoute:
@@ -686,7 +724,7 @@ def attach_async_ledger_hook(
 
     Ragas is why this exists. Its collections metrics await `llm.agenerate(...)`
     and `InstructorLLM` refuses that on a sync client, so the judge seam in #47
-    needs `openai.AsyncOpenAI` and this hook underneath it.
+    needs an async OpenAI client and this hook underneath it.
     """
 
     async def on_response(response: httpx.Response) -> None:
@@ -708,16 +746,71 @@ def _sdk_client(
 ) -> ProviderClient:
     """The provider's own SDK, over an httpx client that already carries the hook."""
     if provider == OPENAI_PROVIDER:
-        return openai.OpenAI(
+        return _openai.OpenAI(
             api_key=credentials.api_key,
             base_url=credentials.base_url,
             http_client=http_client,
         )
-    return anthropic.Anthropic(
+    return _anthropic.Anthropic(
         api_key=credentials.api_key,
         base_url=credentials.base_url,
         http_client=http_client,
     )
+
+
+def _check_raw_purpose(purpose: str) -> None:
+    """Refuse a purpose the raw client path cannot serve, before anything is built.
+
+    Two refusals, both read off `PURPOSE_ROUTES`. A purpose the table does not
+    route used to reach the ledger unread, so a typo billed a real tenant under a
+    name no rollup groups and no report expects. A purpose whose route names a
+    reasoning effort belongs to the instructor seam, because that is the only
+    place a default effort survives to the wire.
+
+    Raises:
+        UnknownPurpose:        the table routes no such purpose. The message
+                               lists the ones it does hold.
+        EffortNeedsInstructor: the route names an effort a raw client drops.
+    """
+    route = route_for(purpose)
+    if route.reasoning_effort is not None:
+        raise EffortNeedsInstructor(
+            f"Purpose {purpose!r} runs at reasoning effort "
+            f"{route.reasoning_effort!r}, which a raw client sends no field for. "
+            "Build it with make_instructor_client, where the route's effort "
+            "becomes a default."
+        )
+
+
+def _hooked_sdk_client(
+    purpose: str,
+    *,
+    tenant_id: str,
+    recorder: Recorder,
+    agent_id: str | None = None,
+    job_id: str | None = None,
+    provider: str | None = None,
+    credentials: Credentials | None = None,
+    http_client: httpx.Client | None = None,
+    clock: Clock = _utc_now,
+) -> ProviderClient:
+    """Build the client and bolt the hook on. The construction half of `make_client`.
+
+    Separate from the check above so `make_instructor_client` can come straight
+    here. The effort a raw client drops is exactly what that seam is about to
+    install as an instructor default, so the refusal would be wrong there.
+    """
+    credentials = credentials or resolve_credentials(provider)
+    provider = provider or provider_for_base_url(credentials.base_url)
+    http_client = http_client or httpx.Client()
+    attach_ledger_hook(
+        http_client,
+        CallContext(purpose=purpose, tenant_id=tenant_id, agent_id=agent_id, job_id=job_id),
+        provider=provider,
+        recorder=recorder,
+        clock=clock,
+    )
+    return _sdk_client(provider, credentials, http_client)
 
 
 def make_client(
@@ -754,21 +847,26 @@ def make_client(
         clock:       reads the instant each row is stamped with.
 
     Returns:
-        An `openai.OpenAI` for the `openai` provider, an `anthropic.Anthropic`
+        An `OpenAI` client for the `openai` provider, an `Anthropic` one
         for everyone else. Both carry the same hook on the same httpx client, and
         neither carries a reasoning effort. See WHERE A PURPOSE GOES above.
+
+    Raises:
+        UnknownPurpose:        the table routes no such purpose.
+        EffortNeedsInstructor: the purpose runs at an effort a raw client drops.
     """
-    credentials = credentials or resolve_credentials(provider)
-    provider = provider or provider_for_base_url(credentials.base_url)
-    http_client = http_client or httpx.Client()
-    attach_ledger_hook(
-        http_client,
-        CallContext(purpose=purpose, tenant_id=tenant_id, agent_id=agent_id, job_id=job_id),
-        provider=provider,
+    _check_raw_purpose(purpose)
+    return _hooked_sdk_client(
+        purpose,
+        tenant_id=tenant_id,
         recorder=recorder,
+        agent_id=agent_id,
+        job_id=job_id,
+        provider=provider,
+        credentials=credentials,
+        http_client=http_client,
         clock=clock,
     )
-    return _sdk_client(provider, credentials, http_client)
 
 
 def make_async_client(
@@ -781,7 +879,7 @@ def make_async_client(
     credentials: Credentials | None = None,
     http_client: httpx.AsyncClient | None = None,
     clock: Clock = _utc_now,
-) -> openai.AsyncOpenAI:
+) -> _openai.AsyncOpenAI:
     """The async half of `make_client`, for the one caller that needs one.
 
     Ragas is that caller. Its collections metrics await `llm.agenerate(...)`, and
@@ -790,7 +888,8 @@ def make_async_client(
     coroutine function (`ragas/llms/base.py`, `_check_client_async`, ragas 0.4.3).
 
     OpenAI is the only provider here, because decision #34 routes every judge to
-    `gpt-5.6-luna` and no other async site exists. A second provider gets added
+    `gpt-5.6-luna` and no other async site exists. `make_instructor_client` is its
+    caller, which is why no purpose check runs here. A second provider gets added
     when a second provider has an async caller, not before.
 
     Args:
@@ -812,7 +911,7 @@ def make_async_client(
         recorder=recorder,
         clock=clock,
     )
-    return openai.AsyncOpenAI(
+    return _openai.AsyncOpenAI(
         api_key=credentials.api_key,
         base_url=credentials.base_url,
         http_client=http_client,
@@ -838,8 +937,9 @@ def make_instructor_client(
     provider SDK, and the SDK asks through httpx. The hook sits on the httpx
     client, the one layer all three still pass through, so a Ragas run lands
     ledger rows without Ragas knowing this module exists. The route supplies the
-    model and the reasoning effort as instructor defaults, so no call site
-    repeats either. See WHERE A PURPOSE GOES above.
+    model and the reasoning effort as instructor defaults. THE RULE: never pass
+    `reasoning_effort` at a call site, because a default fills an absent kwarg
+    only and one passed at the call wins silently. See WHERE A PURPOSE GOES.
 
     Args:
         purpose:     the key the routing table and the rollup both use.
@@ -852,8 +952,7 @@ def make_instructor_client(
         http_client: an httpx client to hook instead of a fresh one. Async when
                      `is_async` is set, since that is the client it wraps.
         clock:       reads the instant each row is stamped with.
-        is_async:    build on `openai.AsyncOpenAI`, which is what Ragas needs and
-                     what `make_async_client` exists for.
+        is_async:    build on an async OpenAI client, which Ragas needs.
 
     Returns:
         An `AsyncInstructor` when `is_async` is set, an `Instructor` otherwise.
@@ -868,7 +967,7 @@ def make_instructor_client(
             f"Purpose {purpose!r} routes to {route.provider!r}, and this factory wraps "
             f"only {OPENAI_PROVIDER!r} clients in instructor."
         )
-    build = make_async_client if is_async else make_client
+    build = make_async_client if is_async else _hooked_sdk_client
     client = build(
         purpose, tenant_id=tenant_id, recorder=recorder, agent_id=agent_id,
         job_id=job_id, credentials=credentials, http_client=http_client, clock=clock,
@@ -877,7 +976,7 @@ def make_instructor_client(
     defaults: dict[str, str] = {"model": route.model}
     if route.reasoning_effort is not None:
         defaults["reasoning_effort"] = route.reasoning_effort
-    return instructor.from_openai(client, **defaults)
+    return _instructor.from_openai(client, **defaults)
 
 
 def record_model_call(call: ModelCall, target: str | LedgerConnection) -> None:

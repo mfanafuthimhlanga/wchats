@@ -43,10 +43,14 @@ from app.core.model_client import (
     PURPOSE_ROUTES,
     CallContext,
     Credentials,
+    EffortNeedsInstructor,
+    LedgerContext,
     ModelRoute,
     UnknownPurpose,
     UnsupportedProvider,
+    attach_async_ledger_hook,
     attach_ledger_hook,
+    make_async_client,
     make_client,
     make_instructor_client,
     provider_for_base_url,
@@ -521,7 +525,7 @@ class TestMakeClient:
         recorded = []
         supplied = httpx.Client(transport=_transport(_body()))
         client = make_client(
-            "judge",
+            "scenario_generation",
             tenant_id=TENANT,
             recorder=recorded.append,
             provider="deepseek",
@@ -535,7 +539,7 @@ class TestMakeClient:
         )
 
         assert len(recorded) == 1
-        assert recorded[0].purpose == "judge"
+        assert recorded[0].purpose == "scenario_generation"
         assert recorded[0].agent_id is None, "a platform call names no agent"
 
     def test_the_request_the_sdk_sent_is_what_the_row_reports(self):
@@ -548,7 +552,7 @@ class TestMakeClient:
 
         recorded = []
         client = make_client(
-            "judge",
+            "scenario_generation",
             tenant_id=TENANT,
             recorder=recorded.append,
             provider="deepseek",
@@ -769,6 +773,75 @@ class TestProviderForAnOpenAiEndpoint:
         assert provider_for_base_url("https://api.openai.com/v1") == "openai"
 
 
+class TestTheAsyncHookFailsOpenToo:
+    """The async twin of TestRecordingFailureIsFailOpen, on the client Ragas drives.
+
+    The sync hook and the async hook each carry their own try/except around the
+    same shared body, so a guard deleted from one is invisible to every test of
+    the other. Deleting the async one broke nothing until this class existed.
+    It builds the async OpenAI client through the factory, which is what every
+    judge call in an eval run runs through.
+    """
+
+    def _client(self, recorder):
+        return make_async_client(
+            "judge_faithfulness",
+            tenant_id=TENANT,
+            recorder=recorder,
+            credentials=Credentials(api_key="test-key"),
+            http_client=httpx.AsyncClient(transport=_transport(_openai_body())),
+            clock=lambda: AT,
+        )
+
+    async def test_a_recorder_that_raises_does_not_fail_the_async_model_call(self):
+        def explode(call):
+            raise RuntimeError("the ledger is down")
+
+        answer = await self._client(explode).chat.completions.create(
+            model=LUNA, messages=[{"role": "user", "content": "grounded?"}]
+        )
+
+        assert answer.choices[0].message.content == "ok"
+        assert answer.usage.completion_tokens == 500
+
+    async def test_the_async_failure_logs_one_event_naming_the_purpose_and_the_tenant(self):
+        def explode(call):
+            raise RuntimeError("the ledger is down")
+
+        with structlog.testing.capture_logs() as logs:
+            await self._client(explode).chat.completions.create(
+                model=LUNA, messages=[{"role": "user", "content": "grounded?"}]
+            )
+
+        failures = [entry for entry in logs if entry["event"] == "model_ledger.record_failed"]
+        assert len(failures) == 1, f"expected one loud event, got {logs}"
+        assert failures[0]["purpose"] == "judge_faithfulness"
+        assert failures[0]["tenant_id"] == TENANT
+        assert failures[0]["log_level"] == "error"
+
+    async def test_a_malformed_async_body_is_swallowed_the_same_way(self):
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200, content=b"not json", headers={"content-type": "application/json"}
+                )
+            )
+        )
+        attach_async_ledger_hook(
+            client,
+            _context("judge_faithfulness"),
+            provider="openai",
+            recorder=lambda call: None,
+            clock=lambda: AT,
+        )
+
+        response = await client.post(
+            "https://api.openai.example/v1/chat/completions", json={"model": LUNA}
+        )
+
+        assert response.status_code == 200
+
+
 # ---------------------------------------------------------------------------
 # The purpose routing table
 # ---------------------------------------------------------------------------
@@ -840,6 +913,84 @@ class TestTheRoutingTable:
         with pytest.raises(dataclasses.FrozenInstanceError):
             route_for("auditor").model = "gpt-5-mini"  # type: ignore[misc]
 
+    def test_the_table_itself_refuses_a_write(self):
+        """A frozen route still sits in a dict anyone can re-point.
+
+        Rebinding a key here would send a purpose to a model nobody chose, and
+        every reader downstream would report the new one as what ran.
+        """
+        with pytest.raises(TypeError):
+            PURPOSE_ROUTES["judge_faithfulness"] = ModelRoute(  # type: ignore[index]
+                provider="openai", model="gpt-5-mini"
+            )
+
+    def test_the_table_refuses_a_new_purpose_too(self):
+        with pytest.raises(TypeError):
+            PURPOSE_ROUTES["spellcheck"] = ModelRoute(  # type: ignore[index]
+                provider="openai", model=LUNA
+            )
+
+
+# ---------------------------------------------------------------------------
+# What the raw client path refuses, and why
+# ---------------------------------------------------------------------------
+
+
+class TestTheRawPathChecksThePurpose:
+    """`make_client` reads the routing table before it builds anything.
+
+    Until it did, a purpose was a free-text string that reached the ledger
+    unread. A typo billed a real tenant under a name no rollup groups, and a
+    judge purpose built a client carrying no reasoning effort, so the run cost
+    what the provider's default effort costs rather than the figure decision #34
+    priced.
+    """
+
+    def _ledger(self) -> LedgerContext:
+        return LedgerContext(tenant_id=TENANT, recorder=lambda call: None)
+
+    def test_a_mistyped_purpose_raises_before_a_client_is_built(self):
+        with pytest.raises(UnknownPurpose, match="spellcheck"):
+            make_client("spellcheck", tenant_id=TENANT, recorder=lambda call: None)
+
+    def test_the_refusal_names_the_purposes_the_table_does_hold(self):
+        with pytest.raises(UnknownPurpose, match="metadata_enrichment"):
+            make_client("metadata_enrichement", tenant_id=TENANT, recorder=lambda call: None)
+
+    def test_the_ledger_shortcut_is_checked_the_same_way(self):
+        with pytest.raises(UnknownPurpose, match="spellcheck"):
+            self._ledger().client("spellcheck")
+
+    def test_a_judge_purpose_is_refused_on_the_raw_path(self):
+        """The raw SDK client carries no reasoning effort, so it may not serve one."""
+        with pytest.raises(EffortNeedsInstructor, match="judge_faithfulness"):
+            make_client("judge_faithfulness", tenant_id=TENANT, recorder=lambda call: None)
+
+    def test_the_refusal_names_the_effort_the_route_asked_for(self):
+        with pytest.raises(EffortNeedsInstructor, match="none"):
+            make_client("judge_retrieval_faithfulness", tenant_id=TENANT, recorder=lambda call: None)
+
+    def test_the_ledger_shortcut_refuses_a_judge_too(self):
+        """`ledger.client("judge_faithfulness")` used to hand back a judge-billed
+        client running at the provider's own effort."""
+        with pytest.raises(EffortNeedsInstructor):
+            self._ledger().client("judge_faithfulness")
+
+    def test_effort_needs_instructor_is_a_value_error(self):
+        assert issubclass(EffortNeedsInstructor, ValueError)
+
+    def test_a_purpose_the_table_routes_at_no_effort_still_builds(self):
+        client = make_client(
+            "actor_gate",
+            tenant_id=TENANT,
+            recorder=lambda call: None,
+            provider="openai",
+            credentials=Credentials(api_key="test-key"),
+            http_client=httpx.Client(transport=_transport(_openai_body())),
+        )
+
+        assert isinstance(client, openai.OpenAI)
+
 
 # ---------------------------------------------------------------------------
 # make_client on OpenAI, and make_instructor_client
@@ -869,9 +1020,13 @@ def _tool_call_body() -> dict:
 
 
 class TestMakeClientOnOpenAi:
+    """`scenario_generation` rather than a judge purpose. Every judge route names
+    a reasoning effort, and a raw client sends no field for one, so the raw path
+    refuses them (`TestTheRawPathChecksThePurpose`)."""
+
     def _client(self, recorder, body: dict):
         return make_client(
-            "judge_faithfulness",
+            "scenario_generation",
             tenant_id=TENANT,
             recorder=recorder,
             provider="openai",
@@ -890,14 +1045,14 @@ class TestMakeClientOnOpenAi:
         )
 
         assert len(recorded) == 1, f"expected one ledger row, got {len(recorded)}"
-        assert recorded[0].purpose == "judge_faithfulness"
+        assert recorded[0].purpose == "scenario_generation"
         assert recorded[0].input_tokens == 1000
 
     def test_an_empty_key_fails_at_construction_and_not_at_the_first_call(self):
         """OPENAI_API_KEY defaults empty until the cutover, so the failure has to be loud."""
         with pytest.raises(openai.OpenAIError):
             make_client(
-                "judge_faithfulness",
+                "scenario_generation",
                 tenant_id=TENANT,
                 recorder=lambda call: None,
                 provider="openai",

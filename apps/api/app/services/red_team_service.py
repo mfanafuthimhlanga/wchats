@@ -1459,8 +1459,8 @@ def run_content_injection_agent(
 # plan 18-03's substrate (app.services.red_team_probe). Unlike the three M7
 # runners above, these drive probe_fn variants that reach the REAL
 # _execute_transactional_tool dispatcher via the transactional probe built by
-# red_team_probe._build_transactional_probe_fn — the shipped M7 probe_fn is a
-# bare Anthropic completion with no tools attached and never reaches L1-L3.
+# red_team_probe._build_transactional_probe_fn. The M7 probe_fn sends a plain
+# completion with no tools attached and never reaches L1-L3.
 #
 # Every app.services.red_team_probe symbol below is imported lazily (inside the
 # function bodies, not at module level) — see the TYPE_CHECKING note in this

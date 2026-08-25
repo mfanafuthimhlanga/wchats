@@ -797,6 +797,22 @@ def _luna_judge_transport(seen: list[str]) -> httpx.MockTransport:
     return httpx.MockTransport(_handler)
 
 
+#: Which purpose each ragas response model belongs to. Instructor names the
+#: response model as the tool it forces, so this is what pairs one request with
+#: the dimension that made it. Faithfulness asks twice under one purpose, first
+#: for the statements and then for a verdict on each.
+_PURPOSE_BY_TOOL = {
+    "StatementGeneratorOutput": "judge_faithfulness",
+    "NLIStatementOutput": "judge_faithfulness",
+    "AnswerRelevanceOutput": "judge_answer_relevancy",
+    "ContextPrecisionOutput": "judge_context_precision",
+    "ContextRecallOutput": "judge_context_recall",
+}
+
+#: 4 scenarios x (2 faithfulness + 3 answer_relevancy + 1 context_precision + 1 context_recall) = 28.
+EXPECTED_JUDGE_CALLS = 28
+
+
 class TestJudgeCallsReachTheLedger:
     """A whole run's judge calls, counted where the bill is read.
 
@@ -854,14 +870,30 @@ class TestJudgeCallsReachTheLedger:
         with patch("httpx.AsyncClient", _Pinned):
             result = _run()
 
-        assert seen, "the run made no judge request at all"
+        assert len(seen) == EXPECTED_JUDGE_CALLS, (
+            f"the run made {len(seen)} judge requests where {EXPECTED_JUDGE_CALLS} "
+            "is the arithmetic above. A drop is a dimension that stopped asking, "
+            "a rise is a bill nobody planned, and both are invisible to a count "
+            "compared against itself"
+        )
         assert len(rows) == len(seen), (
             f"{len(seen)} judge requests left {len(rows)} ledger rows, so this "
             "tenant's judge spend is under-reported by the difference"
         )
-        assert {call.purpose for _dsn, call in rows} == set(JUDGE_PURPOSES), (
-            f"the run billed {sorted({c.purpose for _d, c in rows})}, and a "
-            "rollup that cannot separate the four cannot price any of them"
+        assert sorted(JUDGE_PURPOSES) == sorted(set(_PURPOSE_BY_TOOL.values())), (
+            "a purpose was added to eval_service without a tool to pair it with, "
+            "so the pairing below would never see it"
+        )
+        # Pairing, not set equality. Every purpose being present says nothing
+        # about whether a context_recall request was billed to context_recall,
+        # and a rollup built on a mislabelled row prices the wrong dimension.
+        mispaired = [
+            (tool, call.purpose)
+            for tool, (_dsn, call) in zip(seen, rows, strict=True)
+            if call.purpose != _PURPOSE_BY_TOOL[tool]
+        ]
+        assert mispaired == [], (
+            f"{len(mispaired)} requests were billed to another dimension: {mispaired[:4]}"
         )
         assert {call.served_model for _dsn, call in rows} == {"gpt-5.6-luna"}
         assert {call.model_source for _dsn, call in rows} == {ModelSource.REPORTED}, (
@@ -869,7 +901,16 @@ class TestJudgeCallsReachTheLedger:
         )
         assert {call.job_id for _dsn, call in rows} == {result["run_id"]}
         assert {call.tenant_id for _dsn, call in rows} == {TENANT_ID}
+        assert {call.agent_id for _dsn, call in rows} == {"agent-1"}, (
+            "a judge call billed to no agent cannot be charged back to the "
+            "agent whose eval bought it"
+        )
         assert {dsn for dsn, _call in rows} == {PRODUCTION}
-        assert any(
-            "INSERT INTO model_calls" in sql for sql in wired["cursor"].executed
-        ), "no row reached the database the recorder was bound to"
+        inserts = [
+            sql for sql in wired["cursor"].executed if "INSERT INTO model_calls" in sql
+        ]
+        assert len(inserts) == EXPECTED_JUDGE_CALLS, (
+            f"{len(inserts)} of {EXPECTED_JUDGE_CALLS} rows reached the database "
+            "the recorder was bound to, and a recorder that writes some of them "
+            "reads as a working ledger"
+        )

@@ -60,7 +60,6 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
-import importlib.metadata
 import json
 import uuid
 from collections.abc import Mapping
@@ -88,7 +87,7 @@ from sqlalchemy import text as sa_text
 from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db
 from app.core.model_client import OPENAI_PROVIDER, LedgerContext, route_for
-from app.domain.judge_identity import JudgeIdentity
+from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity
 from app.services.embedding_service import EMBEDDING_MODEL, _get_vo
 
 log = structlog.get_logger(__name__)
@@ -107,22 +106,10 @@ JUDGE_PURPOSES = (
     "judge_context_recall",
 )
 
-#: Which prompt each Judge was given, the third field of `JudgeIdentity`.
-#:
-#: NOTHING IN THIS REPO VERSIONS A JUDGE PROMPT, and this constant is the honest
-#: minimum rather than a version anybody chose. The `prompt_versions` table
-#: (control migration 0018) holds an agent's soul, one immutable row per soul
-#: edit, and no judge reads it or writes to it. The four Judge prompts belong to
-#: ragas, which carries each collections metric's prompt text inside the
-#: installed package, and nothing here authors or edits one.
-#:
-#: So the identifier is the artifact the prompt text ships in, read off the
-#: installed distribution rather than typed here. A literal would go stale the
-#: next time `uv sync` resolves a different 0.4.x with different prompts
-#: underneath it, and a calibration figure would then group two prompts under
-#: one key. The day a Judge prompt is written in this repo, that prompt's own
-#: version replaces this and the identity gets finer-grained rather than wider.
-JUDGE_PROMPT_VERSION = f"ragas-{importlib.metadata.version('ragas')}"
+#: `JUDGE_PROMPT_VERSION` is imported from `app.domain.judge_identity`, beside the
+#: type whose third field it fills. The live-traffic Judge in
+#: `retrieval_eval` reads the same constant, because ragas authors that prompt
+#: too and two copies would let one dimension's key drift from the other's.
 
 # Note: Ragas 0.4.x collections metrics require an InstructorLLM at construction time.
 # Metrics are therefore instantiated inside run_ragas_eval(), not at module level.
@@ -1290,7 +1277,7 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
     including a caller that abandoned an entire run when the branch could not be
     created. An unused connection string invites a false isolation claim, and its
     ABSENCE is what test_scoring_takes_no_connection_string_because_it_opens_none
-    pins. Ticket #47 added the one write that IS scoring's own: every judge call
+    pins. Ticket #47 added the one write that IS scoring's own. Every judge call
     leaves a `model_calls` row, and the dsn for it lives in the recorder inside
     `ledger`, closed over where the caller bound it.
 

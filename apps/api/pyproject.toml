@@ -108,8 +108,8 @@ ignore = ["E501"]
 # restore. Neither is a target: they pin the structure that already holds.
 [tool.importlinter]
 root_package = "app"
-# Required by the provider-SDK contract below: without it grimp builds the graph
-# from app alone and an import of anthropic is not a node it can see.
+# Required by the provider-SDK contract below. Without it grimp builds the graph
+# from app alone, and an import of anthropic is not a node it can see.
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
@@ -156,7 +156,7 @@ skip_descendants = ["app.services"]
 # cannot be bypassed by constructing a client next to the call. The gate is this
 # contract rather than a grep, because a grep bans one spelling and the author
 # picks the spelling.
-# allow_indirect_imports keeps the contract on DIRECT imports: every module that
+# allow_indirect_imports keeps the contract on DIRECT imports. Every module that
 # reaches the factory imports the three packages through it, which is the point.
 # claude_agent_sdk is deliberately absent. The Agent turn still runs on it and
 # leaves through #49, not here.
@@ -164,6 +164,12 @@ skip_descendants = ["app.services"]
 # app/services/validation_service.py turned it BROKEN, naming the edge:
 #   app is not allowed to import anthropic:
 #   -   app.services.validation_service -> anthropic (l.20)
+# Restored, KEPT again at 3 kept 0 broken.
+# The from-import shape is the one an author reaches for and it was never run, so
+# it was run. Observed 2026-08-25: mutation `from openai import OpenAI` added to
+# the same file turned it BROKEN at 2 kept 1 broken, naming the edge:
+#   app is not allowed to import openai:
+#   -   app.services.validation_service -> openai (l.22)
 # Restored, KEPT again at 3 kept 0 broken.
 name = "the provider SDKs have one home"
 type = "forbidden"

@@ -22,6 +22,14 @@ dispatch time in agent.py:
 Idempotency (CLAUDE.md rule 5): re-running this task for the same job_id is a
 no-op once retrieval_metrics.faithfulness is non-NULL for that row.
 
+The Judge names itself (ticket #47, AC3):
+    A faithfulness score nobody can attribute cannot be calibrated against, so
+    the row carries the model, the reasoning effort and the prompt version that
+    produced it, in `retrieval_metrics.judge_identity` (tenant migration 0020).
+    `eval_service` does the same for its four offline metrics, in
+    `eval_results.detail`. Each lands beside its own verdict, so a calibration
+    figure reads one place per verdict and joins nothing.
+
 Security (CLAUDE.md rule 4): task args are (agent_id, job_id) ONLY. conn_str
 is decrypted at runtime from the control DB, never in task args/logs.
 
@@ -50,6 +58,8 @@ first live turn ever sampled):
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import json
 import random
 
 import psycopg2
@@ -65,6 +75,7 @@ from app.core.model_client import (
     route_for,
 )
 from app.core.security import fernet_decrypt, require_ciphertext
+from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity
 from app.models.agent import Agent
 from app.worker.celery_app import celery_app
 
@@ -72,6 +83,40 @@ log = structlog.get_logger(__name__)
 
 #: The routing-table key this task's judge calls bill under.
 JUDGE_PURPOSE = "judge_retrieval_faithfulness"
+
+
+def judge_identity() -> JudgeIdentity | None:
+    """Which Judge scored this turn, at the grain calibration compares on.
+
+    The fifth Judge. `eval_service.judge_identity_for` answers the same question
+    for the four offline metrics, and this answers it for the one that scores
+    live traffic. Both read the model and the effort off `PURPOSE_ROUTES`, the
+    table the request itself was built from, so neither record can name a Judge
+    the run did not use.
+
+    Returns None when the route names no reasoning effort. Decision #34 priced
+    the Judge floor at effort `none` and this route carries it today; a route
+    that dropped it would leave the identity a field short, and a key with a hole
+    in it groups two different Judges together. An absent identity says the Judge
+    is unknown, which is what it would be.
+    """
+    route = route_for(JUDGE_PURPOSE)
+    if route.reasoning_effort is None:
+        log.error(
+            "judge_identity.no_reasoning_effort",
+            purpose=JUDGE_PURPOSE,
+            model=route.model,
+            detail=(
+                "the route names no effort, so the Judge cannot be identified "
+                "and its verdicts cannot be calibrated against"
+            ),
+        )
+        return None
+    return JudgeIdentity(
+        model=route.model,
+        reasoning_effort=route.reasoning_effort,
+        prompt_version=JUDGE_PROMPT_VERSION,
+    )
 
 
 def _turn_ledger(tenant_id: str, agent_id: str, job_id: str, conn_str: str) -> LedgerContext:
@@ -139,16 +184,46 @@ def _fetch_last_user_message(conn_str: str, conversation_id: str) -> str | None:
     return row[0] if row else None
 
 
+def _identity_row(faithfulness: float | None) -> dict | None:
+    """The Judge that produced this verdict, in the shape the row stores, or None.
+
+    None where there is no verdict to attribute, and None again where the route
+    could not name a complete Judge. Both are unknown, and unknown is what the
+    column then holds.
+    """
+    if faithfulness is None:
+        return None
+    identity = judge_identity()
+    return dataclasses.asdict(identity) if identity else None
+
+
 def _update_retrieval_metrics(
-    conn_str: str, job_id: str, citation_coverage: float | None, faithfulness: float | None
+    conn_str: str,
+    job_id: str,
+    citation_coverage: float | None,
+    faithfulness: float | None,
+    identity: dict | None,
 ) -> None:
+    """Write this turn's two signals, and the Judge that produced the second one.
+
+    `identity` belongs to `faithfulness` and to nothing else on the row.
+    citation_coverage is arithmetic this task does itself, so a row carrying only
+    that one gets NULL here rather than the name of a Judge that did no work
+    (tenant migration 0020). It is named `identity` rather than `judge_identity`
+    so it cannot be read as the module function of that name.
+    """
     conn = psycopg2.connect(conn_str, connect_timeout=5)
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE retrieval_metrics SET citation_coverage = %s, faithfulness = %s"
-                " WHERE job_id = %s",
-                (citation_coverage, faithfulness, job_id),
+                "UPDATE retrieval_metrics SET citation_coverage = %s, faithfulness = %s,"
+                " judge_identity = %s::jsonb WHERE job_id = %s",
+                (
+                    citation_coverage,
+                    faithfulness,
+                    json.dumps(identity) if identity else None,
+                    job_id,
+                ),
             )
         conn.commit()
     finally:
@@ -354,11 +429,7 @@ def run_retrieval_faithfulness(self, agent_id: str, job_id: str) -> dict:  # noq
     with get_sync_db() as db:
         agent = db.get(Agent, agent_id)
         if agent is None:
-            log.error(
-                "run_retrieval_faithfulness.agent_not_found",
-                job_id=job_id,
-                agent_id=agent_id,
-            )
+            log.error("run_retrieval_faithfulness.agent_not_found", job_id=job_id, agent_id=agent_id)
             return {}
         conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
         tenant_id = str(agent.tenant_id)  # read while the session is open
@@ -391,7 +462,7 @@ def run_retrieval_faithfulness(self, agent_id: str, job_id: str) -> dict:  # noq
 
     response_text, citations_list, conversation_id, retrieve_contexts = turn_context
 
-    # citation_coverage is a coarse proxy: the schema does not persist per-chunk
+    # citation_coverage is a coarse proxy. The schema does not persist per-chunk
     # citation attribution, so this measures how often a retrieve call led to a
     # cited claim (cited spans over retrieve calls with a result), not exact
     # chunk-level coverage. None rather than 0.0 when nothing was retrieved,
@@ -410,8 +481,10 @@ def run_retrieval_faithfulness(self, agent_id: str, job_id: str) -> dict:  # noq
         log.info("run_retrieval_faithfulness.no_signal", job_id=job_id)
         return {"status": "no_signal"}
 
+    identity_row = _identity_row(faithfulness)
+
     try:
-        _update_retrieval_metrics(conn_str, job_id, citation_coverage, faithfulness)
+        _update_retrieval_metrics(conn_str, job_id, citation_coverage, faithfulness, identity_row)
     except Exception as exc:  # noqa: BLE001 — never fail/retry an already-served turn
         log.warning("run_retrieval_faithfulness.update_failed", job_id=job_id, error=str(exc))
         return {}
@@ -421,9 +494,11 @@ def run_retrieval_faithfulness(self, agent_id: str, job_id: str) -> dict:  # noq
         job_id=job_id,
         citation_coverage=citation_coverage,
         faithfulness=faithfulness,
+        judge_identity=identity_row,
     )
     return {
         "status": "scored",
         "citation_coverage": citation_coverage,
         "faithfulness": faithfulness,
+        "judge_identity": identity_row,
     }

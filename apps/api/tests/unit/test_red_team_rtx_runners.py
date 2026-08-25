@@ -172,7 +172,7 @@ def test_rtx_runner_signatures_match_shipped_contract():
     ledger can only ever cost coverage.
 
     `ledger` (ticket #47) is keyword-only and has NO default, which is the
-    opposite choice for the opposite reason: it carries who the severity call is
+    opposite choice for the opposite reason. It carries who the severity call is
     billed to, and a default would let a runner spend a tenant's money against
     nobody's row. Keyword-only keeps the three positional parameters above
     unchanged, so the uniform runner list still resolves.

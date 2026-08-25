@@ -343,12 +343,12 @@ def run_red_team(self, agent_id: str) -> dict:
     # ------------------------------------------------------------------
     # Step 4 — Build two probe_fn closures
     #
-    # probe_fn (unchanged): sends one message to the deployed agent persona
-    # and returns the response text. Wraps a direct Anthropic API call with
-    # NO tools attached (not _run_sdk_turn from agent.py — that function is
-    # coupled to SSE infrastructure). Correct for the M7
-    # conversational/retrieval probes, which never touch the transactional
-    # dispatcher.
+    # probe_fn: sends one message to the deployed agent persona and returns the
+    # response text. Its client comes from app.core.model_client under the
+    # `red_team_probe` purpose since #47, so every probe leaves a ledger row, and
+    # it attaches NO tools (not _run_sdk_turn from agent.py, which is coupled to
+    # SSE infrastructure). Correct for the M7 conversational/retrieval probes,
+    # which never touch the transactional dispatcher.
     #
     # transactional_probe_fn (new, Phase 18 OD-6): drives the REAL tool
     # server through the transactional dispatcher (_execute_transactional_tool)

@@ -22,8 +22,10 @@ WHY reasoning_effort IS A STRING AND NOT AN ENUM
     any other provider, which is narrower than the identity needs.
 
 WHAT IS NOT HERE
-    No recording and no reader. #53 stores these beside a verdict and groups by
-    them. This slice builds the type and nothing else.
+    No reader. Two writers stamp an identity beside the verdict it belongs to,
+    `eval_service` on `eval_results.detail` and `retrieval_eval` on
+    `retrieval_metrics.judge_identity`. #53 is the first thing to read either and
+    group by them.
 
 Rung: `app.domain` imports the standard library, third-party packages and its
 domain siblings. This module imports the standard library only.
@@ -31,10 +33,31 @@ domain siblings. This module imports the standard library only.
 
 from __future__ import annotations
 
+import importlib.metadata
 from dataclasses import dataclass
 from typing import Any
 
 _REQUIRED_TEXT = ("model", "reasoning_effort", "prompt_version")
+
+#: Which prompt every Judge in this system was given, the third field below.
+#:
+#: NOTHING IN THIS REPO VERSIONS A JUDGE PROMPT, and this constant is the honest
+#: minimum rather than a version anybody chose. The `prompt_versions` table
+#: (control migration 0018) holds an agent's soul, one immutable row per soul
+#: edit, and no judge reads it or writes to it. Every Judge prompt belongs to
+#: ragas, which carries each collections metric's prompt text inside the
+#: installed package, and nothing here authors or edits one. That covers the four
+#: offline metrics `eval_service` scores and the live-traffic Faithfulness
+#: `retrieval_eval` scores, which is why the constant lives here beside the type
+#: rather than in either of them.
+#:
+#: So the identifier is the artifact the prompt text ships in, read off the
+#: installed distribution rather than typed here. A literal would go stale the
+#: next time `uv sync` resolves a different 0.4.x with different prompts
+#: underneath it, and a calibration figure would then group two prompts under
+#: one key. The day a Judge prompt is written in this repo, that prompt's own
+#: version replaces this and the identity gets finer-grained rather than wider.
+JUDGE_PROMPT_VERSION = f"ragas-{importlib.metadata.version('ragas')}"
 
 
 class InvalidJudgeIdentity(ValueError):
@@ -58,8 +81,13 @@ class JudgeIdentity:
     identities is the natural grouping key for a run's verdicts.
 
     Args:
-        model:           the served model, as the price book names it, for
-                         example `gpt-5.6-luna`.
+        model:           the CONFIGURED model, the one the routing table names and
+                         the request asks for, for example `gpt-5.6-luna`. Not the
+                         served model. A calibration figure keys on what was
+                         chosen, because that is the thing an operator changes and
+                         re-measures. Whether the provider served something else is
+                         a different question, and `ModelCall.served_model` plus the
+                         shadow audit answer it per call.
         reasoning_effort: the effort the call ran at, as the provider spells it.
                          `none` is one of OpenAI's efforts and is text like any
                          other, never a stand-in for a missing value.

@@ -9,14 +9,23 @@ on the kwargs the provider receives.
 `ledger()` builds a REAL `LedgerContext`, not a stand-in. Its recorder collects
 rows in a list rather than opening a database, which is the only part a unit
 test cannot afford.
+
+The two app imports are LAZY, inside the helper that needs them. Importing
+`app.core.model_client` at module level made every consumer of this file pay for
+the provider SDKs at collection time, about 3.3s for openai and 1.9s for
+anthropic on this machine, including the consumers that only call `factory()`
+and never build a context. `patch()` takes its target as a string and imports
+nothing here.
 """
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-from app.core.model_client import LedgerContext
-from app.domain.model_call import ModelCall
+if TYPE_CHECKING:
+    from app.core.model_client import LedgerContext
+    from app.domain.model_call import ModelCall
 
 #: Ids a unit test bills to. Real UUIDs, because `ModelCall` and the ledger
 #: columns take UUID strings and a row built from "t1" would never insert.
@@ -27,6 +36,8 @@ JOB_ID = "33333333-3333-3333-3333-333333333333"
 
 def ledger(rows: list[ModelCall] | None = None) -> LedgerContext:
     """A LedgerContext whose recorder appends to `rows` instead of writing."""
+    from app.core.model_client import LedgerContext
+
     collected = [] if rows is None else rows
     return LedgerContext(
         tenant_id=TENANT_ID,

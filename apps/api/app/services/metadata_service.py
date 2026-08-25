@@ -16,7 +16,7 @@ Client construction:
     Per call, through `app.core.model_client` (ticket #47), so every enrichment
     leaves a `model_calls` row under the `metadata_enrichment` purpose and the
     api key is resolved from Settings rather than from `os.environ`. That last
-    part is why the module-level client existed: a Celery worker started without
+    part is why the module-level client existed. A Celery worker started without
     inheriting `.env` has the key nowhere else. `resolve_credentials` reads
     Settings, so the gap is closed in one place for every site instead of here.
 

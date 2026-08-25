@@ -314,7 +314,7 @@ class TestRunRagasEval:
     def test_the_judge_sends_luna_and_effort_none_on_the_wire(self):
         """The two figures decision #34 priced, read off the bytes the judge sent.
 
-        Not off the route, and not off the InstructorLLM: instructor fills in
+        Not off the route, and not off the InstructorLLM. Instructor fills in
         each default the call did not name, and ragas maps parameters per
         provider on the way past. Both layers sit between the routing table and
         the request, so the request is where the claim is checked. A fake
@@ -372,7 +372,7 @@ class TestRunRagasEval:
         class _Pinned(httpx.AsyncClient):
             """A client the OpenAI SDK still recognises, answering canned bytes.
 
-            A lambda here fails: the SDK isinstance-checks the client it is
+            A lambda here fails. The SDK isinstance-checks the client it is
             handed, so the stand-in has to be a real subclass.
             """
 
@@ -703,26 +703,28 @@ class TestJudgeIdentityLandsOnTheScore:
                 "model", "prompt_version", "reasoning_effort"
             ], f"the {metric} row's identity is {identity!r}"
 
-    def test_the_model_and_the_effort_come_off_the_routing_table(self, monkeypatch):
-        """The same data the request was built from, never re-declared.
+    def test_every_dimension_records_luna_at_effort_none(self, monkeypatch):
+        """The two figures decision #34 priced, written out.
 
-        A second copy of the model name here would let the record name a Judge
-        the run did not use, which is the failure the whole identity exists to
-        stop.
+        This compared the record against `PURPOSE_ROUTES` until it was noticed
+        that the record is BUILT from `PURPOSE_ROUTES`, so both sides moved
+        together and the assertion held under any drift at all. Literals cannot.
+        The day a judge route moves off Luna or off effort none, this file goes
+        red and somebody re-measures the calibration figure instead of inheriting
+        it.
         """
-        from app.core.model_client import PURPOSE_ROUTES
-        from app.services.eval_service import JUDGE_PURPOSE_BY_METRIC, METRIC_KEYS
+        from app.services.eval_service import METRIC_KEYS
 
         details = self._details(monkeypatch)
 
         for metric in METRIC_KEYS:
-            route = PURPOSE_ROUTES[JUDGE_PURPOSE_BY_METRIC[metric]]
             identity = details[metric]["judge_identity"]
-            assert identity["model"] == route.model
-            assert identity["reasoning_effort"] == route.reasoning_effort, (
-                f"the {metric} row records effort "
-                f"{identity['reasoning_effort']!r} against a route that runs at "
-                f"{route.reasoning_effort!r}"
+            assert identity["model"] == "gpt-5.6-luna", (
+                f"the {metric} row records model {identity['model']!r}"
+            )
+            assert identity["reasoning_effort"] == "none", (
+                f"the {metric} row records effort {identity['reasoning_effort']!r}, "
+                "and the $0.62 per thousand floor holds only at effort none"
             )
 
     def test_the_prompt_version_names_the_artifact_the_prompt_ships_in(
