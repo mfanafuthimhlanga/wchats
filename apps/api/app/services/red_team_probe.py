@@ -81,6 +81,8 @@ from claude_agent_sdk import (
 )
 
 from app.core.config import settings
+from app.domain.tool_result import Outcome, ToolResult, wire_text
+from app.domain.transactional_schemas import SKILL_INPUT_MODELS
 from app.services.agent_prompt import build_system_prompt
 from app.services.agent_tools import RetrievalStrategy, build_tool_server
 from app.services.red_team_service import SONNET_MODEL
@@ -92,6 +94,7 @@ from app.services.transactional.tools import (
     confirm_action_tool,
     issue_refund_tool,
     place_order_tool,
+    run_transactional_skill,
     update_customer_record_tool,
     update_subscription_tool,
 )
@@ -227,29 +230,51 @@ _VERDICT_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
 
 
 @dataclass(frozen=True)
-class ProbeToolResult:
-    """A single tool call's dispatcher verdict, tagged for deterministic assertion."""
+class ProbeToolResult(ToolResult):
+    """A domain ToolResult plus the red-team verdict tag.
 
-    skill: str
-    is_error: bool
-    text: str
+    The record itself was promoted to `app.domain.tool_result` (ticket #45), so
+    the dispatcher, the resolver and this probe all pass the same type around.
+    What stays here is the tag, because it reads the dispatcher's own response
+    VOCABULARY and that vocabulary lives at this rung: `_VERDICT_PATTERNS`
+    derives its identity needles from `tools.IDV_BLOCK_MESSAGES`, and
+    `app.domain` may not import `app.services`.
+
+    The tag is a refinement of `Outcome`, not a rival taxonomy. `Outcome.denied`
+    says a gate refused; capability_denied, identity_required, rate_denied and
+    actor_blocked say WHICH gate, which is the distinction a red-team finding
+    is made of.
+    """
+
+    @classmethod
+    def from_tool_result(cls, result: ToolResult) -> "ProbeToolResult":
+        """Tag a verdict the dispatcher handed over as a type. Nothing is inferred."""
+        return cls(
+            skill=result.skill,
+            outcome=result.outcome,
+            text=result.text,
+            stored_wire=result.stored_wire,
+        )
 
     @classmethod
     def from_dispatcher_response(cls, skill: str, response: dict) -> "ProbeToolResult":
-        """Build a ProbeToolResult from a dispatcher-shaped response dict.
+        """Read a verdict off the wire, for the one path that only ever sees wire.
 
-        response is expected to look like {"content": [{"type": "text", "text": ...}],
-        "is_error": bool} — the exact shape every transactional @tool handler and
-        _execute_transactional_tool early-return produces.
+        The victim turn in `_build_transactional_probe_fn` receives SDK
+        ToolResultBlocks, never the dispatcher's return value, so it has nothing
+        else to read.
+
+        THE WIRE IS LOSSY, and that is the defect ToolResult exists to answer.
+        A wire dict carries one bit, so the outcome recovered here is only ever
+        `ok` or `error`: a denial arrives as `error` and an escalation to a human
+        arrives as `ok`. `verdict_tag`, which reads the dispatcher's own words,
+        is the part that survives the crossing. Any caller that can receive the
+        type should take that path instead (`invoke_probe_tool`).
         """
-        blocks = response.get("content") or []
-        text_parts = [
-            block.get("text", "") for block in blocks if isinstance(block, dict)
-        ]
         return cls(
             skill=skill,
-            is_error=bool(response.get("is_error", False)),
-            text="\n".join(text_parts),
+            outcome=Outcome.error if response.get("is_error", False) else Outcome.ok,
+            text=wire_text(response),
         )
 
     @property
@@ -279,16 +304,24 @@ class ProbeToolResult:
 # ---------------------------------------------------------------------------
 
 
-async def invoke_probe_tool(skill: str, args: dict) -> dict:
-    """Call the real @tool handler for `skill` and return the dispatcher's response verbatim.
+async def invoke_probe_tool(skill: str, args: dict) -> ProbeToolResult:
+    """Call the real dispatcher for `skill` and return its verdict as a type.
+
+    The six mutating skills enter through `run_transactional_skill`, the same
+    seam the six `@tool` handlers use, so the probe reads the Outcome the
+    dispatcher decided instead of re-deriving one from a wire dict that cannot
+    carry it. confirm_action has no adapter and no dispatcher path, so it goes
+    through its own handler and its verdict comes back off the wire.
 
     The caller must have already populated the dispatcher ContextVars via
     build_tool_server() and must hold an open red_team_mode() window — this
     function does not open one so a caller can chain several invoke_probe_tool
     calls (e.g. RTX-02's repeated small refunds) inside a single window.
     """
+    if skill in SKILL_INPUT_MODELS:
+        return ProbeToolResult.from_tool_result(await run_transactional_skill(skill, args))
     handler = resolve_probe_handler(skill)
-    return await handler(args)
+    return ProbeToolResult.from_dispatcher_response(skill, await handler(args))
 
 
 # ---------------------------------------------------------------------------

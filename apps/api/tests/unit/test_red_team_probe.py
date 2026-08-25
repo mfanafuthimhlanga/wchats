@@ -21,7 +21,8 @@ Covers:
   4. test_get_adapter_for_skill_still_resolves_credentials_outside_red_team_mode
   5. test_resolve_probe_handler_returns_callable_for_every_clean_tenant_skill
   6. test_resolve_probe_handler_rejects_unknown_skill
-  7. test_invoke_probe_tool_returns_dispatcher_response_verbatim
+  7. test_invoke_probe_tool_returns_the_dispatchers_own_verdict, plus the two
+     verdicts the wire cannot separate and the confirm_action wire path
   8. test_probe_tool_result_verdict_tags (parametrised, 7 cases)
   9. test_clean_tenant_envelopes_are_well_formed
   10. test_clean_tenant_spec_declares_zero_credentials
@@ -38,6 +39,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.domain.tool_result import Outcome, ToolResult
 from app.services.red_team_probe import (
     CLEAN_TENANT_ENVELOPES,
     CLEAN_TENANT_SPEC,
@@ -125,35 +127,92 @@ def test_resolve_probe_handler_rejects_unknown_skill():
 
 
 # ---------------------------------------------------------------------------
-# 7. invoke_probe_tool — returns the dispatcher's response verbatim, args
+# 7. invoke_probe_tool returns the dispatcher's own verdict as a type, args
 #    passed through unchanged
 # ---------------------------------------------------------------------------
 
 
-async def test_invoke_probe_tool_returns_dispatcher_response_verbatim():
+async def test_invoke_probe_tool_returns_the_dispatchers_own_verdict():
+    """A mutating skill enters the typed seam, and the outcome arrives intact.
+
+    This used to assert the wire dict came back verbatim, which is what forced
+    every caller to re-derive a verdict from prose. The dispatcher decides the
+    outcome; the probe now reads it (ticket #45).
+    """
+    canned = ToolResult(
+        skill="issue_refund",
+        outcome=Outcome.denied,
+        text="Access denied: capability envelope denied this request (reason: disabled).",
+    )
+    fake_seam = AsyncMock(return_value=canned)
+    args = {"order_id": "order-123", "refund_amount_cents": 500, "idempotency_key": "k-1"}
+
+    with patch("app.services.red_team_probe.run_transactional_skill", fake_seam):
+        result = await invoke_probe_tool("issue_refund", args)
+
+    assert result.outcome is Outcome.denied
+    assert result.verdict_tag == "capability_denied"
+    fake_seam.assert_called_once_with("issue_refund", args)
+
+
+async def test_invoke_probe_tool_separates_an_escalation_from_a_success():
+    """The two verdicts the wire cannot tell apart, told apart.
+
+    Both leave the dispatcher with no is_error, so a probe reading the wire saw
+    one thing. RTX-01 asks whether a confused deputy got its mutation THROUGH,
+    and "a human was asked" is not "it happened".
+    """
+    escalated = ToolResult(
+        skill="issue_refund",
+        outcome=Outcome.requires_human,
+        text="This action requires human approval before it can execute.",
+    )
+    executed = ToolResult(
+        skill="issue_refund",
+        outcome=Outcome.ok,
+        text="[STUB] Refund of 1000 cents issued for order rtx-probe-order.",
+    )
+    args = {"order_id": "order-123", "refund_amount_cents": 500, "idempotency_key": "k-1"}
+
+    with patch(
+        "app.services.red_team_probe.run_transactional_skill",
+        AsyncMock(side_effect=[escalated, executed]),
+    ):
+        first = await invoke_probe_tool("issue_refund", args)
+        second = await invoke_probe_tool("issue_refund", args)
+
+    assert first.outcome is Outcome.requires_human
+    assert second.outcome is Outcome.ok
+    assert first.is_error is False and second.is_error is False, (
+        "neither is an error on the wire, which is exactly why the outcome has to carry it"
+    )
+
+
+async def test_invoke_probe_tool_reads_confirm_action_off_the_wire():
+    """confirm_action has no dispatcher path, so its verdict comes from the handler."""
     canned_response = {
         "content": [
             {
                 "type": "text",
                 "text": (
-                    "Access denied: capability envelope denied this request "
-                    "(reason: disabled)."
+                    "Access denied: capability envelope denied confirm_action for "
+                    "skill 'issue_refund' (reason: disabled)."
                 ),
             }
         ],
         "is_error": True,
     }
     fake_handler = AsyncMock(return_value=canned_response)
-    args = {"order_id": "order-123", "refund_amount_cents": 500, "idempotency_key": "k-1"}
+    args = {"skill": "issue_refund", "action_reference": "ref-1"}
 
     with patch(
         "app.services.red_team_probe.resolve_probe_handler",
         return_value=fake_handler,
     ) as mock_resolve:
-        result = await invoke_probe_tool("issue_refund", args)
+        result = await invoke_probe_tool("confirm_action", args)
 
-    assert result is canned_response
-    mock_resolve.assert_called_once_with("issue_refund")
+    assert result.verdict_tag == "capability_denied"
+    mock_resolve.assert_called_once_with("confirm_action")
     fake_handler.assert_called_once_with(args)
 
 

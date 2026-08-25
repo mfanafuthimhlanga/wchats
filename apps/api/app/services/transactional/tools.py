@@ -21,6 +21,19 @@ The single _execute_transactional_tool dispatcher encodes the enforcement order 
        error → release_idempotency + audit row + is_error
   7. Audit row (success, result=response, error=None) + finalize_idempotency + return
 
+What the dispatcher returns (ticket #45):
+  `_execute_transactional_tool` returns a `ToolResult` from every branch, and
+  `run_transactional_skill` is the seam that validates then calls it. Each `@tool`
+  handler converts at its own SDK edge with `to_wire`, which is the ONE place an
+  outcome becomes the `is_error` bit. The wire is byte for byte what it was.
+
+  The bit is why the type exists. `ok` and `requires_human` both leave the
+  dispatcher with no `is_error`, so a caller reading the wire could not tell a
+  completed order from one an approver still has to sign off, except by reading
+  the English text. `Outcome` carries that distinction; the eight `is_error`
+  branches split into `denied`, meaning a gate refused, and `error`, meaning
+  something broke.
+
 AUD-01 symmetry:
   Every entry into a transactional tool that is NOT a replay or benign in_progress produces
   exactly one tool_calls_audit row: capability denial, rate denial, actor block, adapter error,
@@ -70,7 +83,9 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from app.core.database import get_sync_db
+from app.domain.tool_result import Outcome, ToolResult, to_wire, wire_text
 from app.domain.transactional_schemas import (
+    SKILL_INPUT_MODELS,
     BookSlotInput,
     CancelOrderInput,
     ConfirmActionInput,
@@ -178,7 +193,7 @@ def _recorded_error(recorded: bool, error: str) -> str:
     return f"{RECORDED_NOT_EXECUTED}|{error}" if recorded else error
 
 
-def _not_executed_result(skill: str, detail: str = "") -> dict:
+def _not_executed_result(skill: str, detail: str = "") -> ToolResult:
     """The tool result recorded mode hands the agent in place of a real execution.
 
     Two requirements pull in opposite directions here and both are met.
@@ -205,21 +220,40 @@ def _not_executed_result(skill: str, detail: str = "") -> dict:
     need it actually read. `tool_calls_audit.error` carries
     `RECORDED_NOT_EXECUTED` for the human grader and the labelled Actor set, and
     `get_recorded_side_effects()` carries the full attempt for P2.
+
+    **The outcome is `denied`, not `error`.** The text above is deliberately
+    shaped like a provider outage so the agent reasons the way production makes
+    it reason, and on the wire that is `is_error=True` either way. What the
+    SYSTEM knows is different: no fault occurred, the recorded-mode seam refused
+    to execute. Calling it `error` would page someone every time an eval runs.
+    All three call sites, the step-3 replay, the step-5 require_human arm and
+    step 5.5, are that same refusal.
     """
     tail = f" {detail}" if detail else ""
-    return {
-        "content": [
-            {
-                "type": "text",
-                "text": (
-                    f"NOT EXECUTED: the {skill} request did not reach the provider "
-                    f"and nothing was changed. No money moved and no record was "
-                    f"updated.{tail}"
-                ),
-            }
-        ],
-        "is_error": True,
-    }
+    return ToolResult(
+        skill=skill,
+        outcome=Outcome.denied,
+        text=(
+            f"NOT EXECUTED: the {skill} request did not reach the provider "
+            f"and nothing was changed. No money moved and no record was "
+            f"updated.{tail}"
+        ),
+    )
+
+
+def _confirm_wire(outcome: Outcome, text: str) -> dict:
+    """confirm_action_tool's own edge onto the wire.
+
+    confirm_action does not route through `_execute_transactional_tool`
+    (mutating=False, no adapter), so it reaches `to_wire` from here instead. The
+    conversion is the same one every other branch makes, which is the point:
+    outcome maps to `is_error` in exactly one place.
+
+    `Outcome.requires_human` is what a written confirmation row means. That is
+    the whole job of this tool, and on the wire it is a non-error response,
+    unchanged.
+    """
+    return to_wire(ToolResult(skill="confirm_action", outcome=outcome, text=text))
 
 
 def _declined_detail(
@@ -268,7 +302,7 @@ async def _execute_adapter_and_audit(
     snapshot: dict,
     decision: str,
     rationale: str,
-) -> dict:
+) -> ToolResult:
     """Steps 6 (adapter execute) and 7 (audit + finalize), extracted once.
 
     Called by both `_execute_transactional_tool` (the live-turn dispatcher,
@@ -297,8 +331,10 @@ async def _execute_adapter_and_audit(
         rationale:      Actor rationale text, or a resolver-supplied rationale.
 
     Returns:
-        SDK-compatible tool response dict with "content" key.
-        On errors: also contains "is_error": True.
+        ToolResult. Outcome.ok when the adapter ran; Outcome.error when the
+        provider is not configured, the credential will not decrypt, or the
+        adapter itself raised. Every one of those three is a fault, never a
+        gate's refusal, which is why none of them is Outcome.denied.
     """
     # -------------------------------------------------------- 6. Adapter execute
     # get_adapter_for_skill fetches + decrypts the tenant credential and returns
@@ -322,10 +358,7 @@ async def _execute_adapter_and_audit(
             latency_ms=None,
             error=f"provider.not_configured:{exc}",
         )
-        return {
-            "content": [{"type": "text", "text": str(exc)}],
-            "is_error": True,
-        }
+        return ToolResult(skill=skill, outcome=Outcome.error, text=str(exc))
     start_ms = int(time.time() * 1000)
 
     try:
@@ -361,20 +394,18 @@ async def _execute_adapter_and_audit(
             latency_ms=latency_ms,
             error=error_str,
         )
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": f"Tool execution failed: {error_str}. Please try again.",
-                }
-            ],
-            "is_error": True,
-        }
+        return ToolResult(
+            skill=skill,
+            outcome=Outcome.error,
+            text=f"Tool execution failed: {error_str}. Please try again.",
+        )
 
     # -------------------------------------------------------- 7. Audit row + finalize + return
-    tool_response: dict = {
-        "content": [{"type": "text", "text": response.get("message", str(response))}]
-    }
+    result = ToolResult(
+        skill=skill,
+        outcome=Outcome.ok,
+        text=response.get("message", str(response)),
+    )
 
     await write_audit_row(
         agent_id=agent_id,
@@ -389,7 +420,10 @@ async def _execute_adapter_and_audit(
         error=None,
     )
 
-    await finalize_idempotency(agent_id, skill, validated.idempotency_key, tool_response)
+    # The WIRE dict is stored, not the ToolResult. A later replay hands these
+    # bytes straight back to the agent, and they have to be the same bytes the
+    # first call sent.
+    await finalize_idempotency(agent_id, skill, validated.idempotency_key, to_wire(result))
 
     log.info(
         "transactional_tool.success",
@@ -397,7 +431,7 @@ async def _execute_adapter_and_audit(
         skill=skill,
         latency_ms=latency_ms,
     )
-    return tool_response
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -410,10 +444,11 @@ async def _execute_transactional_tool(
     validated,  # Pydantic-validated input model for the specific tool
     raw_args: dict,
     adapter_method: str,
-) -> dict:
+) -> ToolResult:
     """Enforce the locked execution order for every mutating transactional tool call.
 
-    Called by each of the 6 mutating @tool handlers after Pydantic validation.
+    Reached through `run_transactional_skill`, which validates first. The six
+    mutating @tool handlers and the red-team probe both enter that way.
     confirm_action_tool does NOT use this dispatcher (mutating=False, no adapter).
 
     Enforcement order (documented in Plan-08 objective):
@@ -458,8 +493,25 @@ async def _execute_transactional_tool(
         adapter_method: Method name on ProviderAdapter to call (e.g. "place_order").
 
     Returns:
-        SDK-compatible tool response dict with "content" key.
-        On errors: also contains "is_error": True.
+        ToolResult, from every branch. The outcome each branch carries:
+
+          Outcome.denied          a gate refused. The capability envelope, the
+                                  IDV gate's two token cases, the rate and
+                                  constraint ceiling, the Actor seam's block,
+                                  and every recorded-mode refusal.
+          Outcome.requires_human  the Actor seam escalated and a
+                                  pending_confirmations row now exists.
+          Outcome.error           something broke or the caller sent something
+                                  unusable. No agent identity, the IDV check
+                                  that could not complete, a reused idempotency
+                                  key with different arguments, a concurrent
+                                  duplicate, a stranded reservation, and the
+                                  adapter's own two failures.
+          Outcome.ok              the adapter ran, or a completed earlier call's
+                                  stored result is being replayed.
+
+        `to_wire` turns any of them into the SDK dict, unchanged from what this
+        function returned directly before the type existed.
     """
     # Lazy import breaks the circular dependency between tools.py and agent_tools.py.
     # _conn_str_var MUST stay inside the function body — module-level import causes a
@@ -506,18 +558,14 @@ async def _execute_transactional_tool(
     # the agent choosing anything, and there is no agent_id to attribute a
     # recording to. Nothing durable is written here either.
     if not agent_id:
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        "Precondition failed: agent context not set. "
-                        "Cannot process transactional tool call without a valid agent identity."
-                    ),
-                }
-            ],
-            "is_error": True,
-        }
+        return ToolResult(
+            skill=skill,
+            outcome=Outcome.error,
+            text=(
+                "Precondition failed: agent context not set. "
+                "Cannot process transactional tool call without a valid agent identity."
+            ),
+        )
 
     # -------------------------------------------------------- 2. Capability check (auth-only)
     # check_capability_access is side-effect-free (no Redis INCR, no writes).
@@ -549,18 +597,14 @@ async def _execute_transactional_tool(
             latency_ms=None,
             error=_recorded_error(recorded, f"capability.denial:{denial}"),
         )
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        f"Access denied: capability envelope denied this request "
-                        f"(reason: {denial}). Contact your administrator to enable this tool."
-                    ),
-                }
-            ],
-            "is_error": True,
-        }
+        return ToolResult(
+            skill=skill,
+            outcome=Outcome.denied,
+            text=(
+                f"Access denied: capability envelope denied this request "
+                f"(reason: {denial}). Contact your administrator to enable this tool."
+            ),
+        )
 
     # -------------------------------------------------------- 2.5 IDV gate (IDV-05)
     # Runs AFTER capability check (2) and BEFORE reserve_idempotency (3) so that a
@@ -596,15 +640,9 @@ async def _execute_transactional_tool(
                 latency_ms=None,
                 error=_recorded_error(recorded, "identity_verification.required"),
             )
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": IDV_REQUIRED_MESSAGE,
-                    }
-                ],
-                "is_error": True,
-            }
+            return ToolResult(
+                skill=skill, outcome=Outcome.denied, text=IDV_REQUIRED_MESSAGE
+            )
         from app.services.identity_service import check_verified_session  # noqa: PLC0415
 
         try:
@@ -642,15 +680,12 @@ async def _execute_transactional_tool(
                 latency_ms=None,
                 error=_recorded_error(recorded, "identity_verification.check_failed"),
             )
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": IDV_CHECK_FAILED_MESSAGE,
-                    }
-                ],
-                "is_error": True,
-            }
+            # Outcome.error, not denied: the gate did not refuse this call, it
+            # could not reach a verdict. Failing closed is the right behaviour
+            # and a broken IDV check is still something to page someone about.
+            return ToolResult(
+                skill=skill, outcome=Outcome.error, text=IDV_CHECK_FAILED_MESSAGE
+            )
         if not session_valid:
             # Token present but expired or not found in tenant DB — block before reservation.
             if recorded:
@@ -677,15 +712,9 @@ async def _execute_transactional_tool(
                 latency_ms=None,
                 error=_recorded_error(recorded, "identity_verification.invalid_or_expired"),
             )
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": IDV_EXPIRED_MESSAGE,
-                    }
-                ],
-                "is_error": True,
-            }
+            return ToolResult(
+                skill=skill, outcome=Outcome.denied, text=IDV_EXPIRED_MESSAGE
+            )
 
     # -------------------------------------------------------- 3. Reserve idempotency (atomic)
     # compute_args_hash excludes idempotency_key internally — used to detect WR-02 key reuse.
@@ -722,7 +751,16 @@ async def _execute_transactional_tool(
             # No audit row: AUD-01 exempts replays in both modes, because the
             # call that stored the result already wrote one.
             return _not_executed_result(skill)
-        return reservation.result  # type: ignore[return-value]
+        # stored_wire, not text: these bytes were written by the call that
+        # succeeded, they are read back from the tenant DB as arbitrary JSON,
+        # and the agent gets them untouched. Rebuilding them from a parsed text
+        # field would rewrite any stored result that is not one text block.
+        return ToolResult(
+            skill=skill,
+            outcome=Outcome.ok,
+            text=wire_text(reservation.result),
+            stored_wire=reservation.result,
+        )
 
     if reservation.state == "args_mismatch":
         # WR-02 closed: same idempotency_key used with different business arguments.
@@ -754,18 +792,16 @@ async def _execute_transactional_tool(
             latency_ms=None,
             error=_recorded_error(recorded, "idempotency.args_mismatch"),
         )
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        "Idempotency key reused with different arguments. "
-                        "Each new request must use a unique idempotency_key."
-                    ),
-                }
-            ],
-            "is_error": True,
-        }
+        # Outcome.error: no gate refused this. The caller reused a key with
+        # different arguments, which is a protocol violation upstream.
+        return ToolResult(
+            skill=skill,
+            outcome=Outcome.error,
+            text=(
+                "Idempotency key reused with different arguments. "
+                "Each new request must use a unique idempotency_key."
+            ),
+        )
 
     if reservation.state == "in_progress":
         # Concurrent duplicate delivery — another worker is executing the same key.
@@ -786,18 +822,14 @@ async def _execute_transactional_tool(
                     snapshot=snapshot,
                 ),
             )
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        "This request is already being processed. "
-                        "Please wait a moment and retry if you do not receive a response."
-                    ),
-                }
-            ],
-            "is_error": True,
-        }
+        return ToolResult(
+            skill=skill,
+            outcome=Outcome.error,
+            text=(
+                "This request is already being processed. "
+                "Please wait a moment and retry if you do not receive a response."
+            ),
+        )
 
     if reservation.state == "unknown":
         # CR-01: a stale 'in_flight' reservation exists — the adapter may
@@ -834,20 +866,16 @@ async def _execute_transactional_tool(
             latency_ms=None,
             error=_recorded_error(recorded, "idempotency.stranded_reservation"),
         )
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        "This request cannot be completed automatically: a previous "
-                        "attempt may still be running or may have already completed. "
-                        "Please contact support before retrying to avoid a possible "
-                        "duplicate."
-                    ),
-                }
-            ],
-            "is_error": True,
-        }
+        return ToolResult(
+            skill=skill,
+            outcome=Outcome.error,
+            text=(
+                "This request cannot be completed automatically: a previous "
+                "attempt may still be running or may have already completed. "
+                "Please contact support before retrying to avoid a possible "
+                "duplicate."
+            ),
+        )
 
     # reservation.state == "reserved" — we are the single winner.
 
@@ -895,18 +923,14 @@ async def _execute_transactional_tool(
             latency_ms=None,
             error=_recorded_error(recorded, f"capability.denial:{rate_denial}"),
         )
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        f"Request denied by rate or constraint check "
-                        f"(reason: {rate_denial}). Please wait before retrying."
-                    ),
-                }
-            ],
-            "is_error": True,
-        }
+        return ToolResult(
+            skill=skill,
+            outcome=Outcome.denied,
+            text=(
+                f"Request denied by rate or constraint check "
+                f"(reason: {rate_denial}). Please wait before retrying."
+            ),
+        )
 
     # -------------------------------------------------------- 5. Actor seam
     decision, rationale = await call_actor_gate(
@@ -940,15 +964,11 @@ async def _execute_transactional_tool(
             latency_ms=None,
             error=_recorded_error(recorded, "actor_block"),
         )
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": "Action blocked by security policy. Please contact support.",
-                }
-            ],
-            "is_error": True,
-        }
+        return ToolResult(
+            skill=skill,
+            outcome=Outcome.denied,
+            text="Action blocked by security policy. Please contact support.",
+        )
 
     elif decision == "require_human":
         # Pitfall 4 (15-RESEARCH.md): release reservation FIRST — the action will NOT
@@ -1109,20 +1129,23 @@ async def _execute_transactional_tool(
             latency_ms=None,
             error="actor_require_human",
         )
-        # NON-error response (no is_error key) — the adapter (step 6) MUST NOT run.
-        # The action executes only after confirm_action approval resolves the row (Phase 18).
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        f"This action requires human approval before it can execute. "
-                        f"A confirmation request has been created (ID: {confirmation_id}). "
-                        f"The action will proceed only after an authorized approver confirms it."
-                    ),
-                }
-            ]
-        }
+        # NON-error response (no is_error key on the wire). The adapter (step 6)
+        # MUST NOT run. The action executes only after confirm_action approval
+        # resolves the row (Phase 18).
+        #
+        # THIS IS THE BRANCH ToolResult EXISTS FOR. On the wire it is
+        # indistinguishable from the success at step 7: same keys, no is_error
+        # on either, only the prose differs. A caller asking "did this happen?"
+        # had to read English. Outcome.requires_human answers it.
+        return ToolResult(
+            skill=skill,
+            outcome=Outcome.requires_human,
+            text=(
+                f"This action requires human approval before it can execute. "
+                f"A confirmation request has been created (ID: {confirmation_id}). "
+                f"The action will proceed only after an authorized approver confirms it."
+            ),
+        )
 
     # ---------------------------------------------- 5.5 Recorded mode (D1/P1b, BACKLOG 2.5)
     # The eval invokes this agent through the same seam production uses, which is
@@ -1212,6 +1235,43 @@ async def _execute_transactional_tool(
 
 
 # ---------------------------------------------------------------------------
+# The typed seam: validate, then dispatch, for the six mutating skills
+# ---------------------------------------------------------------------------
+
+
+async def run_transactional_skill(skill: str, args: dict) -> ToolResult:
+    """Validate `args` against `skill`'s Input model, then run the dispatcher.
+
+    Two callers, one path. Each `@tool` handler enters here and converts the
+    result at its own SDK edge with `to_wire`; the red-team probe enters here
+    and reads the outcome, so a probe assertion never has to fuzzy-match prose.
+
+    SKILL_INPUT_MODELS is a definition-time mapping written by hand, so this
+    stays inside the registry's rule that nothing is inferred from a tool name
+    at runtime. Every one of the six names its adapter method identically, which
+    is why `skill` is passed twice below.
+
+    Args:
+        skill: One of the six mutating skills in SKILL_INPUT_MODELS.
+        args:  The raw, unvalidated argument dict the model produced.
+
+    Returns:
+        ToolResult. Bad arguments come back as Outcome.error, which is the
+        wire's is_error=True that a ValidationError has always produced.
+
+    Raises:
+        KeyError: `skill` is not one of the six. A caller naming a skill this
+            mapping does not hold is a bug upstream, never a customer input.
+    """
+    model = SKILL_INPUT_MODELS[skill]
+    try:
+        validated = model(**args)
+    except ValidationError as exc:
+        return ToolResult(skill=skill, outcome=Outcome.error, text=f"Invalid input: {exc}")
+    return await _execute_transactional_tool(skill, validated, args, skill)
+
+
+# ---------------------------------------------------------------------------
 # 1. place_order
 # ---------------------------------------------------------------------------
 
@@ -1226,15 +1286,8 @@ async def _execute_transactional_tool(
     PlaceOrderInput.model_json_schema(),
 )
 async def place_order_tool(args: dict) -> dict:
-    """Validate → _execute_transactional_tool with skill=place_order."""
-    try:
-        validated = PlaceOrderInput(**args)
-    except ValidationError as exc:
-        return {
-            "content": [{"type": "text", "text": f"Invalid input: {exc}"}],
-            "is_error": True,
-        }
-    return await _execute_transactional_tool("place_order", validated, args, "place_order")
+    """Validate, dispatch, then convert at the SDK edge. skill=place_order."""
+    return to_wire(await run_transactional_skill("place_order", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1252,15 +1305,8 @@ async def place_order_tool(args: dict) -> dict:
     CancelOrderInput.model_json_schema(),
 )
 async def cancel_order_tool(args: dict) -> dict:
-    """Validate → _execute_transactional_tool with skill=cancel_order."""
-    try:
-        validated = CancelOrderInput(**args)
-    except ValidationError as exc:
-        return {
-            "content": [{"type": "text", "text": f"Invalid input: {exc}"}],
-            "is_error": True,
-        }
-    return await _execute_transactional_tool("cancel_order", validated, args, "cancel_order")
+    """Validate, dispatch, then convert at the SDK edge. skill=cancel_order."""
+    return to_wire(await run_transactional_skill("cancel_order", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1278,15 +1324,8 @@ async def cancel_order_tool(args: dict) -> dict:
     IssueRefundInput.model_json_schema(),
 )
 async def issue_refund_tool(args: dict) -> dict:
-    """Validate → _execute_transactional_tool with skill=issue_refund."""
-    try:
-        validated = IssueRefundInput(**args)
-    except ValidationError as exc:
-        return {
-            "content": [{"type": "text", "text": f"Invalid input: {exc}"}],
-            "is_error": True,
-        }
-    return await _execute_transactional_tool("issue_refund", validated, args, "issue_refund")
+    """Validate, dispatch, then convert at the SDK edge. skill=issue_refund."""
+    return to_wire(await run_transactional_skill("issue_refund", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1304,17 +1343,8 @@ async def issue_refund_tool(args: dict) -> dict:
     UpdateSubscriptionInput.model_json_schema(),
 )
 async def update_subscription_tool(args: dict) -> dict:
-    """Validate → _execute_transactional_tool with skill=update_subscription."""
-    try:
-        validated = UpdateSubscriptionInput(**args)
-    except ValidationError as exc:
-        return {
-            "content": [{"type": "text", "text": f"Invalid input: {exc}"}],
-            "is_error": True,
-        }
-    return await _execute_transactional_tool(
-        "update_subscription", validated, args, "update_subscription"
-    )
+    """Validate, dispatch, then convert at the SDK edge. skill=update_subscription."""
+    return to_wire(await run_transactional_skill("update_subscription", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1332,15 +1362,8 @@ async def update_subscription_tool(args: dict) -> dict:
     BookSlotInput.model_json_schema(),
 )
 async def book_slot_tool(args: dict) -> dict:
-    """Validate → _execute_transactional_tool with skill=book_slot."""
-    try:
-        validated = BookSlotInput(**args)
-    except ValidationError as exc:
-        return {
-            "content": [{"type": "text", "text": f"Invalid input: {exc}"}],
-            "is_error": True,
-        }
-    return await _execute_transactional_tool("book_slot", validated, args, "book_slot")
+    """Validate, dispatch, then convert at the SDK edge. skill=book_slot."""
+    return to_wire(await run_transactional_skill("book_slot", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1358,17 +1381,8 @@ async def book_slot_tool(args: dict) -> dict:
     UpdateCustomerRecordInput.model_json_schema(),
 )
 async def update_customer_record_tool(args: dict) -> dict:
-    """Validate → _execute_transactional_tool with skill=update_customer_record."""
-    try:
-        validated = UpdateCustomerRecordInput(**args)
-    except ValidationError as exc:
-        return {
-            "content": [{"type": "text", "text": f"Invalid input: {exc}"}],
-            "is_error": True,
-        }
-    return await _execute_transactional_tool(
-        "update_customer_record", validated, args, "update_customer_record"
-    )
+    """Validate, dispatch, then convert at the SDK edge. skill=update_customer_record."""
+    return to_wire(await run_transactional_skill("update_customer_record", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1410,10 +1424,7 @@ async def confirm_action_tool(args: dict) -> dict:
     try:
         validated = ConfirmActionInput(**args)
     except ValidationError as exc:
-        return {
-            "content": [{"type": "text", "text": f"Invalid input: {exc}"}],
-            "is_error": True,
-        }
+        return _confirm_wire(Outcome.error, f"Invalid input: {exc}")
 
     # Lazy import to access the ContextVars set by build_tool_server.
     from app.services.agent_tools import (  # noqa: PLC0415
@@ -1428,36 +1439,22 @@ async def confirm_action_tool(args: dict) -> dict:
 
     # IN-03: agent_id guard — fail before any DB write
     if not agent_id:
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        "Precondition failed: agent context not set. "
-                        "Cannot submit confirmation request without a valid agent identity."
-                    ),
-                }
-            ],
-            "is_error": True,
-        }
+        return _confirm_wire(
+            Outcome.error,
+            "Precondition failed: agent context not set. "
+            "Cannot submit confirmation request without a valid agent identity.",
+        )
 
     # WR-05: capability gate — check_capability_access is side-effect-free.
     # Disabled or missing skill → return is_error without writing the row.
     _snapshot, denial = await check_capability_access(agent_id, validated.skill)
     if denial is not None:
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        f"Access denied: capability envelope denied confirm_action for "
-                        f"skill '{validated.skill}' (reason: {denial}). "
-                        f"Contact your administrator to enable this tool."
-                    ),
-                }
-            ],
-            "is_error": True,
-        }
+        return _confirm_wire(
+            Outcome.denied,
+            f"Access denied: capability envelope denied confirm_action for "
+            f"skill '{validated.skill}' (reason: {denial}). "
+            f"Contact your administrator to enable this tool.",
+        )
 
     # -------------------------------------------------------------------
     # D1/P1b: confirm_action does NOT route through _execute_transactional_tool,
@@ -1488,10 +1485,12 @@ async def confirm_action_tool(args: dict) -> dict:
             agent_id=agent_id,
             skill=validated.skill,
         )
-        return _not_executed_result(
-            "confirm_action",
-            f"No approval request was created for the '{validated.skill}' action "
-            f"(reference: {validated.action_reference}).",
+        return to_wire(
+            _not_executed_result(
+                "confirm_action",
+                f"No approval request was created for the '{validated.skill}' action "
+                f"(reference: {validated.action_reference}).",
+            )
         )
 
     now = datetime.now(timezone.utc)
@@ -1541,18 +1540,12 @@ async def confirm_action_tool(args: dict) -> dict:
                 confirmation_id=str(existing_id),
                 action_reference=validated.action_reference,
             )
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            f"Confirmation request for '{validated.skill}' action "
-                            f"(reference: {validated.action_reference}) is already pending. "
-                            f"Awaiting human approval. Confirmation ID: {existing_id}."
-                        ),
-                    }
-                ]
-            }
+            return _confirm_wire(
+                Outcome.requires_human,
+                f"Confirmation request for '{validated.skill}' action "
+                f"(reference: {validated.action_reference}) is already pending. "
+                f"Awaiting human approval. Confirmation ID: {existing_id}.",
+            )
 
     log.info(
         "confirm_action.pending_row_written",
@@ -1562,18 +1555,12 @@ async def confirm_action_tool(args: dict) -> dict:
         action_reference=validated.action_reference,
     )
 
-    return {
-        "content": [
-            {
-                "type": "text",
-                "text": (
-                    f"Confirmation request submitted for '{validated.skill}' action "
-                    f"(reference: {validated.action_reference}). "
-                    f"Awaiting human approval. Confirmation ID: {confirmation_id}."
-                ),
-            }
-        ]
-    }
+    return _confirm_wire(
+        Outcome.requires_human,
+        f"Confirmation request submitted for '{validated.skill}' action "
+        f"(reference: {validated.action_reference}). "
+        f"Awaiting human approval. Confirmation ID: {confirmation_id}.",
+    )
 
 
 # ---------------------------------------------------------------------------

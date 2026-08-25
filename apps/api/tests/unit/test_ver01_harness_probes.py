@@ -108,7 +108,11 @@ _VERDICT_IS_ERROR: dict[str, bool] = {
 
 
 def _response(tag: str) -> dict:
-    """Build a dispatcher-shaped response dict whose text carries `tag`'s vocabulary."""
+    """Build a dispatcher-shaped WIRE dict whose text carries `tag`'s vocabulary.
+
+    Still a dict, deliberately: this feeds `from_dispatcher_response`, which is
+    the path that only ever sees wire (the SDK victim turn).
+    """
     return {
         "content": [{"type": "text", "text": _VERDICT_TEXT[tag]}],
         "is_error": _VERDICT_IS_ERROR[tag],
@@ -116,6 +120,7 @@ def _response(tag: str) -> dict:
 
 
 def _fake_result(skill: str, tag: str) -> ProbeToolResult:
+    """The verdict `invoke_probe_tool` returns for `tag`, as the type it returns."""
     return ProbeToolResult.from_dispatcher_response(skill, _response(tag))
 
 
@@ -281,7 +286,7 @@ def test_all_probes_inside_red_team_mode():
     async def _record_invoke(skill, args):
         call_counter["n"] += 1
         event_order.append(f"invoke_{call_counter['n']}")
-        return _response("rate_denied")
+        return _fake_result(skill, "rate_denied")
 
     mock_invoke = AsyncMock(side_effect=_record_invoke)
 
