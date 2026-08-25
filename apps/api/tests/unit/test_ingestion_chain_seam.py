@@ -239,7 +239,7 @@ def run(monkeypatch):
             "entity_count": 0,
             "doc_types": {"pdf": 1},
         },
-        run_strategist=lambda signals_json, container: None,
+        run_strategist=lambda signals_json, container, job, tenant_dsn: None,
     )
 
     state.job_row = job_row

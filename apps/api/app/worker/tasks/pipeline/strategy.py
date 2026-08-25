@@ -164,7 +164,7 @@ def synthesize_retrieval_strategy(self, job: IngestionJob) -> IngestionJob:
     # ------------------------------------------------------------------
     result_container: dict = {}
     try:
-        run_strategist(signals_json, result_container)
+        run_strategist(signals_json, result_container, job, conn_str)
     except Exception as exc:
         log.error(
             "synthesize_retrieval_strategy.strategist_failed",

@@ -6,12 +6,17 @@ Architecture notes:
 - Direct Anthropic messages.create with tool_use — captures generate_strategy ToolUseBlock.
 - Synchronous — no asyncio bridge needed; safe in Celery pipeline tasks.
 - Connection strings NEVER logged (CTL-08).
+- The client comes from app.core.model_client.make_client (ticket #46), so every
+  response leaves one model_calls row in the tenant database. Recording is fail
+  open, so a ledger failure logs and the strategy call still returns.
 """
 from __future__ import annotations
 
-import anthropic
 import psycopg2
 import structlog
+
+from app.core.model_client import ledger_recorder, make_client
+from app.domain.ingestion_job import IngestionJob
 
 SONNET_MODEL = "claude-sonnet-4-6"
 log = structlog.get_logger(__name__)
@@ -182,14 +187,34 @@ _TOOL_GENERATE_STRATEGY = {
 # ---------------------------------------------------------------------------
 
 
-def run_strategist(signals_json: str, result_container: dict) -> None:
+def run_strategist(
+    signals_json: str,
+    result_container: dict,
+    job: IngestionJob,
+    tenant_dsn: str,
+) -> None:
     """Call Claude directly via the Anthropic API to synthesize a retrieval strategy.
 
     Uses tool_use to reliably extract structured parameters. Logs and swallows
     exceptions so the Celery task falls back to RetrievalStrategy() defaults.
+
+    Args:
+        signals_json:     the corpus signals the Strategist reasons over.
+        result_container: where the parsed strategy is left for the caller.
+        job:              the three ids every ledger row from this call carries.
+                          The job type holds no connection string and has no field
+                          for one (project rule 1), which is why the dsn below is a
+                          separate argument.
+        tenant_dsn:       the tenant database each ledger row is written to.
     """
     try:
-        client = anthropic.Anthropic()
+        client = make_client(
+            "retrieval_strategist",
+            tenant_id=job.tenant_id,
+            agent_id=job.agent_id,
+            job_id=job.job_id,
+            recorder=ledger_recorder(tenant_dsn),
+        )
         response = client.messages.create(
             # BACKLOG 8.2a. Judgement is the one task that wants no creativity, and
             # every judge in this system sampled at the provider default until now.

@@ -107,8 +107,12 @@ class TestAVerdictSamplesAtZero:
         only, and this module covered the other seven. Deleting the line left the
         whole suite green.
         """
+        from app.domain.ingestion_job import IngestionJob
         from app.services import strategy_service
 
+        job = IngestionJob(
+            tenant_id="tenant", agent_id="agent", job_id="job", document_ids=[]
+        )
         captured: dict = {}
 
         def _create(**kwargs):
@@ -120,7 +124,7 @@ class TestAVerdictSamplesAtZero:
 
         client = SimpleNamespace(messages=SimpleNamespace(create=_create))
         with patch("anthropic.Anthropic", MagicMock(return_value=client)):
-            strategy_service.run_strategist("{}", {})
+            strategy_service.run_strategist("{}", {}, job, "postgresql://tenant-probe")
 
         assert captured, (
             "the stub was not reached. run_strategist swallows exceptions by design, "

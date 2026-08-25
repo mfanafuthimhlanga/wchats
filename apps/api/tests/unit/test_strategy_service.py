@@ -29,10 +29,23 @@ from app.services.retrieval_service import (
     _expand_query,
     rrf_fuse_with_expansion,
 )
+from app.domain.ingestion_job import IngestionJob
 from app.services.strategy_service import (
     _fetch_corpus_signals_sync,
     run_strategist,
 )
+
+# run_strategist now builds its client through app.core.model_client.make_client, so it
+# takes the three ids each ledger row carries and the tenant database each row is
+# written to. The dsn is a separate argument because the job type holds no connection
+# string and has no field for one (project rule 1).
+_JOB = IngestionJob(
+    tenant_id="11111111-1111-1111-1111-111111111111",
+    agent_id="22222222-2222-2222-2222-222222222222",
+    job_id="33333333-3333-3333-3333-333333333333",
+    document_ids=[],
+)
+TENANT_DSN = "postgresql://tenant-probe"
 
 # ---------------------------------------------------------------------------
 # Helper: build a mock psycopg2 connection with controllable multi-cursor responses
@@ -163,8 +176,8 @@ def test_run_strategist_calls_anthropic_api():
     mock_client = MagicMock()
     mock_client.messages.create.return_value = mock_response
 
-    with patch("app.services.strategy_service.anthropic.Anthropic", return_value=mock_client):
-        run_strategist("{}", result_container)
+    with patch("anthropic.Anthropic", return_value=mock_client):
+        run_strategist("{}", result_container, _JOB, TENANT_DSN)
 
     mock_client.messages.create.assert_called_once()
     assert result_container["strategy"]["vector_k"] == 15
@@ -190,13 +203,19 @@ def test_expand_query_returns_three():
         import sys
         mock_module = MagicMock()
         mock_module.Anthropic = mock_anthropic_cls
+        real_module = sys.modules["anthropic"]
         sys.modules["anthropic"] = mock_module
 
         try:
             result = _expand_query("orig")
         finally:
-            # Restore so other tests are not polluted
-            del sys.modules["anthropic"]
+            # Put the REAL module object back, rather than deleting the entry.
+            # Deleting it makes the next `import anthropic` build a second module
+            # object, and every module that already holds a reference to the first
+            # one then ignores `patch("anthropic.Anthropic", ...)`. That reached a
+            # live 401 from api.anthropic.com when this file ran before
+            # test_judgement_temperature.py on 2026-08-25.
+            sys.modules["anthropic"] = real_module
 
     assert result == ["orig", "variant one", "variant two"]
     assert len(result) == 3
@@ -251,3 +270,107 @@ def test_expansion_calls_rrf_fuse_per_variant():
 
     # Result shape must match rrf_fuse contract
     assert set(result.keys()) == {"fused", "vector_candidates", "bm25_candidates"}
+
+
+# ---------------------------------------------------------------------------
+# The model-call ledger (ticket #46, issue #22)
+#
+# run_strategist is the first of the ten ad-hoc `anthropic.Anthropic()` sites to
+# build its client through app.core.model_client.make_client. The two tests below
+# cover the two halves of that. The first reads what the site asked the factory
+# for. The second lets the real factory, the real SDK and the real response hook
+# run against a canned provider body, and reads the INSERT that comes out the far
+# end, so nothing between the call site and psycopg2 is stubbed.
+# ---------------------------------------------------------------------------
+
+
+def _messages_response(usage: dict | None = None) -> dict:
+    """A messages response with a generate_strategy tool call and provider counts."""
+    return {
+        "id": "msg_01",
+        "type": "message",
+        "role": "assistant",
+        "model": "deepseek-v4-flash",
+        "content": [{
+            "type": "tool_use",
+            "id": "toolu_01",
+            "name": "generate_strategy",
+            "input": {
+                "vector_k": 15, "bm25_k": 15, "final_k": 3,
+                "rerank_threshold": 0.1, "query_expansion": False,
+                "metadata_filters": [],
+            },
+        }],
+        "stop_reason": "tool_use",
+        "usage": usage or {
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "cache_read_input_tokens": 2000,
+            "cache_creation_input_tokens": 300,
+        },
+    }
+
+
+def test_run_strategist_asks_the_factory_for_the_jobs_ids():
+    """Every ledger row this call leaves is billed to the job's tenant."""
+    seen: dict = {}
+
+    def spy(purpose, **kwargs):
+        seen.update(kwargs, purpose=purpose)
+        return MagicMock()
+
+    with patch("app.services.strategy_service.make_client", spy):
+        run_strategist("{}", {}, _JOB, TENANT_DSN)
+
+    assert seen["purpose"] == "retrieval_strategist"
+    assert seen["tenant_id"] == _JOB.tenant_id
+    assert seen["agent_id"] == _JOB.agent_id
+    assert seen["job_id"] == _JOB.job_id
+    assert callable(seen["recorder"]), "a client with no recorder records nothing"
+
+
+def test_run_strategist_lands_one_ledger_row_in_the_jobs_tenant_database():
+    """End to end. Real factory, real SDK, real hook, real recorder, canned body."""
+    import httpx
+
+    from app.core.model_client import make_client as real_make_client
+
+    def spy(purpose, **kwargs):
+        # Everything the call site asked for, plus the transport this test needs.
+        return real_make_client(
+            purpose,
+            http_client=httpx.Client(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, json=_messages_response())
+                )
+            ),
+            **kwargs,
+        )
+
+    executed: list = []
+    cursor = MagicMock()
+    cursor.__enter__ = MagicMock(return_value=cursor)
+    cursor.__exit__ = MagicMock(return_value=False)
+    cursor.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+    connection = MagicMock()
+    connection.cursor.return_value = cursor
+
+    result_container: dict = {}
+    with patch("app.services.strategy_service.make_client", spy), patch(
+        "app.core.model_client.psycopg2.connect", return_value=connection
+    ) as connect:
+        run_strategist("{}", result_container, _JOB, TENANT_DSN)
+
+    assert result_container["strategy"]["vector_k"] == 15, (
+        "the Strategist's own output must still reach the caller"
+    )
+    assert connect.call_args[0][0] == TENANT_DSN, (
+        "the row belongs to the tenant database the task handed in"
+    )
+    assert len(executed) == 1, f"expected one INSERT, got {executed}"
+    sql, params = executed[0]
+    assert "model_calls" in sql
+    assert 1000 in params and 500 in params and 2000 in params and 300 in params
+    assert _JOB.tenant_id in params
+    assert _JOB.job_id in params
+    assert "retrieval_strategist" in params
