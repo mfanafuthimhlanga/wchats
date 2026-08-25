@@ -24,7 +24,7 @@ Context:
     placed in the wrong window prices at a fifth or at five times what it cost.
 
     THE IDS ARE TEXT, where `turn_metrics.agent_id` is UUID. Recording is fail open
-    by design: an insert that fails logs loudly and lets the model call succeed, so
+    by design. An insert that fails logs loudly and lets the model call succeed, so
     a column type that can refuse a value `ModelCall` accepts turns a recordable
     call into a silently lost row. `ModelCall` guarantees a non-empty string and
     nothing narrower, and these columns accept exactly that. `job_id` also matches

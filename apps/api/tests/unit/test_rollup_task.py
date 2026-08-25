@@ -4,6 +4,7 @@ The arithmetic is proved in test_usage_rollup.py against calls built in memory, 
 the live databases are exercised in tests/integration/test_usage_rollup_e2e.py. What
 is left, and what this file owns, is the task's own conduct.
 
+    the day it prices is the CAT calendar date, not the UTC one
     it carries no connection string in its arguments (project rule 1)
     it takes a day override and nothing else
     it fetches and decrypts inside the task, per tenant, at run time
@@ -29,12 +30,12 @@ import pytest
 from app.domain.usage_rollup import PriceGap, PurposeUsage
 from app.worker.celery_app import celery_app
 from app.worker.tasks.runtime import usage as task_module
-from app.worker.tasks.runtime.usage import day_window, rollup_model_calls
+from app.worker.tasks.runtime.usage import day_window, rollup_model_calls_beat
 
 TENANT_A = "11111111-1111-1111-1111-111111111111"
 TENANT_B = "22222222-2222-2222-2222-222222222222"
 
-TASK_NAME = "app.worker.tasks.runtime.usage.rollup_model_calls"
+TASK_NAME = "app.worker.tasks.runtime.usage.rollup_model_calls_beat"
 BEAT_NAME = "usage-rollup-daily"
 
 
@@ -81,7 +82,7 @@ def run_task(dsns: dict, calls_by_tenant, rows_by_tenant=None):
         patch.object(task_module, "roll_up", return_value=rows),
     ):
         db.return_value.__enter__.return_value = MagicMock()
-        summary = rollup_model_calls(day="2026-08-24")
+        summary = rollup_model_calls_beat(day="2026-08-24")
     return summary, writes
 
 
@@ -92,31 +93,32 @@ def run_task(dsns: dict, calls_by_tenant, rows_by_tenant=None):
 
 def test_the_task_takes_a_day_and_nothing_else():
     """Project rule 1: a task receives ids, never a connection string."""
-    names = set(inspect.signature(rollup_model_calls.run).parameters)
+    names = set(inspect.signature(rollup_model_calls_beat.run).parameters)
     assert names <= {"self", "day"}, (
-        f"rollup_model_calls takes {sorted(names)}. Anything beyond a day override "
+        f"rollup_model_calls_beat takes {sorted(names)}. Anything beyond a day override "
         "is a value the beat cannot supply and a credential the queue must not hold"
     )
 
 
 @pytest.mark.parametrize("forbidden", ["dsn", "conn", "url", "secret", "key"])
 def test_no_argument_could_ever_hold_a_credential(forbidden):
-    names = " ".join(inspect.signature(rollup_model_calls.run).parameters)
+    names = " ".join(inspect.signature(rollup_model_calls_beat.run).parameters)
     assert forbidden not in names.lower(), (
-        f"rollup_model_calls names an argument containing {forbidden!r}. Connection "
+        f"rollup_model_calls_beat names an argument containing {forbidden!r}. Connection "
         "strings are fetched and decrypted inside the task, never passed to it"
     )
 
 
-def test_no_day_means_yesterday_in_utc():
-    """The beat runs at 00:30 UTC, so the day that just closed is the one to price."""
+def test_no_day_means_the_cat_day_that_just_closed():
+    """The beat runs at 00:30 UTC, which is 02:30 CAT on the following morning."""
     day, _start, _end = day_window(None, now=datetime(2026, 8, 25, 0, 30, tzinfo=timezone.utc))
     assert day == date(2026, 8, 24)
 
 
-def test_yesterday_is_read_from_the_clock_not_from_the_hour_the_task_runs():
+def test_yesterday_is_read_in_cat_so_the_last_two_utc_hours_belong_to_the_next_day():
+    """23:59 UTC is already 01:59 CAT the next morning, so yesterday in CAT is the 25th."""
     day, _start, _end = day_window(None, now=datetime(2026, 8, 25, 23, 59, tzinfo=timezone.utc))
-    assert day == date(2026, 8, 24)
+    assert day == date(2026, 8, 25)
 
 
 def test_an_explicit_day_wins():
@@ -125,11 +127,35 @@ def test_an_explicit_day_wins():
     assert day == date(2026, 8, 20)
 
 
-def test_the_window_is_half_open_from_midnight_to_midnight():
-    """A call at exactly the next midnight belongs to the next day, not to both."""
-    _day, start, end = day_window("2026-08-20")
-    assert start == datetime(2026, 8, 20, 0, 0, tzinfo=timezone.utc)
-    assert end == datetime(2026, 8, 21, 0, 0, tzinfo=timezone.utc)
+def test_the_window_is_half_open_so_its_closing_instant_opens_the_next_day():
+    """A call at exactly the closing instant belongs to the next day, not to both."""
+    _day, _start, end = day_window("2026-08-20")
+    _next_day, next_start, _next_end = day_window("2026-08-21")
+    assert end == next_start
+
+
+def test_the_window_holds_one_cat_calendar_day():
+    """Decision #22: every report and rollup shows CAT, so the day is the CAT date.
+
+    CAT is UTC+2 and observes no daylight saving, so a CAT day opens at 22:00 UTC
+    the evening before and closes at 22:00 UTC on the day itself.
+    """
+    _day, start, end = day_window("2026-08-25")
+    assert start == datetime(2026, 8, 24, 22, 0, tzinfo=timezone.utc)
+    assert end == datetime(2026, 8, 25, 22, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize(
+    "at,day",
+    [
+        (datetime(2026, 8, 24, 21, 30, tzinfo=timezone.utc), "2026-08-24"),
+        (datetime(2026, 8, 24, 22, 30, tzinfo=timezone.utc), "2026-08-25"),
+    ],
+)
+def test_a_call_lands_in_the_cat_day_it_happened_on(at, day):
+    """21:30 UTC is 23:30 CAT the same evening. 22:30 UTC is 00:30 CAT the next morning."""
+    _day, start, end = day_window(day)
+    assert start <= at < end
 
 
 def test_a_day_that_is_not_a_date_is_refused():
@@ -262,7 +288,7 @@ def test_a_priced_purpose_logs_no_gap():
 
 
 def test_the_upsert_target_is_the_primary_key():
-    """This is the whole idempotency: a second run lands on the row the first wrote."""
+    """The whole idempotency. A second run lands on the row the first run wrote."""
     sql = " ".join(task_module.UPSERT_USAGE.split()).lower()
     assert "on conflict (tenant_id, purpose, day) do update" in sql, (
         "the upsert must conflict on the primary key, or a re-run appends a second "
@@ -316,16 +342,16 @@ def test_the_select_reads_a_half_open_window():
 
 
 def test_the_task_is_registered_under_its_module_path():
-    assert rollup_model_calls.name == TASK_NAME
+    assert rollup_model_calls_beat.name == TASK_NAME
 
 
 def test_the_task_acknowledges_late():
     """CLAUDE.md: acks_late AND idempotency, both, on every task."""
-    assert rollup_model_calls.acks_late is True
+    assert rollup_model_calls_beat.acks_late is True
 
 
 def test_the_task_runs_on_the_runtime_queue():
-    assert rollup_model_calls.queue == "runtime"
+    assert rollup_model_calls_beat.queue == "runtime"
 
 
 def test_the_worker_imports_the_task_module():

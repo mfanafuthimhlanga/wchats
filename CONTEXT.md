@@ -75,6 +75,12 @@ Creating and managing an Agent from outside the admin console, over the REST API
 MCP server.
 _Avoid_: A2A (a runtime protocol, out of scope), CLI (dropped).
 
+**Ledger**:
+The record of every model call a Tenant's Agent or the platform makes, with tokens, the
+requested and served model, and when. Money is derived from it at read time and never stored
+on a call.
+_Avoid_: usage log, billing table, telemetry.
+
 **Production ready**:
 Two Agents live on their deployed Vercel URLs: the Mellow Earth Elements Transactional Agent
 completing a real action through the Actor gate, and the Bantuson portfolio support Agent

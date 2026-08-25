@@ -37,7 +37,7 @@ WHAT THE SEEDED BOOK KNOWS AND WHAT IT REFUSES
     exactly that way.
 
     `deepseek-v4-pro` is the documented mapping for `claude-opus` and is
-    deliberately absent: its tariff has not been fetched, so a call that reaches it
+    deliberately absent. Its tariff has not been fetched, so a call that reaches it
     fails loudly rather than being priced from a guess.
 
     Cache creation takes the fresh input rate for its window. The fetched tariff
@@ -115,7 +115,7 @@ class UnknownPrice(LookupError):
     """The book prices no such provider, model or token kind.
 
     A LookupError, because a missing key is what it is. It is raised rather than
-    answered with zero: a zero would report a model call as free, which is the
+    answered with zero. A zero would report a model call as free, which is the
     failure this ticket exists to end.
     """
 

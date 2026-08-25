@@ -431,10 +431,12 @@ def test_the_seeded_fx_table_has_a_rate_a_date_and_a_named_source():
 
 
 def test_the_seeded_fx_table_prices_a_recent_call_in_rand():
-    """Whatever the seeded rate is, rand is usd times that rate, and the version names it."""
-    call = _call(PEAK_TUESDAY)
-    usd, _ = cost_usd(call)
-    zar, fx_version = cost_zar(call)
-    applied = max((r for r in FX_RATES if r.as_of <= date(2026, 8, 25)), key=lambda r: r.as_of)
-    assert zar == usd * applied.usd_zar
-    assert fx_version == f"usd_zar-{applied.as_of.isoformat()}"
+    """The same call the two tests above price at $0.484, in rand, by hand.
+
+    0.484 x 16.0237 = 7.7554708. Deriving the expected value from cost_usd would
+    compare the implementation against itself and stay green through a dropped
+    multiplication.
+    """
+    zar, fx_version = cost_zar(_call(PEAK_TUESDAY))
+    assert zar == Decimal("7.7554708")
+    assert fx_version == "usd_zar-2026-08-24"

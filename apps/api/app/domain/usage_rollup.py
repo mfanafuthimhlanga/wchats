@@ -31,11 +31,14 @@ THE DOLLARS AND THE RAND FAIL SEPARATELY
     while `cost_usd` and `price_version` stand, and `unrated_call_count` says how
     many calls the rand is missing. One gap never hides the other.
 
-WHY A VERSION COLUMN CAN NAME TWO BOOKS
-    A UTC day runs from 02:00 CAT to 02:00 CAT the next day, so it can straddle two
-    published rates. The version fields hold every version that priced the group,
-    comma separated and sorted, which is one value in the ordinary case. Naming
-    only one of two would attribute half the row to a book that never saw it.
+EACH VERSION COLUMN NAMES EXACTLY ONE VERSION
+    A group is one purpose on one CAT calendar day. `cost_usd` returns the version
+    of the single book it was passed, and `cost_zar` picks the fx rate by the
+    call's CAT date, which one CAT day fixes to one date. So both version fields
+    take a single name, and the row carries the book and the rate a reader can go
+    and check. An earlier draft joined a set of versions with commas to cover a
+    UTC day straddling 02:00 CAT to 02:00 CAT. The CAT day removed the straddle,
+    so the set went with it.
 
 Rung: `app.domain` imports the standard library, third-party packages and its
 domain siblings. `app.domain.model_call` and `app.domain.pricing` are siblings.
@@ -104,11 +107,6 @@ class PurposeUsage:
     unrated_call_count: int
 
 
-def _versions(names: set[str]) -> str | None:
-    """Every version that priced a group, sorted, or None when none did."""
-    return ",".join(sorted(names)) if names else None
-
-
 def _gaps(counted: Counter) -> tuple[PriceGap, ...]:
     """The refused (provider, model) pairs as records, in a stable order."""
     return tuple(
@@ -120,14 +118,17 @@ def _gaps(counted: Counter) -> tuple[PriceGap, ...]:
 def _money(calls: Sequence[ModelCall], book: PriceBook, rates: Sequence[FxRate]):
     """Price every call in one group and add the figures up.
 
+    Every call in the group prices against the one book and falls on the one CAT
+    date, so each pass round the loop re-reads the same two version names.
+
     Returns:
-        (usd, zar, price versions, fx versions, refused pairs, unrated call count).
+        (usd, zar, price version, fx version, refused pairs, unrated call count).
         The caller decides which of those figures a row is allowed to carry.
     """
     usd = Decimal(0)
     zar = Decimal(0)
-    price_versions: set[str] = set()
-    fx_versions: set[str] = set()
+    price_version = None
+    fx_version = None
     refused: Counter = Counter()
     unrated = 0
     for call in calls:
@@ -137,15 +138,13 @@ def _money(calls: Sequence[ModelCall], book: PriceBook, rates: Sequence[FxRate])
             refused[(call.provider, call.served_model)] += 1
             continue
         usd += call_usd
-        price_versions.add(price_version)
         try:
             call_zar, fx_version = cost_zar(call, book, rates)
         except UnknownFxRate:
             unrated += 1
             continue
         zar += call_zar
-        fx_versions.add(fx_version)
-    return usd, zar, price_versions, fx_versions, refused, unrated
+    return usd, zar, price_version, fx_version, refused, unrated
 
 
 def _usage_for(
@@ -154,8 +153,8 @@ def _usage_for(
     book: PriceBook,
     rates: Sequence[FxRate],
 ) -> PurposeUsage:
-    """One purpose's row: the counts always, the money only when it is whole."""
-    usd, zar, price_versions, fx_versions, refused, unrated = _money(calls, book, rates)
+    """One purpose's row. The counts always, the money only when it is whole."""
+    usd, zar, price_version, fx_version, refused, unrated = _money(calls, book, rates)
     priced = not refused
     rated = priced and not unrated
     tokens = {field: sum(getattr(call, field) for call in calls) for field in _TOKEN_FIELDS}
@@ -164,8 +163,8 @@ def _usage_for(
         call_count=len(calls),
         cost_usd=usd if priced else None,
         cost_zar=zar if rated else None,
-        price_version=_versions(price_versions) if priced else None,
-        fx_version=_versions(fx_versions) if rated else None,
+        price_version=price_version if priced else None,
+        fx_version=fx_version if rated else None,
         price_gaps=_gaps(refused),
         unrated_call_count=unrated,
         **tokens,
@@ -180,7 +179,7 @@ def roll_up(
     """A day of one tenant's calls, grouped by purpose and priced.
 
     Args:
-        calls: the day's ledger rows, in any order. The caller decides which day.
+        calls: one CAT day's ledger rows, in any order. The caller decides the day.
         book:  the tariff to price against. Passing a corrected book re-derives the
                day, which is what re-pricing at read time means for a rollup.
         rates: the dated usd_zar table.

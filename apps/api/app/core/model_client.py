@@ -21,7 +21,7 @@ RECORDING FAILURE IS FAIL OPEN
     A ledger insert that fails logs one structured event naming the purpose and
     the tenant, and the model call itself succeeds anyway. A customer turn does
     not die because telemetry could not be written. That is a deliberate trade,
-    not an oversight, and it means a quiet ledger is a real failure mode: the
+    not an oversight, and it means a quiet ledger is a real failure mode. The
     `model_ledger.record_failed` event is the only thing that says so, so anything
     reading these rows must treat a gap as unknown rather than as zero spend.
 
@@ -29,7 +29,17 @@ WHICH MODEL RAN
     `served_model_for` answers it. A body naming a model other than the requested
     alias is `reported`, because the provider said so. A body echoing the alias
     falls back to the provider's published mapping and is `mapped_by_docs`, which
-    carries less confidence and is labelled so a report can separate the two.
+    carries less confidence and is labelled so a report can separate the two. A
+    body carrying no `model` field is `unreported`, and served_model holds the
+    requested name. Reading the mapping there would attribute a served name to a
+    provider that named nothing, and the row would read as documented fact.
+
+A STREAM LEAVES A GAP, AND THE GAP SAYS SO
+    A streamed body belongs to the caller, so this hook never reads one and never
+    records the tokens it spent. `model_ledger.stream_skipped` names the purpose
+    and the requested model at every skip, which turns a silent hole in a tenant's
+    day into a line somebody can count. Parsing the stream belongs to the
+    owned-loop ticket. Until it lands, this event is what makes the hole countable.
 
 Rung: `app.core` imports the standard library, third-party packages and
 `app.domain`. It imports no sibling of its own rung.
@@ -43,6 +53,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Protocol
 from urllib.parse import urlparse
 
 import anthropic
@@ -57,6 +68,28 @@ log = structlog.get_logger(__name__)
 
 Recorder = Callable[[ModelCall], None]
 Clock = Callable[[], datetime]
+
+
+class LedgerCursor(Protocol):
+    """One statement, inside a `with`. What psycopg2 hands back from `cursor()`."""
+
+    def execute(self, sql: str, params: tuple) -> object: ...
+
+    def __enter__(self) -> LedgerCursor: ...
+
+    def __exit__(self, *exc: object) -> object: ...
+
+
+class LedgerConnection(Protocol):
+    """The whole of what the ledger asks of an already open connection.
+
+    A psycopg2 connection satisfies it and so does a test double, which is the
+    point of naming it rather than typing the parameter `object`. Commit and close
+    are absent on purpose. The caller that opened the connection still owns both.
+    """
+
+    def cursor(self) -> LedgerCursor: ...
+
 
 # The alias families DeepSeek's published mapping covers, longest prefix first so
 # a future `claude-haiku-5` alias cannot match a shorter entry by accident.
@@ -176,14 +209,18 @@ def served_model_for(
         reported_model:  the `model` field of the response body, if it had one.
 
     Returns:
-        (served model name, ModelSource).
+        (served model name, ModelSource). A body that named no model yields the
+        requested name and UNREPORTED, because the published mapping answers an
+        echoed alias and an absent field echoes nothing.
     """
-    if reported_model and reported_model != requested_model:
+    if not reported_model:
+        return requested_model, ModelSource.UNREPORTED
+    if reported_model != requested_model:
         return reported_model, ModelSource.REPORTED
     for prefix, served in PROVIDER_MODEL_MAP.get(provider, ()):
         if requested_model.startswith(prefix):
             return served, ModelSource.MAPPED_BY_DOCS
-    return reported_model or requested_model, ModelSource.REPORTED
+    return reported_model, ModelSource.REPORTED
 
 
 def model_call_from_bodies(
@@ -220,15 +257,18 @@ def model_call_from_bodies(
     )
 
 
-def _skip(response: httpx.Response) -> bool:
-    """A response the hook must not read.
-
-    An error spent no tokens worth billing. A streamed body belongs to the caller,
-    and reading it here would consume the caller's stream.
-    """
-    if response.status_code >= 400:
-        return True
+def _is_streamed(response: httpx.Response) -> bool:
+    """A body the hook must leave alone, because reading it consumes the caller's stream."""
     return _STREAMING_CONTENT_TYPE in response.headers.get("content-type", "")
+
+
+def _requested_model(request: httpx.Request) -> str:
+    """The alias a request asked for, read off the bytes the SDK sent."""
+    try:
+        body = json.loads(request.content or b"{}")
+    except ValueError:
+        return ""
+    return str(body.get("model") or "") if isinstance(body, dict) else ""
 
 
 def attach_ledger_hook(
@@ -252,7 +292,18 @@ def attach_ledger_hook(
 
     def on_response(response: httpx.Response) -> None:
         try:
-            if _skip(response):
+            # An error response spent no tokens worth billing, and says nothing.
+            if response.status_code >= 400:
+                return
+            if _is_streamed(response):
+                log.warning(
+                    "model_ledger.stream_skipped",
+                    purpose=context.purpose,
+                    requested_model=_requested_model(response.request),
+                    tenant_id=context.tenant_id,
+                    agent_id=context.agent_id,
+                    job_id=context.job_id,
+                )
                 return
             response.read()
             call = model_call_from_bodies(
@@ -330,7 +381,7 @@ def make_client(
     )
 
 
-def record_model_call(call: ModelCall, target: str | object) -> None:
+def record_model_call(call: ModelCall, target: str | LedgerConnection) -> None:
     """Write one row to the tenant's `model_calls` table (tenant migration 0019).
 
     Args:
@@ -342,7 +393,7 @@ def record_model_call(call: ModelCall, target: str | object) -> None:
     """
     params = (str(uuid.uuid4()), *(_value(call, name) for name in _COLUMNS))
     if not isinstance(target, str):
-        with target.cursor() as cur:  # type: ignore[attr-defined]
+        with target.cursor() as cur:
             cur.execute(_INSERT, params)
         return
     conn = psycopg2.connect(target, connect_timeout=settings.TENANT_DB_CONNECT_TIMEOUT_S)
@@ -360,7 +411,7 @@ def _value(call: ModelCall, name: str) -> object:
     return value.value if isinstance(value, ModelSource) else value
 
 
-def ledger_recorder(target: str | object) -> Recorder:
+def ledger_recorder(target: str | LedgerConnection) -> Recorder:
     """A recorder bound to one tenant database, ready to hand to `make_client`."""
 
     def record(call: ModelCall) -> None:

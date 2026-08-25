@@ -8,6 +8,12 @@ WHAT THE HOOK HAS TO SURVIVE
     two ways. `attach_ledger_hook` runs against a bare `httpx.Client` that this
     module never constructed, and `make_client` runs through the real anthropic SDK.
 
+WHAT AN ABSENT `model` FIELD BECOMES
+    `unreported`, and served_model carries the requested alias. `reported` would
+    credit the provider with a name it never sent, and `mapped_by_docs` would read
+    the published mapping for a body that echoed nothing, so both invent a
+    provenance. The tests below drive both providers through that case.
+
 WHY A MOCK TRANSPORT AND NOT A MOCK CLIENT
     A stubbed `messages.create` proves the call site calls it. It proves nothing
     about the bytes a provider sends back, which is where `usage` and `model` live.
@@ -87,7 +93,7 @@ def _transport(body: dict, status: int = 200, headers: dict | None = None):
     return httpx.MockTransport(handler)
 
 
-def _hooked_client(recorder, body: dict, requested: str = "claude-sonnet-4-6", **kwargs):
+def _hooked_client(recorder, body: dict, **kwargs):
     """A bare httpx client this module did not construct, with the hook bolted on."""
     client = httpx.Client(transport=_transport(body, **kwargs))
     attach_ledger_hook(
@@ -197,10 +203,17 @@ class TestServedModel:
         assert served == "claude-haiku-4-5"
         assert source is ModelSource.REPORTED
 
-    def test_a_body_with_no_model_falls_back_to_the_alias(self):
+    def test_an_anthropic_body_that_named_no_model_is_unreported(self):
+        """The provider echoed nothing, so `reported` would name a fact nobody stated."""
         served, source = served_model_for("anthropic", "claude-haiku-4-5", None)
         assert served == "claude-haiku-4-5"
-        assert source is ModelSource.REPORTED
+        assert source is ModelSource.UNREPORTED
+
+    def test_a_deepseek_body_that_named_no_model_is_unreported(self):
+        """The mapping answers an echoed alias. An absent field echoes nothing."""
+        served, source = served_model_for("deepseek", "claude-haiku-4-5", None)
+        assert served == "claude-haiku-4-5"
+        assert source is ModelSource.UNREPORTED
 
     def test_the_hook_puts_the_source_on_the_row(self):
         recorded = []
@@ -266,6 +279,40 @@ class TestTheHookStaysQuiet:
 
         assert recorded == []
         assert b"message_start" in b"".join(chunks)
+
+    def test_a_streamed_response_logs_the_ledger_gap_it_leaves(self):
+        """A stream spends tokens the ledger never sees, so the skip has to be findable."""
+        client = httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    content=b"event: message_start\ndata: {}\n\n",
+                    headers={"content-type": "text/event-stream"},
+                )
+            )
+        )
+        attach_ledger_hook(
+            client, _context(), provider="deepseek", recorder=lambda call: None, clock=lambda: AT
+        )
+
+        with structlog.testing.capture_logs() as logs:
+            with client.stream(
+                "POST",
+                "https://provider.example/v1/messages",
+                json={"model": "claude-haiku-4-5", "stream": True, "messages": []},
+            ) as response:
+                list(response.iter_bytes())
+
+        skipped = [entry for entry in logs if entry["event"] == "model_ledger.stream_skipped"]
+        assert len(skipped) == 1, f"expected one event naming the skipped stream, got {logs}"
+        assert skipped[0]["purpose"] == "retrieval_strategist"
+        assert skipped[0]["requested_model"] == "claude-haiku-4-5"
+
+    def test_an_unstreamed_response_logs_no_stream_skip(self):
+        with structlog.testing.capture_logs() as logs:
+            _post(_hooked_client(lambda call: None, _body()))
+
+        assert [entry for entry in logs if entry["event"] == "model_ledger.stream_skipped"] == []
 
 
 # ---------------------------------------------------------------------------

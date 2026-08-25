@@ -3,7 +3,7 @@
 WHY THIS RECORD EXISTS
     Twelve call sites in `apps/api/app` build a client and read the text back.
     None of them reads `usage` or `model`, so the first Harness run could not be
-    priced: `config.model_id` held the Anthropic alias, and `turn_metrics.cost_usd`
+    priced. `config.model_id` held the Anthropic alias, and `turn_metrics.cost_usd`
     carried the CLI's Anthropic-book figure for calls that DeepSeek served.
 
     One call yields one of these. The tokens are the fact the provider reported.
@@ -25,12 +25,20 @@ WHY CONSTRUCTION IS LOUD
     CAT conversion always starts from a known offset. The column is `timestamptz`.
 
 WHY model_source IS AN ENUM AND NOT A FLAG
-    `reported` means the response named the model that ran. `mapped_by_docs` means
-    the response echoed the requested alias and the provider's published mapping
-    supplied the served name (DeepSeek maps `claude-haiku` and `claude-sonnet` to
-    `deepseek-v4-flash`, `claude-opus` to `deepseek-v4-pro`). The two carry
-    different confidence, and a report that mixes them without saying which is
-    which cannot be audited.
+    Three states, each a different confidence in the served name.
+
+        reported        the response named the model that ran
+        mapped_by_docs  the response echoed the requested alias, and the provider's
+                        published mapping supplied the served name (DeepSeek maps
+                        `claude-haiku` and `claude-sonnet` to `deepseek-v4-flash`,
+                        `claude-opus` to `deepseek-v4-pro`)
+        unreported      the response carried no `model` field at all, so
+                        served_model holds the requested name and no provider ever
+                        stated it
+
+    A report that mixes the three without saying which is which cannot be audited.
+    `unreported` exists because both other labels would credit a provenance the
+    silent body never gave.
 
 WHAT IS NOT HERE
     No connection string, and no field that could hold one (project rule 1). No
@@ -58,10 +66,13 @@ class ModelSource(StrEnum):
     REPORTED:       the provider's response named it.
     MAPPED_BY_DOCS: the response echoed the requested alias, and the provider's
                     published mapping named it.
+    UNREPORTED:     the response named no model, so served_model carries the
+                    requested name and no provider stated what ran.
     """
 
     REPORTED = "reported"
     MAPPED_BY_DOCS = "mapped_by_docs"
+    UNREPORTED = "unreported"
 
 
 class InvalidModelCall(ValueError):

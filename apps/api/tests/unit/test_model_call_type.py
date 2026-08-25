@@ -21,12 +21,14 @@ WHAT THESE TESTS PIN
     to start from.
 
 WHY model_source EXISTS
-    DeepSeek answers a `claude-haiku` request with its own model, and some
-    responses echo the alias back instead of naming what ran. `reported` marks a
-    served model the response named. `mapped_by_docs` marks one the published
-    mapping supplied. A report that mixes the two without saying so cannot be
-    audited, and `turn_metrics.cost_usd` priced DeepSeek calls against
-    Anthropic's book for exactly that reason.
+    DeepSeek answers a `claude-haiku` request with its own model, some responses
+    echo the alias back instead of naming what ran, and some name nothing at all.
+    `reported` marks a served model the response named. `mapped_by_docs` marks one
+    the published mapping supplied. `unreported` marks a body that named no model,
+    where served_model falls back to the requested alias and no provider stated it.
+    A report that mixes the three without saying so cannot be audited, and
+    `turn_metrics.cost_usd` priced DeepSeek calls against Anthropic's book for
+    exactly that reason.
 """
 
 import base64
@@ -131,12 +133,18 @@ def test_no_field_could_hold_a_connection_string():
 
 
 # ---------------------------------------------------------------------------
-# model_source, the two ways a served model arrives
+# model_source, the three ways a served model arrives
 # ---------------------------------------------------------------------------
 
 
-def test_model_source_has_exactly_the_two_decided_members():
-    assert [m.value for m in ModelSource] == ["reported", "mapped_by_docs"]
+def test_model_source_has_exactly_the_three_members_the_hook_can_produce():
+    """Two were decided in #22. `unreported` was added when a silent body forced it."""
+    assert [m.value for m in ModelSource] == ["reported", "mapped_by_docs", "unreported"]
+
+
+def test_a_body_that_named_no_model_is_recorded_as_unreported():
+    """The third state. The alias stands in for a name the provider never sent."""
+    assert _call(model_source="unreported").model_source is ModelSource.UNREPORTED
 
 
 def test_a_source_string_is_coerced_to_the_enum():

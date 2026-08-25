@@ -1,4 +1,4 @@
-"""rollup_model_calls end to end, against the two LOCAL databases (ticket #46, issue #22).
+"""rollup_model_calls_beat end to end, against the two LOCAL databases (#46, issue #22).
 
     INTEGRATION_TESTS_ENABLED=1 .venv/Scripts/python.exe -m pytest \
         tests/integration/test_usage_rollup_e2e.py -q -s
@@ -12,11 +12,16 @@ WHAT IT PROVES THAT THE UNIT TESTS CANNOT
     to the first run's, which is the idempotency claim actually observed rather
     than asserted.
 
+    One test starts a step earlier. `make_client` sends a real request through a
+    fake transport, the response hook parses the canned body, and the row is read
+    back off the probe database, so the whole path from provider bytes to disk is
+    observed once rather than in two halves that were only ever tested apart.
+
 WHICH DATABASES
     The tenant ledger is `wchats_tenant_probe` and the control table is
     `wchats_control`, both on the local disposable cluster documented in CLAUDE.md.
     `CONTROL_DB_URL` in `.env` points at live Neon production and is never read
-    here: tests/integration/conftest.py overrides both control URLs to the local
+    here. tests/integration/conftest.py overrides both control URLs to the local
     cluster before any app module is imported.
 
 WHY THE FAN-OUT IS NARROWED TO THE SEEDED TENANT
@@ -58,12 +63,13 @@ CONTROL_DSN = os.getenv(
     "TEST_CONTROL_DSN", "postgresql://wchats:wchats@localhost:5432/wchats_control"
 )
 
-#: 2026-08-25 is a Tuesday. 08:00 UTC is 10:00 CAT, inside the second peak window,
-#: and 18:00 UTC is 20:00 CAT, off peak.
+#: The CAT calendar date the rollup prices, so its window is 2026-08-24 22:00 UTC
+#: through 2026-08-25 22:00 UTC. 2026-08-25 is a Tuesday. 08:00 UTC is 10:00 CAT,
+#: inside the second peak window, and 18:00 UTC is 20:00 CAT, off peak.
 DAY = "2026-08-25"
 PEAK = datetime(2026, 8, 25, 8, 0, tzinfo=timezone.utc)
 OFF_PEAK = datetime(2026, 8, 25, 18, 0, tzinfo=timezone.utc)
-#: The next day. Its call must not reach the row for DAY.
+#: The next CAT day. Its call must not reach the row for DAY.
 NEXT_DAY = datetime(2026, 8, 26, 8, 0, tzinfo=timezone.utc)
 
 MILLION = 1_000_000
@@ -147,7 +153,8 @@ def read_usage(tenant_id: str) -> list[tuple]:
         conn.close()
 
 
-def clean_up(tenant_id: str, agent_id: str) -> None:
+def clean_up(tenant_id: str) -> None:
+    """Delete every row the test wrote. The agent goes with its tenant id."""
     for dsn, statements in (
         (PROBE_DSN, ["DELETE FROM model_calls WHERE tenant_id = %s"]),
         (
@@ -167,7 +174,82 @@ def clean_up(tenant_id: str, agent_id: str) -> None:
             conn.commit()
         finally:
             conn.close()
-    assert agent_id  # deleted by tenant_id above; named so the caller reads it
+
+
+def read_ledger(tenant_id: str) -> list[tuple]:
+    """Every model_calls row this tenant has, as the factory left it."""
+    conn = psycopg2.connect(PROBE_DSN, connect_timeout=10)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT input_tokens, output_tokens, cache_read_tokens, "
+                "cache_creation_tokens, requested_model, served_model, model_source "
+                "FROM model_calls WHERE tenant_id = %s",
+                (tenant_id,),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def test_the_factory_writes_a_canned_provider_body_into_the_probe_database():
+    """make_client with a fake transport, and the real record_model_call, in one pass.
+
+    Every other test in this file seeds the ledger by calling `record_model_call`
+    itself, so the hop from a provider's bytes to a row on disk was never observed
+    end to end. Here the SDK sends a real request through `httpx.MockTransport`,
+    the response hook reads the canned body, and the row is read back off the probe
+    database rather than off a recorder list.
+    """
+    import httpx
+
+    from app.core.model_client import Credentials, ledger_recorder, make_client
+
+    tenant_id = str(uuid.uuid4())
+    body = {
+        "id": "msg_01",
+        "type": "message",
+        "role": "assistant",
+        "model": "deepseek-v4-flash",
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "cache_read_input_tokens": 2000,
+            "cache_creation_input_tokens": 300,
+        },
+    }
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+    try:
+        client = make_client(
+            "judge",
+            tenant_id=tenant_id,
+            recorder=ledger_recorder(PROBE_DSN),
+            provider="deepseek",
+            credentials=Credentials(api_key="test-key", base_url="https://provider.example"),
+            http_client=httpx.Client(transport=transport),
+            clock=lambda: PEAK,
+        )
+        client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=64,
+            messages=[{"role": "user", "content": "hello"}],
+        )
+
+        rows = read_ledger(tenant_id)
+        print("\nledger row:", rows)
+        assert rows == [
+            (1000, 500, 2000, 300, "claude-haiku-4-5", "deepseek-v4-flash", "reported")
+        ]
+    finally:
+        conn = psycopg2.connect(PROBE_DSN, connect_timeout=10)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM model_calls WHERE tenant_id = %s", (tenant_id,))
+            conn.commit()
+        finally:
+            conn.close()
 
 
 def test_a_day_of_ledger_rows_becomes_priced_usage_rows_and_a_re_run_changes_nothing():
@@ -191,9 +273,9 @@ def test_a_day_of_ledger_rows_becomes_priced_usage_rows_and_a_re_run_changes_not
 
         seeded_only = {tenant_id: found[tenant_id]}
         with patch.object(task_module, "tenant_dsn_ciphertexts", return_value=seeded_only):
-            first_summary = task_module.rollup_model_calls(day=DAY)
+            first_summary = task_module.rollup_model_calls_beat(day=DAY)
             first = read_usage(tenant_id)
-            second_summary = task_module.rollup_model_calls(day=DAY)
+            second_summary = task_module.rollup_model_calls_beat(day=DAY)
             second = read_usage(tenant_id)
 
         print("\nrun 1 summary:", first_summary)
@@ -229,7 +311,7 @@ def test_a_day_of_ledger_rows_becomes_priced_usage_rows_and_a_re_run_changes_not
         assert second_summary == first_summary
         assert second == first, "the second run changed the rows the first run wrote"
     finally:
-        clean_up(tenant_id, agent_id)
+        clean_up(tenant_id)
 
 
 def test_the_day_the_task_is_asked_for_is_the_only_day_it_prices():
@@ -247,7 +329,7 @@ def test_the_day_the_task_is_asked_for_is_the_only_day_it_prices():
         with get_sync_db() as db:
             seeded_only = {tenant_id: task_module.tenant_dsn_ciphertexts(db)[tenant_id]}
         with patch.object(task_module, "tenant_dsn_ciphertexts", return_value=seeded_only):
-            task_module.rollup_model_calls(day="2026-08-26")
+            task_module.rollup_model_calls_beat(day="2026-08-26")
 
         conn = psycopg2.connect(CONTROL_DSN, connect_timeout=10)
         try:
@@ -264,4 +346,4 @@ def test_the_day_the_task_is_asked_for_is_the_only_day_it_prices():
         print("\n2026-08-26 rows:", rows)
         assert rows == [(date(2026, 8, 26), "judge", 5 * MILLION, Decimal("2.2"))]
     finally:
-        clean_up(tenant_id, agent_id)
+        clean_up(tenant_id)

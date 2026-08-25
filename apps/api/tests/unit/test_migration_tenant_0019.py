@@ -163,7 +163,7 @@ def test_0019_is_the_tenant_head():
     """Head IDENTITY, moved here from test_migration_tenant_0018.py.
 
     That file carried this assertion with a docstring saying 0019 would move this
-    line and only this line, and it caught 0019 landing: the battery went red on
+    line and only this line, and it caught 0019 landing. The battery went red on
     the 0018 head assertion the first time this migration existed. Moving it is
     the instruction the test itself gives, and it is not the same as deleting it.
     Relaxing it to `len(heads) == 1` would leave nothing asserting which revision

@@ -4,7 +4,7 @@ The rollup task owns databases. This module owns the arithmetic, so every rule t
 table encodes is proved here against calls built in memory, with no connection
 anywhere and every figure hand computed from the seeded price book.
 
-THE FOUR RULES UNDER TEST
+THE FIVE RULES UNDER TEST
     1. Tokens and calls sum per purpose, and the purposes come out sorted so two
        runs write the same rows in the same order.
     2. Money is summed PER CALL, never derived from the summed tokens. The price
@@ -16,6 +16,9 @@ THE FOUR RULES UNDER TEST
     4. A call with no fx rate on or before its CAT date loses the rand and keeps
        the dollars. The two figures fail independently, so one gap never hides the
        other.
+    5. Each version column names exactly one version. A group is one purpose on one
+       CAT day, priced against one book, so there is nothing for a second name to
+       come from.
 
 WHERE THE EXPECTED FIGURES COME FROM
     PRICE_BOOK 2026-08-23.1, DeepSeek V4 Flash. Peak input is $0.44 per million and
@@ -42,7 +45,8 @@ TENANT = "11111111-1111-1111-1111-111111111111"
 PEAK = datetime(2026, 8, 25, 8, 0, tzinfo=timezone.utc)
 #: 20:00 CAT on the same day. Outside every peak window.
 OFF_PEAK = datetime(2026, 8, 25, 18, 0, tzinfo=timezone.utc)
-#: 01:00 CAT on 2026-08-26, the tail of the same UTC day in a later CAT date.
+#: 01:00 CAT on 2026-08-26. The same UTC day, and a CAT day the rollup never mixes
+#: with the one above, which is what makes a single fx version right.
 NEXT_CAT_DAY = datetime(2026, 8, 25, 23, 0, tzinfo=timezone.utc)
 
 MILLION = 1_000_000
@@ -53,6 +57,7 @@ def call(
     *,
     at: datetime = PEAK,
     served_model: str = "deepseek-v4-flash",
+    model_source: str = "mapped_by_docs",
     provider: str = "deepseek",
     input_tokens: int = 0,
     output_tokens: int = 0,
@@ -65,7 +70,7 @@ def call(
         provider=provider,
         requested_model="claude-haiku-4-5",
         served_model=served_model,
-        model_source="mapped_by_docs",
+        model_source=model_source,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_read_tokens=cache_read_tokens,
@@ -190,10 +195,12 @@ def test_every_figure_names_the_book_and_the_rate_that_produced_it():
     assert usage["judge"].fx_version == "usd_zar-2026-08-24"
 
 
-def test_a_group_priced_by_two_fx_rows_names_both():
-    """A UTC day runs from 02:00 CAT to 02:00 CAT, so it can straddle two rates.
+def test_a_cat_day_names_one_fx_version_even_when_the_table_holds_a_later_rate():
+    """The rate is picked by the call's CAT date, and a group holds one CAT date.
 
-    Recording only one of them would name a book that did not price half the row.
+    The 26th's rate sits in the table and prices nothing here, because every call
+    in this group happened on the 25th in CAT. A comma-joined pair of versions used
+    to be possible when a group was a UTC day spanning 02:00 CAT to 02:00 CAT.
     """
     rates = (
         FxRate(usd_zar=Decimal("16.0237"), as_of=date(2026, 8, 25), source="test"),
@@ -203,15 +210,43 @@ def test_a_group_priced_by_two_fx_rows_names_both():
         roll_up(
             [
                 call("judge", at=PEAK, input_tokens=MILLION),
-                call("judge", at=NEXT_CAT_DAY, input_tokens=MILLION),
+                call("judge", at=OFF_PEAK, output_tokens=MILLION),
             ],
             rates=rates,
         )
     )
     row = usage["judge"]
-    assert row.fx_version == "usd_zar-2026-08-25,usd_zar-2026-08-26"
-    # 0.44 at 16.0237 plus 0.088 off peak at 17.0000.
-    assert row.cost_zar == Decimal("0.44") * Decimal("16.0237") + Decimal("0.088") * 17
+    assert row.fx_version == "usd_zar-2026-08-25"
+    # 0.44 peak input plus 0.264 off-peak output, all at 16.0237.
+    assert row.cost_zar == Decimal("0.704") * Decimal("16.0237")
+
+
+def test_the_later_cat_day_is_priced_by_the_later_rate_when_it_is_asked_for():
+    """The other half of the pair above. The task hands each CAT day over on its own."""
+    rates = (
+        FxRate(usd_zar=Decimal("16.0237"), as_of=date(2026, 8, 25), source="test"),
+        FxRate(usd_zar=Decimal("17.0000"), as_of=date(2026, 8, 26), source="test"),
+    )
+    usage = by_purpose(
+        roll_up([call("judge", at=NEXT_CAT_DAY, input_tokens=MILLION)], rates=rates)
+    )
+    row = usage["judge"]
+    assert row.fx_version == "usd_zar-2026-08-26"
+    # 01:00 CAT is off peak, so 0.088, at 17.0000.
+    assert row.cost_zar == Decimal("0.088") * 17
+
+
+def test_one_book_gives_one_price_version_however_many_windows_a_group_spans():
+    """The hours move the rate. They never move the version, which is the book's."""
+    usage = by_purpose(
+        roll_up(
+            [
+                call("judge", at=PEAK, input_tokens=MILLION),
+                call("judge", at=OFF_PEAK, output_tokens=MILLION),
+            ]
+        )
+    )
+    assert usage["judge"].price_version == "2026-08-23.1"
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +298,34 @@ def test_the_gap_names_the_provider_the_model_and_how_many_calls():
     )
     (gap,) = usage["judge"].price_gaps
     assert (gap.provider, gap.served_model, gap.call_count) == ("deepseek", "deepseek-v4-pro", 2)
+
+
+def test_an_unreported_model_leaves_the_group_money_null_and_names_the_gap():
+    """A response that named no model puts the requested alias in served_model.
+
+    The book prices no `claude-haiku-4-5` from deepseek, so the group keeps its
+    tokens and its count, its money goes to None, and the gap names the alias.
+    """
+    usage = by_purpose(
+        roll_up(
+            [
+                call(
+                    "judge",
+                    at=PEAK,
+                    served_model="claude-haiku-4-5",
+                    model_source="unreported",
+                    input_tokens=MILLION,
+                )
+            ]
+        )
+    )
+    row = usage["judge"]
+    assert row.cost_usd is None
+    assert row.cost_zar is None
+    assert row.input_tokens == MILLION
+    assert row.call_count == 1
+    (gap,) = row.price_gaps
+    assert (gap.provider, gap.served_model, gap.call_count) == ("deepseek", "claude-haiku-4-5", 1)
 
 
 def test_a_priced_group_reports_no_gap():

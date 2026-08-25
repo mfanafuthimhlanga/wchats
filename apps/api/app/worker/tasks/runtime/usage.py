@@ -1,16 +1,24 @@
-"""rollup_model_calls: yesterday's ledger, priced, into tenant_usage_daily (ticket #46).
+"""rollup_model_calls_beat: yesterday's ledger, priced, into tenant_usage_daily (#46).
 
 WHAT IT DOES
     Once a day, for every tenant that has a provisioned database, it reads that
-    tenant's `model_calls` rows for one UTC day, prices each call through
+    tenant's `model_calls` rows for one CAT day, prices each call through
     `app.domain.pricing`, and upserts one row per (tenant, purpose, day) into the
     control table `tenant_usage_daily` (control migration 0020). The ledger keeps
     the tokens, which are the fact. This table carries the money, which is a
     reading of that fact against a versioned book.
 
+THE DAY IS A CAT CALENDAR DATE
+    Decision #22 puts CAT on every report and every rollup, so `day` names the
+    South African calendar date a tenant recognises, never the UTC one. CAT is
+    UTC+2 and observes no daylight saving, so the date maps to a fixed window that
+    opens at 22:00 UTC the evening before and closes at 22:00 UTC on the date
+    itself. The beat fires at 00:30 UTC, two and a half hours after the day it
+    prices closed.
+
 ACKS_LATE AND IDEMPOTENCY, BOTH
     `acks_late=True` means a worker that dies mid-rollup gets the message back.
-    The idempotency that makes redelivery safe is the upsert: the primary key is
+    The idempotency that makes redelivery safe is the upsert. The primary key is
     (tenant_id, purpose, day), so a second run for the same day lands on the row
     the first run wrote and overwrites it with the same values. Running it twice
     yields the same rows, and re-running it against a corrected price book is how
@@ -50,6 +58,7 @@ from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt
 from app.domain.model_call import ModelCall
+from app.domain.pricing import CAT
 from app.domain.usage_rollup import PurposeUsage, roll_up
 from app.models.agent import Agent
 from app.worker.celery_app import celery_app
@@ -75,8 +84,8 @@ LEDGER_COLUMNS = (
     "job_id",
 )
 
-#: Half open on purpose. A call at exactly midnight belongs to the day that opens,
-#: never to both days.
+#: Half open on purpose. A call at exactly midnight CAT belongs to the day that
+#: opens, never to both days.
 SELECT_CALLS = (
     "SELECT " + ", ".join(LEDGER_COLUMNS) + " FROM model_calls WHERE at >= %s AND at < %s"
 )
@@ -107,15 +116,20 @@ UPSERT_USAGE = """
 
 
 def day_window(day: str | None, now: datetime | None = None) -> tuple[date, datetime, datetime]:
-    """The day to price, and the half-open UTC window that holds it.
+    """The CAT date to price, and the half-open UTC window that holds it.
+
+    "Yesterday" is read in CAT as well, so the 00:30 UTC beat prices the CAT date
+    that closed at 22:00 UTC two and a half hours earlier, not the UTC date that
+    closed thirty minutes earlier.
 
     Args:
-        day: an ISO date to re-derive, or None for the day that just closed.
+        day: an ISO CAT date to re-derive, or None for the CAT day that just closed.
         now: the instant "yesterday" is measured from. Injected so a test does not
              depend on the wall clock.
 
     Returns:
-        (the day, its opening midnight UTC, the next midnight UTC).
+        (the CAT date, its opening instant in UTC, the next one). A CAT date opens
+        at 22:00 UTC on the evening before it.
 
     Raises:
         ValueError: `day` is not an ISO date. A rollup for an unparseable day would
@@ -124,8 +138,8 @@ def day_window(day: str | None, now: datetime | None = None) -> tuple[date, date
     if day is not None:
         on = date.fromisoformat(day)
     else:
-        on = ((now or datetime.now(timezone.utc)).astimezone(timezone.utc) - timedelta(days=1)).date()
-    start = datetime(on.year, on.month, on.day, tzinfo=timezone.utc)
+        on = ((now or datetime.now(timezone.utc)).astimezone(CAT) - timedelta(days=1)).date()
+    start = datetime(on.year, on.month, on.day, tzinfo=CAT).astimezone(timezone.utc)
     return on, start, start + timedelta(days=1)
 
 
@@ -225,17 +239,24 @@ def log_gaps(tenant_id: str, on: date, row: PurposeUsage) -> None:
 @celery_app.task(
     bind=True,
     acks_late=True,
-    max_retries=1,
-    default_retry_delay=60,
     queue="runtime",
-    name="app.worker.tasks.runtime.usage.rollup_model_calls",
+    name="app.worker.tasks.runtime.usage.rollup_model_calls_beat",
 )
-def rollup_model_calls(self, day: str | None = None) -> dict:
-    """Price one day of every tenant's model calls into tenant_usage_daily.
+def rollup_model_calls_beat(self, day: str | None = None) -> dict:
+    """Price one CAT day of every tenant's model calls into tenant_usage_daily.
+
+    NOTHING HERE RETRIES, AND A LOST DAY IS STILL RECOVERABLE
+        The upsert lands on the (tenant, purpose, day) primary key, so running the
+        task again for a day overwrites the rows it wrote before. That is what
+        makes recovery cheap and a retry policy redundant. `acks_late=True` puts
+        the message back on the queue when a worker dies, and a redelivered run
+        reads the clock afresh, so it re-derives the same CAT date any time before
+        midnight CAT. After that the `day` override re-derives a named day by hand,
+        which is the path a corrected price book takes anyway.
 
     Args:
-        day: an ISO date to re-derive, or None for yesterday in UTC. This is the
-             only argument. Connection strings are fetched and decrypted inside
+        day: an ISO CAT date to re-derive, or None for yesterday in CAT. This is
+             the only argument. Connection strings are fetched and decrypted inside
              this task (project rule 1).
 
     Returns:

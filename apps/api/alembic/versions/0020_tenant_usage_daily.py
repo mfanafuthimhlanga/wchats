@@ -15,15 +15,23 @@ Context:
     by `app.domain.pricing` and stamped with the versions that produced it, so a
     report can say which tariff and which rand rate a figure came from.
 
+    `day` IS A CAT CALENDAR DATE. Decision #22 puts CAT on every report and every
+    rollup, so this column holds the South African date a tenant recognises, never
+    the UTC one. CAT is UTC+2 with no daylight saving, so the date covers ledger
+    rows stamped from 22:00 UTC the evening before to 22:00 UTC on the date itself,
+    and `rollup_model_calls_beat` selects exactly that window. The column stays
+    DATE: a date carries no zone, which is why the zone has to be written down
+    here, in the rollup and in every reader.
+
     WHY MONEY IS HERE WHEN THE LEDGER REFUSES IT. Tenant migration 0019 stores no
     cost, because a cost frozen onto a call row is a figure a corrected book can
-    never reach. This table is the other side of that decision: money lands here as
+    never reach. This table is the other side of that decision. Money lands here as
     a reading, carrying `price_version` and `fx_version`, and a re-derive against a
     newer book OVERWRITES the row rather than appending beside it. That is what
     re-pricing at read time means for a rollup.
 
     WHY THE PRIMARY KEY IS (tenant_id, purpose, day). It is the upsert key, and the
-    upsert is `rollup_model_calls`'s idempotency. A second run for the same day
+    upsert is `rollup_model_calls_beat`'s idempotency. A second run for the same day
     writes the same three values, lands on the same row, and leaves the table as
     the first run left it. A surrogate id would let a re-run append a duplicate day.
 
@@ -43,13 +51,14 @@ Context:
     INT well before the tenant is large.
 
     Raw SQL with IF NOT EXISTS guards, the convention every control table has
-    followed since 0011. No SQLAlchemy ORM model: the rollup writes through one
+    followed since 0011. No SQLAlchemy ORM model. The rollup writes through one
     upsert statement and nothing reads this table through the ORM yet.
 
     APPLIED AND VERIFIED 2026-08-25 against the local `wchats_control` cluster
     through the alembic Python API: 0019 to 0020, the table arrives with twelve
     columns, the composite primary key and the day index, downgrade to 0019 drops
-    it and re-upgrade restores it.
+    it and re-upgrade restores it. The round trip ran again the same day once the
+    table comment named CAT, and the catalogue reads that wording back.
 """
 
 from typing import Sequence, Union
@@ -68,6 +77,7 @@ def upgrade() -> None:
         CREATE TABLE IF NOT EXISTS tenant_usage_daily (
             tenant_id               UUID NOT NULL,
             purpose                 TEXT NOT NULL,
+            -- The CAT calendar date, not the UTC one. See the docstring above.
             day                     DATE NOT NULL,
             input_tokens            BIGINT NOT NULL,
             output_tokens           BIGINT NOT NULL,
@@ -83,7 +93,7 @@ def upgrade() -> None:
     """)
     op.execute("""
         COMMENT ON TABLE tenant_usage_daily IS
-        'Ticket #46. One row per tenant, purpose and day, derived by app.worker.tasks.runtime.usage.rollup_model_calls from the tenant model_calls ledger. The counts are summed facts; the money is a reading of those facts through app.domain.pricing, stamped with price_version and fx_version. NULL money means the price book refused a model in that group, and the tokens beside it say how much went unpriced.'
+        'Ticket #46. One row per tenant, purpose and day, derived by app.worker.tasks.runtime.usage.rollup_model_calls_beat from the tenant model_calls ledger. day is the CAT calendar date (UTC+2, no daylight saving), so it covers model_calls.at from 22:00 UTC the evening before to 22:00 UTC on the date itself. The counts are summed facts; the money is a reading of those facts through app.domain.pricing, stamped with price_version and fx_version. NULL money means the price book refused a model in that group, and the tokens beside it say how much went unpriced.'
     """)
     # The key covers a tenant's own reads. A platform report asks what every tenant
     # spent yesterday, which starts at the day and has no tenant to lead with.

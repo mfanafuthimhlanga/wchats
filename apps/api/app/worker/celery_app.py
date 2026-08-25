@@ -231,11 +231,12 @@ celery_app.conf.update(
             "schedule": crontab(hour=5, minute=0),
         },
         # Ticket #46: price yesterday's model calls into tenant_usage_daily.
-        # 00:30 UTC, half an hour after the day it prices closes, and clear of
-        # eval-nightly at 02:00. It takes no argument: the day defaults to
-        # yesterday, and the override exists for re-deriving a day by hand.
+        # 00:30 UTC is 02:30 CAT, two and a half hours after the CAT day it prices
+        # closed at 22:00 UTC, and clear of eval-nightly at 02:00. It takes no
+        # argument. The day defaults to yesterday in CAT, and the override exists
+        # for re-deriving a named day by hand.
         "usage-rollup-daily": {
-            "task": "app.worker.tasks.runtime.usage.rollup_model_calls",
+            "task": "app.worker.tasks.runtime.usage.rollup_model_calls_beat",
             "schedule": crontab(hour=0, minute=30),
         },
     },
