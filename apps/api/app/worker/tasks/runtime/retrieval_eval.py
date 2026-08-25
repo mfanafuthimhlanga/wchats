@@ -28,10 +28,11 @@ is decrypted at runtime from the control DB, never in task args/logs.
 Ragas import:
     `import ragas` pulls langchain, datasets and pandas — seconds of import
     time. To keep THIS module cheap at Celery worker startup (celery_app.py's
-    `include=[...]` list imports every task module eagerly), all
-    ragas/instructor/anthropic imports here are LAZY, confined inside
-    `_build_instructor_llm()` / `_build_faithfulness_metrics()`, never at
-    module top-level.
+    `include=[...]` list imports every task module eagerly), the ragas imports
+    here are LAZY, confined inside `_build_instructor_llm()` /
+    `_build_faithfulness_metrics()`, never at module top-level. The provider SDKs
+    are no longer imported here at all: `app.core.model_client` owns them, and
+    the worker already pays for that module through `celery_app`.
 
 Ragas 0.4.x scoring shape (7.18 — this task returned faithfulness=None on the
 first live turn ever sampled):
@@ -41,8 +42,9 @@ first live turn ever sampled):
     a message about the class hierarchy, not about instantiation. Collections
     metrics are scored directly: `await metric.ascore(...) -> MetricResult`,
     which is the API CLAUDE.md rule 4 names. The LLM must wrap an ASYNC
-    Anthropic client: collections metrics only ever call `llm.agenerate()`,
-    and InstructorLLM.agenerate raises TypeError on a sync client.
+    client: collections metrics only ever call `llm.agenerate()`, and
+    InstructorLLM.agenerate raises TypeError on a sync one. `make_async_client`
+    is the factory's answer to that.
 """
 
 from __future__ import annotations
@@ -56,13 +58,28 @@ from sqlalchemy import text as sa_text
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.model_client import (
+    OPENAI_PROVIDER,
+    LedgerContext,
+    ledger_recorder,
+    route_for,
+)
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
 
-HAIKU_MODEL = "claude-haiku-4-5"
+#: The routing-table key this task's judge calls bill under.
+JUDGE_PURPOSE = "judge_retrieval_faithfulness"
+
+
+def _turn_ledger(tenant_id: str, agent_id: str, job_id: str, conn_str: str) -> LedgerContext:
+    """Who this sampled turn's judge call is billed to, and where its row goes."""
+    return LedgerContext(
+        tenant_id=tenant_id, agent_id=agent_id, job_id=job_id,
+        recorder=ledger_recorder(conn_str),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -209,40 +226,37 @@ def _fetch_turn_context(db, job_id: str) -> tuple[str, list, str | None, list[st
 # ---------------------------------------------------------------------------
 
 
-def _build_instructor_llm():
-    """Build the InstructorLLM the collections metrics score through.
+def _build_instructor_llm(purpose: str, ledger: LedgerContext):
+    """The InstructorLLM this task's Faithfulness metric scores through.
 
-    The client is `anthropic.AsyncAnthropic`, not `anthropic.Anthropic`.
-    Collections metrics await `llm.agenerate(...)` exclusively, and
-    InstructorLLM.agenerate raises
-    TypeError("Cannot use agenerate() with a synchronous client") whenever its
-    client is sync — which is what `instructor.from_anthropic(Anthropic())`
-    produces (InstructorLLM.is_async is False for it).
+    The client is async. Collections metrics await `llm.agenerate(...)`
+    exclusively, and `InstructorLLM.agenerate` raises
+    TypeError("Cannot use agenerate() with a synchronous client") for any client
+    whose `chat.completions.create` is not a coroutine function
+    (`ragas/llms/base.py`, `_check_client_async`). It carries the ledger hook, so
+    a sampled live turn's judge call is counted like every other call.
 
-    `thinking={"type": "disabled"}` is 7.20. Instructor's Anthropic TOOLS
-    handler forces `tool_choice={"type": "tool", ...}` on every structured call
-    (instructor/v2/providers/anthropic/handlers.py:392), and the DeepSeek
-    Anthropic-format endpoint 400s a forced tool_choice unless thinking is
-    explicitly off — the same failure the six judge call sites already fix.
-    The seam is InstructorLLM's `**kwargs`: they are merged into `model_args`
-    (ragas/llms/base.py:772), passed through unchanged for the anthropic
-    provider (:803), and splatted into `client.chat.completions.create()` by
-    agenerate (:1109), which instructor forwards to `messages.create`. The flag
-    is a no-op on real Anthropic, so it is provider-neutral.
+    `thinking={"type": "disabled"}` is gone with the provider that needed it. It
+    cleared a DeepSeek 400 on the forced tool_choice instructor puts on every
+    structured call; OpenAI has no such parameter, and ragas splats every extra
+    kwarg straight into `client.chat.completions.create()`
+    (`ragas/llms/base.py:1109`), so leaving it in would put an unknown field on
+    the wire.
+
+    Args:
+        purpose: the routing-table key this judge call bills under. Passed in
+            rather than read off the module constant, so this builder has the
+            same shape as eval_service's and one test drives both.
+        ledger: the ids this judge call is billed to and where its row goes.
     """
-    import anthropic
-    import instructor
     from ragas.llms import InstructorLLM
 
-    client = instructor.from_anthropic(anthropic.AsyncAnthropic())
     return InstructorLLM(
-        client=client,
-        model=HAIKU_MODEL,
-        provider="anthropic",
-        thinking={"type": "disabled"},
-        # BACKLOG 8.2a. Same **kwargs seam as `thinking`: merged into
-        # `model_args` (ragas/llms/base.py:772), passed through unchanged for the
-        # anthropic provider (:803), splatted into the client call by agenerate
+        client=ledger.instructor_client(purpose, is_async=True),
+        model=route_for(purpose).model,
+        provider=OPENAI_PROVIDER,
+        # BACKLOG 8.2a. The **kwargs seam: merged into `model_args`
+        # (ragas/llms/base.py:772) and splatted into the client call by agenerate
         # (:1109). Ragas metrics ARE judges, so they get the same temperature as
         # every other verdict in the system.
         #
@@ -250,14 +264,11 @@ def _build_instructor_llm():
         # at the provider default before 8.2a. ragas 0.4.3's InstructorModelArgs
         # defaults to `temperature=0.01, top_p=0.1` whenever `model_args is None`,
         # which is how this is constructed, and 0.01 was measured on the wire. So
-        # the change here is 0.01 -> 0, not "unset -> 0", and the 8.2a commit's
-        # "every LLM call sampled at whatever the provider defaults to" was false
-        # for 2 of the 9 sites.
+        # the change here is 0.01 -> 0, not "unset -> 0".
         #
         # STILL OPEN and deliberately not changed here: ragas also sends
-        # `top_p: 0.1` alongside, and Anthropic's guidance is to set temperature
-        # OR top_p, not both. Changing it changes retrieval-eval behaviour and
-        # wants its own measurement. BACKLOG 8.10.
+        # `top_p: 0.1` alongside, and setting temperature and top_p together is
+        # against both providers' guidance. BACKLOG 8.10.
         temperature=0,
     )
 
@@ -276,7 +287,7 @@ def _build_faithfulness_metrics(llm) -> list:
 
 
 def _compute_ragas_faithfulness(
-    question: str, response_text: str, contexts: list[str]
+    question: str, response_text: str, contexts: list[str], ledger: LedgerContext
 ) -> float | None:
     """Compute a single-turn Ragas 0.4.x Faithfulness score.
 
@@ -292,7 +303,7 @@ def _compute_ragas_faithfulness(
         return None
 
     try:
-        llm = _build_instructor_llm()
+        llm = _build_instructor_llm(JUDGE_PURPOSE, ledger)
         metrics = _build_faithfulness_metrics(llm)
     except Exception as exc:  # noqa: BLE001 — import or client construction
         log.warning("run_retrieval_faithfulness.ragas_import_failed", error=str(exc))
@@ -350,11 +361,10 @@ def run_retrieval_faithfulness(self, agent_id: str, job_id: str) -> dict:  # noq
             )
             return {}
         conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
+        tenant_id = str(agent.tenant_id)  # read while the session is open
 
-        # ------------------------------------------------------------------
-        # Idempotency guard (T-21-04-01 adjacent): skip recompute if already
+        # Idempotency guard (T-21-04-01 adjacent): skip the recompute if already
         # scored, and skip entirely if no retrieval_metrics row exists.
-        # ------------------------------------------------------------------
         already_scored, has_row = _check_existing_score(conn_str, job_id)
         if not has_row:
             log.info("run_retrieval_faithfulness.no_retrieval_metrics_row", job_id=job_id)
@@ -364,9 +374,9 @@ def run_retrieval_faithfulness(self, agent_id: str, job_id: str) -> dict:  # noq
             return {"status": "already_scored"}
 
         # ------------------------------------------------------------------
-        # Gating (T-21-04-01: DoS/cost mitigation) — sampled OR 100% of
-        # Auditor-flagged ungrounded/partial turns. See module docstring for
-        # why this check lives here (post-Auditor) rather than at dispatch.
+        # Gating (T-21-04-01: DoS/cost mitigation) is sampled OR 100% of the
+        # Auditor-flagged ungrounded and partial turns. The module docstring says
+        # why it lives here, post-Auditor, rather than at dispatch.
         # ------------------------------------------------------------------
         sampled = random.random() < settings.RETRIEVAL_FAITHFULNESS_SAMPLE_RATE
         auditor_flagged = False if sampled else _is_auditor_flagged(db, job_id)
@@ -381,11 +391,11 @@ def run_retrieval_faithfulness(self, agent_id: str, job_id: str) -> dict:  # noq
 
     response_text, citations_list, conversation_id, retrieve_contexts = turn_context
 
-    # citation_coverage: a coarse proxy — the schema does not persist
-    # per-chunk citation attribution, so this measures "how often a retrieve
-    # call led to a cited claim" (cited spans / retrieve calls with a result),
-    # not exact chunk-level coverage. None (not 0.0) when nothing was
-    # retrieved — honest-empty-state discipline (DOMAIN-NOTES §6).
+    # citation_coverage is a coarse proxy: the schema does not persist per-chunk
+    # citation attribution, so this measures how often a retrieve call led to a
+    # cited claim (cited spans over retrieve calls with a result), not exact
+    # chunk-level coverage. None rather than 0.0 when nothing was retrieved,
+    # which is the honest empty state (DOMAIN-NOTES §6).
     if retrieve_contexts:
         citation_coverage = min(1.0, len(citations_list) / len(retrieve_contexts))
     else:
@@ -393,8 +403,8 @@ def run_retrieval_faithfulness(self, agent_id: str, job_id: str) -> dict:  # noq
 
     question = _fetch_last_user_message(conn_str, conversation_id) if conversation_id else None
     faithfulness = _compute_ragas_faithfulness(
-        question=question or "", response_text=response_text, contexts=retrieve_contexts
-    )
+        question=question or "", response_text=response_text, contexts=retrieve_contexts,
+        ledger=_turn_ledger(tenant_id, agent_id, job_id, conn_str))
 
     if citation_coverage is None and faithfulness is None:
         log.info("run_retrieval_faithfulness.no_signal", job_id=job_id)

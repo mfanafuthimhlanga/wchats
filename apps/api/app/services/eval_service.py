@@ -48,7 +48,7 @@ later reader has to infer.
 Design notes:
 - All Ragas imports use the 0.4.x path (ragas.metrics.collections) — CLAUDE.md constraint.
 - Dataset field is 'reference' (renamed from the old 0.3.x name in 0.4.x).
-- LLM wrapper uses InstructorLLM(instructor.from_anthropic(Anthropic())) — 0.4.x collections requirement.
+- LLM wrapper uses InstructorLLM over the factory's async instructor client (0.4.x collections requirement).
 - All DB writes use psycopg2 try/finally/close pattern matching retrieval_service.py.
 - No verified_qa promotion writer exists in this build. D-22's
   source='sandbox_test' / promoted_by='system' and D-23's question_vector say
@@ -64,8 +64,6 @@ import uuid
 from collections.abc import Mapping
 from types import MappingProxyType
 
-import anthropic
-import instructor
 import pandas as pd
 import psycopg2
 import structlog
@@ -87,6 +85,7 @@ from sqlalchemy import text as sa_text
 
 from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db
+from app.core.model_client import OPENAI_PROVIDER, LedgerContext, route_for
 from app.services.embedding_service import EMBEDDING_MODEL, _get_vo
 
 log = structlog.get_logger(__name__)
@@ -95,7 +94,15 @@ log = structlog.get_logger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-HAIKU_MODEL = "claude-haiku-4-5"
+#: The purpose each of the four metrics bills its calls under. One purpose per
+#: metric, so a rollup says which dimension spent the money and a calibration
+#: figure names the Judge it measured (`PURPOSE_ROUTES`, decision #34).
+JUDGE_PURPOSES = (
+    "judge_faithfulness",
+    "judge_answer_relevancy",
+    "judge_context_precision",
+    "judge_context_recall",
+)
 
 # Note: Ragas 0.4.x collections metrics require an InstructorLLM at construction time.
 # Metrics are therefore instantiated inside run_ragas_eval(), not at module level.
@@ -1068,36 +1075,42 @@ class _VoyageRagasEmbedding(BaseRagasEmbedding):
         return await asyncio.to_thread(self.embed_text, text)
 
 
-def _build_instructor_llm() -> InstructorLLM:
-    """Build the InstructorLLM the collections metrics score through.
+def _build_instructor_llm(purpose: str, ledger: LedgerContext) -> InstructorLLM:
+    """The InstructorLLM one metric scores through, billed under its own purpose.
 
-    The client is `anthropic.AsyncAnthropic`, not `anthropic.Anthropic`.
-    Collections metrics await `llm.agenerate(...)` exclusively, and
-    InstructorLLM.agenerate raises
-    TypeError("Cannot use agenerate() with a synchronous client") whenever its
-    client is sync — which is what `instructor.from_anthropic(Anthropic())`
-    produces (InstructorLLM.is_async is False for it).
+    The client is async. Collections metrics await `llm.agenerate(...)`
+    exclusively, and `InstructorLLM.agenerate` raises
+    TypeError("Cannot use agenerate() with a synchronous client") for any client
+    whose `chat.completions.create` is not a coroutine function
+    (`ragas/llms/base.py`, `_check_client_async`). `make_async_client` is the
+    factory's answer to that, and it carries the same ledger hook as every other
+    client here, so a Ragas run lands rows without Ragas knowing this exists.
 
-    `thinking={"type": "disabled"}` is 7.20. Instructor's Anthropic TOOLS
-    handler forces `tool_choice={"type": "tool", ...}` on every structured call
-    (instructor/v2/providers/anthropic/handlers.py:392), and the DeepSeek
-    Anthropic-format endpoint 400s a forced tool_choice unless thinking is
-    explicitly off — the same failure the six judge call sites already fix.
-    The seam is InstructorLLM's `**kwargs`: they are merged into `model_args`
-    (ragas/llms/base.py:772), passed through unchanged for the anthropic
-    provider (:803), and splatted into `client.chat.completions.create()` by
-    agenerate (:1109), which instructor forwards to `messages.create`. The flag
-    is a no-op on real Anthropic, so it is provider-neutral.
+    `thinking={"type": "disabled"}` is gone with the provider that needed it.
+    It cleared a DeepSeek 400 on a forced tool_choice; OpenAI has no such
+    parameter, and ragas splats every extra kwarg straight into
+    `client.chat.completions.create()` (`ragas/llms/base.py:1109`), so leaving it
+    in would put an unknown field on the wire.
+
+    `provider="openai"` reaches `_map_openai_params`, which forces
+    `temperature=1.0` and drops `top_p` for a model it reads as a reasoning
+    model. Observed 2026-08-25 against ragas 0.4.3: `gpt-5.6-luna` is NOT one.
+    `is_reasoning_model` parses the version out of `gpt-<version>-...` with
+    `int()`, and `int("5.6")` raises, so the branch is never taken and
+    `temperature=0` reaches the wire as written. The reasoning effort the Judge
+    floor was priced at rides the instructor client's defaults instead, which is
+    where `make_instructor_client` puts it.
+
+    Args:
+        purpose: the routing-table key this metric's calls bill under.
+        ledger:  the ids each row carries and where it is written.
     """
-    client = instructor.from_anthropic(anthropic.AsyncAnthropic())
     return InstructorLLM(
-        client=client,
-        model=HAIKU_MODEL,
-        provider="anthropic",
-        thinking={"type": "disabled"},
-        # BACKLOG 8.2a. Same **kwargs seam as `thinking`: merged into
-        # `model_args` (ragas/llms/base.py:772), passed through unchanged for the
-        # anthropic provider (:803), splatted into the client call by agenerate
+        client=ledger.instructor_client(purpose, is_async=True),
+        model=route_for(purpose).model,
+        provider=OPENAI_PROVIDER,
+        # BACKLOG 8.2a. Same **kwargs seam: merged into `model_args`
+        # (ragas/llms/base.py:772) and splatted into the client call by agenerate
         # (:1109). Ragas metrics ARE judges, so they get the same temperature as
         # every other verdict in the system.
         #
@@ -1110,24 +1123,30 @@ def _build_instructor_llm() -> InstructorLLM:
         # for 2 of the 9 sites.
         #
         # STILL OPEN and deliberately not changed here: ragas also sends
-        # `top_p: 0.1` alongside, and Anthropic's guidance is to set temperature
-        # OR top_p, not both. Changing it changes retrieval-eval behaviour and
-        # wants its own measurement. BACKLOG 8.10.
+        # `top_p: 0.1` alongside, and setting temperature and top_p together is
+        # against both providers' guidance. Changing it changes eval behaviour
+        # and wants its own measurement. BACKLOG 8.10.
         temperature=0,
     )
 
 
-def _build_ragas_metrics(llm, embeddings) -> list:
+def _build_ragas_metrics(ledger: LedgerContext, embeddings) -> list:
     """The four M6 metrics (D-04 LOCKED) as constructed INSTANCES.
 
     Order matches METRIC_KEYS. Each metric's `.name` is the column it writes,
     which is what binds this list to _METRIC_ASCORE_ARGS and to METRIC_KEYS.
+
+    One client per metric, not one shared between four. They are four separate
+    spends and JUDGE_PURPOSES is what keeps them separable in the ledger.
     """
+    faithfulness, relevancy, precision, recall = (
+        _build_instructor_llm(purpose, ledger) for purpose in JUDGE_PURPOSES
+    )
     return [
-        Faithfulness(llm=llm),
-        AnswerRelevancy(llm=llm, embeddings=embeddings),
-        ContextPrecision(llm=llm),
-        ContextRecall(llm=llm),
+        Faithfulness(llm=faithfulness),
+        AnswerRelevancy(llm=relevancy, embeddings=embeddings),
+        ContextPrecision(llm=precision),
+        ContextRecall(llm=recall),
     ]
 
 
@@ -1166,7 +1185,7 @@ async def _score_samples(metrics: list, samples: list) -> list[dict]:
     return rows
 
 
-def run_ragas_eval(scenarios: list[dict]) -> dict:
+def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
     """Run Ragas 0.4.x evaluation over a list of eval scenarios.
 
     Builds an EvaluationDataset from the scenarios, calls evaluate() with
@@ -1174,15 +1193,16 @@ def run_ragas_eval(scenarios: list[dict]) -> dict:
 
     D-02 LOCKED: Dataset field name is 'reference' (field was renamed in Ragas 0.4.x).
 
-    NO DATABASE IS TOUCHED HERE. Every field the dataset needs is already in the
-    scenario dicts, and the only remote call is to the judge API. This function
-    used to accept a `branch_conn_str` it never referenced (`# noqa: ARG001`),
-    which is how the Neon branch came to look load-bearing to every reader of
-    the call site — including a caller that abandoned an entire run when the
-    branch could not be created. The parameter is gone rather than renamed: an
-    unused connection string is exactly the thing that invites a false isolation
-    claim, and its ABSENCE is what
-    test_scoring_takes_no_connection_string_because_it_opens_none pins.
+    THIS FUNCTION STILL TAKES NO CONNECTION STRING AND READS NO DATABASE. Every
+    field the dataset needs is already in the scenario dicts. It used to accept a
+    `branch_conn_str` it never referenced (`# noqa: ARG001`), which is how the
+    Neon branch came to look load-bearing to every reader of the call site,
+    including a caller that abandoned an entire run when the branch could not be
+    created. An unused connection string invites a false isolation claim, and its
+    ABSENCE is what test_scoring_takes_no_connection_string_because_it_opens_none
+    pins. Ticket #47 added the one write that IS scoring's own: every judge call
+    leaves a `model_calls` row, and the dsn for it lives in the recorder inside
+    `ledger`, closed over where the caller bound it.
 
     Args:
         scenarios: List of scenario dicts. Each must contain:
@@ -1195,22 +1215,22 @@ def run_ragas_eval(scenarios: list[dict]) -> dict:
               this the reference answer again reinstates the tautology, which is
               why the pin lives in the task's tests rather than here.
             - retrieved_contexts (list[str], optional): the contexts the AGENT
-              retrieved during that turn — not the scenario's stored
+              retrieved during that turn, never the scenario's stored
               `retrieved_contexts` column. Scoring faithfulness against contexts
               the agent never saw is D1 in a different costume.
+        ledger: who every judge call is billed to, and where its row goes.
 
     Returns:
         Dict with five keys:
             "scores": list[dict] — one dict per ATTRIBUTED returned row (not per
                 input row: the judge may return fewer, and a row that cannot be
-                matched to the scenario it scored is dropped rather than
-                assigned by position — see attribute_returned_rows).
+                matched to the scenario it scored is dropped, never assigned by
+                position; see attribute_returned_rows).
                 Each dict: {scenario_id, faithfulness, answer_relevancy,
                             context_precision, context_recall}
             "means": dict — per-metric mean over the attributed rows.
             "sent" / "returned" / "unattributed": the judge's own denominators.
-                `returned < sent` is a partial judge outage; `unattributed > 0`
-                means rows came back that cannot be placed at all.
+                `returned < sent` is a partial outage; `unattributed > 0` means rows came back that cannot be placed.
     """
     # Filter to only scenarios that have a reference_answer (required by Ragas)
     # D-02 LOCKED: field name is 'reference' (renamed in Ragas 0.4.x)
@@ -1245,8 +1265,7 @@ def run_ragas_eval(scenarios: list[dict]) -> dict:
     # sample Ragas would reject never reaches a metric.
     dataset = EvaluationDataset.from_list(samples)
 
-    llm = _build_instructor_llm()
-    metrics = _build_ragas_metrics(llm, _VoyageRagasEmbedding())
+    metrics = _build_ragas_metrics(ledger, _VoyageRagasEmbedding())
 
     df = pd.DataFrame(asyncio.run(_score_samples(metrics, list(dataset.samples))))
 
@@ -1534,8 +1553,7 @@ def build_eval_run_config(
 
     Args:
         agent_id: UUID string of the agent being evaluated.
-        conn_str: PRODUCTION tenant connection string (the corpus figure
-            describes the live corpus, not the branch's copy of it).
+        conn_str: PRODUCTION tenant connection string (the corpus figure describes the live corpus, not the branch's copy).
         dataset: dataset_composition() for the rows this run is about to score,
             or None when the caller has none to give. It lands verbatim on the
             run as `config["dataset"]`, which is what makes a golden-set score
@@ -1544,22 +1562,21 @@ def build_eval_run_config(
             which rows it covered. None is stored as null rather than as an
             empty composition — "this run did not record its dataset" is not
             "this run scored no rows".
-        agent_invocation: summarise_agent_invocation()'s observation, or None
-            when the invocation phase has not reported. None is the live path's
-            only value — see the paragraph above.
+        agent_invocation: summarise_agent_invocation()'s observation, or None when
+            the invocation phase has not reported. None is the live path's only
+            value; see the paragraph above.
 
     Returns:
-        {"prompt_version_id": str | None, "config": dict} — ready to hand
-        straight to insert_eval_run().
+        {"prompt_version_id": str | None, "config": dict}, for insert_eval_run().
     """
     unavailable: list[str] = []
 
     # --- prompt_version_id (control DB) --------------------------------
-    # The PRODUCTION label specifically, never resolve_prompt_version's
-    # weighted canary pick: an eval must be reproducible, and a run whose
-    # attribution was decided by random.random() cannot be compared to the
-    # next one. None here means "no production prompt version exists" — a
-    # real state (the agent still runs off its live soul_* columns).
+    # The PRODUCTION label specifically, never resolve_prompt_version's weighted
+    # canary pick: an eval must be reproducible, and a run whose attribution was
+    # decided by random.random() cannot be compared to the next one. None here
+    # means "no production prompt version exists", a real state in which the
+    # agent still runs off its live soul_* columns.
     prompt_version_id: str | None = None
     try:
         with get_sync_db() as db:
@@ -1641,9 +1658,11 @@ def build_eval_run_config(
         # these scores are a function of it is a separate claim, carried by
         # agent_invoked / dimensions_not_exercised below.
         "model_id": AGENT_TURN_MODEL,
-        # The model grading the run. A different dimension entirely: a judge
-        # change moves every score without the agent changing at all.
-        "judge_model_id": HAIKU_MODEL,
+        # A judge change moves every score without the agent changing at all, so
+        # both halves of its identity come off the routing table its clients are
+        # built from and the record cannot name a Judge the run did not use.
+        "judge_model_id": route_for(JUDGE_PURPOSES[0]).model,
+        "judge_reasoning_effort": route_for(JUDGE_PURPOSES[0]).reasoning_effort,
         "retrieval_config_hash": retrieval_config_hash,
         "envelope_hash": envelope_hash,
         "corpus_chunk_count": corpus_chunk_count,

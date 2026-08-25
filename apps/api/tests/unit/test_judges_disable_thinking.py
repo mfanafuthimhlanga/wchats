@@ -18,17 +18,19 @@ Auditor instead of being split across two files by accident of history.
 
 Asserted on the **kwargs the client receives**, never on the source text: the
 kwargs are what the endpoint validates, and a source-shaped guard bans one
-spelling while the author picks the spelling.
+spelling while the author picks the spelling. The client itself comes from the
+factory since ticket #47, so the patch target is `make_client` and the three
+judges are handed a double.
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
 from app.services import validation_service
+from tests.model_doubles import factory, ledger
 
 #: What every forced-tool-choice call site must send.
 THINKING_DISABLED = {"type": "disabled"}
@@ -61,11 +63,21 @@ _STRATEGIST_VERDICT = {"verdict": "ship", "confidence": 0.9, "issues": [], "reas
 
 #: (name, invoke, verdict payload the mocked tool_use block returns)
 _JUDGES = [
-    ("call_gatekeeper", lambda: validation_service.call_gatekeeper("q", "r"), _GATEKEEPER_VERDICT),
-    ("call_auditor", lambda: validation_service.call_auditor("q", "r", "ctx"), _AUDITOR_VERDICT),
+    (
+        "call_gatekeeper",
+        lambda: validation_service.call_gatekeeper("q", "r", ledger()),
+        _GATEKEEPER_VERDICT,
+    ),
+    (
+        "call_auditor",
+        lambda: validation_service.call_auditor("q", "r", "ctx", ledger()),
+        _AUDITOR_VERDICT,
+    ),
     (
         "call_strategist",
-        lambda: validation_service.call_strategist("q", "r", "role", "voice", ["do"], ["do not"]),
+        lambda: validation_service.call_strategist(
+            "q", "r", "role", "voice", ["do"], ["do not"], ledger()
+        ),
         _STRATEGIST_VERDICT,
     ),
 ]
@@ -82,7 +94,7 @@ def test_judge_sends_thinking_disabled_with_its_forced_tool_choice(name, invoke,
         captured.update(kwargs)
         return SimpleNamespace(stop_reason="tool_use", content=[_tool_use(payload)])
 
-    with patch.object(validation_service.ANTHROPIC_CLIENT.messages, "create", _create):
+    with factory(SimpleNamespace(messages=SimpleNamespace(create=_create))):
         invoke()
 
     # The precondition: without a forced tool_choice there is nothing to disable

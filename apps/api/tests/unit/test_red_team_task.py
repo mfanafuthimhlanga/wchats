@@ -285,7 +285,10 @@ def _fake_runner(vector, findings, *, observed=True, truncated=False):
     """
     from app.services.red_team_service import VectorObservation
 
-    def _runner(probe_fn, max_turns, attack_sequences, conn_str=None, observations=None):
+    def _runner(
+        probe_fn, max_turns, attack_sequences, conn_str=None, observations=None,
+        *, ledger=None
+    ):
         if observations is not None:
             observations.append(
                 VectorObservation(

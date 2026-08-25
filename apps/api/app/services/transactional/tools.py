@@ -70,6 +70,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from app.core.database import get_sync_db
+from app.core.model_client import LedgerContext, ledger_recorder
 from app.domain.transactional_schemas import (
     BookSlotInput,
     CancelOrderInput,
@@ -403,6 +404,23 @@ async def _execute_adapter_and_audit(
 # ---------------------------------------------------------------------------
 # Shared dispatcher — encodes the enforcement order ONCE
 # ---------------------------------------------------------------------------
+
+
+def _turn_ledger(agent_id: str, conn_str: str) -> LedgerContext:
+    """Who the Actor gate's model call is billed to, and where its row is written.
+
+    Every id comes from the per-turn ContextVars build_tool_server set, which is
+    the same source the dispatcher reads agent_id and conn_str from. An empty
+    job id becomes None, because the ledger column holds a job or nothing.
+    """
+    from app.services.agent_tools import _job_id_var, _tenant_id_var  # noqa: PLC0415
+
+    return LedgerContext(
+        tenant_id=_tenant_id_var.get(),
+        agent_id=agent_id,
+        job_id=_job_id_var.get() or None,
+        recorder=ledger_recorder(conn_str),
+    )
 
 
 async def _execute_transactional_tool(
@@ -910,8 +928,8 @@ async def _execute_transactional_tool(
 
     # -------------------------------------------------------- 5. Actor seam
     decision, rationale = await call_actor_gate(
-        skill, raw_args, snapshot, conversation_id or "", agent_id, conn_str
-    )
+        skill, raw_args, snapshot, conversation_id or "", agent_id, conn_str,
+        ledger=_turn_ledger(agent_id, conn_str))
     if decision == "block":
         await release_idempotency(agent_id, skill, idem_key)
         if recorded:

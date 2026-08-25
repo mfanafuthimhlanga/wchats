@@ -11,7 +11,7 @@ Phase 14 (this file): always returns ("approve", "").  The seam exists with the
 correct signature so Phase 15 can replace the body without touching any tool handler.
 
 Phase 15 contract:
-  The body will be replaced with a direct Anthropic Haiku API call that reads the
+  The body will be replaced with a direct Haiku API call that reads the
   conversation context and the proposed tool call, returning one of:
     "approve"        — tool executes normally
     "block"          — tool handler returns is_error without calling the adapter
@@ -25,10 +25,12 @@ Why this is NOT an SDK hook (LANDMINE 1 from 14-RESEARCH.md):
   tool handler as a direct async function call.
 
 Module isolation decision (D-15-01):
-  ANTHROPIC_CLIENT, HAIKU_MODEL, and _langfuse are replicated locally in this module
-  rather than imported from validation_service.py. This keeps actor_seam.py
-  independently importable without pulling in the full validation_service dependency
-  graph during unit tests and future refactors.
+  HAIKU_MODEL and _langfuse are replicated locally in this module rather than
+  imported from validation_service.py. This keeps actor_seam.py independently
+  importable without pulling in the full validation_service dependency graph
+  during unit tests and future refactors. The client is no longer replicated at
+  all: it comes from `app.core.model_client` per call (ticket #47), so the gate's
+  spend lands on a `model_calls` row under the `actor_gate` purpose.
 """
 
 from __future__ import annotations
@@ -39,22 +41,20 @@ import os
 import time
 from typing import Literal
 
-import anthropic
 import psycopg2
 import structlog
 from langfuse import Langfuse
 from pydantic import BaseModel
 
 from app.core.config import settings
+from app.core.model_client import LedgerContext
 
 log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Module-level Anthropic client, model, and Langfuse (replicated from
-# validation_service.py for module isolation — D-15-01).
+# Module-level model and Langfuse (replicated from validation_service.py for
+# module isolation, D-15-01).
 # ---------------------------------------------------------------------------
-
-ANTHROPIC_CLIENT = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
 
 HAIKU_MODEL = "claude-haiku-4-5"  # D-02 Haiku tier; matches validation_service.py
 
@@ -136,6 +136,7 @@ async def call_actor_gate(
     conversation_id: str,
     agent_id: str,
     conn_str: str = "",  # NEW — Phase 15 needs tenant DB for conversation history
+    *, ledger: LedgerContext,
 ) -> tuple[str, str]:
     """Pre-execution gate for mutating transactional tools.
 
@@ -159,6 +160,8 @@ async def call_actor_gate(
     conn_str
         Tenant DB connection string for conversation history fetch.
         Empty string (default) → history fetch is skipped, Actor still runs.
+    ledger
+        Who the gate's model call is billed to and where its row is written.
 
     Returns
     -------
@@ -201,21 +204,19 @@ async def call_actor_gate(
         )
         # conversation_history_str remains the fallback sentinel
 
-    # -------------------------------------------------------- Step C: forced-tool-use Haiku call
-    # Mirror call_gatekeeper / call_auditor / call_strategist exactly (ACT-01).
-    # Labeled delimiter sections prevent injection (T-15-01): system prompt instructs
-    # the model to treat CONVERSATION HISTORY and PROPOSED ACTION as DATA not instructions.
+    # ---------------------------------------------- Step C: forced-tool-use Haiku call
+    # Mirrors call_gatekeeper / call_auditor / call_strategist exactly (ACT-01). Labeled
+    # delimiter sections prevent injection (T-15-01): the system prompt tells the model
+    # to treat CONVERSATION HISTORY and PROPOSED ACTION as data, not as orders.
     t0 = time.time()
 
-    response = ANTHROPIC_CLIENT.messages.create(
+    response = ledger.client("actor_gate").messages.create(
         # BACKLOG 8.2a. Judgement is the one task that wants no creativity, and
-        # every judge in this system sampled at the provider default until now.
-        # Some verdict variance survives temperature 0 anyway, from batching and
+        # every judge here sampled at the provider default until now. Some
+        # verdict variance survives temperature 0 anyway, from batching and
         # hardware nondeterminism, which is why a high-stakes verdict eventually
-        # wants more than one sample. (An earlier version of this comment put
-        # that at "3-8%". That number is QUOTED from a talk and has never been
-        # measured in this system, and CLAUDE.md's own rule is to test a
-        # constraint rather than repeat it. BACKLOG 8.11 measures it.)
+        # wants more than one sample. (An earlier version put that at "3-8%",
+        # quoted from a talk and never measured here. BACKLOG 8.11 measures it.)
         temperature=0,
         model=HAIKU_MODEL,
         max_tokens=512,
@@ -282,9 +283,9 @@ async def call_actor_gate(
     decision = verdict.verdict
     rationale = verdict.rationale
 
-    # -------------------------------------------------------- Step D: Langfuse v4 latency log
-    # Guard availability and wrap in try/except so logging failure never affects the verdict.
-    # T-15-07: Langfuse unavailability must never alter the decision or block the gate.
+    # ----------------------------------------------- Step D: Langfuse v4 latency log
+    # Guarded and wrapped in try/except, so a logging failure never affects the verdict
+    # (T-15-07: Langfuse unavailability may not alter the decision or block the gate).
     if _langfuse is not None:
         try:
             with _langfuse.start_as_current_observation(
@@ -305,9 +306,8 @@ async def call_actor_gate(
             # ACT-06: do NOT flush() on the request path. The Actor runs synchronously
             # pre-mutation, so a blocking per-call flush adds a Langfuse network round-trip
             # to every mutating call (measured ~30s/call against a remote Langfuse host).
-            # The SDK's background flusher + atexit deliver the span/score from the
-            # long-lived worker. (The async judges in validation_service.py can afford a
-            # per-call flush because they run post-response, off the latency budget.)
+            # The SDK's background flusher and atexit deliver both from the long-lived
+            # worker. The judges run post-response and can afford the per-call flush.
         except Exception as exc:  # noqa: BLE001
             log.warning("langfuse.actor_log_failed", error=str(exc))
 

@@ -302,11 +302,17 @@ class TestPersistenceSplit:
         )
         assert len(wired["ragas"]) == 1
         args, kwargs = wired["ragas"][0]
-        assert len(args) == 1 and kwargs == {}, (
-            "scoring was handed something besides the scenarios — the only "
-            "thing it ever needed, and the argument it used to be given and "
-            "never read was a connection string"
+        assert len(args) == 2 and kwargs == {}, (
+            "scoring was handed something besides the scenarios and the "
+            "ledger. The argument it used to be given and never read was a "
+            "connection string"
         )
+        scenarios, led = args
+        assert isinstance(scenarios, list)
+        assert not [
+            value for value in vars(led).values() if isinstance(value, str)
+            and value.startswith("postgres")
+        ], f"a connection string reached scoring on the ledger: {led!r}"
         assert result["run_id"]
 
     def test_terminal_status_lands_on_production(self, wired):
@@ -660,7 +666,7 @@ class TestValidityDenominators:
         monkeypatch.setattr(
             mod,
             "run_ragas_eval",
-            lambda scenarios: {
+            lambda scenarios, ledger: {
                 "scores": [
                     {
                         "scenario_id": "g0000000-0000-0000-0000-000000000001",
@@ -695,7 +701,7 @@ class TestValidityDenominators:
         monkeypatch.setattr(
             mod,
             "run_ragas_eval",
-            lambda scenarios: {
+            lambda scenarios, ledger: {
                 "scores": [
                     {
                         "scenario_id": s["id"],

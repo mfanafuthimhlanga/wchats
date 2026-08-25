@@ -93,12 +93,14 @@ class Settings(BaseSettings):
     # Ingestion pipeline — M2 additions (T-02-01-01: keys suppressed by __repr__)
     ANTHROPIC_API_KEY: str
     # Decision #34 routes every direct-API purpose to OpenAI gpt-5.6-luna. The
-    # default is empty rather than absent, because ticket #47 slice A builds the
-    # factory and slice B moves the call sites onto it. A required field here
-    # would stop every process that has no OpenAI key yet, before one call needs
-    # it. `make_client` passes this value straight to the SDK, which refuses an
-    # empty key at construction, so the failure lands where the key is used.
-    # Make it required once the last call site has migrated.
+    # default is empty rather than absent, and after #47 slice B it still is:
+    # the five Judge purposes reach OpenAI through the instructor seam, and the
+    # nine sites that send Anthropic-shaped `messages` bodies still resolve
+    # Anthropic credentials, so a process that never scores an eval needs no
+    # OpenAI key. A required field here would stop all of them at import.
+    # `make_client` and `make_async_client` pass this value straight to the SDK,
+    # which refuses an empty key at construction, so the failure lands where the
+    # key is used. Make it required once those nine sites speak OpenAI too.
     OPENAI_API_KEY: str = ""
     VOYAGE_API_KEY: str
     # M3: Cohere reranker fallback (RET-05); optional so existing envs are not broken

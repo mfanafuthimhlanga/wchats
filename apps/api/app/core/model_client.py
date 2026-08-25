@@ -26,6 +26,17 @@ WHERE A PURPOSE GOES
     mistyped purpose to a model nobody chose. The SDK Agent turn is deliberately
     absent from the table, because it does not come through this factory.
 
+    A ROUTE IS NOT YET A REDIRECT FOR THE messages SITES. `make_instructor_client`
+    reads the table and builds on the provider it names. `make_client` does not:
+    it takes the provider as an argument and defaults to whatever the base url
+    says, which is the Anthropic-format endpoint. Nine call sites migrated in
+    #47 send `messages.create` and `messages.parse` bodies and read Anthropic
+    content blocks back, and `openai.OpenAI` has no `.messages` at all (checked
+    against the installed openai 2.45.0). Naming their purpose is what makes each
+    one countable and separable today; moving them to the route's provider is a
+    rewrite of the request and the response at every one of them, and it is the
+    rest of this ticket rather than a construction change.
+
     `make_instructor_client` applies the route's model and reasoning effort as
     instructor defaults, which a call site can still override per call. In the
     installed instructor 1.15.4,
@@ -109,6 +120,9 @@ Clock = Callable[[], datetime]
 #: What `make_client` hands back. Which one depends on the provider, and both
 #: carry the same ledger hook on the httpx client underneath.
 ProviderClient = anthropic.Anthropic | openai.OpenAI
+#: What `make_instructor_client` hands back. `AsyncInstructor` is the one Ragas
+#: accepts, because `InstructorLLM.agenerate` refuses a synchronous client.
+InstructorClient = instructor.Instructor | instructor.AsyncInstructor
 
 
 class LedgerCursor(Protocol):
@@ -196,6 +210,54 @@ class CallContext:
 
 
 @dataclass(frozen=True)
+class LedgerContext:
+    """The ids one call site carries, and where the rows it produces go.
+
+    `CallContext` is what a built client holds and it names a single purpose.
+    A call site names its purpose itself, at the call, and what it has to be
+    handed is everything else: who is billed and where the row is written. This
+    is that argument, so a migrated function grew one parameter rather than four.
+
+    It holds no connection string and has no field that could hold one (project
+    rule 1). `ledger_recorder` closes over the dsn at the moment the caller binds
+    it, and the dsn reaches `record_model_call` as its own argument.
+
+    Args:
+        tenant_id: UUID string of the tenant billed for these calls.
+        recorder:  where each finished row goes.
+        agent_id:  UUID string of the agent, or None for a platform call.
+        job_id:    UUID string of the job, or None.
+    """
+
+    tenant_id: str
+    recorder: Recorder
+    agent_id: str | None = None
+    job_id: str | None = None
+
+    def client(self, purpose: str, **kwargs) -> ProviderClient:
+        """A factory client for one purpose, billed to these ids."""
+        return make_client(
+            purpose,
+            tenant_id=self.tenant_id,
+            recorder=self.recorder,
+            agent_id=self.agent_id,
+            job_id=self.job_id,
+            **kwargs,
+        )
+
+    def instructor_client(self, purpose: str, **kwargs) -> InstructorClient:
+        """An instructor client for one purpose, billed to these ids."""
+        return make_instructor_client(
+            purpose,
+            tenant_id=self.tenant_id,
+            recorder=self.recorder,
+            agent_id=self.agent_id,
+            job_id=self.job_id,
+            **kwargs,
+        )
+
+
+@dataclass(frozen=True)
 class Credentials:
     """What the SDK needs to reach a provider. Never logged, never stored on a row."""
 
@@ -237,6 +299,22 @@ class UnsupportedProvider(ValueError):
 OPENAI_PROVIDER = "openai"
 LUNA_MODEL = "gpt-5.6-luna"
 
+#: The transient failures a call site retries on, from both SDKs.
+#:
+#: `metadata_service` retries a rate limit and a timeout and nothing else, which
+#: needs the provider's exception classes at a site the import contract now keeps
+#: the provider package out of. Both SDKs' pairs are listed rather than the
+#: current provider's, so a site that moves provider keeps retrying the same two
+#: failures instead of quietly retrying none. Every other error stays fatal: an
+#: authentication error and a schema violation both hit the same wall on retry
+#: and burn budget doing it.
+TRANSIENT_ERRORS: tuple[type[Exception], ...] = (
+    anthropic.RateLimitError,
+    anthropic.APITimeoutError,
+    openai.RateLimitError,
+    openai.APITimeoutError,
+)
+
 # Effort `none` is the figure decision #34 priced, $0.62 per thousand turns for a
 # Judge against DeepSeek's $1.23. The floor holds ONLY at effort none, and the
 # decision says any increase is re-measured from the `model_calls` ledger rather
@@ -268,6 +346,14 @@ PURPOSE_ROUTES: Mapping[str, ModelRoute] = {
     "metadata_enrichment": _LUNA,
     "actor_gate": _LUNA,
     "red_team_prompt": _LUNA,
+    # Added by ticket #47. `red_team_prompt` is the Attacker's own turn and it
+    # runs on the SDK path, so neither of the two direct-API calls the red team
+    # makes had a row. They are separate purposes because they are separate
+    # spends: `red_team_probe` is the persona under attack answering a probe,
+    # billed once per probe, and `red_team_severity` is the judge that rates
+    # what came back, billed once per reported finding.
+    "red_team_probe": _LUNA,
+    "red_team_severity": _LUNA,
     "query_expansion": _LUNA,
     "retrieval_strategist": _LUNA,
     "strategist": _LUNA,
@@ -491,6 +577,64 @@ def _log_skip(event: str, context: CallContext, request: httpx.Request) -> None:
     )
 
 
+def _body_is_unreadable(response: httpx.Response, context: CallContext) -> bool:
+    """True when the hook must leave this response alone, having said why.
+
+    Shared by the sync and the async hook so both skip on the same two grounds
+    and log the same event. An error response spent no tokens worth billing and
+    says nothing. A streamed body belongs to the caller, and reading it here
+    consumes the caller's stream.
+    """
+    if response.status_code >= 400:
+        return True
+    if _is_streamed(response):
+        _log_skip("model_ledger.stream_skipped", context, response.request)
+        return True
+    return False
+
+
+def _record_exchange(
+    response_text: str,
+    request: httpx.Request,
+    context: CallContext,
+    provider: str,
+    recorder: Recorder,
+    clock: Clock,
+) -> None:
+    """Turn one finished exchange into a row, or name the gap it leaves."""
+    response_body = json.loads(response_text)
+    call = model_call_from_bodies(
+        json.loads(request.content or b"{}"),
+        response_body,
+        context,
+        provider,
+        clock(),
+    )
+    if call is not None:
+        recorder(call)
+    elif _unreadable_usage(response_body):
+        _log_skip("model_ledger.shape_skipped", context, request)
+
+
+def _log_record_failure(context: CallContext, exc: Exception) -> None:
+    """Fail open. The caller's turn already succeeded and telemetry may not undo it."""
+    log.error(
+        "model_ledger.record_failed",
+        purpose=context.purpose,
+        tenant_id=context.tenant_id,
+        agent_id=context.agent_id,
+        job_id=context.job_id,
+        error=str(exc),
+    )
+
+
+def _append_response_hook(http_client, hook) -> None:
+    """Add one response hook, keeping whatever hooks the client already carried."""
+    hooks = dict(http_client.event_hooks)
+    hooks["response"] = [*hooks.get("response", []), hook]
+    http_client.event_hooks = hooks
+
+
 def attach_ledger_hook(
     http_client: httpx.Client,
     context: CallContext,
@@ -512,40 +656,51 @@ def attach_ledger_hook(
 
     def on_response(response: httpx.Response) -> None:
         try:
-            # An error response spent no tokens worth billing, and says nothing.
-            if response.status_code >= 400:
-                return
-            if _is_streamed(response):
-                _log_skip("model_ledger.stream_skipped", context, response.request)
+            if _body_is_unreadable(response, context):
                 return
             response.read()
-            response_body = json.loads(response.text)
-            call = model_call_from_bodies(
-                json.loads(response.request.content or b"{}"),
-                response_body,
-                context,
-                provider,
-                clock(),
+            _record_exchange(
+                response.text, response.request, context, provider, recorder, clock
             )
-            if call is not None:
-                recorder(call)
-            elif _unreadable_usage(response_body):
-                _log_skip("model_ledger.shape_skipped", context, response.request)
         except Exception as exc:
-            # Fail open. The customer's turn already succeeded and must not be
-            # undone by a ledger that could not be written.
-            log.error(
-                "model_ledger.record_failed",
-                purpose=context.purpose,
-                tenant_id=context.tenant_id,
-                agent_id=context.agent_id,
-                job_id=context.job_id,
-                error=str(exc),
-            )
+            _log_record_failure(context, exc)
 
-    hooks = dict(http_client.event_hooks)
-    hooks["response"] = [*hooks.get("response", []), on_response]
-    http_client.event_hooks = hooks
+    _append_response_hook(http_client, on_response)
+
+
+def attach_async_ledger_hook(
+    http_client: httpx.AsyncClient,
+    context: CallContext,
+    *,
+    provider: str,
+    recorder: Recorder,
+    clock: Clock = _utc_now,
+) -> None:
+    """The same hook on an async client, because httpx demands an async callable.
+
+    `httpx.AsyncClient` awaits every response hook, so the sync one attached to it
+    is coroutine-less and raises at the first response. Reading the body is
+    `aread()` there and `read()` here; everything either hook then does with the
+    bytes is the shared code above, so the two providers' usage shapes are parsed
+    in exactly one place.
+
+    Ragas is why this exists. Its collections metrics await `llm.agenerate(...)`
+    and `InstructorLLM` refuses that on a sync client, so the judge seam in #47
+    needs `openai.AsyncOpenAI` and this hook underneath it.
+    """
+
+    async def on_response(response: httpx.Response) -> None:
+        try:
+            if _body_is_unreadable(response, context):
+                return
+            await response.aread()
+            _record_exchange(
+                response.text, response.request, context, provider, recorder, clock
+            )
+        except Exception as exc:
+            _log_record_failure(context, exc)
+
+    _append_response_hook(http_client, on_response)
 
 
 def _sdk_client(
@@ -616,6 +771,54 @@ def make_client(
     return _sdk_client(provider, credentials, http_client)
 
 
+def make_async_client(
+    purpose: str,
+    *,
+    tenant_id: str,
+    recorder: Recorder,
+    agent_id: str | None = None,
+    job_id: str | None = None,
+    credentials: Credentials | None = None,
+    http_client: httpx.AsyncClient | None = None,
+    clock: Clock = _utc_now,
+) -> openai.AsyncOpenAI:
+    """The async half of `make_client`, for the one caller that needs one.
+
+    Ragas is that caller. Its collections metrics await `llm.agenerate(...)`, and
+    `InstructorLLM` raises `TypeError("Cannot use agenerate() with a synchronous
+    client")` for anything whose underlying `chat.completions.create` is not a
+    coroutine function (`ragas/llms/base.py`, `_check_client_async`, ragas 0.4.3).
+
+    OpenAI is the only provider here, because decision #34 routes every judge to
+    `gpt-5.6-luna` and no other async site exists. A second provider gets added
+    when a second provider has an async caller, not before.
+
+    Args:
+        purpose:     what these calls are for, the key a rollup groups by.
+        tenant_id:   UUID string of the tenant billed for them.
+        recorder:    where each row goes.
+        agent_id:    UUID string of the agent, or None for a platform call.
+        job_id:      UUID string of the job, or None.
+        credentials: api key and base url. Resolved from Settings when absent.
+        http_client: an async httpx client to hook instead of a fresh one.
+        clock:       reads the instant each row is stamped with.
+    """
+    credentials = credentials or resolve_credentials(OPENAI_PROVIDER)
+    http_client = http_client or httpx.AsyncClient()
+    attach_async_ledger_hook(
+        http_client,
+        CallContext(purpose=purpose, tenant_id=tenant_id, agent_id=agent_id, job_id=job_id),
+        provider=OPENAI_PROVIDER,
+        recorder=recorder,
+        clock=clock,
+    )
+    return openai.AsyncOpenAI(
+        api_key=credentials.api_key,
+        base_url=credentials.base_url,
+        http_client=http_client,
+    )
+
+
 def make_instructor_client(
     purpose: str,
     *,
@@ -625,18 +828,18 @@ def make_instructor_client(
     job_id: str | None = None,
     route: ModelRoute | None = None,
     credentials: Credentials | None = None,
-    http_client: httpx.Client | None = None,
+    http_client: httpx.Client | httpx.AsyncClient | None = None,
     clock: Clock = _utc_now,
-) -> instructor.Instructor:
+    is_async: bool = False,
+) -> InstructorClient:
     """An instructor client over a factory-built one, so structured calls are counted.
 
     Ragas asks its metrics through instructor, instructor asks through the
     provider SDK, and the SDK asks through httpx. The hook sits on the httpx
-    client, which is the one layer all three still pass through, so a Ragas run
-    lands ledger rows without Ragas knowing this module exists.
-
-    The route supplies the model and the reasoning effort as instructor defaults,
-    so no call site repeats either. See WHERE A PURPOSE GOES above.
+    client, the one layer all three still pass through, so a Ragas run lands
+    ledger rows without Ragas knowing this module exists. The route supplies the
+    model and the reasoning effort as instructor defaults, so no call site
+    repeats either. See WHERE A PURPOSE GOES above.
 
     Args:
         purpose:     the key the routing table and the rollup both use.
@@ -646,8 +849,14 @@ def make_instructor_client(
         job_id:      UUID string of the job, or None.
         route:       overrides the table. Injected by a test the way clock is.
         credentials: api key and base url. Resolved from Settings when absent.
-        http_client: an httpx client to hook instead of a fresh one.
+        http_client: an httpx client to hook instead of a fresh one. Async when
+                     `is_async` is set, since that is the client it wraps.
         clock:       reads the instant each row is stamped with.
+        is_async:    build on `openai.AsyncOpenAI`, which is what Ragas needs and
+                     what `make_async_client` exists for.
+
+    Returns:
+        An `AsyncInstructor` when `is_async` is set, an `Instructor` otherwise.
 
     Raises:
         UnknownPurpose:      the table routes no such purpose.
@@ -659,16 +868,11 @@ def make_instructor_client(
             f"Purpose {purpose!r} routes to {route.provider!r}, and this factory wraps "
             f"only {OPENAI_PROVIDER!r} clients in instructor."
         )
-    client = make_client(
-        purpose,
-        tenant_id=tenant_id,
-        recorder=recorder,
-        agent_id=agent_id,
-        job_id=job_id,
-        provider=route.provider,
-        credentials=credentials,
-        http_client=http_client,
-        clock=clock,
+    build = make_async_client if is_async else make_client
+    client = build(
+        purpose, tenant_id=tenant_id, recorder=recorder, agent_id=agent_id,
+        job_id=job_id, credentials=credentials, http_client=http_client, clock=clock,
+        **({} if is_async else {"provider": route.provider}),
     )
     defaults: dict[str, str] = {"model": route.model}
     if route.reasoning_effort is not None:

@@ -36,6 +36,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.worker.tasks.runtime import retrieval_eval as mod
+from tests.model_doubles import ledger
 
 _AGENT_ID = "agent-uuid"
 _JOB_ID = "job-uuid"
@@ -362,42 +363,43 @@ def test_compute_ragas_faithfulness_scores_through_real_ragas(monkeypatch):
     monkeypatch.setattr(
         mod,
         "_build_instructor_llm",
-        lambda: _fake_instructor_llm(["claim A", "claim B"], [1, 0]),
+        lambda purpose, led: _fake_instructor_llm(["claim A", "claim B"], [1, 0]),
     )
 
     score = mod._compute_ragas_faithfulness(
         question="what is the refund window?",
         response_text="Refunds run 30 days. Shipping is free.",
         contexts=["Refunds are accepted within 30 days of delivery."],
+        ledger=ledger(),
     )
 
     assert score == pytest.approx(0.5)
 
 
-def test_instructor_llm_wraps_an_async_client(monkeypatch):
-    """A sync Anthropic client makes agenerate() raise, which is the second
-    half of the same outage: collections metrics never call generate()."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
-
-    llm = mod._build_instructor_llm()
+def test_instructor_llm_wraps_an_async_client():
+    """A sync client makes agenerate() raise, which is the second half of the
+    same outage: collections metrics never call generate()."""
+    llm = mod._build_instructor_llm(mod.JUDGE_PURPOSE, ledger())
 
     assert llm.is_async is True, (
         "InstructorLLM wraps a sync client; agenerate() will raise TypeError"
     )
 
 
-def test_instructor_llm_disables_thinking(monkeypatch):
-    """7.20: instructor forces `tool_choice={"type": "tool"}` on every
-    structured call, and the DeepSeek Anthropic-format endpoint 400s a forced
-    tool_choice under thinking mode. The kwarg has to survive as far as the
-    dict InstructorLLM.agenerate splats into messages.create, which is what
-    _map_provider_params() returns.
+def test_the_judge_carries_no_thinking_parameter():
+    """`thinking` left with the provider that needed it (ticket #47).
+
+    It cleared a DeepSeek 400 on the forced tool_choice instructor puts on every
+    structured call. This judge is on OpenAI now, ragas splats every extra kwarg
+    straight into `client.chat.completions.create()`, and an unknown field on
+    that wire is a 400 of its own.
     """
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+    llm = mod._build_instructor_llm(mod.JUDGE_PURPOSE, ledger())
 
-    llm = mod._build_instructor_llm()
-
-    assert llm._map_provider_params()["thinking"] == {"type": "disabled"}, (
-        "thinking is not disabled on the metric LLM; the forced tool_choice "
-        "instructor adds will 400 on the DeepSeek endpoint"
+    assert "thinking" not in llm._map_provider_params(), (
+        "the judge still carries a thinking parameter, which OpenAI does not "
+        "take; ragas passes it through to the request unchanged"
+    )
+    assert llm.model == "gpt-5.6-luna", (
+        f"the judge names model={llm.model!r} rather than the routed one"
     )

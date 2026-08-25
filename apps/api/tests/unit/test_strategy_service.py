@@ -24,16 +24,17 @@ os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 
 from unittest.mock import MagicMock, patch
 
+from app.domain.ingestion_job import IngestionJob
 from app.services.retrieval_service import (
     RetrievalStrategy,
     _expand_query,
     rrf_fuse_with_expansion,
 )
-from app.domain.ingestion_job import IngestionJob
 from app.services.strategy_service import (
     _fetch_corpus_signals_sync,
     run_strategist,
 )
+from tests.model_doubles import factory, ledger
 
 # run_strategist now builds its client through app.core.model_client.make_client, so it
 # takes the three ids each ledger row carries and the tenant database each row is
@@ -189,33 +190,21 @@ def test_run_strategist_calls_anthropic_api():
 
 
 def test_expand_query_returns_three():
-    """_expand_query returns [original] + up to 2 generated variants — length 3."""
+    """_expand_query returns [original] plus up to 2 generated variants.
+
+    The sys.modules surgery this test used to perform is gone with the lazy
+    `import anthropic` it existed to intercept. Expansion builds its client
+    through the factory now (ticket #47), so one patch target covers it and no
+    test has to put a real module object back afterwards.
+    """
     mock_message = MagicMock()
     mock_message.content = [MagicMock(text="variant one\nvariant two")]
 
-    mock_client_instance = MagicMock()
-    mock_client_instance.messages.create.return_value = mock_message
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_message
 
-    mock_anthropic_cls = MagicMock(return_value=mock_client_instance)
-
-    with patch("app.services.retrieval_service.anthropic", create=True) as _:
-        # Patch the lazy `import anthropic` inside _expand_query by injecting at sys.modules
-        import sys
-        mock_module = MagicMock()
-        mock_module.Anthropic = mock_anthropic_cls
-        real_module = sys.modules["anthropic"]
-        sys.modules["anthropic"] = mock_module
-
-        try:
-            result = _expand_query("orig")
-        finally:
-            # Put the REAL module object back, rather than deleting the entry.
-            # Deleting it makes the next `import anthropic` build a second module
-            # object, and every module that already holds a reference to the first
-            # one then ignores `patch("anthropic.Anthropic", ...)`. That reached a
-            # live 401 from api.anthropic.com when this file ran before
-            # test_judgement_temperature.py on 2026-08-25.
-            sys.modules["anthropic"] = real_module
+    with factory(mock_client):
+        result = _expand_query("orig", ledger())
 
     assert result == ["orig", "variant one", "variant two"]
     assert len(result) == 3
@@ -263,7 +252,7 @@ def test_expansion_calls_rrf_fuse_per_variant():
         ]
         mock_get_vo.return_value = mock_vo
 
-        result = rrf_fuse_with_expansion("conn", [0.0] * 10, "q", strategy)
+        result = rrf_fuse_with_expansion("conn", [0.0] * 10, "q", strategy, ledger())
 
     # rrf_fuse should be called once per variant (3 variants → 3 calls)
     assert mock_rrf_fuse.call_count == 3

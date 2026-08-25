@@ -268,7 +268,7 @@ def _wire(monkeypatch, *, exploratory_rows, silent_ids=(), scores_by_id=None):
     )
     overrides = dict(scores_by_id or {})
 
-    def _fake_ragas(scenarios):
+    def _fake_ragas(scenarios, ledger):
         rec["scored_input"].append(list(scenarios))
         return {
             "scores": [

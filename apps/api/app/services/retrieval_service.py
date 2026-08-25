@@ -30,6 +30,7 @@ import structlog
 from pydantic import BaseModel, ConfigDict
 
 from app.core.config import settings
+from app.core.model_client import LedgerContext
 from app.services.embedding_service import _get_vo
 
 log = structlog.get_logger(__name__)
@@ -388,23 +389,22 @@ def rrf_fuse(
 # ---------------------------------------------------------------------------
 
 
-def _expand_query(query_text: str) -> list[str]:
-    """Generate 2 alternative phrasings of the query using Claude Haiku (lazy import).
+def _expand_query(query_text: str, ledger: LedgerContext) -> list[str]:
+    """Generate 2 alternative phrasings of the query using Claude Haiku.
 
-    Lazy `import anthropic` inside the function body matches the lazy `import cohere`
-    pattern used in _cohere_rerank — keeps the module loadable even if the package
-    is absent or the API key is not set.
+    The lazy `import anthropic` this used to open with is gone. The client comes
+    from `app.core.model_client` (ticket #47), which the module already imports,
+    so an expansion leaves a `model_calls` row under the `query_expansion`
+    purpose instead of spending unrecorded.
 
     Args:
         query_text: The raw user query string.
+        ledger: the ids this expansion is billed to and where its row goes.
 
     Returns:
         List of up to 3 queries: [original] + up to 2 generated variants.
     """
-    import anthropic  # lazy import — only loaded when query_expansion=True
-
-    client = anthropic.Anthropic()
-    msg = client.messages.create(
+    msg = ledger.client("query_expansion").messages.create(
         model="claude-haiku-4-5",
         max_tokens=200,
         messages=[
@@ -427,15 +427,12 @@ def _expand_query(query_text: str) -> list[str]:
 
 
 def rrf_fuse_with_expansion(
-    conn_str: str,
-    query_vector: list[float],
-    query_text: str,
-    strategy: RetrievalStrategy,
+    conn_str: str, query_vector: list[float], query_text: str,
+    strategy: RetrievalStrategy, ledger: LedgerContext,
 ) -> dict:
     """RRF fusion with optional query expansion (M9).
 
-    When strategy.query_expansion is False, delegates directly to rrf_fuse
-    (passthrough — no performance cost).
+    When strategy.query_expansion is False it delegates straight to rrf_fuse, at no cost.
 
     When True:
       1. Generate up to 2 alternative query phrasings via Claude Haiku.
@@ -449,6 +446,9 @@ def rrf_fuse_with_expansion(
         query_vector:  1024-dim float vector for the original query.
         query_text:    The raw user query string.
         strategy:      Per-tenant retrieval config.
+        ledger:        the ids the expansion call is billed to and where its row goes.
+                       Required on the passthrough path too, because the caller cannot
+                       know in advance whether the strategy will ask for an expansion.
 
     Returns:
         Dict with keys "fused", "vector_candidates", "bm25_candidates" —
@@ -458,7 +458,7 @@ def rrf_fuse_with_expansion(
         return rrf_fuse(conn_str, query_vector, query_text, strategy)
 
     # Generate alternative phrasings
-    variants = _expand_query(query_text)
+    variants = _expand_query(query_text, ledger)
 
     # Batch-embed ALL variants through the provider seam (no direct Voyage call when bedrock)
     if settings.EMBEDDING_PROVIDER == "bedrock":

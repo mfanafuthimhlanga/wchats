@@ -100,8 +100,8 @@ Return value (chain contract):
     Connection strings are NEVER returned.
 
 Threat mitigations (T-02-04):
-    T-02-04-01: Task signature is (self, job: IngestionJob); ANTHROPIC_API_KEY read
-                from env at module init by anthropic.Anthropic() in metadata_service.
+    T-02-04-01: Task signature is (self, job: IngestionJob); the provider key is
+                resolved from Settings by the client factory, never a task arg.
     T-02-04-02: Haiku response validated by Pydantic via client.messages.parse();
                 malformed responses raise ValidationError and the chunk is skipped.
                 Literal entity types prevent arbitrary type injection.
@@ -120,6 +120,7 @@ import structlog
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.domain.chunk_metadata import ChunkMetadata
 from app.domain.ingestion_job import IngestionJob
@@ -219,19 +220,24 @@ def _pending_chunks(tenant_conn, chunk_rows) -> list[tuple]:
     return pending
 
 
-def _enrich_pending(tenant_conn, db, job_id: str, pending: list[tuple]) -> int:
+def _enrich_pending(
+    tenant_conn, db, job_id: str, pending: list[tuple], ledger: LedgerContext
+) -> int:
     """Enrich and persist the pending chunks; return how many records landed.
 
     One Haiku call per BATCH_SIZE chunks. The model returns per-chunk results in
     submission order, and this function zips them back to chunk_ids by index,
     never by id. The model never sees an id. A ChunkMetadata exists only for a
     chunk that came back, so the return value counts real records, not attempts.
+
+    `ledger` carries the job's three ids down to the enrichment call, so each
+    batch's spend lands on a row naming the job that spent it.
     """
     enriched = 0
     for batch_start in range(0, len(pending), BATCH_SIZE):
         batch = pending[batch_start : batch_start + BATCH_SIZE]
         try:
-            results = enrich_chunks_batch([content for _, content in batch])
+            results = enrich_chunks_batch([content for _, content in batch], ledger)
         except Exception as exc:
             # One bad batch does not abort the document. Every batch taking this
             # path is what the wholly-failed rule catches.
@@ -260,7 +266,9 @@ def _enrich_pending(tenant_conn, db, job_id: str, pending: list[tuple]) -> int:
     return enriched
 
 
-def _enrich_document(tenant_conn, db, job_id: str, doc_id: str) -> tuple[int, int]:
+def _enrich_document(
+    tenant_conn, db, job_id: str, doc_id: str, ledger: LedgerContext
+) -> tuple[int, int]:
     """Enrich one document's chunks; return (chunks_seen, chunks_enriched).
 
     chunks_seen is the pending count, the chunks this run took responsibility
@@ -277,7 +285,7 @@ def _enrich_document(tenant_conn, db, job_id: str, doc_id: str) -> tuple[int, in
     emit(job_id, "metadata.started", {"document_id": doc_id, "chunk_count": len(chunk_rows)}, db, _redis)
 
     pending = _pending_chunks(tenant_conn, chunk_rows)
-    enriched = _enrich_pending(tenant_conn, db, job_id, pending)
+    enriched = _enrich_pending(tenant_conn, db, job_id, pending, ledger)
 
     emit(job_id, "metadata.complete", {"document_id": doc_id}, db, _redis)
     log.info("generate_metadata.complete", document_id=doc_id, chunks_enriched=enriched)
@@ -355,11 +363,20 @@ def generate_metadata(self, job: IngestionJob) -> IngestionJob:
             require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string")
         )
         tenant_conn = psycopg2.connect(conn_str)
+        # The three ids the chain already carries, plus where the spend is
+        # written. The dsn reaches the recorder here and travels no further:
+        # LedgerContext has no field that could hold one (T-02-04-01).
+        ledger = LedgerContext(
+            tenant_id=job.tenant_id,
+            agent_id=job.agent_id,
+            job_id=job.job_id,
+            recorder=ledger_recorder(conn_str),
+        )
         chunks_seen = 0
         chunks_enriched = 0
         try:
             for doc_id in document_ids:
-                seen, enriched = _enrich_document(tenant_conn, db, job_id, doc_id)
+                seen, enriched = _enrich_document(tenant_conn, db, job_id, doc_id, ledger)
                 chunks_seen += seen
                 chunks_enriched += enriched
         except Exception as exc:

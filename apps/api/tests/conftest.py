@@ -53,6 +53,10 @@ os.environ.setdefault("ADMIN_KEY", "vrd_admin_test_key_for_tests_only")
 
 # M2 ingestion pipeline keys — must be set before any app import (pydantic-settings)
 os.environ.setdefault("ANTHROPIC_API_KEY", "test_anthropic_key")
+# Ticket #47: the Judge purposes route to OpenAI, and the SDK refuses an empty
+# key at construction. A unit test never reaches the network, but it does build
+# the client.
+os.environ.setdefault("OPENAI_API_KEY", "test_openai_key")
 
 # M5: Langfuse — set before any import so module-level Langfuse() init in
 # validation_service.py does not raise on missing keys during test discovery.

@@ -108,6 +108,9 @@ ignore = ["E501"]
 # restore. Neither is a target: they pin the structure that already holds.
 [tool.importlinter]
 root_package = "app"
+# Required by the provider-SDK contract below: without it grimp builds the graph
+# from app alone and an import of anthropic is not a node it can see.
+include_external_packages = true
 
 [[tool.importlinter.contracts]]
 # Direction measured from the 444 real dependencies, not chosen: every observed edge
@@ -146,6 +149,32 @@ name = "no import cycles outside app.services"
 type = "acyclic_siblings"
 ancestors = ["app"]
 skip_descendants = ["app.services"]
+
+[[tool.importlinter.contracts]]
+# Ticket #47. Every direct-API call site builds its client through
+# app.core.model_client, so the response hook that writes the model_calls ledger
+# cannot be bypassed by constructing a client next to the call. The gate is this
+# contract rather than a grep, because a grep bans one spelling and the author
+# picks the spelling.
+# allow_indirect_imports keeps the contract on DIRECT imports: every module that
+# reaches the factory imports the three packages through it, which is the point.
+# claude_agent_sdk is deliberately absent. The Agent turn still runs on it and
+# leaves through #49, not here.
+# Observed 2026-08-25: KEPT, 3 kept 0 broken. Mutation `import anthropic` added to
+# app/services/validation_service.py turned it BROKEN, naming the edge:
+#   app is not allowed to import anthropic:
+#   -   app.services.validation_service -> anthropic (l.20)
+# Restored, KEPT again at 3 kept 0 broken.
+name = "the provider SDKs have one home"
+type = "forbidden"
+source_modules = ["app"]
+forbidden_modules = ["anthropic", "openai", "instructor"]
+allow_indirect_imports = true
+ignore_imports = [
+    "app.core.model_client -> anthropic",
+    "app.core.model_client -> openai",
+    "app.core.model_client -> instructor",
+]
 
 [tool.mutmut]
 # Configured so a mutation run is reproducible elsewhere; it is NOT a gate here.

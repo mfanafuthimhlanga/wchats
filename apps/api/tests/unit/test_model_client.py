@@ -785,6 +785,8 @@ EVERY_PURPOSE = [
     "metadata_enrichment",
     "actor_gate",
     "red_team_prompt",
+    "red_team_probe",
+    "red_team_severity",
     "query_expansion",
     "retrieval_strategist",
     "strategist",

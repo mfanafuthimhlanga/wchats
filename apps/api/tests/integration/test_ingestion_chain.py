@@ -613,7 +613,7 @@ def test_full_chain_runs_in_eager_mode_with_mocks(
         # raises AttributeError before the chain ever runs.
         patch("docling.chunking.HybridChunker") as mock_chunker_cls,
         # Patch external API clients at service module level
-        patch("app.services.metadata_service._anthropic") as mock_anthropic,
+        patch("app.core.model_client.make_client") as mock_factory,
         patch("app.services.embedding_service._vo") as mock_vo,
         # Patch module-level _redis in each task to avoid real Redis connections
         # (events still write to job_events DB table via the emit() db parameter)
@@ -633,7 +633,7 @@ def test_full_chain_runs_in_eager_mode_with_mocks(
         mock_chunker_cls.return_value = mock_chunker
 
         # Configure Anthropic mock
-        mock_anthropic.messages.parse.return_value = metadata_mock
+        mock_factory.return_value.messages.parse.return_value = metadata_mock
 
         # Configure Voyage mock — returns 1024-dim vectors
         mock_vo.embed.return_value = MagicMock(
@@ -712,7 +712,7 @@ def test_idempotent_chain(
     on chunks, SELECT COUNT(*) guard on chunk_metadata, LEFT JOIN WHERE NULL on embeddings)
     collectively ensure that a second run produces the same counts.
 
-    Also asserts that Haiku (mocked _anthropic.messages.parse) is NOT called again on
+    Also asserts that Haiku (the factory's client, mocked) is NOT called again on
     the second run (Layer 3 skip: chunk_metadata already exists).
     """
     tenant_id, agent_id, job_id, tenant_db_url = ready_agent_with_tenant_db
@@ -757,7 +757,7 @@ def test_idempotent_chain(
         # raises AttributeError before the chain ever runs.
         patch("docling.chunking.HybridChunker") as mock_chunker_cls,
         # Patch external API clients at service module level
-        patch("app.services.metadata_service._anthropic") as mock_anthropic,
+        patch("app.core.model_client.make_client") as mock_factory,
         patch("app.services.embedding_service._vo") as mock_vo,
         # Patch module-level _redis in each task to avoid real Redis connections
         # (events still write to job_events DB table via the emit() db parameter)
@@ -775,7 +775,7 @@ def test_idempotent_chain(
         mock_chunker.contextualize.side_effect = lambda c: c.text
         mock_chunker_cls.return_value = mock_chunker
 
-        mock_anthropic.messages.parse.return_value = metadata_mock
+        mock_factory.return_value.messages.parse.return_value = metadata_mock
         mock_vo.embed.return_value = MagicMock(
             embeddings=[[0.1] * 1024, [0.2] * 1024]
         )
@@ -804,7 +804,7 @@ def test_idempotent_chain(
             "chunk_id IN (SELECT id FROM chunks WHERE document_id = %s)",
             (doc_id,),
         )
-        haiku_calls_run1 = mock_anthropic.messages.parse.call_count
+        haiku_calls_run1 = mock_factory.return_value.messages.parse.call_count
 
         # --- RUN 2 ---
         dispatch_chain()
@@ -822,7 +822,7 @@ def test_idempotent_chain(
             "chunk_id IN (SELECT id FROM chunks WHERE document_id = %s)",
             (doc_id,),
         )
-        haiku_calls_run2 = mock_anthropic.messages.parse.call_count
+        haiku_calls_run2 = mock_factory.return_value.messages.parse.call_count
 
     # Idempotency assertions
     assert count_chunks_run2 == count_chunks_run1, (
@@ -906,7 +906,7 @@ def test_chain_emits_all_11_m2_event_types(
         # raises AttributeError before the chain ever runs.
         patch("docling.chunking.HybridChunker") as mock_chunker_cls,
         # Patch external API clients at service module level
-        patch("app.services.metadata_service._anthropic") as mock_anthropic,
+        patch("app.core.model_client.make_client") as mock_factory,
         patch("app.services.embedding_service._vo") as mock_vo,
         # Patch module-level _redis in each task to avoid real Redis connections
         # (events still write to job_events DB table via the emit() db parameter)
@@ -924,7 +924,7 @@ def test_chain_emits_all_11_m2_event_types(
         mock_chunker.contextualize.side_effect = lambda c: c.text
         mock_chunker_cls.return_value = mock_chunker
 
-        mock_anthropic.messages.parse.return_value = metadata_mock
+        mock_factory.return_value.messages.parse.return_value = metadata_mock
         mock_vo.embed.return_value = MagicMock(
             embeddings=[[0.1] * 1024, [0.2] * 1024]
         )
@@ -997,7 +997,7 @@ def test_chain_no_conn_strings_logged(
         # See the note at the other three sites: the name lives on docling.chunking,
         # not on the service module that imports it at call time.
         patch("docling.chunking.HybridChunker") as mock_chunker_cls,
-        patch("app.services.metadata_service._anthropic") as mock_anthropic,
+        patch("app.core.model_client.make_client") as mock_factory,
         patch("app.services.embedding_service._vo") as mock_vo,
         patch("psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT", 0),
         caplog.at_level(logging.DEBUG),
@@ -1007,7 +1007,7 @@ def test_chain_no_conn_strings_logged(
         mock_chunker.contextualize.side_effect = lambda c: c.text
         mock_chunker_cls.return_value = mock_chunker
 
-        mock_anthropic.messages.parse.return_value = metadata_mock
+        mock_factory.return_value.messages.parse.return_value = metadata_mock
         mock_vo.embed.return_value = MagicMock(embeddings=[[0.1] * 1024])
 
         chain(

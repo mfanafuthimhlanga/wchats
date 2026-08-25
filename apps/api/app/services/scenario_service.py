@@ -9,15 +9,15 @@ scenarios (EVL-03). Both write to the tenant DB eval_scenarios table.
 import json
 import uuid
 
-import anthropic
 import psycopg2
 import structlog
 from sqlalchemy import text
 
+from app.core.model_client import LedgerContext, ledger_recorder
+
 log = structlog.get_logger(__name__)
 
 HAIKU_MODEL = "claude-haiku-4-5"
-ANTHROPIC_CLIENT = anthropic.Anthropic()
 
 # ---------------------------------------------------------------------------
 # SCENARIO_TOOL — forced structured output via tool_choice (D-12 / RESEARCH §5)
@@ -57,30 +57,29 @@ SCENARIO_TOOL = {
 # ---------------------------------------------------------------------------
 
 
-def generate_scenarios_from_chunks(chunks: list[dict], n: int = 5) -> list[dict]:
+def generate_scenarios_from_chunks(chunks: list[dict], ledger: LedgerContext, n: int = 5) -> list[dict]:
     """Generate n eval scenarios from a batch of tenant knowledge chunks using Claude Haiku.
 
-    Uses the Anthropic API directly (NOT Agent SDK — D-12 LOCKED) with forced
-    tool_choice structured output matching the validation_service.py pattern.
-    Generated scenarios are tagged source='generated' (D-13 LOCKED).
+    Uses the direct API (NOT Agent SDK, D-12 LOCKED) with forced tool_choice
+    structured output matching validation_service.py. Generated scenarios are
+    tagged source='generated' (D-13 LOCKED), and the client comes from
+    `app.core.model_client` (#47) so each call leaves a `model_calls` row.
 
     Args:
         chunks: List of dicts, each with at least a 'content' key (chunk text).
+        ledger: the ids this generation is billed to and where its rows go.
         n: Number of scenarios to generate (clamped to 3–10 by SCENARIO_TOOL schema).
 
     Returns:
-        List of dicts, each with keys: question, reference_answer,
-        scenario_category, retrieved_contexts, source='generated'.
+        List of dicts with keys question, reference_answer, scenario_category,
+        retrieved_contexts and source='generated'.
 
     Raises:
         ValueError: If no tool_use block is returned by the scenario generator.
     """
     # Concatenate up to 5 chunk contents with "---" separators
-    chunk_text = "\n\n---\n\n".join(
-        f"CHUNK {i + 1}:\n{c['content']}" for i, c in enumerate(chunks[:5])
-    )
-
-    response = ANTHROPIC_CLIENT.messages.create(
+    chunk_text = "\n\n---\n\n".join(f"CHUNK {i + 1}:\n{c['content']}" for i, c in enumerate(chunks[:5]))
+    response = ledger.client("scenario_generation").messages.create(
         model=HAIKU_MODEL,
         max_tokens=1024,
         system=(
@@ -176,21 +175,18 @@ def store_scenarios(scenarios: list[dict], tenant_conn_str: str) -> int:
 
 
 def generate_eval_suite_for_agent(
-    agent_id: str,
-    tenant_conn_str: str,
-    num_scenarios: int = 20,
+    agent_id: str, tenant_id: str, tenant_conn_str: str, num_scenarios: int = 20
 ) -> int:
     """Generate an eval scenario suite for an agent from its tenant knowledge chunks.
 
-    Fetches the most recent 100 chunks from the tenant DB, batches them into
-    groups of up to 5, calls generate_scenarios_from_chunks per batch, and
-    stores all generated scenarios via store_scenarios.
-
-    Generated scenarios have source='generated' (D-13 LOCKED). Continues until
-    num_scenarios are accumulated or all chunk batches are exhausted.
+    Fetches the most recent 100 chunks from the tenant DB, batches them into groups
+    of up to 5, calls generate_scenarios_from_chunks per batch, and stores the
+    results via store_scenarios. They carry source='generated' (D-13 LOCKED), and
+    it continues until num_scenarios accumulate or the batches run out.
 
     Args:
-        agent_id: UUID string of the agent (for logging).
+        agent_id: UUID string of the agent, for logging and on each ledger row.
+        tenant_id: UUID string of the tenant billed for the generation calls.
         tenant_conn_str: Decrypted Neon connection string for the tenant DB.
         num_scenarios: Target number of scenarios to generate (default 20).
 
@@ -218,6 +214,7 @@ def generate_eval_suite_for_agent(
     batch_size = min(5, max(1, len(chunks) // max(1, num_scenarios // 5)))
 
     all_scenarios: list[dict] = []
+    ledger = LedgerContext(tenant_id=tenant_id, agent_id=agent_id, recorder=ledger_recorder(tenant_conn_str))
 
     # Step 3: Process in batches until num_scenarios reached
     for start in range(0, len(chunks), batch_size):
@@ -225,7 +222,7 @@ def generate_eval_suite_for_agent(
             break
         batch = chunks[start : start + batch_size]
         try:
-            new_scenarios = generate_scenarios_from_chunks(batch, n=5)
+            new_scenarios = generate_scenarios_from_chunks(batch, ledger, n=5)
             all_scenarios.extend(new_scenarios)
         except Exception as exc:
             log.warning(

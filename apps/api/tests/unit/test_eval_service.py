@@ -40,6 +40,7 @@ Mock strategy:
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import json
 import os
@@ -47,7 +48,7 @@ import re
 import uuid
 from contextlib import contextmanager
 from types import MappingProxyType
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import psycopg2
@@ -65,6 +66,8 @@ from ragas.metrics.collections.faithfulness.util import (
     StatementFaithfulnessAnswer,
     StatementGeneratorOutput,
 )
+
+from tests.model_doubles import ledger
 
 # ---------------------------------------------------------------------------
 # Real-ragas doubles (7.18)
@@ -122,7 +125,8 @@ class _FakeRagasEmbedding(BaseRagasEmbedding):
         return [1.0, 0.0, 0.0]
 
 
-def _fake_ragas_instructor_llm():
+def _fake_ragas_instructor_llm(purpose, ledger):  # noqa: ARG001
+    """Stands in for `_build_instructor_llm`, whose signature it must match."""
     return _FakeInstructorLLM()
 
 
@@ -253,7 +257,7 @@ class TestRunRagasEval:
             }
         ]
 
-        result = run_ragas_eval(scenarios)
+        result = run_ragas_eval(scenarios, ledger())
 
         # D-02 LOCKED: from_list must receive 'reference' key (not 'ground_truths')
         assert from_list_calls, "EvaluationDataset.from_list was not called"
@@ -290,9 +294,7 @@ class TestRunRagasEval:
 
         from app.services.eval_service import _build_ragas_metrics
 
-        metrics = _build_ragas_metrics(
-            _fake_ragas_instructor_llm(), _FakeRagasEmbedding()
-        )
+        metrics = _build_ragas_metrics(ledger(), _FakeRagasEmbedding())
 
         assert len(metrics) == 4
         for metric in metrics:
@@ -302,32 +304,98 @@ class TestRunRagasEval:
                 f"{type(metric).__name__} is now a legacy ragas Metric"
             )
 
-    def test_instructor_llm_wraps_an_async_client(self, monkeypatch):
+    def test_instructor_llm_wraps_an_async_client(self):
         """Collections metrics only ever await agenerate(), and
         InstructorLLM.agenerate raises TypeError on a synchronous client."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
-
         from app.services.eval_service import _build_instructor_llm
 
-        assert _build_instructor_llm().is_async is True
+        assert _build_instructor_llm("judge_faithfulness", ledger()).is_async is True
 
-    def test_instructor_llm_disables_thinking(self, monkeypatch):
-        """7.20: instructor forces `tool_choice={"type": "tool"}` on every
-        structured call, and the DeepSeek Anthropic-format endpoint 400s a
-        forced tool_choice under thinking mode. The kwarg has to survive as far
-        as the dict InstructorLLM.agenerate splats into messages.create, which
-        is what _map_provider_params() returns.
+    def test_the_judge_sends_luna_and_effort_none_on_the_wire(self):
+        """The two figures decision #34 priced, read off the bytes the judge sent.
+
+        Not off the route, and not off the InstructorLLM: instructor fills in
+        each default the call did not name, and ragas maps parameters per
+        provider on the way past. Both layers sit between the routing table and
+        the request, so the request is where the claim is checked. A fake
+        transport answers with a real OpenAI-shaped body, which is also what
+        makes the ledger row underneath it a real one.
         """
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+        import asyncio
+        import json
+
+        import httpx
+        from pydantic import BaseModel
 
         from app.services.eval_service import _build_instructor_llm
 
-        llm = _build_instructor_llm()
+        class _Verdict(BaseModel):
+            score: int
 
-        assert llm._map_provider_params()["thinking"] == {"type": "disabled"}, (
-            "thinking is not disabled on the metric LLM; the forced tool_choice "
-            "instructor adds will 400 on the DeepSeek endpoint"
+        sent: dict = {}
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            sent.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl-1",
+                    "object": "chat.completion",
+                    "model": "gpt-5.6-luna",
+                    "choices": [{
+                        "index": 0,
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [{
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "_Verdict",
+                                    "arguments": json.dumps({"score": 1}),
+                                },
+                            }],
+                        },
+                    }],
+                    "usage": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 20,
+                        "prompt_tokens_details": {"cached_tokens": 10},
+                    },
+                },
+                headers={"content-type": "application/json"},
+            )
+
+        transport = httpx.MockTransport(_handler)
+
+        class _Pinned(httpx.AsyncClient):
+            """A client the OpenAI SDK still recognises, answering canned bytes.
+
+            A lambda here fails: the SDK isinstance-checks the client it is
+            handed, so the stand-in has to be a real subclass.
+            """
+
+            def __init__(self, **kwargs):
+                super().__init__(transport=transport, **kwargs)
+
+        rows = []
+        with patch("httpx.AsyncClient", _Pinned):
+            llm = _build_instructor_llm("judge_faithfulness", ledger(rows))
+            asyncio.run(llm.agenerate("score this", _Verdict))
+
+        assert sent.get("model") == "gpt-5.6-luna", (
+            f"the judge asked for model={sent.get('model')!r}"
         )
+        assert sent.get("reasoning_effort") == "none", (
+            "the judge sent reasoning_effort="
+            f"{sent.get('reasoning_effort')!r}; decision #34 priced the Judge "
+            "floor at effort none and any other value is a different price"
+        )
+        assert [row.purpose for row in rows] == ["judge_faithfulness"], (
+            f"the call left {rows!r} on the ledger"
+        )
+        assert rows[0].served_model == "gpt-5.6-luna"
 
     def test_run_ragas_eval_empty_scenarios_returns_empty(self):
         """run_ragas_eval returns empty scores/means when no valid scenarios given.
@@ -338,6 +406,7 @@ class TestRunRagasEval:
         # Scenarios without reference_answer are filtered out — early exit
         result = run_ragas_eval(
             [{"question": "Q", "agent_response": "A", "retrieved_contexts": []}],
+            ledger(),
         )
 
         assert result["scores"] == []
@@ -378,11 +447,28 @@ class TestScoringTouchesNoDatabase:
     """
 
     def test_scoring_takes_no_connection_string_because_it_opens_none(self):
+        """`ledger` is the second parameter and it is not a dsn.
+
+        Ticket #47 gave scoring one argument it did read: who the judge calls
+        are billed to, and a recorder for their rows. `LedgerContext` has no
+        field that could hold a connection string (project rule 1), so the claim
+        this test defends is unchanged and the parameter list is pinned exactly
+        rather than left open.
+        """
+        from app.core.model_client import LedgerContext
         from app.services.eval_service import run_ragas_eval
 
         params = inspect.signature(run_ragas_eval).parameters
-        assert list(params) == ["scenarios"], (
+        assert list(params) == ["scenarios", "ledger"], (
             f"run_ragas_eval grew a parameter it does not read: {list(params)}"
+        )
+        carriers = [
+            field.name
+            for field in dataclasses.fields(LedgerContext)
+            if "conn" in field.name or "dsn" in field.name or "url" in field.name
+        ]
+        assert not carriers, (
+            f"LedgerContext grew {carriers}, a field that could carry a dsn"
         )
 
     def test_scoring_issues_no_statement_against_any_database(self):
@@ -672,10 +758,13 @@ class TestBuildEvalRunConfig:
         """A judge change moves every score without the agent changing at all,
         so the two model ids are separate keys — collapsing them into one would
         make a judge upgrade indistinguishable from an agent regression."""
-        from app.services.eval_service import HAIKU_MODEL, build_eval_run_config
+        from app.core.model_client import route_for
+        from app.services.eval_service import JUDGE_PURPOSES, build_eval_run_config
 
+        route = route_for(JUDGE_PURPOSES[0])
         config = build_eval_run_config("agent-1", "postgresql://production")["config"]
-        assert config["judge_model_id"] == HAIKU_MODEL
+        assert config["judge_model_id"] == route.model
+        assert config["judge_reasoning_effort"] == route.reasoning_effort
         assert "model_id" in config and "judge_model_id" in config
 
     def test_absent_prompt_version_is_not_reported_as_unavailable(
@@ -1609,7 +1698,7 @@ class TestRunRagasEvalAttribution:
         )
         monkeypatch.setattr(eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding)
         monkeypatch.setattr(eval_service, "_score_samples", _fake_score_samples)
-        return eval_service.run_ragas_eval(scenarios)
+        return eval_service.run_ragas_eval(scenarios, ledger())
 
     def test_a_partial_return_does_not_hand_the_golden_row_a_foreign_score(
         self, monkeypatch

@@ -207,7 +207,7 @@ def run(monkeypatch):
     _patch(
         "metadata",
         psycopg2=_fake_psycopg2(lambda _: _connection(state.cursors["metadata"])),
-        enrich_chunks_batch=lambda contents: [
+        enrich_chunks_batch=lambda contents, ledger: [
             ChunkMetadataAndEntities(
                 summary="a summary", keywords=["k"], questions=["q?"], entities=[]
             )

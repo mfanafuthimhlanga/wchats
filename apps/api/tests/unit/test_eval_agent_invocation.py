@@ -1565,7 +1565,7 @@ def task_wired(monkeypatch):
     monkeypatch.setattr(
         mod,
         "run_ragas_eval",
-        lambda scenarios: (
+        lambda scenarios, ledger: (
             rec["scored"].append(list(scenarios))
             or {"scores": [], "means": {}, "sent": 0, "returned": 0, "unattributed": 0}
         ),
@@ -1772,7 +1772,7 @@ def test_the_row_exists_before_the_first_turn_and_is_corrected_after_the_last(
     monkeypatch.setattr(
         mod,
         "run_ragas_eval",
-        lambda scenarios: order.append("score")
+        lambda scenarios, ledger: order.append("score")
         or {"scores": [], "means": {}, "sent": 0, "returned": 0, "unattributed": 0},
     )
 
