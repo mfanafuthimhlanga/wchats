@@ -58,7 +58,9 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
+import importlib.metadata
 import json
 import uuid
 from collections.abc import Mapping
@@ -86,6 +88,7 @@ from sqlalchemy import text as sa_text
 from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db
 from app.core.model_client import OPENAI_PROVIDER, LedgerContext, route_for
+from app.domain.judge_identity import JudgeIdentity
 from app.services.embedding_service import EMBEDDING_MODEL, _get_vo
 
 log = structlog.get_logger(__name__)
@@ -103,6 +106,23 @@ JUDGE_PURPOSES = (
     "judge_context_precision",
     "judge_context_recall",
 )
+
+#: Which prompt each Judge was given, the third field of `JudgeIdentity`.
+#:
+#: NOTHING IN THIS REPO VERSIONS A JUDGE PROMPT, and this constant is the honest
+#: minimum rather than a version anybody chose. The `prompt_versions` table
+#: (control migration 0018) holds an agent's soul, one immutable row per soul
+#: edit, and no judge reads it or writes to it. The four Judge prompts belong to
+#: ragas, which carries each collections metric's prompt text inside the
+#: installed package, and nothing here authors or edits one.
+#:
+#: So the identifier is the artifact the prompt text ships in, read off the
+#: installed distribution rather than typed here. A literal would go stale the
+#: next time `uv sync` resolves a different 0.4.x with different prompts
+#: underneath it, and a calibration figure would then group two prompts under
+#: one key. The day a Judge prompt is written in this repo, that prompt's own
+#: version replaces this and the identity gets finer-grained rather than wider.
+JUDGE_PROMPT_VERSION = f"ragas-{importlib.metadata.version('ragas')}"
 
 # Note: Ragas 0.4.x collections metrics require an InstructorLLM at construction time.
 # Metrics are therefore instantiated inside run_ragas_eval(), not at module level.
@@ -422,6 +442,76 @@ METRIC_KEYS: tuple[str, ...] = (
     "context_precision",
     "context_recall",
 )
+
+#: Which routing-table purpose produced each metric's score.
+#:
+#: Built by pairing the two tuples rather than by spelling `judge_` onto a metric
+#: name. `PURPOSE_ROUTES` also routes `judge_retrieval_faithfulness`, which is a
+#: different Judge in a different task, and a prefix rule would hand its route to
+#: this one. `strict=True` holds the two tuples the same length, so a fifth
+#: metric added without a purpose raises here rather than scoring under a Judge
+#: nobody named.
+JUDGE_PURPOSE_BY_METRIC: Mapping[str, str] = MappingProxyType(
+    dict(zip(METRIC_KEYS, JUDGE_PURPOSES, strict=True))
+)
+
+
+def judge_identity_for(metric: str) -> JudgeIdentity | None:
+    """Which Judge produced this dimension's score, at calibration's grain.
+
+    The model and the effort come off `PURPOSE_ROUTES`, the same table the
+    request was built from, so the record cannot name a Judge the run did not
+    use. Reading them anywhere else would be a second copy free to drift from
+    the first.
+
+    Returns None when the route names no reasoning effort. Decision #34 priced
+    the Judge floor at effort `none` and every judge route carries it today; a
+    route that dropped it would leave the identity a field short, and a key with
+    a hole in it groups two different Judges together. An absent identity says
+    the Judge is unknown, which is what it would be.
+
+    Args:
+        metric: one of METRIC_KEYS, the dimension the score is about.
+    """
+    route = route_for(JUDGE_PURPOSE_BY_METRIC[metric])
+    if route.reasoning_effort is None:
+        log.error(
+            "judge_identity.no_reasoning_effort",
+            metric=metric,
+            model=route.model,
+            detail=(
+                "the route names no effort, so the Judge cannot be identified "
+                "and its verdicts cannot be calibrated against"
+            ),
+        )
+        return None
+    return JudgeIdentity(
+        model=route.model,
+        reasoning_effort=route.reasoning_effort,
+        prompt_version=JUDGE_PROMPT_VERSION,
+    )
+
+
+def result_detail(score: Mapping[str, object], metric: str) -> dict:
+    """The `eval_results.detail` payload for one (scenario, metric) row.
+
+    The whole score row unchanged, plus the identity of the Judge that produced
+    THIS metric. `detail` is where the identity lands because the row is
+    already keyed by run and by dimension, which is the grain #53's
+    CalibrationStatus compares on, and `detail` is the one column on that row
+    that holds three fields at once. So a calibration figure reads one place per
+    verdict and joins nothing to learn what ran. No column and no table is added
+    for it.
+
+    `judge_identity` is null when `judge_identity_for` could not name a complete
+    Judge. A verdict whose Judge is unknown is unknown, never filed under the
+    Judge that happened to run last.
+    """
+    identity = judge_identity_for(metric)
+    return {
+        **score,
+        "judge_identity": dataclasses.asdict(identity) if identity else None,
+    }
 
 
 def dataset_of(value: str | None) -> str:
@@ -1369,6 +1459,7 @@ def write_eval_results(
 
     The eval_results table exists from migration 0001:
       id UUID, eval_run_id UUID, scenario_id TEXT, metric TEXT, score NUMERIC, detail JSONB
+    `detail` carries the score row and the Judge that produced it (result_detail).
 
     One row is inserted per (scenario, metric) pair — four rows per scenario for
     Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall.
@@ -1408,7 +1499,7 @@ def write_eval_results(
                         "scenario_id": str(score["scenario_id"]),
                         "metric": metric,
                         "score": score.get(metric),
-                        "detail": json.dumps(score),
+                        "detail": json.dumps(result_detail(score, metric)),
                     })
         conn.commit()
     finally:

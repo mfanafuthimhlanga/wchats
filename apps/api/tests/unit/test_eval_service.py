@@ -647,6 +647,160 @@ class TestPersistenceSplit:
 
 
 # ---------------------------------------------------------------------------
+# The Judge behind each score (ticket #47)
+# ---------------------------------------------------------------------------
+
+
+class TestJudgeIdentityLandsOnTheScore:
+    """Which Judge produced a score, recorded where #53 will read it.
+
+    A calibration figure says how well one Judge agrees with a human, and three
+    things move that agreement: the model, the reasoning effort, and the prompt.
+    A score stored without them cannot be compared to the next one, and grouping
+    two efforts under the word "judge" averages two populations.
+
+    `eval_results` is where a judge's score lands, one row per (scenario,
+    metric), and `metric` is the judge dimension. So the identity goes in that
+    row's `detail`, which makes it retrievable per dimension per run out of one
+    column with no second table to join.
+    """
+
+    def _details(self, monkeypatch) -> dict[str, dict]:
+        """`detail` per metric, off a real write_eval_results call."""
+        from app.services import eval_service
+
+        cursor = _RecordingCursor()
+        connect, _conn = _recording_connect(cursor, [])
+        monkeypatch.setattr(eval_service.psycopg2, "connect", connect)
+
+        eval_service.write_eval_results(
+            str(uuid.uuid4()),
+            [{"scenario_id": "s1", "faithfulness": 0.9, "answer_relevancy": 0.8,
+              "context_precision": 0.7, "context_recall": 0.6}],
+            "postgresql://production",
+        )
+        return {
+            params["metric"]: json.loads(params["detail"])
+            for _sql, params in cursor.executed
+        }
+
+    def test_every_result_row_names_the_judge_that_scored_that_dimension(
+        self, monkeypatch
+    ):
+        """All three fields, on every dimension, in one place."""
+        from app.services.eval_service import METRIC_KEYS
+
+        details = self._details(monkeypatch)
+
+        assert sorted(details) == sorted(METRIC_KEYS)
+        for metric in METRIC_KEYS:
+            identity = details[metric].get("judge_identity")
+            assert identity is not None, (
+                f"the {metric} row records no Judge, so a calibration figure "
+                "keyed on the identity has nothing to key on"
+            )
+            assert sorted(identity) == [
+                "model", "prompt_version", "reasoning_effort"
+            ], f"the {metric} row's identity is {identity!r}"
+
+    def test_the_model_and_the_effort_come_off_the_routing_table(self, monkeypatch):
+        """The same data the request was built from, never re-declared.
+
+        A second copy of the model name here would let the record name a Judge
+        the run did not use, which is the failure the whole identity exists to
+        stop.
+        """
+        from app.core.model_client import PURPOSE_ROUTES
+        from app.services.eval_service import JUDGE_PURPOSE_BY_METRIC, METRIC_KEYS
+
+        details = self._details(monkeypatch)
+
+        for metric in METRIC_KEYS:
+            route = PURPOSE_ROUTES[JUDGE_PURPOSE_BY_METRIC[metric]]
+            identity = details[metric]["judge_identity"]
+            assert identity["model"] == route.model
+            assert identity["reasoning_effort"] == route.reasoning_effort, (
+                f"the {metric} row records effort "
+                f"{identity['reasoning_effort']!r} against a route that runs at "
+                f"{route.reasoning_effort!r}"
+            )
+
+    def test_the_prompt_version_names_the_artifact_the_prompt_ships_in(
+        self, monkeypatch
+    ):
+        """No judge prompt in this repo carries a version, so the ragas
+        distribution the four prompts live inside is the identifier."""
+        import importlib.metadata
+
+        from app.services.eval_service import METRIC_KEYS
+
+        details = self._details(monkeypatch)
+        expected = f"ragas-{importlib.metadata.version('ragas')}"
+
+        for metric in METRIC_KEYS:
+            assert details[metric]["judge_identity"]["prompt_version"] == expected
+
+    def test_the_score_row_survives_alongside_the_identity(self, monkeypatch):
+        """`detail` still carries what it always carried.
+
+        Nothing reads this column today; #53 is its first reader. Replacing the
+        score row rather than extending it would silently change a shape a later
+        reader is entitled to.
+        """
+        details = self._details(monkeypatch)
+
+        assert details["faithfulness"]["scenario_id"] == "s1"
+        assert details["faithfulness"]["faithfulness"] == 0.9
+        assert details["context_recall"]["context_recall"] == 0.6
+
+    def test_each_metric_maps_to_a_purpose_the_routing_table_routes(self):
+        """The map is built from the two tuples, not from a `judge_` prefix rule.
+
+        `PURPOSE_ROUTES` also routes `judge_retrieval_faithfulness`, a different
+        Judge in a different task, and a string rule would hand its route here.
+        """
+        from app.core.model_client import PURPOSE_ROUTES
+        from app.services.eval_service import (
+            JUDGE_PURPOSE_BY_METRIC,
+            JUDGE_PURPOSES,
+            METRIC_KEYS,
+        )
+
+        assert list(JUDGE_PURPOSE_BY_METRIC) == list(METRIC_KEYS)
+        assert list(JUDGE_PURPOSE_BY_METRIC.values()) == list(JUDGE_PURPOSES)
+        for purpose in JUDGE_PURPOSE_BY_METRIC.values():
+            assert purpose in PURPOSE_ROUTES
+
+    def test_a_route_with_no_effort_records_no_judge_rather_than_a_partial_one(
+        self, monkeypatch
+    ):
+        """The fail-open path, observed rather than assumed.
+
+        Decision #34 priced the Judge floor at effort `none`, and every judge
+        route carries it today, so this branch is unreachable from the shipped
+        table. It exists because a route that dropped the effort would leave the
+        identity a field short, and two efforts filed under one key average two
+        populations. Writing null says the Judge is unknown, which is what it
+        would be, and it costs no scored run.
+        """
+        from app.core.model_client import ModelRoute
+        from app.services import eval_service
+
+        monkeypatch.setattr(
+            eval_service,
+            "route_for",
+            lambda _purpose: ModelRoute("openai", "gpt-5.6-luna"),
+        )
+
+        assert eval_service.judge_identity_for("faithfulness") is None
+        detail = eval_service.result_detail({"scenario_id": "s1"}, "faithfulness")
+        assert detail["judge_identity"] is None
+        assert detail["scenario_id"] == "s1", (
+            "the score row was lost along with the identity"
+        )
+
+
+# ---------------------------------------------------------------------------
 # The configuration tuple
 # ---------------------------------------------------------------------------
 

@@ -22,15 +22,25 @@ it SKIPS, which is unobserved, never a pass.
 from __future__ import annotations
 
 import inspect
+import json
 from contextlib import contextmanager
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+import httpx
 import psycopg2
 import pytest
 
 from app.worker.tasks.runtime import eval as mod
 
+# The canned Judge outputs and the embedding stand-in are borrowed rather than
+# copied, because a second set of canned verdicts would let this module and the
+# eval_service tests disagree about what a Judge returns.
+from tests.unit.test_eval_service import _CANNED_JUDGE_OUTPUTS, _FakeRagasEmbedding
+
 PRODUCTION = "postgresql://production/tenant"
+#: The tenant every ledger row this module produces is billed to. A real UUID,
+#: because `ModelCall` and the ledger columns take UUID strings.
+TENANT_ID = "11111111-1111-1111-1111-111111111111"
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +123,7 @@ def wired(monkeypatch):
     make it fail and then assert on what still happened.
     """
     agent = MagicMock()
+    agent.tenant_id = TENANT_ID
     agent.neon_project_id = "neon-project-1"
     agent.neon_connection_string = b"encrypted"
 
@@ -727,3 +738,138 @@ class TestValidityDenominators:
                     "measured": False,
                     "observations": 0,
                 }, f"{name} reported a value for a metric nothing observed"
+
+
+# ---------------------------------------------------------------------------
+# The judge calls a run pays for (ticket #47)
+# ---------------------------------------------------------------------------
+
+
+def _luna_judge_transport(seen: list[str]) -> httpx.MockTransport:
+    """Canned Luna chat-completion bodies, one per structured judge request.
+
+    Instructor names the response model as the tool it forces, so the handler
+    reads that name off the request and answers with the canned output for it.
+    One fixed shape would fail four of the five schemas ragas asks for.
+    `_CANNED_JUDGE_OUTPUTS` is reused from the eval_service tests rather than
+    copied, so the two modules can only ever agree about what a Judge returns.
+
+    Every body carries `model` and a `usage` block in OpenAI's shape, which is
+    what makes the response hook write a real `model_calls` row instead of
+    logging a gap.
+    """
+    by_name = {cls.__name__: make for cls, make in _CANNED_JUDGE_OUTPUTS.items()}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        name = json.loads(request.content)["tools"][0]["function"]["name"]
+        seen.append(name)
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "model": "gpt-5.6-luna",
+                "choices": [{
+                    "index": 0,
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": by_name[name]().model_dump_json(),
+                            },
+                        }],
+                    },
+                }],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "prompt_tokens_details": {"cached_tokens": 10},
+                },
+            },
+            headers={"content-type": "application/json"},
+        )
+
+    return httpx.MockTransport(_handler)
+
+
+class TestJudgeCallsReachTheLedger:
+    """A whole run's judge calls, counted where the bill is read.
+
+    Everything between the task and the wire is real: the scorer, the four ragas
+    metrics, instructor, the OpenAI SDK, the response hook and
+    `record_model_call`'s own INSERT. Only the two network hops are canned, and
+    the database is the double every test in this module writes through. A test
+    that patched the recorder would prove the recorder was called and nothing
+    about whether a row exists.
+    """
+
+    def test_a_full_run_bills_every_judge_call_to_the_ledger(
+        self, wired, monkeypatch
+    ):
+        """One row per judge request, on the four dimensions, for this run."""
+        from app.domain.model_call import ModelSource
+        from app.services import eval_service
+        from app.services.eval_service import JUDGE_PURPOSES
+
+        rows: list = []
+        seen: list[str] = []
+        real_recorder = mod.ledger_recorder
+
+        def _recording_recorder(conn_str):
+            """The production recorder, with every row read on its way past."""
+            write = real_recorder(conn_str)
+
+            def record(call):
+                rows.append((conn_str, call))
+                write(call)
+
+            return record
+
+        monkeypatch.setattr(mod, "ledger_recorder", _recording_recorder)
+        # `wired` doubles the scorer, because every other test in this module is
+        # about which connection string a write opens. This one is about the
+        # calls scoring makes, so the real scorer goes back.
+        monkeypatch.setattr(mod, "run_ragas_eval", eval_service.run_ragas_eval)
+        monkeypatch.setattr(
+            eval_service, "_VoyageRagasEmbedding", _FakeRagasEmbedding
+        )
+
+        transport = _luna_judge_transport(seen)
+
+        class _Pinned(httpx.AsyncClient):
+            """A client the OpenAI SDK still recognises, answering canned bytes.
+
+            A lambda fails here, because the SDK isinstance-checks the client
+            it is handed, so the stand-in has to be a real subclass.
+            """
+
+            def __init__(self, **kwargs):
+                super().__init__(transport=transport, **kwargs)
+
+        with patch("httpx.AsyncClient", _Pinned):
+            result = _run()
+
+        assert seen, "the run made no judge request at all"
+        assert len(rows) == len(seen), (
+            f"{len(seen)} judge requests left {len(rows)} ledger rows, so this "
+            "tenant's judge spend is under-reported by the difference"
+        )
+        assert {call.purpose for _dsn, call in rows} == set(JUDGE_PURPOSES), (
+            f"the run billed {sorted({c.purpose for _d, c in rows})}, and a "
+            "rollup that cannot separate the four cannot price any of them"
+        )
+        assert {call.served_model for _dsn, call in rows} == {"gpt-5.6-luna"}
+        assert {call.model_source for _dsn, call in rows} == {ModelSource.REPORTED}, (
+            "the served model was not read off the body the provider sent"
+        )
+        assert {call.job_id for _dsn, call in rows} == {result["run_id"]}
+        assert {call.tenant_id for _dsn, call in rows} == {TENANT_ID}
+        assert {dsn for dsn, _call in rows} == {PRODUCTION}
+        assert any(
+            "INSERT INTO model_calls" in sql for sql in wired["cursor"].executed
+        ), "no row reached the database the recorder was bound to"
