@@ -70,6 +70,11 @@ An Agent with typed skills that can complete an action, such as a purchase, thro
 gate and a provider adapter.
 _Avoid_: commerce agent, checkout bot.
 
+**Outcome**:
+The typed result of one tool call, `ok`, `denied`, `requires_human` or `error`. Denied means
+the system said no; error means something broke.
+_Avoid_: verdict (that word belongs to the Harness), status, result.
+
 **Provisioning**:
 Creating and managing an Agent from outside the admin console, over the REST API through the
 MCP server.

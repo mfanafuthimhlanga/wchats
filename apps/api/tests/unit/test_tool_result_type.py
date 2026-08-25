@@ -17,10 +17,10 @@ THE DEFECT THIS FILE OPENS ON
     type that fixes it.
 
 WHAT MAY NOT MOVE
-    The wire. The agent and the SDK read those dicts today, so the three
-    literals in `WIRE_PINS` were captured from the dispatcher at HEAD before the
-    type existed and are asserted byte for byte after it. The distinction lives
-    in the type; the bytes are unchanged.
+    The wire. The agent and the SDK read those dicts today, so this file
+    captured the three literals in `WIRE_PINS` from the dispatcher at HEAD
+    before the type existed, and asserts them byte for byte after it. The
+    distinction lives in the type; the bytes do not move.
 """
 
 from __future__ import annotations
@@ -47,8 +47,8 @@ PLACE_ORDER_ARGS = {
     "amount_cents": 500,
 }
 
-#: Captured from `place_order_tool.handler` at HEAD (a5dc6bb), before ToolResult
-#: existed. Each is the exact dict that branch handed the SDK.
+#: `place_order_tool.handler` produced each of these at HEAD (a5dc6bb), before
+#: ToolResult existed. Each is the exact dict that branch handed the SDK.
 WIRE_PINS = {
     "ok": {"content": [{"type": "text", "text": "Order placed [STUB]"}]},
     "requires_human": {
@@ -345,6 +345,26 @@ def test_an_unknown_skill_raises_rather_than_returning_a_verdict():
     from app.services.transactional.tools import run_transactional_skill  # noqa: PLC0415
 
     with pytest.raises(KeyError):
+        asyncio.run(run_transactional_skill("delete_everything", {}))
+
+
+def test_the_unknown_skill_error_carries_the_modules_own_name():
+    """A bare KeyError says a dict lookup missed. This says which contract broke.
+
+    `InvalidJobDict` and `InvalidRetrievedContext` are the house precedent.
+    Name the error after the rule it breaks, and subclass the builtin it
+    replaces so an existing `except KeyError` keeps catching it.
+    """
+    import pytest  # noqa: PLC0415
+
+    from app.services.transactional.tools import (  # noqa: PLC0415
+        UnknownSkillError,
+        run_transactional_skill,
+    )
+
+    assert issubclass(UnknownSkillError, KeyError)
+
+    with pytest.raises(UnknownSkillError, match="delete_everything"):
         asyncio.run(run_transactional_skill("delete_everything", {}))
 
 

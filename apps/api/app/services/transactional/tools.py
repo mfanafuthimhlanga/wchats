@@ -8,8 +8,8 @@ The single _execute_transactional_tool dispatcher encodes the enforcement order 
   3. Reserve idempotency (reserve_idempotency — atomic INSERT ON CONFLICT DO NOTHING;
      DB decides single winner — CR-02 closed):
        "replay"       → return stored result immediately (WR-01: BEFORE rate checks)
-       "args_mismatch"→ explicit is_error (WR-02 closed)
-       "in_progress"  → benign is_error (concurrent duplicate delivery)
+       "args_mismatch"→ denied, and audited beside capability.denial (WR-02 closed)
+       "in_progress"  → denied, a concurrent duplicate the reservation refused
        "unknown"      → is_error + audit (CR-01: stale 'in_flight' row — adapter may
                         already have run; never auto-reclaimed)
        "reserved"     → proceed as the winner
@@ -35,11 +35,11 @@ What the dispatcher returns (ticket #45):
   something broke.
 
 AUD-01 symmetry:
-  Every entry into a transactional tool that is NOT a replay or benign in_progress produces
+  Every entry into a transactional tool that is NOT a replay or an in_progress produces
   exactly one tool_calls_audit row: capability denial, rate denial, actor block, adapter error,
   and success paths all write one row. Replays and in_progress do NOT write audit rows.
 
-confirm_action_tool (mutating=False, WR-05 closed):
+confirm_action_tool, over its own typed seam run_confirm_action (mutating=False, WR-05):
   Gated behind check_capability_access + IN-03 agent_id guard before writing a
   pending_confirmations row. Under side_effects='recorded' it writes no row at
   all and records the attempt instead — it does not use the dispatcher, so it
@@ -224,8 +224,8 @@ def _not_executed_result(skill: str, detail: str = "") -> ToolResult:
     **The outcome is `denied`, not `error`.** The text above is deliberately
     shaped like a provider outage so the agent reasons the way production makes
     it reason, and on the wire that is `is_error=True` either way. What the
-    SYSTEM knows is different: no fault occurred, the recorded-mode seam refused
-    to execute. Calling it `error` would page someone every time an eval runs.
+    SYSTEM knows is different. No fault occurred, and the recorded-mode seam
+    refused to execute. Calling it `error` would page someone on every eval run.
     All three call sites, the step-3 replay, the step-5 require_human arm and
     step 5.5, are that same refusal.
     """
@@ -241,19 +241,19 @@ def _not_executed_result(skill: str, detail: str = "") -> ToolResult:
     )
 
 
-def _confirm_wire(outcome: Outcome, text: str) -> dict:
-    """confirm_action_tool's own edge onto the wire.
+def _confirm_result(outcome: Outcome, text: str) -> ToolResult:
+    """Build one confirm_action verdict.
 
     confirm_action does not route through `_execute_transactional_tool`
-    (mutating=False, no adapter), so it reaches `to_wire` from here instead. The
-    conversion is the same one every other branch makes, which is the point:
+    (mutating=False, no adapter), so it decides its own outcome here. It still
+    reaches the wire through the one `to_wire` every other branch uses, so
     outcome maps to `is_error` in exactly one place.
 
     `Outcome.requires_human` is what a written confirmation row means. That is
     the whole job of this tool, and on the wire it is a non-error response,
     unchanged.
     """
-    return to_wire(ToolResult(skill="confirm_action", outcome=outcome, text=text))
+    return ToolResult(skill="confirm_action", outcome=outcome, text=text)
 
 
 def _declined_detail(
@@ -458,8 +458,8 @@ async def _execute_transactional_tool(
                            fail-closed on EVERY call (including replays) — T-14-04-03
       3. Reserve         — reserve_idempotency: atomic DB claim, DB decides single winner
                            "replay"       → return stored result BEFORE rate checks (WR-01)
-                           "args_mismatch"→ is_error (WR-02)
-                           "in_progress"  → benign is_error (concurrent duplicate delivery)
+                           "args_mismatch"→ denied + audit (WR-02)
+                           "in_progress"  → denied (concurrent duplicate delivery)
                            "unknown"      → is_error + audit (CR-01: stale in-flight row)
                            "reserved"     → proceed as winner
       4. Rate checks     — apply_rate_and_constraint_checks: Redis INCR+EXPIRE (side-effecting)
@@ -496,17 +496,17 @@ async def _execute_transactional_tool(
         ToolResult, from every branch. The outcome each branch carries:
 
           Outcome.denied          a gate refused. The capability envelope, the
-                                  IDV gate's two token cases, the rate and
-                                  constraint ceiling, the Actor seam's block,
-                                  and every recorded-mode refusal.
+                                  IDV gate's two token cases, the reused key
+                                  and the concurrent duplicate the reservation
+                                  refuses, the rate and constraint ceiling, the
+                                  Actor seam's block, and every recorded-mode
+                                  refusal.
           Outcome.requires_human  the Actor seam escalated and a
                                   pending_confirmations row now exists.
-          Outcome.error           something broke or the caller sent something
-                                  unusable. No agent identity, the IDV check
-                                  that could not complete, a reused idempotency
-                                  key with different arguments, a concurrent
-                                  duplicate, a stranded reservation, and the
-                                  adapter's own two failures.
+          Outcome.error           something broke. No agent identity, the IDV
+                                  check that could not reach a verdict, a
+                                  stranded reservation, and the adapter's own
+                                  two failures.
           Outcome.ok              the adapter ran, or a completed earlier call's
                                   stored result is being replayed.
 
@@ -764,10 +764,9 @@ async def _execute_transactional_tool(
 
     if reservation.state == "args_mismatch":
         # WR-02 closed: same idempotency_key used with different business arguments.
-        # Return an explicit error instead of silently replaying the stale result.
-        # AUD-01: this is a security-relevant rejection (suspicious key reuse) — audit it,
-        # matching the capability.denial / actor_block paths. (in_progress is NOT audited
-        # here: it is a concurrent-duplicate no-op; the reserved winner audits the real call.)
+        # Refuse the call outright instead of silently replaying the stale result.
+        # AUD-01: a security-relevant rejection (suspicious key reuse), so it is
+        # audited like capability.denial and actor_block. in_progress writes no row.
         if recorded:
             record_suppressed_side_effect(
                 RECORDED_DECLINED,
@@ -792,11 +791,11 @@ async def _execute_transactional_tool(
             latency_ms=None,
             error=_recorded_error(recorded, "idempotency.args_mismatch"),
         )
-        # Outcome.error: no gate refused this. The caller reused a key with
-        # different arguments, which is a protocol violation upstream.
+        # Outcome.denied: the idempotency gate refused this call, which is why the
+        # audit row sits beside capability.denial as a security-relevant rejection.
         return ToolResult(
             skill=skill,
-            outcome=Outcome.error,
+            outcome=Outcome.denied,
             text=(
                 "Idempotency key reused with different arguments. "
                 "Each new request must use a unique idempotency_key."
@@ -804,13 +803,12 @@ async def _execute_transactional_tool(
         )
 
     if reservation.state == "in_progress":
-        # Concurrent duplicate delivery — another worker is executing the same key.
-        # Return a benign is_error without executing (caller should retry later).
+        # Concurrent duplicate delivery: another worker holds the same key.
+        # Outcome.denied: the reservation refused this caller, and nothing broke.
         if recorded:
-            # No audit row here in either mode (AUD-01: the reserved winner
-            # audits the real call), so the in-process sink is the ONLY record
-            # that the agent tried. Without it, P2 reads this turn as one where
-            # no mutating call was attempted at all.
+            # No audit row in either mode, because the reserved winner audits the
+            # real call. The in-process sink is then the ONLY record that the agent
+            # tried, and without it P2 reads this turn as one with no mutating call.
             record_suppressed_side_effect(
                 RECORDED_DECLINED,
                 _declined_detail(
@@ -824,7 +822,7 @@ async def _execute_transactional_tool(
             )
         return ToolResult(
             skill=skill,
-            outcome=Outcome.error,
+            outcome=Outcome.denied,
             text=(
                 "This request is already being processed. "
                 "Please wait a moment and retry if you do not receive a response."
@@ -897,6 +895,7 @@ async def _execute_transactional_tool(
     # int-typed, so the comparison below is total.
     rate_denial = await apply_rate_and_constraint_checks(agent_id, skill, snapshot, validated)
     if rate_denial is not None:
+        # Outcome.denied: the rate and constraint ceiling refused this call.
         # Release the reservation so a later retry can attempt the key again.
         await release_idempotency(agent_id, skill, idem_key)
         if recorded:
@@ -937,6 +936,7 @@ async def _execute_transactional_tool(
         skill, raw_args, snapshot, conversation_id or "", agent_id, conn_str
     )
     if decision == "block":
+        # Outcome.denied: the Actor gate refused this call.
         await release_idempotency(agent_id, skill, idem_key)
         if recorded:
             record_suppressed_side_effect(
@@ -1239,6 +1239,16 @@ async def _execute_transactional_tool(
 # ---------------------------------------------------------------------------
 
 
+class UnknownSkillError(KeyError):
+    """`run_transactional_skill` was handed a name SKILL_INPUT_MODELS does not hold.
+
+    A bare KeyError says a dict lookup missed. This names the contract that
+    broke, the way `InvalidJobDict` and `InvalidRetrievedContext` do for theirs.
+    It subclasses KeyError so a caller that already catches KeyError keeps
+    catching it.
+    """
+
+
 async def run_transactional_skill(skill: str, args: dict) -> ToolResult:
     """Validate `args` against `skill`'s Input model, then run the dispatcher.
 
@@ -1260,10 +1270,17 @@ async def run_transactional_skill(skill: str, args: dict) -> ToolResult:
         wire's is_error=True that a ValidationError has always produced.
 
     Raises:
-        KeyError: `skill` is not one of the six. A caller naming a skill this
-            mapping does not hold is a bug upstream, never a customer input.
+        UnknownSkillError: `skill` is not one of the six. A caller naming a
+            skill this mapping does not hold is a bug upstream, never a
+            customer input, so it raises rather than returning a verdict.
     """
-    model = SKILL_INPUT_MODELS[skill]
+    try:
+        model = SKILL_INPUT_MODELS[skill]
+    except KeyError as exc:
+        raise UnknownSkillError(
+            f"Unknown transactional skill {skill!r}. "
+            f"Known skills: {sorted(SKILL_INPUT_MODELS)}"
+        ) from exc
     try:
         validated = model(**args)
     except ValidationError as exc:
@@ -1390,116 +1407,82 @@ async def update_customer_record_tool(args: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@tool(
-    "confirm_action",
-    (
-        "Submit a confirmation request for a pending transactional action that requires "
-        "human approval. Creates a pending_confirmations row for Phase-18 resolution. "
-        "Does NOT execute the underlying action and does NOT require an idempotency_key "
-        "(mutating=False). Gated behind check_capability_access (WR-05)."
-    ),
-    ConfirmActionInput.model_json_schema(),
-)
-async def confirm_action_tool(args: dict) -> dict:
-    """Write a pending_confirmations row — no provider adapter, no idempotency key.
+def _confirm_action_recorded(agent_id: str, validated: ConfirmActionInput) -> ToolResult:
+    """Record that the agent asked for approval, and write no row.
 
-    mutating=False (TOOL_REGISTRY): confirm_action only creates a confirmation row;
-    it does NOT execute the underlying provider action. The Phase-18 admin UI will
-    resolve pending rows. PRD DDL unchanged.
+    D1/P1b: confirm_action does NOT route through _execute_transactional_tool,
+    so step 5.5 never sees it, and it sits in `allowed_tools` in both modes by
+    design (an eval agent that cannot request approval cannot be scored on
+    choosing to). Left ungated it writes a durable row into the owner's triage
+    queue on every eval scenario where the agent decides to ask, nightly.
 
-    WR-05 (closed): confirm_action is now gated behind check_capability_access before
-    writing the pending_confirmations row. Disabled or missing skill → is_error, no row.
-
-    IN-03 (closed): empty agent_id → precondition error before any capability check or
-    DB write.
-
-    Duplicate-confirm dedup (T-14-08-05 closed): the partial unique index
-    uq_pending_confirmations_unresolved (migration 0016) allows at most one
-    UNRESOLVED confirmation per (agent_id, skill, action_reference). The row is
-    inserted via the ORM; on the resulting IntegrityError the existing pending row
-    is returned instead of a duplicate, so an enabled agent cannot create unbounded
-    confirmation rows for the same action. Resolved rows (Phase-18) can be
-    re-requested because the index is scoped to resolved_at IS NULL.
+    This is queue pollution rather than money. `_is_confirm_action_shaped` DOES
+    filter this shape, so approving one never reaches an adapter, which is what
+    makes it less dangerous than the require_human row the dispatcher writes. It
+    is still lost eval signal. Nothing recorded that the agent chose to ask for
+    approval, and that decision is worth scoring. Both halves are fixed here:
+    no row, and a recording.
     """
-    try:
-        validated = ConfirmActionInput(**args)
-    except ValidationError as exc:
-        return _confirm_wire(Outcome.error, f"Invalid input: {exc}")
-
-    # Lazy import to access the ContextVars set by build_tool_server.
     from app.services.agent_tools import (  # noqa: PLC0415
-        _agent_id_var,
         _conversation_id_var,
-        _side_effects_var,
         record_suppressed_side_effect,
     )
 
-    agent_id = _agent_id_var.get()
-    recorded: bool = _side_effects_var.get() == "recorded"
+    record_suppressed_side_effect(
+        "transactional.confirm_action",
+        {
+            "skill": validated.skill,
+            "action_reference": validated.action_reference,
+            "agent_id": agent_id,
+            "conversation_id": _conversation_id_var.get() or None,
+            "reason": "confirm_action.not_queued",
+        },
+    )
+    log.info("confirm_action.not_queued", agent_id=agent_id, skill=validated.skill)
+    return _not_executed_result(
+        "confirm_action",
+        f"No approval request was created for the '{validated.skill}' action "
+        f"(reference: {validated.action_reference}).",
+    )
 
-    # IN-03: agent_id guard — fail before any DB write
-    if not agent_id:
-        return _confirm_wire(
-            Outcome.error,
-            "Precondition failed: agent context not set. "
-            "Cannot submit confirmation request without a valid agent identity.",
-        )
 
-    # WR-05: capability gate — check_capability_access is side-effect-free.
-    # Disabled or missing skill → return is_error without writing the row.
-    _snapshot, denial = await check_capability_access(agent_id, validated.skill)
-    if denial is not None:
-        return _confirm_wire(
-            Outcome.denied,
-            f"Access denied: capability envelope denied confirm_action for "
-            f"skill '{validated.skill}' (reason: {denial}). "
-            f"Contact your administrator to enable this tool.",
-        )
+def _existing_confirmation_id(db, agent_id: str, validated: ConfirmActionInput):
+    """The unresolved confirmation already holding this (agent, skill, reference).
 
-    # -------------------------------------------------------------------
-    # D1/P1b: confirm_action does NOT route through _execute_transactional_tool,
-    # so step 5.5 never sees it — and it is in `allowed_tools` in both modes, by
-    # design (an eval agent that cannot request approval cannot be scored on
-    # choosing to). Left ungated it writes a durable row into the owner's triage
-    # queue on every eval scenario where the agent decides to ask, nightly.
-    #
-    # Less dangerous than the require_human row above — `_is_confirm_action_shaped`
-    # DOES filter this shape, so approving one never reaches an adapter — so this
-    # is queue pollution rather than money. It is still lost eval signal: nothing
-    # recorded that the agent chose to ask for approval, which is a decision worth
-    # scoring. Both halves are fixed here: no row, and a recording.
-    # -------------------------------------------------------------------
-    if recorded:
-        record_suppressed_side_effect(
-            "transactional.confirm_action",
-            {
-                "skill": validated.skill,
-                "action_reference": validated.action_reference,
-                "agent_id": agent_id,
-                "conversation_id": _conversation_id_var.get() or None,
-                "reason": "confirm_action.not_queued",
-            },
+    Read after the unique index rejects an insert, so the caller hands back a
+    coherent confirmation id instead of growing the table. None when the losing
+    row cannot be found, which leaves the caller its own id.
+    """
+    existing = (
+        db.query(PendingConfirmation)
+        .filter(
+            PendingConfirmation.agent_id == agent_id,
+            PendingConfirmation.skill == validated.skill,
+            PendingConfirmation.arguments["action_reference"].astext
+            == validated.action_reference,
+            PendingConfirmation.resolved_at.is_(None),
         )
-        log.info(
-            "confirm_action.not_queued",
-            agent_id=agent_id,
-            skill=validated.skill,
-        )
-        return to_wire(
-            _not_executed_result(
-                "confirm_action",
-                f"No approval request was created for the '{validated.skill}' action "
-                f"(reference: {validated.action_reference}).",
-            )
-        )
+        .order_by(PendingConfirmation.requested_at)
+        .first()
+    )
+    return existing.id if existing is not None else None
 
+
+def _write_pending_confirmation(agent_id: str, validated: ConfirmActionInput) -> ToolResult:
+    """Insert the pending_confirmations row, or return the one already there.
+
+    Duplicate-confirm dedup (T-14-08-05 closed): the partial unique index
+    uq_pending_confirmations_unresolved (migration 0016) allows at most one
+    UNRESOLVED confirmation per (agent_id, skill, action_reference). A duplicate
+    confirm_action loses that race, so this catches the IntegrityError and
+    returns the existing row rather than inserting a second one. Resolved rows
+    can be re-requested, because the index is scoped to resolved_at IS NULL.
+    """
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(hours=_CONFIRM_TTL_HOURS)
-
-    # Client-generate the UUID so the ID is set on the Python object without needing
-    # a DB flush/refresh (enables str(row.id) immediately after db.add in test and prod).
+    # Client-generate the UUID so the id is set on the Python object without a
+    # DB flush or refresh (str(row.id) reads right after db.add, in test and prod).
     confirmation_id = uuid4()
-
     row = PendingConfirmation(
         id=confirmation_id,
         agent_id=agent_id,
@@ -1507,7 +1490,7 @@ async def confirm_action_tool(args: dict) -> dict:
         arguments={"action_reference": validated.action_reference},
         requested_at=now,
         expires_at=expires_at,
-        # resolved_at and resolution left NULL until Phase 18 resolves the row.
+        # resolved_at and resolution stay NULL until Phase 18 resolves the row.
     )
 
     with get_sync_db() as db:
@@ -1515,24 +1498,8 @@ async def confirm_action_tool(args: dict) -> dict:
         try:
             db.commit()
         except IntegrityError:
-            # T-14-08-05: a concurrent/duplicate confirm_action lost the
-            # uq_pending_confirmations_unresolved race. Do NOT insert a duplicate;
-            # return the existing unresolved confirmation so the caller still gets a
-            # coherent confirmation id without growing the table unbounded.
             db.rollback()
-            existing = (
-                db.query(PendingConfirmation)
-                .filter(
-                    PendingConfirmation.agent_id == agent_id,
-                    PendingConfirmation.skill == validated.skill,
-                    PendingConfirmation.arguments["action_reference"].astext
-                    == validated.action_reference,
-                    PendingConfirmation.resolved_at.is_(None),
-                )
-                .order_by(PendingConfirmation.requested_at)
-                .first()
-            )
-            existing_id = existing.id if existing is not None else confirmation_id
+            existing_id = _existing_confirmation_id(db, agent_id, validated) or confirmation_id
             log.info(
                 "confirm_action.duplicate_suppressed",
                 agent_id=agent_id,
@@ -1540,7 +1507,7 @@ async def confirm_action_tool(args: dict) -> dict:
                 confirmation_id=str(existing_id),
                 action_reference=validated.action_reference,
             )
-            return _confirm_wire(
+            return _confirm_result(
                 Outcome.requires_human,
                 f"Confirmation request for '{validated.skill}' action "
                 f"(reference: {validated.action_reference}) is already pending. "
@@ -1554,13 +1521,78 @@ async def confirm_action_tool(args: dict) -> dict:
         confirmation_id=str(confirmation_id),
         action_reference=validated.action_reference,
     )
-
-    return _confirm_wire(
+    return _confirm_result(
         Outcome.requires_human,
         f"Confirmation request submitted for '{validated.skill}' action "
         f"(reference: {validated.action_reference}). "
         f"Awaiting human approval. Confirmation ID: {confirmation_id}.",
     )
+
+
+async def run_confirm_action(args: dict) -> ToolResult:
+    """Validate, gate, then write the confirmation row. confirm_action's typed seam.
+
+    The counterpart to `run_transactional_skill`, and it exists for the same
+    reason. The `@tool` handler converts at its own SDK edge with `to_wire`; the
+    red-team probe reads the outcome, so a probe never decides from prose
+    whether an approver was asked. Every row this writes is
+    `Outcome.requires_human`, which on the wire is indistinguishable from a
+    completed action.
+
+    mutating=False (TOOL_REGISTRY): this creates a confirmation row and never
+    executes the underlying provider action. It takes NO idempotency key and
+    calls NO provider adapter. The Phase-18 admin UI resolves pending rows.
+    PRD DDL unchanged.
+
+    WR-05 (closed): the capability gate runs before the row is written, so a
+    disabled or missing skill is denied and writes nothing. IN-03 (closed): an
+    empty agent_id fails before the capability check and before any DB write.
+    """
+    try:
+        validated = ConfirmActionInput(**args)
+    except ValidationError as exc:
+        return _confirm_result(Outcome.error, f"Invalid input: {exc}")
+
+    # Lazy import to access the ContextVars set by build_tool_server.
+    from app.services.agent_tools import _agent_id_var, _side_effects_var  # noqa: PLC0415
+
+    agent_id = _agent_id_var.get()
+    if not agent_id:
+        return _confirm_result(
+            Outcome.error,
+            "Precondition failed: agent context not set. "
+            "Cannot submit confirmation request without a valid agent identity.",
+        )
+
+    # check_capability_access is side-effect-free, so this costs nothing to run first.
+    _snapshot, denial = await check_capability_access(agent_id, validated.skill)
+    if denial is not None:
+        return _confirm_result(
+            Outcome.denied,
+            f"Access denied: capability envelope denied confirm_action for "
+            f"skill '{validated.skill}' (reason: {denial}). "
+            f"Contact your administrator to enable this tool.",
+        )
+
+    if _side_effects_var.get() == "recorded":
+        return _confirm_action_recorded(agent_id, validated)
+
+    return _write_pending_confirmation(agent_id, validated)
+
+
+@tool(
+    "confirm_action",
+    (
+        "Submit a confirmation request for a pending transactional action that requires "
+        "human approval. Creates a pending_confirmations row for Phase-18 resolution. "
+        "Does NOT execute the underlying action and does NOT require an idempotency_key "
+        "(mutating=False). Gated behind check_capability_access (WR-05)."
+    ),
+    ConfirmActionInput.model_json_schema(),
+)
+async def confirm_action_tool(args: dict) -> dict:
+    """Validate, gate, then convert at the SDK edge. skill=confirm_action."""
+    return to_wire(await run_confirm_action(args))
 
 
 # ---------------------------------------------------------------------------

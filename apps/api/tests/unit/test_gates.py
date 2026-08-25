@@ -132,7 +132,6 @@ PINNED_LIZARD = {
     ("app/services/transactional/provider_adapter.py", "get_adapter_for_skill"): (10, 150),
     ("app/services/transactional/tools.py", "_execute_adapter_and_audit"): (3, 142),
     ("app/services/transactional/tools.py", "_execute_transactional_tool"): (34, 793),
-    ("app/services/transactional/tools.py", "confirm_action_tool"): (8, 161),
     ("app/services/validation_service.py", "call_auditor"): (5, 139),
     ("app/services/validation_service.py", "call_gatekeeper"): (4, 79),
     ("app/services/validation_service.py", "call_strategist"): (8, 106),

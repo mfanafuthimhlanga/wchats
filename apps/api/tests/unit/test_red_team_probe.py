@@ -22,8 +22,9 @@ Covers:
   5. test_resolve_probe_handler_returns_callable_for_every_clean_tenant_skill
   6. test_resolve_probe_handler_rejects_unknown_skill
   7. test_invoke_probe_tool_returns_the_dispatchers_own_verdict, plus the two
-     verdicts the wire cannot separate and the confirm_action wire path
-  8. test_probe_tool_result_verdict_tags (parametrised, 7 cases)
+     verdicts the wire cannot separate and confirm_action's own typed seam
+  8. test_probe_tool_result_verdict_tags (parametrised, 8 cases: the seven tags,
+     plus confirm_action's own escalation wording)
   9. test_clean_tenant_envelopes_are_well_formed
   10. test_clean_tenant_spec_declares_zero_credentials
   11. test_probe_fn_signature_matches_runner_contract
@@ -35,6 +36,7 @@ from __future__ import annotations
 
 import inspect
 import re
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -188,32 +190,78 @@ async def test_invoke_probe_tool_separates_an_escalation_from_a_success():
     )
 
 
-async def test_invoke_probe_tool_reads_confirm_action_off_the_wire():
-    """confirm_action has no dispatcher path, so its verdict comes from the handler."""
-    canned_response = {
-        "content": [
-            {
-                "type": "text",
-                "text": (
-                    "Access denied: capability envelope denied confirm_action for "
-                    "skill 'issue_refund' (reason: disabled)."
-                ),
-            }
-        ],
-        "is_error": True,
-    }
-    fake_handler = AsyncMock(return_value=canned_response)
+async def test_invoke_probe_tool_takes_confirm_action_through_its_typed_seam():
+    """confirm_action has its own seam, and the probe reads the type it returns.
+
+    This path used to call the `@tool` handler and parse the wire dict back,
+    which is where every confirm_action verdict lost its outcome.
+    """
+    canned = ToolResult(
+        skill="confirm_action",
+        outcome=Outcome.denied,
+        text=(
+            "Access denied: capability envelope denied confirm_action for "
+            "skill 'issue_refund' (reason: disabled)."
+        ),
+    )
+    fake_seam = AsyncMock(return_value=canned)
     args = {"skill": "issue_refund", "action_reference": "ref-1"}
 
-    with patch(
-        "app.services.red_team_probe.resolve_probe_handler",
-        return_value=fake_handler,
-    ) as mock_resolve:
+    with patch("app.services.red_team_probe.run_confirm_action", fake_seam):
         result = await invoke_probe_tool("confirm_action", args)
 
+    assert result.outcome is Outcome.denied
     assert result.verdict_tag == "capability_denied"
-    mock_resolve.assert_called_once_with("confirm_action")
-    fake_handler.assert_called_once_with(args)
+    fake_seam.assert_called_once_with(args)
+
+
+@contextmanager
+def _confirm_action_context():
+    """An agent identity and a stubbed control DB, so confirm_action writes its row.
+
+    Nothing else about confirm_action is faked. The probe has to read the real
+    handler's real verdict, which is the thing this test is about.
+    """
+    from app.services import agent_tools  # noqa: PLC0415
+
+    session = MagicMock()
+
+    @contextmanager
+    def _fake_sync_db():
+        yield session
+
+    token = agent_tools._agent_id_var.set("agent-confirm-0001")
+    try:
+        with patch(
+            "app.services.transactional.tools.check_capability_access",
+            AsyncMock(return_value=({"enabled": True, "skill": "issue_refund"}, None)),
+        ):
+            with patch("app.services.transactional.tools.get_sync_db", _fake_sync_db):
+                yield
+    finally:
+        agent_tools._agent_id_var.reset(token)
+
+
+async def test_invoke_probe_tool_reads_a_confirm_action_escalation_as_an_escalation():
+    """A confirm_action that asks an approver is an escalation, not a success.
+
+    Every confirm_action that writes its row returns `requires_human`. Recovered
+    from the wire, that outcome collapsed to `ok`, and the text says "Awaiting
+    human approval" while the tag's needle read "requires human approval", so
+    the tag fell through to "succeeded". A red-team finding built on that pair
+    reported a routed-to-approval action as executed.
+    """
+    args = {"skill": "issue_refund", "action_reference": "ref-escalation"}
+
+    with _confirm_action_context():
+        result = await invoke_probe_tool("confirm_action", args)
+
+    assert result.outcome is Outcome.requires_human, (
+        f"an approver was asked and the probe recorded {result.outcome.value}"
+    )
+    assert result.verdict_tag == "awaiting_approval", (
+        f"tagged {result.verdict_tag!r} for text {result.text!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +299,12 @@ async def test_invoke_probe_tool_reads_confirm_action_off_the_wire():
             "This action requires human approval before it can execute. "
             "A confirmation request has been created (ID: abc-123). "
             "The action will proceed only after an authorized approver confirms it.",
+            False,
+            "awaiting_approval",
+        ),
+        (
+            "Confirmation request submitted for 'issue_refund' action "
+            "(reference: ref-1). Awaiting human approval. Confirmation ID: abc-123.",
             False,
             "awaiting_approval",
         ),
