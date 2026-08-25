@@ -28,21 +28,30 @@ FAIL OPEN IS ASSERTED, NOT ASSUMED
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import datetime, timezone
 from decimal import Decimal
 
 import httpx
+import openai
 import pytest
 import structlog
+from pydantic import BaseModel
 
 from app.core.model_client import (
+    PURPOSE_ROUTES,
     CallContext,
     Credentials,
+    ModelRoute,
+    UnknownPurpose,
+    UnsupportedProvider,
     attach_ledger_hook,
     make_client,
+    make_instructor_client,
     provider_for_base_url,
     record_model_call,
+    route_for,
     served_model_for,
 )
 from app.domain.model_call import ModelSource
@@ -553,3 +562,411 @@ class TestMakeClient:
 
         assert seen["model"] == "claude-haiku-4-5"
         assert recorded[0].requested_model == seen["model"]
+
+
+# ---------------------------------------------------------------------------
+# The OpenAI shape, beside the Anthropic one
+# ---------------------------------------------------------------------------
+# Field names read off the installed SDK, `openai 2.45.0`, in
+# `.venv/Lib/site-packages/openai/types/completion_usage.py`. `CompletionUsage`
+# declares `prompt_tokens`, `completion_tokens`, `total_tokens` and an optional
+# `prompt_tokens_details`, whose `PromptTokensDetails` declares `cached_tokens`.
+# `prompt_tokens` COUNTS the cached ones, so fresh input is the difference and
+# adding the two counts would bill the cached tokens twice.
+
+LUNA = "gpt-5.6-luna"
+
+
+def _openai_body(model: str = LUNA, usage: dict | None = None) -> dict:
+    """A chat-completion response shaped the way OpenAI sends one."""
+    counts = {
+        "prompt_tokens": 1200,
+        "completion_tokens": 500,
+        "total_tokens": 1700,
+        "prompt_tokens_details": {"cached_tokens": 200},
+    }
+    if usage is not None:
+        counts = usage
+    return {
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "created": 1,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": counts,
+    }
+
+
+def _openai_hooked(recorder, body: dict, **kwargs):
+    client = httpx.Client(transport=_transport(body, **kwargs))
+    attach_ledger_hook(
+        client,
+        _context("judge_faithfulness"),
+        provider="openai",
+        recorder=recorder,
+        clock=lambda: AT,
+    )
+    return client
+
+
+def _openai_post(client: httpx.Client, requested: str = LUNA) -> httpx.Response:
+    return client.post(
+        "https://api.openai.example/v1/chat/completions",
+        json={"model": requested, "messages": []},
+    )
+
+
+class TestTheOpenAiShape:
+    def test_fresh_input_is_prompt_tokens_less_the_cached_ones(self):
+        """1200 prompt tokens of which 200 were cached leaves 1000 fresh."""
+        recorded = []
+        _openai_post(_openai_hooked(recorded.append, _openai_body()))
+
+        assert recorded[0].input_tokens == 1000
+
+    def test_completion_tokens_are_the_output(self):
+        recorded = []
+        _openai_post(_openai_hooked(recorded.append, _openai_body()))
+
+        assert recorded[0].output_tokens == 500
+
+    def test_cached_tokens_are_the_cache_read(self):
+        recorded = []
+        _openai_post(_openai_hooked(recorded.append, _openai_body()))
+
+        assert recorded[0].cache_read_tokens == 200
+
+    def test_cache_creation_is_zero_because_the_provider_bills_no_write(self):
+        recorded = []
+        _openai_post(_openai_hooked(recorded.append, _openai_body()))
+
+        assert recorded[0].cache_creation_tokens == 0
+
+    def test_a_body_with_no_prompt_tokens_details_reads_every_prompt_token_as_fresh(self):
+        """The field is optional in the SDK, so its absence must not read as a negative."""
+        recorded = []
+        _openai_post(
+            _openai_hooked(
+                recorded.append,
+                _openai_body(
+                    usage={"prompt_tokens": 900, "completion_tokens": 100, "total_tokens": 1000}
+                ),
+            )
+        )
+
+        assert (recorded[0].input_tokens, recorded[0].cache_read_tokens) == (900, 0)
+
+    def test_a_null_prompt_tokens_details_is_the_same_as_an_absent_one(self):
+        recorded = []
+        _openai_post(
+            _openai_hooked(
+                recorded.append,
+                _openai_body(
+                    usage={
+                        "prompt_tokens": 900,
+                        "completion_tokens": 100,
+                        "total_tokens": 1000,
+                        "prompt_tokens_details": None,
+                    }
+                ),
+            )
+        )
+
+        assert (recorded[0].input_tokens, recorded[0].cache_read_tokens) == (900, 0)
+
+    def test_more_cached_tokens_than_prompt_tokens_never_records_a_negative(self):
+        """ModelCall refuses a negative count, so a nonsense body has to clamp at zero."""
+        recorded = []
+        _openai_post(
+            _openai_hooked(
+                recorded.append,
+                _openai_body(
+                    usage={
+                        "prompt_tokens": 100,
+                        "completion_tokens": 10,
+                        "total_tokens": 110,
+                        "prompt_tokens_details": {"cached_tokens": 400},
+                    }
+                ),
+            )
+        )
+
+        assert recorded[0].input_tokens == 0
+
+    def test_the_served_model_is_what_openai_named(self):
+        recorded = []
+        _openai_post(_openai_hooked(recorded.append, _openai_body()))
+
+        assert recorded[0].served_model == LUNA
+        assert recorded[0].model_source is ModelSource.REPORTED
+        assert recorded[0].provider == "openai"
+
+    def test_the_row_prices_against_the_flat_luna_entries(self):
+        """1000 fresh at $0.20/M, 500 out at $1.20/M, 200 cache reads at $0.20/M.
+
+        200 + 600 + 40 = 840 millionths of a dollar, and the peak window the
+        DeepSeek book declares does not move any of them.
+        """
+        recorded = []
+        _openai_post(_openai_hooked(recorded.append, _openai_body()))
+
+        usd, price_version = cost_usd(recorded[0])
+        assert usd == Decimal("0.00084"), f"priced at {usd}"
+        assert price_version == "2026-08-23.1"
+
+    def test_an_anthropic_body_still_records_the_anthropic_way(self):
+        """Adding the second shape may not cost the first one."""
+        recorded = []
+        _post(_hooked_client(recorded.append, _body()))
+
+        call = recorded[0]
+        assert (call.input_tokens, call.output_tokens) == (1000, 500)
+        assert (call.cache_read_tokens, call.cache_creation_tokens) == (2000, 300)
+
+
+class TestABodyMatchingNeitherShape:
+    NEITHER = {"model": LUNA, "usage": {"tokens_spent": 42}}
+
+    def test_it_records_nothing(self):
+        recorded = []
+        _openai_post(_openai_hooked(recorded.append, self.NEITHER))
+
+        assert recorded == [], "a usage block nobody can read must not be guessed at"
+
+    def test_it_logs_the_gap_it_leaves(self):
+        """The treatment a skipped stream gets: a hole somebody can count."""
+        with structlog.testing.capture_logs() as logs:
+            _openai_post(_openai_hooked(lambda call: None, self.NEITHER))
+
+        skipped = [entry for entry in logs if entry["event"] == "model_ledger.shape_skipped"]
+        assert len(skipped) == 1, f"expected one event naming the unreadable body, got {logs}"
+        assert skipped[0]["purpose"] == "judge_faithfulness"
+        assert skipped[0]["requested_model"] == LUNA
+        assert skipped[0]["tenant_id"] == TENANT
+
+    def test_a_body_with_no_usage_at_all_stays_silent(self):
+        """A token-count endpoint reports no spend. That is not a gap in the ledger."""
+        with structlog.testing.capture_logs() as logs:
+            _openai_post(_openai_hooked(lambda call: None, {"input_tokens": 4}))
+
+        assert [entry for entry in logs if entry["event"] == "model_ledger.shape_skipped"] == []
+
+    def test_a_readable_body_logs_no_gap(self):
+        with structlog.testing.capture_logs() as logs:
+            _openai_post(_openai_hooked(lambda call: None, _openai_body()))
+
+        assert [entry for entry in logs if entry["event"] == "model_ledger.shape_skipped"] == []
+
+
+class TestProviderForAnOpenAiEndpoint:
+    def test_an_openai_endpoint_is_openai(self):
+        assert provider_for_base_url("https://api.openai.com/v1") == "openai"
+
+
+# ---------------------------------------------------------------------------
+# The purpose routing table
+# ---------------------------------------------------------------------------
+
+#: Every purpose the direct-API half calls a model for, spelled out here rather
+#: than read out of the table, so a row deleted from the table fails this file.
+EVERY_PURPOSE = [
+    "judge_faithfulness",
+    "judge_answer_relevancy",
+    "judge_context_precision",
+    "judge_context_recall",
+    "judge_retrieval_faithfulness",
+    "scenario_generation",
+    "metadata_enrichment",
+    "actor_gate",
+    "red_team_prompt",
+    "query_expansion",
+    "retrieval_strategist",
+    "strategist",
+    "gatekeeper",
+    "auditor",
+]
+
+#: The purposes decision #34 priced at effort `none`.
+JUDGE_PURPOSES = [
+    "judge_faithfulness",
+    "judge_answer_relevancy",
+    "judge_context_precision",
+    "judge_context_recall",
+    "judge_retrieval_faithfulness",
+]
+
+
+class TestTheRoutingTable:
+    @pytest.mark.parametrize("purpose", EVERY_PURPOSE)
+    def test_every_direct_api_purpose_routes_to_luna_on_openai(self, purpose):
+        route = route_for(purpose)
+
+        assert route.provider == "openai"
+        assert route.model == LUNA
+
+    @pytest.mark.parametrize("purpose", JUDGE_PURPOSES)
+    def test_a_judge_runs_at_effort_none(self, purpose):
+        """The $0.62 per thousand floor holds only at effort none (decision #34)."""
+        assert route_for(purpose).reasoning_effort == "none"
+
+    @pytest.mark.parametrize("purpose", [p for p in EVERY_PURPOSE if p not in JUDGE_PURPOSES])
+    def test_a_non_judge_purpose_names_no_effort(self, purpose):
+        """Nobody has measured what an effort buys here, so the factory asks for none."""
+        assert route_for(purpose).reasoning_effort is None
+
+    def test_the_table_covers_exactly_these_purposes(self):
+        assert sorted(PURPOSE_ROUTES) == sorted(EVERY_PURPOSE)
+
+    def test_an_unknown_purpose_raises(self):
+        with pytest.raises(UnknownPurpose, match="spellcheck"):
+            route_for("spellcheck")
+
+    def test_the_message_names_what_the_table_does_hold(self):
+        with pytest.raises(UnknownPurpose, match="judge_faithfulness"):
+            route_for("judge_faithfullness")
+
+    def test_unknown_purpose_is_a_lookup_error(self):
+        assert issubclass(UnknownPurpose, LookupError)
+
+    def test_a_route_is_frozen(self):
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            route_for("auditor").model = "gpt-5-mini"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# make_client on OpenAI, and make_instructor_client
+# ---------------------------------------------------------------------------
+
+
+class _Verdict(BaseModel):
+    passed: bool
+
+
+def _tool_call_body() -> dict:
+    """What OpenAI returns for a forced tool call, which is how instructor asks."""
+    body = _openai_body()
+    body["choices"][0]["message"] = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "_Verdict", "arguments": json.dumps({"passed": True})},
+            }
+        ],
+    }
+    body["choices"][0]["finish_reason"] = "tool_calls"
+    return body
+
+
+class TestMakeClientOnOpenAi:
+    def _client(self, recorder, body: dict):
+        return make_client(
+            "judge_faithfulness",
+            tenant_id=TENANT,
+            recorder=recorder,
+            provider="openai",
+            credentials=Credentials(api_key="test-key"),
+            http_client=httpx.Client(transport=_transport(body)),
+            clock=lambda: AT,
+        )
+
+    def test_the_factory_returns_an_openai_client(self):
+        assert isinstance(self._client(lambda call: None, _openai_body()), openai.OpenAI)
+
+    def test_a_chat_completion_lands_exactly_one_ledger_row(self):
+        recorded = []
+        self._client(recorded.append, _openai_body()).chat.completions.create(
+            model=LUNA, messages=[{"role": "user", "content": "hello"}]
+        )
+
+        assert len(recorded) == 1, f"expected one ledger row, got {len(recorded)}"
+        assert recorded[0].purpose == "judge_faithfulness"
+        assert recorded[0].input_tokens == 1000
+
+    def test_an_empty_key_fails_at_construction_and_not_at_the_first_call(self):
+        """OPENAI_API_KEY defaults empty until the cutover, so the failure has to be loud."""
+        with pytest.raises(openai.OpenAIError):
+            make_client(
+                "judge_faithfulness",
+                tenant_id=TENANT,
+                recorder=lambda call: None,
+                provider="openai",
+                credentials=Credentials(api_key=""),
+                http_client=httpx.Client(transport=_transport(_openai_body())),
+            )
+
+
+class TestMakeInstructorClient:
+    def _client(self, purpose, recorder, seen: dict | None = None, route=None):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if seen is not None:
+                seen.update(json.loads(request.content))
+            return httpx.Response(200, json=_tool_call_body())
+
+        return make_instructor_client(
+            purpose,
+            tenant_id=TENANT,
+            recorder=recorder,
+            credentials=Credentials(api_key="test-key"),
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+            clock=lambda: AT,
+            route=route,
+        )
+
+    def _ask(self, client):
+        return client.chat.completions.create(
+            response_model=_Verdict, messages=[{"role": "user", "content": "grounded?"}]
+        )
+
+    def test_the_wrapped_call_still_lands_one_ledger_row(self):
+        """The whole point of hooking httpx. Ragas wraps instructor, instructor wraps this."""
+        recorded = []
+        self._ask(self._client("judge_faithfulness", recorded.append))
+
+        assert len(recorded) == 1, f"expected one ledger row, got {len(recorded)}"
+        assert recorded[0].purpose == "judge_faithfulness"
+        assert recorded[0].served_model == LUNA
+
+    def test_the_structured_answer_still_comes_back(self):
+        assert self._ask(self._client("judge_faithfulness", lambda call: None)).passed is True
+
+    def test_the_factory_puts_the_routed_model_on_the_wire(self):
+        seen = {}
+        self._ask(self._client("judge_faithfulness", lambda call: None, seen))
+
+        assert seen["model"] == LUNA
+
+    def test_the_factory_puts_the_judge_effort_on_the_wire(self):
+        """`none` is a ReasoningEffort literal in openai 2.45.0, not a missing value."""
+        seen = {}
+        self._ask(self._client("judge_faithfulness", lambda call: None, seen))
+
+        assert seen["reasoning_effort"] == "none"
+
+    def test_a_non_judge_purpose_sends_no_effort_field_at_all(self):
+        """An explicit null asks for the provider default, which is a different request."""
+        seen = {}
+        self._ask(self._client("auditor", lambda call: None, seen))
+
+        assert "reasoning_effort" not in seen
+
+    def test_an_unknown_purpose_raises_before_any_client_is_built(self):
+        with pytest.raises(UnknownPurpose):
+            self._client("spellcheck", lambda call: None)
+
+    def test_a_route_naming_another_provider_is_refused(self):
+        """Only the OpenAI wire format is wired here, so a silently wrong client is worse."""
+        with pytest.raises(UnsupportedProvider, match="deepseek"):
+            self._client(
+                "judge_faithfulness",
+                lambda call: None,
+                route=ModelRoute(provider="deepseek", model="deepseek-v4-flash"),
+            )

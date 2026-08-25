@@ -17,6 +17,13 @@ THE PRICE BOOK KEY
     hour rather than stored, because a call knows when it happened and the tariff
     knows which hours are dear.
 
+    A provider that charges one figure all day sits in a second table keyed
+    (provider, served_model, token_kind), and a model appears in one table or the
+    other. Writing a flat tariff as two identical windowed rows would let the two
+    drift apart under a later edit, and a reader could not say which of the two is
+    the published number. `cost_usd` reads the same `window_for` answer either way
+    and a flat model simply never consults it.
+
 CAT, AND WHY THE OFFSET IS IN THE DATA
     DeepSeek's peak windows are 03:00 to 06:00 and 08:00 to 12:00 CAT, Monday to
     Friday. CAT is UTC+2 and observes no daylight saving, ever, so the conversion
@@ -30,19 +37,27 @@ CAT, AND WHY THE OFFSET IS IN THE DATA
     inside the peak hours and prices off peak.
 
 WHAT THE SEEDED BOOK KNOWS AND WHAT IT REFUSES
-    One provider and one model, DeepSeek V4 Flash, at the figures fetched
-    2026-08-23. A call naming any other model raises `UnknownPrice`. It never
-    returns zero, because a silent zero is a free model call in every report that
-    reads it, and the Harness run that started this ticket was unpriceable in
-    exactly that way.
+    Two models. DeepSeek V4 Flash by window, at the figures fetched 2026-08-23,
+    and OpenAI `gpt-5.6-luna` flat, at the figures decision #34 verified the same
+    day. A call naming any other model raises `UnknownPrice`. It never returns
+    zero, because a silent zero is a free model call in every report that reads
+    it, and the Harness run that started this ticket was unpriceable in exactly
+    that way.
+
+    `price_version` stays `2026-08-23.1` across the Luna addition. Both tariffs
+    were verified on that date, and every call the book already priced prices
+    identically, so the version still names one set of figures. A version bump is
+    for a figure that changed, which re-prices history.
 
     `deepseek-v4-pro` is the documented mapping for `claude-opus` and is
     deliberately absent. Its tariff has not been fetched, so a call that reaches it
     fails loudly rather than being priced from a guess.
 
-    Cache creation takes the fresh input rate for its window. The fetched tariff
-    names input, output, the off-peak fifth and the cache-read fifth, and states no
-    write premium, so the row records that reading rather than inventing one.
+    DeepSeek cache creation takes the fresh input rate for its window. The fetched
+    tariff names input, output, the off-peak fifth and the cache-read fifth, and
+    states no write premium, so the row records that reading rather than inventing
+    one. Luna's two cache rows carry their own reasoning beside them, and one of
+    them overcounts on purpose.
 
 THE RAND
     Providers bill in USD, so the book stays USD and rand is a second derived
@@ -67,7 +82,7 @@ domain siblings. `app.domain.model_call` is a sibling.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from enum import StrEnum
@@ -109,6 +124,11 @@ _KIND_FIELDS = (
 )
 
 PriceKey = tuple[str, str, TokenKind, Window]
+# A provider that publishes one figure per kind and no time-of-day tariff is keyed
+# without a window. Spelling such a model out as two identical windowed rows lets
+# the two drift apart under a later edit, and leaves a reader unable to say which
+# of the two is the published tariff.
+FlatPriceKey = tuple[str, str, TokenKind]
 
 
 class UnknownPrice(LookupError):
@@ -137,7 +157,10 @@ class PriceBook:
         peak_windows_cat:  half-open (opens, closes) hour pairs in that zone.
         peak_weekdays:     weekday numbers the windows apply on, Monday is 0.
         rates_per_million: (provider, served_model, kind, window) -> USD per
-                           million tokens.
+                           million tokens, for a provider that charges by the hour.
+        flat_rates_per_million: (provider, served_model, kind) -> USD per million
+                           tokens, for a provider that charges one figure all day.
+                           A model appears in one table or the other, never both.
     """
 
     price_version: str
@@ -145,6 +168,7 @@ class PriceBook:
     peak_windows_cat: tuple[tuple[int, int], ...]
     peak_weekdays: tuple[int, ...]
     rates_per_million: Mapping[PriceKey, Decimal]
+    flat_rates_per_million: Mapping[FlatPriceKey, Decimal] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -173,6 +197,11 @@ class FxRate:
 _DEEPSEEK = "deepseek"
 _V4_FLASH = "deepseek-v4-flash"
 
+# OpenAI gpt-5.6-luna, verified 2026-08-23 with decision #34. $0.20 per million in
+# and $1.20 per million out, published as one figure with no time-of-day tariff.
+_OPENAI = "openai"
+_LUNA = "gpt-5.6-luna"
+
 PRICE_BOOK = PriceBook(
     price_version="2026-08-23.1",
     utc_offset_hours=CAT_UTC_OFFSET_HOURS,
@@ -189,6 +218,20 @@ PRICE_BOOK = PriceBook(
         (_DEEPSEEK, _V4_FLASH, TokenKind.CACHE_CREATION, Window.OFF_PEAK): Decimal("0.088"),
         # A cache read is already at the floor, so the window does not move it.
         (_DEEPSEEK, _V4_FLASH, TokenKind.CACHE_READ, Window.OFF_PEAK): Decimal("0.088"),
+    },
+    flat_rates_per_million={
+        (_OPENAI, _LUNA, TokenKind.INPUT): Decimal("0.20"),
+        (_OPENAI, _LUNA, TokenKind.OUTPUT): Decimal("1.20"),
+        # DELIBERATE OVERCOUNT. OpenAI serves cached input at a discount and no
+        # figure for Luna has been verified, so a cache read is charged the full
+        # input rate. The error runs one way only. A report reads high, never low,
+        # and the $20 cap trips early rather than late. Replace this row with the
+        # verified tariff and every historical call re-prices for free.
+        (_OPENAI, _LUNA, TokenKind.CACHE_READ): Decimal("0.20"),
+        # Automatic prompt caching bills nothing to write, so zero is the published
+        # tariff rather than a missing row. The hook records zero cache-creation
+        # tokens for this provider as well, so this row can only ever yield zero.
+        (_OPENAI, _LUNA, TokenKind.CACHE_CREATION): Decimal("0"),
     },
 )
 
@@ -221,6 +264,11 @@ def window_for(at: datetime, book: PriceBook = PRICE_BOOK) -> Window:
     return Window.OFF_PEAK
 
 
+def _names_model(rows: Mapping, provider: str, served_model: str) -> bool:
+    """True when a rate table holds any row for this provider and model."""
+    return any(key[0] == provider and key[1] == served_model for key in rows)
+
+
 def _require_priced_model(book: PriceBook, provider: str, served_model: str) -> None:
     """Fail on a model the book does not price, before any count is read.
 
@@ -228,9 +276,10 @@ def _require_priced_model(book: PriceBook, provider: str, served_model: str) -> 
     the lookup for zero counts would make the one call with no tokens the one call
     that reports a clean zero for an unpriceable model.
     """
-    for key in book.rates_per_million:
-        if key[0] == provider and key[1] == served_model:
-            return
+    if _names_model(book.flat_rates_per_million, provider, served_model):
+        return
+    if _names_model(book.rates_per_million, provider, served_model):
+        return
     raise UnknownPrice(
         f"Price book {book.price_version} prices no {served_model!r} from {provider!r}. "
         "A model call is never free, so this raises instead of reporting zero."
@@ -238,8 +287,19 @@ def _require_priced_model(book: PriceBook, provider: str, served_model: str) -> 
 
 
 def _rate(book: PriceBook, call: ModelCall, kind: TokenKind, window: Window) -> Decimal:
+    """One kind's rate. A flat model is stated once and the window never reaches it."""
+    flat_key = (call.provider, call.served_model, kind)
+    if _names_model(book.flat_rates_per_million, call.provider, call.served_model):
+        try:
+            return book.flat_rates_per_million[flat_key]
+        except KeyError:
+            raise UnknownPrice(
+                f"Price book {book.price_version} prices no {kind} tokens for "
+                f"{call.served_model!r} from {call.provider!r}. That model is flat, "
+                "so no window supplies a second row to fall back on."
+            ) from None
     try:
-        return book.rates_per_million[(call.provider, call.served_model, kind, window)]
+        return book.rates_per_million[(*flat_key, window)]
     except KeyError:
         raise UnknownPrice(
             f"Price book {book.price_version} prices no {kind} tokens for "
@@ -265,8 +325,8 @@ def cost_usd(call: ModelCall, book: PriceBook = PRICE_BOOK) -> tuple[Decimal, st
     _require_priced_model(book, call.provider, call.served_model)
     window = window_for(call.at, book)
     total = Decimal(0)
-    for kind, field in _KIND_FIELDS:
-        tokens = getattr(call, field)
+    for kind, count_field in _KIND_FIELDS:
+        tokens = getattr(call, count_field)
         if tokens == 0:
             continue
         total += _rate(book, call, kind, window) * tokens / PER_MILLION
