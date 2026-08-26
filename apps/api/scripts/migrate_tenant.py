@@ -55,6 +55,11 @@ VERIFIED_COLUMNS = {
     # for the opposite reason. A chunk came from the table path or it did not,
     # there is no third observation, and false is what every pre-0018 row means.
     "0018": ("chunks", "is_table", "boolean", "NO", "false"),
+    # Ticket #46. NOT NULL with NO DEFAULT, which neither 0017 nor 0018 asks for.
+    # The response hook always knows when the call happened, and pricing reads the
+    # CAT peak window off this instant. A DEFAULT now() would price a row that lost
+    # its instant at whenever it reached the database.
+    "0019": ("model_calls", "at", "timestamp with time zone", "NO", None),
 }
 
 

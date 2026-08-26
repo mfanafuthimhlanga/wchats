@@ -132,6 +132,8 @@ celery_app.conf.update(
         "app.worker.tasks.runtime.bench",
         # Phase 22 (ACT-07): pending-confirmation resolver execution task (runtime queue)
         "app.worker.tasks.runtime.confirmations",
+        # Ticket #46: daily model-call rollup into tenant_usage_daily (runtime queue)
+        "app.worker.tasks.runtime.usage",
     ],
 
     # --- Queue topology -------------------------------------------------
@@ -227,6 +229,15 @@ celery_app.conf.update(
         "index-staleness-daily": {
             "task": "app.worker.tasks.pipeline.staleness.check_index_staleness_beat",
             "schedule": crontab(hour=5, minute=0),
+        },
+        # Ticket #46: price yesterday's model calls into tenant_usage_daily.
+        # 00:30 UTC is 02:30 CAT, two and a half hours after the CAT day it prices
+        # closed at 22:00 UTC, and clear of eval-nightly at 02:00. It takes no
+        # argument. The day defaults to yesterday in CAT, and the override exists
+        # for re-deriving a named day by hand.
+        "usage-rollup-daily": {
+            "task": "app.worker.tasks.runtime.usage.rollup_model_calls_beat",
+            "schedule": crontab(hour=0, minute=30),
         },
     },
 
