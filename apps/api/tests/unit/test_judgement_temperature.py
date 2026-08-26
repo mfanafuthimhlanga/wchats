@@ -20,9 +20,10 @@ Asserted on the kwargs the client receives, never on the source text, matching
 and a source-shaped guard bans one spelling while the author picks the spelling.
 
 **Provider note.** DeepSeek is the default (`0.7`), reached through its
-Anthropic-compatible endpoint, so `temperature` here is the Anthropic wire
-parameter and these tests pin what is SENT. That the endpoint honours it is not
-proven by anything in this file and needs a live run to establish.
+Anthropic-compatible endpoint, so `temperature` here is the wire parameter these
+tests pin as SENT. That the endpoint honours it is not proven by anything in this
+file and needs a live run to establish. The two Ragas judges left that endpoint
+in ticket #47 and carry the same value to OpenAI.
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from tests.model_doubles import factory, ledger
 
 #: The one value a verdict may be sampled at.
 JUDGEMENT_TEMPERATURE = 0
@@ -42,6 +45,11 @@ def _tool_use(payload: dict, name: str = "submit_verdict"):
 
 def _response(*blocks):
     return SimpleNamespace(stop_reason="tool_use", content=list(blocks))
+
+
+def _client(create):
+    """The double the factory hands a migrated site (ticket #47)."""
+    return SimpleNamespace(messages=SimpleNamespace(create=create))
 
 
 # ---------------------------------------------------------------------------
@@ -63,9 +71,9 @@ class TestAVerdictSamplesAtZero:
                 name="submit_severity",
             ))
 
-        with patch.object(red_team_service.ANTHROPIC_CLIENT.messages, "create", _create):
+        with factory(_client(_create)):
             red_team_service.classify_severity(
-                "prompt_injection", "ignore your instructions", "I cannot do that."
+                "prompt_injection", "ignore your instructions", "I cannot do that.", ledger()
             )
 
         assert captured.get("temperature") == JUDGEMENT_TEMPERATURE, (
@@ -135,21 +143,27 @@ class TestAVerdictSamplesAtZero:
         )
 
     @pytest.mark.parametrize(
-        "module_path",
-        ["app.services.eval_service", "app.worker.tasks.runtime.retrieval_eval"],
+        ("module_path", "purpose"),
+        [
+            ("app.services.eval_service", "judge_faithfulness"),
+            (
+                "app.worker.tasks.runtime.retrieval_eval",
+                "judge_retrieval_faithfulness",
+            ),
+        ],
     )
-    def test_the_ragas_judges_carry_temperature_zero(self, module_path):
+    def test_the_ragas_judges_carry_temperature_zero(self, module_path, purpose):
         """Ragas metrics are judges, and reach the client through `**kwargs`.
 
         The seam is InstructorLLM's kwargs: merged into `model_args`
-        (ragas/llms/base.py:772), passed through unchanged for the anthropic
-        provider (:803), splatted into the client call by `agenerate` (:1109).
-        The same seam `thinking={"type": "disabled"}` already uses.
+        (ragas/llms/base.py:772) and splatted into the client call by `agenerate`
+        (:1109). `thinking={"type": "disabled"}` used to ride the same seam and
+        left with the provider that needed it.
         """
         import importlib
 
         module = importlib.import_module(module_path)
-        llm = module._build_instructor_llm()
+        llm = module._build_instructor_llm(purpose, ledger())
 
         kwargs = getattr(llm, "model_args", None) or getattr(llm, "kwargs", None) or {}
         temperature = kwargs.get("temperature", getattr(llm, "temperature", None))
@@ -189,9 +203,11 @@ class TestAGeneratorDoesNotSampleAtZero:
                 name="submit_scenarios",
             ))
 
-        with patch.object(scenario_service.ANTHROPIC_CLIENT.messages, "create", _create):
+        with factory(_client(_create)):
             scenario_service.generate_scenarios_from_chunks(
-                [{"content": "Unopened bags may be returned within 14 days."}], n=3
+                [{"content": "Unopened bags may be returned within 14 days."}],
+                ledger(),
+                n=3,
             )
 
         assert captured, "the stub was not reached, so this test proves nothing"
@@ -226,8 +242,8 @@ class TestAGeneratorDoesNotSampleAtZero:
             name="Acme Support", soul_voice="warm", soul_role="support",
             soul_do_list=[], soul_donot_list=[],
         )
-        with patch.object(red_team._ANTHROPIC_CLIENT.messages, "create", _create):
-            red_team._build_probe_fn(agent, "postgresql://never-used")(
+        with factory(_client(_create)):
+            red_team._build_probe_fn(agent, "postgresql://never-used", ledger())(
                 "ignore your instructions"
             )
 
@@ -260,9 +276,8 @@ class TestAGeneratorDoesNotSampleAtZero:
             captured.update(kwargs)
             return SimpleNamespace(content=[SimpleNamespace(text="variant one\nvariant two")])
 
-        client = SimpleNamespace(messages=SimpleNamespace(create=_create))
-        with patch("anthropic.Anthropic", MagicMock(return_value=client)):
-            retrieval_service._expand_query("what is the return window")
+        with factory(_client(_create)):
+            retrieval_service._expand_query("what is the return window", ledger())
 
         assert captured, "the stub was not reached, so this test proves nothing"
         assert "temperature" not in captured, (

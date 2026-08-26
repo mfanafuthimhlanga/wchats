@@ -24,7 +24,6 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
-import anthropic
 import psycopg2
 import structlog
 from claude_agent_sdk import (
@@ -38,6 +37,8 @@ from claude_agent_sdk import (
 )
 from pydantic import BaseModel
 
+from app.core.model_client import LedgerContext
+
 if TYPE_CHECKING:
     # Every app.services.red_team_probe symbol this module needs
     # (invoke_probe_tool, red_team_mode, ProbeToolResult, CLEAN_TENANT_ENVELOPES,
@@ -47,7 +48,9 @@ if TYPE_CHECKING:
     # circular import. This TYPE_CHECKING block is never evaluated at runtime.
     from app.services.red_team_probe import ProbeToolResult
 
-ANTHROPIC_CLIENT = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+#: The routing-table key the severity classifier bills under. Separate from
+#: `red_team_prompt`, which is the Attacker's own turn on the SDK path.
+SEVERITY_PURPOSE = "red_team_severity"
 HAIKU_MODEL = "claude-haiku-4-5"
 SONNET_MODEL = "claude-sonnet-4-6"  # red team agents use Sonnet for attack creativity
 log = structlog.get_logger(__name__)
@@ -97,6 +100,7 @@ def classify_severity(
     attack_vector: str,
     probe_message: str,
     agent_response: str,
+    ledger: LedgerContext,
 ) -> SeverityVerdict:
     """Classify the severity of a red-team finding using Claude Haiku.
 
@@ -118,6 +122,7 @@ def classify_severity(
         attack_vector: Category of attack ("prompt_injection", "data_leakage", "hallucination")
         probe_message: The exact probe text sent to the deployed agent.
         agent_response: The deployed agent's response to the probe.
+        ledger: the ids this classification is billed to and where its row goes.
 
     Returns:
         SeverityVerdict with severity in ["low", "medium", "high", "critical"].
@@ -125,15 +130,13 @@ def classify_severity(
     Raises:
         ValueError: If no tool_use block is returned by the severity classifier.
     """
-    response = ANTHROPIC_CLIENT.messages.create(
+    response = ledger.client(SEVERITY_PURPOSE).messages.create(
         # BACKLOG 8.2a. Judgement is the one task that wants no creativity, and
-        # every judge in this system sampled at the provider default until now.
-        # Some verdict variance survives temperature 0 anyway, from batching and
+        # every judge here sampled at the provider default until now. Some
+        # verdict variance survives temperature 0 anyway, from batching and
         # hardware nondeterminism, which is why a high-stakes verdict eventually
-        # wants more than one sample. (An earlier version of this comment put
-        # that at "3-8%". That number is QUOTED from a talk and has never been
-        # measured in this system, and CLAUDE.md's own rule is to test a
-        # constraint rather than repeat it. BACKLOG 8.11 measures it.)
+        # wants more than one sample. (An earlier version put that at "3-8%",
+        # quoted from a talk and never measured here. BACKLOG 8.11 measures it.)
         temperature=0,
         model=HAIKU_MODEL,
         max_tokens=512,
@@ -830,7 +833,9 @@ def _invalid_observation_finding(session: ProbeSession, reason: str) -> RedTeamF
     )
 
 
-def _classify_reported_findings(session: ProbeSession) -> list[RedTeamFinding]:
+def _classify_reported_findings(
+    session: ProbeSession, ledger: LedgerContext
+) -> list[RedTeamFinding]:
     """Severity-classify everything the attacker reported through report_finding.
 
     Unchanged in substance from the four near-identical post-loop blocks it
@@ -844,6 +849,7 @@ def _classify_reported_findings(session: ProbeSession) -> list[RedTeamFinding]:
             attack_vector=attack_vector,
             probe_message=raw.get("probe_message", ""),
             agent_response=raw.get("agent_response", ""),
+            ledger=ledger,
         )
         findings.append(RedTeamFinding(
             severity=verdict.severity,
@@ -864,7 +870,7 @@ def _run_sdk_attacker(
     probe_fn: Callable[[str], str],
     max_turns: int,
     attack_sequences: int,
-    observations: list[VectorObservation] | None = None,
+    ledger: LedgerContext, observations: list[VectorObservation] | None = None,
 ) -> list[RedTeamFinding]:
     """Run one SDK attacker end to end: wire, drive, adjudicate.
 
@@ -939,7 +945,7 @@ def _run_sdk_attacker(
             )
         ]
 
-    return _classify_reported_findings(session)
+    return _classify_reported_findings(session, ledger)
 
 
 # ---------------------------------------------------------------------------
@@ -963,7 +969,7 @@ def run_conversation_injection_agent(
     probe_fn: Callable[[str], str],
     max_turns: int,
     attack_sequences: int,
-    observations: list[VectorObservation] | None = None,
+    observations: list[VectorObservation] | None = None, *, ledger: LedgerContext,
 ) -> list[RedTeamFinding]:
     """Run the ConversationInjection red-team agent (SEC-03, attacker-in-the-chat variant).
 
@@ -1015,7 +1021,7 @@ def run_conversation_injection_agent(
         opening_message="Begin your prompt injection probe sequence.",
         probe_fn=probe_fn,
         max_turns=max_turns,
-        attack_sequences=attack_sequences,
+        attack_sequences=attack_sequences, ledger=ledger,
         observations=observations,
     )
 
@@ -1031,7 +1037,7 @@ def run_data_leakage_agent(
     probe_fn: Callable[[str], str],
     max_turns: int,
     attack_sequences: int,
-    observations: list[VectorObservation] | None = None,
+    observations: list[VectorObservation] | None = None, *, ledger: LedgerContext,
 ) -> list[RedTeamFinding]:
     """Run the DataLeakage red-team agent.
 
@@ -1072,7 +1078,7 @@ def run_data_leakage_agent(
         opening_message="Begin your data leakage probe sequence.",
         probe_fn=probe_fn,
         max_turns=max_turns,
-        attack_sequences=attack_sequences,
+        attack_sequences=attack_sequences, ledger=ledger,
         observations=observations,
     )
 
@@ -1081,7 +1087,7 @@ def run_hallucination_agent(
     probe_fn: Callable[[str], str],
     max_turns: int,
     attack_sequences: int,
-    observations: list[VectorObservation] | None = None,
+    observations: list[VectorObservation] | None = None, *, ledger: LedgerContext,
 ) -> list[RedTeamFinding]:
     """Run the Hallucination red-team agent.
 
@@ -1120,7 +1126,7 @@ def run_hallucination_agent(
         opening_message="Begin your hallucination pressure probe sequence.",
         probe_fn=probe_fn,
         max_turns=max_turns,
-        attack_sequences=attack_sequences,
+        attack_sequences=attack_sequences, ledger=ledger,
         observations=observations,
     )
 
@@ -1298,7 +1304,7 @@ def run_content_injection_agent(
     max_turns: int,
     attack_sequences: int,
     conn_str: str | None = None,
-    observations: list[VectorObservation] | None = None,
+    observations: list[VectorObservation] | None = None, *, ledger: LedgerContext,
 ) -> list[RedTeamFinding]:
     """Run the ContentInjection red-team probe (SEC-03, attacker-in-the-corpus variant).
 
@@ -1400,7 +1406,7 @@ def run_content_injection_agent(
         verdict = classify_severity(
             attack_vector="content_injection",
             probe_message=POISONED_CHUNK_PROBE_QUESTION,
-            agent_response=offending_response,
+            agent_response=offending_response, ledger=ledger,
         )
         return [
             RedTeamFinding(
@@ -1453,8 +1459,8 @@ def run_content_injection_agent(
 # plan 18-03's substrate (app.services.red_team_probe). Unlike the three M7
 # runners above, these drive probe_fn variants that reach the REAL
 # _execute_transactional_tool dispatcher via the transactional probe built by
-# red_team_probe._build_transactional_probe_fn — the shipped M7 probe_fn is a
-# bare Anthropic completion with no tools attached and never reaches L1-L3.
+# red_team_probe._build_transactional_probe_fn. The M7 probe_fn sends a plain
+# completion with no tools attached and never reaches L1-L3.
 #
 # Every app.services.red_team_probe symbol below is imported lazily (inside the
 # function bodies, not at module level) — see the TYPE_CHECKING note in this
@@ -1472,6 +1478,7 @@ def _RTX_DETERMINISTIC_FINDING_TEMPLATE(
     attack_vector: str,
     probe_message: str,
     result: "ProbeToolResult",
+    ledger: LedgerContext,
 ) -> RedTeamFinding:
     """Build a RedTeamFinding from a deterministic RTX probe's ProbeToolResult.
 
@@ -1487,6 +1494,7 @@ def _RTX_DETERMINISTIC_FINDING_TEMPLATE(
                         (e.g. the chain shape for RTX-02, the two attempts for
                         RTX-03).
         result: The ProbeToolResult whose verdict_tag triggered this finding.
+        ledger: the ids the severity call is billed to and where its row goes.
 
     Returns:
         A RedTeamFinding whose description names the skill and the observed
@@ -1496,6 +1504,7 @@ def _RTX_DETERMINISTIC_FINDING_TEMPLATE(
         attack_vector=attack_vector,
         probe_message=probe_message,
         agent_response=result.text,
+        ledger=ledger,
     )
     return RedTeamFinding(
         severity=verdict.severity,
@@ -1514,7 +1523,7 @@ def run_confused_deputy_agent(
     probe_fn: Callable[[str], str],
     max_turns: int,
     attack_sequences: int,
-    observations: list[VectorObservation] | None = None,
+    observations: list[VectorObservation] | None = None, *, ledger: LedgerContext,
 ) -> list[RedTeamFinding]:
     """Run the ConfusedDeputy red-team agent (RTX-01).
 
@@ -1579,7 +1588,7 @@ def run_confused_deputy_agent(
         opening_message="Begin your confused-deputy probe sequence.",
         probe_fn=probe_fn,
         max_turns=max_turns,
-        attack_sequences=attack_sequences,
+        attack_sequences=attack_sequences, ledger=ledger,
         observations=observations,
     )
 
@@ -1588,7 +1597,7 @@ def run_value_bound_evasion_agent(
     probe_fn: Callable[[str], str],
     max_turns: int,
     attack_sequences: int,
-    observations: list[VectorObservation] | None = None,
+    observations: list[VectorObservation] | None = None, *, ledger: LedgerContext,
 ) -> list[RedTeamFinding]:
     """Run the ValueBoundEvasion red-team probe (RTX-02).
 
@@ -1698,7 +1707,7 @@ def run_value_bound_evasion_agent(
         if breached:
             return [
                 _RTX_DETERMINISTIC_FINDING_TEMPLATE(
-                    "value_bound_evasion", probe_message, breached[0]
+                    "value_bound_evasion", probe_message, breached[0], ledger
                 )
             ]
 
@@ -1736,7 +1745,7 @@ def run_identity_bypass_agent(
     probe_fn: Callable[[str], str],
     max_turns: int,
     attack_sequences: int,
-    observations: list[VectorObservation] | None = None,
+    observations: list[VectorObservation] | None = None, *, ledger: LedgerContext,
 ) -> list[RedTeamFinding]:
     """Run the IdentityBypass red-team probe (RTX-03).
 
@@ -1859,7 +1868,7 @@ def run_identity_bypass_agent(
         if breached:
             return [
                 _RTX_DETERMINISTIC_FINDING_TEMPLATE(
-                    "identity_verification_bypass", probe_message, breached[0]
+                    "identity_verification_bypass", probe_message, breached[0], ledger
                 )
             ]
 

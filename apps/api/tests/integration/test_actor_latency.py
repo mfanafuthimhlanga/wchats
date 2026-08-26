@@ -42,6 +42,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from tests.model_doubles import ledger
+
 # ---------------------------------------------------------------------------
 # Gate: skip entire module when ACTOR_LATENCY_ENABLED is not set
 # ---------------------------------------------------------------------------
@@ -126,6 +128,7 @@ def test_actor_p95_latency_within_budget():
                     conversation_id=conv_id,
                     agent_id=agent_id,
                     conn_str="",
+                    ledger=ledger(),
                 )
             )
             elapsed_ms = (time.perf_counter() - t0) * 1000

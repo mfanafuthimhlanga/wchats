@@ -223,7 +223,10 @@ def test_the_factory_writes_a_canned_provider_body_into_the_probe_database():
     transport = httpx.MockTransport(lambda request: httpx.Response(200, json=body))
     try:
         client = make_client(
-            "judge",
+            # A purpose the routing table holds, and one that runs at no reasoning
+            # effort. `make_client` refuses both a purpose it cannot route and a
+            # judge purpose, which belongs to the instructor seam.
+            "scenario_generation",
             tenant_id=tenant_id,
             recorder=ledger_recorder(PROBE_DSN),
             provider="deepseek",

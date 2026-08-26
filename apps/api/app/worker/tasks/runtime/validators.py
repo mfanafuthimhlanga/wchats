@@ -35,6 +35,7 @@ from sqlalchemy import text as sa_text
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.models.agent import Agent
 from app.services.events import emit
@@ -55,6 +56,46 @@ log = structlog.get_logger(__name__)
 _url_clean = settings.REDIS_URL.split("?")[0] if "?" in settings.REDIS_URL else settings.REDIS_URL
 _ssl_opts: dict = {"ssl_cert_reqs": ssl.CERT_NONE} if _url_clean.startswith("rediss://") else {}
 _redis = redis_lib.from_url(_url_clean, **_ssl_opts)
+
+
+# ---------------------------------------------------------------------------
+# Where a judge's ledger row goes (ticket #47)
+# ---------------------------------------------------------------------------
+
+def _tenant_dsn_for_ledger(agent: Agent, job_id: str) -> str:
+    """The tenant dsn a judge's ledger row is written to, or "" when there is none.
+
+    Absent and undecryptable are both answered with the empty string and a named
+    event rather than an exception. The judges run after the customer's turn has
+    already been served, and refusing to produce a verdict because the spend
+    could not be recorded would trade a measurement for telemetry.
+    """
+    ciphertext = agent.neon_connection_string
+    if not ciphertext:
+        return ""
+    try:
+        return fernet_decrypt(ciphertext)
+    except Exception as exc:  # noqa: BLE001 - any decrypt failure is the same gap
+        log.warning("judge_ledger.dsn_unavailable", job_id=job_id, error=str(exc))
+        return ""
+
+
+def _ledger_for(agent: Agent, agent_id: str, job_id: str) -> LedgerContext:
+    """Who this judge call is billed to, and which database records it.
+
+    Read while the control-DB session is still open. A detached Agent raises on
+    attribute access rather than answering.
+
+    With no dsn to write to the judge still runs: `record_model_call` fails on
+    the empty string, the hook fails open, and one `model_ledger.record_failed`
+    event names the gap. A verdict is never lost to telemetry.
+    """
+    return LedgerContext(
+        tenant_id=str(agent.tenant_id),
+        agent_id=agent_id,
+        job_id=job_id,
+        recorder=ledger_recorder(_tenant_dsn_for_ledger(agent, job_id)),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +225,7 @@ def run_gatekeeper(
             # --------------------------------------------------------------
             # Call Gatekeeper judge (synchronous Haiku API call — D-02)
             # --------------------------------------------------------------
-            verdict = call_gatekeeper(question, response_text)
+            verdict = call_gatekeeper(question, response_text, _ledger_for(agent, agent_id, job_id))
 
             # --------------------------------------------------------------
             # Log to Langfuse via _log_verdict (Pitfall 2: flush inside)
@@ -316,17 +357,16 @@ def run_auditor(
             return {}
 
         try:
-            # --------------------------------------------------------------
             # Parse retrieved context (Pitfall 3: arrives as JSON string)
-            # --------------------------------------------------------------
             retrieved_context = json.loads(retrieved_context_json or "[]")
 
             # --------------------------------------------------------------
-            # Call Auditor judge (synchronous Haiku API call — D-02)
-            # call_auditor expects a string; pass the raw JSON string so the
-            # prompt embeds it as a RETRIEVED CONTEXT: block (C-01 fix)
+            # Call Auditor judge (synchronous Haiku API call, D-02). It takes the
+            # RAW JSON string, so the prompt embeds it as a RETRIEVED CONTEXT
+            # block (C-01 fix).
             # --------------------------------------------------------------
-            verdict = call_auditor(question, response_text, retrieved_context_json or "[]")
+            verdict = call_auditor(question, response_text, retrieved_context_json or "[]",
+                                   _ledger_for(agent, agent_id, job_id))
 
             # --------------------------------------------------------------
             # Log to Langfuse
@@ -519,7 +559,7 @@ def run_strategist(
                 soul_voice=agent.soul_voice or "",
                 soul_do_list=agent.soul_do_list or [],
                 soul_donot_list=agent.soul_donot_list or [],
-            )
+                ledger=_ledger_for(agent, agent_id, job_id))
 
             # --------------------------------------------------------------
             # Log to Langfuse

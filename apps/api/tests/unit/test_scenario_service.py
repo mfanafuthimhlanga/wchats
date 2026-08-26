@@ -11,7 +11,8 @@ Tests:
         — INSERT uses ON CONFLICT DO NOTHING (idempotency rule)
 
 Mock strategy:
-    - ANTHROPIC_CLIENT.messages.create patched at module boundary.
+    - the client factory (app.core.model_client.make_client) patched, since
+      ticket #47 moved construction there and left no module-level client.
     - psycopg2.connect patched to avoid real DB connections.
     - conftest.py sets all required env vars before any app import.
 """
@@ -23,6 +24,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.model_doubles import ledger
+
 # ---------------------------------------------------------------------------
 # test_generate_scenarios_from_chunks_calls_haiku
 # ---------------------------------------------------------------------------
@@ -31,10 +34,11 @@ import pytest
 class TestGenerateScenariosFromChunks:
     """Tests for the Claude Haiku scenario generator."""
 
-    @patch("app.services.scenario_service.ANTHROPIC_CLIENT")
-    def test_generate_scenarios_from_chunks_calls_haiku(self, mock_client):
+    @patch("app.core.model_client.make_client")
+    def test_generate_scenarios_from_chunks_calls_haiku(self, mock_factory):
         """Haiku is called with forced tool_choice and scenarios have source='generated' (D-12/D-13).
         """
+        mock_client = mock_factory.return_value
         from app.services.scenario_service import generate_scenarios_from_chunks
 
         # Build a mock tool_use block
@@ -56,7 +60,7 @@ class TestGenerateScenariosFromChunks:
         mock_client.messages.create.return_value = mock_response
 
         scenarios = generate_scenarios_from_chunks(
-            [{"content": "Our return policy allows 30-day returns."}], n=1
+            [{"content": "Our return policy allows 30-day returns."}], ledger(), n=1
         )
 
         # D-13 LOCKED: source must be 'generated'
@@ -79,8 +83,8 @@ class TestGenerateScenariosFromChunks:
             "D-12 violation: tool_choice name must be 'submit_scenarios'"
         )
 
-    @patch("app.services.scenario_service.ANTHROPIC_CLIENT")
-    def test_generate_scenarios_sends_thinking_disabled(self, mock_client):
+    @patch("app.core.model_client.make_client")
+    def test_generate_scenarios_sends_thinking_disabled(self, mock_factory):
         """The forced tool_choice must ship with thinking off.
 
         Observed 2026-08-16: DeepSeek's Anthropic-format endpoint — the default
@@ -89,6 +93,7 @@ class TestGenerateScenariosFromChunks:
         thinking is explicitly disabled. The parameter is inert on the real
         Anthropic API, so the flag is provider-neutral.
         """
+        mock_client = mock_factory.return_value
         from app.services.scenario_service import generate_scenarios_from_chunks
 
         mock_tool_block = MagicMock()
@@ -104,7 +109,7 @@ class TestGenerateScenariosFromChunks:
         mock_response.content = [mock_tool_block]
         mock_client.messages.create.return_value = mock_response
 
-        generate_scenarios_from_chunks([{"content": "Some knowledge base content."}], n=1)
+        generate_scenarios_from_chunks([{"content": "Some knowledge base content."}], ledger(), n=1)
 
         call_kwargs = mock_client.messages.create.call_args[1]
         # Precondition: with no forced tool_choice there is nothing to disable
@@ -116,9 +121,10 @@ class TestGenerateScenariosFromChunks:
             "no scenarios would ever be generated in production"
         )
 
-    @patch("app.services.scenario_service.ANTHROPIC_CLIENT")
-    def test_generate_scenarios_includes_retrieved_contexts(self, mock_client):
+    @patch("app.core.model_client.make_client")
+    def test_generate_scenarios_includes_retrieved_contexts(self, mock_factory):
         """Generated scenarios include retrieved_contexts from the input chunks."""
+        mock_client = mock_factory.return_value
         from app.services.scenario_service import generate_scenarios_from_chunks
 
         mock_tool_block = MagicMock()
@@ -139,14 +145,15 @@ class TestGenerateScenariosFromChunks:
         mock_client.messages.create.return_value = mock_response
 
         chunk_text = "Chunk content about return policies."
-        scenarios = generate_scenarios_from_chunks([{"content": chunk_text}], n=1)
+        scenarios = generate_scenarios_from_chunks([{"content": chunk_text}], ledger(), n=1)
 
         assert "retrieved_contexts" in scenarios[0]
         assert chunk_text in scenarios[0]["retrieved_contexts"]
 
-    @patch("app.services.scenario_service.ANTHROPIC_CLIENT")
-    def test_generate_scenarios_raises_on_no_tool_block(self, mock_client):
+    @patch("app.core.model_client.make_client")
+    def test_generate_scenarios_raises_on_no_tool_block(self, mock_factory):
         """ValueError raised when response.content has no tool_use block."""
+        mock_client = mock_factory.return_value
         from app.services.scenario_service import generate_scenarios_from_chunks
 
         mock_response = MagicMock()
@@ -154,11 +161,12 @@ class TestGenerateScenariosFromChunks:
         mock_client.messages.create.return_value = mock_response
 
         with pytest.raises(ValueError, match="No tool_use block"):
-            generate_scenarios_from_chunks([{"content": "some content"}], n=1)
+            generate_scenarios_from_chunks([{"content": "some content"}], ledger(), n=1)
 
-    @patch("app.services.scenario_service.ANTHROPIC_CLIENT")
-    def test_generate_scenarios_raises_on_wrong_tool_name(self, mock_client):
+    @patch("app.core.model_client.make_client")
+    def test_generate_scenarios_raises_on_wrong_tool_name(self, mock_factory):
         """ValueError raised when tool block has wrong name (not submit_scenarios)."""
+        mock_client = mock_factory.return_value
         from app.services.scenario_service import generate_scenarios_from_chunks
 
         mock_tool_block = MagicMock()
@@ -171,7 +179,7 @@ class TestGenerateScenariosFromChunks:
         mock_client.messages.create.return_value = mock_response
 
         with pytest.raises(ValueError, match="No tool_use block"):
-            generate_scenarios_from_chunks([{"content": "some content"}], n=1)
+            generate_scenarios_from_chunks([{"content": "some content"}], ledger(), n=1)
 
 
 # ---------------------------------------------------------------------------

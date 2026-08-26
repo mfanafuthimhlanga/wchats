@@ -9,8 +9,9 @@ Tests:
   5. test_entity_extraction_validates_type_literal        — Pydantic rejects invalid entity type
   6. test_chunk_metadata_and_entities_validates_shape     — correct field values on valid construct
 
-Patch target: app.services.metadata_service._anthropic
-(NOT anthropic.Anthropic — always patch the symbol imported into the module under test)
+Patch target: the client factory (app.core.model_client.make_client, through
+model_doubles.factory). Ticket #47 moved construction there, so the module holds
+no client of its own and every site is covered by one target.
 """
 
 import base64
@@ -43,6 +44,8 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
+from tests.model_doubles import factory, ledger
+
 # ---------------------------------------------------------------------------
 # Test 1: enrich_chunk returns ChunkMetadataAndEntities with correct fields
 # ---------------------------------------------------------------------------
@@ -63,9 +66,10 @@ def test_enrich_chunk_returns_chunk_metadata_and_entities():
         entities=[],
     )
 
-    with patch("app.services.metadata_service._anthropic") as mock_anthropic:
+    mock_anthropic = MagicMock()
+    with factory(mock_anthropic):
         mock_anthropic.messages.parse.return_value = mock_result
-        result = enrich_chunk("Some chunk text about products.")
+        result = enrich_chunk("Some chunk text about products.", ledger())
 
     assert isinstance(result, ChunkMetadataAndEntities)
     assert result.summary == "A product summary."
@@ -92,9 +96,10 @@ def test_enrich_chunk_uses_haiku_model_constant():
         summary="s", keywords=["k"], questions=["q?"], entities=[]
     )
 
-    with patch("app.services.metadata_service._anthropic") as mock_anthropic:
+    mock_anthropic = MagicMock()
+    with factory(mock_anthropic):
         mock_anthropic.messages.parse.return_value = mock_result
-        enrich_chunk("text")
+        enrich_chunk("text", ledger())
 
         # Verify the call used HAIKU_MODEL
         call_kwargs = mock_anthropic.messages.parse.call_args.kwargs
@@ -120,9 +125,10 @@ def test_enrich_chunk_uses_output_format_pydantic():
         summary="s", keywords=["k"], questions=["q?"], entities=[]
     )
 
-    with patch("app.services.metadata_service._anthropic") as mock_anthropic:
+    mock_anthropic = MagicMock()
+    with factory(mock_anthropic):
         mock_anthropic.messages.parse.return_value = mock_result
-        enrich_chunk("text")
+        enrich_chunk("text", ledger())
 
         call_kwargs = mock_anthropic.messages.parse.call_args.kwargs
         assert call_kwargs.get("output_format") is ChunkMetadataAndEntities, (
@@ -174,11 +180,12 @@ def test_enrich_chunk_retries_on_rate_limit():
             raise effect
         return effect
 
-    with patch("app.services.metadata_service._anthropic") as mock_anthropic:
+    mock_anthropic = MagicMock()
+    with factory(mock_anthropic):
         mock_anthropic.messages.parse.side_effect = _parse_side_effect
         # Override tenacity wait to speed up the test (no real sleep)
         with patch("tenacity.wait_exponential.__call__", return_value=0):
-            result = enrich_chunk("text")
+            result = enrich_chunk("text", ledger())
 
     assert call_count == 2, (
         f"Expected 2 calls (1 rate-limit retry), got {call_count}"
@@ -259,9 +266,10 @@ def test_enrich_chunks_batch_happy_path():
     mock_result = MagicMock()
     mock_result.parsed_output = batch
 
-    with patch("app.services.metadata_service._anthropic") as mock_anthropic:
+    mock_anthropic = MagicMock()
+    with factory(mock_anthropic):
         mock_anthropic.messages.parse.return_value = mock_result
-        results = enrich_chunks_batch(["chunk one text", "chunk two text"])
+        results = enrich_chunks_batch(["chunk one text", "chunk two text"], ledger())
 
     # Returns a plain list of per-chunk results in submission order
     assert isinstance(results, list)
@@ -310,10 +318,11 @@ def test_enrich_chunks_batch_size_mismatch_raises_value_error():
     mock_result = MagicMock()
     mock_result.parsed_output = batch
 
-    with patch("app.services.metadata_service._anthropic") as mock_anthropic:
+    mock_anthropic = MagicMock()
+    with factory(mock_anthropic):
         mock_anthropic.messages.parse.return_value = mock_result
         with pytest.raises(ValueError, match="Batch size mismatch"):
-            enrich_chunks_batch(["chunk one", "chunk two"])
+            enrich_chunks_batch(["chunk one", "chunk two"], ledger())
 
 
 # ---------------------------------------------------------------------------
@@ -361,10 +370,11 @@ def test_enrich_chunks_batch_retries_on_rate_limit():
             raise effect
         return effect
 
-    with patch("app.services.metadata_service._anthropic") as mock_anthropic:
+    mock_anthropic = MagicMock()
+    with factory(mock_anthropic):
         mock_anthropic.messages.parse.side_effect = _parse_side_effect
         with patch("tenacity.wait_exponential.__call__", return_value=0):
-            results = enrich_chunks_batch(["text"])
+            results = enrich_chunks_batch(["text"], ledger())
 
     assert call_count == 2, (
         f"Expected 2 calls (1 rate-limit retry), got {call_count}"
@@ -401,10 +411,11 @@ def test_enrich_chunks_batch_auth_error_is_fatal():
         call_count += 1
         raise auth_err
 
-    with patch("app.services.metadata_service._anthropic") as mock_anthropic:
+    mock_anthropic = MagicMock()
+    with factory(mock_anthropic):
         mock_anthropic.messages.parse.side_effect = _parse_side_effect
         with pytest.raises(anthropic_lib.AuthenticationError):
-            enrich_chunks_batch(["text"])
+            enrich_chunks_batch(["text"], ledger())
 
     # Fatal — no retry; exactly one call
     assert call_count == 1, (

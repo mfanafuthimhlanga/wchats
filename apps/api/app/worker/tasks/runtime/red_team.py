@@ -39,13 +39,13 @@ import asyncio
 import json
 import uuid
 
-import anthropic
 import psycopg2
 import structlog
 from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.services.agent_tools import RetrievalStrategy, build_tool_server
@@ -67,36 +67,51 @@ log = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Probe function builder — wraps a direct Anthropic API call so it has the
-# signature expected by the red_team_service runner functions: (str) -> str.
+# Probe function builder. It wraps a direct API call so it has the signature
+# the red_team_service runner functions expect: (str) -> str.
 #
 # Note: _run_sdk_turn from agent.py is intentionally NOT used here. That
 # function is tightly coupled to the SSE infrastructure (job_id, db, redis,
 # emit) designed for customer-facing conversations. The probe_fn only needs
 # to send one message to the deployed agent and return the response text —
-# a direct Anthropic API call is the correct and minimal implementation.
+# a direct API call is the correct and minimal implementation.
 # ---------------------------------------------------------------------------
 
-_ANTHROPIC_CLIENT = anthropic.Anthropic()
+#: The routing-table key each probe of the persona bills under. It is not the
+#: Agent turn: this is a stand-in persona built from the soul fields, reached
+#: through the direct API rather than through the SDK.
+PROBE_PURPOSE = "red_team_probe"
 
 
-def _build_probe_fn(agent: "Agent", conn_str: str):
+def _run_ledger(tenant_id: str, agent_id: str, run_id: str, conn_str: str) -> LedgerContext:
+    """Every model call this run makes bills the tenant whose agent is under attack.
+
+    The row lands in that tenant's own ledger, and the run id is the job. A weekly
+    red-team run is one of the larger spends the platform makes on its own behalf,
+    and it went uncounted until ticket #47.
+    """
+    return LedgerContext(
+        tenant_id=tenant_id, agent_id=agent_id, job_id=run_id,
+        recorder=ledger_recorder(conn_str),
+    )
+
+
+def _build_probe_fn(agent: "Agent", conn_str: str, ledger: LedgerContext):
     """Return a probe_fn closure for the given agent.
 
     The closure captures the agent's system prompt fields so the red-team agents
-    probe the same persona that is served to real customers. conn_str is captured
-    for future extension (retrieval context injection) but is not logged.
+    probe the same persona real customers are served, and it builds the client once
+    so the whole run shares a connection pool. conn_str is captured for a future
+    extension and is never logged.
 
     Args:
         agent: Agent ORM instance (soul fields, name).
         conn_str: Decrypted Neon connection string — NEVER logged (CTL-08).
-
+        ledger: the ids each probe is billed to and where its row goes.
     Returns:
-        Callable[[str], str] — sends message to the deployed agent persona and
-        returns the text response.
+        Callable[[str], str] that sends one message and returns its text.
     """
-    # Build a minimal system prompt from agent soul fields (matches what
-    # build_system_prompt produces for real customer conversations).
+    # A minimal system prompt from the soul fields, matching build_system_prompt.
     system_lines = [f"You are {agent.name}, a customer service agent."]
     if getattr(agent, "soul_voice", None):
         system_lines.append(f"Voice: {agent.soul_voice}")
@@ -107,17 +122,18 @@ def _build_probe_fn(agent: "Agent", conn_str: str):
         if do_items:
             system_lines.append("Do: " + "; ".join(str(i) for i in do_items))
     if getattr(agent, "soul_donot_list", None):
-        donot_items = agent.soul_donot_list if isinstance(agent.soul_donot_list, list) else []
-        if donot_items:
-            system_lines.append("Do not: " + "; ".join(str(i) for i in donot_items))
+        donot = agent.soul_donot_list if isinstance(agent.soul_donot_list, list) else []
+        if donot:
+            system_lines.append("Do not: " + "; ".join(str(i) for i in donot))
     system_prompt = "\n".join(system_lines)
+    client = ledger.client(PROBE_PURPOSE)
 
     async def _async_probe(message: str) -> str:
         """Send one probe message to the agent persona and return the response text."""
         try:
             response = await asyncio.get_running_loop().run_in_executor(
                 None,
-                lambda: _ANTHROPIC_CLIENT.messages.create(
+                lambda: client.messages.create(
                     model="claude-haiku-4-5",
                     max_tokens=512,
                     system=system_prompt,
@@ -327,12 +343,12 @@ def run_red_team(self, agent_id: str) -> dict:
     # ------------------------------------------------------------------
     # Step 4 — Build two probe_fn closures
     #
-    # probe_fn (unchanged): sends one message to the deployed agent persona
-    # and returns the response text. Wraps a direct Anthropic API call with
-    # NO tools attached (not _run_sdk_turn from agent.py — that function is
-    # coupled to SSE infrastructure). Correct for the M7
-    # conversational/retrieval probes, which never touch the transactional
-    # dispatcher.
+    # probe_fn: sends one message to the deployed agent persona and returns the
+    # response text. Its client comes from app.core.model_client under the
+    # `red_team_probe` purpose since #47, so every probe leaves a ledger row, and
+    # it attaches NO tools (not _run_sdk_turn from agent.py, which is coupled to
+    # SSE infrastructure). Correct for the M7 conversational/retrieval probes,
+    # which never touch the transactional dispatcher.
     #
     # transactional_probe_fn (new, Phase 18 OD-6): drives the REAL tool
     # server through the transactional dispatcher (_execute_transactional_tool)
@@ -341,9 +357,9 @@ def run_red_team(self, agent_id: str) -> dict:
     # functions for exactly this reason — one bare, one wired to the real
     # dispatcher. conn_str is never logged (CTL-08).
     # ------------------------------------------------------------------
-    probe_fn = _build_probe_fn(agent, conn_str)
-
     tenant_id_str = str(agent.tenant_id)
+    ledger = _run_ledger(tenant_id_str, agent_id, run_id, conn_str)
+    probe_fn = _build_probe_fn(agent, conn_str, ledger)
     transactional_probe_fn = _build_transactional_probe_fn(agent, conn_str, tenant_id_str)
 
     # RTX-02 (ValueBoundEvasion) and RTX-03 (IdentityBypass) are deterministic —
@@ -392,7 +408,7 @@ def run_red_team(self, agent_id: str) -> dict:
             probe_fn,
             max_turns=settings.RED_TEAM_MAX_TURNS,
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
-            observations=observations,
+            observations=observations, ledger=ledger,
         )
         # SEC-03 / OD-7: content_injection also receives the conversational
         # probe_fn (not transactional_probe_fn) — this variant tests retrieval
@@ -403,38 +419,37 @@ def run_red_team(self, agent_id: str) -> dict:
             probe_fn,
             max_turns=settings.RED_TEAM_MAX_TURNS,
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
-            conn_str=conn_str,
-            observations=observations,
+            conn_str=conn_str, observations=observations, ledger=ledger,
         )
         leakage_findings = run_data_leakage_agent(
             probe_fn,
             max_turns=settings.RED_TEAM_MAX_TURNS,
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
-            observations=observations,
+            observations=observations, ledger=ledger,
         )
         hallucination_findings = run_hallucination_agent(
             probe_fn,
             max_turns=settings.RED_TEAM_MAX_TURNS,
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
-            observations=observations,
+            observations=observations, ledger=ledger,
         )
         confused_deputy_findings = run_confused_deputy_agent(
             transactional_probe_fn,
             max_turns=settings.RED_TEAM_MAX_TURNS,
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
-            observations=observations,
+            observations=observations, ledger=ledger,
         )
         value_bound_findings = run_value_bound_evasion_agent(
             transactional_probe_fn,
             max_turns=settings.RED_TEAM_MAX_TURNS,
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
-            observations=observations,
+            observations=observations, ledger=ledger,
         )
         identity_bypass_findings = run_identity_bypass_agent(
             transactional_probe_fn,
             max_turns=settings.RED_TEAM_MAX_TURNS,
             attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
-            observations=observations,
+            observations=observations, ledger=ledger,
         )
         all_findings = (
             conversation_injection_findings

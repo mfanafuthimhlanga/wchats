@@ -27,18 +27,6 @@ import asyncio
 import pytest
 from pydantic import ValidationError
 
-from app.services.actor_seam import call_actor_gate
-from app.services.transactional.provider_adapter import (
-    ProviderAdapter,
-    StubProviderAdapter,
-    get_adapter,
-)
-from app.services.transactional.registry import (
-    TOOL_METADATA,
-    TOOL_REGISTRY,
-    to_a2a_skill,
-)
-
 # ---------------------------------------------------------------------------
 # Task 1: Schema tests
 # ---------------------------------------------------------------------------
@@ -58,6 +46,18 @@ from app.domain.transactional_schemas import (
     UpdateSubscriptionInput,
     UpdateSubscriptionOutput,
 )
+from app.services.actor_seam import call_actor_gate
+from app.services.transactional.provider_adapter import (
+    ProviderAdapter,
+    StubProviderAdapter,
+    get_adapter,
+)
+from app.services.transactional.registry import (
+    TOOL_METADATA,
+    TOOL_REGISTRY,
+    to_a2a_skill,
+)
+from tests.model_doubles import ledger
 
 # --------------- idempotency_key required on all 6 mutating inputs -----------
 
@@ -459,6 +459,7 @@ def test_call_actor_gate_returns_approve():
             capability_snapshot=snapshot,
             conversation_id="conv-001",
             agent_id="agent-001",
+            ledger=ledger(),
         )
     )
     assert decision == "approve"
@@ -485,6 +486,7 @@ def test_call_actor_gate_always_approve_regardless_of_args():
                 capability_snapshot=skip_snapshot,
                 conversation_id="conv-test",
                 agent_id="agent-test",
+                ledger=ledger(),
             )
         )
         assert decision == "approve", f"{skill}: expected approve, got {decision}"

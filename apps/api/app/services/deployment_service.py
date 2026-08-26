@@ -1031,8 +1031,8 @@ def _fetch_red_team_summary_sync(agent_id: str, conn_str: str) -> dict:
     when it did not, with `coverage_source` saying which. Deriving them from the
     current build unconditionally would re-describe every historical run with
     today's numbers the moment P4 flips SDK_ATTACKERS_CAN_PROBE. red_team_service
-    is imported inside the function because it constructs an anthropic client at
-    module scope.
+    is imported inside the function because it pulls claude_agent_sdk at module
+    scope. It built a provider client there too until ticket #47.
 
     Returns dict with keys: signal, signal_detail, last_run_at,
     deployment_blocked, critical_count, high_count, medium_count, low_count,

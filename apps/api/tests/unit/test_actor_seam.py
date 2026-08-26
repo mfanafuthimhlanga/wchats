@@ -4,13 +4,15 @@ Unit tests for the Phase-15 Actor seam (call_actor_gate).
 Coverage:
   ACT-01 — Haiku forced-tool-use returns approve | block | require_human + rationale
   ACT-03 — skip short-circuit: low-value action (max_amount_cents < threshold AND
-            requires_confirmation=False) returns approve WITHOUT calling the Anthropic client
+            requires_confirmation=False) returns approve WITHOUT calling the model
   ACT-06 — Langfuse v4 start_as_current_observation + create_score + flush called on Haiku call
 
 Mock strategy:
-  - Patch ANTHROPIC_CLIENT.messages.create at module boundary
-    (app.services.actor_seam.ANTHROPIC_CLIENT) with a MagicMock whose .content
-    is a list containing a fake tool_use block
+  - Patch the client factory (app.core.model_client.make_client, through
+    model_doubles.factory) so the gate is handed a double whose messages.create
+    is a MagicMock returning a fake tool_use block. The gate builds its client
+    per call through the factory (ticket #47), so no module-level client is left
+    to patch and the assertion stays on the kwargs the provider receives
   - Patch app.services.actor_seam._langfuse to test Langfuse logging branch
   - Patch app.services.actor_seam._fetch_history (AsyncMock) to control history fetch
   - asyncio.run() drives the async call_actor_gate; no real event loop setup needed
@@ -23,9 +25,12 @@ Named skip tests (-k skip_threshold selects both):
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from tests.model_doubles import factory, ledger
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -70,7 +75,7 @@ _SNAP_ABOVE_THRESHOLD = {
 
 
 def _make_tool_use_block(verdict: str, rationale: str = "Test rationale.") -> MagicMock:
-    """Create a fake tool_use content block mimicking Anthropic API response."""
+    """Create a fake tool_use content block mimicking the provider response."""
     block = MagicMock()
     block.type = "tool_use"
     block.name = "submit_verdict"
@@ -78,8 +83,13 @@ def _make_tool_use_block(verdict: str, rationale: str = "Test rationale.") -> Ma
     return block
 
 
+def _messages_client(create) -> SimpleNamespace:
+    """A client double whose messages.create is the mock the test asserts on."""
+    return SimpleNamespace(messages=SimpleNamespace(create=create))
+
+
 def _make_api_response(*blocks) -> MagicMock:
-    """Create a fake anthropic messages.create response with the given content blocks."""
+    """Create a fake messages.create response with the given content blocks."""
     response = MagicMock()
     response.content = list(blocks)
     return response
@@ -99,7 +109,7 @@ def _run_gate(
     ctx_managers = []
     if api_mock is not None:
         ctx_managers.append(
-            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock)
+            factory(_messages_client(api_mock))
         )
     if history_mock is not None:
         ctx_managers.append(
@@ -112,7 +122,8 @@ def _run_gate(
 
     def _run():
         return call_actor_gate(
-            _SKILL, _ARGUMENTS, snapshot, _CONV_ID, _AGENT_ID, conn_str
+            _SKILL, _ARGUMENTS, snapshot, _CONV_ID, _AGENT_ID, conn_str,
+            ledger=ledger(),
         )
 
     # Apply patches via nested context managers
@@ -144,17 +155,17 @@ class TestSkipThreshold:
 
     def test_skip_threshold_returns_approve(self):
         """Low-value skill: requires_confirmation=False, max_amount_cents=400 < 500 → approve,
-        and ANTHROPIC_CLIENT.messages.create is NOT called."""
+        and the factory is never asked for a client."""
         api_mock = MagicMock()  # MagicMock, NOT AsyncMock — messages.create is synchronous
 
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 
         with (
-            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            factory(_messages_client(api_mock)),
             patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
         ):
             decision, rationale = asyncio.run(
-                call_actor_gate(_SKILL, _ARGUMENTS, _SNAP_LOW_VALUE, _CONV_ID, _AGENT_ID, "")
+                call_actor_gate(_SKILL, _ARGUMENTS, _SNAP_LOW_VALUE, _CONV_ID, _AGENT_ID, "", ledger=ledger())
             )
 
         assert decision == "approve", f"Expected approve, got {decision!r}"
@@ -169,12 +180,12 @@ class TestSkipThreshold:
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 
         with (
-            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            factory(_messages_client(api_mock)),
             patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
             patch(f"{_MODULE}._langfuse", None),
         ):
             decision, _ = asyncio.run(
-                call_actor_gate(_SKILL, _ARGUMENTS, _SNAP_AT_THRESHOLD, _CONV_ID, _AGENT_ID, "")
+                call_actor_gate(_SKILL, _ARGUMENTS, _SNAP_AT_THRESHOLD, _CONV_ID, _AGENT_ID, "", ledger=ledger())
             )
 
         assert decision == "approve"
@@ -188,13 +199,14 @@ class TestSkipThreshold:
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 
         with (
-            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            factory(_messages_client(api_mock)),
             patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
             patch(f"{_MODULE}._langfuse", None),
         ):
             decision, _ = asyncio.run(
                 call_actor_gate(
-                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, ""
+                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, "",
+                    ledger=ledger(),
                 )
             )
 
@@ -223,13 +235,14 @@ class TestVerdictParsing:
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 
         with (
-            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            factory(_messages_client(api_mock)),
             patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
             patch(f"{_MODULE}._langfuse", None),
         ):
             decision, rationale = asyncio.run(
                 call_actor_gate(
-                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, ""
+                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, "",
+                    ledger=ledger(),
                 )
             )
 
@@ -252,13 +265,14 @@ class TestVerdictParsing:
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 
         with (
-            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            factory(_messages_client(api_mock)),
             patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
             patch(f"{_MODULE}._langfuse", None),
         ):
             asyncio.run(
                 call_actor_gate(
-                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, ""
+                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, "",
+                    ledger=ledger(),
                 )
             )
 
@@ -293,13 +307,14 @@ class TestVerdictParsing:
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 
         with (
-            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            factory(_messages_client(api_mock)),
             patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
             patch(f"{_MODULE}._langfuse", None),
         ):
             asyncio.run(
                 call_actor_gate(
-                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, ""
+                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, "",
+                    ledger=ledger(),
                 )
             )
 
@@ -317,13 +332,14 @@ class TestVerdictParsing:
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 
         with (
-            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            factory(_messages_client(api_mock)),
             patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
             patch(f"{_MODULE}._langfuse", None),
         ):
             decision, rationale = asyncio.run(
                 call_actor_gate(
-                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, ""
+                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, "",
+                    ledger=ledger(),
                 )
             )
 
@@ -338,13 +354,14 @@ class TestVerdictParsing:
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 
         with (
-            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            factory(_messages_client(api_mock)),
             patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
             patch(f"{_MODULE}._langfuse", None),
         ):
             decision, rationale = asyncio.run(
                 call_actor_gate(
-                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, ""
+                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, "",
+                    ledger=ledger(),
                 )
             )
 
@@ -359,13 +376,14 @@ class TestVerdictParsing:
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 
         with (
-            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            factory(_messages_client(api_mock)),
             patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
             patch(f"{_MODULE}._langfuse", None),
         ):
             decision, rationale = asyncio.run(
                 call_actor_gate(
-                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, ""
+                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, "",
+                    ledger=ledger(),
                 )
             )
 
@@ -391,13 +409,14 @@ class TestHistoryFallback:
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 
         with (
-            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            factory(_messages_client(api_mock)),
             patch(f"{_MODULE}._fetch_history", history_mock),
             patch(f"{_MODULE}._langfuse", None),
         ):
             decision, _ = asyncio.run(
                 call_actor_gate(
-                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, "conn://..."
+                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, "conn://...",
+                    ledger=ledger(),
                 )
             )
 
@@ -419,14 +438,15 @@ class TestHistoryFallback:
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 
         with (
-            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            factory(_messages_client(api_mock)),
             patch(f"{_MODULE}._langfuse", None),
         ):
             # conn_str="" — _fetch_history is NOT patched; the real function runs
             # but returns [] because conn_str is empty (no psycopg2 call)
             decision, _ = asyncio.run(
                 call_actor_gate(
-                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, ""
+                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, "",
+                    ledger=ledger(),
                 )
             )
 
@@ -463,13 +483,14 @@ class TestLangfuseLogging:
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 
         with (
-            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            factory(_messages_client(api_mock)),
             patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
             patch(f"{_MODULE}._langfuse", langfuse_mock),
         ):
             asyncio.run(
                 call_actor_gate(
-                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, ""
+                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, "",
+                    ledger=ledger(),
                 )
             )
 
@@ -502,14 +523,15 @@ class TestLangfuseLogging:
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 
         with (
-            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            factory(_messages_client(api_mock)),
             patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
             patch(f"{_MODULE}._langfuse", langfuse_mock),
         ):
             # Must NOT raise
             decision, rationale = asyncio.run(
                 call_actor_gate(
-                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, ""
+                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, "",
+                    ledger=ledger(),
                 )
             )
 
@@ -524,13 +546,14 @@ class TestLangfuseLogging:
         from app.services.actor_seam import call_actor_gate  # noqa: PLC0415
 
         with (
-            patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+            factory(_messages_client(api_mock)),
             patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
             patch(f"{_MODULE}._langfuse", None),
         ):
             decision, _ = asyncio.run(
                 call_actor_gate(
-                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, ""
+                    _SKILL, _ARGUMENTS, _SNAP_REQUIRES_CONFIRM, _CONV_ID, _AGENT_ID, "",
+                    ledger=ledger(),
                 )
             )
 

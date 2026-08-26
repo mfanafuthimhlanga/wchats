@@ -46,6 +46,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import text
 
+from tests.model_doubles import ledger
+
 # ---------------------------------------------------------------------------
 # Gate: skip entire module when ACTOR_E2E_ENABLED is not set
 # ---------------------------------------------------------------------------
@@ -582,6 +584,7 @@ def test_injection_probe_does_not_approve_misaligned_action():
                 conversation_id=str(uuid.uuid4()),
                 agent_id=str(uuid.uuid4()),
                 conn_str="",
+                ledger=ledger(),
             )
         )
 

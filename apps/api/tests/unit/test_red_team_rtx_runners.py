@@ -63,6 +63,7 @@ from app.services.red_team_service import (
     run_identity_bypass_agent,
     run_value_bound_evasion_agent,
 )
+from tests.model_doubles import ledger
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -177,6 +178,12 @@ def test_rtx_runner_signatures_match_shipped_contract():
     the ones in this file — has to keep resolving without it. A vector that
     reports no observation is counted invalid by run_coverage(), so an omitted
     ledger can only ever cost coverage.
+
+    `ledger` (ticket #47) is keyword-only and has NO default, which is the
+    opposite choice for the opposite reason. It carries who the severity call is
+    billed to, and a default would let a runner spend a tenant's money against
+    nobody's row. Keyword-only keeps the three positional parameters above
+    unchanged, so the uniform runner list still resolves.
     """
     for fn in (
         run_confused_deputy_agent,
@@ -189,8 +196,11 @@ def test_rtx_runner_signatures_match_shipped_contract():
             "max_turns",
             "attack_sequences",
             "observations",
+            "ledger",
         ]
         assert params["observations"].default is None
+        assert params["ledger"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert params["ledger"].default is inspect.Parameter.empty
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +221,7 @@ def test_value_bound_evasion_reports_no_finding_when_rate_layer_stops_the_chain(
         patch("app.services.red_team_probe.red_team_mode", mock_mode),
         patch("app.services.red_team_service.classify_severity", mock_classify),
     ):
-        result = run_value_bound_evasion_agent(MagicMock(), max_turns=5, attack_sequences=1)
+        result = run_value_bound_evasion_agent(MagicMock(), max_turns=5, attack_sequences=1, ledger=ledger())
 
     assert result == []
     mock_classify.assert_not_called()
@@ -229,7 +239,7 @@ def test_value_bound_evasion_reports_finding_when_chain_completes():
         patch("app.services.red_team_probe.red_team_mode", mock_mode),
         patch("app.services.red_team_service.classify_severity", return_value=verdict),
     ):
-        result = run_value_bound_evasion_agent(MagicMock(), max_turns=5, attack_sequences=1)
+        result = run_value_bound_evasion_agent(MagicMock(), max_turns=5, attack_sequences=1, ledger=ledger())
 
     assert len(result) == 1
     finding = result[0]
@@ -252,7 +262,7 @@ def test_value_bound_evasion_uses_fresh_idempotency_key_per_call():
         patch("app.services.red_team_probe.invoke_probe_tool", AsyncMock(side_effect=_record)),
         patch("app.services.red_team_probe.red_team_mode", mock_mode),
     ):
-        run_value_bound_evasion_agent(MagicMock(), max_turns=5, attack_sequences=1)
+        run_value_bound_evasion_agent(MagicMock(), max_turns=5, attack_sequences=1, ledger=ledger())
 
     keys = [args["idempotency_key"] for args in captured_args]
     assert len(keys) == 3
@@ -272,7 +282,7 @@ def test_value_bound_evasion_amount_below_clean_tenant_ceiling():
         patch("app.services.red_team_probe.invoke_probe_tool", AsyncMock(side_effect=_record)),
         patch("app.services.red_team_probe.red_team_mode", mock_mode),
     ):
-        run_value_bound_evasion_agent(MagicMock(), max_turns=5, attack_sequences=1)
+        run_value_bound_evasion_agent(MagicMock(), max_turns=5, attack_sequences=1, ledger=ledger())
 
     assert captured_args, "expected at least one captured call"
     for args in captured_args:
@@ -292,7 +302,7 @@ def test_value_bound_evasion_uses_one_red_team_mode_window():
         ),
         patch("app.services.red_team_probe.red_team_mode", mock_mode),
     ):
-        run_value_bound_evasion_agent(MagicMock(), max_turns=5, attack_sequences=1)
+        run_value_bound_evasion_agent(MagicMock(), max_turns=5, attack_sequences=1, ledger=ledger())
 
     assert mock_mode.call_count == 1
 
@@ -314,7 +324,7 @@ def test_provider_not_configured_yields_invalid_run_finding():
         patch("app.services.red_team_probe.red_team_mode", mock_mode),
         patch("app.services.red_team_service.classify_severity", mock_classify),
     ):
-        result = run_value_bound_evasion_agent(MagicMock(), max_turns=5, attack_sequences=1)
+        result = run_value_bound_evasion_agent(MagicMock(), max_turns=5, attack_sequences=1, ledger=ledger())
 
     assert len(result) == 1
     assert "invalid" in result[0].description.lower()
@@ -335,7 +345,7 @@ def test_identity_bypass_reports_no_finding_when_gate_blocks_both_attempts():
         patch("app.services.red_team_probe.invoke_probe_tool", AsyncMock(side_effect=responses)),
         patch("app.services.red_team_probe.red_team_mode", mock_mode),
     ):
-        result = run_identity_bypass_agent(MagicMock(), max_turns=5, attack_sequences=1)
+        result = run_identity_bypass_agent(MagicMock(), max_turns=5, attack_sequences=1, ledger=ledger())
 
     assert result == []
 
@@ -354,7 +364,7 @@ def test_identity_bypass_reports_finding_when_unverified_call_succeeds():
         patch("app.services.red_team_probe.red_team_mode", mock_mode),
         patch("app.services.red_team_service.classify_severity", return_value=verdict),
     ):
-        result = run_identity_bypass_agent(MagicMock(), max_turns=5, attack_sequences=1)
+        result = run_identity_bypass_agent(MagicMock(), max_turns=5, attack_sequences=1, ledger=ledger())
 
     assert len(result) == 1
     assert result[0].attack_vector == "identity_verification_bypass"
@@ -381,7 +391,7 @@ def test_identity_bypass_restores_verified_session_context_var():
         patch("app.services.red_team_probe.invoke_probe_tool", AsyncMock(side_effect=_record)),
         patch("app.services.red_team_probe.red_team_mode", mock_mode),
     ):
-        run_identity_bypass_agent(MagicMock(), max_turns=5, attack_sequences=1)
+        run_identity_bypass_agent(MagicMock(), max_turns=5, attack_sequences=1, ledger=ledger())
 
     assert observed_tokens == ["", "rtx03-forged-session-token-unissued"]
     assert _verified_session_token_var.get() == pre_call_value
@@ -403,7 +413,8 @@ def test_confused_deputy_reports_an_sdk_failure_as_invalid_not_clean():
     """
     with patch("app.services.red_team_service.ClaudeSDKClient", _RaisingClaudeSDKClient):
         result = run_confused_deputy_agent(
-            MagicMock(return_value="probe response"), max_turns=2, attack_sequences=1
+            MagicMock(return_value="probe response"), max_turns=2, attack_sequences=1,
+            ledger=ledger(),
         )
     assert len(result) == 1
     assert result[0].attack_vector == "confused_deputy"
@@ -418,7 +429,7 @@ def test_confused_deputy_system_prompt_instructs_block_is_not_a_finding():
         patch("app.services.red_team_service.ClaudeAgentOptions", mock_options_cls),
         patch("app.services.red_team_service.ClaudeSDKClient", _RaisingClaudeSDKClient),
     ):
-        result = run_confused_deputy_agent(MagicMock(), max_turns=2, attack_sequences=1)
+        result = run_confused_deputy_agent(MagicMock(), max_turns=2, attack_sequences=1, ledger=ledger())
 
     assert len(result) == 1  # the INVALID finding — see the test above
     _, kwargs = mock_options_cls.call_args

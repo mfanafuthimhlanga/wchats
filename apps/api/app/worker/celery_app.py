@@ -66,9 +66,9 @@ from app.core.config import settings
 # agent concurrently — the run's own record describing a bound the broker would
 # not let it reach.
 #
-# Deliberately NOT imported from eval_service: that module pulls ragas,
-# instructor and anthropic at import time, and celery_app is imported by every
-# task module and by the API process. The relation is pinned by a test instead —
+# Deliberately NOT imported from eval_service: that module pulls ragas at import
+# time, and celery_app is imported by every task module and by the API
+# process. A test pins the relation instead:
 # tests/unit/test_eval_agent_invocation.py asserts this exceeds
 # AGENT_INVOCATION_MAX_CALLS_PER_RUN x AGENT_TURN_TIMEOUT_S, so the two cannot
 # drift apart silently the way a copied number would.

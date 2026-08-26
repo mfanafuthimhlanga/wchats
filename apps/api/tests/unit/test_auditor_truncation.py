@@ -27,7 +27,6 @@ before validating.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
@@ -38,10 +37,16 @@ from app.services.validation_service import (
     AuditorVerdictTruncated,
     call_auditor,
 )
+from tests.model_doubles import factory, ledger
 
 
 def _response(*, stop_reason: str, content: list):
     return SimpleNamespace(stop_reason=stop_reason, content=content)
+
+
+def _client(create):
+    """The double the factory hands the Auditor (ticket #47)."""
+    return SimpleNamespace(messages=SimpleNamespace(create=create))
 
 
 def _tool_use(payload: dict):
@@ -82,8 +87,8 @@ def test_the_span_cap_reaches_the_model():
         captured.update(kwargs)
         return _response(stop_reason="tool_use", content=[_tool_use(_GOOD_VERDICT)])
 
-    with patch.object(validation_service.ANTHROPIC_CLIENT.messages, "create", _create):
-        call_auditor("q", "r", "ctx")
+    with factory(_client(_create)):
+        call_auditor("q", "r", "ctx", ledger())
 
     assert captured["max_tokens"] == AUDITOR_MAX_TOKENS
 
@@ -111,15 +116,13 @@ def test_a_truncated_tool_call_raises_truncated_not_a_validation_error():
     Before the fix this path raised pydantic's "citation_spans Field required",
     which is indistinguishable from a model that ignored its schema.
     """
-    with patch.object(
-        validation_service.ANTHROPIC_CLIENT.messages,
-        "create",
-        lambda **kw: _response(
-            stop_reason="max_tokens", content=[_tool_use(_TRUNCATED_PAYLOAD)]
-        ),
-    ):
+    with factory(_client(
+    lambda **kw: _response(
+        stop_reason="max_tokens", content=[_tool_use(_TRUNCATED_PAYLOAD)]
+    )
+    )):
         with pytest.raises(AuditorVerdictTruncated) as exc_info:
-            call_auditor("q", "r", "ctx")
+            call_auditor("q", "r", "ctx", ledger())
 
     message = str(exc_info.value)
     assert "max_tokens" in message, message
@@ -136,25 +139,21 @@ def test_truncation_is_checked_before_validation():
     If validation ran first, the specific error would never be reachable and
     this module would be pinning a branch that cannot execute.
     """
-    with patch.object(
-        validation_service.ANTHROPIC_CLIENT.messages,
-        "create",
-        lambda **kw: _response(
-            stop_reason="max_tokens", content=[_tool_use(_TRUNCATED_PAYLOAD)]
-        ),
-    ):
+    with factory(_client(
+    lambda **kw: _response(
+        stop_reason="max_tokens", content=[_tool_use(_TRUNCATED_PAYLOAD)]
+    )
+    )):
         with pytest.raises(AuditorVerdictTruncated):
-            call_auditor("q", "r", "ctx")
+            call_auditor("q", "r", "ctx", ledger())
 
 
 def test_a_complete_verdict_still_validates_normally():
     """The guard must not cost the happy path."""
-    with patch.object(
-        validation_service.ANTHROPIC_CLIENT.messages,
-        "create",
-        lambda **kw: _response(stop_reason="tool_use", content=[_tool_use(_GOOD_VERDICT)]),
-    ):
-        verdict = call_auditor("q", "r", "ctx")
+    with factory(_client(
+    lambda **kw: _response(stop_reason="tool_use", content=[_tool_use(_GOOD_VERDICT)])
+    )):
+        verdict = call_auditor("q", "r", "ctx", ledger())
 
     assert verdict.verdict == "partial"
     assert verdict.confidence == 0.65
@@ -166,15 +165,13 @@ def test_a_schema_violation_that_is_NOT_truncation_still_raises_validation_error
     """The two failures stay distinguishable in both directions."""
     from pydantic import ValidationError
 
-    with patch.object(
-        validation_service.ANTHROPIC_CLIENT.messages,
-        "create",
-        lambda **kw: _response(
-            stop_reason="tool_use", content=[_tool_use({"verdict": "partial"})]
-        ),
-    ):
+    with factory(_client(
+    lambda **kw: _response(
+        stop_reason="tool_use", content=[_tool_use({"verdict": "partial"})]
+    )
+    )):
         with pytest.raises(ValidationError):
-            call_auditor("q", "r", "ctx")
+            call_auditor("q", "r", "ctx", ledger())
 
 
 # ---------------------------------------------------------------------------
@@ -206,8 +203,8 @@ def test_the_retrieved_context_reaches_the_judge_framed():
         return _response(stop_reason="tool_use", content=[_tool_use(_GOOD_VERDICT)])
 
     context = '["Tier A costs R450."]'
-    with patch.object(validation_service.ANTHROPIC_CLIENT.messages, "create", _capture):
-        call_auditor("q", "r", context)
+    with factory(_client(_capture)):
+        call_auditor("q", "r", context, ledger())
 
     sent = seen["messages"][0]["content"]
     assert RETRIEVED_CONTEXT_HEADER in sent, (

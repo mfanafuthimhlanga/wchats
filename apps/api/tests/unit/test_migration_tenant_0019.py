@@ -159,26 +159,9 @@ def test_0019_is_the_sole_child_of_0018_and_the_tree_is_unforked():
     )
 
 
-def test_0019_is_the_tenant_head():
-    """Head IDENTITY, moved here from test_migration_tenant_0018.py.
-
-    That file carried this assertion with a docstring saying 0019 would move this
-    line and only this line, and it caught 0019 landing. The battery went red on
-    the 0018 head assertion the first time this migration existed. Moving it is
-    the instruction the test itself gives, and it is not the same as deleting it.
-    Relaxing it to `len(heads) == 1` would leave nothing asserting which revision
-    the tree ends at, and an assertion getting weaker inside a test that still
-    passes is invisible.
-
-    0020 moves this line and only this line.
-    """
-    revisions = _all_tenant_revisions()
-    parents = {down for down in revisions.values() if down is not None}
-    heads = set(revisions) - parents
-    assert heads == {"0019"}, (
-        f"the tenant head is {sorted(heads)}, not 0019. If a later revision "
-        "landed, move this assertion to its test file rather than deleting it"
-    )
+# Head IDENTITY moved on to test_migration_tenant_0020.py when 0020 landed, which
+# is the instruction that assertion carries and is not the same as deleting it.
+# It arrived here from test_migration_tenant_0018.py the same way.
 
 
 # ---------------------------------------------------------------------------

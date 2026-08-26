@@ -36,6 +36,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.worker.tasks.runtime import retrieval_eval as mod
+from tests.model_doubles import ledger
 
 _AGENT_ID = "agent-uuid"
 _JOB_ID = "job-uuid"
@@ -256,6 +257,82 @@ def test_citation_coverage_ratio_capped_at_one(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# The fifth Judge names itself (ticket #47, AC3)
+# ---------------------------------------------------------------------------
+
+
+class TestTheFifthJudgeIsIdentified:
+    """A faithfulness score nobody can attribute cannot be calibrated against.
+
+    `eval_service` stamps its four Judges on the `eval_results.detail` of every
+    row they score. This Judge scores live traffic, so its verdict lands on the
+    `retrieval_metrics` row for the turn, and the identity lands beside it in the
+    same UPDATE. The three fields are the grain a calibration figure compares on,
+    which is why an incomplete one is written as NULL rather than partially.
+    """
+
+    def _scored(self, monkeypatch, faithfulness=0.87):
+        mock_db = _make_mock_db(_make_mock_agent())
+        _patch_common(monkeypatch, mock_db)
+        updates = _patch_scoreable_turn(monkeypatch)
+        monkeypatch.setattr(mod, "_compute_ragas_faithfulness", lambda **kw: faithfulness)
+        monkeypatch.setattr(mod.settings, "RETRIEVAL_FAITHFULNESS_SAMPLE_RATE", 1.0)
+        monkeypatch.setattr(mod.random, "random", lambda: 0.0)
+
+        result = mod.run_retrieval_faithfulness.run(_AGENT_ID, _JOB_ID)
+        return result, updates
+
+    def test_the_update_carries_the_judge_that_produced_the_verdict(self, monkeypatch):
+        """Literals, not a read of the same table the code reads.
+
+        Comparing against `PURPOSE_ROUTES` here would pass unchanged the day the
+        route moves, which is exactly the day a stored identity stops matching
+        the Judge that ran.
+        """
+        import importlib.metadata
+
+        _result, updates = self._scored(monkeypatch)
+
+        # (conn_str, job_id, citation_coverage, faithfulness, judge_identity)
+        assert updates[0][4] == {
+            "model": "gpt-5.6-luna",
+            "reasoning_effort": "none",
+            "prompt_version": f"ragas-{importlib.metadata.version('ragas')}",
+        }
+
+    def test_the_identity_is_absent_when_no_verdict_was_produced(self, monkeypatch):
+        """citation_coverage is arithmetic this task does itself. No Judge ran."""
+        _result, updates = self._scored(monkeypatch, faithfulness=None)
+
+        assert updates[0][3] is None
+        assert updates[0][4] is None, (
+            "a turn the Judge never scored names a Judge anyway, which files "
+            "arithmetic under a model that did no work"
+        )
+
+    def test_the_prompt_version_names_the_artifact_the_prompt_ships_in(self):
+        """No judge prompt in this repo carries a version. Ragas authors this one,
+        the same package that authors eval_service's four, so the installed
+        distribution is the identifier both read."""
+        import importlib.metadata
+
+        from app.services.eval_service import JUDGE_PROMPT_VERSION as offline
+
+        assert mod.judge_identity().prompt_version == offline
+        assert offline == f"ragas-{importlib.metadata.version('ragas')}"
+
+    def test_a_route_naming_no_effort_yields_no_identity_at_all(self, monkeypatch):
+        """A key with a hole in it groups two different Judges together."""
+        from app.core.model_client import ModelRoute
+
+        monkeypatch.setattr(
+            mod, "route_for", lambda purpose: ModelRoute("openai", "gpt-5.6-luna")
+        )
+
+        assert mod.judge_identity() is None
+
+
+# ---------------------------------------------------------------------------
 # Test 8: config knob present with the documented default
 # ---------------------------------------------------------------------------
 
@@ -362,42 +439,43 @@ def test_compute_ragas_faithfulness_scores_through_real_ragas(monkeypatch):
     monkeypatch.setattr(
         mod,
         "_build_instructor_llm",
-        lambda: _fake_instructor_llm(["claim A", "claim B"], [1, 0]),
+        lambda purpose, led: _fake_instructor_llm(["claim A", "claim B"], [1, 0]),
     )
 
     score = mod._compute_ragas_faithfulness(
         question="what is the refund window?",
         response_text="Refunds run 30 days. Shipping is free.",
         contexts=["Refunds are accepted within 30 days of delivery."],
+        ledger=ledger(),
     )
 
     assert score == pytest.approx(0.5)
 
 
-def test_instructor_llm_wraps_an_async_client(monkeypatch):
-    """A sync Anthropic client makes agenerate() raise, which is the second
-    half of the same outage: collections metrics never call generate()."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
-
-    llm = mod._build_instructor_llm()
+def test_instructor_llm_wraps_an_async_client():
+    """A sync client makes agenerate() raise, which is the second half of the
+    same outage: collections metrics never call generate()."""
+    llm = mod._build_instructor_llm(mod.JUDGE_PURPOSE, ledger())
 
     assert llm.is_async is True, (
         "InstructorLLM wraps a sync client; agenerate() will raise TypeError"
     )
 
 
-def test_instructor_llm_disables_thinking(monkeypatch):
-    """7.20: instructor forces `tool_choice={"type": "tool"}` on every
-    structured call, and the DeepSeek Anthropic-format endpoint 400s a forced
-    tool_choice under thinking mode. The kwarg has to survive as far as the
-    dict InstructorLLM.agenerate splats into messages.create, which is what
-    _map_provider_params() returns.
+def test_the_judge_carries_no_thinking_parameter():
+    """`thinking` left with the provider that needed it (ticket #47).
+
+    It cleared a DeepSeek 400 on the forced tool_choice instructor puts on every
+    structured call. This judge is on OpenAI now, ragas splats every extra kwarg
+    straight into `client.chat.completions.create()`, and an unknown field on
+    that wire is a 400 of its own.
     """
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+    llm = mod._build_instructor_llm(mod.JUDGE_PURPOSE, ledger())
 
-    llm = mod._build_instructor_llm()
-
-    assert llm._map_provider_params()["thinking"] == {"type": "disabled"}, (
-        "thinking is not disabled on the metric LLM; the forced tool_choice "
-        "instructor adds will 400 on the DeepSeek endpoint"
+    assert "thinking" not in llm._map_provider_params(), (
+        "the judge still carries a thinking parameter, which OpenAI does not "
+        "take; ragas passes it through to the request unchanged"
+    )
+    assert llm.model == "gpt-5.6-luna", (
+        f"the judge names model={llm.model!r} rather than the routed one"
     )

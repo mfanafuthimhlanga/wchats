@@ -101,6 +101,7 @@ import structlog
 from sqlalchemy import select
 
 from app.core.database import get_sync_db
+from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.services.eval_service import (
@@ -131,6 +132,19 @@ from app.services.scenario_service import (
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
+
+
+def _run_ledger(tenant_id: str, agent_id: str, run_id: str, conn_str: str) -> LedgerContext:
+    """Who this run's judge calls are billed to, and which database records them.
+
+    The dsn reaches the recorder here and travels no further: `LedgerContext` has
+    no field that could hold one, which is what lets `run_ragas_eval` go on saying
+    it takes no connection string.
+    """
+    return LedgerContext(
+        tenant_id=tenant_id, agent_id=agent_id, job_id=run_id,
+        recorder=ledger_recorder(conn_str),
+    )
 
 
 def _mark_failed_on_production(run_id: str, conn_str: str, agent_id: str) -> None:
@@ -722,6 +736,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
 
         # Decrypt conn_str at runtime — never stored, never passed as arg (CTL-08)
         conn_str = fernet_decrypt(agent.neon_connection_string)
+        tenant_id = str(agent.tenant_id)  # read while the session is open
 
     # Check eval_runs table on tenant DB for a recent running run.
     #
@@ -1093,20 +1108,18 @@ def run_eval_suite(self, agent_id: str) -> dict:
                 min_response_rate=invocation["min_response_rate"],
                 min_scored_observations=invocation["min_scored_observations"],
                 detail=(
-                    "no eval_results written and no judge call billed — a run "
-                    "below the floor is not a measurement, and writing its "
-                    "scores would make the deploy gate read it as one"
+                    "no eval_results written and no judge call billed. A run below the "
+                    "floor is not a measurement, and writing its scores would make the "
+                    "deploy gate read it as one"
                 ),
             )
-            update_eval_run_status(
-                run_id, "complete", finished_at=True, conn_str=conn_str
-            )
-            results = {"scores": [], "means": {}, "sent": 0, "returned": 0,
-                       "unattributed": 0}
+            update_eval_run_status(run_id, "complete", finished_at=True, conn_str=conn_str)
+            results = {"scores": [], "means": {}, "sent": 0, "returned": 0, "unattributed": 0}
         else:
-            # No connection string is passed: scoring opens nothing. It scores
-            # the AGENT'S responses against the contexts the AGENT retrieved.
-            results = run_ragas_eval(scored_scenarios)
+            # No connection string is passed: scoring reads nothing. It scores the
+            # AGENT'S responses against the contexts the AGENT retrieved, and each
+            # judge call bills this run through the recorder.
+            results = run_ragas_eval(scored_scenarios, _run_ledger(tenant_id, agent_id, run_id, conn_str))
 
             # Observations about the run land on PRODUCTION, which is the whole
             # point of the split: the branch below is about to be destroyed.
@@ -1271,6 +1284,7 @@ def generate_eval_suite(self, agent_id: str) -> dict:
 
         # T-02-01: conn_str is never logged — local variable only (D-18)
         conn_str = fernet_decrypt(agent.neon_connection_string)
+        tenant_id = str(agent.tenant_id)  # read while the session is open
 
     # ------------------------------------------------------------------
     # Idempotency guard: skip if eval_scenarios already has >= 10 rows
@@ -1303,11 +1317,7 @@ def generate_eval_suite(self, agent_id: str) -> dict:
     # Generate scenario suite via scenario_service (Claude Haiku — D-12)
     # ------------------------------------------------------------------
     try:
-        count = generate_eval_suite_for_agent(
-            agent_id,
-            conn_str,
-            num_scenarios=20,
-        )
+        count = generate_eval_suite_for_agent(agent_id, tenant_id, conn_str, num_scenarios=20)
         log.info(
             "generate_eval_suite.complete",
             agent_id=agent_id,

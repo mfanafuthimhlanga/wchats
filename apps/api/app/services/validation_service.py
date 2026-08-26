@@ -2,8 +2,13 @@
 Validation service for W Chats M5 validation chain.
 
 Provides three synchronous Haiku judge functions (Gatekeeper, Auditor, Strategist)
-and Pydantic verdict models with locked enums. All Haiku calls use the Anthropic
-API directly (NOT the Agent SDK — D-02). Fully synchronous — no coroutines.
+and Pydantic verdict models with locked enums. All Haiku calls use the direct API
+(NOT the Agent SDK, D-02). Fully synchronous, with no coroutines.
+
+Every judge builds its client through `app.core.model_client` (ticket #47), so
+each verdict leaves one `model_calls` row under its own purpose. The three
+purposes are `gatekeeper`, `auditor` and `strategist`, which is what lets a
+rollup say which judge spent what.
 
 Langfuse logging via start_as_current_generation context manager (SDK v3 canonical).
 Forbidden v2 patterns are not used (D-16 / CLAUDE.md Rule 6).
@@ -12,16 +17,14 @@ Forbidden v2 patterns are not used (D-16 / CLAUDE.md Rule 6).
 import os
 from typing import Literal
 
-import anthropic
 import structlog
 from langfuse import Langfuse
 from pydantic import BaseModel, field_validator
 
+from app.core.model_client import LedgerContext
 from app.domain.context_frame import frame_retrieved_context
 
 log = structlog.get_logger(__name__)
-
-ANTHROPIC_CLIENT = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
 
 HAIKU_MODEL = "claude-haiku-4-5"  # D-02 Haiku tier; matches eval judge.py model family
 
@@ -123,7 +126,7 @@ class StrategistVerdict(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def call_gatekeeper(question: str, response_text: str) -> GatekeeperVerdict:
+def call_gatekeeper(question: str, response_text: str, ledger: LedgerContext) -> GatekeeperVerdict:
     """Call Claude Haiku with forced tool-use to evaluate if the response addresses the question.
 
     D-07: "Does this response address the user's actual question?"
@@ -132,6 +135,7 @@ def call_gatekeeper(question: str, response_text: str) -> GatekeeperVerdict:
     Args:
         question: The user's original question.
         response_text: The agent's response to evaluate.
+        ledger: the ids this verdict is billed to and where its row goes.
 
     Returns:
         GatekeeperVerdict with verdict in ["pass", "fail", "needs_clarification"].
@@ -139,15 +143,13 @@ def call_gatekeeper(question: str, response_text: str) -> GatekeeperVerdict:
     Raises:
         ValueError: If no tool_use block is returned by the judge.
     """
-    response = ANTHROPIC_CLIENT.messages.create(
+    response = ledger.client("gatekeeper").messages.create(
         # BACKLOG 8.2a. Judgement is the one task that wants no creativity, and
-        # every judge in this system sampled at the provider default until now.
-        # Some verdict variance survives temperature 0 anyway, from batching and
+        # every judge here sampled at the provider default until now. Some
+        # verdict variance survives temperature 0 anyway, from batching and
         # hardware nondeterminism, which is why a high-stakes verdict eventually
-        # wants more than one sample. (An earlier version of this comment put
-        # that at "3-8%". That number is QUOTED from a talk and has never been
-        # measured in this system, and CLAUDE.md's own rule is to test a
-        # constraint rather than repeat it. BACKLOG 8.11 measures it.)
+        # wants more than one sample. (An earlier version put that at "3-8%",
+        # quoted from a talk and never measured here. BACKLOG 8.11 measures it.)
         temperature=0,
         model=HAIKU_MODEL,
         max_tokens=512,
@@ -208,6 +210,7 @@ def call_auditor(
     question: str,
     response_text: str,
     retrieved_context: str,
+    ledger: LedgerContext,
 ) -> AuditorVerdict:
     """Call Claude Haiku to audit whether every claim is supported by retrieved context.
 
@@ -218,6 +221,7 @@ def call_auditor(
         question: The user's original question.
         response_text: The agent's response to audit.
         retrieved_context: JSON string of retrieved context passages.
+        ledger: the ids this verdict is billed to and where its row goes.
 
     Returns:
         AuditorVerdict with citation_spans mapping claims to source chunks.
@@ -225,15 +229,13 @@ def call_auditor(
     Raises:
         ValueError: If no tool_use block is returned by the judge.
     """
-    response = ANTHROPIC_CLIENT.messages.create(
+    response = ledger.client("auditor").messages.create(
         # BACKLOG 8.2a. Judgement is the one task that wants no creativity, and
-        # every judge in this system sampled at the provider default until now.
-        # Some verdict variance survives temperature 0 anyway, from batching and
+        # every judge here sampled at the provider default until now. Some
+        # verdict variance survives temperature 0 anyway, from batching and
         # hardware nondeterminism, which is why a high-stakes verdict eventually
-        # wants more than one sample. (An earlier version of this comment put
-        # that at "3-8%". That number is QUOTED from a talk and has never been
-        # measured in this system, and CLAUDE.md's own rule is to test a
-        # constraint rather than repeat it. BACKLOG 8.11 measures it.)
+        # wants more than one sample. (An earlier version put that at "3-8%",
+        # quoted from a talk and never measured here. BACKLOG 8.11 measures it.)
         temperature=0,
         model=HAIKU_MODEL,
         # BACKLOG 5.14. 512 was enough only while the Auditor received an EMPTY
@@ -352,6 +354,7 @@ def call_strategist(
     soul_voice: str,
     soul_do_list: list[str],
     soul_donot_list: list[str],
+    ledger: LedgerContext,
 ) -> StrategistVerdict:
     """Call Claude Haiku to evaluate response coherence, on-brand alignment, and role fit.
 
@@ -366,6 +369,7 @@ def call_strategist(
         soul_voice: The agent's defined voice/tone.
         soul_do_list: List of behaviors the agent must do.
         soul_donot_list: List of behaviors the agent must not do.
+        ledger: the ids this verdict is billed to and where its row goes.
 
     Returns:
         StrategistVerdict with verdict in ["ship", "revise", "escalate"].
@@ -376,15 +380,13 @@ def call_strategist(
     do_str = "\n".join(f"- {item}" for item in soul_do_list) if soul_do_list else "(none specified)"
     donot_str = "\n".join(f"- {item}" for item in soul_donot_list) if soul_donot_list else "(none specified)"
 
-    response = ANTHROPIC_CLIENT.messages.create(
+    response = ledger.client("strategist").messages.create(
         # BACKLOG 8.2a. Judgement is the one task that wants no creativity, and
-        # every judge in this system sampled at the provider default until now.
-        # Some verdict variance survives temperature 0 anyway, from batching and
+        # every judge here sampled at the provider default until now. Some
+        # verdict variance survives temperature 0 anyway, from batching and
         # hardware nondeterminism, which is why a high-stakes verdict eventually
-        # wants more than one sample. (An earlier version of this comment put
-        # that at "3-8%". That number is QUOTED from a talk and has never been
-        # measured in this system, and CLAUDE.md's own rule is to test a
-        # constraint rather than repeat it. BACKLOG 8.11 measures it.)
+        # wants more than one sample. (An earlier version put that at "3-8%",
+        # quoted from a talk and never measured here. BACKLOG 8.11 measures it.)
         temperature=0,
         model=HAIKU_MODEL,
         max_tokens=512,

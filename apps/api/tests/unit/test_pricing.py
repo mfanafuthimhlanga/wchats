@@ -440,3 +440,99 @@ def test_the_seeded_fx_table_prices_a_recent_call_in_rand():
     zar, fx_version = cost_zar(_call(PEAK_TUESDAY))
     assert zar == Decimal("7.7554708")
     assert fx_version == "usd_zar-2026-08-24"
+
+
+# ---------------------------------------------------------------------------
+# The flat half of the book: gpt-5.6-luna, decision #34
+# ---------------------------------------------------------------------------
+# Luna publishes one figure per token kind and no time-of-day tariff, so its rows
+# live in `flat_rates_per_million`, keyed without a window. Stating the figure
+# once is the point. Two windowed rows carrying the same number can drift apart
+# under a later edit, and a reader cannot tell which of the two is the tariff.
+#
+# The assertions below are per-kind rather than a single total, because a total
+# stays green while input and output swap places.
+
+LUNA_PROVIDER = "openai"
+LUNA = "gpt-5.6-luna"
+
+
+def _luna(at: datetime = PEAK_TUESDAY, **overrides) -> ModelCall:
+    fields = {"provider": LUNA_PROVIDER, "served_model": LUNA, "requested_model": LUNA}
+    fields.update(overrides)
+    return _call(at, **fields)
+
+
+def test_luna_input_prices_at_twenty_cents_per_million():
+    # 500_000 / 1_000_000 * 0.20 = 0.10, output zeroed so only input is measured
+    usd, _ = cost_usd(_luna(output_tokens=0))
+    assert usd == Decimal("0.10")
+
+
+def test_luna_output_prices_at_one_dollar_twenty_per_million():
+    # 200_000 / 1_000_000 * 1.20 = 0.24
+    usd, _ = cost_usd(_luna(input_tokens=0))
+    assert usd == Decimal("0.24")
+
+
+def test_the_peak_hours_do_not_move_a_luna_call():
+    """A flat tariff is flat. The same call in both windows is the same figure."""
+    peak, _ = cost_usd(_luna(PEAK_TUESDAY))
+    off_peak, _ = cost_usd(_luna(OFF_PEAK_TUESDAY))
+
+    assert peak == off_peak == Decimal("0.34")
+
+
+def test_the_weekday_rule_does_not_move_a_luna_call_either():
+    saturday, _ = cost_usd(_luna(PEAK_HOURS_SATURDAY))
+    assert saturday == Decimal("0.34")
+
+
+def test_a_luna_cache_read_prices_at_the_full_input_rate():
+    """The deliberate overcount. No cache tariff for Luna has been verified, and
+    overcounting cannot hide spend from the $20 cap the way a discount would."""
+    # 100_000 / 1_000_000 * 0.20 = 0.02, the same rate fresh input pays
+    usd, _ = cost_usd(_luna(input_tokens=0, output_tokens=0, cache_read_tokens=100_000))
+    assert usd == Decimal("0.02")
+
+
+def test_a_luna_cache_creation_costs_nothing():
+    """OpenAI's automatic prompt caching bills no write, so the row is a fact, not a gap."""
+    usd, _ = cost_usd(_luna(input_tokens=0, output_tokens=0, cache_creation_tokens=100_000))
+    assert usd == Decimal("0")
+
+
+def test_the_flat_table_is_read_through_the_same_window_call():
+    """`window_for` still answers for a Luna call. The book simply ignores its answer."""
+    assert window_for(PEAK_TUESDAY) is Window.PEAK
+    assert window_for(OFF_PEAK_TUESDAY) is Window.OFF_PEAK
+
+
+def test_a_model_in_neither_table_still_raises():
+    with pytest.raises(UnknownPrice, match="gpt-5-mini"):
+        cost_usd(_luna(served_model="gpt-5-mini"))
+
+
+def test_a_flat_model_with_no_row_for_a_kind_it_spent_raises():
+    """The flat path fails the same way the windowed path does, never at zero."""
+    thin = dict(PRICE_BOOK.flat_rates_per_million)
+    del thin[(LUNA_PROVIDER, LUNA, TokenKind.OUTPUT)]
+    book = PriceBook(
+        price_version="test-flat-thin",
+        utc_offset_hours=2,
+        peak_windows_cat=((3, 6), (8, 12)),
+        peak_weekdays=(0, 1, 2, 3, 4),
+        rates_per_million={},
+        flat_rates_per_million=thin,
+    )
+    with pytest.raises(UnknownPrice, match="output"):
+        cost_usd(_luna(), book)
+
+
+def test_the_seeded_book_still_prices_deepseek_by_window():
+    """Adding a flat model leaves the windowed model priced exactly as before."""
+    peak, _ = cost_usd(_call(PEAK_TUESDAY))
+    off_peak, _ = cost_usd(_call(OFF_PEAK_TUESDAY))
+
+    assert peak == Decimal("0.484")
+    assert off_peak == Decimal("0.0968")

@@ -7,17 +7,22 @@ runs in the same call as metadata enrichment — NOT a separate request (CONTEXT
 non-negotiable: same API call, single cost unit).
 
 Tenacity retry contract:
-    Retries ONLY on anthropic.RateLimitError and anthropic.APITimeoutError.
+    Retries ONLY on the provider's rate-limit and timeout errors, which
+    `app.core.model_client.TRANSIENT_ERRORS` names for both SDKs.
     Authentication errors, validation errors, and content-policy errors are fatal —
     do not retry (same wall, burns budget).
 
-Module-level client init:
-    _anthropic = anthropic.Anthropic() reads ANTHROPIC_API_KEY from env at import
-    time. Fail-fast at import is preferred so misconfigured workers crash immediately
-    rather than silently failing on first real request.
+Client construction:
+    Per call, through `app.core.model_client` (ticket #47), so every enrichment
+    leaves a `model_calls` row under the `metadata_enrichment` purpose and the
+    api key is resolved from Settings rather than from `os.environ`. That last
+    part is why the module-level client existed. A Celery worker started without
+    inheriting `.env` has the key nowhere else. `resolve_credentials` reads
+    Settings, so the gap is closed in one place for every site instead of here.
 
 Threat mitigations (T-02-04):
-    T-02-04-01: ANTHROPIC_API_KEY never in task args — read from env at module init.
+    T-02-04-01: The api key is never in task args. The factory resolves it
+                from Settings at construction.
     T-02-04-02: client.messages.parse(output_format=...) enforces Pydantic schema
                 validation; malformed responses raise ValidationError.
                 Literal["product","person","place","policy","process"] prevents
@@ -32,23 +37,20 @@ Threat mitigations (T-02-04):
 
 from typing import Literal
 
-import anthropic
 import structlog
 from pydantic import BaseModel
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from app.core.config import settings
+from app.core.model_client import TRANSIENT_ERRORS, LedgerContext
 
 log = structlog.get_logger(__name__)
 
-# Pinned model string — verify via anthropic.Anthropic().models.list() before deploy
+# Pinned model string. Verify it against the provider's model list before deploy
 # (RESEARCH.md Open Question 2). Do NOT use "claude-haiku-latest" — embedding drift risk.
 HAIKU_MODEL = "claude-haiku-4-5"
 
-# Module-level client — explicit api_key bypasses os.environ gap when Celery
-# is started without inheriting the .env file (e.g., via Start-Process on Windows).
-# pydantic Settings loads .env via _find_env_file(); os.environ is not populated.
-_anthropic = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+#: The routing-table key both enrichment calls bill under.
+PURPOSE = "metadata_enrichment"
 
 # System prompt for structured metadata + entity extraction
 METADATA_SYSTEM_PROMPT = (
@@ -101,9 +103,9 @@ class ChunkMetadataAndEntities(BaseModel):
 @retry(
     wait=wait_exponential(multiplier=1, min=2, max=30),
     stop=stop_after_attempt(5),
-    retry=retry_if_exception_type((anthropic.RateLimitError, anthropic.APITimeoutError)),
+    retry=retry_if_exception_type(TRANSIENT_ERRORS),
 )
-def enrich_chunk(text: str) -> ChunkMetadataAndEntities:
+def enrich_chunk(text: str, ledger: LedgerContext) -> ChunkMetadataAndEntities:
     """Single Haiku call returning summary + keywords + questions + entities.
 
     Uses client.messages.parse() with Pydantic output_format for validated structured
@@ -117,17 +119,18 @@ def enrich_chunk(text: str) -> ChunkMetadataAndEntities:
     Args:
         text: Chunk content (sanitized by sanitize_chunk_text before storage —
               Wave 3 precondition; prompt injection markers already stripped).
+        ledger: the ids this call is billed to and where its row goes.
 
     Returns:
         ChunkMetadataAndEntities with summary, keywords, questions, and entities.
 
     Raises:
-        anthropic.RateLimitError: Re-raised after max retries exhausted.
-        anthropic.APITimeoutError: Re-raised after max retries exhausted.
-        anthropic.AuthenticationError: Fatal — raised immediately, no retry.
+        RateLimitError: Re-raised after max retries exhausted.
+        APITimeoutError: Re-raised after max retries exhausted.
+        AuthenticationError: Fatal. Raised immediately, with no retry.
         pydantic.ValidationError: Fatal — Haiku response does not match schema.
     """
-    result = _anthropic.messages.parse(
+    result = ledger.client(PURPOSE).messages.parse(
         model=HAIKU_MODEL,
         system=METADATA_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": text}],
@@ -187,9 +190,11 @@ BATCH_SYSTEM_PROMPT = (
 @retry(
     wait=wait_exponential(multiplier=1, min=2, max=30),
     stop=stop_after_attempt(5),
-    retry=retry_if_exception_type((anthropic.RateLimitError, anthropic.APITimeoutError)),
+    retry=retry_if_exception_type(TRANSIENT_ERRORS),
 )
-def enrich_chunks_batch(texts: list[str]) -> list[ChunkMetadataAndEntities]:
+def enrich_chunks_batch(
+    texts: list[str], ledger: LedgerContext
+) -> list[ChunkMetadataAndEntities]:
     """Single Haiku call extracting metadata for up to BATCH_SIZE chunks at once.
 
     Chunks are numbered by position in the input list. Returns results in the
@@ -203,6 +208,7 @@ def enrich_chunks_batch(texts: list[str]) -> list[ChunkMetadataAndEntities]:
     Args:
         texts: Chunk contents (sanitized by sanitize_chunk_text before storage).
                Up to BATCH_SIZE entries — callers slice the pending list.
+        ledger: the ids this call is billed to and where its row goes.
 
     Returns:
         list[ChunkMetadataAndEntities] in the same order as `texts`.
@@ -210,15 +216,15 @@ def enrich_chunks_batch(texts: list[str]) -> list[ChunkMetadataAndEntities]:
     Raises:
         ValueError: Batch size mismatch — model returned a different count than sent.
         pydantic.ValidationError: Fatal — Haiku response doesn't match BatchResult schema.
-        anthropic.AuthenticationError: Fatal — raised immediately, no retry.
-        anthropic.RateLimitError: Re-raised after max retries exhausted.
-        anthropic.APITimeoutError: Re-raised after max retries exhausted.
+        AuthenticationError: Fatal. Raised immediately, with no retry.
+        RateLimitError: Re-raised after max retries exhausted.
+        APITimeoutError: Re-raised after max retries exhausted.
     """
     prompt = "\n\n".join(
         f'<chunk index="{i}">\n{text}\n</chunk>'
         for i, text in enumerate(texts)
     )
-    result = _anthropic.messages.parse(
+    result = ledger.client(PURPOSE).messages.parse(
         model=HAIKU_MODEL,
         system=BATCH_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],

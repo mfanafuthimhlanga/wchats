@@ -55,6 +55,19 @@ def _make_fake_sdk():
     fake.CLIConnectionError = type("CLIConnectionError", (Exception,), {})
     fake.ProcessError = type("ProcessError", (Exception,), {})
     fake.CLIJSONDecodeError = type("CLIJSONDecodeError", (Exception,), {})
+    # Everything this file did not deliberately stand in for comes from the
+    # installed package. Without it the fake is a fixed list that goes stale. It
+    # had no `UserMessage`, so once pytest imported this module during
+    # collection, every later module reaching agent.py raised
+    # ImportError("cannot import name 'UserMessage' from 'claude_agent_sdk'").
+    # A whole-suite run hid that behind alphabetical ordering, because
+    # test_agent_task.py imports the real package first. Dunders stay off, so
+    # this module never claims the real one's __file__.
+    import claude_agent_sdk as real
+
+    for name, value in vars(real).items():
+        if not name.startswith("__") and name not in fake.__dict__:
+            setattr(fake, name, value)
     return fake
 
 

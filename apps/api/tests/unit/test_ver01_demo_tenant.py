@@ -14,9 +14,9 @@ SDK subprocess. No file under apps/api/app/ is touched by this module — the
 demo tenant is verification data, not production surface.
 
 Mock strategy (mirrors tests/unit/test_actor_seam.py exactly):
-    - Patch ANTHROPIC_CLIENT.messages.create at module boundary
-      (app.services.actor_seam.ANTHROPIC_CLIENT) with a MagicMock whose
-      .content is a list containing a fake tool_use block.
+    - Patch the client factory (app.core.model_client.make_client, through
+      model_doubles.factory) so the gate is handed a double whose
+      messages.create returns a fake tool_use block.
     - Patch app.services.actor_seam._fetch_history (AsyncMock) so no real
       psycopg2 connection is attempted.
     - Patch app.services.actor_seam._langfuse to None so no Langfuse call is
@@ -53,6 +53,7 @@ include "enabled".
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -62,6 +63,7 @@ from app.services.capability_service import (
     PLATFORM_CAPABILITY_DEFAULTS,
     validate_tighten_only,
 )
+from tests.model_doubles import factory, ledger
 
 _MODULE = "app.services.actor_seam"
 
@@ -197,7 +199,7 @@ def _make_api_response(*blocks: MagicMock) -> MagicMock:
 def _run_gate(skill: str, snapshot: dict, api_mock: MagicMock) -> tuple[str, str]:
     """Drive call_actor_gate through asyncio.run with every external dependency mocked."""
     with (
-        patch(f"{_MODULE}.ANTHROPIC_CLIENT.messages.create", api_mock),
+        factory(SimpleNamespace(messages=SimpleNamespace(create=api_mock))),
         patch(f"{_MODULE}._fetch_history", AsyncMock(return_value=[])),
         patch(f"{_MODULE}._langfuse", None),
     ):
@@ -209,6 +211,7 @@ def _run_gate(skill: str, snapshot: dict, api_mock: MagicMock) -> tuple[str, str
                 _CONV_ID,
                 _AGENT_ID,
                 "",
+                ledger=ledger(),
             )
         )
 
