@@ -501,9 +501,7 @@ def rrf_fuse_with_expansion(
     """RRF fusion with optional query expansion (M9).
 
     When strategy.query_expansion is False, this hands straight to rrf_fuse and
-    costs nothing.
-
-    When True:
+    costs nothing. With it on:
       1. Generate up to 2 alternative phrasings through the query_expansion
          purpose, then batch-embed all variants in one Voyage call.
       2. Run rrf_fuse for each (variant, variant_vector) pair.

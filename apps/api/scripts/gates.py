@@ -166,7 +166,7 @@ LIZARD_BASELINE = {
     ("app/services/red_team_service.py", "seed_poisoned_chunk"): (2, 75),
     ("app/services/redteam_programme_service.py", "read_programme"): (16, 99),
     ("app/services/retrieval_service.py", "rrf_fuse"): (3, 65),
-    ("app/services/retrieval_service.py", "rrf_fuse_with_expansion"): (8, 69),
+    ("app/services/retrieval_service.py", "rrf_fuse_with_expansion"): (8, 68),
     ("app/services/retrieval_service.py", "verified_qa_lookup"): (3, 61),
     ("app/services/scenario_service.py", "generate_eval_suite_for_agent"): (7, 66),
     ("app/services/scenario_service.py", "generate_scenarios_from_chunks"): (7, 66),
