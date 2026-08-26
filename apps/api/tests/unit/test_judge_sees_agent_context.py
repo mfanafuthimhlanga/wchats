@@ -33,6 +33,7 @@ import json
 from unittest.mock import patch
 
 from app.domain.retrieved_context import RetrievedChunk, RetrievedContext
+from app.domain.tool_result import wire_text
 from app.services import agent_loop
 from app.services.agent_tools import (
     _RETRIEVE_CALLS_PER_TURN_MAX,
@@ -130,7 +131,9 @@ def _capture(calls: list[str | list[str]], *, is_error: bool = False) -> list[di
         if is_error:
             wire["is_error"] = True
         tool_calls_log.append(
-            agent_loop._log_entry("retrieve", {"query": f"q{i}"}, f"toolu_{i}", wire)
+            agent_loop._log_entry(
+                "retrieve", {"query": f"q{i}"}, f"toolu_{i}", wire, wire_text(wire)
+            )
         )
     return tool_calls_log
 

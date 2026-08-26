@@ -20,6 +20,7 @@ live tool server, and this file is about the task body around them.
 
 from __future__ import annotations
 
+import re
 import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -267,6 +268,161 @@ def test_the_chat_path_hands_the_seam_a_ledger_bound_to_the_tenant_db():
         "the chat path's ledger wrote this turn's model_calls row to "
         f"{write.call_args.args[1]!r} rather than to the tenant database the "
         "turn was served from"
+    )
+
+
+def _seam_holding(*calls):
+    """A seam whose turn already carries `calls`, and the task's own ledger.
+
+    `_seam` hands back an EMPTY `calls` list, which is what let the ledger write
+    be deleted from `run_agent_turn`'s `finally` with 104 tests still green.
+    `record_turn_calls` over nothing writes nothing either way, so its absence and
+    its presence look identical. A turn that recorded rows is what tells them
+    apart. The ledger is the one the task built, never a double, because the
+    assertion is about which database the rows reach.
+    """
+    def _seam_with_rows(**kwargs):
+        return SimpleNamespace(
+            calls=list(calls), ledger=kwargs.get("ledger", lambda call: None)
+        )
+
+    return _seam_with_rows
+
+
+def test_a_served_turn_writes_its_model_calls_rows_to_the_tenant_ledger():
+    """The rows the loop recorded reach `record_model_call` once the turn is over.
+
+    Two separate claims, and only the first was pinned. The task hands the seam a
+    ledger bound to the tenant dsn (the test above), and the task then USES it.
+    Deleting `record_turn_calls(turn)` from this task's `finally` left the whole
+    suite green, because the seam double's `calls` was always empty. Here it is
+    not. One real `ModelCall` goes in, and the assertion is that it comes out the
+    other side against the decrypted tenant dsn.
+
+    Nothing is written DURING the turn. `record_model_call` opens, commits and
+    closes a tenant connection per row, and a sleeping Neon endpoint takes 8 to 20
+    seconds to wake. So the write is asserted to happen after the loop returned,
+    which is where `record_turn_calls` puts it.
+    """
+    from app.worker.tasks.runtime.agent import run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent = _make_agent()
+    job = _make_job(job_id)
+    call = _a_model_call()
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None
+    mock_db.get.side_effect = [agent, job]
+
+    writes: list[tuple] = []
+
+    def _loop_that_records_nothing_yet(*_args, **_kwargs):
+        assert writes == [], (
+            "a model_calls row was written from inside the turn. That is a tenant "
+            f"connect on the customer's wall clock, up to 20s per row: {writes}"
+        )
+        return _CANNED_RESULT_WITH_CITATION
+
+    with (
+        patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
+        patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value=TENANT_DSN),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
+        patch(
+            "app.worker.tasks.runtime.agent._create_conversation_row",
+            return_value="00000000-0000-0000-0000-0000000000ac",
+        ),
+        patch("app.worker.tasks.runtime.agent._persist_messages"),
+        patch(
+            "app.worker.tasks.runtime.agent.build_agent_turn",
+            side_effect=_seam_holding(call),
+        ),
+        patch(
+            "app.worker.tasks.runtime.agent.asyncio.run",
+            side_effect=_loop_that_records_nothing_yet,
+        ),
+        patch("app.worker.tasks.runtime.agent.emit"),
+        patch(
+            "app.core.model_client.record_model_call",
+            side_effect=lambda row, target: writes.append((row, target)),
+        ),
+    ):
+        run_agent_turn.run(
+            job_id=job_id,
+            agent_id=str(agent.id),
+            message="What is the return policy?",
+            conversation_id=None,
+        )
+
+    assert writes, (
+        "the turn recorded a model call and no row reached the ledger. The task "
+        "spent the tenant's money with nothing to show for it, which is the "
+        "failure #46 ended."
+    )
+    assert [row for row, _target in writes] == [call]
+    assert writes[0][1] == TENANT_DSN, (
+        f"the row was written to {writes[0][1]!r} rather than to the tenant "
+        "database the turn was served from"
+    )
+
+
+def test_a_turn_that_died_still_writes_the_calls_it_already_paid_for():
+    """The failure path owes the same rows. It is where they matter most.
+
+    A turn that timed out, or one whose loop raised, has already been billed by
+    the provider for every call it made. Those rows only exist in
+    `AgentTurn.calls` until `record_turn_calls` runs, so a `finally` that skipped
+    them on the failure path would lose exactly the spend nobody got an answer
+    for. The task retries here rather than serving, and the rows still land.
+    """
+    import pytest
+    from celery.exceptions import Retry
+
+    from app.worker.tasks.runtime.agent import run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent = _make_agent()
+    job = _make_job(job_id)
+    call = _a_model_call()
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None
+    mock_db.get.side_effect = [agent, job]
+
+    loop_failure = RuntimeError("the provider hung up mid-turn")
+    writes: list[tuple] = []
+
+    with (
+        patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
+        patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value=TENANT_DSN),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
+        patch(
+            "app.worker.tasks.runtime.agent._create_conversation_row",
+            return_value="00000000-0000-0000-0000-0000000000ad",
+        ),
+        patch(
+            "app.worker.tasks.runtime.agent.build_agent_turn",
+            side_effect=_seam_holding(call),
+        ),
+        patch("app.worker.tasks.runtime.agent.asyncio.run", side_effect=loop_failure),
+        patch("app.worker.tasks.runtime.agent.emit"),
+        patch.object(run_agent_turn, "retry", MagicMock(return_value=Retry())),
+        patch(
+            "app.core.model_client.record_model_call",
+            side_effect=lambda row, target: writes.append((row, target)),
+        ),
+        pytest.raises(Retry),
+    ):
+        run_agent_turn.run(
+            job_id=job_id,
+            agent_id=str(agent.id),
+            message="What is the return policy?",
+            conversation_id=None,
+        )
+
+    assert [(row, target) for row, target in writes] == [(call, TENANT_DSN)], (
+        "a turn that died lost the model_calls rows it had already paid for; "
+        f"the ledger saw {writes}. The provider billed for them either way."
     )
 
 
@@ -1167,6 +1323,117 @@ def test_terminal_failure_emits_agent_failed_when_the_job_status_write_raises():
 
 
 # ---------------------------------------------------------------------------
+# What one tool call leaves at rest in the tenant database
+# ---------------------------------------------------------------------------
+
+
+class _RecordingCursor:
+    """Collects every (sql, params) pair, for the INSERTs _persist_messages makes."""
+
+    def __init__(self):
+        self.executed: list[tuple] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+
+
+class _RecordingConn:
+    def __init__(self):
+        self.cursor_obj = _RecordingCursor()
+        self.commits = 0
+
+    def cursor(self):
+        return self.cursor_obj
+
+    def commit(self):
+        self.commits += 1
+
+
+def _tool_call_rows(conn) -> list[tuple]:
+    return [
+        params
+        for sql, params in conn.cursor_obj.executed
+        if "INSERT INTO tool_calls" in sql
+    ]
+
+
+def test_a_non_retrieve_tool_call_persists_an_empty_result_column():
+    """POPIA. The tenant's `tool_calls.result` holds `{}` for every tool but retrieve.
+
+    The two halves are joined here rather than assumed. The entry comes from the
+    real `_log_entry` in the loop, and the column value comes from the real
+    INSERT `_persist_messages` executes. `lookup_structured` returns a CUSTOMER's
+    rows and the six mutating skills return what they moved; the SDK path stored
+    none of it and nobody decided to start.
+    """
+    import json
+
+    from app.services.agent_loop import _log_entry
+    from app.worker.tasks.runtime.agent import _persist_messages
+
+    looked_up = _log_entry(
+        "lookup_structured",
+        {"table": "customers", "filters": {"email": "thandi@example.co.za"}},
+        "call-1",
+        {"content": [{"type": "text", "text": "Thandi Nkosi, 27 82 555 0134"}]},
+        "Thandi Nkosi, 27 82 555 0134",
+    )
+
+    assert "result" not in looked_up, (
+        f"the loop captured a lookup_structured result: {looked_up!r}"
+    )
+
+    conn = _RecordingConn()
+    _persist_messages(conn, CONV, "who am I on file as?", "You are on file.", [looked_up])
+
+    rows = _tool_call_rows(conn)
+    assert len(rows) == 1, f"expected one tool_calls row, got {rows}"
+    _row_id, _msg_id, tool_name, _arguments, result, _chunks, *_ = rows[0]
+    assert tool_name == "lookup_structured"
+    assert json.loads(result) == {}, (
+        f"the customer's own rows were written to tool_calls.result as {result!r}. "
+        "That column held {} for every non-retrieve tool on the SDK path, and "
+        "this is a POPIA-sensitive platform."
+    )
+
+
+def test_a_retrieve_tool_call_still_persists_its_audit_capture():
+    """The other side of the same decision, so the fix is a narrowing not a deletion.
+
+    `_judge_retrieved_context` reads `result` as the degraded evidence when a
+    retrieve carries no decodable ride-along, and `run_eval_suite` filters on the
+    key being present. A retrieve that stopped writing it would take both with it.
+    """
+    import json
+
+    from app.services.agent_loop import _log_entry
+    from app.worker.tasks.runtime.agent import _persist_messages
+
+    retrieved = _log_entry(
+        "retrieve",
+        {"query": "returns"},
+        "call-2",
+        {"content": [{"type": "text", "text": "Unopened bags, 14 days."}]},
+        "Unopened bags, 14 days.",
+    )
+
+    conn = _RecordingConn()
+    _persist_messages(conn, CONV, "how long do I have?", "Fourteen days.", [retrieved])
+
+    _row_id, _msg_id, tool_name, _arguments, result, _chunks, *_ = _tool_call_rows(conn)[0]
+    assert tool_name == "retrieve"
+    assert json.loads(result) == "Unopened bags, 14 days.", (
+        f"a retrieve's audit capture did not reach the column: {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # _read_turn_history, the session state ADR 0008 put in the database
 #
 # The SDK's `resume` stored session files on the container filesystem and
@@ -1201,6 +1468,7 @@ class _OrderedCursor:
         self._rows = list(rows)
         self._result: list = []
         self.last_params = None
+        self.last_sql = ""
 
     def __enter__(self):
         return self
@@ -1209,6 +1477,7 @@ class _OrderedCursor:
         return False
 
     def execute(self, sql, params):
+        self.last_sql = sql
         self.last_params = params
         conv_id, limit = params
         selected = [
@@ -1246,6 +1515,59 @@ def _row(role, content, created_at, conv=CONV):
         "content": content,
         "created_at": created_at,
     }
+
+
+#: The tiebreak expression, as PostgreSQL has to receive it.
+_TIEBREAK = "CASE role WHEN 'assistant' THEN 0 ELSE 1 END"
+
+_SQL_COMMENTS = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
+
+
+def _order_by_clause(sql: str) -> str:
+    """The text PostgreSQL will sort by: after the last ORDER BY, before any LIMIT.
+
+    Comments come out FIRST, which is the whole reason this helper exists. A
+    substring search over the raw statement is satisfied by the tiebreak sitting
+    in a `--` comment while the ORDER BY that reaches the planner has lost it,
+    and that mutation was run. The six tests below stayed green over a query with
+    no tiebreak in it (BACKLOG 5.16, guard the value the consumer receives rather
+    than the syntax that produces it, with PostgreSQL as the consumer).
+    """
+    plain = _SQL_COMMENTS.sub(" ", sql)
+    tail = re.split(r"\border\s+by\b", plain, flags=re.IGNORECASE)[-1]
+    return " ".join(re.split(r"\blimit\b", tail, flags=re.IGNORECASE)[0].split())
+
+
+def test_the_tiebreak_is_in_the_order_by_that_reaches_postgres():
+    """The clause the planner sorts on, not a mention of it anywhere in the text.
+
+    `_OrderedCursor` decides its own sort by looking for the tiebreak in the SQL
+    string, so every ordering test below is satisfied by the characters being
+    present ANYWHERE, a comment included. This reads the same statement the way
+    a server does: comments stripped, then the segment after the final ORDER BY
+    and before the LIMIT.
+
+    The position assertion is the second half. A tiebreak listed BEFORE
+    `created_at DESC` is not a tiebreak; it is the primary sort key, and it would
+    interleave two conversations' turns by role.
+    """
+    from app.worker.tasks.runtime.agent import _read_turn_history
+
+    conn = _OrderedConn([_row("user", "q", 100), _row("assistant", "a", 100)])
+    _read_turn_history(conn, CONV)
+
+    clause = _order_by_clause(conn.cursor_obj.last_sql)
+    assert _TIEBREAK in clause, (
+        f"the ORDER BY PostgreSQL receives is {clause!r} and it carries no "
+        f"tiebreak. Both rows of a turn share one transaction_timestamp(), so "
+        f"created_at alone leaves their order to the plan (issue #79). The "
+        f"expression has to be in the clause, not in a comment beside it."
+    )
+    assert clause.index("created_at DESC") < clause.index(_TIEBREAK), (
+        f"the tiebreak sorts BEFORE created_at in {clause!r}, which makes role "
+        "the primary key and interleaves the whole conversation by role rather "
+        "than settling one timestamp's ties."
+    )
 
 
 def test_the_history_puts_the_question_before_the_answer_within_one_timestamp():
@@ -1331,6 +1653,37 @@ def test_the_history_cap_takes_the_newest_rows():
         "have to be the twenty that just happened."
     )
     assert history[-1]["content"] == f"message {total - 1}"
+
+
+def test_an_empty_assistant_row_does_not_travel_into_the_next_turn():
+    """What a `max_model_calls` exhaustion persists, and why it stays behind.
+
+    A turn that ran out of model calls while the model was still asking for tools
+    joins `response_text` to "", and `_persist_messages` writes that empty string
+    as an assistant row. Replayed, it reaches the next turn as a message in which
+    the agent chose to say nothing, and the model answers the conversation it is
+    shown. The row is the honest record of what happened and stays in the table;
+    it just does not become context.
+    """
+    from app.worker.tasks.runtime.agent import _read_turn_history
+
+    conn = _OrderedConn([
+        _row("user", "Where is my order?", 100),
+        _row("assistant", "", 100),
+        _row("user", "Hello?", 200),
+        _row("assistant", "   \n ", 200),
+    ])
+
+    history = _read_turn_history(conn, CONV)
+
+    assert history == [
+        {"role": "user", "content": "Where is my order?"},
+        {"role": "user", "content": "Hello?"},
+    ], (
+        f"an empty assistant turn reached the next turn's context: {history}. "
+        "Both the empty string and the whitespace-only row are what an exhausted "
+        "turn persists, and neither is anything the model can read as an answer."
+    )
 
 
 def test_the_history_ignores_rows_from_another_conversation():

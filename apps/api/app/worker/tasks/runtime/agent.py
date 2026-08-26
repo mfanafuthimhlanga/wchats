@@ -438,7 +438,17 @@ def _read_turn_history(conn, conv_id: str) -> list[dict]:
     # says. Without it a turn's own answer can come back before its question and
     # the model reads the conversation inside out.
     rows.reverse()
-    return [{"role": role, "content": content} for role, content in rows]
+    # An assistant row with no text is what a turn that exhausted
+    # `max_model_calls` persists. The loop ran out of calls while the model was
+    # still asking for tools, so `response_text` joined to "". Replaying it puts
+    # an empty assistant message into the next turn's context, where the model
+    # reads it as a turn in which it chose to say nothing. The row stays in the
+    # table, because it is the record of what happened; it just does not travel.
+    return [
+        {"role": role, "content": content}
+        for role, content in rows
+        if content and str(content).strip()
+    ]
 
 
 def _set_prompt_version_id(conn, conv_id: str, prompt_version_id: str) -> None:

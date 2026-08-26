@@ -54,6 +54,7 @@ from app.services.agent_loop import (
     RETRIEVE_CHUNKS_SOURCE_KEY,
     RETRIEVE_CHUNKS_UNPARSED,
     RETRIEVE_JUDGE_CHUNKS_KEY,
+    RETRIEVE_RESULT_CAPTURE_CHARS,
     RETRIEVE_RESULT_IS_ERROR_KEY,
     AgentTurn,
     build_agent_turn,
@@ -358,6 +359,46 @@ class TestTheSeam:
                 side_effects="live",
             )
 
+    def test_a_seam_that_fails_after_building_the_client_closes_it(self):
+        """The client is the one thing this function acquires, so it owns it.
+
+        The turn's own `finally` closes the client, and a turn that was never
+        returned has no `finally`. `route_for` raises UnknownPurpose and
+        `agent_tool_definitions` can raise too, and both are evaluated after the
+        factory has already opened an httpx transport. Leaked, it lives until the
+        worker restarts, and this worker runs for weeks.
+        """
+        client = _Client(_completion(content="ok"))
+        boom = RuntimeError("the tool definitions could not be built")
+
+        with (
+            patch("app.services.agent_loop.make_async_client", return_value=client),
+            patch("app.services.agent_loop.agent_tool_definitions", side_effect=boom),
+            pytest.raises(RuntimeError, match="tool definitions"),
+        ):
+            build_agent_turn(**_seam_kwargs())
+
+        assert client.closed == 1, (
+            "the seam raised after the factory had built a client and left the "
+            "transport open. Nothing else holds a reference to it, so nothing "
+            "else can close it."
+        )
+
+    def test_closing_a_leaked_client_never_replaces_the_reason_the_seam_failed(self):
+        """Cleanup that raises would rename the fault after a socket."""
+        client = MagicMock()
+        client.close.side_effect = OSError("the transport was already gone")
+
+        with (
+            patch("app.services.agent_loop.make_async_client", return_value=client),
+            patch(
+                "app.services.agent_loop.agent_tool_definitions",
+                side_effect=RuntimeError("the tool definitions could not be built"),
+            ),
+            pytest.raises(RuntimeError, match="tool definitions"),
+        ):
+            build_agent_turn(**_seam_kwargs())
+
     def test_the_mode_reaches_the_tool_layer(self):
         _build(side_effects="recorded")
         assert current_side_effect_mode() == "recorded"
@@ -555,6 +596,51 @@ class TestOneModelCall:
         assert out["stop_reason"] == "length"
         assert out["num_turns"] == 1
         assert out["tool_calls_log"] == []
+
+    async def test_a_reply_with_no_choices_ends_the_turn_rather_than_killing_it(self):
+        """An empty `choices` list is a response, not a fault.
+
+        `completion.choices[0]` raised IndexError straight out of the loop for
+        it. The Celery task caught that, and the customer read a provider hiccup
+        as `agent.failed` on a turn nobody could retry usefully. The turn now ends
+        with the text it has and a stop_reason the ops room can count.
+        """
+        empty = SimpleNamespace(choices=[])
+        turn = _turn(_Client(empty))
+
+        out, _ = await _drive(turn)
+
+        assert out["response_text"] == ""
+        assert out["stop_reason"] == "no_choices", (
+            f"the turn stopped for {out['stop_reason']!r}. A reply carrying no "
+            "choice is its own observation and needs its own name."
+        )
+        assert out["num_turns"] == 1
+        assert out["tool_calls_log"] == []
+
+    async def test_a_reply_with_no_choices_field_at_all_ends_the_turn_too(self):
+        """Same claim one step further out, for a body the SDK could not parse."""
+        turn = _turn(_Client(SimpleNamespace()))
+
+        out, _ = await _drive(turn)
+
+        assert out["stop_reason"] == "no_choices"
+
+    async def test_the_text_of_earlier_calls_survives_a_choiceless_reply(self):
+        """The turn keeps what it already produced. It is an ending, not a reset."""
+        client = _Client(
+            _completion(
+                content="let me look that up",
+                tool_calls=[_tool_call("call-1", "retrieve", '{"query": "returns"}')],
+                finish_reason="tool_calls",
+            ),
+            SimpleNamespace(choices=[]),
+        )
+
+        out, _ = await _drive(_turn(client, tools=[_tool("retrieve", _echo_handler)]))
+
+        assert out["response_text"] == "let me look that up"
+        assert out["stop_reason"] == "no_choices"
 
     async def test_the_request_names_the_model_and_the_effort(self):
         client = _Client(_completion(content="ok"))
@@ -855,6 +941,29 @@ class TestTheClientIsClosed:
             "the loop down under it, one leaked transport per failed turn."
         )
 
+    async def test_the_client_is_closed_when_the_opening_assembly_raises(self):
+        """The message list and the tools wire are built INSIDE the try.
+
+        They used to be built above it, where a raise skipped the `finally`
+        entirely. A tool object missing one of the four attributes the loop
+        duck-types is all it takes, and the turn dies holding an open transport
+        the caller cannot reach.
+        """
+        client = _Client(_completion(content="ok"))
+        missing_description = SimpleNamespace(
+            name="retrieve",
+            input_schema={"type": "object", "properties": {}},
+            handler=_echo_handler,
+        )
+
+        with pytest.raises(AttributeError):
+            await _drive(_turn(client, tools=[missing_description]))
+
+        assert client.closed == 1, (
+            "the turn died while assembling its request and left the httpx "
+            "transport open, because the assembly sat above the try."
+        )
+
     async def test_the_client_is_closed_when_a_tool_kills_the_turn(self):
         """Any raise out of the loop body, not only the provider's."""
         client = _Client(
@@ -909,6 +1018,75 @@ class TestEscalation:
 
         assert out["escalated"] is False
         assert out["escalation_reason"] is None
+
+    def _escalating_client(self, arguments: str):
+        return _Client(
+            _completion(
+                tool_calls=[_tool_call("call-1", "escalate_to_human", arguments)],
+                finish_reason="tool_calls",
+            ),
+            _completion(content="a colleague will call you.", finish_reason="stop"),
+        )
+
+    async def test_arguments_that_do_not_read_do_not_escalate(self):
+        """Nothing was written and no mail was sent, so nothing is reported.
+
+        The escalation used to be recorded before dispatch, off the tool name and
+        the arguments alone. Arguments the model wrote as broken JSON never reach
+        a handler, so `_tool_arguments` hands back `{}` and a refusal, and the
+        turn still came back `escalated=True` with a null reason. That fires
+        `agent.escalated` at the widget, writes `turn_metrics.escalated`, and
+        counts toward the escalation rate the ops room reads, over a conversation
+        no human was ever told about.
+        """
+        out, _ = await _drive(
+            _turn(
+                self._escalating_client("{not json"),
+                tools=[_tool("escalate_to_human", _echo_handler)],
+            )
+        )
+
+        assert out["escalated"] is False, (
+            "a malformed escalate_to_human call was reported as an escalation, "
+            f"with reason {out['escalation_reason']!r}. Nothing marked the "
+            "conversation and no mail left the building."
+        )
+        assert out["escalation_reason"] is None
+        assert out["escalation_context"] is None
+        assert out["tool_calls_log"][0]["tool_name"] == "escalate_to_human", (
+            "the attempt still belongs in the audit log; only the CLAIM that a "
+            f"human is coming is withdrawn: {out['tool_calls_log']}"
+        )
+
+    async def test_a_handler_that_raises_does_not_escalate(self):
+        """The tenant connection refused, so the conversation is not flagged."""
+        async def _boom(args):
+            raise RuntimeError("the tenant database refused the connection")
+
+        out, _ = await _drive(
+            _turn(
+                self._escalating_client('{"reason": "asked three times"}'),
+                tools=[_tool("escalate_to_human", _boom)],
+            )
+        )
+
+        assert out["escalated"] is False, (
+            "the escalation handler raised and the turn reported an escalation "
+            "anyway. `_mark_conversation_escalated` never ran, so the owner's "
+            "inbox and every escalation dashboard disagree with turn_metrics."
+        )
+        assert out["escalation_reason"] is None
+
+    async def test_a_tool_nobody_registered_does_not_escalate(self):
+        """The third error wire, and the same rule reaches it."""
+        out, _ = await _drive(
+            _turn(
+                self._escalating_client('{"reason": "asked three times"}'),
+                tools=[_tool("clarify", _echo_handler)],
+            )
+        )
+
+        assert out["escalated"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -1123,7 +1301,38 @@ class TestTheRetrieveCapture:
         assert entry[RETRIEVE_CHUNKS_KEY] == []
         assert entry[RETRIEVE_CHUNKS_SOURCE_KEY] == RETRIEVE_CHUNKS_PARSED
 
+    async def test_the_audit_capture_is_the_text_the_model_read(self):
+        """`wire_text`'s join, not a repr of the content-block list.
+
+        The capture used to be `str(wire["content"])`, which stored
+        `[{'type': 'text', 'text': '...'}]` into a jsonb column and handed that
+        syntax to `_judge_retrieved_context`'s degraded branch as evidence. ADR
+        0008 records the repr seam dying with this ticket, and `_run_tool_call`
+        has already joined the text for the tool message beside it.
+        """
+        entry = await self._entry(_text_wire("Unopened bags, 14 days."))
+
+        assert entry["result"] == "Unopened bags, 14 days.", (
+            f"the audit capture is {entry['result']!r}. That is the wire's "
+            "structure rather than the passage the model read."
+        )
+
+    async def test_a_long_retrieve_capture_is_cut_at_the_column_bound(self):
+        """The cap is why the capture exists as a separate value at all."""
+        entry = await self._entry(_text_wire("x" * (RETRIEVE_RESULT_CAPTURE_CHARS + 500)))
+
+        assert entry["result"] == "x" * RETRIEVE_RESULT_CAPTURE_CHARS
+
     async def test_a_non_retrieve_tool_carries_no_capture_keys(self):
+        """And no `result` either, which is a retention decision (BLOCK 3).
+
+        `_persist_messages` writes this key into the tenant's `tool_calls.result`
+        jsonb. The SDK path returned early for every non-retrieve tool, so that
+        column held `{}`; carrying a `result` on every entry would silently start
+        retaining `lookup_structured`'s customer rows and the six mutating skills'
+        outputs at rest, up to RETRIEVE_RESULT_CAPTURE_CHARS per call, on a
+        POPIA-sensitive platform. Nobody decided that.
+        """
         client = _Client(
             _completion(
                 tool_calls=[_tool_call("call-1", "clarify", '{"question": "which order?"}')],
@@ -1137,6 +1346,15 @@ class TestTheRetrieveCapture:
         entry = out["tool_calls_log"][0]
         assert RETRIEVE_CHUNKS_KEY not in entry
         assert RETRIEVE_RESULT_IS_ERROR_KEY not in entry
+        assert "result" not in entry, (
+            f"a clarify call carried its result into the audit log: {entry!r}. "
+            "That value is written to the tenant's tool_calls.result column, "
+            "where the SDK path stored {} for every tool but retrieve."
+        )
+        assert entry["tool_name"] == "clarify" and entry["tool_use_id"] == "call-1", (
+            "the entry lost the fields a reader attaches results by id with "
+            f"(BACKLOG 5.21): {entry!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -358,8 +358,8 @@ class _Options:
     after the turn, off the event loop, and reads both to do it.
     """
 
-    def __init__(self, ledger=None) -> None:
-        self.calls: list = []
+    def __init__(self, ledger=None, calls=None) -> None:
+        self.calls: list = list(calls or [])
         self.ledger = ledger if ledger is not None else (lambda call: None)
 
     def __repr__(self) -> str:  # pragma: no cover - only read on failure
@@ -582,6 +582,95 @@ def test_the_turn_goes_through_the_seam_and_asks_for_recorded_side_effects():
     )
     assert fake_loop.args[0] == "What is the return policy?"
     assert result["response_text"].startswith("Returns are accepted")
+
+
+def _drive_one_eval_turn(*, calls, loop):
+    """Run `_run_one_eval_turn` over a seam whose turn already carries `calls`.
+
+    Returns every `(row, target)` pair that reached `record_model_call`. The seam
+    is handed a real `ledger_recorder` bound to the production dsn, because the
+    question is which database the rows land in, and a double would answer it for
+    the double.
+    """
+    from app.core.model_client import ledger_recorder
+
+    agent = _agent_row()
+    db = MagicMock()
+    db.get.return_value = agent
+    writes: list[tuple] = []
+
+    with (
+        patch.object(mod, "get_sync_db", _db_ctx(db)),
+        patch(
+            "app.services.agent_loop.build_agent_turn",
+            return_value=_Options(ledger=ledger_recorder(PRODUCTION), calls=calls),
+        ),
+        patch("app.services.agent_loop.run_agent_loop", side_effect=loop),
+        patch(
+            "app.core.model_client.record_model_call",
+            side_effect=lambda row, target: writes.append((row, target)),
+        ),
+    ):
+        yield_value = None
+        try:
+            yield_value = mod._run_one_eval_turn(
+                agent_id=str(agent.id),
+                conn_str=PRODUCTION,
+                run_id=RUN_ID,
+                question="What is the return policy?",
+                prompt_version_id=None,
+            )
+        except Exception as exc:
+            # Returned rather than raised. Both callers want the ledger writes, and
+            # one of them wants the failure as well.
+            yield_value = exc
+    return writes, yield_value
+
+
+def test_an_eval_turn_writes_its_model_calls_rows_to_the_tenant_ledger():
+    """The rows a scenario's turn recorded reach `record_model_call` after it.
+
+    `_drive_eval_turn`'s `finally` is the only thing that takes them there, and
+    deleting it left the suite green because every turn double in this file
+    carried an empty `calls`. A run that invokes sixty scenarios a night and
+    records none of them is the failure #46 ended, one path over from the chat
+    task.
+    """
+    call = _a_model_call()
+
+    async def _loop(*_args, **_kwargs):
+        return _turn()
+
+    writes, result = _drive_one_eval_turn(calls=[call], loop=_loop)
+
+    assert writes == [(call, PRODUCTION)], (
+        "an eval turn recorded a model call and the ledger saw "
+        f"{writes}. The run spent the tenant's money with no row to show for it."
+    )
+    assert result["response_text"].startswith("Returns are accepted")
+
+
+def test_an_eval_turn_that_died_still_writes_the_calls_it_already_paid_for():
+    """A scenario that raised has still been billed for the calls it made.
+
+    The eval catches this one scenario and carries on, so the rows are the only
+    record that the turn cost anything at all. `_drive_eval_turn` writes them from
+    a `finally` for that reason, and this is what says so.
+    """
+    call = _a_model_call()
+
+    async def _loop(*_args, **_kwargs):
+        raise RuntimeError("the provider hung up mid-scenario")
+
+    writes, result = _drive_one_eval_turn(calls=[call], loop=_loop)
+
+    assert isinstance(result, RuntimeError), (
+        f"the scenario failure was swallowed inside the turn; got {result!r}. "
+        "`_invoke_agent_for_scenarios` is what excludes and counts it."
+    )
+    assert writes == [(call, PRODUCTION)], (
+        f"a scenario that died lost the rows it had already paid for: {writes}"
+    )
 
 
 def test_every_model_call_of_an_eval_turn_is_billed_under_the_run():

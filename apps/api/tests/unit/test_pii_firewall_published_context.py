@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 
 from app.domain.pii_firewall import PII_DEFLECTION, scan_response
+from app.domain.tool_result import wire_text
 from app.services import agent_loop
 from app.services.agent_tools import _frame_retrieved_context
 from app.worker.tasks.runtime import agent as agent_module
@@ -101,7 +102,9 @@ def _capture(
     if is_error:
         payload["is_error"] = True
     return [
-        agent_loop._log_entry(tool_name, {"query": query}, "toolu_0", payload)
+        agent_loop._log_entry(
+            tool_name, {"query": query}, "toolu_0", payload, wire_text(payload)
+        )
     ]
 
 

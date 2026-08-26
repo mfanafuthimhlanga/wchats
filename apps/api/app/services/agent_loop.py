@@ -18,6 +18,9 @@ THE SEAM, AND WHY IT IS ONE FUNCTION
     as this repo's recurring defect. `build_agent_options` held that line for the
     SDK path and this function carries it forward.
 
+    The seam has one side effect, and it is the point. `bind_tool_context`
+    publishes the ContextVars every tool handler reads, and the last caller wins.
+
     `side_effects` is mandatory and has no default. A default is exactly how the
     eval path silently ends up live, and live means the agent can move a
     customer's money. A caller that does not say which mode it wants raises
@@ -57,6 +60,7 @@ which is what lets the loop run tools the SDK defined without importing it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -319,6 +323,27 @@ def _turn_client(*, agent, job_id: str, calls: list[ModelCall]):
     )
 
 
+def _discard_client(client) -> None:
+    """Close a client built for a turn that then failed to come into existence.
+
+    `AsyncOpenAI.close` is a coroutine and this seam is synchronous, so the close
+    runs on an event loop of its own. Both callers are sync Celery code, so there
+    is no running loop for this one to collide with.
+
+    Every failure here is swallowed. This runs while an exception is already on
+    its way out of the seam, and a raise from the cleanup would replace the
+    reason the turn failed with a footnote about a socket.
+    """
+    try:
+        asyncio.run(client.close())
+    except Exception as exc:
+        log.warning(
+            "agent_loop.unused_client_not_closed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+
+
 def build_agent_turn(
     *,
     agent,
@@ -331,8 +356,6 @@ def build_agent_turn(
     soul_override: dict | None = None,
 ) -> AgentTurn:
     """Assemble one turn of `agent`. THE SEAM, described in the module docstring.
-
-    One side effect, and it is the point. `bind_tool_context` publishes the ContextVars every tool handler reads, and the last caller wins.
 
     Args:
         agent:                  Control-DB Agent row: id, tenant_id, name, retrieval_strategy, soul fields.
@@ -350,9 +373,8 @@ def build_agent_turn(
         ValidationError: pydantic refused `agent.retrieval_strategy`.
         UnknownPurpose:  PURPOSE_ROUTES has no row for AGENT_TURN_PURPOSE.
     """
-    # FIRST, before anything that can raise. The prefork pool does not isolate
-    # contextvars per task and the mode is sticky, so a previous turn's value is
-    # in force on entry. Resetting here makes the safe default this function's.
+    # FIRST, before anything that can raise. The prefork pool does not isolate contextvars per task and
+    # the mode is sticky, so a previous turn's value is in force on entry. Resetting here makes the safe default this function's.
     reset_side_effect_context()
     _check_mode(side_effects)
     bind_tool_context(
@@ -369,16 +391,19 @@ def build_agent_turn(
     )
     system_prompt = build_system_prompt(agent, soul_override=soul_override)
     calls: list[ModelCall] = []
-    return AgentTurn(
-        client=_turn_client(agent=agent, job_id=job_id, calls=calls),
-        route=route_for(AGENT_TURN_PURPOSE),
-        system_prompt=system_prompt,
-        tools=agent_tool_definitions(),
-        max_model_calls=MAX_MODEL_CALLS_PER_TURN,
-        max_budget_usd=settings.AGENT_MAX_BUDGET_USD,
-        calls=calls,
-        ledger=ledger,
-    )
+    # Into a name rather than into the argument list, so the rest of the assembly has something to close when
+    # it raises. `route_for` and `agent_tool_definitions` both can, and a transport nobody holds outlives the turn.
+    client = _turn_client(agent=agent, job_id=job_id, calls=calls)
+    try:
+        return AgentTurn(
+            client=client, route=route_for(AGENT_TURN_PURPOSE),
+            system_prompt=system_prompt, tools=agent_tool_definitions(),
+            max_model_calls=MAX_MODEL_CALLS_PER_TURN, max_budget_usd=settings.AGENT_MAX_BUDGET_USD,
+            calls=calls, ledger=ledger,
+        )
+    except BaseException:
+        _discard_client(client)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -534,9 +559,18 @@ async def _dispatch(tools, name: str, args: dict) -> dict:
     return _error_wire(f"Tool {name} returned a {type(wire).__name__} rather than a result.")
 
 
-def _note_escalation(state: _TurnState, name: str, args: dict) -> None:
-    """Escalation is read off the tool the model called, never off its prose (T-04-03-03)."""
-    if name != "escalate_to_human":
+def _note_escalation(state: _TurnState, name: str, args: dict, wire: dict) -> None:
+    """Escalation is read off the tool the model called, never off its prose (T-04-03-03).
+
+    It is read off the tool's RESULT as well, and that half is what the earlier
+    ordering lost. This used to run before dispatch, so arguments the model wrote
+    as broken JSON, or a handler that raised on the tenant connection, still set
+    `escalated` with a null reason. The turn then fired `agent.escalated` at the
+    widget and wrote `turn_metrics.escalated`, while nothing marked the
+    conversation and no mail left the building. An error wire is not an
+    escalation.
+    """
+    if name != "escalate_to_human" or wire.get("is_error"):
         return
     state.escalated = True
     state.escalation_reason = args.get("reason")
@@ -578,8 +612,23 @@ def _attach_retrieve_capture(entry: dict, wire: dict) -> None:
     entry[RETRIEVE_CHUNKS_SOURCE_KEY] = RETRIEVE_CHUNKS_PARSED
 
 
-def _log_entry(name: str, args: dict, tool_use_id: str, wire: dict) -> dict:
-    """One `tool_calls_log` row. A retrieve carries its captures as well."""
+def _log_entry(name: str, args: dict, tool_use_id: str, wire: dict, text: str) -> dict:
+    """One `tool_calls_log` row. A retrieve carries its captures as well.
+
+    ONLY A RETRIEVE CARRIES `result`, and that is a retention decision rather
+    than a formatting one. `_persist_messages` writes this key into the tenant's
+    `tool_calls.result` jsonb, so a `result` on every tool would keep
+    `lookup_structured`'s customer rows and the six mutating skills' outputs at
+    rest, up to RETRIEVE_RESULT_CAPTURE_CHARS per call, on a POPIA-sensitive
+    platform. The SDK path stored `{}` there for every non-retrieve tool and
+    nobody decided to change that. `tc.get("result", {})` is what the writer
+    reads, so an absent key writes `{}` exactly as before.
+
+    `text` is the tool result as the MODEL read it, which is what `wire_text`
+    joins out of the content blocks. The capture used to be `str(wire["content"])`,
+    a Python repr of the block list, and ADR 0008 records that seam dying with
+    this ticket. This is its last producer.
+    """
     entry = {
         "tool_name": name,
         "input": args,
@@ -587,9 +636,9 @@ def _log_entry(name: str, args: dict, tool_use_id: str, wire: dict) -> dict:
         # a result, by id. "The most recent entry without a result" mis-attributes
         # the moment a reply carries two tool calls (BACKLOG 5.21).
         "tool_use_id": tool_use_id,
-        "result": str(wire.get("content"))[:RETRIEVE_RESULT_CAPTURE_CHARS],
     }
     if name == "retrieve":
+        entry["result"] = text[:RETRIEVE_RESULT_CAPTURE_CHARS]
         _attach_retrieve_capture(entry, wire)
     return entry
 
@@ -604,12 +653,25 @@ async def _run_tool_call(call, *, messages, state, turn, job_id, db, redis) -> N
     name = call.function.name
     args, refusal = _tool_arguments(name, call.function.arguments)
     emit(job_id, "agent.tool_call", {"tool_name": name, "input": args}, db, redis)
-    _note_escalation(state, name, args)
     wire = refusal if refusal is not None else await _dispatch(turn.tools, name, args)
+    _note_escalation(state, name, args, wire)
     text = wire_text(wire)
     messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
     emit(job_id, "agent.tool_result", {"tool_name": name, "summary": text[:200]}, db, redis)
-    state.tool_calls_log.append(_log_entry(name, args, call.id, wire))
+    state.tool_calls_log.append(_log_entry(name, args, call.id, wire, text))
+
+
+def _first_choice(completion):
+    """The choice the loop reads, or None when the reply carried none.
+
+    A completion with an empty `choices` list is a well-formed response that
+    produced no content. `completion.choices[0]` raised IndexError straight out
+    of the loop for it, the task's handler caught that and the customer read a
+    provider hiccup as `agent.failed`. A turn that produced nothing ends with the
+    text it already has and a stop_reason naming the absence.
+    """
+    choices = getattr(completion, "choices", None) or []
+    return choices[0] if choices else None
 
 
 def _turn_result(state: _TurnState) -> dict:
@@ -639,20 +701,20 @@ async def run_agent_loop(message: str, *, history, turn: AgentTurn, job_id, db, 
         redis:   sync Redis client, for `emit`.
 
     Returns:
-        response_text, tool_calls_log, escalated, escalation_reason,
-        escalation_context, num_turns and stop_reason. `stop_reason` is the
-        provider's finish_reason when the model stopped on its own, and
-        "budget_exceeded" or "max_model_calls" when a ceiling stopped it.
+        response_text, tool_calls_log, escalated, escalation_reason, escalation_context,
+        num_turns and stop_reason. `stop_reason` is the provider's finish_reason when the
+        model stopped on its own, "budget_exceeded" or "max_model_calls" when a ceiling
+        stopped it, and "no_choices" when a reply carried nothing to read.
     """
-    messages = _opening_messages(
-        message, history=list(history), system_prompt=turn.system_prompt
-    )
-    tools_wire = _tools_wire(turn.tools)
     state = _TurnState()
     try:
+        # Inside the try, because the client is already built and the `finally` closes it. A tool missing an attribute raises out of `_tools_wire`.
+        messages = _opening_messages(
+            message, history=list(history), system_prompt=turn.system_prompt
+        )
+        tools_wire = _tools_wire(turn.tools)
         for index in range(turn.max_model_calls):
-            # Every call after the first. A turn that has spent nothing yet cannot
-            # be over its own ceiling, and checking there would refuse to serve.
+            # Every call after the first. A turn that has spent nothing yet cannot be over its own ceiling, and checking there would refuse to serve.
             if index and _over_budget(turn):
                 state.stop_reason = "budget_exceeded"
                 break
@@ -660,7 +722,10 @@ async def run_agent_loop(message: str, *, history, turn: AgentTurn, job_id, db, 
                 **_request_kwargs(turn, messages, tools_wire)
             )
             state.num_turns += 1
-            choice = completion.choices[0]
+            choice = _first_choice(completion)
+            if choice is None:
+                state.stop_reason = "no_choices"
+                break
             if choice.message.content:
                 state.response_parts.append(choice.message.content)
             tool_calls = getattr(choice.message, "tool_calls", None)
@@ -670,18 +735,14 @@ async def run_agent_loop(message: str, *, history, turn: AgentTurn, job_id, db, 
             messages.append(_assistant_turn(choice.message, tool_calls))
             for call in tool_calls:
                 await _run_tool_call(
-                    call, messages=messages, state=state, turn=turn,
-                    job_id=job_id, db=db, redis=redis,
+                    call, messages=messages, state=state, turn=turn, job_id=job_id, db=db, redis=redis
                 )
         else:
-            # `for ... else` runs only when no `break` fired, so this is the call
-            # ceiling and nothing else. The model was still asking for tools.
+            # `for ... else` runs only when no `break` fired, so this is the call ceiling and nothing else. The model was still asking for tools.
             state.stop_reason = "max_model_calls"
     finally:
-        # The loop owns the client because an `AgentTurn` is single-use by
-        # construction. Its `calls` list and the tool ContextVars are this turn's.
-        # `asyncio.run` tears the event loop down the moment this returns, and a
-        # live httpx transport per turn is a file-descriptor leak in a worker that
-        # runs for weeks.
+        # The loop owns the client because an `AgentTurn` is single-use by construction. Its `calls` list and the
+        # tool ContextVars are this turn's. `asyncio.run` tears the event loop down the moment this returns, and a
+        # live httpx transport per turn is a file-descriptor leak in a worker that runs for weeks.
         await turn.client.close()
     return _turn_result(state)

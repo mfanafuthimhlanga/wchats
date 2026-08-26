@@ -18,8 +18,13 @@ Mock strategy (mirrors test_agent_turn_connection_batch.py / test_agent_task.py)
     cursor, exactly like _persist_messages is exercised in sibling tests.
   - patch asyncio.run at the asyncio.run() boundary (do NOT use AsyncMock for
     the turn, same convention as test_agent_task.py).
-  - patch build_agent_turn with a real AgentTurn carrying declared `calls`, so
-    the cost the row records is derived from ledger rows this test can name.
+  - patch build_agent_turn with `_seam_with`, which returns a SimpleNamespace
+    carrying two fields: `calls`, the ledger rows the test declares, and
+    `ledger`, where the task sends them once the turn is over. It is not an
+    AgentTurn. The real seam builds a provider client and a live tool server
+    bound to the tenant connection string, and neither belongs in a test about
+    one metrics row; what this file needs from the turn is the rows the cost is
+    derived from, so those are what the double carries.
 """
 
 from __future__ import annotations

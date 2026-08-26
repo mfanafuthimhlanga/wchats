@@ -112,6 +112,30 @@ BEHAVIOUR_DETERMINING_CALLS = (
 #: customer is served, and the chat path would serve one no eval measures.
 MODULES_ALLOWED_TO_CONSTRUCT_TURNS = {"app/services/agent_loop.py"}
 
+#: Modules permitted to construct the SDK's own `ClaudeAgentOptions` anywhere
+#: under `app/`. The customer agent left that type with ADR 0008 and none of
+#: these three is the customer agent.
+#:
+#: `deployment_service.py` builds the deployment orchestrator and
+#: `red_team_service.py` builds ADVERSARIES. Neither is what a customer talks to.
+#:
+#: `red_team_probe.py` is a known divergence rather than an adversary.
+#: `_build_transactional_probe_fn` builds the VICTIM turn, which is the customer
+#: agent, by hand, with its own `_PROBE_MODEL` and its own `_ALLOWED_TOOLS`. So RTX-01's
+#: confused-deputy findings are about an agent with a different model and a
+#: different tool list from the one production serves and the eval measures.
+#: Routing it through the seam is #49; until then the entry records the gap.
+#:
+#: The names that matter are the ones absent: `agent_loop.py`, `agent.py` and
+#: `eval.py`. A turn assembled from `ClaudeAgentOptions` in any of those is the
+#: harness coming back for one caller and nobody else, which is drift by another
+#: route. This pin came off in the #48 rewrite of this suite and is restored here.
+MODULES_ALLOWED_TO_CONSTRUCT_OPTIONS = {
+    "app/services/deployment_service.py",
+    "app/services/red_team_probe.py",
+    "app/services/red_team_service.py",
+}
+
 #: The exact capability surface the seam grants, in registration order. A value,
 #: not a count: the audit's transactional table shows six of these move money or
 #: state, so a silent addition is a capability grant and a silent removal is a
@@ -588,6 +612,51 @@ def test_only_allowlisted_modules_construct_agent_turns():
         f"  allowed: {sorted(MODULES_ALLOWED_TO_CONSTRUCT_TURNS)}\n"
         "A new one is a new agent definition. The eval and the chat task must "
         f"both go through {SEAM} or they are not serving the same agent."
+    )
+
+
+def _construction_sites(callee: str) -> dict[str, int]:
+    """Every module under `app/` that calls `callee`, and how many times."""
+    found: dict[str, int] = {}
+    for path in sorted(_APP_ROOT.rglob("*.py")):
+        tree = _tree(path)
+        count = _called_names(tree, _aliases_in(tree))[callee]
+        if count:
+            found[path.relative_to(_APP_ROOT.parent).as_posix()] = count
+    return found
+
+
+def test_only_allowlisted_modules_construct_claude_agent_options():
+    """The SDK type the customer turn left behind, still pinned where it remains.
+
+    ADR 0008 moved the agent off `ClaudeAgentOptions`, and the #48 rewrite of this
+    suite dropped this test along with the type's last mention on the turn path.
+    Three modules go on constructing it, and until #49 they were unpinned. A new
+    construction anywhere under `app/` was invisible, including one on the turn
+    path, which would be the harness returning for one caller and no other. That
+    is the same drift `MODULES_ALLOWED_TO_CONSTRUCT_TURNS` closes, in the type it
+    replaced.
+
+    Adding a module here is a deliberate act with a reviewer attached. Removing
+    one is what #49 does.
+    """
+    found = _construction_sites("ClaudeAgentOptions")
+
+    for forbidden in (_LOOP_PY, _AGENT_PY, _EVAL_PY):
+        key = forbidden.relative_to(_APP_ROOT.parent).as_posix()
+        assert key not in found, (
+            f"{key} constructs ClaudeAgentOptions ({found.get(key)} site(s)). The "
+            f"customer turn is assembled by {SEAM} and run by the owned loop; an "
+            "options object on this path is a second agent definition wearing the "
+            "harness the ADR retired."
+        )
+
+    assert set(found) == MODULES_ALLOWED_TO_CONSTRUCT_OPTIONS, (
+        "the set of modules constructing ClaudeAgentOptions changed.\n"
+        f"  found:   {sorted(found)}\n"
+        f"  allowed: {sorted(MODULES_ALLOWED_TO_CONSTRUCT_OPTIONS)}\n"
+        "A new one is a new agent definition. If it is genuinely an adversary or "
+        "an orchestrator rather than the customer agent, add it here on purpose."
     )
 
 

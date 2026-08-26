@@ -382,8 +382,20 @@ def _framed_body(text: str) -> str:
     return text[header_end:text.rindex(agent_tools.RETRIEVED_CONTEXT_FOOTER)]
 
 
-def test_retrieve_tool_model_string_still_parses_the_way_the_loop_parses_it():
-    """json.loads is the parser on the other side; it must read this back whole."""
+def test_the_model_facing_json_carries_the_chunks_the_loop_captured():
+    """The framed text the MODEL reads is well formed JSON, carrying the same records.
+
+    Nothing on the other side parses it. `_run_tool_call` joins the wire's text
+    for the tool message and `_attach_retrieve_capture` takes the chunks off the
+    `_retrieved_context` ride-along structurally, so no reader in this tree turns
+    this string back into objects.
+
+    What the assertion establishes is that the two renderings of one retrieval
+    agree. `json.loads` here is the test's own instrument. It fails if the framed
+    body is not valid JSON, which is what the model is being asked to read, and
+    the comparison then pins that the records in it are the chunks the loop
+    captured. A chunk the loop stored is a chunk the model was shown.
+    """
     import json
 
     agent_tools._retrieve_call_count_var.set(0)
@@ -404,34 +416,6 @@ def test_retrieve_tool_model_string_still_parses_the_way_the_loop_parses_it():
         "Refunds take 5 days.",
     ]
     assert [record["document_id"] for record in records] == ["d1", "d2"]
-
-
-def test_retrieve_tool_model_string_still_parses_the_way_agent_py_parses_it():
-    """The SDK path's ast.literal_eval reads JSON of these values as well.
-
-    `app/worker/tasks/runtime/agent.py` is cut over to the loop by a later piece
-    of #48, and until then it parses this payload with `ast.literal_eval`. These
-    values are strings, floats and ints, so json.dumps output is also a valid
-    Python literal and the SDK path keeps working across the two pieces.
-    """
-    import ast
-
-    agent_tools._retrieve_call_count_var.set(0)
-    query, rrf_result, reranked = _pinned_retrieval()
-
-    with (
-        patch("app.services.agent_tools.embed_query", return_value=[0.1] * 8),
-        patch("app.services.agent_tools.rrf_fuse", return_value=rrf_result),
-        patch("app.services.agent_tools.rerank", return_value=reranked),
-        patch("app.services.agent_tools.write_retrieval_metrics"),
-    ):
-        result = _run(_fn(agent_tools.retrieve_tool)({"query": query}))
-
-    records = ast.literal_eval(_framed_body(result["content"][0]["text"]).strip())
-    assert [record["content"] for record in records] == [
-        "Unopened bags, 14 days.",
-        "Refunds take 5 days.",
-    ]
 
 
 def test_retrieve_tool_rides_the_retrieved_context_along_beside_the_citations():
