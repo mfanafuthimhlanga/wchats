@@ -16,9 +16,25 @@ from __future__ import annotations
 import uuid
 from unittest.mock import MagicMock, patch
 
+from app.domain.retrieved_context import RetrievedChunk, RetrievedContext
+from app.services.retrieval_service import RrfFusion
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _context(strategy: str, score: float, query: str = "q") -> RetrievedContext:
+    """One chunk under one strategy, the shape retrieval_service now returns."""
+    return RetrievedContext(
+        query=query,
+        chunks=(RetrievedChunk("c1", "d1", "hello", score, 1),),
+        strategy=strategy,
+    )
+
+
+def _empty(strategy: str, query: str = "q") -> RetrievedContext:
+    return RetrievedContext(query=query, chunks=(), strategy=strategy)
 
 def _make_agent(agent_id: str = None, retrieval_strategy: dict | None = None) -> MagicMock:
     agent = MagicMock()
@@ -183,15 +199,15 @@ def test_retrieve_and_rank_happy_path():
     mock_db_ctx.__exit__ = MagicMock(return_value=False)
 
     fake_vector = [0.1] * 1024
-    fake_fused = [{"chunk_id": "c1", "content": "hello", "rrf_score": 0.9}]
-    fake_vector_cands = [{"chunk_id": "c1", "content": "hello", "cosine_score": 0.95}]
-    fake_bm25_cands = [{"chunk_id": "c1", "content": "hello", "bm25_score": 0.8}]
-    fake_reranked = [{"chunk_id": "c1", "content": "hello", "rerank_score": 0.99}]
+    fake_fused = _context("rrf", 0.9)
+    fake_vector_cands = _context("vector", 0.95)
+    fake_bm25_cands = _context("bm25", 0.8)
+    fake_reranked = _context("rerank", 0.99)
     fake_trace = {
-        "vector_candidates": fake_vector_cands,
-        "bm25_candidates": fake_bm25_cands,
-        "fused_candidates": fake_fused,
-        "reranked_candidates": fake_reranked,
+        "vector_candidates": fake_vector_cands.to_json()["chunks"],
+        "bm25_candidates": fake_bm25_cands.to_json()["chunks"],
+        "fused_candidates": fake_fused.to_json()["chunks"],
+        "reranked_candidates": fake_reranked.to_json()["chunks"],
     }
 
     emitted_events: list[str] = []
@@ -205,11 +221,11 @@ def test_retrieve_and_rank_happy_path():
         patch("app.worker.tasks.runtime.retrieve.embed_query", return_value=fake_vector),
         # D-27: verified_qa_lookup returns None (cache miss) — falls through to hybrid search
         patch("app.worker.tasks.runtime.retrieve.verified_qa_lookup", return_value=None),
-        patch("app.worker.tasks.runtime.retrieve.rrf_fuse", return_value={
-            "fused": fake_fused,
-            "vector_candidates": fake_vector_cands,
-            "bm25_candidates": fake_bm25_cands,
-        }),
+        patch("app.worker.tasks.runtime.retrieve.rrf_fuse", return_value=RrfFusion(
+            fused=fake_fused,
+            vector_candidates=fake_vector_cands,
+            bm25_candidates=fake_bm25_cands,
+        )),
         patch("app.worker.tasks.runtime.retrieve.rerank", return_value=fake_reranked),
         patch("app.worker.tasks.runtime.retrieve.build_trace", return_value=fake_trace),
         patch("app.worker.tasks.runtime.retrieve.emit", side_effect=fake_emit),
@@ -386,10 +402,12 @@ def test_retrieve_and_rank_verified_qa_lookup_called_with_threshold():
         patch("app.worker.tasks.runtime.retrieve.fernet_decrypt", return_value="postgresql://tenant"),
         patch("app.worker.tasks.runtime.retrieve.embed_query", return_value=fake_vector),
         patch("app.worker.tasks.runtime.retrieve.verified_qa_lookup", mock_lookup),
-        patch("app.worker.tasks.runtime.retrieve.rrf_fuse", return_value={
-            "fused": [], "vector_candidates": [], "bm25_candidates": []
-        }),
-        patch("app.worker.tasks.runtime.retrieve.rerank", return_value=[]),
+        patch("app.worker.tasks.runtime.retrieve.rrf_fuse", return_value=RrfFusion(
+            fused=_empty("rrf"),
+            vector_candidates=_empty("vector"),
+            bm25_candidates=_empty("bm25"),
+        )),
+        patch("app.worker.tasks.runtime.retrieve.rerank", return_value=_empty("rerank")),
         patch("app.worker.tasks.runtime.retrieve.build_trace", return_value={}),
         patch("app.worker.tasks.runtime.retrieve.emit"),
     ):

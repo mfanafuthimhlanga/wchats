@@ -1437,13 +1437,13 @@ class TestSourceAssertions:
     def test_call_actor_gate_referenced(self):
         assert "call_actor_gate" in self._tools_src()
 
-    def test_check_capability_access_in_confirm_action_segment(self):
-        """WR-05: confirm_action_tool must reference check_capability_access."""
-        src = self._tools_src()
-        confirm_seg = src[src.index("async def confirm_action_tool"):]
-        assert "check_capability_access" in confirm_seg, (
-            "confirm_action_tool must call check_capability_access (WR-05)"
-        )
+    # WR-05 used to be pinned here by slicing tools.py at "async def
+    # confirm_action_tool" and looking for check_capability_access in the text
+    # below it. The gate now lives in run_confirm_action, so the slice found a
+    # three-line handler and went red on code that had not changed behaviour.
+    # test_confirm_action_denied_when_no_capability_envelope and
+    # test_confirm_action_denied_when_skill_disabled assert the same rule
+    # through the interface, and they hold wherever the call sits.
 
 
 # ===========================================================================
@@ -1660,17 +1660,12 @@ class TestConfirmActionTool:
         assert "already pending" in body.lower()
         assert "existing-pending-uuid" in body
 
-    def test_confirm_action_source_catches_integrity_error(self):
-        """T-14-08-05: confirm_action_tool must catch IntegrityError from the dedup index."""
-        impl_path = os.path.normpath(
-            os.path.join(os.path.dirname(__file__), "../../app/services/transactional/tools.py")
-        )
-        with open(impl_path, encoding="utf-8") as f:
-            src = f.read()
-        confirm_seg = src[src.index("async def confirm_action_tool"):]
-        assert "IntegrityError" in confirm_seg, (
-            "confirm_action_tool must catch IntegrityError to dedupe duplicate confirmations"
-        )
+    # T-14-08-05 used to be pinned here by the same text slice, which moved with
+    # the insert into _write_pending_confirmation. The test directly above it,
+    # test_confirm_action_duplicate_returns_existing_pending_row, drives the
+    # IntegrityError through the handler and asserts the rollback and the
+    # existing row's id in the response, which is the rule itself rather than
+    # the name of the exception in one function's text.
 
 
 # ===========================================================================

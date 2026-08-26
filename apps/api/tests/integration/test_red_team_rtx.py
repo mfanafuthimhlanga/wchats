@@ -394,11 +394,11 @@ def test_identity_bypass(clean_tenant):
     max_amount_cents = clean_tenant.issue_refund_envelope["constraints"]["max_amount_cents"]
     per_call_amount_cents = max(1, max_amount_cents // 5)
 
-    async def _attempt_no_session() -> dict:
+    async def _attempt_no_session() -> ProbeToolResult:
         with red_team_mode():
             return await invoke_probe_tool("issue_refund", _refund_args(per_call_amount_cents))
 
-    async def _attempt_forged_token() -> dict:
+    async def _attempt_forged_token() -> ProbeToolResult:
         token = _verified_session_token_var.set("rtx03-forged-session-token-unissued")
         try:
             with red_team_mode():
@@ -410,9 +410,8 @@ def test_identity_bypass(clean_tenant):
 
     with _control_db_redirected(clean_tenant.control_db_url):
         # Attempt 1 — no verified session. The Step 2.5 gate must block server-side.
-        response1 = asyncio.run(_attempt_no_session())
-        result1 = ProbeToolResult.from_dispatcher_response("issue_refund", response1)
-        assert response1.get("is_error") is True
+        result1 = asyncio.run(_attempt_no_session())
+        assert result1.is_error is True
         assert result1.verdict_tag == "identity_required"
 
         # No successful adapter call was recorded for the blocked attempt.
@@ -437,8 +436,7 @@ def test_identity_bypass(clean_tenant):
         ), "the unverified attempt must be audited as an identity_verification.required denial"
 
         # Attempt 2 — a syntactically plausible but unissued token. Also blocked.
-        response2 = asyncio.run(_attempt_forged_token())
-        result2 = ProbeToolResult.from_dispatcher_response("issue_refund", response2)
+        result2 = asyncio.run(_attempt_forged_token())
         assert result2.verdict_tag == "identity_required"
 
 
@@ -509,7 +507,7 @@ def test_identity_bypass_verified_session_proceeds(clean_tenant):
         finally:
             tenant_engine.dispose()
 
-        async def _attempt_verified() -> dict:
+        async def _attempt_verified() -> ProbeToolResult:
             token = _verified_session_token_var.set(session_token)
             try:
                 with red_team_mode():
@@ -519,8 +517,7 @@ def test_identity_bypass_verified_session_proceeds(clean_tenant):
             finally:
                 _verified_session_token_var.reset(token)
 
-        response3 = asyncio.run(_attempt_verified())
-        result3 = ProbeToolResult.from_dispatcher_response("issue_refund", response3)
+        result3 = asyncio.run(_attempt_verified())
         # A real verified session must proceed PAST Step 2.5 — it is never
         # identity_required. (It may be capability_denied/rate_denied/succeeded
         # depending on downstream layers; the assertion is scoped to Step 2.5.)
@@ -594,11 +591,10 @@ def test_value_bound_evasion(clean_tenant, require_redis):
         try:
             with red_team_mode():
                 for _ in range(chain_length):
-                    response = await invoke_probe_tool(
-                        "issue_refund", _refund_args(per_call_amount_cents)
-                    )
                     results.append(
-                        ProbeToolResult.from_dispatcher_response("issue_refund", response)
+                        await invoke_probe_tool(
+                            "issue_refund", _refund_args(per_call_amount_cents)
+                        )
                     )
         finally:
             _verified_session_token_var.reset(token)
