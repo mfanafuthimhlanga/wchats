@@ -5,6 +5,16 @@ Monkeypatches ``claude_agent_sdk`` before module import so tests run without
 the SDK binary present. The tool functions are async so each test uses
 ``asyncio.run()``.
 
+THE FAKE SDK, AND WHEN IT WINS
+    Four test modules install a fake `claude_agent_sdk`, and the guard on each
+    reads "the real package is not installed" rather than "nothing has imported
+    it yet". The old `not in sys.modules` spelling let the fake win whenever
+    another fake-installing module imported first, so `agent_tools.tool` was the
+    real decorator or a stand-in depending on pytest's file order, and
+    `agent_tool_definitions()` then handed the loop objects with no `.name`
+    (#48). `find_spec` is what makes the answer the same in every run order. The
+    other three modules point here rather than repeating this.
+
 Updated for PROD-14 ContextVar refactor: module-level globals (_conn_str,
 _agent_id, etc.) are now ContextVars (_conn_str_var, _agent_id_var, etc.).
 Tests that previously set globals directly now call .set() on the ContextVars;
@@ -28,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import types
+from importlib.util import find_spec as _find_spec
 from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
@@ -72,8 +83,9 @@ def _make_fake_sdk():
     return fake
 
 
-# Install the fake only if the real SDK is not installed.
-if "claude_agent_sdk" not in sys.modules:
+# THE RULE: install the fake only when the real package is absent. See "THE
+# FAKE SDK, AND WHEN IT WINS" in this module's docstring.
+if "claude_agent_sdk" not in sys.modules and _find_spec("claude_agent_sdk") is None:
     sys.modules["claude_agent_sdk"] = _make_fake_sdk()
 
 # Now it's safe to import agent_tools.
@@ -285,7 +297,7 @@ def test_retrieve_tool_data_wrapper():
     )
     footer_start = text.rindex(agent_tools.RETRIEVED_CONTEXT_FOOTER)
     body = text[header_end:footer_start]
-    assert "'chunk_id': '0'" in body
+    assert '"chunk_id": "0"' in body
 
     # _citations is unchanged in length and shape versus the chunk list.
     assert len(citations) == min(len(fake_chunks), MAX_CHUNKS)
@@ -294,24 +306,22 @@ def test_retrieve_tool_data_wrapper():
 
 
 # ---------------------------------------------------------------------------
-# Test 3c: ticket #44, the model-facing string, pinned byte for byte.
+# Test 3c: ticket #48, the model-facing string, pinned byte for byte.
 #
-# retrieve_tool renders the retrieved chunks as the repr of a list of dicts,
-# and app/worker/tasks/runtime/agent.py reads that string back with
-# ast.literal_eval. #44 puts RetrievedContext at the retrieval seam and leaves
-# the repr where it is, so the two sides still meet.
+# retrieve_tool renders the retrieved chunks as JSON, and `app.services.agent_loop`
+# reads that string back with json.loads. #44 put RetrievedContext at the retrieval
+# seam and left the repr in place; #48 replaced the repr with json.dumps of the same
+# `to_json` chunks, so the keys and their order are still `to_json`'s decision.
 #
-# The literal below is the NEW contract, written by hand from the five keys
-# RetrievedChunk names. It is not what the code emitted before #44: that string
-# carried nine keys, and neither `score` nor `rank` was among them. What holds
-# the two sides together is the literal_eval test beside this one, which proves
-# the parser on the other side still reads the string this pin fixes.
+# The literal below is written by hand from the five keys RetrievedChunk names.
+# The parser test beside this one proves the reader on the other side still reads
+# the string this pin fixes.
 # ---------------------------------------------------------------------------
 
 PINNED_MODEL_FACING_CHUNKS = (
-    "[{'chunk_id': 'c1', 'document_id': 'd1', 'content': 'Unopened bags, 14 days.', "
-    "'score': 0.95, 'rank': 1}, {'chunk_id': 'c2', 'document_id': 'd2', 'content': "
-    "'Refunds take 5 days.', 'score': 0.8, 'rank': 2}]"
+    '[{"chunk_id": "c1", "document_id": "d1", "content": "Unopened bags, 14 days.", '
+    '"score": 0.95, "rank": 1}, {"chunk_id": "c2", "document_id": "d2", "content": '
+    '"Refunds take 5 days.", "score": 0.8, "rank": 2}]'
 )
 
 
@@ -341,7 +351,7 @@ def _pinned_retrieval():
     return query, _rrf_result(fused), reranked
 
 
-def test_retrieve_tool_model_string_is_byte_for_byte_the_pinned_repr():
+def test_retrieve_tool_model_string_is_byte_for_byte_the_pinned_json():
     """A fixed retrieval result renders the pinned string, key for key."""
     agent_tools._retrieve_call_count_var.set(0)
     query, rrf_result, reranked = _pinned_retrieval()
@@ -364,8 +374,46 @@ def test_retrieve_tool_model_string_is_byte_for_byte_the_pinned_repr():
     assert text == agent_tools._frame_retrieved_context(PINNED_MODEL_FACING_CHUNKS)
 
 
+def _framed_body(text: str) -> str:
+    """The payload between the header and the footer of a framed retrieve result."""
+    header_end = text.index(agent_tools.RETRIEVED_CONTEXT_HEADER) + len(
+        agent_tools.RETRIEVED_CONTEXT_HEADER
+    )
+    return text[header_end:text.rindex(agent_tools.RETRIEVED_CONTEXT_FOOTER)]
+
+
+def test_retrieve_tool_model_string_still_parses_the_way_the_loop_parses_it():
+    """json.loads is the parser on the other side; it must read this back whole."""
+    import json
+
+    agent_tools._retrieve_call_count_var.set(0)
+    query, rrf_result, reranked = _pinned_retrieval()
+
+    with (
+        patch("app.services.agent_tools.embed_query", return_value=[0.1] * 8),
+        patch("app.services.agent_tools.rrf_fuse", return_value=rrf_result),
+        patch("app.services.agent_tools.rerank", return_value=reranked),
+        patch("app.services.agent_tools.write_retrieval_metrics"),
+    ):
+        result = _run(_fn(agent_tools.retrieve_tool)({"query": query}))
+
+    records = json.loads(_framed_body(result["content"][0]["text"]).strip())
+    assert records == result["_retrieved_context"]["chunks"]
+    assert [record["content"] for record in records] == [
+        "Unopened bags, 14 days.",
+        "Refunds take 5 days.",
+    ]
+    assert [record["document_id"] for record in records] == ["d1", "d2"]
+
+
 def test_retrieve_tool_model_string_still_parses_the_way_agent_py_parses_it():
-    """ast.literal_eval is the parser on the other side; it must still read this."""
+    """The SDK path's ast.literal_eval reads JSON of these values as well.
+
+    `app/worker/tasks/runtime/agent.py` is cut over to the loop by a later piece
+    of #48, and until then it parses this payload with `ast.literal_eval`. These
+    values are strings, floats and ints, so json.dumps output is also a valid
+    Python literal and the SDK path keeps working across the two pieces.
+    """
     import ast
 
     agent_tools._retrieve_call_count_var.set(0)
@@ -379,18 +427,30 @@ def test_retrieve_tool_model_string_still_parses_the_way_agent_py_parses_it():
     ):
         result = _run(_fn(agent_tools.retrieve_tool)({"query": query}))
 
-    text = result["content"][0]["text"]
-    header_end = text.index(agent_tools.RETRIEVED_CONTEXT_HEADER) + len(
-        agent_tools.RETRIEVED_CONTEXT_HEADER
-    )
-    body = text[header_end:text.rindex(agent_tools.RETRIEVED_CONTEXT_FOOTER)]
-
-    records = ast.literal_eval(body.strip())
+    records = ast.literal_eval(_framed_body(result["content"][0]["text"]).strip())
     assert [record["content"] for record in records] == [
         "Unopened bags, 14 days.",
         "Refunds take 5 days.",
     ]
-    assert [record["document_id"] for record in records] == ["d1", "d2"]
+
+
+def test_retrieve_tool_rides_the_retrieved_context_along_beside_the_citations():
+    """The loop captures the chunks structurally rather than re-parsing the text."""
+    agent_tools._retrieve_call_count_var.set(0)
+    query, rrf_result, reranked = _pinned_retrieval()
+
+    with (
+        patch("app.services.agent_tools.embed_query", return_value=[0.1] * 8),
+        patch("app.services.agent_tools.rrf_fuse", return_value=rrf_result),
+        patch("app.services.agent_tools.rerank", return_value=reranked),
+        patch("app.services.agent_tools.write_retrieval_metrics"),
+    ):
+        result = _run(_fn(agent_tools.retrieve_tool)({"query": query}))
+
+    context = result["_retrieved_context"]
+    assert context == reranked.to_json()
+    assert context["query"] == query
+    assert [chunk["chunk_id"] for chunk in context["chunks"]] == ["c1", "c2"]
 
 
 def test_frame_retrieved_context_idempotent_safe():
@@ -458,7 +518,7 @@ def test_build_tool_server_sets_globals():
     """build_tool_server must propagate all six arguments to ContextVars (PROD-14)."""
     from app.services.retrieval_service import RetrievalStrategy
 
-    sentinel_conn = "postgresql://sentinel:pass@host/db"
+    sentinel_conn = "postgresql://sentinel:<redacted>@host/db"
     sentinel_agent_id = "agent-sentinel-id"
     sentinel_agent_name = "Sentinel Bot"
     sentinel_strategy = RetrievalStrategy.model_validate({})
@@ -481,6 +541,71 @@ def test_build_tool_server_sets_globals():
     assert agent_tools._strategy_var.get() is sentinel_strategy
     assert agent_tools._conversation_id_var.get() == sentinel_conv_id
     assert agent_tools._notify_fn_var.get() is sentinel_notify
+
+
+# ---------------------------------------------------------------------------
+# Test 6b: agent_tool_definitions, the one list both callers read (ticket #48)
+#
+# `build_tool_server` registers it with the MCP server and `app.services.agent_loop`
+# turns it into the JSON schemas the owned loop sends. Two literals would let the
+# two callers disagree about which tools an agent has, and only one of them serves
+# a customer.
+# ---------------------------------------------------------------------------
+
+#: The eleven tools an Agent turn may call, in registration order.
+PINNED_TOOL_ORDER = [
+    "retrieve",
+    "lookup_structured",
+    "escalate_to_human",
+    "clarify",
+    "place_order",
+    "cancel_order",
+    "issue_refund",
+    "update_subscription",
+    "book_slot",
+    "update_customer_record",
+    "confirm_action",
+]
+
+
+def _tool_name(tool_obj) -> str:
+    """The tool's name, under the real SDK's SdkMcpTool or the fake decorator.
+
+    Same reason as `_fn` above: which shape this module gets depends on whether
+    another test module imported the real SDK first.
+    """
+    return getattr(tool_obj, "name", None) or tool_obj._tool_name
+
+
+def test_agent_tool_definitions_returns_the_eleven_tools_in_order():
+    definitions = agent_tools.agent_tool_definitions()
+
+    assert len(definitions) == 11
+    assert [_tool_name(t) for t in definitions] == PINNED_TOOL_ORDER
+
+
+def test_agent_tool_definitions_returns_a_tuple():
+    """A caller that appended to a list would change what the other caller registers."""
+    assert isinstance(agent_tools.agent_tool_definitions(), tuple)
+
+
+def test_build_tool_server_registers_exactly_the_definitions():
+    """Asserted through the function, so a second literal cannot pass this."""
+    from app.services.retrieval_service import RetrievalStrategy
+
+    with patch("app.services.agent_tools.create_sdk_mcp_server") as make_server:
+        build_tool_server(
+            conn_str="postgresql://sentinel:<redacted>@host/db",
+            agent_id="agent-sentinel-id",
+            agent_name="Sentinel Bot",
+            strategy=RetrievalStrategy.model_validate({}),
+            conversation_id="conv-sentinel-456",
+            notify_fn=MagicMock(),
+        )
+
+    assert make_server.call_args.kwargs["tools"] == list(
+        agent_tools.agent_tool_definitions()
+    )
 
 
 # ---------------------------------------------------------------------------
