@@ -76,6 +76,45 @@ the SDK's `total_cost_usd`.
 - The history tiebreak fixture inserts the user row first. Inserting the assistant row
   first passes with or without the `CASE`, which makes that arrangement a tautology.
 
+## What the adversary pass found, and what it cost
+
+Three findings blocked. Two of them were guards the earlier mutation proofs had already
+certified, which is the part worth remembering.
+
+- **The history tiebreak was pinned by string-matching the SQL.** The fake cursor decided
+  how to sort by looking for the `CASE` expression anywhere in the statement, so leaving
+  that text in a `--` comment while deleting it from the `ORDER BY` kept six tests green
+  on a query that had lost its tiebreak. The earlier proof deleted the clause outright and
+  went red, which looked like evidence and was not. The fix is a guard that strips comments
+  and reads only the segment after the final `ORDER BY`, plus
+  `tests/integration/test_turn_history_order.py`, which writes both rows of a turn in one
+  transaction against `wchats_tenant_probe` and reads them back through the real function.
+  It carries a control test that runs the tiebreak-less statement and pins the wrong answer,
+  so it cannot pass by accident.
+- **Nothing pinned that the ledger is ever written.** Deleting `record_turn_calls` from both
+  `finally` blocks left 104 tests passing, because the task suite handed the seam a turn
+  whose `calls` list was always empty. Both call sites now drive a real `ModelCall` through
+  to `record_model_call`, on the served path and on a path that raises.
+- **Every tool result was being persisted where the SDK path stored `{}`.** `_log_entry` set
+  `result` for all eleven tools and `_persist_messages` writes that key into the tenant's
+  `tool_calls.result`, so `lookup_structured` customer rows and the six mutating skills'
+  outputs were being retained at rest up to 1800 chars per call. Nobody decided that.
+  `result` is now set only for `retrieve`, and it carries the joined text rather than a
+  Python repr of the content blocks, which retires the last producer of the repr ADR 0008
+  says died here.
+
+Smaller ones fixed in the same round: the client leaked when the opening messages or the
+tools wire raised, an empty `choices` list killed the turn with an IndexError, a malformed
+`escalate_to_human` argument reported an escalation that never happened, an empty assistant
+row replayed into the next turn's context, and the rewritten seam suite had stopped policing
+`ClaudeAgentOptions` construction across the repo while three modules still construct it.
+
+Two fixture directions were wrong in briefs written for that work, both the same way. A
+history test that inserts the assistant row first passes with or without the tiebreak,
+because the reader reverses a `DESC` scan. The rule that catches it is to make the fixture's
+heap order disagree with the wanted order, then check that the tiebreak-less query really
+does return the wrong answer.
+
 ## Discovered work, filed the same day
 
 - #79 `messages` has no ordering tiebreaker. Four readers order by `created_at` alone.
@@ -83,6 +122,14 @@ the SDK's `total_cost_usd`.
 - #81 `retrieval_eval` scores an errored retrieve's refusal text as retrieved context.
 - #82 `AGENT_MAX_BUDGET_USD` is roughly 650 times the measured turn cost, so the budget
   guard cannot fire. The six-call ceiling is the live bound.
+- #83 provider response bodies and libpq DSN fragments reach the public SSE stream as
+  `str(exc)`, measured against the installed SDK.
+- #84 the faithfulness context proxy changed shape at the cutover, so scores computed
+  either side of it do not compare.
+- #85 an `acks_late` redelivery mid-turn runs a second full turn. The idempotency read is
+  sequential-only.
+- #86 `emit` commits to the control database twice per tool call, on the turn's event loop.
+  The tenant ledger moved off that loop in this ticket and the control writes did not.
 
 ## Known limits
 
