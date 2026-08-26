@@ -94,6 +94,7 @@ from uuid import uuid4
 import structlog
 from pydantic import ValidationError
 
+from app.domain.tool_result import to_wire
 from app.domain.transactional_schemas import SKILL_INPUT_MODELS
 from app.services.transactional.audit import write_audit_row
 from app.services.transactional.enforcement import (
@@ -403,16 +404,16 @@ async def execute_approved_confirmation(
         rationale=f"pending_confirmation:{confirmation_id}",
     )
 
-    if result.get("is_error"):
-        content = result.get("content") or []
-        reason_text = content[0].get("text") if content else None
+    # The helper returns a ToolResult now (ticket #45), so this reads a verdict
+    # instead of digging `content[0]["text"]` out of a wire dict.
+    if result.is_error:
         log.warning(
             "confirmation_resolution.adapter_denied",
             agent_id=agent_id,
             skill=skill,
             outcome="denied",
         )
-        return ResolutionOutcome(outcome="denied", reason=reason_text)
+        return ResolutionOutcome(outcome="denied", reason=result.text)
 
     log.info(
         "confirmation_resolution.executed",
@@ -420,4 +421,4 @@ async def execute_approved_confirmation(
         skill=skill,
         outcome="executed",
     )
-    return ResolutionOutcome(outcome="executed", response=result)
+    return ResolutionOutcome(outcome="executed", response=to_wire(result))

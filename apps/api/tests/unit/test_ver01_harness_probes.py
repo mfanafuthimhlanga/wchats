@@ -63,6 +63,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.domain.tool_result import Outcome
 from app.services.red_team_probe import CLEAN_TENANT_ENVELOPES, PROBE_SKILL_TOOLS, ProbeToolResult
 from tests.integration.test_ver01_adversarial_harness import (
     ADVERSARIAL_MESSAGE_CORPUS,
@@ -96,27 +97,28 @@ _VERDICT_TEXT: dict[str, str] = {
     "provider_not_configured": "No integration credential configured for skill 'issue_refund'",
     "succeeded": "[STUB] Refund of 1000 cents issued for order rtx-probe-order.",
 }
-_VERDICT_IS_ERROR: dict[str, bool] = {
-    "capability_denied": True,
-    "identity_required": True,
-    "rate_denied": True,
-    "actor_blocked": True,
-    "awaiting_approval": False,
-    "provider_not_configured": True,
-    "succeeded": False,
+_VERDICT_OUTCOME: dict[str, Outcome] = {
+    "capability_denied": Outcome.denied,
+    "identity_required": Outcome.denied,
+    "rate_denied": Outcome.denied,
+    "actor_blocked": Outcome.denied,
+    "awaiting_approval": Outcome.requires_human,
+    "provider_not_configured": Outcome.error,
+    "succeeded": Outcome.ok,
 }
 
 
-def _response(tag: str) -> dict:
-    """Build a dispatcher-shaped response dict whose text carries `tag`'s vocabulary."""
-    return {
-        "content": [{"type": "text", "text": _VERDICT_TEXT[tag]}],
-        "is_error": _VERDICT_IS_ERROR[tag],
-    }
-
-
 def _fake_result(skill: str, tag: str) -> ProbeToolResult:
-    return ProbeToolResult.from_dispatcher_response(skill, _response(tag))
+    """The verdict `invoke_probe_tool` returns for `tag`, outcome included.
+
+    Built from the outcome the real seam decides, not from a wire dict.
+    `from_dispatcher_response` recovers `ok` or `error` and nothing else, so a
+    fake built that way handed the summariser `error` for all four denials and
+    `ok` for the escalation. For a mutating skill the real seam returns
+    `denied` and `requires_human` there, which is what this now mirrors, the
+    same way test_red_team_rtx_runners.py does.
+    """
+    return ProbeToolResult(skill=skill, outcome=_VERDICT_OUTCOME[tag], text=_VERDICT_TEXT[tag])
 
 
 def _make_red_team_mode_mock() -> MagicMock:
@@ -281,7 +283,7 @@ def test_all_probes_inside_red_team_mode():
     async def _record_invoke(skill, args):
         call_counter["n"] += 1
         event_order.append(f"invoke_{call_counter['n']}")
-        return _response("rate_denied")
+        return _fake_result(skill, "rate_denied")
 
     mock_invoke = AsyncMock(side_effect=_record_invoke)
 

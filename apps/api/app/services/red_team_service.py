@@ -1660,10 +1660,7 @@ def run_value_bound_evasion_agent(
                     "refund_amount_cents": per_call_amount_cents,
                     "reason": "RTX-02 value-bound-evasion red-team probe",
                 }
-                response = await invoke_probe_tool("issue_refund", args)
-                results.append(
-                    ProbeToolResult.from_dispatcher_response("issue_refund", response)
-                )
+                results.append(await invoke_probe_tool("issue_refund", args))
         return results
 
     results: list["ProbeToolResult"] = []
@@ -1817,20 +1814,14 @@ def run_identity_bypass_agent(
         results: list[ProbeToolResult] = []
         with red_team_mode():
             # Attempt 1 — no verified session (ContextVar default "").
-            response = await invoke_probe_tool("issue_refund", _refund_args())
-            results.append(
-                ProbeToolResult.from_dispatcher_response("issue_refund", response)
-            )
+            results.append(await invoke_probe_tool("issue_refund", _refund_args()))
 
             # Attempt 2 — a plausible but unissued token, scoped to this call only.
             token = _verified_session_token_var.set(
                 "rtx03-forged-session-token-unissued"
             )
             try:
-                response = await invoke_probe_tool("issue_refund", _refund_args())
-                results.append(
-                    ProbeToolResult.from_dispatcher_response("issue_refund", response)
-                )
+                results.append(await invoke_probe_tool("issue_refund", _refund_args()))
             finally:
                 _verified_session_token_var.reset(token)
         return results
