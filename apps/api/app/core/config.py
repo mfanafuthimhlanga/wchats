@@ -199,11 +199,15 @@ class Settings(BaseSettings):
     # serve that path, not serve it quietly.
     S3_ENDPOINT_URL: str | None = None
 
-    # M4 Runtime agent budget — per-turn USD ceiling for ClaudeAgentOptions.
-    # D-10 fix phase 2: raised from 0.05 (too low for thinking+retrieve+synthesis).
-    # 0.50 gives headroom for a Haiku extended-thinking+retrieve+synthesis turn
-    # while still acting as a DoS guardrail (T-04-03-06).
-    # Set AGENT_MAX_BUDGET_USD in .env to override (e.g. tighter in production).
+    # The owned loop's per-turn USD ceiling (#48). Between model calls
+    # `agent_loop._over_budget` prices this turn's `model_calls` rows against the
+    # versioned book and stops the turn once the total reaches this number, so
+    # what it guards is a runaway turn (T-04-03-06) and not a monthly bill.
+    #
+    # 0.50 was derived for a Haiku extended-thinking turn under ClaudeAgentOptions
+    # and NOBODY HAS RE-DERIVED IT for gpt-5.6-luna at reasoning effort none.
+    # Issue #82 carries that decision. The value stands until #82 lands.
+    # Set AGENT_MAX_BUDGET_USD in .env to override, tighter in production.
     AGENT_MAX_BUDGET_USD: float = 0.50
 
     # Phase 21 (OPS-07): sampled Ragas 0.4.x faithfulness + citation-coverage rate.
@@ -266,15 +270,16 @@ settings = Settings()
 # ---------------------------------------------------------------------------
 # Pinned model identifiers (constants, deliberately NOT Settings fields)
 # ---------------------------------------------------------------------------
-# AGENT_TURN_MODEL is the model that serves a customer turn — the model an eval
-# score is actually an assertion ABOUT. It is a constant rather than a Settings
-# field because it is not an operational knob: changing it changes what every
-# recorded score means, so it must move by code review and land in the eval
-# run's configuration tuple (eval_runs.config.model_id, migration 0013), never
-# by an environment variable that no run record would notice.
+# AGENT_TURN_MODEL names the model that serves a customer turn, and an eval score
+# is an assertion about that model. It is a constant rather than a Settings field
+# because it is not an operational knob. Changing it changes what every recorded
+# score means, so it moves by code review and lands in the eval run's
+# configuration tuple (eval_runs.config.model_id, migration 0013), never by an
+# environment variable no run record would notice.
 #
-# Single source of truth for run_agent_turn's ClaudeAgentOptions(model=...),
-# its Langfuse generation trace, and eval_service.build_eval_run_config. A
-# second literal anywhere else is a drift bug: the score would be attributed to
-# a model that did not produce it.
-AGENT_TURN_MODEL = "claude-haiku-4-5-20251001"
+# Single source of truth for three readers. The agent-turn purpose route in
+# app.core.model_client sends it on the wire, the Langfuse turn trace names it,
+# and eval_service.build_eval_run_config stamps it on the run. A second literal
+# anywhere else is a drift bug, because a score would then name a model that did
+# not produce it.
+AGENT_TURN_MODEL = "gpt-5.6-luna"
