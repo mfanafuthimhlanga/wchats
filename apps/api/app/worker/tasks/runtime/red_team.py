@@ -70,7 +70,7 @@ log = structlog.get_logger(__name__)
 # Probe function builder. It wraps a direct API call so it has the signature
 # the red_team_service runner functions expect: (str) -> str.
 #
-# Note: _run_sdk_turn from agent.py is intentionally NOT used here. That
+# Note: run_agent_loop from agent_loop.py is intentionally NOT used here. That
 # function is tightly coupled to the SSE infrastructure (job_id, db, redis,
 # emit) designed for customer-facing conversations. The probe_fn only needs
 # to send one message to the deployed agent and return the response text —
@@ -346,7 +346,7 @@ def run_red_team(self, agent_id: str) -> dict:
     # probe_fn: sends one message to the deployed agent persona and returns the
     # response text. Its client comes from app.core.model_client under the
     # `red_team_probe` purpose since #47, so every probe leaves a ledger row, and
-    # it attaches NO tools (not _run_sdk_turn from agent.py, which is coupled to
+    # it attaches NO tools (not run_agent_loop from agent_loop.py, which is coupled to
     # SSE infrastructure). Correct for the M7 conversational/retrieval probes,
     # which never touch the transactional dispatcher.
     #

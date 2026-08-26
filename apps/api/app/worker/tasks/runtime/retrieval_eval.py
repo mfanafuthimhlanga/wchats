@@ -261,7 +261,7 @@ def _fetch_turn_context(db, job_id: str) -> tuple[str, list, str | None, list[st
 
     retrieve_contexts is built from `agent.tool_result` job_events whose
     tool_name is 'retrieve' — the summary field (truncated to 200 chars at
-    emit time, see agent.py's _run_sdk_turn) is the best available retrieved-
+    emit time, see agent_loop.py's run_agent_loop) is the best available retrieved-
     context proxy from data that is actually persisted; full chunk content is
     never round-tripped into job_events by design.
     """

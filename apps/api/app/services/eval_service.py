@@ -146,7 +146,7 @@ _METRIC_ASCORE_ARGS: Mapping[str, tuple[str, ...]] = MappingProxyType({
 #    read as "the model swap was quality-neutral".
 #
 #    EVAL_INVOKES_AGENT below is a claim about the CODE: this harness drives the
-#    customer agent per scenario, through agent.build_agent_options. It is NOT
+#    customer agent per scenario, through agent_loop.build_agent_turn. It is NOT
 #    the same claim as `config["agent_invoked"]`, which is a claim about ONE RUN
 #    and is written from what that run observed. The distinction is the whole
 #    lesson of D1: a constant that says the agent was invoked, stamped on a run
@@ -1286,7 +1286,7 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
             - question (str): The user question.
             - reference_answer (str): Ground-truth answer (D-02).
             - agent_response (str): The agent's own response text, produced by
-              the turn eval.py drove through agent.build_agent_options. It was
+              the turn eval.py drove through agent_loop.build_agent_turn. It was
               the reference answer itself until D1/P2 — the metrics were then
               self-scoring and approached 1.0 by construction. A caller handing
               this the reference answer again reinstates the tautology, which is

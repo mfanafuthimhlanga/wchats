@@ -278,9 +278,9 @@ def test_resolve_prompt_version_no_versions_falls_back_to_none(control_session):
 
 class _FakeTenantConn:
     """In-memory replay of the conversations.metadata jsonb_set contract that
-    _set_prompt_version_id/_set_sdk_session_id use — no live tenant Neon
-    project is available in this local-dev environment (CLAUDE.md: tenant DBs
-    are per-tenant Neon projects, not a local Postgres install)."""
+    _set_prompt_version_id uses. No live tenant Neon project is available in
+    this local-dev environment (CLAUDE.md: tenant DBs are per-tenant Neon
+    projects, not a local Postgres install)."""
 
     def __init__(self):
         self.metadata: dict = {}
@@ -317,8 +317,8 @@ def test_resolve_turn_prompt_version_sticky_across_turns(control_session):
     Updated for BACKLOG 2.6 (settled 2026-08-07, "resolve before, commit
     after"): `_resolve_turn_prompt_version` no longer writes. It is a control-DB
     read that RETURNS whether the caller must persist, and `run_agent_turn`
-    does the write once `build_agent_options` has returned — so a turn that dies
-    in options-building re-rolls instead of leaving the conversation sticky to a
+    does the write once `build_agent_turn` has returned, so a turn that dies in
+    the seam re-rolls instead of leaving the conversation sticky to a
     version that never served it. The persist call itself is exercised through
     `_set_prompt_version_id` directly here, against the same fake tenant conn,
     because that is the contract the caller now invokes.
@@ -348,7 +348,7 @@ def test_resolve_turn_prompt_version_sticky_across_turns(control_session):
     assert needs_persist is True
     assert fake_tenant_conn.metadata.get("prompt_version_id") is None, (
         "the resolver wrote to the tenant DB. It must not: the write belongs "
-        "behind a successful build_agent_options (BACKLOG 2.6)."
+        "behind a successful build_agent_turn (BACKLOG 2.6)."
     )
 
     # What run_agent_turn does next, once the options exist.

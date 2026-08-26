@@ -213,7 +213,7 @@ def _wire(monkeypatch, *, exploratory_rows, silent_ids=(), scores_by_id=None):
         "results_written": [],
     }
 
-    def _fake_invoke(*, agent_id, conn_str, scenarios, prompt_version_id):
+    def _fake_invoke(*, agent_id, conn_str, run_id, scenarios, prompt_version_id):
         rec["invoked"].append([s["id"] for s in scenarios])
         answered = [s for s in scenarios if s["id"] not in set(silent_ids)]
         rows = [

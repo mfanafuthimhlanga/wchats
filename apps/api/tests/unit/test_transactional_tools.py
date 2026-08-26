@@ -1800,52 +1800,61 @@ class TestBuildToolServerRegistration:
 # ===========================================================================
 
 
-class TestAgentPyAllowedTools:
-    """agent.py allowed_tools must contain the 7 new mcp__customer-tools__ entries."""
+class TestTheAgentIsGrantedTheTransactionalTools:
+    """The seven transactional skills reach the customer agent, and the four
+    original tools survive beside them (TXN-04).
 
-    def test_agent_py_has_all_7_new_allowed_tools(self):
-        agent_py_path = os.path.normpath(
-            os.path.join(
-                os.path.dirname(__file__),
-                "../../app/worker/tasks/runtime/agent.py",
-            )
+    WHAT MOVED, AND WHY THESE TESTS CHANGED SHAPE. Until ADR 0008 the surface was
+    `ClaudeAgentOptions.allowed_tools` in `agent.py`, and these two tests grepped
+    that file's CHARACTERS for `mcp__customer-tools__place_order` and its
+    siblings. The turn no longer runs on the SDK, there is no MCP namespace and
+    no allowed_tools list, and `agent_tool_definitions()` is the whole tool list,
+    read by the seam and sent to the model as plain function names.
+
+    So the assertion moved from the text of a file to the VALUE the agent is
+    handed. That is the stronger form anyway: a grep was satisfied by the names
+    appearing anywhere in agent.py, including inside a comment, and it said
+    nothing about whether the turn could actually call them.
+    """
+
+    @staticmethod
+    def _granted() -> set[str]:
+        from app.services.agent_tools import agent_tool_definitions
+
+        return {tool.name for tool in agent_tool_definitions()}
+
+    def test_all_7_transactional_tools_are_granted(self):
+        new_tools = {
+            "place_order",
+            "cancel_order",
+            "issue_refund",
+            "update_subscription",
+            "book_slot",
+            "update_customer_record",
+            "confirm_action",
+        }
+        missing = sorted(new_tools - self._granted())
+        assert not missing, (
+            f"the agent is no longer granted {missing}. Six of these move money "
+            "or tenant state, so a silent removal is not a narrowing that makes "
+            "the product safer: it makes every capability-envelope eval scenario "
+            "unfalsifiable, because the agent can no longer attempt the thing it "
+            "is supposed to refuse."
         )
-        assert os.path.isfile(agent_py_path), f"agent.py not found at {agent_py_path}"
-        with open(agent_py_path, encoding="utf-8") as f:
-            source = f.read()
 
-        new_tools = [
-            "mcp__customer-tools__place_order",
-            "mcp__customer-tools__cancel_order",
-            "mcp__customer-tools__issue_refund",
-            "mcp__customer-tools__update_subscription",
-            "mcp__customer-tools__book_slot",
-            "mcp__customer-tools__update_customer_record",
-            "mcp__customer-tools__confirm_action",
-        ]
-        for tool_name in new_tools:
-            assert tool_name in source, f"agent.py allowed_tools missing: {tool_name!r}"
-
-    def test_agent_py_retains_original_4_allowed_tools(self):
-        agent_py_path = os.path.normpath(
-            os.path.join(
-                os.path.dirname(__file__),
-                "../../app/worker/tasks/runtime/agent.py",
-            )
+    def test_the_original_4_tools_are_retained(self):
+        retained_tools = {
+            "retrieve",
+            "lookup_structured",
+            "escalate_to_human",
+            "clarify",
+        }
+        missing = sorted(retained_tools - self._granted())
+        assert not missing, (
+            f"the agent lost {missing}. These four predate the transactional "
+            "skills and TXN-04 retains them explicitly; without `retrieve` the "
+            "agent has no grounding at all."
         )
-        with open(agent_py_path, encoding="utf-8") as f:
-            source = f.read()
-
-        retained_tools = [
-            "mcp__customer-tools__retrieve",
-            "mcp__customer-tools__lookup_structured",
-            "mcp__customer-tools__escalate_to_human",
-            "mcp__customer-tools__clarify",
-        ]
-        for tool_name in retained_tools:
-            assert tool_name in source, (
-                f"agent.py allowed_tools missing retained tool: {tool_name!r}"
-            )
 
 
 # ---------------------------------------------------------------------------

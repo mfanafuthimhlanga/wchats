@@ -38,16 +38,17 @@ invisible:
      never saw is D1 in a different costume, and it would leave every number
      looking healthy.
 
-No live PostgreSQL and no Agent SDK subprocess exist here, so the SDK turn is a
-double at exactly one boundary — `_run_one_eval_turn` for the loop tests, and
-`agent.build_agent_options` / `agent._run_sdk_turn` for the turn test. Nothing
-in this file observes a real eval end to end; that is integration territory and
-it SKIPS on this machine, which is unobserved, never a pass.
+No live PostgreSQL and no provider endpoint exist here, so the turn is a double
+at exactly one boundary - `_run_one_eval_turn` for the loop tests, and
+`agent_loop.build_agent_turn` / `agent_loop.run_agent_loop` for the turn test.
+Nothing in this file observes a real eval end to end; that is integration
+territory and it SKIPS on this machine, which is unobserved, never a pass.
 """
 
 from __future__ import annotations
 
 import ast
+import importlib
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -62,8 +63,13 @@ _EVAL_PY = Path(mod.__file__).with_suffix(".py")
 
 PRODUCTION = "postgresql://production/tenant"
 
-#: The seam every caller of the customer agent must go through (P1).
-SEAM = "build_agent_options"
+#: The eval run these turns belong to. It is the job_id every model call of the
+#: run bills under, agent turns and judges alike, so `model_calls WHERE
+#: job_id = <run_id>` returns the whole run rather than the judge half of it.
+RUN_ID = "eeeeeeee-1111-2222-3333-444444444444"
+
+#: The seam every caller of the customer agent must go through (P1, ADR 0008).
+SEAM = "build_agent_turn"
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +280,7 @@ def test_the_eval_reaches_a_turn_only_through_the_seam_and_never_through_the_tas
     """The companion the side-effects guard needs to mean what it says.
 
     `test_the_eval_path_never_asks_for_live_side_effects` enumerates
-    `build_agent_options(...)` call sites INSIDE eval.py, so it is blind to a
+    `build_agent_turn(...)` call sites INSIDE eval.py, so it is blind to a
     route to a live turn that does not name that function here. Adding
     `run_agent_turn(...)` or `run_agent_turn.apply_async(...)` for a subset of
     scenarios — approach (a) creeping back — leaves the existing call site intact
@@ -301,7 +307,7 @@ def test_the_eval_reaches_a_turn_only_through_the_seam_and_never_through_the_tas
     ]
     assert mentions == [], (
         f"eval.py references run_agent_turn at line(s) {mentions}. The eval "
-        "reaches the agent through build_agent_options + _run_sdk_turn, which "
+        "reaches the agent through build_agent_turn + run_agent_loop, which "
         "is what lets it demand side_effects='recorded'. Dispatching the chat "
         "task instead runs the turn LIVE and writes tenant data, and the "
         "side-effects guard cannot see it."
@@ -346,10 +352,59 @@ def test_the_constant_that_claims_the_agent_is_invoked_is_pinned_to_the_code():
 
 class _Options:
     """Stand-in for the options object the seam returns. Not a MagicMock: it
-    must be recognisably the seam's own object in a failure message."""
+    must be recognisably the seam's own object in a failure message.
+
+    It carries `calls` and `ledger` because the eval writes the turn's ledger rows
+    after the turn, off the event loop, and reads both to do it.
+    """
+
+    def __init__(self, ledger=None) -> None:
+        self.calls: list = []
+        self.ledger = ledger if ledger is not None else (lambda call: None)
 
     def __repr__(self) -> str:  # pragma: no cover - only read on failure
         return "<options returned by the seam>"
+
+
+def _a_model_call():
+    """One finished row, the shape a ledger is handed."""
+    from datetime import datetime, timezone
+
+    from app.domain.model_call import ModelCall, ModelSource
+
+    return ModelCall(
+        purpose="agent_turn",
+        provider="openai",
+        requested_model="gpt-5.6-luna",
+        served_model="gpt-5.6-luna",
+        model_source=ModelSource.REPORTED,
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
+        at=datetime(2026, 8, 26, 9, 0, tzinfo=timezone.utc),
+        tenant_id="11111111-1111-1111-1111-111111111111",
+    )
+
+
+def _assert_ledger_writes_to(ledger, dsn):
+    """Drive a real ModelCall through `ledger` and assert where the row lands.
+
+    `callable(ledger)` is satisfied by `lambda call: None`, which records nothing,
+    spends the tenant's money and leaves no row. That is the failure #46 ended. The value
+    is what matters, so this asserts it.
+    """
+    assert ledger is not None, "the caller built a turn with no ledger at all"
+    call = _a_model_call()
+    with patch("app.core.model_client.record_model_call") as write:
+        ledger(call)
+
+    write.assert_called_once()
+    assert write.call_args.args[0] is call
+    assert write.call_args.args[1] == dsn, (
+        f"the ledger wrote this turn's model_calls row to {write.call_args.args[1]!r} "
+        f"rather than to {dsn!r}, the database the turn was served from"
+    )
 
 
 def _db_ctx(db):
@@ -369,18 +424,17 @@ def _agent_row() -> MagicMock:
     return agent
 
 
-def _agent_module():
-    """agent.py, imported lazily.
+def _loop_module():
+    """agent_loop.py, imported lazily.
 
-    Module scope would bind agent.py — and through it `claude_agent_sdk` — at
-    COLLECTION time, and several test modules install a fake SDK into
-    sys.modules at their own import time. eval.py's own imports of agent.py are
-    lazy for exactly this reason; a guard whose meaning depends on collection
-    order is not a guard.
+    Lazy for the same reason eval.py's own imports of it are: this module reads
+    eval.py's syntax tree, and binding the turn's whole import graph at
+    COLLECTION time would make these guards depend on what else pytest imported
+    first. A guard whose meaning depends on collection order is not a guard.
     """
-    from app.worker.tasks.runtime import agent
+    from app.services import agent_loop
 
-    return agent
+    return agent_loop
 
 
 #: The default retrieve result behind `_turn`. Non-empty, because a responded
@@ -400,17 +454,17 @@ def _retrieve_entry(chunks, *, unparsed=False):
     A test that supplied only `result` could not tell the two apart, which is
     how scoring a repr blob survived review.
     """
-    agent = _agent_module()
+    loop = _loop_module()
     chunks = list(chunks)
     return {
         "tool_name": "retrieve",
         "input": {},
         "result": repr([{"type": "text", "text": str(chunks)}])[
-            : agent.RETRIEVE_RESULT_CAPTURE_CHARS
+            : loop.RETRIEVE_RESULT_CAPTURE_CHARS
         ],
-        agent.RETRIEVE_CHUNKS_KEY: [] if unparsed else chunks,
-        agent.RETRIEVE_CHUNKS_SOURCE_KEY: (
-            agent.RETRIEVE_CHUNKS_UNPARSED if unparsed else agent.RETRIEVE_CHUNKS_PARSED
+        loop.RETRIEVE_CHUNKS_KEY: [] if unparsed else chunks,
+        loop.RETRIEVE_CHUNKS_SOURCE_KEY: (
+            loop.RETRIEVE_CHUNKS_UNPARSED if unparsed else loop.RETRIEVE_CHUNKS_PARSED
         ),
     }
 
@@ -422,7 +476,7 @@ def _turn(
     retrieve_calls=None,
     unparsed=False,
 ):
-    """The dict `_run_sdk_turn` returns.
+    """The dict `run_agent_loop` returns.
 
     `contexts` is the list of CHUNK TEXTS the retrieve call came back with, and
     by default one retrieve call carries all of them — which is the production
@@ -448,8 +502,6 @@ def _turn(
         "escalated": False,
         "escalation_reason": None,
         "escalation_context": None,
-        "sdk_session_id": None,
-        "total_cost_usd": 0.002,
         "num_turns": 3,
         "stop_reason": "end_turn",
     }
@@ -466,31 +518,33 @@ def test_the_turn_goes_through_the_seam_and_asks_for_recorded_side_effects():
     Every other seam argument is asserted too, because each is a way the eval
     could measure a different agent than the one production serves:
     a `verified_session_token` that is not "" would give the eval an identity
-    posture no eval scenario has, a `resume` would let scenario N's answer be
-    shaped by scenario N-1.
+    posture no eval scenario has, and a non-empty `history` would let scenario
+    N's answer be shaped by scenario N-1.
     """
     agent = _agent_row()
     db = MagicMock()
     db.get.return_value = agent
 
-    async def fake_sdk_turn(**kwargs):
-        fake_sdk_turn.kwargs = kwargs
+    async def fake_loop(*args, **kwargs):
+        fake_loop.args = args
+        fake_loop.kwargs = kwargs
         return _turn()
 
     with (
         patch.object(mod, "get_sync_db", _db_ctx(db)),
         patch(
-            "app.worker.tasks.runtime.agent.build_agent_options",
+            "app.services.agent_loop.build_agent_turn",
             return_value=_Options(),
         ) as seam,
         patch(
-            "app.worker.tasks.runtime.agent._run_sdk_turn",
-            side_effect=fake_sdk_turn,
+            "app.services.agent_loop.run_agent_loop",
+            side_effect=fake_loop,
         ),
     ):
         result = mod._run_one_eval_turn(
             agent_id=str(agent.id),
             conn_str=PRODUCTION,
+            run_id=RUN_ID,
             question="What is the return policy?",
             prompt_version_id=None,
         )
@@ -509,16 +563,64 @@ def test_the_turn_goes_through_the_seam_and_asks_for_recorded_side_effects():
         "an eval scenario is an unverified customer; a token here would give "
         "every identity-gated skill a posture no scenario carries evidence for"
     )
-    assert kwargs["resume"] is None, (
-        "resume= would carry one scenario's SDK session into the next, so "
-        "scenario N's answer could be shaped by scenario N-1"
+    _assert_ledger_writes_to(kwargs["ledger"], PRODUCTION)
+    assert kwargs["job_id"] == RUN_ID, (
+        "the eval turn billed under "
+        f"{kwargs.get('job_id')!r}, an id that names no job. The judges bill under "
+        "the run id, so model_calls WHERE job_id = <run_id> returns the judge half "
+        "of the run and none of the agent turns, and the agent's own eval traffic "
+        "is indistinguishable from live customer traffic under purpose='agent_turn'."
     )
-    assert fake_sdk_turn.kwargs["options"] is seam.return_value, (
-        "the SDK turn was not handed the seam's own options object — the eval "
-        "is measuring an agent it assembled itself"
+    assert fake_loop.kwargs["turn"] is seam.return_value, (
+        "the loop was not handed the seam's own turn object, so the eval is "
+        "measuring an agent it assembled itself"
     )
-    assert fake_sdk_turn.kwargs["message"] == "What is the return policy?"
+    assert fake_loop.kwargs["history"] == [], (
+        "the eval turn carried conversation history. Scenarios are independent "
+        "by construction, and history here lets scenario N's answer be shaped "
+        f"by scenario N-1; got {fake_loop.kwargs['history']!r}"
+    )
+    assert fake_loop.args[0] == "What is the return policy?"
     assert result["response_text"].startswith("Returns are accepted")
+
+
+def test_every_model_call_of_an_eval_turn_is_billed_under_the_run():
+    """The id the run's agent turns bill under, stamped where it is stamped.
+
+    `make_async_client` builds the `CallContext` that every `ModelCall` the ledger
+    hook records carries, and `job_id` is the field a rollup groups by. The seam
+    passes its `job_id` straight into it, so the id the factory is asked for IS the
+    id on the rows. The judges bill under the run id (`_run_ledger`); before this,
+    the agent turns billed under a uuid minted per scenario that named no job.
+    """
+    agent = _agent_row()
+    db = MagicMock()
+    db.get.return_value = agent
+
+    async def fake_loop(*args, **kwargs):
+        return _turn()
+
+    with (
+        patch.object(mod, "get_sync_db", _db_ctx(db)),
+        patch("app.services.agent_loop.make_async_client") as factory,
+        patch("app.services.agent_loop.run_agent_loop", side_effect=fake_loop),
+    ):
+        mod._run_one_eval_turn(
+            agent_id=str(agent.id),
+            conn_str=PRODUCTION,
+            run_id=RUN_ID,
+            question="Q",
+            prompt_version_id=None,
+        )
+
+    kwargs = factory.call_args.kwargs
+    assert kwargs["job_id"] == RUN_ID, (
+        f"every model call of this eval turn is stamped job_id={kwargs.get('job_id')!r}. "
+        "A synthesised id names no job, so the run's agent spend cannot be found "
+        "from the run, and it is indistinguishable from live customer traffic."
+    )
+    assert kwargs["tenant_id"] == str(agent.tenant_id)
+    assert kwargs["agent_id"] == str(agent.id)
 
 
 def test_the_turn_serves_the_prompt_version_the_run_is_attributed_to():
@@ -535,7 +637,7 @@ def test_the_turn_serves_the_prompt_version_the_run_is_attributed_to():
     soul = {"soul_role": "the production persona", "soul_voice": "clipped"}
     pv_id = "11111111-2222-3333-4444-555555555555"
 
-    async def fake_sdk_turn(**kwargs):
+    async def fake_loop(*args, **kwargs):
         return _turn()
 
     with (
@@ -545,17 +647,18 @@ def test_the_turn_serves_the_prompt_version_the_run_is_attributed_to():
             return_value=(pv_id, dict(soul), False),
         ) as resolve,
         patch(
-            "app.worker.tasks.runtime.agent.build_agent_options",
+            "app.services.agent_loop.build_agent_turn",
             return_value=_Options(),
         ) as seam,
         patch(
-            "app.worker.tasks.runtime.agent._run_sdk_turn",
-            side_effect=fake_sdk_turn,
+            "app.services.agent_loop.run_agent_loop",
+            side_effect=fake_loop,
         ),
     ):
         mod._run_one_eval_turn(
             agent_id=str(agent.id),
             conn_str=PRODUCTION,
+            run_id=RUN_ID,
             question="Q",
             prompt_version_id=pv_id,
         )
@@ -572,7 +675,7 @@ def test_the_turn_serves_the_prompt_version_the_run_is_attributed_to():
 def test_the_eval_turn_writes_no_job_events():
     """The SSE half of "persistence and SSE differ by design".
 
-    `_run_sdk_turn` emits `agent.tool_call` / `agent.tool_result` through the db
+    `run_agent_loop` emits `agent.tool_call` / `agent.tool_result` through the db
     and redis handles it is given. On the eval path the job_id names no `jobs`
     row, so those events would be sixty scenarios' worth of orphan rows in the
     CONTROL DB's `job_events` — the table the SSE replay endpoint and the ops
@@ -584,24 +687,25 @@ def test_the_eval_turn_writes_no_job_events():
     db.get.return_value = agent
     seen: dict = {}
 
-    async def fake_sdk_turn(**kwargs):
+    async def fake_loop(*args, **kwargs):
         seen.update(kwargs)
         return _turn()
 
     with (
         patch.object(mod, "get_sync_db", _db_ctx(db)),
         patch(
-            "app.worker.tasks.runtime.agent.build_agent_options",
+            "app.services.agent_loop.build_agent_turn",
             return_value=_Options(),
         ),
         patch(
-            "app.worker.tasks.runtime.agent._run_sdk_turn",
-            side_effect=fake_sdk_turn,
+            "app.services.agent_loop.run_agent_loop",
+            side_effect=fake_loop,
         ),
     ):
         mod._run_one_eval_turn(
             agent_id=str(agent.id),
             conn_str=PRODUCTION,
+            run_id=RUN_ID,
             question="Q",
             prompt_version_id=None,
         )
@@ -618,7 +722,7 @@ def test_the_eval_turn_writes_no_job_events():
     # sink's own surface and nothing about the COUPLING: emit currently uses
     # publish / add / commit, and the day it gains a db.flush() or a
     # db.refresh(event) every eval turn raises AttributeError inside
-    # _run_sdk_turn, all sixty scenarios count as failed, and the eval silently
+    # run_agent_loop, all sixty scenarios count as failed, and the eval silently
     # stops measuring anything with only the invocation counters to say why.
     from app.services.events import emit
 
@@ -649,7 +753,7 @@ def _invoke(scenarios, turn_for, side_effects_for=None):
     """Drive the real loop with the SDK turn doubled at one boundary."""
     calls: list[str] = []
 
-    def _fake_turn(*, agent_id, conn_str, question, prompt_version_id):
+    def _fake_turn(*, agent_id, conn_str, run_id, question, prompt_version_id):
         calls.append(question)
         return turn_for(question)
 
@@ -666,6 +770,7 @@ def _invoke(scenarios, turn_for, side_effects_for=None):
         rows, summary = mod._invoke_agent_for_scenarios(
             agent_id="agent-1",
             conn_str=PRODUCTION,
+            run_id=RUN_ID,
             scenarios=scenarios,
             prompt_version_id=None,
         )
@@ -1047,7 +1152,7 @@ def test_the_side_effect_mode_is_returned_to_live_when_the_loop_ends():
 
 
 def test_an_attempt_is_attributed_to_the_scenario_that_made_it_and_no_other():
-    """The sink is emptied BEFORE each turn, not only inside build_agent_options.
+    """The sink is emptied BEFORE each turn, not only inside build_agent_turn.
 
     Everything `_run_one_eval_turn` does before it reaches the seam can raise:
     get_sync_db(), the agent row lookup, _resolve_turn_prompt_version. The
@@ -1066,7 +1171,7 @@ def test_an_attempt_is_attributed_to_the_scenario_that_made_it_and_no_other():
     """
     from app.services import agent_tools
 
-    def _turn_for(*, agent_id, conn_str, question, prompt_version_id):
+    def _turn_for(*, agent_id, conn_str, run_id, question, prompt_version_id):
         if question == "Question 0?":
             agent_tools.record_suppressed_side_effect(
                 "transactional.adapter", {"skill": "issue_refund", "amount": 40.0}
@@ -1081,6 +1186,7 @@ def test_an_attempt_is_attributed_to_the_scenario_that_made_it_and_no_other():
             _rows, summary = mod._invoke_agent_for_scenarios(
                 agent_id="agent-1",
                 conn_str=PRODUCTION,
+                run_id=RUN_ID,
                 scenarios=_scenarios(2),
                 prompt_version_id=None,
             )
@@ -1144,11 +1250,9 @@ def test_the_bounds_the_run_ran_under_are_on_the_run():
     agent_tools.CHUNK_CONTENT_CHAR_LIMIT, the per-chunk cap on the text the
     judge is given, where being at the boundary really is evidence of a cut.
     """
+    from app.services.agent_loop import RETRIEVE_RESULT_CAPTURE_CHARS
     from app.services.agent_tools import CHUNK_CONTENT_CHAR_LIMIT
-    from app.worker.tasks.runtime.agent import (
-        AGENT_TURN_TIMEOUT_S,
-        RETRIEVE_RESULT_CAPTURE_CHARS,
-    )
+    from app.worker.tasks.runtime.agent import AGENT_TURN_TIMEOUT_S
 
     scenarios = _scenarios(3)
     at_cap = "x" * CHUNK_CONTENT_CHAR_LIMIT
@@ -1217,8 +1321,8 @@ def test_a_full_retrieval_of_uncut_chunks_is_not_reported_as_truncated():
     for a single short chunk the audit repr is short too, and for a 2000-char
     chunk both caps trip.
     """
+    from app.services.agent_loop import RETRIEVE_RESULT_CAPTURE_CHARS
     from app.services.agent_tools import CHUNK_CONTENT_CHAR_LIMIT
-    from app.worker.tasks.runtime.agent import RETRIEVE_RESULT_CAPTURE_CHARS
 
     chunks = ["c" * 700, "d" * 700, "e" * 700]
     for chunk in chunks:
@@ -1272,6 +1376,12 @@ def _bound_consuming_positions(tree: ast.AST) -> list[ast.Constant]:
     return found
 
 
+def _module_tree(module_name: str) -> ast.Module:
+    """The syntax tree of one already-imported app module, by dotted name."""
+    module = importlib.import_module(module_name)
+    return ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+
+
 def _module_constant(tree: ast.AST, name: str) -> tuple[int, int]:
     """(value, lineno) of a module-scope `NAME = <int>` assignment. Exactly one."""
     defined = [
@@ -1288,33 +1398,34 @@ def _module_constant(tree: ast.AST, name: str) -> tuple[int, int]:
     return defined[0]
 
 
-@pytest.mark.parametrize(
-    "constant_name",
-    ["RETRIEVE_RESULT_CAPTURE_CHARS", "AGENT_TURN_TIMEOUT_S"],
-)
-def test_the_turn_bounds_are_read_from_one_copy_of_the_number(constant_name):
-    """One copy of each number, in agent.py, read by agent.py.
+#: Where each turn bound is DEFINED, and therefore where its one copy must live.
+#: ADR 0008 split them: the retrieve capture belongs to the loop that writes it,
+#: and the wall-clock ceiling belongs to the Celery task that enforces it.
+TURN_BOUNDS = [
+    ("app.services.agent_loop", "RETRIEVE_RESULT_CAPTURE_CHARS"),
+    ("app.worker.tasks.runtime.agent", "AGENT_TURN_TIMEOUT_S"),
+]
+
+
+@pytest.mark.parametrize("module_name, constant_name", TURN_BOUNDS)
+def test_the_turn_bounds_are_read_from_one_copy_of_the_number(module_name, constant_name):
+    """One copy of each number, in its owning module, read by that module.
 
     A second literal is the audit's D3 defect wearing new clothes: the deploy
     gate's eval query fails open to this day because one call site kept its own
-    copy of a column name. If agent.py's retrieve capture is retuned or the turn
+    copy of a column name. If the retrieve capture is retuned or the turn
     timeout moves, this run's provenance has to move with it or every run
     reports a bound it did not run under.
 
-    ANTI-TAUTOLOGY NOTE. The first version of this test read
-    `inspect.getsource` and asserted the constant's NAME appeared and `[:1800]`
-    did not. Both halves were satisfied by prose: the name appears in the
-    comment above the slice, and a reformatted literal is not the substring
-    `[:1800]`. Mutating the slice back to a literal left it green — a guard
-    demonstrated only inside the complement of its own blind spot (BACKLOG
-    3.3's defect class). It reads the AST now, where a comment does not exist
-    and formatting cannot hide an integer.
+    ANTI-TAUTOLOGY NOTE. The first version of this test read the source as text
+    and asserted the constant's NAME appeared and `[:1800]` did not. Both halves
+    were satisfied by prose: the name appears in the comment above the slice, and
+    a reformatted literal is not the substring `[:1800]`. Mutating the slice back
+    to a literal left it green, a guard demonstrated only inside the complement
+    of its own blind spot (BACKLOG 3.3's defect class). It reads the syntax tree
+    now, where a comment does not exist and formatting cannot hide an integer.
     """
-    from pathlib import Path
-
-    from app.worker.tasks.runtime import agent as agent_module
-
-    tree = ast.parse(Path(agent_module.__file__).read_text(encoding="utf-8"))
+    tree = _module_tree(module_name)
     value, _lineno = _module_constant(tree, constant_name)
 
     literals = [
@@ -1322,7 +1433,7 @@ def test_the_turn_bounds_are_read_from_one_copy_of_the_number(constant_name):
     ]
     assert literals == [], (
         f"the integer {value} is used as a BOUND (a slice upper or a timeout= "
-        f"argument) in agent.py at line(s) {[n.lineno for n in literals]} "
+        f"argument) in {module_name} at line(s) {[n.lineno for n in literals]} "
         f"instead of through {constant_name}. Two copies of a bound, one of "
         "which will move first, and the run's provenance will keep reporting "
         "the other."
@@ -1335,32 +1446,26 @@ def test_the_turn_bounds_are_read_from_one_copy_of_the_number(constant_name):
         and isinstance(node.ctx, ast.Load)
     ]
     assert names, (
-        f"nothing in agent.py READS {constant_name} — it is defined for the "
-        "eval's benefit and no longer bounds the turn it describes"
+        f"nothing in {module_name} READS {constant_name}, so it is defined for "
+        "the eval's benefit and no longer bounds the turn it describes"
     )
 
 
-@pytest.mark.parametrize(
-    "constant_name",
-    ["RETRIEVE_RESULT_CAPTURE_CHARS", "AGENT_TURN_TIMEOUT_S"],
-)
-def test_the_eval_imports_the_turn_bounds_rather_than_restating_them(constant_name):
+@pytest.mark.parametrize("module_name, constant_name", TURN_BOUNDS)
+def test_the_eval_imports_the_turn_bounds_rather_than_restating_them(
+    module_name, constant_name
+):
     """…AND THE EVAL IMPORTS IT — the half the docstring above claimed and
     nothing tested.
 
-    The guard above reads agent.py only. Replacing eval.py's
+    The guard above reads the owning module only. Replacing eval.py's
     `from app.worker.tasks.runtime.agent import AGENT_TURN_TIMEOUT_S` with a
     local `AGENT_TURN_TIMEOUT_S = 90` left it green, and left
     test_the_bounds_the_run_ran_under_are_on_the_run green too — that test
     imports the constant from agent.py and compares 90 to 90. The second copy is
     exactly the D3 shape the first guard's own docstring cites.
     """
-    from pathlib import Path
-
-    from app.worker.tasks.runtime import agent as agent_module
-
-    agent_tree = ast.parse(Path(agent_module.__file__).read_text(encoding="utf-8"))
-    value, _lineno = _module_constant(agent_tree, constant_name)
+    value, _lineno = _module_constant(_module_tree(module_name), constant_name)
 
     eval_tree = _eval_tree()
 
@@ -1372,7 +1477,8 @@ def test_the_eval_imports_the_turn_bounds_rather_than_restating_them(constant_na
     ]
     assert redefined == [], (
         f"eval.py assigns its own {constant_name} at line(s) {redefined}. The "
-        "run's provenance would then report a bound agent.py is not enforcing."
+        f"run's provenance would then report a bound {module_name} is not "
+        "enforcing."
     )
 
     literals = [
@@ -1387,13 +1493,13 @@ def test_the_eval_imports_the_turn_bounds_rather_than_restating_them(constant_na
         node.lineno
         for node in ast.walk(eval_tree)
         if isinstance(node, ast.ImportFrom)
-        and node.module == "app.worker.tasks.runtime.agent"
+        and node.module == module_name
         and any(alias.name == constant_name for alias in node.names)
     ]
     assert imported, (
-        f"eval.py does not import {constant_name} from "
-        "app.worker.tasks.runtime.agent. Either it stopped stamping the bound "
-        "on the run, or it grew its own copy of the number."
+        f"eval.py does not import {constant_name} from {module_name}. Either it "
+        "stopped stamping the bound on the run, or it grew its own copy of the "
+        "number."
     )
 
 
@@ -1474,6 +1580,7 @@ def test_the_loop_refuses_to_run_if_the_concurrency_bound_moves_without_it():
             mod._invoke_agent_for_scenarios(
                 agent_id="agent-1",
                 conn_str=PRODUCTION,
+                run_id=RUN_ID,
                 scenarios=_scenarios(1),
                 prompt_version_id=None,
             )
@@ -1578,7 +1685,7 @@ def task_wired(monkeypatch):
         ),
     )
 
-    def _fake_turn(*, agent_id, conn_str, question, prompt_version_id):
+    def _fake_turn(*, agent_id, conn_str, run_id, question, prompt_version_id):
         return _turn(f"AGENT ANSWER to {question}", contexts=[f"AGENT CTX {question}"])
 
     monkeypatch.setattr(mod, "_run_one_eval_turn", _fake_turn)
@@ -1670,7 +1777,7 @@ def test_a_run_below_the_floor_writes_no_scores_and_so_cannot_report_a_pass(
         lambda run_id, scores, conn_str: written.append((run_id, scores, conn_str)),
     )
 
-    def _mostly_dead(*, agent_id, conn_str, question, prompt_version_id):
+    def _mostly_dead(*, agent_id, conn_str, run_id, question, prompt_version_id):
         if question == "Question 0?":
             return _turn(f"AGENT ANSWER to {question}", contexts=["CTX"])
         raise TimeoutError("SDK subprocess never answered")
@@ -1713,7 +1820,7 @@ def test_a_run_where_nothing_reached_the_scorer_does_not_claim_agent_sourced_sco
     about rows that do not exist, which a future consumer could read as evidence
     of an agent-sourced measurement.
     """
-    def _all_dead(*, agent_id, conn_str, question, prompt_version_id):
+    def _all_dead(*, agent_id, conn_str, run_id, question, prompt_version_id):
         raise TimeoutError("SDK subprocess never answered")
 
     monkeypatch.setattr(mod, "_run_one_eval_turn", _all_dead)
@@ -1792,84 +1899,3 @@ def test_the_row_exists_before_the_first_turn_and_is_corrected_after_the_last(
         "judge outage must not take the record of what the agent did with it)."
     )
 
-
-# ---------------------------------------------------------------------------
-# What the judge is actually shown (D1's second half, P2 review)
-# ---------------------------------------------------------------------------
-
-
-def _framed(chunks: list[dict]) -> str:
-    """Exactly what agent_tools.retrieve_tool puts on the wire."""
-    from app.services.agent_tools import _frame_retrieved_context
-
-    return _frame_retrieved_context(str(chunks))
-
-
-def test_the_scored_context_is_the_chunk_text_not_a_repr_of_the_transport():
-    """The capture format must not be the dominant term in the score.
-
-    `retrieve_tool` returns
-    `{'content': [{'type': 'text', 'text': _frame_retrieved_context(str(chunks))}]}`
-    where `chunks` is up to five dicts. The eval scored
-    `str(block.content)[:1800]` — a Python repr of a list of dicts containing a
-    repr of a list of dicts, cut mid-structure below one full chunk, handed to
-    Ragas as ONE element. Three consequences, all invisible in the numbers:
-    dict-syntax noise the metric cannot distinguish from evidence, a cut that
-    reads as an unsupported claim, and a single-element context list that
-    collapses ContextPrecision's ranking semantics.
-    """
-    agent = _agent_module()
-    chunks = [
-        {"chunk_id": "c1", "content": "Refunds are issued within 5 business days."},
-        {"chunk_id": "c2", "content": "Shipping is free above R500."},
-    ]
-    block_content = [{"type": "text", "text": _framed(chunks)}]
-
-    texts = agent._retrieved_chunk_texts(agent._tool_result_text(block_content))
-
-    assert texts == [
-        "Refunds are issued within 5 business days.",
-        "Shipping is free above R500.",
-    ], f"the decoded contexts are {texts!r}"
-    for text in texts:
-        assert "chunk_id" not in text and "'type':" not in text, (
-            "transport metadata reached the judge as if it were retrieved "
-            "evidence"
-        )
-    assert len(texts) == len(chunks), (
-        "the chunks were flattened into one element, which leaves "
-        "ContextPrecision nothing to rank"
-    )
-
-
-def test_an_unreadable_retrieve_payload_is_none_and_not_an_empty_retrieval():
-    """None, never [] — the two mean opposite things downstream.
-
-    `[]` is "the agent retrieved nothing", which the loop reports as
-    `no_retrieval` and treats as correct behaviour. A payload this build cannot
-    decode is a decode regression, and reporting it as the former would hide it
-    behind a plausible behavioural explanation.
-    """
-    agent = _agent_module()
-
-    assert agent._retrieved_chunk_texts("not a framed payload at all") is None
-    assert agent._retrieved_chunk_texts(_framed([{"content": "x"}])[:-40]) is None, (
-        "a payload cut mid-structure parsed anyway"
-    )
-    # …and a genuinely empty retrieval decodes to an empty list, not to None.
-    assert agent._retrieved_chunk_texts(_framed([])) == []
-
-
-def test_the_tool_result_text_is_read_out_of_every_shape_the_sdk_uses():
-    """`str(block.content)` is only correct for one of these three."""
-    agent = _agent_module()
-
-    class _Block:
-        text = "from an object"
-
-    assert agent._tool_result_text("already a string") == "already a string"
-    assert agent._tool_result_text([{"type": "text", "text": "from a dict"}]) == (
-        "from a dict"
-    )
-    assert agent._tool_result_text([_Block()]) == "from an object"
-    assert agent._tool_result_text(None) == ""

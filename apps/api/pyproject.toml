@@ -158,8 +158,17 @@ skip_descendants = ["app.services"]
 # picks the spelling.
 # allow_indirect_imports keeps the contract on DIRECT imports. Every module that
 # reaches the factory imports the three packages through it, which is the point.
-# claude_agent_sdk is deliberately absent. The Agent turn still runs on it and
-# leaves through #49, not here.
+# claude_agent_sdk is deliberately absent, and #48 is why that is now a choice
+# rather than a description. The customer turn left the SDK for the owned loop in
+# app.services.agent_loop, so no customer path runs on it. Five modules still
+# import it. agent_tools.py and transactional/tools.py take `tool` for the eleven
+# tool definitions, agent_tools.py also takes `create_sdk_mcp_server` for
+# build_tool_server, and red_team_probe.py, red_team_service.py and
+# deployment_service.py drive the SDK's own client for the Attacker and the
+# deployment Orchestrator. build_tool_server's remaining callers are
+# red_team_probe.py and worker/tasks/runtime/red_team.py. Ticket #49 retires all
+# of it, and adding claude_agent_sdk to forbidden_modules is #49's edit, under
+# its own mutation proof.
 # Observed 2026-08-25: KEPT, 3 kept 0 broken. Mutation `import anthropic` added to
 # app/services/validation_service.py turned it BROKEN, naming the edge:
 #   app is not allowed to import anthropic:
