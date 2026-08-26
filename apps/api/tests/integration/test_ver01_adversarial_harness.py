@@ -601,8 +601,10 @@ async def run_adversarial_corpus(corpus: list[dict]) -> list:
     results = []
     with red_team_mode():
         for entry in corpus:
-            response = await invoke_probe_tool(entry["skill"], entry["args"])
-            results.append(ProbeToolResult.from_dispatcher_response(entry["skill"], response))
+            # invoke_probe_tool returns the dispatcher's verdict as a
+            # ProbeToolResult (ticket #45). It used to return a wire dict this
+            # loop then re-parsed.
+            results.append(await invoke_probe_tool(entry["skill"], entry["args"]))
     return results
 
 

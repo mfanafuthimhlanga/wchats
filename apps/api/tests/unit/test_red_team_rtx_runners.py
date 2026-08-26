@@ -54,8 +54,9 @@ import uuid
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.domain.tool_result import Outcome
 from app.services import red_team_service
-from app.services.red_team_probe import CLEAN_TENANT_ENVELOPES
+from app.services.red_team_probe import CLEAN_TENANT_ENVELOPES, ProbeToolResult
 from app.services.red_team_service import (
     SeverityVerdict,
     run_confused_deputy_agent,
@@ -93,23 +94,30 @@ _VERDICT_TEXT: dict[str, str] = {
     "provider_not_configured": "No integration credential configured for skill 'issue_refund'",
     "succeeded": "[STUB] Refund of 1000 cents issued for order rtx-probe-order.",
 }
-_VERDICT_IS_ERROR: dict[str, bool] = {
-    "capability_denied": True,
-    "identity_required": True,
-    "rate_denied": True,
-    "actor_blocked": True,
-    "awaiting_approval": False,
-    "provider_not_configured": True,
-    "succeeded": False,
+#: The outcome the dispatcher decides for each tag. This replaced a tag -> bool
+#: map (ticket #45): `awaiting_approval` and `succeeded` both read False there,
+#: which is the wire's single error bit failing to separate them.
+_VERDICT_OUTCOME: dict[str, Outcome] = {
+    "capability_denied": Outcome.denied,
+    "identity_required": Outcome.denied,
+    "rate_denied": Outcome.denied,
+    "actor_blocked": Outcome.denied,
+    "awaiting_approval": Outcome.requires_human,
+    "provider_not_configured": Outcome.error,
+    "succeeded": Outcome.ok,
 }
 
 
-def _response(tag: str) -> dict:
-    """Build a dispatcher-shaped response dict whose text carries `tag`'s vocabulary."""
-    return {
-        "content": [{"type": "text", "text": _VERDICT_TEXT[tag]}],
-        "is_error": _VERDICT_IS_ERROR[tag],
-    }
+def _result(tag: str) -> ProbeToolResult:
+    """Build the verdict `invoke_probe_tool` returns for `tag`.
+
+    Text and outcome both, because the runners read both: the tag comes from the
+    dispatcher's own vocabulary in the text, and the outcome is what the type
+    now carries alongside it.
+    """
+    return ProbeToolResult(
+        skill="issue_refund", outcome=_VERDICT_OUTCOME[tag], text=_VERDICT_TEXT[tag]
+    )
 
 
 def _make_red_team_mode_mock() -> MagicMock:
@@ -203,7 +211,7 @@ def test_rtx_runner_signatures_match_shipped_contract():
 def test_value_bound_evasion_reports_no_finding_when_rate_layer_stops_the_chain():
     """chain_length = max(3, 1*2) = 3. First two succeed (within the clean
     tenant's 2/hour limit); the third is rate_denied — the layer worked."""
-    responses = [_response("succeeded"), _response("succeeded"), _response("rate_denied")]
+    responses = [_result("succeeded"), _result("succeeded"), _result("rate_denied")]
     mock_invoke = AsyncMock(side_effect=responses)
     mock_mode = _make_red_team_mode_mock()
     mock_classify = MagicMock()
@@ -221,7 +229,7 @@ def test_value_bound_evasion_reports_no_finding_when_rate_layer_stops_the_chain(
 
 def test_value_bound_evasion_reports_finding_when_chain_completes():
     """Every call succeeds — the aggregate layer never stopped the chain."""
-    responses = [_response("succeeded")] * 3
+    responses = [_result("succeeded")] * 3
     mock_invoke = AsyncMock(side_effect=responses)
     mock_mode = _make_red_team_mode_mock()
     verdict = SeverityVerdict(severity="high", confidence=0.9, reason="aggregate breach")
@@ -246,7 +254,7 @@ def test_value_bound_evasion_uses_fresh_idempotency_key_per_call():
 
     async def _record(skill, args):
         captured_args.append(args)
-        return _response("rate_denied") if len(captured_args) > 2 else _response("succeeded")
+        return _result("rate_denied") if len(captured_args) > 2 else _result("succeeded")
 
     mock_mode = _make_red_team_mode_mock()
 
@@ -266,7 +274,7 @@ def test_value_bound_evasion_amount_below_clean_tenant_ceiling():
 
     async def _record(skill, args):
         captured_args.append(args)
-        return _response("rate_denied")
+        return _result("rate_denied")
 
     mock_mode = _make_red_team_mode_mock()
 
@@ -290,7 +298,7 @@ def test_value_bound_evasion_uses_one_red_team_mode_window():
     with (
         patch(
             "app.services.red_team_probe.invoke_probe_tool",
-            AsyncMock(return_value=_response("rate_denied")),
+            AsyncMock(return_value=_result("rate_denied")),
         ),
         patch("app.services.red_team_probe.red_team_mode", mock_mode),
     ):
@@ -304,9 +312,9 @@ def test_provider_not_configured_yields_invalid_run_finding():
     that failed to engage must surface as an explicit INVALID finding, never
     as silent success (which would masquerade as a passing gate)."""
     responses = [
-        _response("succeeded"),
-        _response("succeeded"),
-        _response("provider_not_configured"),
+        _result("succeeded"),
+        _result("succeeded"),
+        _result("provider_not_configured"),
     ]
     mock_mode = _make_red_team_mode_mock()
     mock_classify = MagicMock()
@@ -330,7 +338,7 @@ def test_provider_not_configured_yields_invalid_run_finding():
 
 
 def test_identity_bypass_reports_no_finding_when_gate_blocks_both_attempts():
-    responses = [_response("identity_required"), _response("identity_required")]
+    responses = [_result("identity_required"), _result("identity_required")]
     mock_mode = _make_red_team_mode_mock()
 
     with (
@@ -345,7 +353,7 @@ def test_identity_bypass_reports_no_finding_when_gate_blocks_both_attempts():
 def test_identity_bypass_reports_finding_when_unverified_call_succeeds():
     """A 'succeeded' verdict on attempt 1 (no verified session) means the
     Step 2.5 gate trusted a call it should have blocked."""
-    responses = [_response("succeeded"), _response("identity_required")]
+    responses = [_result("succeeded"), _result("identity_required")]
     mock_mode = _make_red_team_mode_mock()
     verdict = SeverityVerdict(
         severity="critical", confidence=0.95, reason="unverified session accepted"
@@ -374,7 +382,7 @@ def test_identity_bypass_restores_verified_session_context_var():
 
     async def _record(skill, args):
         observed_tokens.append(_verified_session_token_var.get())
-        return _response("identity_required")
+        return _result("identity_required")
 
     mock_mode = _make_red_team_mode_mock()
     pre_call_value = _verified_session_token_var.get()
