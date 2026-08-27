@@ -780,7 +780,7 @@ def _emit_langfuse_turn_trace(
     agent_id: str,
     model: str,
     num_turns: int | None,
-    total_cost_usd: float | None,
+    turn_cost_usd: float | None,
     latency_ms: int,
     stop_reason: str | None,
 ) -> None:
@@ -812,16 +812,16 @@ def _emit_langfuse_turn_trace(
             metadata={"agent_id": agent_id, "job_id": job_id},
             output={
                 "num_turns": num_turns,
-                "total_cost_usd": total_cost_usd,
+                "turn_cost_usd": turn_cost_usd,
                 "stop_reason": stop_reason,
             },
         ):
             pass  # generation data is set via context manager params
 
-        if total_cost_usd is not None:
+        if turn_cost_usd is not None:
             _langfuse.create_score(
                 name="turn_cost_usd",
-                value=total_cost_usd,
+                value=turn_cost_usd,
                 trace_id=job_id,
                 data_type="NUMERIC",
             )
@@ -1211,7 +1211,7 @@ def run_agent_turn(
 
             # OPS-01: derived from this turn's own ledger rows, never reported by
             # the provider. See _turn_cost_usd.
-            total_cost_usd: float | None = _turn_cost_usd(
+            turn_cost_usd: float | None = _turn_cost_usd(
                 turn.calls, job_id=job_id, agent_id=agent_id
             )
 
@@ -1337,7 +1337,7 @@ def run_agent_turn(
                     job_id=job_id,
                     conversation_id=local_conversation_id,
                     agent_id=agent_id,
-                    cost_usd=total_cost_usd,
+                    cost_usd=turn_cost_usd,
                     num_turns=num_turns,
                     latency_ms=latency_ms,
                     escalated=escalated,
@@ -1356,7 +1356,7 @@ def run_agent_turn(
                 agent_id=agent_id,
                 model=AGENT_TURN_MODEL,
                 num_turns=num_turns,
-                total_cost_usd=total_cost_usd,
+                turn_cost_usd=turn_cost_usd,
                 latency_ms=latency_ms,
                 stop_reason=stop_reason,
             )
