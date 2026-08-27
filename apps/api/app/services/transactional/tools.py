@@ -78,12 +78,12 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import structlog
-from claude_agent_sdk import tool
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from app.core.database import get_sync_db
 from app.core.model_client import LedgerContext, ledger_recorder
+from app.domain.tool_def import tool
 from app.domain.tool_result import Outcome, ToolResult, to_wire, wire_text
 from app.domain.transactional_schemas import (
     SKILL_INPUT_MODELS,

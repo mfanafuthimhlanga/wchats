@@ -1,9 +1,9 @@
 """
 agent_tools, the eleven tool definitions and the two factories over them.
 
-Provides the tool layer that the Claude Agent SDK invokes inside a Celery task.
-All four tools are defined at module level and read per-task state from ContextVars
-for worker concurrency safety (PROD-14).
+Provides the tool layer that `app.services.agent_loop` dispatches inside a Celery
+task. All four tools are defined at module level and read per-task state from
+ContextVars for worker concurrency safety (PROD-14).
 
 Tools:
     retrieve            — embed → rrf_fuse → rerank → return top MAX_CHUNKS chunks
@@ -19,7 +19,7 @@ Design decisions:
     - Per-task state (_conn_str, _agent_id, etc.) is stored in contextvars.ContextVar
       so workers running multiple tasks concurrently carry no cross-request state bleed
       (PROD-14).  bind_tool_context() calls .set() on each ContextVar at the start of
-      every run_agent_turn invocation, and build_tool_server() calls it in turn.
+      every run_agent_turn invocation, and is the single entry point since #49.
     - retrieve_tool reads all ContextVars into local variables in the async body BEFORE
       passing lambdas to run_in_executor — executor threads do not inherit the asyncio
       context automatically, so ContextVar.get() calls inside executor lambdas would
@@ -45,7 +45,6 @@ from typing import Any, Literal
 import psycopg2
 import redis as redis_lib
 import structlog
-from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from app.core.config import settings
 from app.domain.context_frame import (
@@ -56,6 +55,7 @@ from app.domain.context_frame import (
 )
 from app.domain.context_frame import frame_retrieved_context as _frame_context
 from app.domain.retrieved_context import RetrievedContext
+from app.domain.tool_def import ToolDefinition, tool
 from app.services.retrieval_metrics_service import write_retrieval_metrics
 from app.services.retrieval_service import (
     RetrievalStrategy,
@@ -951,17 +951,18 @@ async def clarify_tool(args: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Factory: build_tool_server
+# Factory: bind_tool_context
 # ---------------------------------------------------------------------------
 
-def agent_tool_definitions() -> tuple:
+def agent_tool_definitions() -> tuple[ToolDefinition, ...]:
     """The eleven tools an Agent turn may call, in registration order.
 
-    Two callers read this list. `build_tool_server` registers it with the MCP
-    server the SDK path uses, and `app.services.agent_loop` turns it into the
-    JSON schemas the owned loop sends on the wire. One list means the two cannot
-    disagree about which tools an agent has, and only one of them serves a
-    customer.
+    `app.services.agent_loop.build_agent_turn` is the only reader. It turns this
+    list into the JSON schemas the owned loop sends on the wire, and dispatches
+    a tool call by matching `name` against it. Until #49 a second reader existed,
+    `build_tool_server`, which registered the same list with an MCP server for
+    the SDK path. One list is what kept the two from granting an agent different
+    capabilities; now there is only the one path.
 
     The seven transactional tools are imported inside this function rather than
     at module scope. `transactional.tools` imports `_agent_id_var` from this
@@ -1028,9 +1029,16 @@ def bind_tool_context(
     """Publish one turn's tenant-scoped state into the per-task ContextVars.
 
     Every tool handler reads its tenant, its agent and its mode from here, and
-    whoever publishes last owns the turn. `build_tool_server` calls this for the
-    SDK paths that still need a server; `agent_loop.build_agent_turn` calls it
-    alone, because the owned loop dispatches tools itself.
+    whoever publishes last owns the turn. Every caller reaches it directly since
+    ticket #49: `agent_loop.build_agent_turn` for a customer or probe turn, and
+    `worker.tasks.runtime.red_team` for the two deterministic vectors that call
+    `invoke_probe_tool` without a model turn at all.
+
+    Until #49 those callers went through a `build_tool_server` wrapper that built
+    an MCP server first and bound second, so that a server which raised left no
+    side-effect mode behind. The server is gone with the SDK, and with it the
+    only step between entry and the bind, so the ordering hazard it guarded
+    against no longer exists.
 
     Called once per turn in the sync Celery task body, before asyncio.run(), so
     every value is visible inside the async turn and its tool callees. ContextVar
@@ -1042,56 +1050,6 @@ def bind_tool_context(
     task, so a bind that dies halfway through would otherwise leave a "recorded"
     behind for whatever runs next in this worker's context. That next thing is a
     customer turn that silently stops refunding, with no error anywhere.
-
-    Args: as `build_tool_server` documents them.
-
-    Raises:
-        ValueError: side_effects is neither "live" nor "recorded".
-    """
-    _require_side_effect_mode("bind_tool_context", side_effects)
-
-    _conn_str_var.set(conn_str)
-    _agent_id_var.set(agent_id)
-    _tenant_id_var.set(tenant_id)
-    _agent_name_var.set(agent_name)
-    _strategy_var.set(strategy)
-    _conversation_id_var.set(conversation_id)
-    _notify_fn_var.set(notify_fn)
-    _job_id_var.set(job_id)
-
-    # D-10 (suspenders): this turn's retrieve counter starts at zero.
-    _retrieve_call_count_var.set(0)
-    # IDV-05: the enforcement gate in transactional/tools.py (17-06) reads this
-    # token. NEVER referenced in any log call (T-04-03-05).
-    _verified_session_token_var.set(verified_session_token)
-
-    log.debug("bind_tool_context.ready", agent_id=agent_id, conversation_id=conversation_id)
-
-    # D1/P1b: the mode and a FRESH sink, last, for the reason in the docstring. The
-    # sink matters as much as the mode: one carried over from the previous turn
-    # reports one eval scenario's refund attempt as another's, which is worse than
-    # no recording at all. It is a wrong observation that looks right.
-    _side_effects_var.set(side_effects)
-    _recorded_side_effects_var.set([])
-
-
-def build_tool_server(
-    conn_str: str,
-    agent_id: str,
-    agent_name: str,
-    strategy: RetrievalStrategy,
-    conversation_id: str,
-    notify_fn,
-    tenant_id: str = "",
-    verified_session_token: str = "",
-    job_id: str = "",
-    side_effects: str = "live",
-) -> object:
-    """Build the MCP server for one turn, over a freshly bound tool context.
-
-    The remaining callers are `red_team_probe` and `deployment_service`, which
-    drive the SDK's own client and need a server object. `bind_tool_context` above
-    does the ContextVar half, and this adds the server.
 
     Args:
         conn_str:                Decrypted tenant DB connection string.
@@ -1119,39 +1077,29 @@ def build_tool_server(
         ValueError: side_effects is neither "live" nor "recorded". Deliberately loud:
             a typo that silently read as "not recorded, therefore live" would move
             real money on the eval path.
-
-    Returns:
-        MCP server object (create_sdk_mcp_server result) registering all 11 tools:
-        the original 4 (retrieve, lookup_structured, escalate_to_human, clarify) plus the
-        7 transactional tools added in Phase 14 Plan 04 (place_order, cancel_order,
-        issue_refund, update_subscription, book_slot, update_customer_record, confirm_action).
     """
-    _require_side_effect_mode("build_tool_server", side_effects)
+    _require_side_effect_mode("bind_tool_context", side_effects)
 
-    # CONSTRUCT FIRST, BIND SECOND, and that ordering is the reason this function
-    # still exists as a wrapper. `bind_tool_context` publishes the side-effect
-    # mode last, so a `create_sdk_mcp_server` that raises here leaves no mode
-    # behind at all. A half-built server can never hand the next thing in this
-    # worker's context a stale "recorded".
-    #
-    # The tool list lives in `agent_tool_definitions` above, because the owned
-    # loop reads the same eleven tools and two literals would let the SDK path
-    # and the loop grant an agent different capabilities.
-    server = create_sdk_mcp_server(
-        name="customer-tools",
-        version="1.0.0",
-        tools=list(agent_tool_definitions()),
-    )
-    bind_tool_context(
-        conn_str=conn_str,
-        agent_id=agent_id,
-        agent_name=agent_name,
-        strategy=strategy,
-        conversation_id=conversation_id,
-        notify_fn=notify_fn,
-        tenant_id=tenant_id,
-        verified_session_token=verified_session_token,
-        job_id=job_id,
-        side_effects=side_effects,
-    )
-    return server
+    _conn_str_var.set(conn_str)
+    _agent_id_var.set(agent_id)
+    _tenant_id_var.set(tenant_id)
+    _agent_name_var.set(agent_name)
+    _strategy_var.set(strategy)
+    _conversation_id_var.set(conversation_id)
+    _notify_fn_var.set(notify_fn)
+    _job_id_var.set(job_id)
+
+    # D-10 (suspenders): this turn's retrieve counter starts at zero.
+    _retrieve_call_count_var.set(0)
+    # IDV-05: the enforcement gate in transactional/tools.py (17-06) reads this
+    # token. NEVER referenced in any log call (T-04-03-05).
+    _verified_session_token_var.set(verified_session_token)
+
+    log.debug("bind_tool_context.ready", agent_id=agent_id, conversation_id=conversation_id)
+
+    # D1/P1b: the mode and a FRESH sink, last, for the reason in the docstring. The
+    # sink matters as much as the mode: one carried over from the previous turn
+    # reports one eval scenario's refund attempt as another's, which is worse than
+    # no recording at all. It is a wrong observation that looks right.
+    _side_effects_var.set(side_effects)
+    _recorded_side_effects_var.set([])

@@ -48,7 +48,7 @@ from app.core.database import get_sync_db
 from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
-from app.services.agent_tools import RetrievalStrategy, build_tool_server
+from app.services.agent_tools import RetrievalStrategy, bind_tool_context
 from app.services.red_team_probe import _build_transactional_probe_fn
 from app.services.red_team_service import (
     VectorObservation,
@@ -364,18 +364,18 @@ def run_red_team(self, agent_id: str) -> dict:
 
     # RTX-02 (ValueBoundEvasion) and RTX-03 (IdentityBypass) are deterministic —
     # they call red_team_probe.invoke_probe_tool directly instead of driving a
-    # ClaudeSDKClient conversational turn, so (unlike transactional_probe_fn,
+    # conversational model turn, so (unlike transactional_probe_fn,
     # which seeds the dispatcher ContextVars itself inside its own
     # asyncio.run() call for every probe message) they need those ContextVars
     # seeded once here, synchronously, before Step 5 begins.
     # red_team_probe.invoke_probe_tool's own contract is explicit: "The caller
     # must have already populated the dispatcher ContextVars via
-    # build_tool_server()." asyncio.run()/Task creation copies the *current*
+    # bind_tool_context()." asyncio.run()/Task creation copies the *current*
     # thread context (contextvars.copy_context()) at Task-creation time, so
     # values set here — before any asyncio.run() call in Step 5 — propagate
     # into each runner's own event loop. conn_str is never logged.
     _rtx_strategy = RetrievalStrategy.model_validate(agent.retrieval_strategy or {})
-    build_tool_server(
+    bind_tool_context(
         conn_str=conn_str,
         agent_id=str(agent.id),
         agent_name=agent.name,
