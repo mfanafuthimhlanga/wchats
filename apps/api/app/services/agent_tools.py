@@ -1,9 +1,9 @@
 """
 agent_tools, the eleven tool definitions and the one factory over them.
 
-Provides the tool layer that `app.services.agent_loop` dispatches inside a Celery
-task. All four tools are defined at module level and read per-task state from
-ContextVars for worker concurrency safety (PROD-14).
+Provides the tool layer that `app.services.tool_loop.dispatch` runs inside a
+Celery task. All eleven tools are defined at module level and read per-task state
+from ContextVars for worker concurrency safety (PROD-14).
 
 Tools:
     retrieve            — embed → rrf_fuse → rerank → return top MAX_CHUNKS chunks
@@ -386,7 +386,7 @@ def get_tool_results() -> list[ToolResult]:
 
 
 def reset_side_effect_context() -> None:
-    """Return this context to the safe default: live, with an empty sink.
+    """Return this context to the safe default: live, with both sinks empty.
 
     The mode is process-context sticky and nothing resets it between Celery
     tasks — the prefork pool does not isolate contextvars per task. Today every
@@ -402,9 +402,19 @@ def reset_side_effect_context() -> None:
     customer rather than by us. A stale "live" surviving into an eval turn is
     the loud failure — it moves money, and every other guard in this phase
     exists to catch it.
+
+    BOTH SINKS, and it cleared only one until #49's adversarial pass. The
+    tool-result sink arrived with the typed verdicts the red-team probe reads,
+    and this function was not taught about it, so a `build_agent_turn` that
+    raised between here and `bind_tool_context` left the PREVIOUS turn's verdicts
+    readable by `get_tool_results()`, refund text and all. `bind_tool_context`'s
+    own block comment states the rule this missed: a sink carried over reports one
+    message's verdicts as the next message's, which is worse than no recording
+    because it is a wrong observation that looks right.
     """
     _side_effects_var.set("live")
     _recorded_side_effects_var.set([])
+    _tool_results_var.set([])
 
 
 # ---------------------------------------------------------------------------

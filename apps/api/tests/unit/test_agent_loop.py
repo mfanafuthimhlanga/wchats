@@ -348,6 +348,33 @@ class TestTheSeam:
 
         assert current_side_effect_mode() == "live"
 
+    def test_a_refused_mode_leaves_no_verdict_from_the_previous_turn(self):
+        """The partner of the test above, for the sink that arrived with #49.
+
+        `reset_side_effect_context` cleared the mode and the recorded sink and
+        not the tool-result sink, so a `build_agent_turn` that raised between the
+        reset and `bind_tool_context` left the previous turn's typed verdicts
+        readable. The red-team probe reads that sink to build its transcript, so
+        the stale entry would be reported as this message's verdict, with the
+        earlier message's refund text in it.
+        """
+        from app.domain.tool_result import Outcome, ToolResult
+        from app.services.agent_tools import get_tool_results, publish_tool_result
+
+        _build(side_effects="live")
+        publish_tool_result(
+            ToolResult(skill="issue_refund", outcome=Outcome.ok, text="R2000 refunded")
+        )
+        assert len(get_tool_results()) == 1
+
+        with pytest.raises(ValueError):
+            _build(side_effects="dry-run")
+
+        assert get_tool_results() == [], (
+            "a turn that failed to build left the previous turn's verdicts in the "
+            "sink. The probe would report them as this message's."
+        )
+
     def test_the_ledger_is_mandatory(self):
         """A client that records nothing is the failure #46 ended."""
         with pytest.raises(TypeError):

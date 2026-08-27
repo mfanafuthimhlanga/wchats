@@ -521,7 +521,11 @@ def run_coverage(observations: list[VectorObservation] | None) -> dict:
 # a third tool reaches the attacker only if somebody adds it to
 # build_probe_tools. There is nothing left here to configure wrongly.
 
-# Bare names, in the same order as build_probe_tools returns them.
+# Bare names, in the same order as build_probe_tools returns them. The name is
+# now a leftover: this allows nothing, because `run_tool_loop` takes the tool
+# list itself. One reader remains, `_invalid_observation_finding`, which puts
+# `[0]` into a finding a person reads. Renaming it is #49 follow-up work, not
+# #49: the constant is public and the rename is not what this ticket is about.
 ALLOWED_PROBE_TOOLS: tuple[str, ...] = (
     _TOOL_SEND_PROBE["name"],
     _TOOL_REPORT_FINDING["name"],

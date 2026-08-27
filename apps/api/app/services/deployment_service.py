@@ -366,9 +366,10 @@ def build_report_tools(result_container: dict) -> list[ToolDefinition]:
 
     The handler is a pure side-effect recorder, mirroring `report_finding`: it
     writes the report into `result_container` and returns a minimal ack. It
-    never raises. `tool_loop.dispatch` turns a raising handler into an error
-    result the model reads, which spends another of the five turns and can
-    still end with no report.
+    never raises, and that is what keeps the loop's `stop_after` honest. A
+    handler that raised would leave the container empty, so `dispatch_outcome`
+    reports it as not run and the loop carries on to its turn ceiling rather
+    than stopping on a report nobody filed.
     """
 
     @tool(

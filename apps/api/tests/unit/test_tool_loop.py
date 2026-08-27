@@ -172,10 +172,25 @@ class TestTheTwoLoopsAgree:
         assert agent_loop.tools_wire is tool_loop.tools_wire
 
     def test_neither_loop_owns_a_private_dispatch(self):
-        """The extraction is not done while a shadow copy is still importable."""
+        """The extraction is not done while a shadow copy is still importable.
+
+        Every name this branch moved out of `agent_loop`, not a sample of them.
+        The list was four of the six until an adversarial reviewer pointed out
+        that `_assistant_turn` and `_error_wire` could come back as private
+        copies with this test green.
+        """
         import app.services.agent_loop as agent_loop
 
-        for shadowed in ("_dispatch", "_tools_wire", "_tool_arguments", "_first_choice"):
+        moved = (
+            "_dispatch",
+            "_dispatch_outcome",
+            "_tools_wire",
+            "_tool_arguments",
+            "_first_choice",
+            "_assistant_turn",
+            "_error_wire",
+        )
+        for shadowed in moved:
             assert not hasattr(agent_loop, shadowed), (
                 f"agent_loop.{shadowed} came back. Two implementations is how the "
                 "probe path and the customer path start behaving differently."
@@ -312,6 +327,65 @@ class TestWhatStopsTheLoop:
         )
 
         assert result.stop_reason == "stop"
+
+    def test_a_raising_handler_does_not_end_the_loop(self):
+        """The case the first version of this guard missed.
+
+        `ran` was computed from the tool's EXISTENCE, so a `submit_report` whose
+        handler raised stopped the loop with `stop_reason="stop_after"` and an
+        empty container. Two adversarial reviewers found it independently on #49.
+        """
+
+        @tool("submit_report", "files the report", {"type": "object", "properties": {}})
+        async def _boom(args: dict) -> dict:
+            raise RuntimeError("the control DB is asleep")
+
+        result, _ = _drive(
+            _completion(tool_calls=[_tool_call("c1", "submit_report", "{}")]),
+            _completion(content="I could not file that."),
+            tools=[_boom],
+            stop_after=frozenset({"submit_report"}),
+        )
+
+        assert result.stop_reason == "stop", (
+            "the loop stopped on a handler that raised, so the caller reads an empty "
+            "container and a stop_reason saying the report arrived."
+        )
+
+    def test_a_handler_returning_a_non_dict_does_not_end_the_loop_either(self):
+        """Same claim, fourth path. `dispatch` synthesised the wire, not the handler."""
+
+        @tool("submit_report", "files the report", {"type": "object", "properties": {}})
+        async def _wrong(args: dict) -> dict:
+            return "filed"  # type: ignore[return-value]
+
+        result, _ = _drive(
+            _completion(tool_calls=[_tool_call("c1", "submit_report", "{}")]),
+            _completion(content="retrying"),
+            tools=[_wrong],
+            stop_after=frozenset({"submit_report"}),
+        )
+
+        assert result.stop_reason == "stop"
+
+    def test_a_handler_that_ran_and_refused_still_ends_the_loop(self):
+        """`ran` is not `succeeded`. A gate returning is_error ran perfectly well.
+
+        The anti-tautology partner of the two above: without it, `ran = False`
+        everywhere would pass all three.
+        """
+
+        @tool("submit_report", "files the report", {"type": "object", "properties": {}})
+        async def _refused(args: dict) -> dict:
+            return _text_wire("the envelope forbids this", is_error=True)
+
+        result, _ = _drive(
+            _completion(tool_calls=[_tool_call("c1", "submit_report", "{}")]),
+            tools=[_refused],
+            stop_after=frozenset({"submit_report"}),
+        )
+
+        assert result.stop_reason == "stop_after"
 
     def test_a_tool_outside_stop_after_does_not_end_the_loop(self):
         result, _ = _drive(

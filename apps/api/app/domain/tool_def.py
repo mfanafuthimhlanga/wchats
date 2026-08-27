@@ -3,7 +3,7 @@
 WHAT IT REPLACES
     `claude_agent_sdk.tool` and `claude_agent_sdk.SdkMcpTool`. The SDK's
     decorator is a six-line constructor over a dataclass, and the four fields it
-    sets are the four `app.services.agent_loop._tools_wire` reads: `name`,
+    sets are the four `app.services.tool_loop.tools_wire` reads: `name`,
     `description`, `input_schema` and `handler`. Ticket #48 put the customer turn
     on the owned loop and left the tool declarations on the SDK, so the whole
     dependency was still installed for those six lines. This module is them.
@@ -21,7 +21,7 @@ WHY THE SCHEMA MUST BE A JSON SCHEMA DICT
     a live turn to import time.
 
 WHY THE HANDLER MUST BE A COROUTINE FUNCTION
-    `agent_loop._dispatch` awaits it. A `def` handler raises `TypeError: object
+    `tool_loop.dispatch` awaits it. A `def` handler raises `TypeError: object
     dict can't be used in 'await' expression` inside the loop, where `_dispatch`
     catches every exception and returns an error wire dict, because ending a
     customer's turn over one tool is worse. So a sync handler would ship as a

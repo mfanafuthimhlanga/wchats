@@ -10,7 +10,7 @@ WHY THIS MODULE EXISTS
     The parts they share are the wire: how a tool list is spelled, how a model's
     argument string is parsed, how a handler that raises becomes a result the
     model can read, how the assistant's own turn is replayed. Those live here and
-    have exactly one implementation, because two implementations of `_dispatch`
+    have exactly one implementation, because two implementations of `dispatch`
     is how a probe ends up measuring something the customer path would not do.
 
     What is NOT shared stays in `agent_loop`: the SSE emit, the escalation
@@ -30,7 +30,7 @@ WHAT THE OWNED LOOP DOES NOT NEED
 
     `run_tool_loop` has no built-ins to remove, no config file to merge and no
     permission model to set. The `tools` argument is the entire set of tools that
-    exist for that loop, and `_dispatch` refuses a name that is not in it. The
+    exist for that loop, and `dispatch` refuses a name that is not in it. The
     allowlist and the tool list became the same object.
 
 WHAT THE CALLER PASSES `run_tool_loop`
@@ -144,22 +144,45 @@ async def dispatch(tools: Sequence[ToolDefinition], name: str, args: dict) -> di
     and the turn continues. Raising here would end a customer's turn over one
     tool, and every reader downstream (`wire_text`, `_log_entry`) calls `.get` on
     what this returns.
+
+    The customer turn reads only the wire, so this is what `agent_loop` calls.
+    `run_tool_loop` needs the second half of the answer and calls
+    `dispatch_outcome` below.
+    """
+    wire, _ = await dispatch_outcome(tools, name, args)
+    return wire
+
+
+async def dispatch_outcome(
+    tools: Sequence[ToolDefinition], name: str, args: dict
+) -> tuple[dict, bool]:
+    """The wire, and whether the named handler ran to completion.
+
+    Two different questions, and `stop_after` is why they are separated. Every
+    failure below produces a wire dict the model can read, which is all the
+    customer turn needs. A caller that stops the loop on a tool call is claiming
+    the handler did its work, and three of these four paths mean it did not.
+
+    `True` means the handler was found, awaited, and returned a dict. It does NOT
+    mean the handler succeeded: a gate refusing an action returns `is_error` and
+    ran perfectly well. The distinction is whether OUR code produced the wire or
+    the handler did.
     """
     tool = next((candidate for candidate in tools if candidate.name == name), None)
     if tool is None:
         log.warning("tool_loop.unknown_tool", tool_name=name)
-        return error_wire(f"Tool {name} is not one this agent has.")
+        return error_wire(f"Tool {name} is not one this agent has."), False
     try:
         wire = await tool.handler(args)
     except Exception as exc:
         log.warning("tool_loop.tool_failed", tool_name=name, error_type=type(exc).__name__)
-        return error_wire(f"Tool {name} failed with {type(exc).__name__}.")
+        return error_wire(f"Tool {name} failed with {type(exc).__name__}."), False
     if isinstance(wire, dict):
-        return wire
+        return wire, True
     log.warning(
         "tool_loop.tool_result_not_a_dict", tool_name=name, result_type=type(wire).__name__
     )
-    return error_wire(f"Tool {name} returned a {type(wire).__name__} rather than a result.")
+    return error_wire(f"Tool {name} returned a {type(wire).__name__} rather than a result."), False
 
 
 def first_choice(completion):
@@ -280,22 +303,32 @@ async def _run_one_call(
 ) -> bool:
     """Run one tool call, append its result message, and say whether to stop.
 
-    THE STOP IS A CLAIM THAT THE HANDLER RAN, which is why it is decided here
-    rather than on the name alone. `stop_after` exists for the Orchestrator's
-    `submit_report`, and that handler is what writes the report into the
-    caller's container. A model that calls a name no tool carries, or writes
-    arguments that are not a JSON object, produced no report: stopping on either
-    would hand the caller an empty container and a `stop_reason` saying the
-    report arrived. Both cases are ordinary traffic rather than faults, so the
-    loop runs on and lets the model correct itself.
+    THE STOP IS A CLAIM THAT THE HANDLER RAN, and `dispatch_outcome` is what
+    supplies it. `stop_after` exists for the Orchestrator's `submit_report`, and
+    that handler is what writes the report into the caller's container. Four
+    things produce no report: a name no tool carries, arguments that are not a
+    JSON object, a handler that raises, and a handler that returns something
+    other than a dict. Stopping on any of them hands the caller an empty
+    container and a `stop_reason` saying the report arrived.
+
+    This line read `any(candidate.name == name for candidate in tools)` until two
+    adversarial reviewers found, independently, that it covers the first two and
+    misses the last two. It was unreachable then, because `build_report_tools`'
+    handler is a `dict.setdefault` that cannot raise. That is the kind of guard
+    which is merely wrong for one release and load-bearing for the next.
+
+    All four cases are ordinary traffic rather than faults, so the loop runs on
+    and lets the model correct itself.
     """
     name = call.function.name
     result.tool_names.append(name)
     if on_tool_use is not None:
         on_tool_use(name)
     args, refusal = tool_arguments(name, call.function.arguments)
-    ran = refusal is None and any(candidate.name == name for candidate in tools)
-    payload = refusal if refusal is not None else await dispatch(tools, name, args)
+    if refusal is not None:
+        payload, ran = refusal, False
+    else:
+        payload, ran = await dispatch_outcome(tools, name, args)
     # `wire_text`, not `json.dumps`, and the Attacker is why. `send_probe`
     # returns the deployed agent's answer as its tool result, and the Attacker's
     # next move is reasoning about that answer. Handing it the MCP envelope
