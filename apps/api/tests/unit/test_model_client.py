@@ -868,6 +868,10 @@ EVERY_PURPOSE = [
     # Ticket #48. The owned loop builds its client here like every other purpose,
     # so the Agent turn leaves a `model_calls` row on every iteration.
     "agent_turn",
+    # Ticket #49. The deployment Orchestrator's prose turn ran on the Agent SDK
+    # against a model no route named, so a checklist run could not report what
+    # its own assessment cost. It bills like everything else now.
+    "deployment_orchestrator",
 ]
 
 #: The purposes decision #34 priced at effort `none`.
