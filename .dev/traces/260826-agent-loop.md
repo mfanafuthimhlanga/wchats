@@ -131,10 +131,51 @@ does return the wrong answer.
 - #86 `emit` commits to the control database twice per tool call, on the turn's event loop.
   The tenant ledger moved off that loop in this ticket and the control writes did not.
 
+## Validated against the live model, 2026-08-27
+
+The owner supplied an OpenAI key and revoked the Anthropic and DeepSeek credentials. Four
+probes ran against `gpt-5.6-luna` for $0.001895 in total. Every assumption the loop makes
+about the provider is now measured rather than assumed.
+
+The model contract. `reasoning_effort: "none"` is accepted alongside `tools`, and the API
+names the supported set as none, low, medium, high and xhigh. `finish_reason` reads
+`tool_calls` for a tool reply and `stop` for an answer. `function.arguments` arrives as a
+string of JSON, which is what `json.loads` in `_tool_arguments` expects. The body reports
+`gpt-5.6-luna` itself, so `model_source` is `reported` and the price book prices every
+call. Nothing comes back that the loop would have to echo into the next request. A 400
+leaves no ledger row, which is the hook correctly skipping an error body.
+
+The loop. A grounded question ran a two-call tool round trip, captured two chunks and two
+judge chunks with source `chunks`, and stored the joined text rather than a repr. A
+follow-up turn answered from DB-shaped history with no container state. An angry customer
+produced `escalated=True` off the tool the model called, with the handler actually invoked.
+`max_model_calls=1` stopped a turn with `stop_reason='max_model_calls'`. Seven `ModelCall`
+rows were written into the probe database by `record_turn_calls` and then removed.
+
+The seam. Driven through `build_agent_turn`, so the prompt was the one `build_system_prompt`
+writes. Luna emitted the citation block in the exact shape `CITATIONS_REGEX` demands and
+`_extract_citations` returned two structured citations. The PII firewall then allowed the
+business's support email through because it appeared in the retrieved published context,
+and `detect_pii` on the same text reports `email`, so the BACKLOG 7.29 exemption is what
+let it pass rather than an absent detector.
+
+The ceilings. A budget of $0.00002 produced `stop_reason='budget_exceeded'` after one call
+that cost $0.000114, which measures the one-call overshoot the guard's shape implies.
+Luna emits parallel tool calls, `retrieve` and `lookup_structured` in a single reply, each
+carrying its own `tool_use_id`, so the id-matched attribution BACKLOG 5.21 introduced is
+exercised by real traffic rather than only by fixtures. The non-retrieve call carried no
+`result` key, so nothing of its output would reach `tool_calls.result`.
+
 ## Known limits
 
-- A live Luna turn is unproven here. `OPENAI_API_KEY` is empty and #41 carries it, so the
-  first acceptance criterion rests on gate-level tests until that lands.
+- A full `run_agent_turn` has not run. It needs the control database, and `CONTROL_DB_URL`
+  points at live Neon production, so the probes drove `run_agent_loop` and the seam
+  directly instead. Retrieval was stubbed because the probe database's `chunks` table
+  carries no embedding column.
+- The root `.env` the owner keeps the OpenAI key in is shadowed by `apps/api/.env`, which
+  is the first `.env` above `app/core`. The probes injected the key into the process
+  environment, which outranks the env file. A worker cannot serve a live turn until one of
+  the two files is made canonical, and `ADMIN_KEY` differs between them. #41 carries it.
 - The `unparsed` retrieve state is now reachable only alongside `is_error`, because
   `retrieve_tool` attaches the ride-along on its one success path. The three readers in
   `agent.py` check the error flag first and skip, so their counter reads zero.
