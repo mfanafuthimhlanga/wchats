@@ -1,7 +1,7 @@
 """Every judge in `validation_service` sends `thinking` disabled and `temperature=0`.
 
-Observed 2026-08-16 against DeepSeek's Anthropic-format endpoint, which is the
-platform's default provider via `ANTHROPIC_BASE_URL`: a `messages.create`
+Observed 2026-08-16 against DeepSeek's Anthropic-format endpoint, which was the
+platform's default provider then via `ANTHROPIC_BASE_URL`. A `messages.create`
 carrying a forced `tool_choice` is rejected with
 
     HTTP 400 — Thinking mode does not support this tool_choice

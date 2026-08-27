@@ -87,8 +87,8 @@ class TestGenerateScenariosFromChunks:
     def test_generate_scenarios_sends_thinking_disabled(self, mock_factory):
         """The forced tool_choice must ship with thinking off.
 
-        Observed 2026-08-16: DeepSeek's Anthropic-format endpoint — the default
-        provider via ANTHROPIC_BASE_URL — rejects a forced tool_choice with
+        Observed 2026-08-16: DeepSeek's Anthropic-format endpoint, which was the
+        default provider then via ANTHROPIC_BASE_URL, rejects a forced tool_choice with
         HTTP 400 "Thinking mode does not support this tool_choice" unless
         thinking is explicitly disabled. The parameter is inert on the real
         Anthropic API, so the flag is provider-neutral.
