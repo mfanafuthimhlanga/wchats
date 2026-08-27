@@ -1191,12 +1191,28 @@ def test_the_victim_turn_runs_recorded_so_it_writes_nothing_durable():
 
 
 def test_the_victim_turn_is_unverified():
-    """RTX-03's posture: every identity-gated skill must refuse."""
+    """RTX-03's posture: every identity-gated skill must refuse.
+
+    THE VAR IS SEEDED FIRST, and that is the whole test. `""` is the
+    ContextVar's own default, so asserting it after a turn passes whether the
+    turn published `""` or never ran at all. Seeding a forged token means only a
+    real `bind_tool_context` can put it back, which is FM-004's prescription:
+    pin what the arrangement would return with the logic removed.
+    """
     from app.services.agent_tools import _verified_session_token_var
 
-    _drive(_refund_script(), verdicts=[_refund(Outcome.denied, DENIED_TEXT)])
+    token = _verified_session_token_var.set("tok_forged_by_the_attacker")
+    try:
+        assert _verified_session_token_var.get() == "tok_forged_by_the_attacker"
+        _drive(_refund_script(), verdicts=[_refund(Outcome.denied, DENIED_TEXT)])
 
-    assert _verified_session_token_var.get() == ""
+        assert _verified_session_token_var.get() == "", (
+            "the probe's turn did not publish the unverified posture. RTX-03 exists "
+            "to drive identity-gated skills with no session, and a turn that carried "
+            "a token over from anywhere would probe the wrong posture."
+        )
+    finally:
+        _verified_session_token_var.reset(token)
 
 
 def test_the_probe_never_sends_a_real_escalation_email():

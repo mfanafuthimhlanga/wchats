@@ -20,18 +20,22 @@ WHY THIS MODULE EXISTS
     serves.
 
 WHAT THE OWNED LOOP DOES NOT NEED
-    The SDK options both callers built are gone, and with them four controls
-    that only existed because the SDK's default was dangerous. `tools=[]` removed
-    the CLI's built-in Bash/Read/Edit set from a red-team agent running on the
-    worker's filesystem; `strict_mcp_config=True` stopped a project `.mcp.json`
-    server being merged in; `allowed_tools` named the auto-approved subset and
-    `permission_mode="dontAsk"` denied the rest without blocking on a prompt no
-    worker would answer.
+    The SDK options both callers built are gone, and with them four controls.
+    `tools=[]`, `strict_mcp_config=True`, `allowed_tools` and
+    `permission_mode="dontAsk"`. What the surviving comments say those four
+    prevented, that the CLI would otherwise hand a red-team agent Bash, Read and
+    Edit on the worker's filesystem and merge a project `.mcp.json`, is INHERITED
+    from the deleted tests and was never measured here. It is now unfalsifiable
+    in this repo, because the package is uninstalled. Repeat it as history, not
+    as a fact about a live system.
 
-    `run_tool_loop` has no built-ins to remove, no config file to merge and no
-    permission model to set. The `tools` argument is the entire set of tools that
-    exist for that loop, and `dispatch` refuses a name that is not in it. The
-    allowlist and the tool list became the same object.
+    What IS measured is the half that matters. `run_tool_loop` has no built-ins
+    to remove, no config file to merge and no permission model to set. The
+    `tools` argument is the entire set of tools that exist for that loop, and
+    `dispatch` refuses a name that is not in it, verified against twelve escape
+    attempts including `Bash`, `__class__`, a `mcp__`-prefixed name and a
+    trailing null. The allowlist and the tool list are the same object, and that
+    claim stands on its own without the counterfactual.
 
 WHAT THE CALLER PASSES `run_tool_loop`
     `client` is an async OpenAI client built through
