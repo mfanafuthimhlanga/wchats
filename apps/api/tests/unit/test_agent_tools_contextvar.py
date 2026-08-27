@@ -19,44 +19,9 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import sys
-import types
-from importlib.util import find_spec as _find_spec
 from unittest.mock import MagicMock
 
-# ---------------------------------------------------------------------------
-# Monkeypatch claude_agent_sdk BEFORE importing agent_tools.
-# agent_tools.py imports ``tool`` and ``create_sdk_mcp_server`` at module load
-# time, so the fake must be installed in sys.modules first.
-# ---------------------------------------------------------------------------
-# THE RULE: install the fake only when the real package is absent. Why the
-# `find_spec` half is load-bearing is in test_agent_tools.py's module docstring.
-if "claude_agent_sdk" not in sys.modules and _find_spec("claude_agent_sdk") is None:
-    _fake_sdk = types.ModuleType("claude_agent_sdk")
-
-    def _tool_decorator(name: str, description: str, schema: dict):
-        def wrapper(fn):
-            fn._tool_name = name
-            return fn
-        return wrapper
-
-    _fake_sdk.tool = _tool_decorator
-    _fake_sdk.create_sdk_mcp_server = MagicMock(return_value=MagicMock(name="mcp_server"))
-    _fake_sdk.ClaudeAgentOptions = MagicMock(name="ClaudeAgentOptions")
-    _fake_sdk.ClaudeSDKClient = MagicMock(name="ClaudeSDKClient")
-    _fake_sdk.AssistantMessage = MagicMock(name="AssistantMessage")
-    _fake_sdk.ResultMessage = MagicMock(name="ResultMessage")
-    _fake_sdk.TextBlock = MagicMock(name="TextBlock")
-    _fake_sdk.ToolUseBlock = MagicMock(name="ToolUseBlock")
-    _fake_sdk.ToolResultBlock = MagicMock(name="ToolResultBlock")
-    _fake_sdk.ClaudeSDKError = type("ClaudeSDKError", (Exception,), {})
-    _fake_sdk.CLINotFoundError = type("CLINotFoundError", (Exception,), {})
-    _fake_sdk.CLIConnectionError = type("CLIConnectionError", (Exception,), {})
-    _fake_sdk.ProcessError = type("ProcessError", (Exception,), {})
-    _fake_sdk.CLIJSONDecodeError = type("CLIJSONDecodeError", (Exception,), {})
-    sys.modules["claude_agent_sdk"] = _fake_sdk
-
-import app.services.agent_tools as agent_tools  # noqa: E402
+import app.services.agent_tools as agent_tools
 
 # ---------------------------------------------------------------------------
 # Test 1: ContextVar propagation across asyncio.run()
@@ -222,7 +187,6 @@ def test_bind_tool_context_sets_verified_session_token():
     task-scoped ContextVar.  Uses the same MagicMock SDK server pattern as the
     module-level monkeypatch above (create_sdk_mcp_server is already patched).
     """
-    from unittest.mock import MagicMock
 
     result: list[str] = []
 
@@ -256,7 +220,6 @@ def test_default_empty_when_omitted():
     ContextVar stays at its empty-string default so non-IDV tool calls are
     unaffected (IDV-05, Phase 17).
     """
-    from unittest.mock import MagicMock
 
     result: list[str] = []
 

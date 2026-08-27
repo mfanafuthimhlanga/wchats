@@ -55,59 +55,13 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import sys
-import types
-from importlib.util import find_spec as _find_spec
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Fake SDK bootstrap — same shape and same reason as test_retrieval_metrics.py's:
-# the real claude_agent_sdk binary is not present here. The `not in sys.modules`
-# guard deliberately does not clobber an already-imported real SDK, so this
-# module is collection-order independent.
-# ---------------------------------------------------------------------------
-
-
-def _make_passthrough_tool_decorator():
-    def tool_decorator(name: str, description: str, input_schema: dict):
-        def wrapper(fn):
-            fn._tool_name = name
-            fn._tool_description = description
-            fn._tool_schema = input_schema
-            return fn
-        return wrapper
-    return tool_decorator
-
-
-def _make_fake_sdk():
-    fake = types.ModuleType("claude_agent_sdk")
-    fake.tool = _make_passthrough_tool_decorator()
-    fake.create_sdk_mcp_server = MagicMock(return_value=MagicMock(name="mcp_server"))
-    fake.ClaudeAgentOptions = MagicMock(name="ClaudeAgentOptions")
-    fake.ClaudeSDKClient = MagicMock(name="ClaudeSDKClient")
-    fake.AssistantMessage = MagicMock(name="AssistantMessage")
-    fake.ResultMessage = MagicMock(name="ResultMessage")
-    fake.TextBlock = MagicMock(name="TextBlock")
-    fake.ToolUseBlock = MagicMock(name="ToolUseBlock")
-    fake.ToolResultBlock = MagicMock(name="ToolResultBlock")
-    fake.ClaudeSDKError = type("ClaudeSDKError", (Exception,), {})
-    fake.CLINotFoundError = type("CLINotFoundError", (Exception,), {})
-    fake.CLIConnectionError = type("CLIConnectionError", (Exception,), {})
-    fake.ProcessError = type("ProcessError", (Exception,), {})
-    fake.CLIJSONDecodeError = type("CLIJSONDecodeError", (Exception,), {})
-    return fake
-
-
-# THE RULE: install the fake only when the real package is absent. Why the
-# `find_spec` half is load-bearing is in test_agent_tools.py's module docstring.
-if "claude_agent_sdk" not in sys.modules and _find_spec("claude_agent_sdk") is None:
-    sys.modules["claude_agent_sdk"] = _make_fake_sdk()
-
-import app.services.agent_tools as agent_tools  # noqa: E402
+import app.services.agent_tools as agent_tools
 
 _T = "app.services.transactional.tools"
 _TOOLS_PY = Path(agent_tools.__file__).resolve().parent / "transactional" / "tools.py"
