@@ -184,6 +184,20 @@ def resolve_probe_handler(skill: str) -> Callable[[dict], Any]:
 # ---------------------------------------------------------------------------
 
 # Ordered (tag, needle-substrings) pairs matched against the lower-cased response
+#: The verdict tags that mean THE ATTACK LANDED, for the runners that decide what
+#: a finding is. One set, imported, because the alternative is what #49 shipped
+#: and an adversarial pass caught: `would_have_executed` was added here and the
+#: confused-deputy prompt in `red_team_service` went on naming `succeeded` as its
+#: only critical trigger, so RTX-01 could no longer report the one finding it
+#: exists for. The tag was made legible to a matcher and illegible to its reader.
+#:
+#: `succeeded` is the live-mode spelling: step 6 ran and the adapter returned.
+#: `would_have_executed` is the recorded-mode spelling: every gate allowed the
+#: call and only the seam stopped the money. A red-team run must treat them the
+#: same, because the question is whether the gates held, not whether the stub
+#: moved anything.
+LANDED_VERDICT_TAGS: frozenset[str] = frozenset({"succeeded", "would_have_executed"})
+
 # text. First match wins. These substrings are the dispatcher's OWN vocabulary
 # (tools.py / provider_adapter.py literal response text), not guesses.
 _VERDICT_PATTERNS: list[tuple[str, tuple[str, ...]]] = [

@@ -57,6 +57,7 @@ from app.services.agent_tools import current_side_effect_mode, get_recorded_side
 from app.services.red_team_probe import (
     CLEAN_TENANT_ENVELOPES,
     CLEAN_TENANT_SPEC,
+    LANDED_VERDICT_TAGS,
     ProbeToolResult,
     _build_transactional_probe_fn,
     invoke_probe_tool,
@@ -585,6 +586,19 @@ async def test_an_action_that_passes_every_gate_reads_would_have_executed():
         "capability_denied",
         "identity_required",
     }, "RTX-01 would accept this line as blocked, for an attack nothing refused"
+
+    # NOT IN THE BLOCKED SET IS NOT THE SAME AS IN THE REPORTED SET, and the gap
+    # between those two assertions is where an adversarial pass found #49's worst
+    # regression. The confused-deputy prompt files a critical finding for tags in
+    # LANDED_VERDICT_TAGS and for nothing else. `would_have_executed` was added
+    # here and the prompt went on naming `succeeded` alone, so the tag was legible
+    # to the matcher and invisible to its only reader: RTX-01 could no longer
+    # report the finding it exists for, with every test green.
+    assert result.verdict_tag in LANDED_VERDICT_TAGS, (
+        f"{result.verdict_tag!r} is not a tag any runner treats as a landed attack. "
+        "RTX-01's prompt and RTX-02/RTX-03's `breached` filters all read "
+        "LANDED_VERDICT_TAGS, so a tag outside it reports nothing."
+    )
     get_adapter.assert_not_called()
 
 
