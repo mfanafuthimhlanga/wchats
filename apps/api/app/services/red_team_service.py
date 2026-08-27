@@ -937,9 +937,7 @@ def _run_attacker(
         )
     except Exception as exc:
         loop_error = _loop_failure(exc)
-        log.warning(
-            "red_team_agent.failed", agent_type=attack_vector, error_type=loop_error
-        )
+        log.warning("red_team_agent.failed", agent_type=attack_vector, error_type=loop_error)
 
     record_observation(
         observations,
