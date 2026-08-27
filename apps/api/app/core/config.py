@@ -90,8 +90,20 @@ class Settings(BaseSettings):
     # (/vrd-uploads) and Windows native runs (C:/vrd-uploads or any writable path)
     UPLOADS_DIR: str = "/vrd-uploads"
 
-    # Ingestion pipeline — M2 additions (T-02-01-01: keys suppressed by __repr__)
-    ANTHROPIC_API_KEY: str
+    # Ingestion pipeline, M2 additions (T-02-01-01, keys suppressed by __repr__)
+    #
+    # REVOKED 2026-08-27, and required until that day. The owner revoked the
+    # Anthropic and DeepSeek credentials once ADR 0008 put every model call on
+    # OpenAI, so the name is gone from every env file in this repo. A required
+    # field would now stop the API, both workers and the whole test suite at
+    # import over a credential nothing on the customer path uses.
+    #
+    # Empty rather than deleted, because `resolve_credentials` still has an
+    # Anthropic branch for the nine `messages` call sites #76 moves. Those pass
+    # this value straight to the SDK, which refuses an empty key at
+    # construction, so such a call fails where it is made instead of billing a
+    # provider nobody chose. Delete the field when #76 lands.
+    ANTHROPIC_API_KEY: str = ""
     # Decision #34 routes every direct-API purpose to OpenAI gpt-5.6-luna. The
     # default is empty rather than absent, and after #47 slice B it still is:
     # the five Judge purposes reach OpenAI through the instructor seam, and the
