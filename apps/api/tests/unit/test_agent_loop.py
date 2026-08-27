@@ -432,6 +432,40 @@ class TestTheSeam:
 
         send.assert_called_once_with(agent, "frustrated customer", "third repeat")
 
+    def test_a_live_turn_with_no_notify_override_still_reaches_the_mail(self):
+        """The default an override could silently break (ticket #49).
+
+        `notify_fn` grew a keyword so `red_team_probe` can run a victim turn on
+        side_effects="live" without paging the owner about a customer who does not
+        exist. One caller passes one. Every other caller passes nothing, and the
+        seam has to go on picking the mode's own notifier for them, so the absence
+        of the keyword is asserted here rather than assumed.
+        """
+        assert "notify_fn" not in _seam_kwargs()
+        agent = _agent()
+        with patch("app.services.agent_loop.send_escalation_email") as send:
+            _build(agent=agent, side_effects="live")
+            from app.services.agent_tools import _notify_fn_var
+
+            _notify_fn_var.get()("frustrated customer", "third repeat")
+
+        send.assert_called_once_with(agent, "frustrated customer", "third repeat")
+
+    def test_an_override_replaces_the_notifier_and_no_mail_leaves(self):
+        """The red-team probe's half. Live mode, and nothing reaches the owner."""
+        seen: list = []
+        with patch("app.services.agent_loop.send_escalation_email") as send:
+            _build(
+                side_effects="live",
+                notify_fn=lambda reason, context: seen.append((reason, context)),
+            )
+            from app.services.agent_tools import _notify_fn_var
+
+            _notify_fn_var.get()("frustrated customer", "third repeat")
+
+        send.assert_not_called()
+        assert seen == [("frustrated customer", "third repeat")]
+
 
 class TestTheClientFactory:
     def test_the_factory_is_asked_for_the_agent_turn_purpose(self):

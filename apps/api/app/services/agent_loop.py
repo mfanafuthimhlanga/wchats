@@ -1,8 +1,8 @@
 """The customer turn: one assembly seam, one bounded tool loop, no framework.
 
 WHY THIS MODULE EXISTS
-    ADR 0008 took the Agent turn off `claude_agent_sdk` and put it on the plain
-    OpenAI SDK. The harness's remaining value was `resume`, which stores session
+    ADR 0008 took the Agent turn off the Agent SDK harness and put it on the
+    plain OpenAI SDK. The harness's remaining value was `resume`, which stores session
     files on the container filesystem, and Railway replaces that filesystem on
     every deploy. Session state lives in the `conversations` and `messages`
     tables instead, so a turn resumes from the database on any container. What
@@ -53,9 +53,10 @@ WHAT THE LOOP COUNTS, AND WHAT IT REFUSES TO INVENT
 Rung: `app.services` imports `app.core`, `app.domain`, third-party packages and
 its own siblings. It imports nothing from `app.worker`. It imports no provider
 SDK either, because `app.core.model_client` is the only home for those and the
-client arrives here already built and already hooked. `claude_agent_sdk` is absent
-too. A tool is anything carrying `name`, `description`, `input_schema` and `handler`,
-which is what lets the loop run tools the SDK defined without importing it.
+client arrives here already built and already hooked. The Agent SDK harness is
+absent too, and #49 took its last import out of this tree. A tool is anything
+carrying `name`, `description`, `input_schema` and `handler`, which is what let
+this loop run the harness-declared tools without importing the harness.
 """
 
 from __future__ import annotations
@@ -268,16 +269,27 @@ def record_turn_calls(turn: AgentTurn) -> int:
     return written
 
 
-def _escalation_notifier(agent, conversation_id: str, side_effects: str):
-    """The escalation edge, live or recorded.
+def _escalation_notifier(agent, conversation_id: str, side_effects: str, override=None):
+    """The escalation edge: the caller's own, or the one this mode implies.
 
     On the eval path the mail is recorded rather than sent. A scenario that drives
     the agent to escalate would otherwise page the owner about a customer who does
     not exist, and would do it nightly.
 
+    `override` HAS ONE CALLER, and the mode is why it needs one.
+    `red_team_probe._build_transactional_probe_fn` runs its victim turn on
+    side_effects="live", because recorded mode short-circuits the mutating skills
+    and the live gate verdicts are the whole red-team finding. Live mode's own
+    notifier would then page the owner about a customer who does not exist, once
+    per attack sequence that talks the agent into escalating. Every other caller
+    passes nothing and takes the mode's notifier, which is the default a
+    replacement could silently break.
+
     A conditional expression rather than two `def`s, because a nested definition
     would hide a second assembly of this edge from the seam suite.
     """
+    if override is not None:
+        return override
     return (
         (lambda reason, context: send_escalation_email(agent, reason, context))
         if side_effects == "live"
@@ -360,6 +372,7 @@ def build_agent_turn(
     ledger: Recorder,
     verified_session_token: str = "",
     soul_override: dict | None = None,
+    notify_fn=None,
 ) -> AgentTurn:
     """Assemble one turn of `agent`. THE SEAM, described in the module docstring.
 
@@ -372,6 +385,7 @@ def build_agent_turn(
         ledger:                 where each finished `ModelCall` goes once the turn is over, through `record_turn_calls`. Mandatory.
         verified_session_token: IDV-05 token, "" when there is none. NEVER logged (T-04-03-05).
         soul_override:          Prompt-version soul fields (OPS-16), or None.
+        notify_fn:              What `escalate_to_human` calls, or None for the notifier this mode implies. One caller passes one; `_escalation_notifier` says which and why.
 
     Raises:
         TypeError:       `side_effects` or `ledger` was not passed. Neither has a default.
@@ -379,8 +393,7 @@ def build_agent_turn(
         ValidationError: pydantic refused `agent.retrieval_strategy`.
         UnknownPurpose:  PURPOSE_ROUTES has no row for AGENT_TURN_PURPOSE.
     """
-    # FIRST, before anything that can raise. The prefork pool does not isolate contextvars per task and
-    # the mode is sticky, so a previous turn's value is in force on entry. Resetting here makes the safe default this function's.
+    # FIRST, before anything that can raise. `reset_side_effect_context` carries the reasoning.
     reset_side_effect_context()
     _check_mode(side_effects)
     bind_tool_context(
@@ -389,7 +402,7 @@ def build_agent_turn(
         agent_name=agent.name,
         strategy=RetrievalStrategy.model_validate(agent.retrieval_strategy or {}),
         conversation_id=str(conversation_id),
-        notify_fn=_escalation_notifier(agent, conversation_id, side_effects),
+        notify_fn=_escalation_notifier(agent, conversation_id, side_effects, notify_fn),
         tenant_id=str(agent.tenant_id),
         verified_session_token=verified_session_token,
         job_id=job_id,
@@ -397,8 +410,7 @@ def build_agent_turn(
     )
     system_prompt = build_system_prompt(agent, soul_override=soul_override)
     calls: list[ModelCall] = []
-    # Into a name rather than into the argument list, so the rest of the assembly has something to close when
-    # it raises. `route_for` and `agent_tool_definitions` both can, and a transport nobody holds outlives the turn.
+    # Into a name, so `_discard_client` has something to close when `route_for` or `agent_tool_definitions` raises.
     client = _turn_client(agent=agent, job_id=job_id, calls=calls)
     try:
         return AgentTurn(

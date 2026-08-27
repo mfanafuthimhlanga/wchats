@@ -1,5 +1,5 @@
 """
-agent_tools, the eleven tool definitions and the two factories over them.
+agent_tools, the eleven tool definitions and the one factory over them.
 
 Provides the tool layer that `app.services.agent_loop` dispatches inside a Celery
 task. All four tools are defined at module level and read per-task state from
@@ -56,6 +56,7 @@ from app.domain.context_frame import (
 from app.domain.context_frame import frame_retrieved_context as _frame_context
 from app.domain.retrieved_context import RetrievedContext
 from app.domain.tool_def import ToolDefinition, tool
+from app.domain.tool_result import ToolResult
 from app.services.retrieval_metrics_service import write_retrieval_metrics
 from app.services.retrieval_service import (
     RetrievalStrategy,
@@ -314,6 +315,73 @@ def get_recorded_side_effects() -> list[dict]:
     append, and cannot clear the sink by mutating what it got back.
     """
     sink = _recorded_side_effects_var.get()
+    return list(sink) if sink else []
+
+
+# ---------------------------------------------------------------------------
+# The typed tool-result sink (ticket #49).
+#
+# `to_wire` spends a ToolResult's outcome on the wire's single error bit, so a
+# reader downstream of the seven transactional handlers cannot tell a gate's
+# denial from a broken call, or an escalation to a human from a completed
+# action. The red-team victim turn needs exactly that distinction: its transcript
+# is what RTX-01 reads to decide whether a confused-deputy attack landed.
+#
+# Until #49 that turn drove the SDK and saw ToolResultBlocks only, so it
+# recovered a verdict by matching the dispatcher's prose. BACKLOG 5.8 is the bill
+# for one hand-copied substring: the identity gate blocked a refund and the probe
+# reported the attack as having SUCCEEDED. The victim turn runs `run_agent_loop`
+# in this process now, so the type is handed over instead of re-derived.
+#
+# THE VERDICT DOES NOT GO ON `tool_calls_log`. `agent_loop._log_entry` keeps
+# `result` for `retrieve` alone, because `_persist_messages` writes that key into
+# the tenant's `tool_calls.result` jsonb, and a result on every tool would keep
+# `lookup_structured`'s customer rows and the six mutating skills' outputs at rest
+# on a POPIA-sensitive platform. This sink is in-process and dies with the turn.
+# ---------------------------------------------------------------------------
+
+#: Per-turn sink for the typed results the seven transactional handlers produced.
+#: Holds the LIST OBJECT itself, for the reason `_recorded_side_effects_var` gives
+#: above: asyncio.run() copies the context, so a .set() inside the turn is invisible
+#: to the caller afterwards, while appends to a list installed BEFORE the copy are.
+_tool_results_var: ContextVar[list[ToolResult] | None] = ContextVar(
+    "tool_results", default=None
+)
+
+
+def publish_tool_result(result: ToolResult) -> None:
+    """Put one transactional verdict in reach of whoever assembled this turn.
+
+    Called at the one edge in `transactional.tools` where a `ToolResult` becomes
+    wire bytes, BEFORE the conversion, so the sink holds what the dispatcher
+    decided rather than what survived the crossing.
+
+    Never raises: a publishing failure must not fail the turn it is observing.
+    A missing sink is logged at WARNING rather than swallowed, because a probe
+    reading an empty sink reports a clean run it was structurally incapable of
+    failing, and BACKLOG 5.9 is what that costs.
+    """
+    sink = _tool_results_var.get()
+    if sink is None:
+        log.warning(
+            "tool_results.published_without_sink",
+            skill=result.skill,
+            note=(
+                "a transactional handler produced a verdict but no sink was installed "
+                "bind_tool_context was not called for this context"
+            ),
+        )
+        return
+    sink.append(result)
+
+
+def get_tool_results() -> list[ToolResult]:
+    """Every transactional verdict this turn produced, in the order they returned.
+
+    Returns a copy, so a caller iterating it cannot be surprised by a late
+    append, and cannot clear the sink by mutating what it got back.
+    """
+    sink = _tool_results_var.get()
     return list(sink) if sink else []
 
 
@@ -1014,6 +1082,43 @@ def _require_side_effect_mode(caller: str, side_effects: str) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# bind_tool_context — the one entry point, and the three rules it follows.
+#
+# Every tool handler reads its tenant, its agent and its mode from the ContextVars
+# below, and whoever publishes last owns the turn. Every caller reaches this
+# function directly since ticket #49: `agent_loop.build_agent_turn` for a customer
+# or probe turn, and `worker.tasks.runtime.red_team` for the two deterministic
+# vectors that call `invoke_probe_tool` without a model turn at all.
+#
+# Until #49 those callers went through a `build_tool_server` wrapper that built an
+# MCP server first and bound second, so that a server which raised left no
+# side-effect mode behind. The server is gone with the SDK, and with it the only
+# step between entry and the bind, so the ordering hazard it guarded against no
+# longer exists.
+#
+# CALLED ONCE PER TURN in the sync Celery task body, before asyncio.run(), so every
+# value is visible inside the async turn and its tool callees. ContextVar .set()
+# writes only the current context's copy, so prefork concurrency > 1 bleeds nothing
+# between tasks (PROD-14).
+#
+# THE MODE AND THE SINKS GO LAST, after every step that can raise. The mode is
+# process-context sticky and the prefork pool does not isolate contextvars per
+# task, so a bind that dies halfway through would otherwise leave a "recorded"
+# behind for whatever runs next in this worker's context. That next thing is a
+# customer turn that silently stops refunding, with no error anywhere.
+#
+# BOTH SINKS ARE FRESH LISTS, and that matters as much as the mode. A sink carried
+# over from the previous turn reports one eval scenario's refund attempt as
+# another's, or one red-team message's verdicts as the next message's. That is
+# worse than no recording: it is a wrong observation that looks right.
+#
+# The prose sits here rather than in the docstring because lizard measures a
+# function from its `def` to its last line, and this one was 30 lines over the
+# standard with every word of it inside.
+# ---------------------------------------------------------------------------
+
+
 def bind_tool_context(
     conn_str: str,
     agent_id: str,
@@ -1028,28 +1133,7 @@ def bind_tool_context(
 ) -> None:
     """Publish one turn's tenant-scoped state into the per-task ContextVars.
 
-    Every tool handler reads its tenant, its agent and its mode from here, and
-    whoever publishes last owns the turn. Every caller reaches it directly since
-    ticket #49: `agent_loop.build_agent_turn` for a customer or probe turn, and
-    `worker.tasks.runtime.red_team` for the two deterministic vectors that call
-    `invoke_probe_tool` without a model turn at all.
-
-    Until #49 those callers went through a `build_tool_server` wrapper that built
-    an MCP server first and bound second, so that a server which raised left no
-    side-effect mode behind. The server is gone with the SDK, and with it the
-    only step between entry and the bind, so the ordering hazard it guarded
-    against no longer exists.
-
-    Called once per turn in the sync Celery task body, before asyncio.run(), so
-    every value is visible inside the async turn and its tool callees. ContextVar
-    .set() writes only the current context's copy, so prefork concurrency > 1
-    bleeds nothing between tasks (PROD-14).
-
-    THE MODE AND THE SINK GO LAST, after every step that can raise. The mode is
-    process-context sticky and the prefork pool does not isolate contextvars per
-    task, so a bind that dies halfway through would otherwise leave a "recorded"
-    behind for whatever runs next in this worker's context. That next thing is a
-    customer turn that silently stops refunding, with no error anywhere.
+    The block comment above carries the three rules this follows.
 
     Args:
         conn_str:                Decrypted tenant DB connection string.
@@ -1059,24 +1143,18 @@ def bind_tool_context(
         conversation_id:         Conversation UUID for escalation DB writes.
         notify_fn:               Callable(reason: str, context: str) — fire-and-forget notification.
         tenant_id:               Tenant UUID string for credential derivation (INT-01).
-        verified_session_token:  IDV-05 verified session token from the Celery task arg.
-                                 NEVER logged (T-04-03-05). Empty string when no verified
-                                 session is present — all non-IDV tool calls pass through.
-        job_id:                  OPS-05/06 (Phase 21 Plan 03): Celery job_id, threaded into
-                                 retrieve_tool's retrieval_metrics write path via _job_id_var.
-                                 Empty string when omitted (backward compatible).
-        side_effects:            D1/P1b (BACKLOG 2.5): "live" or "recorded". Defaults to
-                                 "live" so every pre-existing caller — notably the red-team
-                                 probes, which must read REAL dispatcher verdict tags —
-                                 keeps the behaviour it had. The mandatory-no-default rule
-                                 lives one layer up, on agent_loop.build_agent_turn, which is
-                                 where the eval path is chosen. See the SideEffectMode block
-                                 above for why the default points this way.
+        verified_session_token:  IDV-05 token from the Celery task arg. NEVER logged (T-04-03-05).
+                                 Empty when no verified session is present, which lets every
+                                 non-IDV tool call pass through.
+        job_id:                  OPS-05/06: Celery job_id, threaded into retrieve_tool's
+                                 retrieval_metrics write path via _job_id_var. Empty when omitted.
+        side_effects:            D1/P1b (BACKLOG 2.5): "live" or "recorded", defaulting to "live" so
+                                 every pre-existing caller keeps the behaviour it had. The
+                                 SideEffectMode block above says why the default points that way.
 
     Raises:
-        ValueError: side_effects is neither "live" nor "recorded". Deliberately loud:
-            a typo that silently read as "not recorded, therefore live" would move
-            real money on the eval path.
+        ValueError: side_effects is neither "live" nor "recorded". Loud on purpose, because a
+            typo read as "not recorded, therefore live" moves real money on the eval path.
     """
     _require_side_effect_mode("bind_tool_context", side_effects)
 
@@ -1091,15 +1169,12 @@ def bind_tool_context(
 
     # D-10 (suspenders): this turn's retrieve counter starts at zero.
     _retrieve_call_count_var.set(0)
-    # IDV-05: the enforcement gate in transactional/tools.py (17-06) reads this
-    # token. NEVER referenced in any log call (T-04-03-05).
+    # IDV-05: read by the gate in transactional/tools.py. NEVER logged (T-04-03-05).
     _verified_session_token_var.set(verified_session_token)
 
     log.debug("bind_tool_context.ready", agent_id=agent_id, conversation_id=conversation_id)
 
-    # D1/P1b: the mode and a FRESH sink, last, for the reason in the docstring. The
-    # sink matters as much as the mode: one carried over from the previous turn
-    # reports one eval scenario's refund attempt as another's, which is worse than
-    # no recording at all. It is a wrong observation that looks right.
+    # D1/P1b: the mode and two fresh sinks, last. Reason in the block above.
     _side_effects_var.set(side_effects)
     _recorded_side_effects_var.set([])
+    _tool_results_var.set([])

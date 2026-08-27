@@ -21,11 +21,12 @@ The single _execute_transactional_tool dispatcher encodes the enforcement order 
        error → release_idempotency + audit row + is_error
   7. Audit row (success, result=response, error=None) + finalize_idempotency + return
 
-What the dispatcher returns (ticket #45):
+What the dispatcher returns (ticket #45, edge moved by #49):
   `_execute_transactional_tool` returns a `ToolResult` from every branch, and
-  `run_transactional_skill` is the seam that validates then calls it. Each `@tool`
-  handler converts at its own SDK edge with `to_wire`, which is the ONE place an
-  outcome becomes the `is_error` bit. The wire is byte for byte what it was.
+  `run_transactional_skill` is the seam that validates then calls it. All seven
+  `@tool` handlers hand that result to `_published_wire`, the ONE place an outcome
+  becomes the `is_error` bit and the one place the typed verdict is published to
+  the turn's sink. The wire is byte for byte what it was.
 
   The bit is why the type exists. `ok` and `requires_human` both leave the
   dispatcher with no `is_error`, so a caller reading the wire could not tell a
@@ -240,6 +241,31 @@ def _not_executed_result(skill: str, detail: str = "") -> ToolResult:
             f"updated.{tail}"
         ),
     )
+
+
+def _published_wire(result: ToolResult) -> dict:
+    """Publish the typed verdict to this turn's sink, then convert for the wire.
+
+    THE SEVEN HANDLERS CONVERT HERE AND NOWHERE ELSE, which is what makes the
+    publish unmissable: an eighth handler that skips this function returns
+    something the loop will not accept, so the two steps cannot come apart.
+
+    Both halves are needed because they carry different things. `to_wire` spends
+    the outcome on one bit for the model to read, and `publish_tool_result` keeps
+    the outcome itself for whoever assembled the turn. The red-team victim turn is
+    the caller that needs the second half: it reports each mutating call's real
+    dispatcher verdict, and until #49 it re-derived one by matching this module's
+    prose through the SDK's ToolResultBlocks. BACKLOG 5.8 records what one
+    hand-copied substring cost.
+
+    The lazy import is the one `run_confirm_action` already takes for the
+    ContextVars. `agent_tools.agent_tool_definitions` imports this module, so a
+    module-level import back would close the cycle.
+    """
+    from app.services.agent_tools import publish_tool_result  # noqa: PLC0415
+
+    publish_tool_result(result)
+    return to_wire(result)
 
 
 def _confirm_result(outcome: Outcome, text: str) -> ToolResult:
@@ -1270,9 +1296,9 @@ class UnknownSkillError(KeyError):
 async def run_transactional_skill(skill: str, args: dict) -> ToolResult:
     """Validate `args` against `skill`'s Input model, then run the dispatcher.
 
-    Two callers, one path. Each `@tool` handler enters here and converts the
-    result at its own SDK edge with `to_wire`; the red-team probe enters here
-    and reads the outcome, so a probe assertion never has to fuzzy-match prose.
+    Two callers, one path. Each `@tool` handler enters here and hands the result
+    to `_published_wire`; the red-team probe's deterministic vectors enter here
+    directly and read the outcome, so no assertion has to fuzzy-match prose.
 
     SKILL_INPUT_MODELS is a definition-time mapping written by hand, so this
     stays inside the registry's rule that nothing is inferred from a tool name
@@ -1321,8 +1347,8 @@ async def run_transactional_skill(skill: str, args: dict) -> ToolResult:
     PlaceOrderInput.model_json_schema(),
 )
 async def place_order_tool(args: dict) -> dict:
-    """Validate, dispatch, then convert at the SDK edge. skill=place_order."""
-    return to_wire(await run_transactional_skill("place_order", args))
+    """Validate, dispatch, publish the verdict, then convert. skill=place_order."""
+    return _published_wire(await run_transactional_skill("place_order", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1340,8 +1366,8 @@ async def place_order_tool(args: dict) -> dict:
     CancelOrderInput.model_json_schema(),
 )
 async def cancel_order_tool(args: dict) -> dict:
-    """Validate, dispatch, then convert at the SDK edge. skill=cancel_order."""
-    return to_wire(await run_transactional_skill("cancel_order", args))
+    """Validate, dispatch, publish the verdict, then convert. skill=cancel_order."""
+    return _published_wire(await run_transactional_skill("cancel_order", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1359,8 +1385,8 @@ async def cancel_order_tool(args: dict) -> dict:
     IssueRefundInput.model_json_schema(),
 )
 async def issue_refund_tool(args: dict) -> dict:
-    """Validate, dispatch, then convert at the SDK edge. skill=issue_refund."""
-    return to_wire(await run_transactional_skill("issue_refund", args))
+    """Validate, dispatch, publish the verdict, then convert. skill=issue_refund."""
+    return _published_wire(await run_transactional_skill("issue_refund", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1378,8 +1404,8 @@ async def issue_refund_tool(args: dict) -> dict:
     UpdateSubscriptionInput.model_json_schema(),
 )
 async def update_subscription_tool(args: dict) -> dict:
-    """Validate, dispatch, then convert at the SDK edge. skill=update_subscription."""
-    return to_wire(await run_transactional_skill("update_subscription", args))
+    """Validate, dispatch, publish the verdict, then convert. skill=update_subscription."""
+    return _published_wire(await run_transactional_skill("update_subscription", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1397,8 +1423,8 @@ async def update_subscription_tool(args: dict) -> dict:
     BookSlotInput.model_json_schema(),
 )
 async def book_slot_tool(args: dict) -> dict:
-    """Validate, dispatch, then convert at the SDK edge. skill=book_slot."""
-    return to_wire(await run_transactional_skill("book_slot", args))
+    """Validate, dispatch, publish the verdict, then convert. skill=book_slot."""
+    return _published_wire(await run_transactional_skill("book_slot", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1416,8 +1442,8 @@ async def book_slot_tool(args: dict) -> dict:
     UpdateCustomerRecordInput.model_json_schema(),
 )
 async def update_customer_record_tool(args: dict) -> dict:
-    """Validate, dispatch, then convert at the SDK edge. skill=update_customer_record."""
-    return to_wire(await run_transactional_skill("update_customer_record", args))
+    """Validate, dispatch, publish the verdict, then convert. skill=update_customer_record."""
+    return _published_wire(await run_transactional_skill("update_customer_record", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1551,7 +1577,7 @@ async def run_confirm_action(args: dict) -> ToolResult:
     """Validate, gate, then write the confirmation row. confirm_action's typed seam.
 
     The counterpart to `run_transactional_skill`, and it exists for the same
-    reason. The `@tool` handler converts at its own SDK edge with `to_wire`; the
+    reason. The `@tool` handler hands the result to `_published_wire`; the
     red-team probe reads the outcome, so a probe never decides from prose
     whether an approver was asked. Every row this writes is
     `Outcome.requires_human`, which on the wire is indistinguishable from a
@@ -1609,8 +1635,8 @@ async def run_confirm_action(args: dict) -> ToolResult:
     ConfirmActionInput.model_json_schema(),
 )
 async def confirm_action_tool(args: dict) -> dict:
-    """Validate, gate, then convert at the SDK edge. skill=confirm_action."""
-    return to_wire(await run_confirm_action(args))
+    """Validate, gate, publish the verdict, then convert. skill=confirm_action."""
+    return _published_wire(await run_confirm_action(args))
 
 
 # ---------------------------------------------------------------------------

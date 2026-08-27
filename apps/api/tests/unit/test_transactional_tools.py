@@ -1701,88 +1701,69 @@ class TestToolRegistryAttachment:
 
 
 # ===========================================================================
-# build_tool_server (kept from 14-04)
+# The publish edge — _published_wire (ticket #49, replaces build_tool_server)
+#
+# All seven @tool handlers convert through _published_wire, which puts the typed
+# ToolResult in this turn's sink and THEN builds the wire dict. Both halves are
+# needed and they carry different things: the wire spends the outcome on one bit
+# for the model, the sink keeps the outcome itself for whoever assembled the turn.
+#
+# The red-team victim turn is why. It reports each mutating call's real dispatcher
+# verdict, and while it ran on the SDK it re-derived one by matching this module's
+# prose off ToolResultBlocks. BACKLOG 5.8 is what one hand-copied substring cost:
+# the identity gate blocked a refund and the probe reported the attack SUCCEEDED.
 # ===========================================================================
 
 
-class TestBuildToolServerRegistration:
-    """build_tool_server must pass all 11 tools to create_sdk_mcp_server."""
+class TestThePublishEdge:
+    """Every handler publishes, the sink keeps what the wire cannot, bytes unchanged."""
 
-    def test_build_tool_server_includes_all_11_tools(self):
-        from app.services.agent_tools import build_tool_server
+    @staticmethod
+    def _sink() -> list:
+        """Install a fresh sink and hand it back. bind_tool_context does this per turn."""
+        from app.services.agent_tools import _tool_results_var  # noqa: PLC0415
 
-        with patch("app.services.agent_tools.create_sdk_mcp_server") as mock_create:
-            mock_create.return_value = {
-                "type": "sdk",
-                "name": "customer-tools",
-                "instance": MagicMock(),
-            }
-            build_tool_server(
-                conn_str="postgresql://test",
-                agent_id=TEST_AGENT_ID,
-                agent_name="Test Agent",
-                strategy=MagicMock(),
-                conversation_id=TEST_CONV_ID,
-                notify_fn=None,
-            )
+        sink: list = []
+        _tool_results_var.set(sink)
+        return sink
 
-        mock_create.assert_called_once()
-        tools_arg = mock_create.call_args.kwargs.get("tools")
-        assert tools_arg is not None, "tools= must be passed as keyword to create_sdk_mcp_server"
-        tool_names = [t.name for t in tools_arg]
-
-        assert len(tool_names) == 11, (
-            f"Expected 11 tools in build_tool_server, got {len(tool_names)}: {tool_names}"
+    @staticmethod
+    def _handlers() -> list:
+        from app.services.transactional.tools import (  # noqa: PLC0415
+            book_slot_tool,
+            cancel_order_tool,
+            confirm_action_tool,
+            issue_refund_tool,
+            place_order_tool,
+            update_customer_record_tool,
+            update_subscription_tool,
         )
 
-    def test_build_tool_server_original_4_tools_retained(self):
-        from app.services.agent_tools import build_tool_server
+        return [
+            place_order_tool,
+            cancel_order_tool,
+            issue_refund_tool,
+            update_subscription_tool,
+            book_slot_tool,
+            update_customer_record_tool,
+            confirm_action_tool,
+        ]
 
-        with patch("app.services.agent_tools.create_sdk_mcp_server") as mock_create:
-            mock_create.return_value = {
-                "type": "sdk",
-                "name": "customer-tools",
-                "instance": MagicMock(),
-            }
-            build_tool_server(
-                conn_str="postgresql://test",
-                agent_id=TEST_AGENT_ID,
-                agent_name="Test Agent",
-                strategy=MagicMock(),
-                conversation_id=TEST_CONV_ID,
-                notify_fn=None,
-            )
+    def test_every_one_of_the_seven_handlers_publishes(self):
+        """A handler that skips the edge is a skill the victim transcript loses.
 
-        tools_arg = mock_create.call_args.kwargs.get("tools", [])
-        tool_names = {t.name for t in tools_arg}
+        Driven with arguments no Input model accepts, so each one returns from its
+        own validation arm without touching a database. The arms differ per handler,
+        which is the point: the publish has to be on the path they share.
+        """
+        _set_context()
+        sink = self._sink()
 
-        assert "retrieve" in tool_names
-        assert "lookup_structured" in tool_names
-        assert "escalate_to_human" in tool_names
-        assert "clarify" in tool_names
+        for handler in self._handlers():
+            asyncio.run(handler.handler({}))
 
-    def test_build_tool_server_has_all_7_new_tools(self):
-        from app.services.agent_tools import build_tool_server
-
-        with patch("app.services.agent_tools.create_sdk_mcp_server") as mock_create:
-            mock_create.return_value = {
-                "type": "sdk",
-                "name": "customer-tools",
-                "instance": MagicMock(),
-            }
-            build_tool_server(
-                conn_str="postgresql://test",
-                agent_id=TEST_AGENT_ID,
-                agent_name="Test Agent",
-                strategy=MagicMock(),
-                conversation_id=TEST_CONV_ID,
-                notify_fn=None,
-            )
-
-        tools_arg = mock_create.call_args.kwargs.get("tools", [])
-        tool_names = {t.name for t in tools_arg}
-
-        expected_new = {
+        published = [r.skill for r in sink]
+        assert published == [
             "place_order",
             "cancel_order",
             "issue_refund",
@@ -1790,9 +1771,84 @@ class TestBuildToolServerRegistration:
             "book_slot",
             "update_customer_record",
             "confirm_action",
-        }
-        missing = expected_new - tool_names
-        assert not missing, f"Missing new tools in build_tool_server: {missing}"
+        ], f"a handler returned without publishing its verdict: {published}"
+
+    def test_a_capability_denial_reaches_the_sink_as_denied(self):
+        """`Outcome.denied` says a gate refused. The wire says only is_error."""
+        from app.domain.tool_result import Outcome  # noqa: PLC0415
+
+        _set_context()
+        sink = self._sink()
+
+        with (
+            _p("check_capability_access", _mock_access_deny("disabled")),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.write_audit_row", AsyncMock()),
+        ):
+            from app.services.transactional.tools import place_order_tool  # noqa: PLC0415
+
+            wire = asyncio.run(place_order_tool.handler(_valid_place_order_args()))
+
+        assert wire.get("is_error") is True
+        assert [(r.skill, r.outcome) for r in sink] == [("place_order", Outcome.denied)]
+
+    def test_an_escalation_to_a_human_is_indistinguishable_on_the_wire_and_not_in_the_sink(self):
+        """The exact collision `Outcome` exists for.
+
+        A written confirmation row and a completed order both leave the dispatcher
+        with no is_error, so a reader downstream of the conversion has to guess from
+        English. The victim turn used to guess, and every confirm_action that routed
+        an action to an approver was reported to the red-team suite as an attack that
+        landed.
+        """
+        from app.domain.tool_result import Outcome  # noqa: PLC0415
+
+        _set_context()
+        sink = self._sink()
+        db_cm, _session = _mock_db_session()
+
+        with (
+            _p("check_capability_access", _mock_access_pass()),
+            patch(f"{_T}.get_sync_db", db_cm),
+        ):
+            from app.services.transactional.tools import confirm_action_tool  # noqa: PLC0415
+
+            wire = asyncio.run(
+                confirm_action_tool.handler(
+                    {"skill": "place_order", "action_reference": "idem-001"}
+                )
+            )
+
+        assert "is_error" not in wire, (
+            "an escalation to a human carries no error bit, which is why the wire "
+            "cannot tell it apart from a completed action"
+        )
+        assert [r.outcome for r in sink] == [Outcome.requires_human]
+
+    def test_the_wire_is_byte_for_byte_what_to_wire_builds(self):
+        """Publishing added a reader, not a format. The model reads what it read."""
+        from app.domain.tool_result import Outcome, ToolResult, to_wire  # noqa: PLC0415
+        from app.services.transactional.tools import _published_wire  # noqa: PLC0415
+
+        self._sink()
+        for outcome in Outcome:
+            result = ToolResult(skill="issue_refund", outcome=outcome, text="R50.00")
+            assert _published_wire(result) == to_wire(result)
+
+    def test_a_replay_publishes_the_stored_wire_untouched(self):
+        """`stored_wire` is arbitrary JSON an earlier call left in the tenant DB."""
+        from app.domain.tool_result import Outcome, ToolResult  # noqa: PLC0415
+        from app.services.transactional.tools import _published_wire  # noqa: PLC0415
+
+        sink = self._sink()
+        stored = {"content": [{"type": "text", "text": "Refunded"}], "extra": {"n": 1}}
+        result = ToolResult(
+            skill="issue_refund", outcome=Outcome.ok, text="ignored", stored_wire=stored
+        )
+
+        assert _published_wire(result) is stored
+        assert sink == [result]
 
 
 # ===========================================================================
