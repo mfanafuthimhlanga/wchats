@@ -197,20 +197,25 @@ threat registers.
   `S3_UPLOADS_BUCKET` and AWS credential env vars, and run MinIO's standalone Windows binary as a
   plain process — no Docker, so rule 6 holds. Also set `EMBEDDING_PROVIDER=voyage`; the default is
   `bedrock`, which needs real AWS.
-- **`ANTHROPIC_API_KEY` must be EXPORTED into `os.environ`, not merely present in `.env`.** Pydantic
-  loads `.env` into `Settings`; the Anthropic client reads `os.environ`. A worker started without it
-  loses every direct-API call — and at least one task reports success anyway (`1.28`).
+- **No model key needs exporting any more, and `1.28` is why that sentence stayed here for weeks
+  after it stopped being true.** It said `ANTHROPIC_API_KEY` had to reach `os.environ` because
+  pydantic filled `Settings` while the Agent SDK's client read the environment, so an unexported key
+  lost every call and one task reported success anyway. #49 removed the SDK. `resolve_credentials`
+  reads the key from `Settings`, and an absent `OPENAI_BASE_URL` is the correct endpoint rather than
+  a wrong one, so an unset variable is now the safe case. Run `scripts/probe_environment.py` to see
+  what this shell would actually reach.
 
 ## Stack
 
 ```
 Backend:     FastAPI + Pydantic + Celery + Redis + Alembic (uv for Python tooling)
 Data:        Neon (control DB + per-tenant projects), pgvector (HNSW)
-Agents:      claude-agent-sdk 0.1.81 — customer agents, red-team attackers, deployment orchestrator
-             Claude API direct     — all judges, the Actor gate, Ragas' LLM, scenario generation
-Models:      claude-haiku-4-5             judges, Gatekeeper/Auditor/Strategist/Actor, scenario gen
-             claude-haiku-4-5-20251001    the customer agent (agent.py)
-             claude-sonnet-4-6            red-team attackers, deployment orchestrator, strategist
+Agents:      app/services/tool_loop.py  the owned bounded loop. No agent framework (ADR 0008).
+                                       Customer turn, red-team Attacker, deployment Orchestrator.
+             openai SDK direct         judges, the Actor gate, Ragas' LLM, scenario generation
+Models:      gpt-5.6-luna              every row in PURPOSE_ROUTES. One provider, one price book.
+                                       A call site never names a model; app/core/model_client routes it.
+                                       Twelve raw purposes still BUILD an Anthropic client: issue #88.
 Ingestion:   Docling (layout-aware), Chonkie ≥1.6.5 (structure-aware)
 Embeddings:  voyageai (embed + rerank), bedrock (default provider), cohere fallback
 Evals:       ragas 0.4.x + custom harness
