@@ -282,9 +282,9 @@ def _generic_adapter(skill: str) -> MagicMock:
 def _set_dispatcher_identity() -> None:
     """The ContextVars the dispatcher reads for identity, before asyncio.run().
 
-    Set directly rather than through `build_tool_server`, matching
+    Set directly rather than through `bind_tool_context`, matching
     test_transactional_tools.py — building a real MCP server is not what these
-    tests are about, and `test_build_tool_server_publishes_the_mode_and_a_fresh_sink`
+    tests are about, and `test_bind_tool_context_publishes_the_mode_and_a_fresh_sink`
     below is what pins the production wiring of the same two variables.
     """
     agent_tools._agent_id_var.set("agent-recorded-0001")
@@ -293,11 +293,11 @@ def _set_dispatcher_identity() -> None:
 
 
 # ===========================================================================
-# build_tool_server — the production wiring of the mode
+# bind_tool_context — the production wiring of the mode
 # ===========================================================================
 
 
-def test_build_tool_server_publishes_the_mode_and_a_fresh_sink():
+def test_bind_tool_context_publishes_the_mode_and_a_fresh_sink():
     """The seam's `side_effects` argument has to actually reach the tools.
 
     Everything else in this file sets the ContextVar by hand, which proves the
@@ -305,13 +305,13 @@ def test_build_tool_server_publishes_the_mode_and_a_fresh_sink():
     test that drives the real factory, so a seam that accepted the parameter and
     then dropped it on the floor goes red here and nowhere else.
 
-    The sink reset matters as much as the mode: `build_tool_server` runs once per
+    The sink reset matters as much as the mode: `bind_tool_context` runs once per
     turn, and a sink carried over from the previous turn would report another
     conversation's refund attempt as this eval scenario's.
     """
     with _mode("live"):
         agent_tools._recorded_side_effects_var.get().append({"kind": "stale", "detail": {}})
-        agent_tools.build_tool_server(
+        agent_tools.bind_tool_context(
             conn_str="postgresql://tenant",
             agent_id="agent-btsr",
             agent_name="Recorded Mode Agent",
@@ -323,13 +323,13 @@ def test_build_tool_server_publishes_the_mode_and_a_fresh_sink():
         )
         assert agent_tools.current_side_effect_mode() == "recorded"
         assert agent_tools.get_recorded_side_effects() == [], (
-            "build_tool_server did not install a FRESH recording sink. The "
+            "bind_tool_context did not install a FRESH recording sink. The "
             "previous turn's suppressed side effects are still in it, so the "
             "eval would attribute one scenario's refund attempt to another."
         )
 
 
-def test_build_tool_server_defaults_to_live():
+def test_bind_tool_context_defaults_to_live():
     """Every pre-existing caller keeps the behaviour it had.
 
     `red_team.py` and `red_team_probe.py` build tool servers to probe the REAL
@@ -340,7 +340,7 @@ def test_build_tool_server_defaults_to_live():
     on the seam, one layer up, where the eval path is chosen.
     """
     with _mode("recorded"):
-        agent_tools.build_tool_server(
+        agent_tools.bind_tool_context(
             conn_str="postgresql://tenant",
             agent_id="agent-default",
             agent_name="Default Mode Agent",
@@ -352,7 +352,7 @@ def test_build_tool_server_defaults_to_live():
         assert agent_tools.current_side_effect_mode() == "live"
 
 
-def test_build_tool_server_rejects_a_mode_it_does_not_implement():
+def test_bind_tool_context_rejects_a_mode_it_does_not_implement():
     """A typo must not read as "not recorded, therefore live".
 
     `side_effects="dry_run"` is the plausible mistake — it is what the parameter
@@ -360,7 +360,7 @@ def test_build_tool_server_rejects_a_mode_it_does_not_implement():
     `"recorded"` would treat it as live and move real money on the eval path.
     """
     with pytest.raises(ValueError, match="side_effects"):
-        agent_tools.build_tool_server(
+        agent_tools.bind_tool_context(
             conn_str="postgresql://tenant",
             agent_id="agent-bad-mode",
             agent_name="Bad Mode Agent",
