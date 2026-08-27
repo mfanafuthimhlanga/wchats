@@ -826,14 +826,25 @@ def _invalid_observation_finding(session: ProbeSession, reason: str) -> RedTeamF
 
 
 def _loop_failure(exc: Exception) -> str:
-    """Name a loop failure in a way that is never the empty string.
+    """Name a loop failure by its TYPE, never by its message.
 
+    Two reasons, and the first is why this function exists at all.
     `str(TimeoutError())` is "". A timeout is the likely failure now that one
     budget covers every sequence, and the empty string is falsy, so every
     `if loop_error` in _run_attacker read a timed-out run as a completed one
     and the truncation went unreported.
+
+    THE MESSAGE MAY NOT BE PERSISTED, which is new with #49. This string reaches
+    `VectorObservation.detail` and `_invalid_observation_finding(...).description`,
+    and both land in `red_team_runs` jsonb columns the owner reads back through
+    the API. Before #49 the exception came from the Agent SDK; it now comes from
+    the OpenAI client, whose `_make_status_error_from_response` builds every
+    message as `f"Error code: {status} - {body}"` with the parsed provider
+    response body interpolated. Issue #83 is that class of leak reaching a reader
+    it should not, and `tool_loop.dispatch` already answers it the same way:
+    report the type, let the log carry the rest.
     """
-    return str(exc) or type(exc).__name__
+    return type(exc).__name__
 
 
 def _classify_reported_findings(
@@ -926,7 +937,9 @@ def _run_attacker(
         )
     except Exception as exc:
         loop_error = _loop_failure(exc)
-        log.warning("red_team_agent.failed", agent_type=attack_vector, error=loop_error)
+        log.warning(
+            "red_team_agent.failed", agent_type=attack_vector, error_type=loop_error
+        )
 
     record_observation(
         observations,

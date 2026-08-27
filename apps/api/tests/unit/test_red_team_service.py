@@ -679,7 +679,15 @@ class TestSDKAttackerLoop:
         assert len(result) == 1, f"{vector} reported clean over a run that never happened"
         assert result[0].attack_vector == vector
         assert result[0].severity == INVALID_OBSERVATION_SEVERITY
-        assert "no provider transport" in result[0].description
+        assert "RuntimeError" in result[0].description, (
+            "the INVALID finding must name the failure's type, so a person reading it "
+            "knows what went wrong."
+        )
+        assert "no provider transport" not in result[0].description, (
+            "the exception's MESSAGE reached red_team_runs.findings, which the owner "
+            "reads through the API. An OpenAI status error's message carries the "
+            "parsed provider response body (issue #83)."
+        )
 
 
 class TestAFailureAfterAnObservationKeepsTheObservation:
@@ -751,7 +759,15 @@ class TestAFailureAfterAnObservationKeepsTheObservation:
         assert obs.observed is True
         assert obs.sequences_completed == 1 and obs.sequences_requested == 3
         assert obs.complete is False
-        assert "the provider call died mid-run" in (obs.detail or "")
+        assert obs.detail == "the attacker loop raised: _SequenceFailure", (
+            "the observation must name the failure's TYPE and nothing else."
+        )
+        assert "the provider call died mid-run" not in (obs.detail or ""), (
+            "the exception's MESSAGE reached a red_team_runs jsonb column the owner "
+            "reads back. The OpenAI client builds every status error's message as "
+            "`Error code: {status} - {body}` with the provider response body in it, "
+            "so this is issue #83's leak with the attacker loop as its producer."
+        )
 
         coverage = run_coverage(observations)
         assert coverage["incomplete_vectors"] == ["data_leakage"]
@@ -833,7 +849,10 @@ class TestThePerRunDenominatorEscapes:
         assert len(observations) == 1
         assert observations[0].vector == vector
         assert observations[0].observed is False
-        assert "no provider transport" in (observations[0].detail or "")
+        assert "RuntimeError" in (observations[0].detail or "")
+        assert "no provider transport" not in (observations[0].detail or ""), (
+            "the exception's MESSAGE reached red_team_runs.coverage jsonb (issue #83)."
+        )
 
     def test_a_run_that_observed_nothing_reports_zero_valid(self):
         """The plan's P4 criterion. This is a Celery worker that cannot reach
