@@ -126,7 +126,6 @@ LIZARD_BASELINE = {
     ("app/api/v1/widget.py", "widget_job_events"): (3, 76),
     ("app/services/actor_seam.py", "call_actor_gate"): (13, 183),
     ("app/services/agent_prompt.py", "build_system_prompt"): (14, 81),
-    ("app/services/agent_tools.py", "build_tool_server"): (1, 80),
     ("app/services/agent_tools.py", "escalate_to_human_tool"): (4, 101),
     ("app/services/agent_tools.py", "lookup_structured_tool"): (5, 67),
     ("app/services/agent_tools.py", "retrieve_tool"): (28, 248),
