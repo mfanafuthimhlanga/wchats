@@ -58,12 +58,9 @@ Two new modules, one deletion.
 - **The MCP name prefix dies with the server.** `mcp__{server}__{tool}` rewriting is what
   forced `probe_tool_basename`, and what forced the Orchestrator to accept two spellings of
   `submit_report`. Names are bare now, and both mechanisms are gone.
-- **`stop_after` claims the handler RAN, not that the name was called.** Found under
-  mutation by the implementing agent. A model naming a tool that does not exist got
-  `stop_reason="stop_after"` while `dispatch` had already refused it, so the caller would
-  read an empty container and a stop reason saying the report arrived. Unreadable arguments
-  are the same case. `submit_report`'s handler is what writes the report, so the stop is a
-  claim about the handler.
+- **`stop_after` claims the handler RAN, not that the name was called.** The implementing
+  agent found two of the four ways that claim can be false, and the adversarial pass found
+  the other two. See "The adversarial pass" below.
 - **`_run_sdk_attacker` is now `_run_attacker`.** There is no SDK, and a name saying
   otherwise teaches the next reader something false.
 - **`ANTHROPIC_BASE_URL` retired.** The SDK's CLI reads it to pick a wire format and this
@@ -106,3 +103,46 @@ Filed rather than widening this branch.
 
 FM-008 opened (the extraction diverges from the path it unifies), gated at rung 2. FM-005
 climbed to rung 1: the fake SDK modules are deleted, because there is nothing left to fake.
+
+## The adversarial pass, and what it changed
+
+Two reviewers, run against green gates, different lenses, neither told to be conservative.
+Both found the same defect first.
+
+Fixed on the branch:
+
+- **`stop_after` stopped on a handler that raised.** `ran` was computed from the tool's
+  existence before dispatch, so a `submit_report` whose handler threw returned
+  `stop_reason="stop_after"` with an empty container, which is verbatim what the guard's own
+  docstring says it prevents. `dispatch` split into `dispatch_outcome`. Logged as FM-010: the
+  guard read a proxy for the property rather than the property.
+- **`reset_side_effect_context` cleared one sink of two**, so a turn that failed to build left
+  the previous turn's typed verdicts readable, refund text included.
+- **Three stale ceilings in `test_gates.py::PINNED_LIZARD`** let `LIZARD_BASELINE` be raised
+  back with no meta-guard signal. One reviewer prescribed deleting all three; that would have
+  broken the guard, because one key is still live in the baseline. Two deleted, one ratcheted.
+- The shadow-copy test covered four of the six names the branch moved.
+- Five stale names and claims.
+
+Filed, not fixed:
+
+- **#90.** The victim turn runs live, so an Actor gate `require_human` writes an approvable,
+  unmarked `pending_confirmations` row. Approving it makes a real provider call.
+- **#91.** The same turn writes retrieval metrics, un-namespaced idempotency reservations,
+  unmarked audit rows and ledger rows into the tenant's real tables.
+
+Both trace to one thing, logged as FM-009. This ticket's headline finding was that the Attacker
+and Orchestrator were DEAD on the credential retired the day before, and #49 revives them. The
+same revocation had also stopped the victim turn reaching the dispatcher. The revival was
+reasoned about in the direction that was good news and not in the direction that was not.
+
+## What is not proven
+
+- **RTX-01 has never executed.** The victim turn was rewritten and the only test that drives it
+  against a real model is gated behind `INTEGRATION_TESTS_ENABLED` and spends money. The
+  correctness win this ticket claims as its headline rests on a path no live run has touched.
+- **Neither BLOCK was observed.** Both are traced hop by hop through source and the source's own
+  comments. Nothing has watched a `pending_confirmations` row appear from a probe. One
+  integration test against `wchats_tenant_probe` would settle both.
+- The gates now run with `claude_agent_sdk` uninstalled: 3153 passed, 13 skipped. Before
+  `uv sync` every green gate on this branch ran with the removed package still importable.
