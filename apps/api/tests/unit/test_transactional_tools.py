@@ -2187,6 +2187,168 @@ class TestActorRequireHuman:
 
 
 # ===========================================================================
+# The three durable writes the red-team victim turn used to leave behind
+# (#90, #91). `red_team_probe._build_transactional_probe_fn` drove its victim
+# on side_effects="live" for a milestone, on a docstring sentence claiming
+# recorded mode short-circuits the six mutating skills. It does not. The
+# dispatcher runs steps 1 to 5 either way, and what live mode added was writes
+# into the owner's product. These three pins are what stops them.
+# ===========================================================================
+
+
+@contextmanager
+def _recorded_mode(mode: str = "recorded"):
+    """Enter `mode` with a fresh sink, and reset both tokens in `finally`.
+
+    ContextVars are process-wide for the whole pytest session and nothing resets
+    them between tests. A leaked "recorded" would make every later test in this
+    file stop reaching its adapter mock while still passing its own assertions.
+    """
+    from app.services.agent_tools import (  # noqa: PLC0415
+        _recorded_side_effects_var,
+        _side_effects_var,
+    )
+
+    mode_token = _side_effects_var.set(mode)
+    sink_token = _recorded_side_effects_var.set([])
+    try:
+        yield
+    finally:
+        _recorded_side_effects_var.reset(sink_token)
+        _side_effects_var.reset(mode_token)
+
+
+class TestRecordedModeLeavesTheOwnersProductAlone:
+    """#90 and #91, one test per durable write, each with its live partner."""
+
+    def _run(self, mode: str, gate_mock, *, reserve=None, release=None, audit=None):
+        """One place_order through the real dispatcher, in `mode`."""
+        _set_context()
+        db_cm, session = _mock_db_session()
+        reserve = reserve or _mock_reserve("reserved")
+        release = release or _mock_release()
+        audit = audit or AsyncMock()
+
+        with (
+            _recorded_mode(mode),
+            _p("check_capability_access", _mock_access_pass()),
+            _p("reserve_idempotency", reserve),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("finalize_idempotency", _mock_finalize()),
+            _p("release_idempotency", release),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", gate_mock),
+            patch(f"{_T}.write_audit_row", audit),
+            patch(f"{_T}.get_sync_db", db_cm),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=_mock_adapter())),
+        ):
+            from app.services.transactional.tools import place_order_tool  # noqa: PLC0415
+
+            result = asyncio.run(place_order_tool.handler(_valid_place_order_args("idem-rec")))
+        return result, session, reserve, release, audit
+
+    # -- #90: the pending_confirmations row --------------------------------
+
+    def test_recorded_require_human_writes_no_pending_confirmation(self):
+        """#90, and the one that matters most.
+
+        A require_human verdict writes a durable row into the owner's approval
+        queue. The row carries nothing marking it as a probe, and
+        `_is_confirm_action_shaped` does not filter it, so it appears in
+        GET /agents/{agent_id}/pending-confirmations like a customer's.
+        Approving it dispatches resolve_confirmation_task ->
+        execute_approved_confirmation -> get_adapter_for_skill, hours later, in
+        another task, outside the `red_team_mode()` window that makes every
+        in-turn adapter call resolve to the offline stub. So a red-team run that
+        provoked a large refund queued a real refund for the owner to approve.
+        """
+        _, session, _, _, _ = self._run("recorded", _mock_gate_require_human())
+
+        session.add.assert_not_called()
+        session.commit.assert_not_called()
+
+    def test_live_require_human_still_queues_the_pending_confirmation(self):
+        """The anti-tautology partner. The approval queue is a real product
+        surface, and a customer turn the Actor escalates must still leave a row
+        in it. Without this, deleting the require_human write passes #90."""
+        _, session, _, _, _ = self._run("live", _mock_gate_require_human())
+
+        session.add.assert_called_once()
+        session.commit.assert_called_once()
+
+    # -- #91b: the idempotency keyspace ------------------------------------
+
+    def test_recorded_mode_reserves_in_its_own_keyspace(self):
+        """#91b. The idempotency key is MODEL-supplied and models produce
+        deterministic ones ("refund-ORD-9001"). A probe reserving in the
+        customer keyspace makes a real later call with the same key read as a
+        replay or a stranded reservation, and a probe can also be handed a real
+        completed call's stored provider result."""
+        reserve = _mock_reserve("reserved")
+        release = _mock_release()
+
+        self._run("recorded", _mock_gate_approve(), reserve=reserve, release=release)
+
+        reserved_key = reserve.call_args[0][2]
+        assert reserved_key == "recorded:idem-rec", (
+            f"the probe reserved {reserved_key!r} in the customer keyspace"
+        )
+        assert release.call_args[0][2] == reserved_key, (
+            "the release used a different key from the reservation, so the "
+            "recorded key is held until it expires"
+        )
+
+    def test_live_mode_reserves_under_the_key_the_model_supplied(self):
+        """The anti-tautology partner: a customer's key is never rewritten."""
+        reserve = _mock_reserve("reserved")
+
+        self._run("live", _mock_gate_approve(), reserve=reserve)
+
+        assert reserve.call_args[0][2] == "idem-rec"
+
+    # -- #91c: the audit rows ----------------------------------------------
+
+    def test_every_recorded_audit_row_carries_the_marker(self):
+        """#91c. An unmarked recorded row is byte-identical to a production row
+        in `tool_calls_audit`, which is the table the labelled Actor set and the
+        human grader read. Both the approve path and a gate refusal are checked,
+        because the refused column of that confusion matrix is made entirely of
+        the second kind."""
+        from app.services.transactional.tools import (  # noqa: PLC0415
+            RECORDED_NOT_EXECUTED,
+        )
+
+        approved = AsyncMock()
+        self._run("recorded", _mock_gate_approve(), audit=approved)
+        blocked = AsyncMock()
+        self._run("recorded", _mock_gate_block(), audit=blocked)
+
+        for name, audit in (("approve", approved), ("actor block", blocked)):
+            assert audit.call_count == 1, f"{name}: AUD-01 wants exactly one row"
+            error = audit.call_args.kwargs.get("error") or ""
+            assert error.startswith(RECORDED_NOT_EXECUTED), (
+                f"{name}: the recorded audit row's error is {error!r}, which a "
+                "consumer filtering on the marker cannot tell from production"
+            )
+
+    def test_live_audit_rows_stay_unmarked(self):
+        """The anti-tautology partner: marking every row would also pass above,
+        and would make the marker useless as a filter."""
+        from app.services.transactional.tools import (  # noqa: PLC0415
+            RECORDED_NOT_EXECUTED,
+        )
+
+        blocked = AsyncMock()
+        self._run("live", _mock_gate_block(), audit=blocked)
+
+        assert blocked.call_args.kwargs.get("error") == "actor_block", (
+            "a live actor_block row no longer reads exactly as it did"
+        )
+        assert RECORDED_NOT_EXECUTED not in (blocked.call_args.kwargs.get("error") or "")
+
+
+# ===========================================================================
 # ACT-02 — mutating-only gating: confirm_action (mutating=False) does NOT
 # call call_actor_gate; mutating tools DO (negative + positive assertion)
 # ===========================================================================

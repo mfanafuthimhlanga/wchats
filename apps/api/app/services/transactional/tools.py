@@ -144,6 +144,37 @@ RECORDED_NOT_EXECUTED: str = "side_effects.recorded:not_executed"
 #: tried and was stopped".
 RECORDED_DECLINED: str = "transactional.declined"
 
+#: Detail on the ToolResult step 5.5 returns, and the needle
+#: `red_team_probe._VERDICT_PATTERNS` derives its `would_have_executed` tag
+#: from. Step 5.5 is the ONE branch where every gate allowed the call and only
+#: the recorded seam stopped the money, which makes it the opposite cell of the
+#: matrix from RECORDED_DECLINED above: "would have executed" against "the
+#: envelope refused". Without a detail the two cells hand the agent the same
+#: sentence, and the probe's matcher fell through to "succeeded" for both. That
+#: happens to be the right answer for this cell, by the mechanism that gave
+#: BACKLOG 5.8 the wrong answer for identity blocks.
+#:
+#: The wording carries no evaluation frame, for the reason `_not_executed_result`
+#: below gives at length. The agent reads this text and conditions the rest of
+#: its turn on it, and a provider that accepted the request and then failed
+#: produces this same sentence in production.
+GATES_PASSED_DETAIL: str = "Every check passed and the request stopped at the provider."
+
+#: Detail on the two ToolResults recorded mode returns when the agent asked an
+#: approver instead of acting: the dispatcher's require_human arm, and
+#: confirm_action's own arm. Both carry it so both tag `awaiting_approval`, the
+#: tag live mode gives the same decision, which keeps the probe's vocabulary
+#: mode-invariant everywhere except the one branch above.
+#:
+#: confirm_action is why this is a constant rather than two literals. Its
+#: recorded text carried none of the matcher's approval vocabulary, so a probe
+#: on the recorded path tagged an agent that routed the attack to a human as
+#: `succeeded`. That is RTX-01's critical finding, raised for an action nobody
+#: performed.
+APPROVAL_NOT_QUEUED_DETAIL: str = (
+    "It requires human approval and no approval request was created."
+)
+
 
 # ---------------------------------------------------------------------------
 # The IDV gate's customer-facing texts (step 2.5), as constants.
@@ -1084,7 +1115,7 @@ async def _execute_transactional_tool(
             )
             return _not_executed_result(
                 skill,
-                "It requires human approval and no approval request was created.",
+                APPROVAL_NOT_QUEUED_DETAIL,
             )
 
         now = datetime.now(timezone.utc)
@@ -1258,7 +1289,7 @@ async def _execute_transactional_tool(
             agent_id=agent_id,
             skill=skill,
         )
-        return _not_executed_result(skill)
+        return _not_executed_result(skill, GATES_PASSED_DETAIL)
 
     # -------------------------------------------------------- 6-7. Adapter + audit
     # Delegated to the shared helper (T-22-ACT-15) — see _execute_adapter_and_audit
@@ -1483,9 +1514,12 @@ def _confirm_action_recorded(agent_id: str, validated: ConfirmActionInput) -> To
         },
     )
     log.info("confirm_action.not_queued", agent_id=agent_id, skill=validated.skill)
+    # APPROVAL_NOT_QUEUED_DETAIL leads, and the constant's own comment says what
+    # it cost when this text did not carry it: the red-team probe tagged an agent
+    # that routed its attack to a human approver as `succeeded`.
     return _not_executed_result(
         "confirm_action",
-        f"No approval request was created for the '{validated.skill}' action "
+        f"{APPROVAL_NOT_QUEUED_DETAIL} The action was '{validated.skill}' "
         f"(reference: {validated.action_reference}).",
     )
 

@@ -276,14 +276,19 @@ def _escalation_notifier(agent, conversation_id: str, side_effects: str, overrid
     the agent to escalate would otherwise page the owner about a customer who does
     not exist, and would do it nightly.
 
-    `override` HAS ONE CALLER, and the mode is why it needs one.
-    `red_team_probe._build_transactional_probe_fn` runs its victim turn on
-    side_effects="live", because recorded mode short-circuits the mutating skills
-    and the live gate verdicts are the whole red-team finding. Live mode's own
-    notifier would then page the owner about a customer who does not exist, once
-    per attack sequence that talks the agent into escalating. Every other caller
-    passes nothing and takes the mode's notifier, which is the default a
-    replacement could silently break.
+    `override` HAS ONE CALLER, `red_team_probe._build_transactional_probe_fn`,
+    and it is redundant on purpose. That probe runs on side_effects="recorded"
+    since #90, so the branch below already returns the recording lambda for it
+    and no mail can leave.
+
+    It is kept because this is the one edge that pages a real human, and because
+    of how the caller got here. The probe ran on side_effects="live" until #90,
+    on the claim that recorded mode short-circuits the mutating skills and
+    destroys the gate verdicts. That claim was false: recorded mode runs steps 1
+    to 5 and every gate returns identical text. It went unchecked for a milestone
+    and cost two BLOCK findings, so this edge does not rest on a claim about mode
+    behaviour staying true. Every other caller passes nothing and takes the mode's
+    notifier, which is the default a replacement could silently break.
 
     A conditional expression rather than two `def`s, because a nested definition
     would hide a second assembly of this edge from the seam suite.

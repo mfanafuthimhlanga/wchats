@@ -17,10 +17,12 @@ WHAT THE DOUBLES STAND IN FOR
     A few tests drive the real thing instead. `TestOneModelCall`'s
     `test_the_eleven_real_tools_reach_the_wire` and every test in `TestTheSeam`
     go through `agent_tool_definitions()`, which returns
-    `claude_agent_sdk.SdkMcpTool` objects today. That is also correct, and it is
-    the other half of the claim. The duck typing says the loop asks for nothing
-    more; these say the objects the product actually hands it satisfy that,
-    SDK-built or not. The day #49 replaces those definitions, these tests notice.
+    `app.domain.tool_def.ToolDefinition` objects since #49 and
+    `claude_agent_sdk.SdkMcpTool` before it. That is also correct, and it is the
+    other half of the claim. The duck typing says the loop asks for nothing more;
+    these say the objects the product actually hands it satisfy that. They
+    noticed nothing when #49 swapped the type, which is the point: the loop reads
+    four attributes and the replacement supplied the same four.
 
 WHAT THE SEAM TESTS DRIVE FOR REAL
     `build_agent_turn` calls `bind_tool_context` for real, because that binding
@@ -462,9 +464,10 @@ class TestTheSeam:
     def test_a_live_turn_with_no_notify_override_still_reaches_the_mail(self):
         """The default an override could silently break (ticket #49).
 
-        `notify_fn` grew a keyword so `red_team_probe` can run a victim turn on
-        side_effects="live" without paging the owner about a customer who does not
-        exist. One caller passes one. Every other caller passes nothing, and the
+        `notify_fn` grew a keyword for `red_team_probe`, which ran its victim turn
+        on side_effects="live" until #90 moved it to "recorded". The override is
+        redundant now and kept anyway: this is the one edge that pages a real
+        human. One caller passes one. Every other caller passes nothing, and the
         seam has to go on picking the mode's own notifier for them, so the absence
         of the keyword is asserted here rather than assumed.
         """
