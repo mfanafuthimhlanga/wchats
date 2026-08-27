@@ -99,10 +99,16 @@ class Settings(BaseSettings):
     # import over a credential nothing on the customer path uses.
     #
     # Empty rather than deleted, because `resolve_credentials` still has an
-    # Anthropic branch for the nine `messages` call sites #76 moves. Those pass
-    # this value straight to the SDK, which refuses an empty key at
-    # construction, so such a call fails where it is made instead of billing a
-    # provider nobody chose. Delete the field when #76 lands.
+    # Anthropic branch for the nine `messages` call sites #76 moves.
+    #
+    # WHERE AN EMPTY KEY ACTUALLY FAILS, measured against anthropic 0.101.0 on
+    # 2026-08-27 rather than assumed. `Anthropic(api_key="")` constructs, and so
+    # does `api_key=None`. The refusal comes at the CALL, as
+    # `TypeError: Could not resolve authentication method`, raised while the SDK
+    # resolves auth and therefore before any request leaves this machine. So a
+    # revoked credential fails closed and silently costs nothing, but it fails
+    # at the call site rather than where the client is built. Delete the field
+    # when #76 lands.
     ANTHROPIC_API_KEY: str = ""
     # Decision #34 routes every direct-API purpose to OpenAI gpt-5.6-luna. The
     # default is empty rather than absent, and after #47 slice B it still is:
