@@ -124,17 +124,39 @@ Fixed on the branch:
 - The shadow-copy test covered four of the six names the branch moved.
 - Five stale names and claims.
 
-Filed, not fixed:
+Filed as #90 and #91, then fixed here, and the fix is smaller than the issues said because one
+of my own claims was wrong.
 
-- **#90.** The victim turn runs live, so an Actor gate `require_human` writes an approvable,
-  unmarked `pending_confirmations` row. Approving it makes a real provider call.
-- **#91.** The same turn writes retrieval metrics, un-namespaced idempotency reservations,
-  unmarked audit rows and ledger rows into the tenant's real tables.
+Both issues argued AGAINST flipping the probe to recorded mode, on the strength of a sentence in
+`red_team_probe.py`: *"recorded mode short-circuits the six mutating skills, and the live gate
+verdicts are the entire finding."* False. `_execute_transactional_tool`'s step list says
+**"Steps 1-5 all ran; only the money did not move"**, and every gate branch under `recorded`
+returns a `ToolResult` with identical text.
 
-Both trace to one thing, logged as FM-009. This ticket's headline finding was that the Attacker
+So recorded mode closes both issues at once: the `require_human` row is not queued, retrieval
+metrics are recorded rather than written, idempotency keys get the `recorded:` namespace, and
+every audit row carries `RECORDED_NOT_EXECUTED`. The only real work was making the approve path
+legible, since `verdict_tag` reported `succeeded` for it by falling off the end of the needle
+list. `GATES_PASSED_DETAIL` names that case and the probe derives a `would_have_executed` tag
+from the constant rather than copying its words.
+
+Two defects the move itself created, both closed: `confirm_action` under recorded mode tagged an
+escalation to a human approver as `succeeded`, and `bind_tool_context` never resets
+`_side_effects_var`, which broke 26 tests in another module by file order once the probe bound
+something other than the default.
+
+#91 stays open for its ledger-attribution clause. The victim turn must keep the `agent_turn`
+route, because `red_team_probe` names no reasoning effort while `agent_turn` names `none`, and
+sending no field is a different request. What is missing is the `job_id`, and that is a signature
+change through the runner template.
+
+**Two failure modes, both mine.** FM-009: this ticket's headline finding was that the Attacker
 and Orchestrator were DEAD on the credential retired the day before, and #49 revives them. The
-same revocation had also stopped the victim turn reaching the dispatcher. The revival was
-reasoned about in the direction that was good news and not in the direction that was not.
+same revocation had also stopped the victim turn reaching the dispatcher. The revival was reasoned
+about in the direction that was good news and not the other. FM-001 recurrence: I read the false
+sentence, repeated it into two issues and three agent briefs, and never ran it. It sat in a list
+headed "each is load-bearing" beside three true claims, and two adversarial reviewers briefed to
+check claims against evidence read past it too.
 
 ## What is not proven
 
