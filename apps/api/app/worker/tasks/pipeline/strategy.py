@@ -76,8 +76,7 @@ def synthesize_retrieval_strategy(self, job: IngestionJob) -> IngestionJob:
     1. Reads agent_id and job_id off the job embed_and_migrate returned.
     2. Checks idempotency — skips if strategy already set and resynthesis not flagged.
     3. Fetches corpus signals from the tenant DB via psycopg2.
-    4. Calls the Strategist's direct-API turn (60s timeout). It never ran on the
-       Agent SDK; `strategy_service` has always called the provider client itself.
+    4. Calls the Strategist's direct-API turn, 60s timeout. Never the Agent SDK.
     5. Validates the output via RetrievalStrategy; falls back to defaults on failure.
     6. Writes agent.retrieval_strategy and clears strategy_resynthesis_flagged.
     7. Emits 'strategy.synthesized' SSE event.

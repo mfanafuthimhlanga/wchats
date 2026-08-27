@@ -1619,9 +1619,7 @@ def build_eval_run_config(
     `_fetch_corpus_stats_sync` for the corpus figure. Both are imported inside
     the function. deployment_service pulled in the Claude Agent SDK at module
     scope until #49, and eval_service sits on the FastAPI route import chain via
-    api/v1/evals.py. The SDK is gone, so what the deferral still buys is
-    deployment_service's own load, which is smaller. Kept because the route
-    chain has not changed and neither has the reason to keep it short.
+    api/v1/evals.py, so the deferral now buys deployment_service's own load alone.
 
     MISSING DATA IS NEVER PASSING DATA. Each dimension is collected
     independently and a dimension that could not be READ is recorded as None
