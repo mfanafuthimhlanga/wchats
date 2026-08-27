@@ -1,0 +1,269 @@
+"""The provider-shaped half of a bounded tool loop (ticket #49, ADR 0008).
+
+WHY THIS MODULE EXISTS
+    Three loops in this codebase send a system prompt and a tool list to a
+    model, read tool calls back, run them and feed the results in again. One is
+    the customer turn (`app.services.agent_loop`). The other two are the red-team
+    Attacker and the deployment Orchestrator, which ran on `claude_agent_sdk`
+    until #49 and now do not.
+
+    The parts they share are the wire: how a tool list is spelled, how a model's
+    argument string is parsed, how a handler that raises becomes a result the
+    model can read, how the assistant's own turn is replayed. Those live here and
+    have exactly one implementation, because two implementations of `_dispatch`
+    is how a probe ends up measuring something the customer path would not do.
+
+    What is NOT shared stays in `agent_loop`: the SSE emit, the escalation
+    ledger, the retrieval capture, the spend ceiling read off `model_calls`. The
+    Attacker has no customer waiting on a stream and no tenant DB row to write,
+    so a loop general enough for both would carry branches for cases it never
+    serves.
+
+WHAT THE OWNED LOOP DOES NOT NEED
+    The SDK options both callers built are gone, and with them four controls
+    that only existed because the SDK's default was dangerous. `tools=[]` removed
+    the CLI's built-in Bash/Read/Edit set from a red-team agent running on the
+    worker's filesystem; `strict_mcp_config=True` stopped a project `.mcp.json`
+    server being merged in; `allowed_tools` named the auto-approved subset and
+    `permission_mode="dontAsk"` denied the rest without blocking on a prompt no
+    worker would answer.
+
+    `run_tool_loop` has no built-ins to remove, no config file to merge and no
+    permission model to set. The `tools` argument is the entire set of tools that
+    exist for that loop, and `_dispatch` refuses a name that is not in it. The
+    allowlist and the tool list became the same object.
+
+Rung: `app.services`. Imports `app.domain` and the standard library.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from typing import Any
+
+import structlog
+
+from app.domain.tool_def import ToolDefinition
+from app.domain.tool_result import wire_text
+
+log = structlog.get_logger(__name__)
+
+
+def tools_wire(tools: Sequence[ToolDefinition]) -> list[dict]:
+    """The tool list as the wire carries it. Built once and sent on every call."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.input_schema,
+            },
+        }
+        for tool in tools
+    ]
+
+
+def assistant_turn(message, tool_calls) -> dict:
+    """Replay the model's own turn, built by hand so the wire shape is ours.
+
+    A `model_dump` of the response object would carry whatever fields the SDK
+    version happens to hold, and the next request would send them back.
+    """
+    return {
+        "role": "assistant",
+        "content": message.content or None,
+        "tool_calls": [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {
+                    "name": call.function.name,
+                    "arguments": call.function.arguments,
+                },
+            }
+            for call in tool_calls
+        ],
+    }
+
+
+def error_wire(text: str) -> dict:
+    """The wire shape a failed tool call returns. `wire_text` reads it like any other."""
+    return {"content": [{"type": "text", "text": text}], "is_error": True}
+
+
+def tool_arguments(name: str, raw) -> tuple[dict, dict | None]:
+    """The arguments the model sent, and the refusal to hand back when they do not read.
+
+    A model writes this string, so a malformed one is ordinary traffic rather
+    than a fault. It goes back as an error tool result the model can correct on
+    its next call, and the turn runs on.
+    """
+    try:
+        args = json.loads(raw or "{}")
+    except ValueError:
+        log.warning("tool_loop.tool_arguments_unparsed", tool_name=name)
+        return {}, error_wire(f"Tool {name} received arguments that are not valid JSON.")
+    if not isinstance(args, dict):
+        log.warning("tool_loop.tool_arguments_not_an_object", tool_name=name)
+        return {}, error_wire(f"Tool {name} received arguments that are not a JSON object.")
+    return args, None
+
+
+async def dispatch(tools: Sequence[ToolDefinition], name: str, args: dict) -> dict:
+    """Run the named tool's handler, or say why nothing ran.
+
+    An unknown name, a raising handler and a handler that returns something other
+    than a wire dict all come back as an error wire dict. The model reads the text
+    and the turn continues. Raising here would end a customer's turn over one
+    tool, and every reader downstream (`wire_text`, `_log_entry`) calls `.get` on
+    what this returns.
+    """
+    tool = next((candidate for candidate in tools if candidate.name == name), None)
+    if tool is None:
+        log.warning("tool_loop.unknown_tool", tool_name=name)
+        return error_wire(f"Tool {name} is not one this agent has.")
+    try:
+        wire = await tool.handler(args)
+    except Exception as exc:
+        log.warning("tool_loop.tool_failed", tool_name=name, error_type=type(exc).__name__)
+        return error_wire(f"Tool {name} failed with {type(exc).__name__}.")
+    if isinstance(wire, dict):
+        return wire
+    log.warning(
+        "tool_loop.tool_result_not_a_dict", tool_name=name, result_type=type(wire).__name__
+    )
+    return error_wire(f"Tool {name} returned a {type(wire).__name__} rather than a result.")
+
+
+def first_choice(completion):
+    """The choice the loop reads, or None when the reply carried none.
+
+    A completion with an empty `choices` list is a well-formed response that
+    produced no content. `completion.choices[0]` raised IndexError straight out
+    of the loop for it, the task's handler caught that and the customer read a
+    provider hiccup as `agent.failed`. A turn that produced nothing ends with the
+    text it already has and a stop_reason naming the absence.
+    """
+    choices = getattr(completion, "choices", None) or []
+    return choices[0] if choices else None
+
+
+@dataclass
+class ToolLoopResult:
+    """What one `run_tool_loop` sequence produced.
+
+    Attributes:
+        response_text: every text part the model produced, joined by newline.
+        tool_names:    the tools it called, in order, with repeats. The Attacker
+                       counts these; a name appearing here means the model asked
+                       for it, not that the handler succeeded.
+        num_turns:     model calls made.
+        stop_reason:   the provider's `finish_reason` when the model stopped on
+                       its own, `"stop_after"` when a named tool ended the loop,
+                       `"max_turns"` when the ceiling did, and `"no_choices"`
+                       when a reply carried nothing to read.
+    """
+
+    response_text: str = ""
+    tool_names: list[str] = field(default_factory=list)
+    num_turns: int = 0
+    stop_reason: str | None = None
+
+
+async def run_tool_loop(
+    opening_message: str,
+    *,
+    client,
+    model: str,
+    system_prompt: str,
+    tools: Sequence[ToolDefinition],
+    max_turns: int,
+    on_tool_use: Callable[[str], None] | None = None,
+    stop_after: frozenset[str] = frozenset(),
+    reasoning_effort: str | None = None,
+) -> ToolLoopResult:
+    """Run one bounded conversation to its end.
+
+    Args:
+        opening_message:  what the loop opens with, as the first user message.
+        client:           an async OpenAI client, built through
+                          `app.core.model_client.make_async_client` so the
+                          `model_calls` hook is attached. The caller owns it and
+                          closes it, because the Attacker runs several sequences
+                          on one client.
+        model:            the model id, from the caller's `PURPOSE_ROUTES` row.
+        system_prompt:    the persona.
+        tools:            every tool this loop has. There is no separate
+                          allowlist; see the module docstring.
+        max_turns:        ceiling on model calls.
+        on_tool_use:      called with each tool name AS the model asks for it,
+                          before the handler runs. The Attacker's observation
+                          ledger reads this rather than the returned list,
+                          because one `wait_for` budget covers several sequences
+                          and a timeout must keep what was already observed.
+        stop_after:       tool names that end the loop once the model calls one.
+                          The Orchestrator's `submit_report` is a side-effect
+                          tool whose handler has already written the report, so
+                          sending it a result and letting it talk on spends money
+                          on a turn nobody reads.
+        reasoning_effort: sent only when the caller's route names one. An
+                          explicit null is a different request from no field.
+
+    Returns:
+        A `ToolLoopResult`. This function does not close `client`, and it does
+        not catch exceptions from the provider call: the callers wrap it in
+        their own timeout and their own `except`, and each reports a partial run
+        differently.
+    """
+    result = ToolLoopResult()
+    messages: list[dict] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": opening_message},
+    ]
+    wire = tools_wire(tools)
+    for _ in range(max_turns):
+        kwargs: dict[str, Any] = {"model": model, "messages": messages, "tools": wire}
+        if reasoning_effort is not None:
+            kwargs["reasoning_effort"] = reasoning_effort
+        completion = await client.chat.completions.create(**kwargs)
+        result.num_turns += 1
+        choice = first_choice(completion)
+        if choice is None:
+            result.stop_reason = "no_choices"
+            return result
+        if choice.message.content:
+            result.response_text = "\n".join(
+                part for part in (result.response_text, choice.message.content) if part
+            )
+        tool_calls = getattr(choice.message, "tool_calls", None)
+        if not tool_calls:
+            result.stop_reason = choice.finish_reason
+            return result
+        messages.append(assistant_turn(choice.message, tool_calls))
+        for call in tool_calls:
+            name = call.function.name
+            result.tool_names.append(name)
+            if on_tool_use is not None:
+                on_tool_use(name)
+            args, refusal = tool_arguments(name, call.function.arguments)
+            payload = refusal if refusal is not None else await dispatch(tools, name, args)
+            # `wire_text`, not `json.dumps`, and the Attacker is why. `send_probe`
+            # returns the deployed agent's answer as its tool result, and the
+            # Attacker's next move is reasoning about that answer. Handing it the
+            # MCP envelope instead of the text puts a layer of JSON between the
+            # attacker and the thing it is attacking. The customer path reads the
+            # same rule from the same function.
+            messages.append(
+                {"role": "tool", "tool_call_id": call.id, "content": wire_text(payload)}
+            )
+            # After the handler ran, never before. The report is written by
+            # `submit_report` itself, so stopping first would leave the container
+            # empty and the loop reporting a report it never took.
+            if name in stop_after:
+                result.stop_reason = "stop_after"
+                return result
+    result.stop_reason = "max_turns"
+    return result
