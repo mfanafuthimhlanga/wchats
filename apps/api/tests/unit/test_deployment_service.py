@@ -2,7 +2,7 @@
 
 Tests:
     TestRunOrchestrator
-        test_run_orchestrator_populates_result_container  — DEP-01, DEP-02
+        the orchestrator's turn, driven against a scripted model client
 
     TestDeploymentReport
         test_deployment_report_model_construction         — DEP-02
@@ -17,9 +17,10 @@ Tests:
         test_fetch_eval_summary_sync_no_runs              — empty / no-runs branch
 
 Mock strategy:
-    - asyncio.run patched at app.services.deployment_service.asyncio.run
+    - the orchestrator's client is a scripted stand-in, injected by patching
+      app.services.deployment_service.make_async_client. The loop itself runs.
     - psycopg2.connect patched at app.services.deployment_service.psycopg2.connect
-    - No live Anthropic, Agent SDK, or DB calls in any test
+    - No live provider or DB calls in any test
 """
 
 import base64
@@ -49,6 +50,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import settings
+from app.core.model_client import LedgerContext, route_for
 from app.services.deployment_service import (
     _DEPLOYMENT_SYSTEM_PROMPT,
     COVERAGE_SOURCE_CURRENT_BUILD,
@@ -62,9 +64,11 @@ from app.services.deployment_service import (
     EVAL_SIGNAL_RUN_FAILED,
     EVAL_SIGNAL_UNAVAILABLE,
     EVAL_SUMMARY_UNAVAILABLE_SIGNAL,
+    ORCHESTRATOR_PURPOSE,
     RED_TEAM_SIGNAL_MEASURED,
     RED_TEAM_SIGNAL_NO_RUNS,
     RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL,
+    SUBMIT_REPORT_TOOL_NAME,
     DeploymentReport,
     DeploymentWarning,
     _compute_envelope_hash_sync,
@@ -327,42 +331,293 @@ def test_fetch_blast_radius_sync():
 
 
 # ---------------------------------------------------------------------------
+# Helper: a scripted model client, in the shape tool_loop.run_tool_loop reads
+# ---------------------------------------------------------------------------
+#
+# The SDK harness took its client from inside itself, so a test could only patch
+# the whole loop away. BACKLOG 3.10 caught that, and it is why
+# `_run_orchestrator_loop` spent four phases reporting "was never awaited".
+# `run_tool_loop` takes the client as an argument, so the loop runs for real here
+# and a scripted reply stands in for the model.
+
+
+class _FakeFunction:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
+
+
+class _FakeToolCall:
+    def __init__(self, name, arguments, call_id="call_1"):
+        self.id = call_id
+        self.function = _FakeFunction(name, arguments)
+
+
+class _FakeMessage:
+    def __init__(self, content=None, tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+class _FakeChoice:
+    def __init__(self, message, finish_reason="stop"):
+        self.message = message
+        self.finish_reason = finish_reason
+
+
+class _FakeCompletion:
+    def __init__(self, choice):
+        self.choices = [choice]
+
+
+class _FakeCompletions:
+    def __init__(self, replies, requests):
+        self._replies = list(replies)
+        self._requests = requests
+
+    async def create(self, **kwargs):
+        self._requests.append(kwargs)
+        return _FakeCompletion(self._replies.pop(0))
+
+
+class _FakeChat:
+    def __init__(self, completions):
+        self.completions = completions
+
+
+class _FakeAsyncClient:
+    """One scripted reply per model call, popped in order.
+
+    `requests` keeps every request body the loop built, which is where the tool
+    list, the model and the system prompt are read back. `closed` is how the
+    caller's ownership of the client is observed: `run_tool_loop` closes nothing.
+    """
+
+    def __init__(self, *replies):
+        self.requests = []
+        self.chat = _FakeChat(_FakeCompletions(replies, self.requests))
+        self.closed = False
+
+    async def close(self):
+        self.closed = True
+
+
+def _reply_calling(name, arguments, call_id="call_1"):
+    """An assistant turn that calls one tool."""
+    return _FakeChoice(
+        _FakeMessage(tool_calls=[_FakeToolCall(name, json.dumps(arguments), call_id)]),
+        finish_reason="tool_calls",
+    )
+
+
+def _reply_saying(content):
+    """An assistant turn that calls nothing and stops."""
+    return _FakeChoice(_FakeMessage(content=content))
+
+
+_A_REPORT = {"recommendation": "ship", "summary": "All good.", "warnings": []}
+
+
+def _a_ledger(recorder=None):
+    """The three ids each model_calls row carries, and where the row goes."""
+    return LedgerContext(
+        tenant_id=str(uuid.uuid4()),
+        agent_id=str(uuid.uuid4()),
+        job_id=str(uuid.uuid4()),
+        recorder=recorder if recorder is not None else (lambda call: None),
+    )
+
+
+def _drive(client, ledger=None, container=None):
+    """Run the whole orchestrator against `client` and return the container."""
+    container = {} if container is None else container
+    with patch(
+        "app.services.deployment_service.make_async_client", return_value=client
+    ) as factory:
+        run_orchestrator(
+            json.dumps({"eval_summary": {}, "red_team_summary": {}}),
+            container,
+            ledger=ledger if ledger is not None else _a_ledger(),
+        )
+    return container, factory
+
+
+# ---------------------------------------------------------------------------
 # TestRunOrchestrator
 # ---------------------------------------------------------------------------
 
 
 class TestRunOrchestrator:
-    """Tests for the Agent SDK Sonnet orchestrator (run_orchestrator)."""
+    """The orchestrator turn, run end to end against a scripted client.
+
+    WHAT THESE OBSERVE AND WHAT THEY DO NOT. A scripted client is not a model,
+    so nothing here observes the prompt's blocking conditions being obeyed;
+    deployment_service.py's own comment above `_TOOL_SUBMIT_REPORT` says why the
+    platform never depends on that. What they do observe is the wiring BACKLOG
+    1.32 found broken. The tool the prompt names is the tool the model is given,
+    and the stop, the billing ids and the client's close are observed with it.
+    """
 
     def test_run_orchestrator_populates_result_container(self):
-        """Patch asyncio.run at module boundary; verify result_container["report"] is set.
+        """DEP-01 the sync bridge, DEP-02 the report the tool call carried."""
+        client = _FakeAsyncClient(_reply_calling(SUBMIT_REPORT_TOOL_NAME, _A_REPORT))
 
-        DEP-01: run_orchestrator bridges the Celery sync world to async Agent SDK.
-        DEP-02: the report dict contains 'recommendation' from the agent's tool call.
+        container, _ = _drive(client)
+
+        assert container["report"]["recommendation"] == "ship"
+        assert container["report"]["summary"] == "All good."
+        assert container["report"]["warnings"] == []
+
+    def test_the_tool_the_prompt_names_is_the_tool_the_model_is_given(self):
+        """BACKLOG 1.32, pinned as a value on the wire rather than as wiring.
+
+        The defect was a tool DESCRIBED in the prompt and REGISTERED nowhere, so
+        every checklist failed with "Orchestrator did not produce a report". Both
+        halves are asserted here against one name.
         """
-        result_container = {}
+        client = _FakeAsyncClient(_reply_calling(SUBMIT_REPORT_TOOL_NAME, _A_REPORT))
 
-        def _set_report_side_effect(*args, **kwargs):
-            """Simulate the orchestrator setting the report on result_container."""
-            result_container["report"] = {
-                "recommendation": "ship",
-                "summary": "All good.",
-                "warnings": [],
-            }
+        _drive(client)
 
-        with patch(
-            "app.services.deployment_service.asyncio.run",
-            side_effect=_set_report_side_effect,
-        ) as mock_asyncio_run:
-            run_orchestrator(
-                json.dumps({"eval_summary": {}, "red_team_summary": {}}),
-                result_container,
+        assert SUBMIT_REPORT_TOOL_NAME in _DEPLOYMENT_SYSTEM_PROMPT, (
+            "the prompt no longer names the tool it tells the model to call"
+        )
+        sent = [t["function"]["name"] for t in client.requests[0]["tools"]]
+        assert sent == [SUBMIT_REPORT_TOOL_NAME], (
+            f"the model was given {sent}, so the tool the prompt names is either "
+            "missing or joined by one nobody authorised"
+        )
+
+    def test_an_unregistered_tool_call_leaves_the_container_empty(self):
+        """The tool list is the allowlist. `dispatch` refuses anything else.
+
+        The SDK needed `allowed_tools` and `permission_mode` for this. Here the
+        refusal comes back as an error tool result, the loop runs on, and no
+        report is written by a name nobody registered.
+        """
+        client = _FakeAsyncClient(
+            _reply_calling("submit_report_v2", _A_REPORT),
+            _reply_saying("I could not submit."),
+        )
+
+        container, _ = _drive(client)
+
+        assert container == {}
+
+    def test_the_loop_stops_on_the_report_and_pays_for_one_call(self):
+        """`stop_after` fires AFTER the handler, so the report is present.
+
+        The second reply is scripted and never consumed: a turn spent reading the
+        handler's ack is a turn nobody reads and money nobody gets back.
+        """
+        client = _FakeAsyncClient(
+            _reply_calling(SUBMIT_REPORT_TOOL_NAME, _A_REPORT),
+            _reply_saying("a second turn nobody asked for"),
+        )
+
+        container, _ = _drive(client)
+
+        assert container["report"] == _A_REPORT
+        assert len(client.requests) == 1, (
+            f"{len(client.requests)} model calls for one report; the loop did not "
+            "stop on submit_report"
+        )
+
+    def test_the_first_report_wins(self):
+        """Two calls in one turn. The container keeps the first, and stops there."""
+        client = _FakeAsyncClient(
+            _FakeChoice(
+                _FakeMessage(
+                    tool_calls=[
+                        _FakeToolCall(
+                            SUBMIT_REPORT_TOOL_NAME, json.dumps(_A_REPORT), "call_1"
+                        ),
+                        _FakeToolCall(
+                            SUBMIT_REPORT_TOOL_NAME,
+                            json.dumps({**_A_REPORT, "recommendation": "block"}),
+                            "call_2",
+                        ),
+                    ]
+                ),
+                finish_reason="tool_calls",
             )
+        )
 
-        assert mock_asyncio_run.called, "asyncio.run should have been called"
-        assert result_container["report"]["recommendation"] == "ship"
-        assert result_container["report"]["summary"] == "All good."
-        assert result_container["report"]["warnings"] == []
+        container, _ = _drive(client)
+
+        assert container["report"]["recommendation"] == "ship"
+
+    def test_a_turn_that_calls_nothing_leaves_the_container_empty(self):
+        """The caller reads the absence and fails the run. It must stay an absence."""
+        client = _FakeAsyncClient(_reply_saying("I decline to assess this."))
+
+        container, _ = _drive(client)
+
+        assert container == {}
+
+    def test_the_client_is_closed_whether_or_not_a_report_arrives(self):
+        """`run_tool_loop` closes no client, so this loop must, on both paths."""
+        reported = _FakeAsyncClient(_reply_calling(SUBMIT_REPORT_TOOL_NAME, _A_REPORT))
+        silent = _FakeAsyncClient(_reply_saying("nothing to say"))
+
+        _drive(reported)
+        _drive(silent)
+
+        assert reported.closed, "the client of a successful turn was left open"
+        assert silent.closed, "the client of a turn that produced no report was left open"
+
+    def test_every_model_call_is_billed_to_the_agents_own_tenant(self):
+        """Ticket #47's rule at this call site: no client without a ledger row.
+
+        The purpose is asserted as a value because `route_for` raises on a
+        purpose the table does not route, and the rollup groups on this string.
+        """
+        ledger = _a_ledger()
+        client = _FakeAsyncClient(_reply_calling(SUBMIT_REPORT_TOOL_NAME, _A_REPORT))
+
+        _, factory = _drive(client, ledger=ledger)
+
+        purpose = factory.call_args[0][0]
+        kwargs = factory.call_args[1]
+        assert purpose == ORCHESTRATOR_PURPOSE == "deployment_orchestrator"
+        assert kwargs["tenant_id"] == ledger.tenant_id
+        assert kwargs["agent_id"] == ledger.agent_id
+        assert kwargs["job_id"] == ledger.job_id
+        assert kwargs["recorder"] is ledger.recorder
+
+    def test_the_model_and_the_persona_come_from_one_place_each(self):
+        """The model is the routing table's, the prompt is the module's.
+
+        `SONNET_MODEL = "claude-sonnet-4-6"` was this module's own until #49, and
+        the credential it needed was revoked on 2026-08-26. A model named here
+        again would be a second answer to a question the table already answers.
+        """
+        client = _FakeAsyncClient(_reply_calling(SUBMIT_REPORT_TOOL_NAME, _A_REPORT))
+
+        _drive(client)
+
+        body = client.requests[0]
+        assert body["model"] == route_for(ORCHESTRATOR_PURPOSE).model
+        assert body["messages"][0] == {
+            "role": "system",
+            "content": _DEPLOYMENT_SYSTEM_PROMPT,
+        }
+
+    def test_the_bridge_swallows_a_failing_turn(self):
+        """BACKLOG 1.33. The Celery task has its own handler and its own log line.
+
+        A raise out of this bridge would reach a caller that already treats an
+        empty container as the failure, so the failure would be reported twice
+        and the second report would be the less specific one.
+        """
+        container = {}
+        with patch(
+            "app.services.deployment_service.make_async_client",
+            side_effect=RuntimeError("no credential"),
+        ):
+            run_orchestrator(json.dumps({}), container, ledger=_a_ledger())
+
+        assert container == {}
 
 
 # ---------------------------------------------------------------------------
@@ -1406,13 +1661,13 @@ class TestAgentInvokedGate:
         downgrades what this test is cited for).
 
         It asserts two substrings are present in a module-level constant.
-        Nothing in this repo executes `run_orchestrator` — BACKLOG 3.10 records
-        `_run_orchestrator_loop` reporting "was never awaited" — so no test
-        anywhere observes the model obeying any prose blocking condition, and
-        this one cannot support a claim that the narration is prevented from
-        contradicting the verdict. deployment_service.py's own comment makes
-        the argument: a gate that depends on an LLM correctly reading a state
-        field fails open the first time the model is confident and wrong.
+        TestRunOrchestrator drives the real loop since #49, but it drives it
+        against a scripted client, so no test anywhere observes the MODEL obeying
+        any prose blocking condition, and this one cannot support a claim that
+        the narration is prevented from contradicting the verdict.
+        deployment_service.py's own comment makes the argument: a gate that
+        depends on an LLM correctly reading a state field fails open the first
+        time the model is confident and wrong.
 
         What actually constrains the narration is the SUPPRESSION — _eval_summary
         puts no pass_rates on the payload outside EVAL_SIGNAL_MEASURED, so the

@@ -33,6 +33,30 @@ WHAT THE OWNED LOOP DOES NOT NEED
     exist for that loop, and `_dispatch` refuses a name that is not in it. The
     allowlist and the tool list became the same object.
 
+WHAT THE CALLER PASSES `run_tool_loop`
+    `client` is an async OpenAI client built through
+    `app.core.model_client.make_async_client`, so the `model_calls` hook is
+    attached and cannot be bypassed. The CALLER owns it and closes it, because
+    the Attacker runs several sequences on one client.
+
+    `model` is the id from the caller's own `PURPOSE_ROUTES` row, and
+    `reasoning_effort` travels only when that route names one. An explicit null
+    is a different request from no field at all.
+
+    `tools` is every tool the loop has. There is no separate allowlist.
+
+    `on_tool_use` fires with each tool name AS the model asks for it, before the
+    handler runs. The Attacker's observation ledger reads this rather than the
+    returned `tool_names`, because one `wait_for` budget covers several attack
+    sequences, and a timeout has to keep what was already observed.
+
+    `stop_after` names tools that end the loop once one of them has RUN. It
+    exists for the Orchestrator's `submit_report`, a side-effect tool whose
+    handler writes the report into the caller's container. Sending that handler's
+    result back and letting the model talk on spends money on a turn nobody
+    reads. `_run_one_call` decides the stop, and its docstring says why the
+    handler running is part of the claim.
+
 Rung: `app.services`. Imports `app.domain` and the standard library.
 """
 
@@ -185,85 +209,97 @@ async def run_tool_loop(
     stop_after: frozenset[str] = frozenset(),
     reasoning_effort: str | None = None,
 ) -> ToolLoopResult:
-    """Run one bounded conversation to its end.
-
-    Args:
-        opening_message:  what the loop opens with, as the first user message.
-        client:           an async OpenAI client, built through
-                          `app.core.model_client.make_async_client` so the
-                          `model_calls` hook is attached. The caller owns it and
-                          closes it, because the Attacker runs several sequences
-                          on one client.
-        model:            the model id, from the caller's `PURPOSE_ROUTES` row.
-        system_prompt:    the persona.
-        tools:            every tool this loop has. There is no separate
-                          allowlist; see the module docstring.
-        max_turns:        ceiling on model calls.
-        on_tool_use:      called with each tool name AS the model asks for it,
-                          before the handler runs. The Attacker's observation
-                          ledger reads this rather than the returned list,
-                          because one `wait_for` budget covers several sequences
-                          and a timeout must keep what was already observed.
-        stop_after:       tool names that end the loop once the model calls one.
-                          The Orchestrator's `submit_report` is a side-effect
-                          tool whose handler has already written the report, so
-                          sending it a result and letting it talk on spends money
-                          on a turn nobody reads.
-        reasoning_effort: sent only when the caller's route names one. An
-                          explicit null is a different request from no field.
+    """Run one bounded conversation to its end. See WHAT THE CALLER PASSES above.
 
     Returns:
-        A `ToolLoopResult`. This function does not close `client`, and it does
-        not catch exceptions from the provider call: the callers wrap it in
-        their own timeout and their own `except`, and each reports a partial run
-        differently.
+        A `ToolLoopResult`. This function closes no client and catches nothing
+        from the provider call. Each caller wraps it in its own timeout and its
+        own `except`, and each reports a partial run differently.
     """
     result = ToolLoopResult()
     messages: list[dict] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": opening_message},
     ]
-    wire = tools_wire(tools)
+    schemas = tools_wire(tools)
     for _ in range(max_turns):
-        kwargs: dict[str, Any] = {"model": model, "messages": messages, "tools": wire}
-        if reasoning_effort is not None:
-            kwargs["reasoning_effort"] = reasoning_effort
-        completion = await client.chat.completions.create(**kwargs)
+        completion = await client.chat.completions.create(
+            **_request_kwargs(model, messages, schemas, reasoning_effort)
+        )
         result.num_turns += 1
         choice = first_choice(completion)
         if choice is None:
             result.stop_reason = "no_choices"
             return result
-        if choice.message.content:
-            result.response_text = "\n".join(
-                part for part in (result.response_text, choice.message.content) if part
-            )
+        _collect_text(result, choice.message.content)
         tool_calls = getattr(choice.message, "tool_calls", None)
         if not tool_calls:
             result.stop_reason = choice.finish_reason
             return result
         messages.append(assistant_turn(choice.message, tool_calls))
         for call in tool_calls:
-            name = call.function.name
-            result.tool_names.append(name)
-            if on_tool_use is not None:
-                on_tool_use(name)
-            args, refusal = tool_arguments(name, call.function.arguments)
-            payload = refusal if refusal is not None else await dispatch(tools, name, args)
-            # `wire_text`, not `json.dumps`, and the Attacker is why. `send_probe`
-            # returns the deployed agent's answer as its tool result, and the
-            # Attacker's next move is reasoning about that answer. Handing it the
-            # MCP envelope instead of the text puts a layer of JSON between the
-            # attacker and the thing it is attacking. The customer path reads the
-            # same rule from the same function.
-            messages.append(
-                {"role": "tool", "tool_call_id": call.id, "content": wire_text(payload)}
-            )
-            # After the handler ran, never before. The report is written by
-            # `submit_report` itself, so stopping first would leave the container
-            # empty and the loop reporting a report it never took.
-            if name in stop_after:
+            if await _run_one_call(
+                call,
+                messages=messages,
+                result=result,
+                tools=tools,
+                on_tool_use=on_tool_use,
+                stop_after=stop_after,
+            ):
                 result.stop_reason = "stop_after"
                 return result
     result.stop_reason = "max_turns"
     return result
+
+
+def _request_kwargs(
+    model: str, messages: list, schemas: list, reasoning_effort: str | None
+) -> dict[str, Any]:
+    """One request body. The effort field is absent when the caller names none."""
+    kwargs: dict[str, Any] = {"model": model, "messages": messages, "tools": schemas}
+    if reasoning_effort is not None:
+        kwargs["reasoning_effort"] = reasoning_effort
+    return kwargs
+
+
+def _collect_text(result: ToolLoopResult, content) -> None:
+    """Join this reply's text onto what the loop has already collected."""
+    if content:
+        parts = (result.response_text, content)
+        result.response_text = "\n".join(part for part in parts if part)
+
+
+async def _run_one_call(
+    call,
+    *,
+    messages: list,
+    result: ToolLoopResult,
+    tools: Sequence[ToolDefinition],
+    on_tool_use: Callable[[str], None] | None,
+    stop_after: frozenset[str],
+) -> bool:
+    """Run one tool call, append its result message, and say whether to stop.
+
+    THE STOP IS A CLAIM THAT THE HANDLER RAN, which is why it is decided here
+    rather than on the name alone. `stop_after` exists for the Orchestrator's
+    `submit_report`, and that handler is what writes the report into the
+    caller's container. A model that calls a name no tool carries, or writes
+    arguments that are not a JSON object, produced no report: stopping on either
+    would hand the caller an empty container and a `stop_reason` saying the
+    report arrived. Both cases are ordinary traffic rather than faults, so the
+    loop runs on and lets the model correct itself.
+    """
+    name = call.function.name
+    result.tool_names.append(name)
+    if on_tool_use is not None:
+        on_tool_use(name)
+    args, refusal = tool_arguments(name, call.function.arguments)
+    ran = refusal is None and any(candidate.name == name for candidate in tools)
+    payload = refusal if refusal is not None else await dispatch(tools, name, args)
+    # `wire_text`, not `json.dumps`, and the Attacker is why. `send_probe`
+    # returns the deployed agent's answer as its tool result, and the Attacker's
+    # next move is reasoning about that answer. Handing it the MCP envelope
+    # instead of the text puts a layer of JSON between the attacker and the thing
+    # it is attacking. The customer path reads the same rule from the same function.
+    messages.append({"role": "tool", "tool_call_id": call.id, "content": wire_text(payload)})
+    return ran and name in stop_after
