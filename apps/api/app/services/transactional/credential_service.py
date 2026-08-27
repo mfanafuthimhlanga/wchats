@@ -10,7 +10,7 @@ INT-02: Returns a CredentialHandle wrapping the decrypted credential so the raw 
 
 Security invariants enforced here:
   T-16-01: CredentialHandle.__repr__ / __str__ always return the redacted marker.
-  T-16-06: tenant_id flows via _tenant_id_var ContextVar (set by build_tool_server),
+  T-16-06: tenant_id flows via _tenant_id_var ContextVar (set by bind_tool_context),
             never as a Celery task arg.
   T-16-10: _derive_tenant_fernet creates a FRESH HKDF instance per call (HKDF.derive()
             is single-use). Never cache the HKDF instance.

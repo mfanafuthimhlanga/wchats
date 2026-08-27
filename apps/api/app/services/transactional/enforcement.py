@@ -325,8 +325,8 @@ async def apply_rate_and_constraint_checks(
         # against a concurrent real caller.
         #
         # Lazy import: agent_tools imports transactional.tools (which imports
-        # this module) inside build_tool_server, so a module-level import here
-        # would close that loop.
+        # this module) inside agent_tool_definitions, so a module-level import
+        # here would close that loop.
         from app.services.agent_tools import _side_effects_var  # noqa: PLC0415
 
         mode_prefix = "recorded:" if _side_effects_var.get() == "recorded" else ""

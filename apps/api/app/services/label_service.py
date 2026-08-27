@@ -218,7 +218,7 @@ def _current_celery_task():
 def _current_agent_id() -> str:
     """The agent id of the tool-server context in scope, or ''.
 
-    Set by `agent_tools.build_tool_server()` for the duration of an agent turn,
+    Set by `agent_tools.bind_tool_context()` for the duration of an agent turn,
     so a non-empty value means a model is driving this call stack.
 
     Same split as `_current_celery_task`: a missing `agent_tools` means there is

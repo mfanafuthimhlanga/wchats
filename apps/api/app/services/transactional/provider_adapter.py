@@ -197,7 +197,7 @@ _STUB_ADAPTER: StubProviderAdapter = StubProviderAdapter()
 # Off by default. The ONLY sanctioned setter is red_team_probe.red_team_mode()
 # (apps/api/app/services/red_team_probe.py), which calls _set_red_team_mode /
 # _reset_red_team_mode symmetrically around a probe invocation. No `settings`
-# field, no environment variable, and no code path in agent_tools.build_tool_server
+# field, no environment variable, and no code path in agent_tools.bind_tool_context
 # sets this var — a customer turn can never enter red-team mode.
 # ---------------------------------------------------------------------------
 
@@ -240,7 +240,7 @@ async def get_adapter_for_skill(
     """Resolve credentials and return the correct ProviderAdapter for a skill (INT-02).
 
     Called at step 6 of _execute_transactional_tool. The conn_str is already
-    available via _conn_str_var (set by build_tool_server, never a task arg).
+    available via _conn_str_var (set by bind_tool_context, never a task arg).
 
     Security invariants:
       T-16-01: The raw credential string is wrapped in a CredentialHandle whose
