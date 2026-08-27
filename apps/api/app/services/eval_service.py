@@ -518,20 +518,21 @@ def dataset_of(value: str | None) -> str:
 # ---------------------------------------------------------------------------
 # THE COST SHAPE CHANGED, AND SILENTLY IF NOBODY BOUNDS IT. Before P2 a nightly
 # eval was seconds of arithmetic plus judge calls. Now every selected row costs
-# one live SDK turn — the whole golden set unsampled, plus EXPLORATORY_SAMPLE_SIZE
+# one live agent turn - the whole golden set unsampled, plus EXPLORATORY_SAMPLE_SIZE
 # rotating rows — at a 90s per-turn ceiling, per agent, every night, billed. Two
 # bounds, and both are stamped on the run so a reader can tell a cheap run from a
 # truncated one instead of inferring it from a bill.
 
 #: How many agent turns run at once. ONE, and the implementation asserts it
 #: rather than trusting it: this box has 4 GB of RAM (CLAUDE.md environment
-#: constraints) and each turn is an Agent SDK subprocess. Raising the number
+#: constraints). Until #49 each turn was also an Agent SDK subprocess, which was
+#: the larger half of the reason; what remains is the RAM. Raising the number
 #: without changing the loop would make the provenance say something the run did
 #: not do, which is the defect class this whole phase exists to remove — so
 #: eval.py raises on any other value instead of quietly running sequentially.
 AGENT_INVOCATION_CONCURRENCY = 1
 
-#: The per-run ceiling on live SDK turns. The binding cost control: worst-case
+#: The per-run ceiling on live agent turns. The binding cost control: worst-case
 #: wall clock for a run is this times the per-turn timeout.
 #:
 #: It sits BELOW GOLDEN_SET_SOFT_CEILING (200) on purpose, and the two disagree
@@ -613,7 +614,7 @@ def summarise_agent_invocation(
     judge that errors. The same rule applies one layer earlier here: a turn that
     timed out, raised, or came back with no text produced no observation about
     answer quality, and averaging a zero in would move every metric with the
-    failure rate of the Agent SDK rather than with the agent's behaviour.
+    failure rate of the transport rather than with the agent's behaviour.
 
     Args:
         records: one dict per scenario an agent turn was ATTEMPTED for, each
@@ -654,7 +655,7 @@ def summarise_agent_invocation(
     responded = sum(1 for r in records if r.get("responded"))
     scorable = sum(1 for r in records if r.get("scorable"))
     failed = sum(1 for r in records if r.get("error"))
-    # Neither responded nor errored: the SDK returned, with no text. That is the
+    # Neither responded nor errored: the turn returned, with no text. That is the
     # max_turns / max_budget signature (agent.py's D-10 notes), and it is a
     # different failure from an exception, so it is counted apart from one.
     empty = attempted - responded - failed
@@ -1603,7 +1604,7 @@ def build_eval_run_config(
 
     AT INSERT TIME THE HONEST ANSWER IS ALWAYS "NOT YET". This function runs
     before the first agent turn, because the eval_runs row is also the per-agent
-    idempotency key and inserting it after sixty SDK calls would let a concurrent
+    idempotency key and inserting it after sixty model calls would let a concurrent
     dispatch double-invoke. So `agent_invocation` is None here on the live path
     and the run is stamped agent_invoked=False; run_eval_suite patches the
     observed value in afterwards with update_eval_run_config. A run that dies in
@@ -1616,9 +1617,11 @@ def build_eval_run_config(
     a second projection of capability_envelopes — a divergent projection would
     silently produce a different hash for identical configuration) and
     `_fetch_corpus_stats_sync` for the corpus figure. Both are imported inside
-    the function: deployment_service pulls in the Claude Agent SDK at module
-    scope, and eval_service sits on the FastAPI route import chain via
-    api/v1/evals.py, so the cost is paid only by the Celery task that needs it.
+    the function. deployment_service pulled in the Claude Agent SDK at module
+    scope until #49, and eval_service sits on the FastAPI route import chain via
+    api/v1/evals.py. The SDK is gone, so what the deferral still buys is
+    deployment_service's own load, which is smaller. Kept because the route
+    chain has not changed and neither has the reason to keep it short.
 
     MISSING DATA IS NEVER PASSING DATA. Each dimension is collected
     independently and a dimension that could not be READ is recorded as None
@@ -1862,7 +1865,7 @@ def update_eval_run_config(run_id: str, patch: dict, conn_str: str) -> bool:
 
     The one write that turns `agent_invoked` from a hope into an observation.
     The row has to exist before the first agent turn — it is the per-agent
-    idempotency key, and inserting it after sixty SDK calls would let a
+    idempotency key, and inserting it after sixty model calls would let a
     concurrent dispatch double-invoke — so the run is stamped agent_invoked=False
     at INSERT and corrected here once the invocation phase has reported.
 
