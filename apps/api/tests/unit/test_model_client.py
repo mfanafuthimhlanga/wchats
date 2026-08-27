@@ -1093,6 +1093,47 @@ class TestMakeClientOnOpenAi:
             )
 
 
+class TestWhatEachProviderSdkDoesWithAnEmptyKey:
+    """The two SDKs disagree about when a missing key is an error, and it matters.
+
+    FM-001 in the failure-mode log is "transplanted claim": a prose claim about
+    one library, written where a sibling branch handles a different one. Its
+    climb from rung 4 to rung 2 reads "a provider-contract test asserting what
+    each SDK does with an empty key. Offline, no spend, so there is no excuse for
+    it sitting at 4." This is that test, and nothing here touches a socket.
+
+    The asymmetry is the finding. OpenAI refuses at construction, so a
+    misconfigured worker dies at the factory with a message naming the key.
+    Anthropic constructs happily and raises later while resolving auth, so the
+    same misconfiguration reaches the call site and surfaces as whatever the
+    caller's `except` decides to say about it.
+
+    That is what makes issue #88 more than a tidiness problem. Twelve routed-to-
+    Luna purposes build an Anthropic client, `ANTHROPIC_API_KEY` defaults to
+    empty since the credential was retired on 2026-08-26, and the branch that
+    fails quietly is the one they are on.
+    """
+
+    def test_openai_refuses_an_empty_key_at_construction(self):
+        with pytest.raises(openai.OpenAIError):
+            openai.OpenAI(api_key="")
+
+    def test_the_openai_refusal_names_the_key(self):
+        """A worker that dies at the factory should say which setting is missing."""
+        with pytest.raises(openai.OpenAIError, match="api_key"):
+            openai.OpenAI(api_key="")
+
+    def test_anthropic_accepts_an_empty_key_at_construction(self):
+        """Not a bug in either SDK. A recorded difference, so nobody assumes parity.
+
+        If this ever starts raising, the comment on `resolve_credentials` and the
+        reasoning on issue #88 both need re-reading rather than editing.
+        """
+        import anthropic
+
+        assert anthropic.Anthropic(api_key="") is not None
+
+
 class TestMakeInstructorClient:
     def _client(self, purpose, recorder, seen: dict | None = None, route=None):
         def handler(request: httpx.Request) -> httpx.Response:
