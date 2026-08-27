@@ -204,7 +204,7 @@ PINNED_SOURCE = {
     "tests/unit/test_red_team_rtx_runners.py": 1,
     "tests/unit/test_red_team_service.py": 3,
     "tests/unit/test_s3_uploads.py": 1,
-    "tests/unit/test_sdk_tools_are_registered.py": 2,
+    "tests/unit/test_tool_loop_agents_are_given_tools.py": 2,
     "tests/unit/test_shopify_adapter.py": 1,
     "tests/unit/test_sql_paramstyle_collisions.py": 4,
     "tests/unit/test_stripe_adapter.py": 1,

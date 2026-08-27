@@ -36,9 +36,7 @@ def build_system_prompt(agent: Agent, soul_override: dict | None = None) -> str:
     """Assemble system prompt from agent soul fields.
 
     Called once per ``run_agent_turn`` invocation. The returned string becomes
-    ``AgentTurn.system_prompt``, which the owned loop puts on the first message
-    of every request body. It went to ``ClaudeAgentOptions(system_prompt=...)``
-    until #49.
+    ``AgentTurn.system_prompt``, first message of every request body since #49.
 
     Args:
         agent: Agent ORM model (or compatible duck-type / MagicMock in tests)
