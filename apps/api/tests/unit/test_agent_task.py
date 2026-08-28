@@ -1678,3 +1678,51 @@ def test_the_history_ignores_rows_from_another_conversation():
     assert [h["content"] for h in history] == ["ours"], (
         f"another conversation's messages reached this turn: {history}"
     )
+
+
+def test_an_unresolvable_conversation_id_emits_agent_failed_naming_the_cause():
+    """The ownership guard's failure reaches the customer with a name on it.
+
+    #104 publishes error_type on agent.failed and nothing else, because raw
+    str(exc) on the other failure path renders a provider response body verbatim.
+    This payload carried only `error`, so filtering it would have left the
+    customer's stream with an empty payload on the one branch where the cause is
+    a fixed, safe string.
+    """
+    from app.services.sse import public_payload
+    from app.worker.tasks.runtime.agent import run_agent_turn
+
+    job_id = str(uuid.uuid4())
+    agent_id = str(uuid.uuid4())
+    agent = _make_agent(str(agent_id))
+    job = _make_job(job_id)
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = None
+    mock_db.get.side_effect = [agent, job]
+
+    emitted_events: list[tuple[str, dict]] = []
+
+    def fake_emit(jid, event_type, payload, db, redis):
+        emitted_events.append((event_type, payload or {}))
+
+    with (
+        patch("app.worker.tasks.runtime.agent.get_sync_db", return_value=_make_db_ctx(mock_db)),
+        patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
+        patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
+        patch("app.worker.tasks.runtime.agent._validate_conversation_owner", return_value=None),
+        patch("app.worker.tasks.runtime.agent.emit", side_effect=fake_emit),
+    ):
+        run_agent_turn.run(
+            job_id=job_id,
+            agent_id=agent_id,
+            message="Follow-up on a conversation this agent does not own",
+            conversation_id=str(uuid.uuid4()),
+        )
+
+    failed = [payload for event_type, payload in emitted_events if event_type == "agent.failed"]
+    assert len(failed) == 1, f"expected one agent.failed, got: {emitted_events}"
+    assert failed[0] == {"error_type": "conversation_not_found"}
+    assert public_payload("agent.failed", failed[0]) == {"error_type": "conversation_not_found"}, (
+        "the public widget stream must still name this failure"
+    )

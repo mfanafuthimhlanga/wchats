@@ -31,9 +31,14 @@ SSE event sequence:
     agent.tool_result   ← each tool result (emitted by the loop)
     agent.escalated     ← (optional) the model called escalate_to_human
     agent.response      ← terminal event with text, citations, conversation_id
-    agent.failed        ← terminal failure only (retries exhausted). Payload
-                          carries error_type beside error, because str() of
-                          several exceptions on this path is empty (BACKLOG 1.30).
+    agent.failed        ← terminal failure (retries exhausted), and the
+                          conversation id that did not resolve. Payload carries
+                          error_type beside error, because str() of several
+                          exceptions on this path is empty (BACKLOG 1.30).
+                          error_type is also ALL the public widget stream
+                          publishes of this event: raw str(exc) renders a
+                          provider response body verbatim and echoes DSN
+                          fragments out of libpq (#83, see sse.py).
 
 Queue: runtime (CLAUDE.md non-negotiable: both Celery queues always present)
 """
@@ -1027,7 +1032,7 @@ def run_agent_turn(
                     emit(
                         job_id,
                         "agent.failed",
-                        {"error": "conversation_not_found"},
+                        {"error_type": "conversation_not_found"},
                         db,
                         _redis,
                     )

@@ -526,14 +526,14 @@ async def widget_job_events(
 ) -> EventSourceResponse:
     """Public SSE endpoint for widget clients.
 
-    R-03 resolution: EventSource cannot send Authorization headers, so this
-    public sibling reuses the existing event_generator from sse.py.
-    Security: job_id is a server-generated UUID4 (~122 bits entropy) —
-    cannot be guessed; short-lived (terminal event closes stream within seconds).
+    R-03 resolution: EventSource cannot send Authorization headers, so this public
+    sibling reuses event_generator from sse.py with public=True, which filters every
+    payload through PUBLIC_EVENT_FIELDS and fails closed on an event type that map does
+    not name (#104, #83). Security: job_id is a server-generated UUID4 (~122 bits
+    entropy), unguessable and short-lived (a terminal event closes the stream).
 
-    F8 controls (T-04.1-02-02, T-04.1-02-03):
-        - Per-agent_id concurrent SSE connection cap (_MAX_CONCURRENT_SSE_PER_AGENT=50)
-        - asyncio.timeout(120) hard cap on the SSE generator loop
+    F8 controls (T-04.1-02-02, T-04.1-02-03): a per-agent_id concurrent SSE connection
+    cap (_MAX_CONCURRENT_SSE_PER_AGENT=50) and an asyncio.timeout(120) on the loop.
 
     Terminal set: CUSTOMER_TERMINAL_EVENTS, so the server closes the stream itself on
     agent.response / agent.failed instead of holding a slot to the 120s cap waiting for
@@ -541,10 +541,8 @@ async def widget_job_events(
     afterwards; those events remain visible on the authenticated /jobs/{id}/events
     stream, which keeps the default job-lifecycle terminal set.
 
-    Headers:
-        X-Accel-Buffering: no          — prevents nginx buffering
-        Cache-Control: no-store        — explicit belt-and-suspenders
-        Access-Control-Allow-Origin: * — required for cross-origin widget
+    Headers: X-Accel-Buffering: no, so nginx does not buffer; Cache-Control: no-store;
+    and Access-Control-Allow-Origin: *, which the cross-origin widget requires.
     """
     # ------------------------------------------------------------------
     # 1. Resolve agent_id from Job row (needed for per-agent slot key)
@@ -580,6 +578,8 @@ async def widget_job_events(
                     db,
                     redis_client,
                     terminal_events=CUSTOMER_TERMINAL_EVENTS,
+                    # #104, #83: sse.PUBLIC_EVENT_FIELDS decides what leaves here.
+                    public=True,
                 ):
                     yield event
         except asyncio.TimeoutError:
