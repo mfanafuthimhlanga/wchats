@@ -1,9 +1,11 @@
 # Gates that fail open
 
-Four of this repo's five CI jobs were reporting something other than what a reader took
-them to mean. Two reported a small failure while checking nothing. One reported success
-over zero assertions. This note records what each one printed, why the printed line was
-misread, and the one property that separates a gate you can trust from a gate you cannot.
+Three of this repo's five CI jobs were reporting something other than what a reader took
+them to mean. Type-check reported one error while checking one file of 150. Integration
+reported one failure while `-x` hid eight tests. Eval reported success over zero
+assertions. This note records what each one printed, why the printed line was misread, and
+the one property that separates a gate you can trust from a gate you cannot. Lint and Unit
+are not in it; both were reporting exactly what they found.
 
 Read it before adding a gate, and before believing one.
 
@@ -30,7 +32,8 @@ Logged as FM-013 in `.dev/failure-modes.jsonl`.
 ## mypy checked one file for seventeen days
 
 `dc67d37` (2026-08-11) landed a prose comment inside an `if` block in
-`app/services/red_team_probe.py`. Line 434 began:
+`app/services/red_team_probe.py`. It landed at line 379 and drifted to 434 by the time it
+was deleted, which is the number mypy reported. The line read:
 
 ```
                             # type:"user" entries. The ToolResultBlock branch below
@@ -67,8 +70,9 @@ Success: no issues found in 1 source file
 ```
 
 `a4a03fb` had driven mypy to zero on 2026-08-06, five days before the comment landed.
-Between then and 2026-08-28, 58 commits touched `apps/api/app`. When #87 deleted the SDK
-block carrying the comment, mypy parsed the tree again:
+Between `dc67d37` and the merge that removed it, 70 non-merge commits touched
+`apps/api/app`. When `772f9cf` deleted the SDK block carrying the comment (issue #49, which
+reached main as PR #87), mypy parsed the tree again:
 
 ```
 Found 148 errors in 12 files (checked 150 source files)
@@ -104,6 +108,12 @@ The workflow then converts that skip into a green check, which restores the fals
 one layer up. The job is named for five checks (D3, D5, D6, D7, G-06) and runs none.
 Tracked as **#102**.
 
+G-06 is worse than skipped. `_check_escalation_rate_gate` is called from
+`run_evals.py:544`, inside `test_llm_judged_dimensions_d1_d2_d3_d4_d8`, which `-k
+deterministic` deselects unconditionally. It would not run in that job with a full
+`responses/` directory either. One fifth of the job's name is structural rather than
+circumstantial.
+
 Two `pytest.skip` calls can produce that line, `run_evals.py:403` (no built widget bundle)
 and `:424` (no recorded responses), and the step runs without `-rs`, so the log does not
 say which. Add `-rs` before asking any further question about it.
@@ -133,8 +143,9 @@ opposite of what a gate is for."* The integration job did not get the same treat
 
 `apps/widget` carried `pnpm-lock.yaml`, which every change updates, and
 `package-lock.json`, untouched since 2026-06-01. CI read the second. `e264850` added
-`vitest` on 2026-08-26 and `npm ci` refused to run from then on. The npm lockfile is now
-deleted and both workflows install with pnpm, which is what `CLAUDE.md` already required.
+`vitest` on 2026-08-18 and `npm ci` refused to run from then on, so that job was dark for
+ten days. The npm lockfile is now deleted and both workflows install with pnpm, which is
+what `CLAUDE.md` already required.
 
 pnpm 11 needs Node 22.13 and dies reaching for `node:sqlite` below it, so the workflows
 pin Node 22. A local verification on a different Node than the job pins is not a
@@ -142,8 +153,10 @@ verification of the job.
 
 ## How long the gate had been dark
 
-Every one of the last 88 CI runs, back to 2026-07-27, concluded failure. Nothing was
-green for a month, so no branch in that window was gated by CI at all, whatever its
-checks said.
+Every CI run GitHub still retains concluded failure. That is 93 runs as of 2026-08-28,
+the oldest dated 2026-07-27, and that date is the end of the retention window rather than
+a point where something changed. There is no evidence of a green run at any time inside it,
+and no evidence of one before it either way. No branch in that window was gated by CI,
+whatever its checks said.
 
 Before trusting a gate's verdict, read when it last passed.

@@ -10,8 +10,8 @@ WHY THIS MODULE EXISTS
     schemas, the dispatch, and the two ceilings.
 
 THE SEAM, AND WHY IT IS ONE FUNCTION
-    `build_agent_turn` assembles a turn exactly once, and both callers go through
-    it. "Same agent" is not the same model id. It is the system prompt, the tool
+    `build_agent_turn` assembles a turn exactly once, and all three callers go
+    through it. "Same agent" is not the same model id. It is the system prompt, the tool
     server that enforces the capability envelope, the tool list, the two ceilings
     and the model, together. Assemble any of those twice and the eval measures
     something adjacent to the product, which the measurement-layer audit records
@@ -35,22 +35,18 @@ THE SEAM, AND WHY IT IS ONE FUNCTION
     row opens a tenant connection and a sleeping tenant endpoint takes 8 to 20
     seconds to wake.
 
-THE PII FIREWALL IS INSIDE THE SEAM, WHERE NO CALLER CAN SKIP IT
-    `_turn_result` scans the turn's finished text through
-    `app.domain.pii_firewall.scan_response` and hands back the SERVED text. That
-    module's docstring says the scan is unconditional, and until #50 it was not:
-    the live Celery task ran it after `run_agent_loop` returned, and neither the
-    eval task nor the red-team victim turn imported the module at all. A response
-    the firewall would have deflected was therefore scored by Ragas verbatim and
-    posted to a third-party judge API. The original text is not returned in any
-    form, because a caller that can read it can serve it.
+THE PII FIREWALL SCANS THE RESPONSE, AND NO CALLER OF THIS LOOP CAN SKIP IT
+    `_turn_result` scans the turn's finished text through `scan_response` and
+    hands back the SERVED text. Until #50 the live Celery task ran it after
+    `run_agent_loop` returned, and neither the eval nor the red-team victim turn
+    imported the module, so a deflectable response was scored by Ragas verbatim.
+    THREE CALLERS run this loop, not two: `run_agent_turn`, the eval's
+    `_run_one_eval_turn`, and `red_team_probe._build_transactional_probe_fn`.
 
-    THREE CALLERS RUN THIS LOOP, not two: `run_agent_turn`, the eval's
-    `_run_one_eval_turn`, and `red_team_probe._build_transactional_probe_fn`. The
-    third one now sees what a customer would have been served, which is what that
-    probe's own docstring asks for — and it means a red-team attack that talks
-    the agent into a leak is scored on the deflection the firewall substituted,
-    not on the words the model wrote.
+    The guarantee is the RESPONSE TEXT and nothing wider. `agent.tool_call` and
+    `agent.tool_result` below leave the process per tool call, above this scan
+    (#104), and probes that skip the loop entirely never reach it (#105). ADR
+    0006 lists what is and is not covered.
 
 WHAT THE LOOP COUNTS, AND WHAT IT REFUSES TO INVENT
     The turn's cost is derived from `model_calls` rows at read time, against a
@@ -733,8 +729,7 @@ async def run_agent_loop(message: str, *, history, turn: AgentTurn, job_id, db, 
         response_text, tool_calls_log, escalated, escalation_reason, escalation_context,
         num_turns and stop_reason. `stop_reason` is the provider's finish_reason when the
         model stopped on its own, "budget_exceeded" or "max_model_calls" when a ceiling
-        stopped it, and "no_choices" when a reply carried nothing to read.
-        `response_text` is what the PII firewall SERVES; `_turn_result` describes it and the four `pii_` keys.
+        stopped it, and "no_choices" when a reply carried nothing to read. `response_text` is what the PII firewall SERVES, and `_turn_result` describes it beside the four `pii_` keys.
     """
     state = _TurnState()
     try:

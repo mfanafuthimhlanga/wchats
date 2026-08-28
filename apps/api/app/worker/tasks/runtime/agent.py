@@ -814,8 +814,8 @@ def _extract_citations(text: str) -> list[dict]:
 # any of those twice and the eval measures something adjacent to the product,
 # which the measurement-layer audit records as this repo's recurring defect.
 #
-# So they are assembled exactly once, in `build_agent_turn`, and both callers go
-# through it. ADR 0008 moved that function out of this module together with the
+# So they are assembled exactly once, in `build_agent_turn`, and all three callers
+# go through it. ADR 0008 moved that function out of this module together with the
 # loop it feeds, because the loop is service code and this file is a Celery task;
 # `build_agent_options` held the same line for the SDK path and this is its
 # successor. tests/unit/test_agent_options_seam.py fails if `run_agent_turn`
@@ -1178,7 +1178,7 @@ def run_agent_turn(
             # exemption flag come from the pre-scan text, which is exactly what
             # the seam refuses to hand back. A caller that dropped both lines
             # would still serve the deflection.
-            pii_detector: str | None = result.get("pii_detector")
+            pii_detector: str | None = result["pii_detector"]
             published_chunks: int = result.get("pii_published_chunks", 0)
             if pii_detector is not None:
                 log.warning(
