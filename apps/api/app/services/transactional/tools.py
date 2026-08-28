@@ -21,11 +21,12 @@ The single _execute_transactional_tool dispatcher encodes the enforcement order 
        error → release_idempotency + audit row + is_error
   7. Audit row (success, result=response, error=None) + finalize_idempotency + return
 
-What the dispatcher returns (ticket #45):
+What the dispatcher returns (ticket #45, edge moved by #49):
   `_execute_transactional_tool` returns a `ToolResult` from every branch, and
-  `run_transactional_skill` is the seam that validates then calls it. Each `@tool`
-  handler converts at its own SDK edge with `to_wire`, which is the ONE place an
-  outcome becomes the `is_error` bit. The wire is byte for byte what it was.
+  `run_transactional_skill` is the seam that validates then calls it. All seven
+  `@tool` handlers hand that result to `_published_wire`, the ONE place an outcome
+  becomes the `is_error` bit and the one place the typed verdict is published to
+  the turn's sink. The wire is byte for byte what it was.
 
   The bit is why the type exists. `ok` and `requires_human` both leave the
   dispatcher with no `is_error`, so a caller reading the wire could not tell a
@@ -78,12 +79,12 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import structlog
-from claude_agent_sdk import tool
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from app.core.database import get_sync_db
 from app.core.model_client import LedgerContext, ledger_recorder
+from app.domain.tool_def import tool
 from app.domain.tool_result import Outcome, ToolResult, to_wire, wire_text
 from app.domain.transactional_schemas import (
     SKILL_INPUT_MODELS,
@@ -142,6 +143,37 @@ RECORDED_NOT_EXECUTED: str = "side_effects.recorded:not_executed"
 #: recorded only the first cannot tell "the agent never tried" from "the agent
 #: tried and was stopped".
 RECORDED_DECLINED: str = "transactional.declined"
+
+#: Detail on the ToolResult step 5.5 returns, and the needle
+#: `red_team_probe._VERDICT_PATTERNS` derives its `would_have_executed` tag
+#: from. Step 5.5 is the ONE branch where every gate allowed the call and only
+#: the recorded seam stopped the money, which makes it the opposite cell of the
+#: matrix from RECORDED_DECLINED above: "would have executed" against "the
+#: envelope refused". Without a detail the two cells hand the agent the same
+#: sentence, and the probe's matcher fell through to "succeeded" for both. That
+#: happens to be the right answer for this cell, by the mechanism that gave
+#: BACKLOG 5.8 the wrong answer for identity blocks.
+#:
+#: The wording carries no evaluation frame, for the reason `_not_executed_result`
+#: below gives at length. The agent reads this text and conditions the rest of
+#: its turn on it, and a provider that accepted the request and then failed
+#: produces this same sentence in production.
+GATES_PASSED_DETAIL: str = "Every check passed and the request stopped at the provider."
+
+#: Detail on the two ToolResults recorded mode returns when the agent asked an
+#: approver instead of acting: the dispatcher's require_human arm, and
+#: confirm_action's own arm. Both carry it so both tag `awaiting_approval`, the
+#: tag live mode gives the same decision, which keeps the probe's vocabulary
+#: mode-invariant everywhere except the one branch above.
+#:
+#: confirm_action is why this is a constant rather than two literals. Its
+#: recorded text carried none of the matcher's approval vocabulary, so a probe
+#: on the recorded path tagged an agent that routed the attack to a human as
+#: `succeeded`. That is RTX-01's critical finding, raised for an action nobody
+#: performed.
+APPROVAL_NOT_QUEUED_DETAIL: str = (
+    "It requires human approval and no approval request was created."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +272,31 @@ def _not_executed_result(skill: str, detail: str = "") -> ToolResult:
             f"updated.{tail}"
         ),
     )
+
+
+def _published_wire(result: ToolResult) -> dict:
+    """Publish the typed verdict to this turn's sink, then convert for the wire.
+
+    THE SEVEN HANDLERS CONVERT HERE AND NOWHERE ELSE, which is what makes the
+    publish unmissable: an eighth handler that skips this function returns
+    something the loop will not accept, so the two steps cannot come apart.
+
+    Both halves are needed because they carry different things. `to_wire` spends
+    the outcome on one bit for the model to read, and `publish_tool_result` keeps
+    the outcome itself for whoever assembled the turn. The red-team victim turn is
+    the caller that needs the second half: it reports each mutating call's real
+    dispatcher verdict, and until #49 it re-derived one by matching this module's
+    prose through the SDK's ToolResultBlocks. BACKLOG 5.8 records what one
+    hand-copied substring cost.
+
+    The lazy import is the one `run_confirm_action` already takes for the
+    ContextVars. `agent_tools.agent_tool_definitions` imports this module, so a
+    module-level import back would close the cycle.
+    """
+    from app.services.agent_tools import publish_tool_result  # noqa: PLC0415
+
+    publish_tool_result(result)
+    return to_wire(result)
 
 
 def _confirm_result(outcome: Outcome, text: str) -> ToolResult:
@@ -1058,7 +1115,7 @@ async def _execute_transactional_tool(
             )
             return _not_executed_result(
                 skill,
-                "It requires human approval and no approval request was created.",
+                APPROVAL_NOT_QUEUED_DETAIL,
             )
 
         now = datetime.now(timezone.utc)
@@ -1232,7 +1289,7 @@ async def _execute_transactional_tool(
             agent_id=agent_id,
             skill=skill,
         )
-        return _not_executed_result(skill)
+        return _not_executed_result(skill, GATES_PASSED_DETAIL)
 
     # -------------------------------------------------------- 6-7. Adapter + audit
     # Delegated to the shared helper (T-22-ACT-15) — see _execute_adapter_and_audit
@@ -1270,9 +1327,9 @@ class UnknownSkillError(KeyError):
 async def run_transactional_skill(skill: str, args: dict) -> ToolResult:
     """Validate `args` against `skill`'s Input model, then run the dispatcher.
 
-    Two callers, one path. Each `@tool` handler enters here and converts the
-    result at its own SDK edge with `to_wire`; the red-team probe enters here
-    and reads the outcome, so a probe assertion never has to fuzzy-match prose.
+    Two callers, one path. Each `@tool` handler enters here and hands the result
+    to `_published_wire`; the red-team probe's deterministic vectors enter here
+    directly and read the outcome, so no assertion has to fuzzy-match prose.
 
     SKILL_INPUT_MODELS is a definition-time mapping written by hand, so this
     stays inside the registry's rule that nothing is inferred from a tool name
@@ -1321,8 +1378,8 @@ async def run_transactional_skill(skill: str, args: dict) -> ToolResult:
     PlaceOrderInput.model_json_schema(),
 )
 async def place_order_tool(args: dict) -> dict:
-    """Validate, dispatch, then convert at the SDK edge. skill=place_order."""
-    return to_wire(await run_transactional_skill("place_order", args))
+    """Validate, dispatch, publish the verdict, then convert. skill=place_order."""
+    return _published_wire(await run_transactional_skill("place_order", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1340,8 +1397,8 @@ async def place_order_tool(args: dict) -> dict:
     CancelOrderInput.model_json_schema(),
 )
 async def cancel_order_tool(args: dict) -> dict:
-    """Validate, dispatch, then convert at the SDK edge. skill=cancel_order."""
-    return to_wire(await run_transactional_skill("cancel_order", args))
+    """Validate, dispatch, publish the verdict, then convert. skill=cancel_order."""
+    return _published_wire(await run_transactional_skill("cancel_order", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1359,8 +1416,8 @@ async def cancel_order_tool(args: dict) -> dict:
     IssueRefundInput.model_json_schema(),
 )
 async def issue_refund_tool(args: dict) -> dict:
-    """Validate, dispatch, then convert at the SDK edge. skill=issue_refund."""
-    return to_wire(await run_transactional_skill("issue_refund", args))
+    """Validate, dispatch, publish the verdict, then convert. skill=issue_refund."""
+    return _published_wire(await run_transactional_skill("issue_refund", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1378,8 +1435,8 @@ async def issue_refund_tool(args: dict) -> dict:
     UpdateSubscriptionInput.model_json_schema(),
 )
 async def update_subscription_tool(args: dict) -> dict:
-    """Validate, dispatch, then convert at the SDK edge. skill=update_subscription."""
-    return to_wire(await run_transactional_skill("update_subscription", args))
+    """Validate, dispatch, publish the verdict, then convert. skill=update_subscription."""
+    return _published_wire(await run_transactional_skill("update_subscription", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1397,8 +1454,8 @@ async def update_subscription_tool(args: dict) -> dict:
     BookSlotInput.model_json_schema(),
 )
 async def book_slot_tool(args: dict) -> dict:
-    """Validate, dispatch, then convert at the SDK edge. skill=book_slot."""
-    return to_wire(await run_transactional_skill("book_slot", args))
+    """Validate, dispatch, publish the verdict, then convert. skill=book_slot."""
+    return _published_wire(await run_transactional_skill("book_slot", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1416,8 +1473,8 @@ async def book_slot_tool(args: dict) -> dict:
     UpdateCustomerRecordInput.model_json_schema(),
 )
 async def update_customer_record_tool(args: dict) -> dict:
-    """Validate, dispatch, then convert at the SDK edge. skill=update_customer_record."""
-    return to_wire(await run_transactional_skill("update_customer_record", args))
+    """Validate, dispatch, publish the verdict, then convert. skill=update_customer_record."""
+    return _published_wire(await run_transactional_skill("update_customer_record", args))
 
 
 # ---------------------------------------------------------------------------
@@ -1457,9 +1514,12 @@ def _confirm_action_recorded(agent_id: str, validated: ConfirmActionInput) -> To
         },
     )
     log.info("confirm_action.not_queued", agent_id=agent_id, skill=validated.skill)
+    # APPROVAL_NOT_QUEUED_DETAIL leads, and the constant's own comment says what
+    # it cost when this text did not carry it: the red-team probe tagged an agent
+    # that routed its attack to a human approver as `succeeded`.
     return _not_executed_result(
         "confirm_action",
-        f"No approval request was created for the '{validated.skill}' action "
+        f"{APPROVAL_NOT_QUEUED_DETAIL} The action was '{validated.skill}' "
         f"(reference: {validated.action_reference}).",
     )
 
@@ -1551,7 +1611,7 @@ async def run_confirm_action(args: dict) -> ToolResult:
     """Validate, gate, then write the confirmation row. confirm_action's typed seam.
 
     The counterpart to `run_transactional_skill`, and it exists for the same
-    reason. The `@tool` handler converts at its own SDK edge with `to_wire`; the
+    reason. The `@tool` handler hands the result to `_published_wire`; the
     red-team probe reads the outcome, so a probe never decides from prose
     whether an approver was asked. Every row this writes is
     `Outcome.requires_human`, which on the wire is indistinguishable from a
@@ -1609,8 +1669,8 @@ async def run_confirm_action(args: dict) -> ToolResult:
     ConfirmActionInput.model_json_schema(),
 )
 async def confirm_action_tool(args: dict) -> dict:
-    """Validate, gate, then convert at the SDK edge. skill=confirm_action."""
-    return to_wire(await run_confirm_action(args))
+    """Validate, gate, publish the verdict, then convert. skill=confirm_action."""
+    return _published_wire(await run_confirm_action(args))
 
 
 # ---------------------------------------------------------------------------

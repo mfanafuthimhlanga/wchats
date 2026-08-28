@@ -18,11 +18,12 @@ Phase 15 contract:
     "require_human"  — tool handler writes a pending_confirmations row and returns
                        an "awaiting confirmation" response to the agent
 
-Why this is NOT an SDK hook (LANDMINE 1 from 14-RESEARCH.md):
-  ClaudeAgentOptions.hooks (PreToolUseHookInput) routes through the CLI subprocess
-  control channel.  It cannot access Python ContextVars (agent_id, conversation_id)
-  or the control-DB for the capability envelope.  The seam MUST live inside the
-  tool handler as a direct async function call.
+Why this was NOT an SDK hook (LANDMINE 1 from 14-RESEARCH.md):
+  The option existed and was refused. ClaudeAgentOptions.hooks (PreToolUseHookInput)
+  routed through the CLI subprocess control channel, so it could reach neither the
+  Python ContextVars (agent_id, conversation_id) nor the control DB for the
+  capability envelope. The seam lives inside the tool handler as a direct async
+  call, and #49 removed the alternative it was chosen over.
 
 Module isolation decision (D-15-01):
   HAIKU_MODEL and _langfuse are replicated locally in this module rather than

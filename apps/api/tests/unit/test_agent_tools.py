@@ -1,19 +1,17 @@
 """
 Unit tests for app.services.agent_tools.
 
-Monkeypatches ``claude_agent_sdk`` before module import so tests run without
-the SDK binary present. The tool functions are async so each test uses
-``asyncio.run()``.
+The tool functions are async, so each test uses ``asyncio.run()``.
 
-THE FAKE SDK, AND WHEN IT WINS
-    Four test modules install a fake `claude_agent_sdk`, and the guard on each
-    reads "the real package is not installed" rather than "nothing has imported
-    it yet". The old `not in sys.modules` spelling let the fake win whenever
-    another fake-installing module imported first, so `agent_tools.tool` was the
-    real decorator or a stand-in depending on pytest's file order, and
-    `agent_tool_definitions()` then handed the loop objects with no `.name`
-    (#48). `find_spec` is what makes the answer the same in every run order. The
-    other three modules point here rather than repeating this.
+WHAT THE FAKE SDK USED TO BE FOR
+    This module installed a fake `claude_agent_sdk` before importing agent_tools,
+    because agent_tools took its `@tool` decorator and `create_sdk_mcp_server`
+    from that package at import time. Three other test modules point here for the
+    rule that guard follows: install the fake only when the REAL package is
+    absent, since `not in sys.modules` let the fake win on pytest file order and
+    `agent_tool_definitions()` then handed the loop objects with no `.name` (#48).
+    #49 removed the import it protected. `app.domain.tool_def.tool` returns a
+    ToolDefinition in every run order, so there is nothing left to install.
 
 Updated for PROD-14 ContextVar refactor: module-level globals (_conn_str,
 _agent_id, etc.) are now ContextVars (_conn_str_var, _agent_id_var, etc.).
@@ -26,74 +24,26 @@ Test coverage:
   3. test_retrieve_truncates_to_max_chunks
   4. test_escalate_calls_notify_fn
   5. test_clarify_returns_question_text
-  6. test_build_tool_server_sets_globals
+  6. test_bind_tool_context_sets_globals
   7. test_allowed_lookup_tables_is_frozenset
   ...
   15. test_retrieve_tool_blocked_on_third_call  (D-10 suspenders)
-  16. test_retrieve_tool_counter_reset_by_build_tool_server  (D-10 suspenders)
+  16. test_retrieve_tool_counter_reset_by_bind_tool_context  (D-10 suspenders)
+  17. the typed tool-result sink (ticket #49) — see the block at the end
 """
 
 from __future__ import annotations
 
 import asyncio
-import sys
-import types
-from importlib.util import find_spec as _find_spec
 from unittest.mock import MagicMock, patch
 
-# ---------------------------------------------------------------------------
-# Monkeypatch claude_agent_sdk BEFORE importing agent_tools.
-# The module uses ``from claude_agent_sdk import tool, create_sdk_mcp_server``
-# at import time, so the fake must be installed in sys.modules first.
-# ---------------------------------------------------------------------------
-
-def _make_passthrough_tool_decorator():
-    """Return a @tool decorator that wraps the async function transparently."""
-    def tool_decorator(name: str, description: str, input_schema: dict):
-        def wrapper(fn):
-            # Attach metadata so tests can inspect if needed; return fn as-is.
-            fn._tool_name = name
-            fn._tool_description = description
-            fn._tool_schema = input_schema
-            return fn
-        return wrapper
-    return tool_decorator
-
-
-def _make_fake_sdk():
-    """Build a fake claude_agent_sdk module with all attrs needed by agent_tools and agent.py."""
-    fake = types.ModuleType("claude_agent_sdk")
-    fake.tool = _make_passthrough_tool_decorator()
-    fake.create_sdk_mcp_server = MagicMock(return_value=MagicMock(name="mcp_server"))
-    # Attributes required by app.worker.tasks.runtime.agent at module import time.
-    # Without these, any test that indirectly imports agent.py after this fake is
-    # installed will fail with ImportError: cannot import name 'ClaudeAgentOptions'.
-    fake.ClaudeAgentOptions = MagicMock(name="ClaudeAgentOptions")
-    fake.ClaudeSDKClient = MagicMock(name="ClaudeSDKClient")
-    fake.AssistantMessage = MagicMock(name="AssistantMessage")
-    fake.ResultMessage = MagicMock(name="ResultMessage")
-    fake.TextBlock = MagicMock(name="TextBlock")
-    fake.ToolUseBlock = MagicMock(name="ToolUseBlock")
-    fake.ToolResultBlock = MagicMock(name="ToolResultBlock")
-    fake.ClaudeSDKError = type("ClaudeSDKError", (Exception,), {})
-    fake.CLINotFoundError = type("CLINotFoundError", (Exception,), {})
-    fake.CLIConnectionError = type("CLIConnectionError", (Exception,), {})
-    fake.ProcessError = type("ProcessError", (Exception,), {})
-    fake.CLIJSONDecodeError = type("CLIJSONDecodeError", (Exception,), {})
-    return fake
-
-
-# THE RULE: install the fake only when the real package is absent. See "THE
-# FAKE SDK, AND WHEN IT WINS" in this module's docstring.
-if "claude_agent_sdk" not in sys.modules and _find_spec("claude_agent_sdk") is None:
-    sys.modules["claude_agent_sdk"] = _make_fake_sdk()
-
-# Now it's safe to import agent_tools.
-import app.services.agent_tools as agent_tools  # noqa: E402  (after monkeypatch)
-from app.services.agent_tools import (  # noqa: E402
+import app.services.agent_tools as agent_tools
+from app.services.agent_tools import (
     ALLOWED_LOOKUP_TABLES,
     MAX_CHUNKS,
-    build_tool_server,
+    bind_tool_context,
+    get_tool_results,
+    publish_tool_result,
 )
 
 # ---------------------------------------------------------------------------
@@ -106,17 +56,13 @@ def _run(coro):
 
 
 def _fn(tool_obj):
-    """Resolve a @tool-decorated tool to its async callable.
+    """Resolve a @tool-declared tool to its async callable.
 
-    The fake SDK's passthrough decorator returns the function itself, but the
-    REAL claude_agent_sdk's @tool returns an ``SdkMcpTool`` dataclass, which is
-    not callable — its async function lives on ``.handler``. Which shape we get
-    depends on test-module ordering: the ``if "claude_agent_sdk" not in
-    sys.modules`` guard above deliberately does not clobber an already-imported
-    real SDK, and modules such as test_agent_chat_routes.py import ``app.main``
-    (pulling in the real SDK) before this module loads. Resolving both shapes
-    here makes these tests order-independent instead of silently depending on
-    winning that race.
+    `app.domain.tool_def.tool` returns a frozen ToolDefinition and the coroutine
+    lives on ``.handler``. The `getattr` fallback is what absorbed the SDK-era
+    ambiguity, when a passthrough fake returned the function itself and the real
+    decorator returned an ``SdkMcpTool``, so which shape a test got depended on
+    pytest's file order.
     """
     return getattr(tool_obj, "handler", tool_obj)
 
@@ -221,7 +167,6 @@ def test_retrieve_truncates_to_max_chunks():
     # Produce 20 chunks with 5000-char content each.
     long_content = "x" * 5000
     fake_context = _long_chunk_context(long_content)
-    fake_chunks = fake_context.chunks
 
     fake_rrf_result = _rrf_result(fake_context)
 
@@ -494,12 +439,12 @@ def test_clarify_returns_question_text():
 
 
 # ---------------------------------------------------------------------------
-# Test 6: build_tool_server sets ContextVars
+# Test 6: bind_tool_context sets ContextVars
 # ---------------------------------------------------------------------------
 
 
-def test_build_tool_server_sets_globals():
-    """build_tool_server must propagate all six arguments to ContextVars (PROD-14)."""
+def test_bind_tool_context_sets_globals():
+    """bind_tool_context must propagate all six arguments to ContextVars (PROD-14)."""
     from app.services.retrieval_service import RetrievalStrategy
 
     sentinel_conn = "postgresql://sentinel:<redacted>@host/db"
@@ -509,7 +454,7 @@ def test_build_tool_server_sets_globals():
     sentinel_conv_id = "conv-sentinel-456"
     sentinel_notify = MagicMock()
 
-    build_tool_server(
+    bind_tool_context(
         conn_str=sentinel_conn,
         agent_id=sentinel_agent_id,
         agent_name=sentinel_agent_name,
@@ -528,12 +473,13 @@ def test_build_tool_server_sets_globals():
 
 
 # ---------------------------------------------------------------------------
-# Test 6b: agent_tool_definitions, the one list both callers read (ticket #48)
+# Test 6b: agent_tool_definitions, the one list the loop reads (ticket #48)
 #
-# `build_tool_server` registers it with the MCP server and `app.services.agent_loop`
-# turns it into the JSON schemas the owned loop sends. Two literals would let the
-# two callers disagree about which tools an agent has, and only one of them serves
-# a customer.
+# `app.services.agent_loop` turns it into the JSON schemas the owned loop sends and
+# dispatches a tool call by matching against it. Until #49 a second reader existed,
+# `build_tool_server`, which registered the same list with an MCP server; two
+# literals would have let the two callers disagree about which tools an agent has,
+# and only one of them serves a customer.
 # ---------------------------------------------------------------------------
 
 #: The eleven tools an Agent turn may call, in registration order.
@@ -571,25 +517,6 @@ def test_agent_tool_definitions_returns_the_eleven_tools_in_order():
 def test_agent_tool_definitions_returns_a_tuple():
     """A caller that appended to a list would change what the other caller registers."""
     assert isinstance(agent_tools.agent_tool_definitions(), tuple)
-
-
-def test_build_tool_server_registers_exactly_the_definitions():
-    """Asserted through the function, so a second literal cannot pass this."""
-    from app.services.retrieval_service import RetrievalStrategy
-
-    with patch("app.services.agent_tools.create_sdk_mcp_server") as make_server:
-        build_tool_server(
-            conn_str="postgresql://sentinel:<redacted>@host/db",
-            agent_id="agent-sentinel-id",
-            agent_name="Sentinel Bot",
-            strategy=RetrievalStrategy.model_validate({}),
-            conversation_id="conv-sentinel-456",
-            notify_fn=MagicMock(),
-        )
-
-    assert make_server.call_args.kwargs["tools"] == list(
-        agent_tools.agent_tool_definitions()
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -899,12 +826,12 @@ def test_retrieve_tool_blocked_on_third_call():
 
 
 # ---------------------------------------------------------------------------
-# Test 16: D-10 (suspenders) — build_tool_server resets the retrieve counter
+# Test 16: D-10 (suspenders) — bind_tool_context resets the retrieve counter
 # ---------------------------------------------------------------------------
 
 
-def test_retrieve_tool_counter_reset_by_build_tool_server():
-    """D-10 suspenders: build_tool_server must reset _retrieve_call_count_var to 0.
+def test_retrieve_tool_counter_reset_by_bind_tool_context():
+    """D-10 suspenders: bind_tool_context must reset _retrieve_call_count_var to 0.
 
     This ensures each new run_agent_turn invocation starts with a fresh counter,
     so the per-turn DoS guard does not accumulate across multiple Celery task
@@ -916,7 +843,7 @@ def test_retrieve_tool_counter_reset_by_build_tool_server():
     # PROD-14: ContextVar-backed, so use .set() not direct assignment.
     agent_tools._retrieve_call_count_var.set(99)
 
-    build_tool_server(
+    bind_tool_context(
         conn_str="postgresql://test:test@localhost/testdb",
         agent_id="agent-reset-test",
         agent_name="Reset Bot",
@@ -926,6 +853,96 @@ def test_retrieve_tool_counter_reset_by_build_tool_server():
     )
 
     assert agent_tools._retrieve_call_count_var.get() == 0, (
-        f"build_tool_server must reset _retrieve_call_count_var to 0, "
+        f"bind_tool_context must reset _retrieve_call_count_var to 0, "
         f"got {agent_tools._retrieve_call_count_var.get()}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 17: the typed tool-result sink (ticket #49)
+#
+# `to_wire` spends a ToolResult's outcome on one bit, so the red-team victim turn
+# used to recover a verdict by matching the dispatcher's prose off the SDK's
+# ToolResultBlocks. BACKLOG 5.8 is the bill for one hand-copied substring, and
+# BACKLOG 5.9 is the bill for the transcript being empty for a whole milestone.
+# The sink is what makes the type reach that turn instead.
+# ---------------------------------------------------------------------------
+
+
+def _bind(conversation_id: str = "conv-sink-001") -> None:
+    from app.services.retrieval_service import RetrievalStrategy
+
+    bind_tool_context(
+        conn_str="postgresql://test:test@localhost/testdb",
+        agent_id="agent-sink-001",
+        agent_name="Sink Bot",
+        strategy=RetrievalStrategy.model_validate({}),
+        conversation_id=conversation_id,
+        notify_fn=None,
+    )
+
+
+def _verdict(skill: str, outcome=None, text: str = "done"):
+    from app.domain.tool_result import Outcome, ToolResult
+
+    return ToolResult(skill=skill, outcome=outcome or Outcome.ok, text=text)
+
+
+def test_publish_tool_result_reaches_get_tool_results_in_order():
+    _bind()
+
+    publish_tool_result(_verdict("issue_refund"))
+    publish_tool_result(_verdict("place_order"))
+
+    assert [r.skill for r in get_tool_results()] == ["issue_refund", "place_order"]
+
+
+def test_the_outcome_survives_the_sink():
+    """The whole reason the sink exists. The wire cannot carry these apart."""
+    from app.domain.tool_result import Outcome
+
+    _bind()
+    publish_tool_result(_verdict("issue_refund", Outcome.denied, "Access denied"))
+    publish_tool_result(_verdict("confirm_action", Outcome.requires_human, "Awaiting"))
+
+    assert [r.outcome for r in get_tool_results()] == [
+        Outcome.denied,
+        Outcome.requires_human,
+    ]
+
+
+def test_bind_tool_context_installs_a_fresh_sink():
+    """A sink carried over reports one attack's refund attempt as the next one's.
+
+    Worse than no recording, because it is a wrong observation that looks right.
+    """
+    _bind("conv-sink-first")
+    publish_tool_result(_verdict("issue_refund"))
+    assert len(get_tool_results()) == 1
+
+    _bind("conv-sink-second")
+
+    assert get_tool_results() == [], (
+        "the previous turn's verdicts survived into this one — a red-team "
+        "transcript would report the last attack's refund as this attack's"
+    )
+
+
+def test_get_tool_results_returns_a_copy():
+    """A caller cannot empty the sink by mutating what it got back."""
+    _bind()
+    publish_tool_result(_verdict("issue_refund"))
+
+    got = get_tool_results()
+    got.clear()
+
+    assert [r.skill for r in get_tool_results()] == ["issue_refund"]
+
+
+def test_publishing_without_a_sink_does_not_raise():
+    """A recording failure must not fail the turn it is observing."""
+    agent_tools._tool_results_var.set(None)
+
+    publish_tool_result(_verdict("issue_refund"))
+
+    assert get_tool_results() == []

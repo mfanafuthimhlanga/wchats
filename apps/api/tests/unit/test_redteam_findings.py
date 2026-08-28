@@ -221,7 +221,7 @@ class TestRunRedTeamWritesFindingsRows:
             "app.worker.tasks.runtime.red_team.run_identity_bypass_agent",
             return_value=[],
         ), patch(
-            "app.worker.tasks.runtime.red_team.build_tool_server",
+            "app.worker.tasks.runtime.red_team.bind_tool_context",
             return_value=MagicMock(),
         ), patch(
             "app.worker.tasks.runtime.red_team._build_transactional_probe_fn",
@@ -326,7 +326,7 @@ class TestRunRedTeamWritesFindingsRows:
             "app.worker.tasks.runtime.red_team.run_identity_bypass_agent",
             return_value=[],
         ), patch(
-            "app.worker.tasks.runtime.red_team.build_tool_server",
+            "app.worker.tasks.runtime.red_team.bind_tool_context",
             return_value=MagicMock(),
         ), patch(
             "app.worker.tasks.runtime.red_team._build_transactional_probe_fn",

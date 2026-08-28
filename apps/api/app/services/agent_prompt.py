@@ -35,8 +35,8 @@ Agent: [calls escalate_to_human with reason="Customer expressed frustration abou
 def build_system_prompt(agent: Agent, soul_override: dict | None = None) -> str:
     """Assemble system prompt from agent soul fields.
 
-    Called once per ``run_agent_turn`` invocation. The returned string is
-    passed directly to ``ClaudeAgentOptions(system_prompt=...)``.
+    Called once per ``run_agent_turn`` invocation. The returned string becomes
+    ``AgentTurn.system_prompt``, first message of every request body since #49.
 
     Args:
         agent: Agent ORM model (or compatible duck-type / MagicMock in tests)

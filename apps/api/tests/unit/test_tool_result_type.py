@@ -308,13 +308,20 @@ def test_recorded_mode_keeps_the_head_wire_shape():
 
         result = asyncio.run(run_transactional_skill("place_order", dict(PLACE_ORDER_ARGS)))
 
+    # The detail is IMPORTED, not spelled out. #90 gave step 5.5 its own detail so
+    # the red-team probe can tag a call that cleared every gate, and a hand-copied
+    # pin here would have to be edited every time that wording moves. BACKLOG 5.8
+    # is what hand-copying a dispatcher string cost the last time.
+    from app.services.transactional.tools import GATES_PASSED_DETAIL  # noqa: PLC0415
+
     assert to_wire(result) == {
         "content": [
             {
                 "type": "text",
                 "text": (
                     "NOT EXECUTED: the place_order request did not reach the provider "
-                    "and nothing was changed. No money moved and no record was updated."
+                    "and nothing was changed. No money moved and no record was "
+                    f"updated. {GATES_PASSED_DETAIL}"
                 ),
             }
         ],

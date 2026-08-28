@@ -44,7 +44,7 @@ REPO_ROOT = API_DIR.parent.parent
 #: HANDOFF's "Running anything locally".
 KEYS = [
     "CONTROL_DB_URL", "CONTROL_DB_SYNC_URL", "AGENT_ID", "API_KEY",
-    "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "NEON_API_KEY",
+    "OPENAI_API_KEY", "NEON_API_KEY",
     "NEON_ENCRYPTION_KEY", "PLATFORM_CREDENTIAL_KEY", "REDIS_URL",
     "EMBEDDING_PROVIDER", "VOYAGE_API_KEY", "S3_ENDPOINT_URL", "S3_UPLOADS_BUCKET",
 ]
@@ -97,36 +97,45 @@ def report_env_files() -> dict[str, str]:
 
 
 def report_provider(env: dict[str, str]) -> None:
-    """WHICH PROVIDER the Anthropic-shaped variables actually point at.
+    """WHICH PROVIDER a call from this shell would actually reach.
 
-    **DeepSeek is the default provider** (BACKLOG `0.7`, owner 2026-08-15), reached
-    through its Anthropic-compatible endpoint. The variables are named
-    `ANTHROPIC_*` because the Claude Agent SDK accepts only Anthropic wire
-    formats, not because the calls go to Anthropic, and reading those names as
-    "Anthropic" is a mistake this script previously invited.
+    **OpenAI `gpt-5.6-luna` is the only provider** (ADR 0008, owner 2026-08-23).
+    Every row in `PURPOSE_ROUTES` names it, and ticket #49 removed the last
+    caller that did not go through the route table.
 
-    `.env` is not `os.environ`, and the gap is `1.28`: pydantic loads `.env` into
-    Settings while the client reads `os.environ`. **An unexported base URL does
-    not merely fail. The client falls back to `api.anthropic.com`**, so the
-    split-brain is Settings saying DeepSeek while the socket goes to Anthropic,
-    on a key that is not Anthropic's. That is the accidental-spend path, and it is
-    why this reports the HOST rather than a tick.
+    THIS SECTION USED TO REPORT THE OPPOSITE, and what it reported was real. The
+    variables were named `ANTHROPIC_*` because the Claude Agent SDK accepted only
+    Anthropic wire formats, `ANTHROPIC_BASE_URL` pointed them at DeepSeek, and
+    `1.28` was the gap between `.env` and `os.environ`: pydantic loaded `.env`
+    into Settings while the SDK's client read `os.environ`, so an unexported base
+    URL sent a DeepSeek key to `api.anthropic.com`. That was the
+    accidental-spend path.
+
+    It cannot happen now, and the reason is worth stating rather than assuming.
+    `resolve_credentials` reads the key from Settings, which pydantic fills from
+    `.env`, so no export is needed for a call to authenticate. It reads
+    `OPENAI_BASE_URL` from `os.environ`, and an ABSENT value is the correct
+    production endpoint rather than a wrong one. The failure mode inverted: an
+    unset variable is now the safe case and a SET one is the one to look at.
     """
-    print("\n  provider (the ANTHROPIC_* names are the SDK's wire format, not the vendor):")
-    url = env.get("ANTHROPIC_BASE_URL", "")
-    host = re.sub(r"^https?://", "", url).split("/")[0] if url else ""
-    print(f"    ANTHROPIC_BASE_URL in .env     {host or 'ABSENT'}")
-    if host and "deepseek" not in host:
-        print(f"      WARNING: {host} is not DeepSeek, which is the default provider (0.7)")
+    print()
+    print("  provider (ADR 0008: OpenAI gpt-5.6-luna serves every purpose):")
+    key = env.get("OPENAI_API_KEY", "")
+    state = f"set, len {len(key)}" if key else "ABSENT"
+    print(f"    OPENAI_API_KEY in .env         {state}")
+    if not key:
+        print("      -> every model call fails at the call. Settings is where the key is read.")
 
-    print("\n  exported into os.environ (NOT the same as present in .env):")
-    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"):
-        value = os.environ.get(key)
-        state = "exported" if value else "NOT exported"
-        print(f"    {key:26} {state}")
-    if not os.environ.get("ANTHROPIC_BASE_URL"):
-        print("      -> a client started from this shell would default to api.anthropic.com,")
-        print("         which is the WRONG PROVIDER on a DeepSeek key (1.28). Export it.")
+    override = os.environ.get("OPENAI_BASE_URL", "")
+    host = re.sub(r"^https?://", "", override).split("/")[0] if override else ""
+    shown = host or "ABSENT (api.openai.com)"
+    print(f"    OPENAI_BASE_URL in os.environ  {shown}")
+    if host:
+        print(f"      WARNING: every call from this shell goes to {host}, not OpenAI.")
+
+    stale = ", ".join(n for n in ("ANTHROPIC_BASE_URL",) if os.environ.get(n))
+    if stale:
+        print(f"    stale, exported, and read by nothing since #49: {stale}")
 
 
 def probe_postgres(label: str, dsn: str, timeout: int = 20) -> str | None:

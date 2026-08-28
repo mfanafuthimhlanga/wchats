@@ -7,7 +7,8 @@ Architecture constraints (CLAUDE.md — non-negotiable):
     - acks_late=True AND idempotency guard on every Celery task (both always required)
     - run_deployment_checklist receives only `agent_id` — NEVER a conn_str in task args (CTL-08)
     - conn_str is fetched from the control DB and decrypted at runtime via fernet_decrypt
-    - asyncio.run(asyncio.wait_for(..., timeout=120.0)) bridge — never loop.run_until_complete
+    - asyncio.run(asyncio.wait_for(..., timeout=ORCHESTRATOR_TIMEOUT_S)) bridge, never
+      loop.run_until_complete
 
 Dual-DB split (PATTERNS.md — non-negotiable):
     - Control DB (checklist_runs, agents): use get_sync_db() SQLAlchemy ORM
@@ -36,7 +37,8 @@ Flow (run_deployment_checklist):
        dispatched for a run that recorded an explicit `false` or a failed run:
        those states recur, so firing on them is a spend loop rather than
        convergence.
-    5. Call run_orchestrator(signals_json, result_container) via asyncio.run bridge
+    5. Run the orchestrator's turn on the owned loop, under ORCHESTRATOR_TIMEOUT_S,
+       billed to the assessed tenant through a LedgerContext this task builds
     6. Parse result, apply the deterministic evidence gate (P2 — an eval or
        red-team signal that is not 'measured' forces recommendation='block'
        with a stated warning; the gate never softens a verdict), then UPDATE
@@ -56,6 +58,7 @@ import structlog
 from sqlalchemy import select, text
 
 from app.core.database import get_sync_db
+from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
 from app.models.checklist_run import ChecklistRun
@@ -159,8 +162,8 @@ def _dispatch_eval_run(agent_id: str) -> bool:
 def run_deployment_checklist(self, agent_id: str) -> dict:
     """Per-agent deployment checklist run.
 
-    Collects quality signals from the tenant DB, calls the Agent SDK orchestrator,
-    and records the recommendation in the control DB checklist_runs table.
+    Collects quality signals from the tenant DB, runs the orchestrator's turn on
+    the owned loop, and records the recommendation in control DB checklist_runs.
 
     Receives agent_id str — no conn_str in args (CTL-08 / CLAUDE.md non-negotiable).
 
@@ -198,6 +201,7 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
             return {}
 
         conn_str = fernet_decrypt(agent.neon_connection_string)
+        tenant_id = str(agent.tenant_id)
 
     # ------------------------------------------------------------------
     # Step 2 — Idempotency guard: check checklist_runs for a recent running row
@@ -355,10 +359,8 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
         envelope_hash = None
 
     # ------------------------------------------------------------------
-    # Step 5 — Call Agent SDK orchestrator via asyncio.run bridge
-    # asyncio.run(asyncio.wait_for(..., timeout=120.0)) — CTL-08 rule.
-    # run_orchestrator is a sync bridge that internally calls asyncio.run,
-    # so we call it directly here (no nested asyncio.run needed).
+    # Step 5 - the orchestrator's turn, under ORCHESTRATOR_TIMEOUT_S. The shim
+    # awaits the service's loop; run_orchestrator would nest a second asyncio.run.
     # ------------------------------------------------------------------
     signals = {
         "eval_summary": eval_summary,
@@ -369,11 +371,12 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
     }
     signals_json = json.dumps(signals)
     result_container: dict = {}
+    ledger = _orchestrator_ledger(tenant_id, agent_id, run_id, conn_str)
 
     try:
         asyncio.run(
             asyncio.wait_for(
-                _call_orchestrator_async(signals_json, result_container),
+                _call_orchestrator_async(signals_json, result_container, ledger=ledger),
                 timeout=ORCHESTRATOR_TIMEOUT_S,
             )
         )
@@ -530,14 +533,31 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
         return {}
 
 
-async def _call_orchestrator_async(signals_json: str, result_container: dict) -> None:
-    """Thin async shim that calls run_orchestrator's internal loop.
+def _orchestrator_ledger(
+    tenant_id: str, agent_id: str, run_id: str, conn_str: str
+) -> LedgerContext:
+    """The orchestrator's turn is billed to the tenant whose agent it assesses.
 
-    run_orchestrator is a sync function that calls asyncio.run internally.
-    We need an awaitable to pass to asyncio.wait_for, so this shim calls
-    the service's _run_orchestrator_loop directly via an import.
+    The row lands in that tenant's own ledger and the checklist run is the job,
+    mirroring red_team.py's _run_ledger. conn_str reaches the recorder and
+    nothing else: no carrier and no ledger row has a field for it (rule 1).
+    """
+    return LedgerContext(
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        job_id=run_id,
+        recorder=ledger_recorder(conn_str),
+    )
 
-    This avoids a nested asyncio.run() which would raise RuntimeError in Python 3.12.
+
+async def _call_orchestrator_async(
+    signals_json: str, result_container: dict, *, ledger: LedgerContext
+) -> None:
+    """Thin async shim that awaits the service's orchestrator loop.
+
+    The service's run_orchestrator bridge is synchronous and calls asyncio.run
+    itself. wait_for needs an awaitable, so this shim awaits the loop directly
+    and avoids a nested asyncio.run(), which raises RuntimeError in Python 3.12.
     """
     from app.services.deployment_service import _run_orchestrator_loop
-    await _run_orchestrator_loop(signals_json, result_container)
+    await _run_orchestrator_loop(signals_json, result_container, ledger=ledger)

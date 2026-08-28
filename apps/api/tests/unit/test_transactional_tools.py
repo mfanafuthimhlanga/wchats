@@ -1701,88 +1701,69 @@ class TestToolRegistryAttachment:
 
 
 # ===========================================================================
-# build_tool_server (kept from 14-04)
+# The publish edge — _published_wire (ticket #49, replaces build_tool_server)
+#
+# All seven @tool handlers convert through _published_wire, which puts the typed
+# ToolResult in this turn's sink and THEN builds the wire dict. Both halves are
+# needed and they carry different things: the wire spends the outcome on one bit
+# for the model, the sink keeps the outcome itself for whoever assembled the turn.
+#
+# The red-team victim turn is why. It reports each mutating call's real dispatcher
+# verdict, and while it ran on the SDK it re-derived one by matching this module's
+# prose off ToolResultBlocks. BACKLOG 5.8 is what one hand-copied substring cost:
+# the identity gate blocked a refund and the probe reported the attack SUCCEEDED.
 # ===========================================================================
 
 
-class TestBuildToolServerRegistration:
-    """build_tool_server must pass all 11 tools to create_sdk_mcp_server."""
+class TestThePublishEdge:
+    """Every handler publishes, the sink keeps what the wire cannot, bytes unchanged."""
 
-    def test_build_tool_server_includes_all_11_tools(self):
-        from app.services.agent_tools import build_tool_server
+    @staticmethod
+    def _sink() -> list:
+        """Install a fresh sink and hand it back. bind_tool_context does this per turn."""
+        from app.services.agent_tools import _tool_results_var  # noqa: PLC0415
 
-        with patch("app.services.agent_tools.create_sdk_mcp_server") as mock_create:
-            mock_create.return_value = {
-                "type": "sdk",
-                "name": "customer-tools",
-                "instance": MagicMock(),
-            }
-            build_tool_server(
-                conn_str="postgresql://test",
-                agent_id=TEST_AGENT_ID,
-                agent_name="Test Agent",
-                strategy=MagicMock(),
-                conversation_id=TEST_CONV_ID,
-                notify_fn=None,
-            )
+        sink: list = []
+        _tool_results_var.set(sink)
+        return sink
 
-        mock_create.assert_called_once()
-        tools_arg = mock_create.call_args.kwargs.get("tools")
-        assert tools_arg is not None, "tools= must be passed as keyword to create_sdk_mcp_server"
-        tool_names = [t.name for t in tools_arg]
-
-        assert len(tool_names) == 11, (
-            f"Expected 11 tools in build_tool_server, got {len(tool_names)}: {tool_names}"
+    @staticmethod
+    def _handlers() -> list:
+        from app.services.transactional.tools import (  # noqa: PLC0415
+            book_slot_tool,
+            cancel_order_tool,
+            confirm_action_tool,
+            issue_refund_tool,
+            place_order_tool,
+            update_customer_record_tool,
+            update_subscription_tool,
         )
 
-    def test_build_tool_server_original_4_tools_retained(self):
-        from app.services.agent_tools import build_tool_server
+        return [
+            place_order_tool,
+            cancel_order_tool,
+            issue_refund_tool,
+            update_subscription_tool,
+            book_slot_tool,
+            update_customer_record_tool,
+            confirm_action_tool,
+        ]
 
-        with patch("app.services.agent_tools.create_sdk_mcp_server") as mock_create:
-            mock_create.return_value = {
-                "type": "sdk",
-                "name": "customer-tools",
-                "instance": MagicMock(),
-            }
-            build_tool_server(
-                conn_str="postgresql://test",
-                agent_id=TEST_AGENT_ID,
-                agent_name="Test Agent",
-                strategy=MagicMock(),
-                conversation_id=TEST_CONV_ID,
-                notify_fn=None,
-            )
+    def test_every_one_of_the_seven_handlers_publishes(self):
+        """A handler that skips the edge is a skill the victim transcript loses.
 
-        tools_arg = mock_create.call_args.kwargs.get("tools", [])
-        tool_names = {t.name for t in tools_arg}
+        Driven with arguments no Input model accepts, so each one returns from its
+        own validation arm without touching a database. The arms differ per handler,
+        which is the point: the publish has to be on the path they share.
+        """
+        _set_context()
+        sink = self._sink()
 
-        assert "retrieve" in tool_names
-        assert "lookup_structured" in tool_names
-        assert "escalate_to_human" in tool_names
-        assert "clarify" in tool_names
+        for handler in self._handlers():
+            asyncio.run(handler.handler({}))
 
-    def test_build_tool_server_has_all_7_new_tools(self):
-        from app.services.agent_tools import build_tool_server
-
-        with patch("app.services.agent_tools.create_sdk_mcp_server") as mock_create:
-            mock_create.return_value = {
-                "type": "sdk",
-                "name": "customer-tools",
-                "instance": MagicMock(),
-            }
-            build_tool_server(
-                conn_str="postgresql://test",
-                agent_id=TEST_AGENT_ID,
-                agent_name="Test Agent",
-                strategy=MagicMock(),
-                conversation_id=TEST_CONV_ID,
-                notify_fn=None,
-            )
-
-        tools_arg = mock_create.call_args.kwargs.get("tools", [])
-        tool_names = {t.name for t in tools_arg}
-
-        expected_new = {
+        published = [r.skill for r in sink]
+        assert published == [
             "place_order",
             "cancel_order",
             "issue_refund",
@@ -1790,9 +1771,84 @@ class TestBuildToolServerRegistration:
             "book_slot",
             "update_customer_record",
             "confirm_action",
-        }
-        missing = expected_new - tool_names
-        assert not missing, f"Missing new tools in build_tool_server: {missing}"
+        ], f"a handler returned without publishing its verdict: {published}"
+
+    def test_a_capability_denial_reaches_the_sink_as_denied(self):
+        """`Outcome.denied` says a gate refused. The wire says only is_error."""
+        from app.domain.tool_result import Outcome  # noqa: PLC0415
+
+        _set_context()
+        sink = self._sink()
+
+        with (
+            _p("check_capability_access", _mock_access_deny("disabled")),
+            _p("reserve_idempotency", _mock_reserve("reserved")),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.write_audit_row", AsyncMock()),
+        ):
+            from app.services.transactional.tools import place_order_tool  # noqa: PLC0415
+
+            wire = asyncio.run(place_order_tool.handler(_valid_place_order_args()))
+
+        assert wire.get("is_error") is True
+        assert [(r.skill, r.outcome) for r in sink] == [("place_order", Outcome.denied)]
+
+    def test_an_escalation_to_a_human_is_indistinguishable_on_the_wire_and_not_in_the_sink(self):
+        """The exact collision `Outcome` exists for.
+
+        A written confirmation row and a completed order both leave the dispatcher
+        with no is_error, so a reader downstream of the conversion has to guess from
+        English. The victim turn used to guess, and every confirm_action that routed
+        an action to an approver was reported to the red-team suite as an attack that
+        landed.
+        """
+        from app.domain.tool_result import Outcome  # noqa: PLC0415
+
+        _set_context()
+        sink = self._sink()
+        db_cm, _session = _mock_db_session()
+
+        with (
+            _p("check_capability_access", _mock_access_pass()),
+            patch(f"{_T}.get_sync_db", db_cm),
+        ):
+            from app.services.transactional.tools import confirm_action_tool  # noqa: PLC0415
+
+            wire = asyncio.run(
+                confirm_action_tool.handler(
+                    {"skill": "place_order", "action_reference": "idem-001"}
+                )
+            )
+
+        assert "is_error" not in wire, (
+            "an escalation to a human carries no error bit, which is why the wire "
+            "cannot tell it apart from a completed action"
+        )
+        assert [r.outcome for r in sink] == [Outcome.requires_human]
+
+    def test_the_wire_is_byte_for_byte_what_to_wire_builds(self):
+        """Publishing added a reader, not a format. The model reads what it read."""
+        from app.domain.tool_result import Outcome, ToolResult, to_wire  # noqa: PLC0415
+        from app.services.transactional.tools import _published_wire  # noqa: PLC0415
+
+        self._sink()
+        for outcome in Outcome:
+            result = ToolResult(skill="issue_refund", outcome=outcome, text="R50.00")
+            assert _published_wire(result) == to_wire(result)
+
+    def test_a_replay_publishes_the_stored_wire_untouched(self):
+        """`stored_wire` is arbitrary JSON an earlier call left in the tenant DB."""
+        from app.domain.tool_result import Outcome, ToolResult  # noqa: PLC0415
+        from app.services.transactional.tools import _published_wire  # noqa: PLC0415
+
+        sink = self._sink()
+        stored = {"content": [{"type": "text", "text": "Refunded"}], "extra": {"n": 1}}
+        result = ToolResult(
+            skill="issue_refund", outcome=Outcome.ok, text="ignored", stored_wire=stored
+        )
+
+        assert _published_wire(result) is stored
+        assert sink == [result]
 
 
 # ===========================================================================
@@ -2128,6 +2184,168 @@ class TestActorRequireHuman:
         assert "existing-require-human-uuid" in result["content"][0]["text"]
         # Still exactly one audit row, matching AUD-01 symmetry.
         assert audit_mock.call_count == 1
+
+
+# ===========================================================================
+# The three durable writes the red-team victim turn used to leave behind
+# (#90, #91). `red_team_probe._build_transactional_probe_fn` drove its victim
+# on side_effects="live" for a milestone, on a docstring sentence claiming
+# recorded mode short-circuits the six mutating skills. It does not. The
+# dispatcher runs steps 1 to 5 either way, and what live mode added was writes
+# into the owner's product. These three pins are what stops them.
+# ===========================================================================
+
+
+@contextmanager
+def _recorded_mode(mode: str = "recorded"):
+    """Enter `mode` with a fresh sink, and reset both tokens in `finally`.
+
+    ContextVars are process-wide for the whole pytest session and nothing resets
+    them between tests. A leaked "recorded" would make every later test in this
+    file stop reaching its adapter mock while still passing its own assertions.
+    """
+    from app.services.agent_tools import (  # noqa: PLC0415
+        _recorded_side_effects_var,
+        _side_effects_var,
+    )
+
+    mode_token = _side_effects_var.set(mode)
+    sink_token = _recorded_side_effects_var.set([])
+    try:
+        yield
+    finally:
+        _recorded_side_effects_var.reset(sink_token)
+        _side_effects_var.reset(mode_token)
+
+
+class TestRecordedModeLeavesTheOwnersProductAlone:
+    """#90 and #91, one test per durable write, each with its live partner."""
+
+    def _run(self, mode: str, gate_mock, *, reserve=None, release=None, audit=None):
+        """One place_order through the real dispatcher, in `mode`."""
+        _set_context()
+        db_cm, session = _mock_db_session()
+        reserve = reserve or _mock_reserve("reserved")
+        release = release or _mock_release()
+        audit = audit or AsyncMock()
+
+        with (
+            _recorded_mode(mode),
+            _p("check_capability_access", _mock_access_pass()),
+            _p("reserve_idempotency", reserve),
+            _p("mark_reservation_in_flight", AsyncMock(return_value=None)),
+            _p("apply_rate_and_constraint_checks", _mock_rate_pass()),
+            _p("finalize_idempotency", _mock_finalize()),
+            _p("release_idempotency", release),
+            _p("compute_args_hash", MagicMock(return_value="fakehash")),
+            patch(f"{_T}.call_actor_gate", gate_mock),
+            patch(f"{_T}.write_audit_row", audit),
+            patch(f"{_T}.get_sync_db", db_cm),
+            patch(f"{_T}.get_adapter_for_skill", AsyncMock(return_value=_mock_adapter())),
+        ):
+            from app.services.transactional.tools import place_order_tool  # noqa: PLC0415
+
+            result = asyncio.run(place_order_tool.handler(_valid_place_order_args("idem-rec")))
+        return result, session, reserve, release, audit
+
+    # -- #90: the pending_confirmations row --------------------------------
+
+    def test_recorded_require_human_writes_no_pending_confirmation(self):
+        """#90, and the one that matters most.
+
+        A require_human verdict writes a durable row into the owner's approval
+        queue. The row carries nothing marking it as a probe, and
+        `_is_confirm_action_shaped` does not filter it, so it appears in
+        GET /agents/{agent_id}/pending-confirmations like a customer's.
+        Approving it dispatches resolve_confirmation_task ->
+        execute_approved_confirmation -> get_adapter_for_skill, hours later, in
+        another task, outside the `red_team_mode()` window that makes every
+        in-turn adapter call resolve to the offline stub. So a red-team run that
+        provoked a large refund queued a real refund for the owner to approve.
+        """
+        _, session, _, _, _ = self._run("recorded", _mock_gate_require_human())
+
+        session.add.assert_not_called()
+        session.commit.assert_not_called()
+
+    def test_live_require_human_still_queues_the_pending_confirmation(self):
+        """The anti-tautology partner. The approval queue is a real product
+        surface, and a customer turn the Actor escalates must still leave a row
+        in it. Without this, deleting the require_human write passes #90."""
+        _, session, _, _, _ = self._run("live", _mock_gate_require_human())
+
+        session.add.assert_called_once()
+        session.commit.assert_called_once()
+
+    # -- #91b: the idempotency keyspace ------------------------------------
+
+    def test_recorded_mode_reserves_in_its_own_keyspace(self):
+        """#91b. The idempotency key is MODEL-supplied and models produce
+        deterministic ones ("refund-ORD-9001"). A probe reserving in the
+        customer keyspace makes a real later call with the same key read as a
+        replay or a stranded reservation, and a probe can also be handed a real
+        completed call's stored provider result."""
+        reserve = _mock_reserve("reserved")
+        release = _mock_release()
+
+        self._run("recorded", _mock_gate_approve(), reserve=reserve, release=release)
+
+        reserved_key = reserve.call_args[0][2]
+        assert reserved_key == "recorded:idem-rec", (
+            f"the probe reserved {reserved_key!r} in the customer keyspace"
+        )
+        assert release.call_args[0][2] == reserved_key, (
+            "the release used a different key from the reservation, so the "
+            "recorded key is held until it expires"
+        )
+
+    def test_live_mode_reserves_under_the_key_the_model_supplied(self):
+        """The anti-tautology partner: a customer's key is never rewritten."""
+        reserve = _mock_reserve("reserved")
+
+        self._run("live", _mock_gate_approve(), reserve=reserve)
+
+        assert reserve.call_args[0][2] == "idem-rec"
+
+    # -- #91c: the audit rows ----------------------------------------------
+
+    def test_every_recorded_audit_row_carries_the_marker(self):
+        """#91c. An unmarked recorded row is byte-identical to a production row
+        in `tool_calls_audit`, which is the table the labelled Actor set and the
+        human grader read. Both the approve path and a gate refusal are checked,
+        because the refused column of that confusion matrix is made entirely of
+        the second kind."""
+        from app.services.transactional.tools import (  # noqa: PLC0415
+            RECORDED_NOT_EXECUTED,
+        )
+
+        approved = AsyncMock()
+        self._run("recorded", _mock_gate_approve(), audit=approved)
+        blocked = AsyncMock()
+        self._run("recorded", _mock_gate_block(), audit=blocked)
+
+        for name, audit in (("approve", approved), ("actor block", blocked)):
+            assert audit.call_count == 1, f"{name}: AUD-01 wants exactly one row"
+            error = audit.call_args.kwargs.get("error") or ""
+            assert error.startswith(RECORDED_NOT_EXECUTED), (
+                f"{name}: the recorded audit row's error is {error!r}, which a "
+                "consumer filtering on the marker cannot tell from production"
+            )
+
+    def test_live_audit_rows_stay_unmarked(self):
+        """The anti-tautology partner: marking every row would also pass above,
+        and would make the marker useless as a filter."""
+        from app.services.transactional.tools import (  # noqa: PLC0415
+            RECORDED_NOT_EXECUTED,
+        )
+
+        blocked = AsyncMock()
+        self._run("live", _mock_gate_block(), audit=blocked)
+
+        assert blocked.call_args.kwargs.get("error") == "actor_block", (
+            "a live actor_block row no longer reads exactly as it did"
+        )
+        assert RECORDED_NOT_EXECUTED not in (blocked.call_args.kwargs.get("error") or "")
 
 
 # ===========================================================================

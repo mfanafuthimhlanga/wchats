@@ -1,12 +1,14 @@
 """
-M8 Deployment service: pre-deployment readiness orchestrator (Claude Agent SDK Sonnet).
+M8 Deployment service: pre-deployment readiness orchestrator.
 
 Architecture notes:
-- Signals are collected synchronously (psycopg2) BEFORE calling the Agent SDK.
-- Agent calls submit_report as a side-effect tool; runner captures ToolUseBlock
-  and writes to result_container. No tool result sent back (same as report_finding pattern).
-- claude-agent-sdk==0.1.81 PINNED — do not upgrade without testing.
-- asyncio.run(asyncio.wait_for(..., timeout=120.0)) bridge in Celery task.
+- Signals are collected synchronously (psycopg2) BEFORE the model is called.
+- The orchestrator's prose turn runs on `app.services.tool_loop.run_tool_loop`
+  (ticket #49, ADR 0008). Nothing here runs on the Agent SDK.
+- The agent calls submit_report as a side-effect tool. The handler writes the
+  report into result_container and `stop_after` ends the loop on that call, so
+  the ack it returns is never sent to a second model call.
+- asyncio.run(asyncio.wait_for(..., ORCHESTRATOR_TIMEOUT_S)) bridge in the Celery task.
 - DEP-01 latency/cost signals deferred to M10 (OPS-04). M8 reads only eval, red team,
   verified QA, and corpus stats from the DB.
 """
@@ -19,23 +21,24 @@ from urllib.parse import urlsplit
 
 import psycopg2
 import structlog
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ClaudeSDKClient,
-    ToolUseBlock,
-    create_sdk_mcp_server,
-    tool,
-)
 from pydantic import BaseModel
 from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database import get_sync_db
+from app.core.model_client import LedgerContext, make_async_client, route_for
+from app.domain.tool_def import ToolDefinition, tool
 from app.services.capability_service import canonical_envelope_hash
+from app.services.tool_loop import run_tool_loop
 from app.services.transactional.enforcement import _parse_rate_limit
 
-SONNET_MODEL = "claude-sonnet-4-6"
+#: The routing-table key every model call this orchestrator makes bills under,
+#: and the row a rollup groups its spend by. The model comes from that row, not
+#: from this module: `SONNET_MODEL = "claude-sonnet-4-6"` lived here until #49,
+#: and the Anthropic credential it needed was revoked on 2026-08-26, so nothing
+#: has served that alias since. ADR 0008 routes this purpose to OpenAI.
+ORCHESTRATOR_PURPOSE = "deployment_orchestrator"
+
 log = structlog.get_logger(__name__)
 
 
@@ -249,10 +252,14 @@ Call submit_report exactly once with your assessment.
 # model's SUMMARY does not contradict the recommendation the platform imposed;
 # the gate exists so the recommendation does not depend on the model at all.
 #
-# AND NOTHING HERE OBSERVES THE MODEL OBEYING ANY OF IT (P3 review). No test in
-# the repo executes run_orchestrator — BACKLOG 3.10 records `_run_orchestrator_loop`
-# reporting "was never awaited" — so the prompt tests are drift protection over a
-# string, never evidence that the narration is constrained. What actually
+# AND NOTHING HERE OBSERVES THE MODEL OBEYING ANY OF IT (P3 review). The prompt
+# tests are drift protection over a string, never evidence that the narration is
+# constrained. BACKLOG 3.10 recorded that nothing executed run_orchestrator at
+# all, and `_run_orchestrator_loop` reported "was never awaited"; #49 put the
+# loop on `run_tool_loop`, which takes its client as an argument, and
+# TestRunOrchestrator now drives the whole loop against a scripted one. That
+# observes the wiring and the stop. A scripted client is not a model, so it
+# still observes nothing about any prose condition above. What actually
 # prevents the summary from praising a tautology's 0.99 is that _eval_summary
 # does not put pass_rates on the payload at all outside EVAL_SIGNAL_MEASURED:
 # the model cannot narrate a number it was not given. Read every "the prompt
@@ -289,8 +296,15 @@ Call submit_report exactly once with your assessment.
 ORCHESTRATOR_TIMEOUT_S = 300.0
 
 
+# BACKLOG 1.32. Spelled once, because three places must agree on it: the tool
+# the model is GIVEN, the `stop_after` set that ends the loop, and the prompt's
+# own prose telling the model to call it. 1.32 is what a disagreement costs. A
+# tool described in the prompt and registered nowhere failed every checklist
+# ever run with "Orchestrator did not produce a report".
+SUBMIT_REPORT_TOOL_NAME = "submit_report"
+
 _TOOL_SUBMIT_REPORT = {
-    "name": "submit_report",
+    "name": SUBMIT_REPORT_TOOL_NAME,
     "description": "Submit the deployment readiness report with recommendation and warnings.",
     "input_schema": {
         "type": "object",
@@ -329,26 +343,15 @@ _TOOL_SUBMIT_REPORT = {
     },
 }
 
-# BACKLOG 1.32. The three-way name agreement `3.7` names: the MCP server's
-# name, the `mcp_servers` key, and the `mcp__{server}__{tool}` prefix the SDK
-# rewrites tool names into. Spelled once here so the loop that matches the
-# ToolUseBlock and the allowlist that authorises it cannot drift apart — the
-# drift IS the defect this constant exists to close.
-DEPLOYMENT_MCP_SERVER_NAME = "deployment"
-DEPLOYMENT_MCP_SERVER_VERSION = "1.0.0"
-SUBMIT_REPORT_TOOL_NAME = f"mcp__{DEPLOYMENT_MCP_SERVER_NAME}__{_TOOL_SUBMIT_REPORT['name']}"
 
-
-def build_report_tools(result_container: dict) -> list:
+def build_report_tools(result_container: dict) -> list[ToolDefinition]:
     """Make `_TOOL_SUBMIT_REPORT` a tool the orchestrator can actually call.
 
     BACKLOG `1.32`. Until 2026-08-13 `_TOOL_SUBMIT_REPORT` was referenced
-    **exactly once in the repository — its own definition.** It was never
-    passed to `ClaudeAgentOptions`, and `deployment_service` contained no
-    `create_sdk_mcp_server`, no `mcp_servers` and no `allowed_tools`. The
-    orchestrator was instructed to "call submit_report" while holding no such
-    tool, so it could never emit `ToolUseBlock(name='submit_report')`, the loop
-    always fell through, and **every deployment checklist ever run failed with
+    **exactly once in the repository, its own definition.** It was passed to
+    nothing. The orchestrator was instructed to "call submit_report" while
+    holding no such tool, so it could never call it, the loop always fell
+    through, and **every deployment checklist ever run failed with
     "Orchestrator did not produce a report".**
 
     This is audit defect **D4 exactly** — the one already found and fixed in
@@ -356,21 +359,27 @@ def build_report_tools(result_container: dict) -> list:
     reported clean"). The same shape survived here because, per `3.10`,
     `run_orchestrator` had never been executed by anything.
 
+    Since #49 the list this returns is the turn's whole tool set AND its whole
+    allowlist. `tool_loop.dispatch` refuses any name that is not in it, so
+    registering the tool and authorising it are one act, and the two cannot
+    drift the way `3.7` records the SDK's three names drifting.
+
     The handler is a pure side-effect recorder, mirroring `report_finding`: it
     writes the report into `result_container` and returns a minimal ack. It
-    never raises — an exception escaping an in-process MCP handler aborts the
-    whole loop, which would turn a malformed report into the same silent
-    no-report this fix exists to remove.
+    never raises, and that is what keeps the loop's `stop_after` honest. A
+    handler that raised would leave the container empty, so `dispatch_outcome`
+    reports it as not run and the loop carries on to its turn ceiling rather
+    than stopping on a report nobody filed.
     """
 
     @tool(
-        _TOOL_SUBMIT_REPORT["name"],  # type: ignore[arg-type] # SDK stubs are narrower than the runtime contract
-        _TOOL_SUBMIT_REPORT["description"],  # type: ignore[arg-type]
-        _TOOL_SUBMIT_REPORT["input_schema"],  # type: ignore[arg-type]
+        _TOOL_SUBMIT_REPORT["name"],
+        _TOOL_SUBMIT_REPORT["description"],
+        _TOOL_SUBMIT_REPORT["input_schema"],
     )
     async def _submit_report(args: dict) -> dict:
         # First call wins, matching the loop's documented "capture the first
-        # submit_report and return" contract.
+        # submit_report and stop" contract.
         result_container.setdefault("report", args)
         return {"content": [{"type": "text", "text": "report recorded"}]}
 
@@ -1031,8 +1040,8 @@ def _fetch_red_team_summary_sync(agent_id: str, conn_str: str) -> dict:
     when it did not, with `coverage_source` saying which. Deriving them from the
     current build unconditionally would re-describe every historical run with
     today's numbers the moment P4 flips SDK_ATTACKERS_CAN_PROBE. red_team_service
-    is imported inside the function because it pulls claude_agent_sdk at module
-    scope. It built a provider client there too until ticket #47.
+    is imported inside the function. It pulled the Agent SDK there until #49 and
+    a provider client until #47, so the deferral now buys only its own load.
 
     Returns dict with keys: signal, signal_detail, last_run_at,
     deployment_blocked, critical_count, high_count, medium_count, low_count,
@@ -2002,60 +2011,108 @@ def derive_blast_radius_warnings(blast_radius: dict) -> list[DeploymentWarning]:
 
 
 # ---------------------------------------------------------------------------
-# Agent SDK orchestrator loop
+# Orchestrator loop
 # ---------------------------------------------------------------------------
+
+# WHAT FOUR SDK OPTIONS BECAME ONE ARGUMENT. `run_tool_loop`'s `tools` list is
+# the turn's whole tool set AND its whole authorisation. The SDK needed four
+# options to reach the same place, because its default was to hand the agent the
+# CLI's own toolset: `tools=[]` kept Bash/Read/Edit off the worker's filesystem,
+# `strict_mcp_config=True` stopped a project `.mcp.json` server being merged in,
+# and `allowed_tools` plus `permission_mode="dontAsk"` named the approved subset
+# and denied the rest without blocking on a prompt no worker would answer.
+# `run_tool_loop` has no built-ins, no config file and no permission model, and
+# `tool_loop.dispatch` refuses any name the `tools` list does not carry. Deleting
+# those four options removed no control.
+
+#: How many times the model may be asked in one orchestrator turn. Carried over
+#: from the SDK options at the #49 cutover and never re-measured. One call reads
+#: the signals and calls submit_report; the other four are headroom for a model
+#: that sends an argument string which does not parse and has to correct itself.
+ORCHESTRATOR_MAX_TURNS = 5
+
+
+async def _close_client(client) -> None:
+    """Close the client the loop was handed. `run_tool_loop` closes none itself.
+
+    Every exception is swallowed. This runs from a `finally`, and on the timeout
+    path (`ORCHESTRATOR_TIMEOUT_S`, BACKLOG 1.30) it runs while a cancellation is
+    already on its way out. A raise here would replace the reason the
+    orchestrator failed with a footnote about a socket. `asyncio.CancelledError`
+    is a BaseException and passes straight through, so the timeout still fires.
+    """
+    try:
+        await client.close()
+    except Exception as exc:
+        log.warning(
+            "deployment_orchestrator.client_not_closed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
 
 
 async def _run_orchestrator_loop(
     signals_json: str,
     result_container: dict,
+    *,
+    ledger: LedgerContext,
 ) -> None:
-    """Async Agent SDK loop that calls submit_report as a side-effect tool.
+    """Ask the model for a readiness report, on the owned tool loop (#49).
 
-    Captures the first ToolUseBlock(name='submit_report') into result_container
-    and returns immediately. No tool result is sent back to the agent
-    (same side-effect pattern as report_finding in red_team_service.py).
+    submit_report is a side-effect tool. `build_report_tools`' handler writes the
+    report into `result_container`, and `stop_after` ends the loop on that call,
+    AFTER the handler has run. The ack the handler returns is appended to a
+    message list the loop never sends again, so a report costs one model call.
+
+    Args:
+        signals_json:     the quality signals the model reasons over.
+        result_container: where the handler leaves the report. Untouched when
+                          the model never calls the tool, and the caller reads
+                          that absence as a failed run.
+        ledger:           the three ids each `model_calls` row carries and the
+                          tenant database it is written to. Mandatory, with no
+                          default: a client that records nothing spends a
+                          tenant's money leaving no row to show for it.
     """
-    # BACKLOG 1.32: the tool must be REGISTERED, not merely described in the
-    # prompt. `tools=[]` + `strict_mcp_config=True` also stop the orchestrator
-    # inheriting the CLI's Bash/Read/Edit built-ins on the worker's filesystem,
-    # for the same reason red_team_service refuses them.
-    server = create_sdk_mcp_server(
-        name=DEPLOYMENT_MCP_SERVER_NAME,
-        version=DEPLOYMENT_MCP_SERVER_VERSION,
-        tools=build_report_tools(result_container),
+    route = route_for(ORCHESTRATOR_PURPOSE)
+    client = make_async_client(
+        ORCHESTRATOR_PURPOSE,
+        tenant_id=ledger.tenant_id,
+        recorder=ledger.recorder,
+        agent_id=ledger.agent_id,
+        job_id=ledger.job_id,
     )
-    options = ClaudeAgentOptions(
-        model=SONNET_MODEL,
-        system_prompt=_DEPLOYMENT_SYSTEM_PROMPT,
-        max_turns=5,
-        tools=[],
-        mcp_servers={DEPLOYMENT_MCP_SERVER_NAME: server},
-        allowed_tools=[SUBMIT_REPORT_TOOL_NAME],
-        strict_mcp_config=True,
-        permission_mode="dontAsk",
-    )
-    async with ClaudeSDKClient(options=options) as client:
-        await client.query(
+    try:
+        result = await run_tool_loop(
             f"Here are the agent's quality signals:\n\n{signals_json}\n\n"
-            "Assess deployment readiness and call submit_report."
+            "Assess deployment readiness and call submit_report.",
+            client=client,
+            model=route.model,
+            system_prompt=_DEPLOYMENT_SYSTEM_PROMPT,
+            # BACKLOG 1.32: the tool must be REGISTERED, not merely described
+            # in the prompt. It is the whole allowlist too; see the note above.
+            tools=build_report_tools(result_container),
+            max_turns=ORCHESTRATOR_MAX_TURNS,
+            stop_after=frozenset({SUBMIT_REPORT_TOOL_NAME}),
+            reasoning_effort=route.reasoning_effort,
         )
-        async for msg in client.receive_response():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    # The SDK rewrites in-process MCP tool names to
-                    # `mcp__{server}__{tool}`, so matching the bare name here
-                    # would reproduce 1.32 in a second place. Accept both: the
-                    # handler above has already recorded the report either way.
-                    if isinstance(block, ToolUseBlock) and block.name in (
-                        SUBMIT_REPORT_TOOL_NAME,
-                        _TOOL_SUBMIT_REPORT["name"],
-                    ):
-                        result_container.setdefault("report", block.input)
-                        return
+    finally:
+        await _close_client(client)
+    if "report" not in result_container:
+        # BACKLOG 1.30's family. The caller logs `no_report`, which names no
+        # cause; these three fields are the cause. The model stopped talking, or
+        # it hit ORCHESTRATOR_MAX_TURNS, or it called something else.
+        log.warning(
+            "deployment_orchestrator.no_report",
+            stop_reason=result.stop_reason,
+            num_turns=result.num_turns,
+            tool_names=result.tool_names,
+        )
 
 
-def run_orchestrator(signals_json: str, result_container: dict) -> None:
+def run_orchestrator(
+    signals_json: str, result_container: dict, *, ledger: LedgerContext
+) -> None:
     """Synchronous bridge. NOT on the live path, and kept deliberately.
 
     BACKLOG `1.33`. `run_deployment_checklist` does not call this: it goes
@@ -2073,7 +2130,7 @@ def run_orchestrator(signals_json: str, result_container: dict) -> None:
     try:
         asyncio.run(
             asyncio.wait_for(
-                _run_orchestrator_loop(signals_json, result_container),
+                _run_orchestrator_loop(signals_json, result_container, ledger=ledger),
                 timeout=ORCHESTRATOR_TIMEOUT_S,
             )
         )

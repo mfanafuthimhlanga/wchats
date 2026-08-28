@@ -17,10 +17,12 @@ WHAT THE DOUBLES STAND IN FOR
     A few tests drive the real thing instead. `TestOneModelCall`'s
     `test_the_eleven_real_tools_reach_the_wire` and every test in `TestTheSeam`
     go through `agent_tool_definitions()`, which returns
-    `claude_agent_sdk.SdkMcpTool` objects today. That is also correct, and it is
-    the other half of the claim. The duck typing says the loop asks for nothing
-    more; these say the objects the product actually hands it satisfy that,
-    SDK-built or not. The day #49 replaces those definitions, these tests notice.
+    `app.domain.tool_def.ToolDefinition` objects since #49 and
+    `claude_agent_sdk.SdkMcpTool` before it. That is also correct, and it is the
+    other half of the claim. The duck typing says the loop asks for nothing more;
+    these say the objects the product actually hands it satisfy that. They
+    noticed nothing when #49 swapped the type, which is the point: the loop reads
+    four attributes and the replacement supplied the same four.
 
 WHAT THE SEAM TESTS DRIVE FOR REAL
     `build_agent_turn` calls `bind_tool_context` for real, because that binding
@@ -348,6 +350,33 @@ class TestTheSeam:
 
         assert current_side_effect_mode() == "live"
 
+    def test_a_refused_mode_leaves_no_verdict_from_the_previous_turn(self):
+        """The partner of the test above, for the sink that arrived with #49.
+
+        `reset_side_effect_context` cleared the mode and the recorded sink and
+        not the tool-result sink, so a `build_agent_turn` that raised between the
+        reset and `bind_tool_context` left the previous turn's typed verdicts
+        readable. The red-team probe reads that sink to build its transcript, so
+        the stale entry would be reported as this message's verdict, with the
+        earlier message's refund text in it.
+        """
+        from app.domain.tool_result import Outcome, ToolResult
+        from app.services.agent_tools import get_tool_results, publish_tool_result
+
+        _build(side_effects="live")
+        publish_tool_result(
+            ToolResult(skill="issue_refund", outcome=Outcome.ok, text="R2000 refunded")
+        )
+        assert len(get_tool_results()) == 1
+
+        with pytest.raises(ValueError):
+            _build(side_effects="dry-run")
+
+        assert get_tool_results() == [], (
+            "a turn that failed to build left the previous turn's verdicts in the "
+            "sink. The probe would report them as this message's."
+        )
+
     def test_the_ledger_is_mandatory(self):
         """A client that records nothing is the failure #46 ended."""
         with pytest.raises(TypeError):
@@ -431,6 +460,41 @@ class TestTheSeam:
             _notify_fn_var.get()("frustrated customer", "third repeat")
 
         send.assert_called_once_with(agent, "frustrated customer", "third repeat")
+
+    def test_a_live_turn_with_no_notify_override_still_reaches_the_mail(self):
+        """The default an override could silently break (ticket #49).
+
+        `notify_fn` grew a keyword for `red_team_probe`, which ran its victim turn
+        on side_effects="live" until #90 moved it to "recorded". The override is
+        redundant now and kept anyway: this is the one edge that pages a real
+        human. One caller passes one. Every other caller passes nothing, and the
+        seam has to go on picking the mode's own notifier for them, so the absence
+        of the keyword is asserted here rather than assumed.
+        """
+        assert "notify_fn" not in _seam_kwargs()
+        agent = _agent()
+        with patch("app.services.agent_loop.send_escalation_email") as send:
+            _build(agent=agent, side_effects="live")
+            from app.services.agent_tools import _notify_fn_var
+
+            _notify_fn_var.get()("frustrated customer", "third repeat")
+
+        send.assert_called_once_with(agent, "frustrated customer", "third repeat")
+
+    def test_an_override_replaces_the_notifier_and_no_mail_leaves(self):
+        """The red-team probe's half. Live mode, and nothing reaches the owner."""
+        seen: list = []
+        with patch("app.services.agent_loop.send_escalation_email") as send:
+            _build(
+                side_effects="live",
+                notify_fn=lambda reason, context: seen.append((reason, context)),
+            )
+            from app.services.agent_tools import _notify_fn_var
+
+            _notify_fn_var.get()("frustrated customer", "third repeat")
+
+        send.assert_not_called()
+        assert seen == [("frustrated customer", "third repeat")]
 
 
 class TestTheClientFactory:

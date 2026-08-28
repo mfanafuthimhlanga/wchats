@@ -180,7 +180,7 @@ class TestRunDeploymentChecklistHappyPath:
             "enabled_skill_count": 0,
         }
 
-        async def _fake_call_orchestrator_async(signals_json, result_container):
+        async def _fake_call_orchestrator_async(signals_json, result_container, *, ledger=None):
             """Coroutine stub that sets result_container["report"] (happy path)."""
             result_container["report"] = {
                 "recommendation": "ship",
@@ -227,6 +227,106 @@ class TestRunDeploymentChecklistHappyPath:
         )
         # Verify db.commit() was called to persist the 'complete' status
         assert mock_db.commit.called, "db.commit() should be called to persist 'complete' status"
+
+    def test_the_orchestrator_turn_is_billed_to_the_tenant_it_assesses(self):
+        """The ledger the task builds, asserted at the call site rather than in isolation.
+
+        Ticket #49 put the Orchestrator's prose turn on the owned loop, so it now
+        leaves a `model_calls` row like every other purpose. Until then it ran on
+        the Agent SDK against a model no route named, and a checklist run could
+        not report what its own assessment cost.
+
+        The seven fakes in this module take `ledger` with a default, which is what
+        lets them stand in for a keyword-only parameter. A default is also what
+        would let the task stop passing one without a single test noticing, so
+        this is the test that reads it.
+        """
+        from app.core.model_client import LedgerContext
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        agent_id = str(uuid.uuid4())
+        tenant_id = str(uuid.uuid4())
+        mock_run_id = str(uuid.uuid4())
+        seen: dict = {}
+
+        mock_agent = MagicMock()
+        mock_agent.neon_connection_string = b"encrypted_conn"
+        mock_agent.tenant_id = tenant_id
+        mock_run = MagicMock()
+        mock_run.id = mock_run_id
+        mock_run.status = "running"
+
+        mock_db = MagicMock()
+
+        def _db_get(model, pk):
+            if hasattr(model, "__name__") and model.__name__ == "Agent":
+                return mock_agent
+            return mock_run
+
+        mock_db.get.side_effect = _db_get
+        mock_db.execute.return_value.scalar_one_or_none.return_value = None
+        mock_db.refresh.side_effect = lambda obj: setattr(obj, "id", mock_run_id)
+
+        async def _capture(signals_json, result_container, *, ledger=None):
+            seen["ledger"] = ledger
+            result_container["report"] = {
+                "recommendation": "ship",
+                "summary": "All signals look good.",
+                "warnings": [],
+            }
+
+        with patch(
+            "app.worker.tasks.runtime.deployment.get_sync_db",
+            _make_sync_db_ctx(mock_db),
+        ), patch(
+            "app.worker.tasks.runtime.deployment.fernet_decrypt",
+            return_value="postgresql://test/tenant",
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_eval_summary_sync",
+            return_value=_measured_eval_signal(),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_red_team_summary_sync",
+            return_value=_measured_red_team_signal(),
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_verified_qa_stats_sync",
+            return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_corpus_stats_sync",
+            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+        ), patch(
+            "app.worker.tasks.runtime.deployment._fetch_blast_radius_sync",
+            return_value={
+                "configured_max_single_action_cents": None,
+                "configured_max_hourly_aggregate_cents": None,
+                "observed_max_single_action_cents": None,
+                "observed_max_hourly_aggregate_cents": None,
+                "observed_window_days": 7,
+                "warn_threshold_single_cents": 50000,
+                "warn_threshold_hourly_cents": 200000,
+                "enabled_skill_count": 0,
+            },
+        ), patch(
+            "app.worker.tasks.runtime.deployment._compute_envelope_hash_sync",
+            return_value="test-envelope-hash",
+        ), patch(
+            "app.worker.tasks.runtime.deployment._call_orchestrator_async",
+            side_effect=_capture,
+        ):
+            run_deployment_checklist.run(agent_id=agent_id)
+
+        ledger = seen.get("ledger")
+        assert isinstance(ledger, LedgerContext), (
+            f"the task passed {ledger!r} rather than a LedgerContext. Without one "
+            "the orchestrator's turn bills nobody and the run cannot report its cost."
+        )
+        assert ledger.tenant_id == tenant_id, (
+            "the turn is billed to the tenant whose agent it assesses, so a wrong "
+            "tenant id here is a wrong tenant's invoice."
+        )
+        assert ledger.agent_id == agent_id
+        assert ledger.job_id == mock_run_id, (
+            "the checklist run is the job, so a rollup can total one run's spend."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +563,7 @@ class TestBlastRadiusWiring:
             "enabled_skill_count": 0,
         }
 
-        async def _fake_call_orchestrator_async(signals_json, result_container):
+        async def _fake_call_orchestrator_async(signals_json, result_container, *, ledger=None):
             result_container["report"] = {
                 "recommendation": "ship", "summary": "All good.", "warnings": [],
             }
@@ -510,7 +610,7 @@ class TestBlastRadiusWiring:
         mock_db, mock_run = _build_full_happy_path_mock_db(mock_run_id)
         empty_eval, empty_red_team, empty_verified_qa, empty_corpus = _empty_first_four_signals()
 
-        async def _fake_call_orchestrator_async(signals_json, result_container):
+        async def _fake_call_orchestrator_async(signals_json, result_container, *, ledger=None):
             result_container["report"] = {
                 "recommendation": "ship", "summary": "All good.", "warnings": [],
             }
@@ -570,7 +670,7 @@ class TestBlastRadiusWiring:
             "enabled_skill_count": 1,
         }
 
-        async def _fake_call_orchestrator_async(signals_json, result_container):
+        async def _fake_call_orchestrator_async(signals_json, result_container, *, ledger=None):
             result_container["report"] = {
                 "recommendation": "ship_with_warnings",
                 "summary": "One eval metric is a little low.",
@@ -635,7 +735,7 @@ class TestBlastRadiusWiring:
             "enabled_skill_count": 1,
         }
 
-        async def _fake_call_orchestrator_async(signals_json, result_container):
+        async def _fake_call_orchestrator_async(signals_json, result_container, *, ledger=None):
             result_container["report"] = {
                 "recommendation": "ship_with_warnings",
                 "summary": "Flagged by the orchestrator too.",
@@ -716,7 +816,7 @@ class TestEvidenceGateWiring:
         mock_run_id = str(uuid.uuid4())
         mock_db, mock_run = _build_full_happy_path_mock_db(mock_run_id)
 
-        async def _fake_call_orchestrator_async(signals_json, result_container):
+        async def _fake_call_orchestrator_async(signals_json, result_container, *, ledger=None):
             result_container["report"] = {
                 "recommendation": orchestrator_recommendation,
                 "summary": "All good.",
@@ -839,7 +939,7 @@ class TestEvidenceGateWiring:
         mock_run_id = str(uuid.uuid4())
         mock_db, mock_run = _build_full_happy_path_mock_db(mock_run_id)
 
-        async def _fake_call_orchestrator_async(signals_json, result_container):
+        async def _fake_call_orchestrator_async(signals_json, result_container, *, ledger=None):
             # The orchestrator is handed the substituted signal, so assert on
             # what it was told as well as on what the platform decided.
             import json as _json

@@ -128,7 +128,11 @@ def _as_utc(value: Any) -> datetime:
 
 @dataclass(frozen=True)
 class ModelCall:
-    """One call to a model, as the response hook and the SDK path both record it.
+    """One call to a model, as the response hook records it.
+
+    There were two producers until #49. The SDK path priced its own turns from a
+    book nobody here controlled, and it went with the harness, so the hook on the
+    factory's httpx client is the only producer now.
 
     Args:
         purpose:               what the call was for, the key the rollup groups by

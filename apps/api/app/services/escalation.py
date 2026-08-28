@@ -3,7 +3,7 @@ escalation — Fire-and-forget email notification for customer escalations.
 
 Design: NEVER raises. If SMTP is not configured, logs a warning and returns.
 If SMTP send fails, logs a warning and returns. This function is called from
-within a Celery task as a notify_fn callback from build_tool_server; any
+within a Celery task as the notify_fn `agent_loop.build_agent_turn` binds; any
 exception here would abort the agent turn incorrectly.
 
 Threat context (T-04-03-03):

@@ -25,8 +25,9 @@ Guards:
       Actor gate (one live Haiku call per chained refund). Measured, not
       assumed: it 401'd the first time it ever ran, 2026-08-11.
     - test_confused_deputy additionally requires a real, non-placeholder
-      ANTHROPIC_API_KEY (drives a real ClaudeSDKClient victim turn) — skips
-      with a clear reason otherwise.
+      OPENAI_API_KEY. Since #49 its victim turn IS the customer turn, run by
+      build_agent_turn on the agent_turn route. Skips with a clear reason
+      otherwise.
     - test_identity_bypass needs no Redis. Its first two attempts (the ones
       RTX-03 is actually about) need no Anthropic API either and always run.
       Its THIRD attempt does: a genuinely verified session is supposed to
@@ -632,7 +633,7 @@ def test_value_bound_evasion(clean_tenant, require_redis):
 
 
 # ---------------------------------------------------------------------------
-# test_confused_deputy — T-18-RTX-01. Requires a real ANTHROPIC_API_KEY.
+# test_confused_deputy - T-18-RTX-01. Requires a real OPENAI_API_KEY.
 # ---------------------------------------------------------------------------
 
 
@@ -641,11 +642,33 @@ def _has_real_anthropic_key() -> bool:
     return bool(key) and not key.startswith("test_") and key != "test_anthropic_key"
 
 
+def _has_real_openai_key() -> bool:
+    """The victim turn's credential since #49, which is a different one.
+
+    `_build_transactional_probe_fn` runs `build_agent_turn` now, and that goes
+    through `make_async_client`, which passes `OPENAI_PROVIDER` explicitly. So
+    RTX-01 needs an OpenAI key and no Anthropic key at all.
+
+    The two Actor-gate guards above still read `ANTHROPIC_API_KEY`, and they are
+    right to for now: `actor_gate` reaches the model through `make_client`, which
+    derives its provider from a base url rather than from `PURPOSE_ROUTES` and so
+    builds an Anthropic client despite routing to Luna. That is issue #88. When
+    it lands, those two guards move here.
+
+    Settings, not `os.environ`, is where the key is read from now, so the "not
+    merely .env" half of the old reason is gone. This still reads `os.environ`
+    because a test deciding whether to SPEND money should look at the shell it
+    was launched from rather than at a file it might not have loaded.
+    """
+    key = os.environ.get("OPENAI_API_KEY", "")
+    return bool(key) and not key.startswith("test_") and key != "test_openai_key"
+
+
 def test_confused_deputy(clean_tenant):
-    if not _has_real_anthropic_key():
+    if not _has_real_openai_key():
         pytest.skip(
-            "a real, non-placeholder ANTHROPIC_API_KEY is required for the "
-            "confused-deputy victim ClaudeSDKClient turn"
+            "a real, non-placeholder OPENAI_API_KEY is required for the "
+            "confused-deputy victim turn, which runs the customer loop since #49"
         )
 
     from app.services.red_team_probe import (

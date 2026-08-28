@@ -19,11 +19,11 @@ WHAT MOVED, AND WHAT DID NOT. ADR 0008 took the turn off the Agent SDK harness.
 `build_agent_options` became `build_agent_turn`, `ClaudeAgentOptions` became the
 `AgentTurn` dataclass, and both now live in `app/services/agent_loop.py` beside
 the loop they feed. The property this file pins did not move: one assembly, two
-callers, no second definition of the agent anywhere. The SDK's own
-`ClaudeAgentOptions` is still constructed by `deployment_service`,
-`red_team_probe` and `red_team_service`, which build orchestrators and
-adversaries rather than the customer agent; that type is #49's subject and this
-suite no longer polices it.
+callers, no second definition of the agent anywhere. Ticket #49 then took the
+last three callers of the SDK's own `ClaudeAgentOptions` off it, so
+`MODULES_ALLOWED_TO_CONSTRUCT_OPTIONS` is empty and
+`test_only_allowlisted_modules_construct_claude_agent_options` now pins that
+absence. Read that test's docstring for which gate is the primary one.
 
 Three kinds of assertion, deliberately layered:
 
@@ -31,9 +31,9 @@ Three kinds of assertion, deliberately layered:
     inlined `AgentTurn(...)` inside `run_agent_turn` fails here even when it
     happens to produce byte-identical fields today, because "identical today" is
     precisely the state that drifts tomorrow. Import aliases are resolved before
-    counting, so `from … import build_tool_server as bts` does not hide a second
-    tool server, and dynamic dispatch (`getattr(mod, "X")(…)`) is banned outright
-    on the turn path rather than left as a hole.
+    counting, so `from … import bind_tool_context as btc` does not hide a second
+    binding of the tool context, and dynamic dispatch (`getattr(mod, "X")(…)`) is
+    banned outright on the turn path rather than left as a hole.
   * IDENTITY, a sentinel driven through the live task. The turn object
     `run_agent_loop` actually receives must be the object the seam returned.
     Source that merely mentions the seam and then passes something else fails
@@ -113,28 +113,21 @@ BEHAVIOUR_DETERMINING_CALLS = (
 MODULES_ALLOWED_TO_CONSTRUCT_TURNS = {"app/services/agent_loop.py"}
 
 #: Modules permitted to construct the SDK's own `ClaudeAgentOptions` anywhere
-#: under `app/`. The customer agent left that type with ADR 0008 and none of
-#: these three is the customer agent.
+#: under `app/`. Empty, and #49 is what emptied it.
 #:
-#: `deployment_service.py` builds the deployment orchestrator and
-#: `red_team_service.py` builds ADVERSARIES. Neither is what a customer talks to.
+#: ADR 0008 took the customer agent off that type. Three modules went on
+#: constructing it afterwards: `deployment_service.py` for the deployment
+#: Orchestrator, `red_team_service.py` for the red-team Attacker, and
+#: `red_team_probe.py`, whose `_build_transactional_probe_fn` assembled the
+#: VICTIM turn by hand with its own `_PROBE_MODEL` and its own `_ALLOWED_TOOLS`,
+#: so RTX-01's confused-deputy findings described an agent with a different model
+#: and a different tool list from the one production serves. All three now run on
+#: `app.services.tool_loop`, and the victim turn goes through the seam.
 #:
-#: `red_team_probe.py` is a known divergence rather than an adversary.
-#: `_build_transactional_probe_fn` builds the VICTIM turn, which is the customer
-#: agent, by hand, with its own `_PROBE_MODEL` and its own `_ALLOWED_TOOLS`. So RTX-01's
-#: confused-deputy findings are about an agent with a different model and a
-#: different tool list from the one production serves and the eval measures.
-#: Routing it through the seam is #49; until then the entry records the gap.
-#:
-#: The names that matter are the ones absent: `agent_loop.py`, `agent.py` and
-#: `eval.py`. A turn assembled from `ClaudeAgentOptions` in any of those is the
-#: harness coming back for one caller and nobody else, which is drift by another
-#: route. This pin came off in the #48 rewrite of this suite and is restored here.
-MODULES_ALLOWED_TO_CONSTRUCT_OPTIONS = {
-    "app/services/deployment_service.py",
-    "app/services/red_team_probe.py",
-    "app/services/red_team_service.py",
-}
+#: An empty allowlist asserts an ABSENCE, so read
+#: `test_only_allowlisted_modules_construct_claude_agent_options` for which gate
+#: is primary and what this one adds to it.
+MODULES_ALLOWED_TO_CONSTRUCT_OPTIONS: set[str] = set()
 
 #: The exact capability surface the seam grants, in registration order. A value,
 #: not a count: the audit's transactional table shows six of these move money or
@@ -205,10 +198,10 @@ def _tree(path: Path) -> ast.Module:
 def _aliases_in(tree: ast.Module) -> dict[str, str]:
     """Map each local import alias back to the name it actually binds.
 
-    `from app.services.agent_tools import build_tool_server as bts` makes `bts`
-    a second spelling of the tool-server constructor. Counting the syntactic
-    callee alone would score `bts(...)` as an unrelated function and let a
-    second tool server exist while every count stayed at 1.
+    `from app.services.agent_tools import bind_tool_context as btc` makes `btc`
+    a second spelling of the function that publishes the per-turn ContextVars.
+    Counting the syntactic callee alone would score `btc(...)` as an unrelated
+    function and let a second binding exist while every count stayed at 1.
     """
     aliases: dict[str, str] = {}
     for node in ast.walk(tree):
@@ -237,8 +230,8 @@ def _top_level_functions(path: Path) -> dict[str, ast.AST]:
 def _callee_name(call: ast.Call, aliases: dict[str, str]) -> str | None:
     """The name being called, with import aliases resolved.
 
-    `Foo(...)` -> "Foo"; `mod.Foo(...)` -> "Foo"; `bts(...)` -> "build_tool_server"
-    when `bts` is an alias. A call whose callee is itself an expression (a call,
+    `Foo(...)` -> "Foo"; `mod.Foo(...)` -> "Foo"; `btc(...)` -> "bind_tool_context"
+    when `btc` is an alias. A call whose callee is itself an expression (a call,
     a subscript, a lambda) has no name — that returns None and is banned
     separately by `test_the_turn_path_uses_no_dynamic_dispatch`.
     """
@@ -441,25 +434,25 @@ def test_import_aliases_are_resolved_before_counting():
     """Anti-tautology pin for the counter the two tests above depend on.
 
     `_called_names` used to key on the syntactic callee identifier, so
-    `from … import build_tool_server as bts` followed by `bts(...)` counted as
-    an unrelated function named "bts" and a second tool server could exist with
-    every count still reading 1. This asserts the alias resolution actually
-    happens, on a synthetic module, so the property is observed rather than
-    assumed from reading the helper.
+    `from … import bind_tool_context as btc` followed by `btc(...)` counted as
+    an unrelated function named "btc" and a second binding of the tool context
+    could exist with every count still reading 1. This asserts the alias
+    resolution actually happens, on a synthetic module, so the property is
+    observed rather than assumed from reading the helper.
     """
     tree = ast.parse(
-        "from app.services.agent_tools import build_tool_server as bts\n"
+        "from app.services.agent_tools import bind_tool_context as btc\n"
         "def f():\n"
-        "    return bts(1), build_system_prompt(2)\n"
+        "    return btc(1), build_system_prompt(2)\n"
     )
     aliases = _aliases_in(tree)
-    assert aliases.get("bts") == "build_tool_server"
+    assert aliases.get("btc") == "bind_tool_context"
     counts = _called_names(tree, aliases)
-    assert counts["build_tool_server"] == 1, (
-        "an aliased import of build_tool_server was not counted against its real "
+    assert counts["bind_tool_context"] == 1, (
+        "an aliased import of bind_tool_context was not counted against its real "
         f"name; counts={dict(counts)}"
     )
-    assert counts["bts"] == 0
+    assert counts["btc"] == 0
 
 
 @pytest.mark.parametrize("fn_name", sorted(_TURN_SINKS))
@@ -519,7 +512,7 @@ def test_the_turn_path_never_rebinds_attributes_on_the_agent_row():
                     )
     assert offenders == [], (
         f"the turn path rebinds fields on the agent row: {offenders}. The row is "
-        "an input to build_system_prompt and build_tool_server; mutating it "
+        "an input to build_system_prompt and bind_tool_context; mutating it "
         "here changes the agent the customer gets without changing the agent "
         "any eval can rebuild from the database."
     )
@@ -627,18 +620,26 @@ def _construction_sites(callee: str) -> dict[str, int]:
 
 
 def test_only_allowlisted_modules_construct_claude_agent_options():
-    """The SDK type the customer turn left behind, still pinned where it remains.
+    """The SDK type nothing under `app/` builds any more. The belt, not the braces.
 
-    ADR 0008 moved the agent off `ClaudeAgentOptions`, and the #48 rewrite of this
-    suite dropped this test along with the type's last mention on the turn path.
-    Three modules go on constructing it, and until #49 they were unpinned. A new
-    construction anywhere under `app/` was invisible, including one on the turn
-    path, which would be the harness returning for one caller and no other. That
-    is the same drift `MODULES_ALLOWED_TO_CONSTRUCT_TURNS` closes, in the type it
-    replaced.
+    THE PRIMARY GATE IS THE IMPORT-LINTER CONTRACT, `the provider SDKs have one
+    home` in `pyproject.toml`, which #49 extends by adding `claude_agent_sdk` to
+    its `forbidden_modules`. That contract is stronger than anything here: it
+    bans the IMPORT, so a module cannot reach the name at all, by any spelling,
+    including one this file's counter has no case for. An empty allowlist alone
+    would be a weak assertion, and it is not the argument.
 
-    Adding a module here is a deliberate act with a reviewer attached. Removing
-    one is what #49 does.
+    This test is the belt to those braces, and it stays for what the contract
+    cannot say. A broken contract prints one edge, `app is not allowed to import
+    claude_agent_sdk`. This prints the module and the count, and the failure
+    message points at the seam, so the reader learns which file went back to the
+    harness and why that is drift rather than a dependency question. The two also
+    fail on different mistakes: the contract catches the import and misses a
+    construction through a name already in scope, while this catches the
+    construction and misses an import that builds nothing.
+
+    Adding a module here is a deliberate act with a reviewer attached, and it now
+    means arguing past the contract as well. Removing all three is what #49 did.
     """
     found = _construction_sites("ClaudeAgentOptions")
 
@@ -655,8 +656,11 @@ def test_only_allowlisted_modules_construct_claude_agent_options():
         "the set of modules constructing ClaudeAgentOptions changed.\n"
         f"  found:   {sorted(found)}\n"
         f"  allowed: {sorted(MODULES_ALLOWED_TO_CONSTRUCT_OPTIONS)}\n"
-        "A new one is a new agent definition. If it is genuinely an adversary or "
-        "an orchestrator rather than the customer agent, add it here on purpose."
+        "#49 took every caller off that type and onto app.services.tool_loop, so "
+        "the allowed set is empty and a found one means the harness came back. "
+        "Check the import-linter contract `the provider SDKs have one home` too: "
+        "it bans the import outright, so this reading a construction while that "
+        "contract stays KEPT means one of the two gates is no longer measuring."
     )
 
 
@@ -1315,14 +1319,14 @@ def test_the_seam_rejects_a_mode_it_does_not_implement():
     the third value rather than silently on the safe-looking one.
 
     Both collaborators are patched out, and `match=` pins the seam's OWN message.
-    Neither is fussiness. An early version of this test called the real
-    `build_tool_server`, which has the same check one layer down — so it was
-    green with the seam's `raise` deleted, and its mutation proof said so. It was
-    demonstrating the tool layer's guard while claiming to demonstrate the
-    seam's. The seam's check is not redundant with that one. It fires BEFORE
-    `build_tool_server` sets any per-task ContextVar or the system prompt is
-    assembled, and it names `build_agent_turn`, which is where the caller made
-    the mistake. A test still cannot prove a guard it never reaches.
+    Neither is fussiness. An early version of this test called the real tool
+    layer, which has the same check one layer down, so it was green with the
+    seam's `raise` deleted and its mutation proof said so. It was demonstrating
+    the tool layer's guard while claiming to demonstrate the seam's. The seam's
+    check is not redundant with that one. It fires BEFORE `bind_tool_context`
+    publishes any per-task ContextVar or the system prompt is assembled, and it
+    names `build_agent_turn`, which is where the caller made the mistake. A test
+    still cannot prove a guard it never reaches.
     """
     from app.services.agent_loop import build_agent_turn
 
@@ -1406,7 +1410,7 @@ def test_the_seam_threads_the_mode_into_the_tool_server(mode):
     assert mock_tools.call_args.kwargs["side_effects"] == mode, (
         f"the seam was asked for side_effects={mode!r} and passed "
         f"{mock_tools.call_args.kwargs.get('side_effects')!r} to "
-        "build_tool_server. The mode has no effect anywhere else."
+        "bind_tool_context. The mode has no effect anywhere else."
     )
 
 

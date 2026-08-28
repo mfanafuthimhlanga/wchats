@@ -9,75 +9,18 @@ TDD RED -> GREEN:
          with job_id read from the new _job_id_var ContextVar into a local
          BEFORE any run_in_executor call (Pitfall 4).
 
-Monkeypatches ``claude_agent_sdk`` before module import, same pattern as
+Drives the real tool definitions, which since ticket #49 need no SDK, same as
 test_agent_tools.py, so tests run without the SDK binary present.
 """
 
 from __future__ import annotations
 
 import asyncio
-import sys
-import types
-from importlib.util import find_spec as _find_spec
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Monkeypatch claude_agent_sdk BEFORE importing agent_tools (mirrors
-# test_agent_tools.py's fake-SDK bootstrap).
-# ---------------------------------------------------------------------------
-
-
-def _make_passthrough_tool_decorator():
-    def tool_decorator(name: str, description: str, input_schema: dict):
-        def wrapper(fn):
-            fn._tool_name = name
-            fn._tool_description = description
-            fn._tool_schema = input_schema
-            return fn
-        return wrapper
-    return tool_decorator
-
-
-def _make_fake_sdk():
-    fake = types.ModuleType("claude_agent_sdk")
-    fake.tool = _make_passthrough_tool_decorator()
-    fake.create_sdk_mcp_server = MagicMock(return_value=MagicMock(name="mcp_server"))
-    fake.ClaudeAgentOptions = MagicMock(name="ClaudeAgentOptions")
-    fake.ClaudeSDKClient = MagicMock(name="ClaudeSDKClient")
-    fake.AssistantMessage = MagicMock(name="AssistantMessage")
-    fake.ResultMessage = MagicMock(name="ResultMessage")
-    fake.TextBlock = MagicMock(name="TextBlock")
-    fake.ToolUseBlock = MagicMock(name="ToolUseBlock")
-    fake.ToolResultBlock = MagicMock(name="ToolResultBlock")
-    fake.ClaudeSDKError = type("ClaudeSDKError", (Exception,), {})
-    fake.CLINotFoundError = type("CLINotFoundError", (Exception,), {})
-    fake.CLIConnectionError = type("CLIConnectionError", (Exception,), {})
-    fake.ProcessError = type("ProcessError", (Exception,), {})
-    fake.CLIJSONDecodeError = type("CLIJSONDecodeError", (Exception,), {})
-    # Everything this file did not deliberately stand in for comes from the
-    # installed package. Without it the fake is a fixed list that goes stale. It
-    # had no `UserMessage`, so once pytest imported this module during
-    # collection, every later module reaching agent.py raised
-    # ImportError("cannot import name 'UserMessage' from 'claude_agent_sdk'").
-    # A whole-suite run hid that behind alphabetical ordering, because
-    # test_agent_task.py imports the real package first. Dunders stay off, so
-    # this module never claims the real one's __file__.
-    import claude_agent_sdk as real
-
-    for name, value in vars(real).items():
-        if not name.startswith("__") and name not in fake.__dict__:
-            setattr(fake, name, value)
-    return fake
-
-
-# THE RULE: install the fake only when the real package is absent. Why the
-# `find_spec` half is load-bearing is in test_agent_tools.py's module docstring.
-if "claude_agent_sdk" not in sys.modules and _find_spec("claude_agent_sdk") is None:
-    sys.modules["claude_agent_sdk"] = _make_fake_sdk()
-
-import app.services.agent_tools as agent_tools  # noqa: E402
+import app.services.agent_tools as agent_tools
 from app.domain.retrieved_context import RetrievedChunk, RetrievedContext  # noqa: E402
 from app.services.retrieval_service import RrfFusion  # noqa: E402
 
@@ -87,14 +30,17 @@ def _run(coro):
 
 
 def _fn(tool_obj):
-    """Resolve a @tool-decorated tool to its async callable.
+    """The async callable behind a `@tool` declaration.
 
-    The fake SDK's passthrough decorator returns the function itself, but the
-    REAL claude_agent_sdk's @tool returns an ``SdkMcpTool`` dataclass, which is
-    not callable — its async function lives on ``.handler``. The guard above
-    deliberately does not clobber an already-imported real SDK, and modules such
-    as test_agent_chat_routes.py import ``app.main`` (pulling in the real SDK)
-    before this module loads, so resolve both shapes to stay order-independent.
+    One shape since ticket #49. `app.domain.tool_def.ToolDefinition` is frozen
+    and not callable, and its handler lives on `.handler`, which is where
+    `tool_loop.dispatch` looks too.
+
+    There were two shapes until then, and the reason is worth keeping. The real
+    `claude_agent_sdk.tool` returned an `SdkMcpTool`, while the fake this module
+    installed returned the function itself, so which one a test received
+    depended on whether another module had already imported the real package.
+    `getattr(obj, "handler", obj)` was what made that race invisible.
     """
     return getattr(tool_obj, "handler", tool_obj)
 

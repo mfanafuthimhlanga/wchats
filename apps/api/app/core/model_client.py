@@ -413,6 +413,10 @@ PURPOSE_ROUTES: Mapping[str, ModelRoute] = MappingProxyType({
     # what came back, billed once per reported finding.
     "red_team_probe": _LUNA,
     "red_team_severity": _LUNA,
+    # Added by ticket #49. The deployment Orchestrator's prose turn ran on the
+    # Agent SDK against `claude-sonnet-4-6` and so had no row at all, which is
+    # why a checklist run could not report what its own assessment cost.
+    "deployment_orchestrator": _LUNA,
     "query_expansion": _LUNA,
     "retrieval_strategist": _LUNA,
     "strategist": _LUNA,
@@ -469,25 +473,28 @@ def resolve_credentials(provider: str | None = None) -> Credentials:
 
     The key comes from Settings because a Celery worker started without inheriting
     `.env` has it nowhere else, which is the reason `metadata_service` already
-    passes it explicitly. The base url comes from the environment because that is
-    where the SDK itself looks, so resolving it here changes no endpoint a worker
-    already calls.
+    passes it explicitly.
+
+    `ANTHROPIC_BASE_URL` went with ticket #49 and it is worth saying why, because
+    the variable was doing real work. The Agent SDK's CLI reads it to pick a wire
+    format, and this repo set it to `api.deepseek.com/anthropic` so an
+    Anthropic-shaped call reached DeepSeek. ADR 0008 retired DeepSeek and #49
+    removed the SDK, so the only remaining effect of that variable would be to
+    redirect an Anthropic call to a provider no route names, silently, from an
+    environment nobody reads. `ANTHROPIC_API_KEY` stays because the Anthropic
+    branch is still constructible; it is no longer steerable from the outside.
 
     Args:
         provider: the price book's name for who serves the call. `openai` reads
                   the OpenAI pair. Anything else, including None, reads the
-                  Anthropic pair, which is what DeepSeek's Anthropic-format
-                  endpoint is configured through today.
+                  Anthropic key against Anthropic's own endpoint.
     """
     if provider == OPENAI_PROVIDER:
         return Credentials(
             api_key=settings.OPENAI_API_KEY,
             base_url=os.environ.get("OPENAI_BASE_URL"),
         )
-    return Credentials(
-        api_key=settings.ANTHROPIC_API_KEY,
-        base_url=os.environ.get("ANTHROPIC_BASE_URL"),
-    )
+    return Credentials(api_key=settings.ANTHROPIC_API_KEY, base_url=None)
 
 
 def served_model_for(

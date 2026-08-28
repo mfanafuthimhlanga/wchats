@@ -19,44 +19,9 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import sys
-import types
-from importlib.util import find_spec as _find_spec
 from unittest.mock import MagicMock
 
-# ---------------------------------------------------------------------------
-# Monkeypatch claude_agent_sdk BEFORE importing agent_tools.
-# agent_tools.py imports ``tool`` and ``create_sdk_mcp_server`` at module load
-# time, so the fake must be installed in sys.modules first.
-# ---------------------------------------------------------------------------
-# THE RULE: install the fake only when the real package is absent. Why the
-# `find_spec` half is load-bearing is in test_agent_tools.py's module docstring.
-if "claude_agent_sdk" not in sys.modules and _find_spec("claude_agent_sdk") is None:
-    _fake_sdk = types.ModuleType("claude_agent_sdk")
-
-    def _tool_decorator(name: str, description: str, schema: dict):
-        def wrapper(fn):
-            fn._tool_name = name
-            return fn
-        return wrapper
-
-    _fake_sdk.tool = _tool_decorator
-    _fake_sdk.create_sdk_mcp_server = MagicMock(return_value=MagicMock(name="mcp_server"))
-    _fake_sdk.ClaudeAgentOptions = MagicMock(name="ClaudeAgentOptions")
-    _fake_sdk.ClaudeSDKClient = MagicMock(name="ClaudeSDKClient")
-    _fake_sdk.AssistantMessage = MagicMock(name="AssistantMessage")
-    _fake_sdk.ResultMessage = MagicMock(name="ResultMessage")
-    _fake_sdk.TextBlock = MagicMock(name="TextBlock")
-    _fake_sdk.ToolUseBlock = MagicMock(name="ToolUseBlock")
-    _fake_sdk.ToolResultBlock = MagicMock(name="ToolResultBlock")
-    _fake_sdk.ClaudeSDKError = type("ClaudeSDKError", (Exception,), {})
-    _fake_sdk.CLINotFoundError = type("CLINotFoundError", (Exception,), {})
-    _fake_sdk.CLIConnectionError = type("CLIConnectionError", (Exception,), {})
-    _fake_sdk.ProcessError = type("ProcessError", (Exception,), {})
-    _fake_sdk.CLIJSONDecodeError = type("CLIJSONDecodeError", (Exception,), {})
-    sys.modules["claude_agent_sdk"] = _fake_sdk
-
-import app.services.agent_tools as agent_tools  # noqa: E402
+import app.services.agent_tools as agent_tools
 
 # ---------------------------------------------------------------------------
 # Test 1: ContextVar propagation across asyncio.run()
@@ -67,7 +32,7 @@ def test_asyncio_run_propagation():
 
     Python 3.7+ guarantees that asyncio.run() inherits the caller's context via an
     implicit copy_context() on task creation.  This proves that values set by
-    build_tool_server (sync Celery task body) are visible inside run_agent_loop (async,
+    bind_tool_context (sync Celery task body) are visible inside run_agent_loop (async,
     entered via asyncio.run) — closing the RESEARCH.md Cluster 7 propagation question.
     """
     # Set a sentinel value in the current (sync) context.
@@ -161,14 +126,14 @@ def test_retrieve_counter_isolated():
     """Per-turn retrieve counter increments are fully isolated between contexts.
 
     Context X increments 3 times; Context Y increments 7 times.  Neither context
-    observes the other's counter state — the counter resets per build_tool_server call
+    observes the other's counter state — the counter resets per bind_tool_context call
     and is scoped to the task's ContextVar copy.  This is the T-13-07-02 (stale counter)
     mitigation check.
     """
     counts: dict[str, int] = {}
 
     def _increment_n(ctx_name: str, n: int) -> None:
-        # Simulate build_tool_server reset at turn start
+        # Simulate bind_tool_context reset at turn start
         agent_tools._retrieve_call_count_var.set(0)
         for _ in range(n):
             current = agent_tools._retrieve_call_count_var.get()
@@ -198,7 +163,7 @@ def test_verified_session_token_var_default_empty():
 
     An empty-string default means 'no verified session — all non-IDV tool calls
     pass through' (IDV-05, Phase 17).  This test runs inside copy_context() to
-    simulate a fresh Celery task context that has never called build_tool_server.
+    simulate a fresh Celery task context that has never called bind_tool_context.
     """
     result: list[str] = []
 
@@ -214,20 +179,19 @@ def test_verified_session_token_var_default_empty():
     )
 
 
-def test_build_tool_server_sets_verified_session_token():
-    """build_tool_server with verified_session_token='tok_abc' sets the ContextVar.
+def test_bind_tool_context_sets_verified_session_token():
+    """bind_tool_context with verified_session_token='tok_abc' sets the ContextVar.
 
-    The test calls build_tool_server with the new kwarg and immediately reads
+    The test calls bind_tool_context with the new kwarg and immediately reads
     _verified_session_token_var to confirm the token was threaded into the
     task-scoped ContextVar.  Uses the same MagicMock SDK server pattern as the
     module-level monkeypatch above (create_sdk_mcp_server is already patched).
     """
-    from unittest.mock import MagicMock
 
     result: list[str] = []
 
     def _run() -> None:
-        agent_tools.build_tool_server(
+        agent_tools.bind_tool_context(
             conn_str="postgresql://test/db",
             agent_id="agent-idv-test",
             agent_name="IDV Test Agent",
@@ -242,26 +206,25 @@ def test_build_tool_server_sets_verified_session_token():
     ctx = contextvars.copy_context()
     ctx.run(_run)
 
-    assert len(result) == 1, "build_tool_server context block did not execute"
+    assert len(result) == 1, "bind_tool_context context block did not execute"
     assert result[0] == "tok_abc", (
         f"Expected ContextVar to carry 'tok_abc', got {result[0]!r}"
     )
 
 
 def test_default_empty_when_omitted():
-    """build_tool_server WITHOUT verified_session_token leaves ContextVar as ''.
+    """bind_tool_context WITHOUT verified_session_token leaves ContextVar as ''.
 
     Proves backward compatibility: existing 4-arg dispatches (job_id, agent_id,
     message, conversation_id) do not need to supply the new param; the
     ContextVar stays at its empty-string default so non-IDV tool calls are
     unaffected (IDV-05, Phase 17).
     """
-    from unittest.mock import MagicMock
 
     result: list[str] = []
 
     def _run() -> None:
-        agent_tools.build_tool_server(
+        agent_tools.bind_tool_context(
             conn_str="postgresql://test/db",
             agent_id="agent-compat-test",
             agent_name="Compat Test Agent",
@@ -276,7 +239,7 @@ def test_default_empty_when_omitted():
     ctx = contextvars.copy_context()
     ctx.run(_run)
 
-    assert len(result) == 1, "build_tool_server context block did not execute"
+    assert len(result) == 1, "bind_tool_context context block did not execute"
     assert result[0] == "", (
         f"Expected ContextVar to be '' when arg omitted, got {result[0]!r}"
     )

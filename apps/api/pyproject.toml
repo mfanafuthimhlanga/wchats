@@ -26,7 +26,6 @@ dependencies = [
     "langfuse>=4.0.0,<5.0.0",
     "python-multipart==0.0.20",
     "tenacity==9.1.2",
-    "claude-agent-sdk==0.1.81",
     # M6: Eval system — Ragas 0.4.x with InstructorLLM (Anthropic) (D-01 LOCKED)
     "ragas>=0.4.0,<0.5.0",
     # langchain-community pinned <0.4: ragas 0.4.3 (latest 0.4.x) hard-imports
@@ -158,17 +157,21 @@ skip_descendants = ["app.services"]
 # picks the spelling.
 # allow_indirect_imports keeps the contract on DIRECT imports. Every module that
 # reaches the factory imports the three packages through it, which is the point.
-# claude_agent_sdk is deliberately absent, and #48 is why that is now a choice
-# rather than a description. The customer turn left the SDK for the owned loop in
-# app.services.agent_loop, so no customer path runs on it. Five modules still
-# import it. agent_tools.py and transactional/tools.py take `tool` for the eleven
-# tool definitions, agent_tools.py also takes `create_sdk_mcp_server` for
-# build_tool_server, and red_team_probe.py, red_team_service.py and
-# deployment_service.py drive the SDK's own client for the Attacker and the
-# deployment Orchestrator. build_tool_server's remaining callers are
-# red_team_probe.py and worker/tasks/runtime/red_team.py. Ticket #49 retires all
-# of it, and adding claude_agent_sdk to forbidden_modules is #49's edit, under
-# its own mutation proof.
+# claude_agent_sdk joined the list in #49, and the five modules it names are the
+# ones that carried it. agent_tools.py and transactional/tools.py took `tool` for
+# the eighteen tool definitions, agent_tools.py also took `create_sdk_mcp_server`
+# for build_tool_server, and red_team_probe.py, red_team_service.py and
+# deployment_service.py drove the SDK's own client for the victim turn, the
+# Attacker and the deployment Orchestrator. All five now run on
+# app.services.tool_loop, the package is out of the dependency tree, and this
+# contract is what stops it coming back one import at a time.
+# Observed 2026-08-27: KEPT, 3 kept 0 broken. Mutation
+# `from claude_agent_sdk import tool` added to app/services/validation_service.py
+# turned it BROKEN, naming the edge:
+#   app is not allowed to import claude_agent_sdk:
+#   -   app.services.validation_service -> claude_agent_sdk (l.21)
+# Restored, KEPT again at 3 kept 0 broken. The from-import shape was chosen
+# because it is the one the five removed call sites all used.
 # Observed 2026-08-25: KEPT, 3 kept 0 broken. Mutation `import anthropic` added to
 # app/services/validation_service.py turned it BROKEN, naming the edge:
 #   app is not allowed to import anthropic:
@@ -183,7 +186,7 @@ skip_descendants = ["app.services"]
 name = "the provider SDKs have one home"
 type = "forbidden"
 source_modules = ["app"]
-forbidden_modules = ["anthropic", "openai", "instructor"]
+forbidden_modules = ["anthropic", "openai", "instructor", "claude_agent_sdk"]
 allow_indirect_imports = true
 ignore_imports = [
     "app.core.model_client -> anthropic",

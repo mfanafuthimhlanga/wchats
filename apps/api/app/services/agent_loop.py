@@ -1,8 +1,8 @@
 """The customer turn: one assembly seam, one bounded tool loop, no framework.
 
 WHY THIS MODULE EXISTS
-    ADR 0008 took the Agent turn off `claude_agent_sdk` and put it on the plain
-    OpenAI SDK. The harness's remaining value was `resume`, which stores session
+    ADR 0008 took the Agent turn off the Agent SDK harness and put it on the
+    plain OpenAI SDK. The harness's remaining value was `resume`, which stores session
     files on the container filesystem, and Railway replaces that filesystem on
     every deploy. Session state lives in the `conversations` and `messages`
     tables instead, so a turn resumes from the database on any container. What
@@ -53,15 +53,15 @@ WHAT THE LOOP COUNTS, AND WHAT IT REFUSES TO INVENT
 Rung: `app.services` imports `app.core`, `app.domain`, third-party packages and
 its own siblings. It imports nothing from `app.worker`. It imports no provider
 SDK either, because `app.core.model_client` is the only home for those and the
-client arrives here already built and already hooked. `claude_agent_sdk` is absent
-too. A tool is anything carrying `name`, `description`, `input_schema` and `handler`,
-which is what lets the loop run tools the SDK defined without importing it.
+client arrives here already built and already hooked. The Agent SDK harness is
+absent too, and #49 took its last import out of this tree. A tool is anything
+carrying `name`, `description`, `input_schema` and `handler`, which is what let
+this loop run the harness-declared tools without importing the harness.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
@@ -84,6 +84,13 @@ from app.services.agent_tools import (
 )
 from app.services.escalation import send_escalation_email
 from app.services.events import emit
+from app.services.tool_loop import (
+    assistant_turn,
+    dispatch,
+    first_choice,
+    tool_arguments,
+    tools_wire,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -262,16 +269,32 @@ def record_turn_calls(turn: AgentTurn) -> int:
     return written
 
 
-def _escalation_notifier(agent, conversation_id: str, side_effects: str):
-    """The escalation edge, live or recorded.
+def _escalation_notifier(agent, conversation_id: str, side_effects: str, override=None):
+    """The escalation edge: the caller's own, or the one this mode implies.
 
     On the eval path the mail is recorded rather than sent. A scenario that drives
     the agent to escalate would otherwise page the owner about a customer who does
     not exist, and would do it nightly.
 
+    `override` HAS ONE CALLER, `red_team_probe._build_transactional_probe_fn`,
+    and it is redundant on purpose. That probe runs on side_effects="recorded"
+    since #90, so the branch below already returns the recording lambda for it
+    and no mail can leave.
+
+    It is kept because this is the one edge that pages a real human, and because
+    of how the caller got here. The probe ran on side_effects="live" until #90,
+    on the claim that recorded mode short-circuits the mutating skills and
+    destroys the gate verdicts. That claim was false: recorded mode runs steps 1
+    to 5 and every gate returns identical text. It went unchecked for a milestone
+    and cost two BLOCK findings, so this edge does not rest on a claim about mode
+    behaviour staying true. Every other caller passes nothing and takes the mode's
+    notifier, which is the default a replacement could silently break.
+
     A conditional expression rather than two `def`s, because a nested definition
     would hide a second assembly of this edge from the seam suite.
     """
+    if override is not None:
+        return override
     return (
         (lambda reason, context: send_escalation_email(agent, reason, context))
         if side_effects == "live"
@@ -354,6 +377,7 @@ def build_agent_turn(
     ledger: Recorder,
     verified_session_token: str = "",
     soul_override: dict | None = None,
+    notify_fn=None,
 ) -> AgentTurn:
     """Assemble one turn of `agent`. THE SEAM, described in the module docstring.
 
@@ -366,6 +390,7 @@ def build_agent_turn(
         ledger:                 where each finished `ModelCall` goes once the turn is over, through `record_turn_calls`. Mandatory.
         verified_session_token: IDV-05 token, "" when there is none. NEVER logged (T-04-03-05).
         soul_override:          Prompt-version soul fields (OPS-16), or None.
+        notify_fn:              What `escalate_to_human` calls, or None for the notifier this mode implies. One caller passes one; `_escalation_notifier` says which and why.
 
     Raises:
         TypeError:       `side_effects` or `ledger` was not passed. Neither has a default.
@@ -373,8 +398,7 @@ def build_agent_turn(
         ValidationError: pydantic refused `agent.retrieval_strategy`.
         UnknownPurpose:  PURPOSE_ROUTES has no row for AGENT_TURN_PURPOSE.
     """
-    # FIRST, before anything that can raise. The prefork pool does not isolate contextvars per task and
-    # the mode is sticky, so a previous turn's value is in force on entry. Resetting here makes the safe default this function's.
+    # FIRST, before anything that can raise. `reset_side_effect_context` carries the reasoning.
     reset_side_effect_context()
     _check_mode(side_effects)
     bind_tool_context(
@@ -383,7 +407,7 @@ def build_agent_turn(
         agent_name=agent.name,
         strategy=RetrievalStrategy.model_validate(agent.retrieval_strategy or {}),
         conversation_id=str(conversation_id),
-        notify_fn=_escalation_notifier(agent, conversation_id, side_effects),
+        notify_fn=_escalation_notifier(agent, conversation_id, side_effects, notify_fn),
         tenant_id=str(agent.tenant_id),
         verified_session_token=verified_session_token,
         job_id=job_id,
@@ -391,8 +415,7 @@ def build_agent_turn(
     )
     system_prompt = build_system_prompt(agent, soul_override=soul_override)
     calls: list[ModelCall] = []
-    # Into a name rather than into the argument list, so the rest of the assembly has something to close when
-    # it raises. `route_for` and `agent_tool_definitions` both can, and a transport nobody holds outlives the turn.
+    # Into a name, so `_discard_client` has something to close when `route_for` or `agent_tool_definitions` raises.
     client = _turn_client(agent=agent, job_id=job_id, calls=calls)
     try:
         return AgentTurn(
@@ -440,28 +463,13 @@ def _opening_messages(message: str, *, history: list, system_prompt: str) -> lis
     ]
 
 
-def _tools_wire(tools) -> list[dict]:
-    """The tool list as the wire carries it. Built once and sent on every call."""
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.input_schema,
-            },
-        }
-        for tool in tools
-    ]
-
-
-def _request_kwargs(turn: AgentTurn, messages: list, tools_wire: list) -> dict:
+def _request_kwargs(turn: AgentTurn, messages: list, tool_schemas: list) -> dict:
     """One request body. The effort field is absent when the route names none.
 
     Sending an explicit null is a different request from sending nothing, so a
     route without an effort sends no field at all and takes the provider default.
     """
-    kwargs = {"model": turn.route.model, "messages": messages, "tools": tools_wire}
+    kwargs = {"model": turn.route.model, "messages": messages, "tools": tool_schemas}
     if turn.route.reasoning_effort is not None:
         kwargs["reasoning_effort"] = turn.route.reasoning_effort
     return kwargs
@@ -483,80 +491,6 @@ def _over_budget(turn: AgentTurn) -> bool:
             log.warning("agent_loop.budget_unpriced", error=str(exc))
             return False
     return float(total) >= turn.max_budget_usd
-
-
-def _assistant_turn(message, tool_calls) -> dict:
-    """Replay the model's own turn, built by hand so the wire shape is ours.
-
-    A `model_dump` of the response object would carry whatever fields the SDK
-    version happens to hold, and the next request would send them back.
-    """
-    return {
-        "role": "assistant",
-        "content": message.content or None,
-        "tool_calls": [
-            {
-                "id": call.id,
-                "type": "function",
-                "function": {
-                    "name": call.function.name,
-                    "arguments": call.function.arguments,
-                },
-            }
-            for call in tool_calls
-        ],
-    }
-
-
-def _error_wire(text: str) -> dict:
-    """The wire shape a failed tool call returns. `wire_text` reads it like any other."""
-    return {"content": [{"type": "text", "text": text}], "is_error": True}
-
-
-def _tool_arguments(name: str, raw) -> tuple[dict, dict | None]:
-    """The arguments the model sent, and the refusal to hand back when they do not read.
-
-    A model writes this string, so a malformed one is ordinary traffic rather
-    than a fault. It goes back as an error tool result the model can correct on
-    its next call, and the turn runs on.
-    """
-    try:
-        args = json.loads(raw or "{}")
-    except ValueError:
-        log.warning("agent_loop.tool_arguments_unparsed", tool_name=name)
-        return {}, _error_wire(f"Tool {name} received arguments that are not valid JSON.")
-    if not isinstance(args, dict):
-        log.warning("agent_loop.tool_arguments_not_an_object", tool_name=name)
-        return {}, _error_wire(f"Tool {name} received arguments that are not a JSON object.")
-    return args, None
-
-
-async def _dispatch(tools, name: str, args: dict) -> dict:
-    """Run the named tool's handler, or say why nothing ran.
-
-    An unknown name, a raising handler and a handler that returns something other
-    than a wire dict all come back as an error wire dict. The model reads the text
-    and the turn continues. Raising here would end a customer's turn over one
-    tool, and every reader downstream (`wire_text`, `_log_entry`) calls `.get` on
-    what this returns.
-    """
-    tool = next((candidate for candidate in tools if candidate.name == name), None)
-    if tool is None:
-        log.warning("agent_loop.unknown_tool", tool_name=name)
-        return _error_wire(f"Tool {name} is not one this agent has.")
-    try:
-        wire = await tool.handler(args)
-    except Exception as exc:
-        log.warning(
-            "agent_loop.tool_failed", tool_name=name, error_type=type(exc).__name__
-        )
-        return _error_wire(f"Tool {name} failed with {type(exc).__name__}.")
-    if isinstance(wire, dict):
-        return wire
-    log.warning(
-        "agent_loop.tool_result_not_a_dict", tool_name=name, result_type=type(wire).__name__
-    )
-    return _error_wire(f"Tool {name} returned a {type(wire).__name__} rather than a result.")
 
 
 def _note_escalation(state: _TurnState, name: str, args: dict, wire: dict) -> None:
@@ -651,27 +585,14 @@ async def _run_tool_call(call, *, messages, state, turn, job_id, db, redis) -> N
     `payload["tool_name"] == "retrieve"` and reads `payload["summary"]`.
     """
     name = call.function.name
-    args, refusal = _tool_arguments(name, call.function.arguments)
+    args, refusal = tool_arguments(name, call.function.arguments)
     emit(job_id, "agent.tool_call", {"tool_name": name, "input": args}, db, redis)
-    wire = refusal if refusal is not None else await _dispatch(turn.tools, name, args)
+    wire = refusal if refusal is not None else await dispatch(turn.tools, name, args)
     _note_escalation(state, name, args, wire)
     text = wire_text(wire)
     messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
     emit(job_id, "agent.tool_result", {"tool_name": name, "summary": text[:200]}, db, redis)
     state.tool_calls_log.append(_log_entry(name, args, call.id, wire, text))
-
-
-def _first_choice(completion):
-    """The choice the loop reads, or None when the reply carried none.
-
-    A completion with an empty `choices` list is a well-formed response that
-    produced no content. `completion.choices[0]` raised IndexError straight out
-    of the loop for it, the task's handler caught that and the customer read a
-    provider hiccup as `agent.failed`. A turn that produced nothing ends with the
-    text it already has and a stop_reason naming the absence.
-    """
-    choices = getattr(completion, "choices", None) or []
-    return choices[0] if choices else None
 
 
 def _turn_result(state: _TurnState) -> dict:
@@ -708,21 +629,21 @@ async def run_agent_loop(message: str, *, history, turn: AgentTurn, job_id, db, 
     """
     state = _TurnState()
     try:
-        # Inside the try, because the client is already built and the `finally` closes it. A tool missing an attribute raises out of `_tools_wire`.
+        # Inside the try, because the client is already built and the `finally` closes it. A tool missing an attribute raises out of `tools_wire`.
         messages = _opening_messages(
             message, history=list(history), system_prompt=turn.system_prompt
         )
-        tools_wire = _tools_wire(turn.tools)
+        tool_schemas = tools_wire(turn.tools)
         for index in range(turn.max_model_calls):
             # Every call after the first. A turn that has spent nothing yet cannot be over its own ceiling, and checking there would refuse to serve.
             if index and _over_budget(turn):
                 state.stop_reason = "budget_exceeded"
                 break
             completion = await turn.client.chat.completions.create(
-                **_request_kwargs(turn, messages, tools_wire)
+                **_request_kwargs(turn, messages, tool_schemas)
             )
             state.num_turns += 1
-            choice = _first_choice(completion)
+            choice = first_choice(completion)
             if choice is None:
                 state.stop_reason = "no_choices"
                 break
@@ -732,7 +653,7 @@ async def run_agent_loop(message: str, *, history, turn: AgentTurn, job_id, db, 
             if not tool_calls:
                 state.stop_reason = choice.finish_reason
                 break
-            messages.append(_assistant_turn(choice.message, tool_calls))
+            messages.append(assistant_turn(choice.message, tool_calls))
             for call in tool_calls:
                 await _run_tool_call(
                     call, messages=messages, state=state, turn=turn, job_id=job_id, db=db, redis=redis
