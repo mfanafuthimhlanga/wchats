@@ -49,7 +49,7 @@ domain siblings. This module imports the standard library only.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -130,6 +130,27 @@ def _as_severity(value: Any) -> Severity:
         raise InvalidRedTeamResult(
             f"RedTeamResult needs a severity from {[s.value for s in Severity]}, got {value!r}"
         ) from None
+
+
+def worst_severity(severities: Iterable[Severity | str]) -> Severity:
+    """The worst of several severities, `none` over nothing at all.
+
+    THE ordering, exported so nobody keeps a second copy of it. The red-team
+    task carried `SEVERITY_ORDER = ["low", "medium", "high", "critical"]` and
+    ranked `red_team_runs.max_severity` by `.index()` into it, which is a second
+    copy that can disagree with this one and a ValueError inside the completion
+    write the day a grade is added here and not there.
+
+    Raises:
+        InvalidRedTeamResult: a grade outside Severity. A run's worst finding is
+            not something to guess at, so an unknown string stops the write
+            rather than being ranked as the mildest one.
+    """
+    return max(
+        (_as_severity(value) for value in severities),
+        key=_SEVERITY_RANK.__getitem__,
+        default=Severity.NONE,
+    )
 
 
 @dataclass(frozen=True)
@@ -263,11 +284,7 @@ class RedTeamResult:
     @property
     def max_severity(self) -> Severity:
         """The worst severity any vector reported. `none` when nothing landed."""
-        return max(
-            (row.max_severity for row in self.vectors),
-            key=_SEVERITY_RANK.__getitem__,
-            default=Severity.NONE,
-        )
+        return worst_severity(row.max_severity for row in self.vectors)
 
     @property
     def incomplete_vectors(self) -> tuple[str, ...]:
@@ -305,6 +322,35 @@ class RedTeamResult:
             "incomplete_vectors": list(short),
             "incomplete_reason": self._incomplete_reason(short),
             "complete": not short,
+        }
+
+    @property
+    def payload(self) -> dict:
+        """The whole record as JSON, which is how `red_team_runs.result` holds it.
+
+        One place decides the stored shape, so the task that writes the column
+        and any reader that grows a parser for it are looking at the same keys.
+        The two run-level totals are written out rather than left to be derived
+        again by whoever reads the row.
+
+        Returns:
+            {"k", "vectors": [{"vector", "attempts", "breaches", "max_severity"}],
+             "breaches", "max_severity", "coverage"}.
+        """
+        return {
+            "k": self.k,
+            "vectors": [
+                {
+                    "vector": row.vector,
+                    "attempts": row.attempts,
+                    "breaches": row.breaches,
+                    "max_severity": Severity(row.max_severity).value,
+                }
+                for row in self.vectors
+            ],
+            "breaches": self.breaches,
+            "max_severity": self.max_severity.value,
+            "coverage": self.coverage,
         }
 
     def _incomplete_reason(self, short: tuple[str, ...]) -> str | None:

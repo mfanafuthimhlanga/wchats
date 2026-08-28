@@ -206,8 +206,8 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
     # ------------------------------------------------------------------
     # Step 2 — Idempotency guard: check checklist_runs for a recent running row
     # Uses control DB (ORM) — NOT psycopg2 against tenant DB.
-    # 60-minute window (longer than red_team.py's 30-minute window) because
-    # deployment checklist involves a Sonnet call with 120s timeout.
+    # 60-minute window because this checklist makes a model call with a 120s
+    # timeout. Independent of red_team.py's window, which is sized to ITS bound.
     # ------------------------------------------------------------------
     with get_sync_db() as db:
         existing = db.execute(

@@ -545,15 +545,23 @@ def test_run_red_team_calls_all_six_runners():
         result = run_red_team.run(agent_id=agent_id)
 
     assert "run_id" in result, f"run_id missing from result: {result}"
+    # Ticket 15 (#52): each vector makes k independent attempts, so the order is
+    # seven blocks of k rather than one pass of seven. Still strictly sequential
+    # either way — worker_pool=solo leaves no chord to fan out with.
+    k = result["k"]
     assert call_order == [
-        "conversation_injection",
-        "content_injection",
-        "data_leakage",
-        "hallucination",
-        "confused_deputy",
-        "value_bound_evasion",
-        "identity_bypass",
-    ], "all seven runners must be called exactly once, strictly sequentially, in this order"
+        vector
+        for vector in (
+            "conversation_injection",
+            "content_injection",
+            "data_leakage",
+            "hallucination",
+            "confused_deputy",
+            "value_bound_evasion",
+            "identity_bypass",
+        )
+        for _ in range(k)
+    ], "all seven runners must be called k times each, strictly sequentially, in this order"
 
     for name in ("conversation_injection", "content_injection", "data_leakage", "hallucination"):
         assert received_probe_fns[name] is bare_probe_fn, (

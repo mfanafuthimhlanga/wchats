@@ -13,7 +13,7 @@ Architecture constraints (CLAUDE.md — non-negotiable):
 
 Flow (run_red_team):
     1. Fetch agent from control DB; decrypt conn_str
-    2. Idempotency guard — skip if a running red_team_run for this agent exists within 30 min
+    2. Idempotency guard — skip if a running red_team_run for this agent is inside the window
     3. Insert red_team_run row (status='running')
     4. Build two probe_fn closures: the bare-completion probe (calls the deployed
        agent via direct Claude API, no tools attached) for the M7 conversational
@@ -22,11 +22,15 @@ Flow (run_red_team):
     5. Run ConversationInjection → ContentInjection → DataLeakage → Hallucination →
        ConfusedDeputy → ValueBoundEvasion → IdentityBypass agents sequentially
        (Phase 18 SEC-03 / OD-7: the shipped PromptInjection agent is split into
-       the conversation-injection and content-injection variants)
-    6. Compute max_severity and deployment_blocked
-    7. Update red_team_run row to 'complete' with findings JSONB and the run's
-       own coverage (migration 0015) — an empty findings list is unreadable
-       without the denominator that says how many vectors could probe at all
+       the conversation-injection and content-injection variants), each one
+       RED_TEAM_ATTEMPTS_PER_VECTOR times from the top with nothing carried
+       between attempts (ticket 15)
+    6. Build the run's RedTeamResult; max_severity and deployment_blocked come
+       off it
+    7. Update red_team_run row to 'complete' with findings JSONB, the run's own
+       coverage (migration 0015) and its RedTeamResult (0021) — an empty findings
+       list is unreadable without the denominator that says how many vectors
+       could probe at all, and how many times each one tried
        7b. Persist first-class red_team_strategies/red_team_probes rows (OPS-13)
        7c. Persist one first-class red_team_findings row per finding, status='open'
            (OPS-14) — the deploy gate reads this table, not the findings JSONB
@@ -47,10 +51,12 @@ from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt
+from app.domain.red_team_result import RedTeamResult
 from app.models.agent import Agent
 from app.services.agent_tools import RetrievalStrategy, bind_tool_context
 from app.services.red_team_probe import _build_transactional_probe_fn
 from app.services.red_team_service import (
+    RedTeamFinding,
     VectorObservation,
     run_confused_deputy_agent,
     run_content_injection_agent,
@@ -60,6 +66,7 @@ from app.services.red_team_service import (
     run_hallucination_agent,
     run_identity_bypass_agent,
     run_value_bound_evasion_agent,
+    run_vector_attempts,
 )
 from app.worker.celery_app import celery_app
 
@@ -81,6 +88,24 @@ log = structlog.get_logger(__name__)
 #: Agent turn: this is a stand-in persona built from the soul fields, reached
 #: through the direct API rather than through the SDK.
 PROBE_PURPOSE = "red_team_probe"
+
+#: How far back Step 2's guard looks for a `running` row before deciding a
+#: second run for this agent would be a duplicate.
+#:
+#: THIRTY MINUTES WAS SOUND UNTIL k. One pass of the seven vectors is bounded by
+#: seven ATTACKER_LOOP_TIMEOUT_S budgets, so the worst case was about fifteen
+#: minutes and a run comfortably finished inside the window. Ticket 15 (#52) runs
+#: each vector k times: at k=3 the same bound is about forty-five minutes, and a
+#: run that used it would sit OUTSIDE a thirty-minute window while still running
+#: — so a second trigger would find no recent row, skip nothing, and put two
+#: red-team runs on one agent, double-billing the tenant and racing the RTX
+#: probes over one Redis rate counter.
+#:
+#: Ninety leaves headroom above that bound and stays under
+#: BROKER_VISIBILITY_TIMEOUT_S, so a message the broker genuinely redelivers
+#: after two hours is not refused by a guard still holding a dead run's row.
+#: tests/unit/test_red_team_task.py pins both relations rather than the number.
+RUN_IDEMPOTENCY_WINDOW_MINUTES = 90
 
 
 def _run_ledger(tenant_id: str, agent_id: str, run_id: str, conn_str: str) -> LedgerContext:
@@ -207,6 +232,170 @@ def run_red_team_beat(self) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# The seven vectors, k attempts each (ticket 15, issue #52)
+# ---------------------------------------------------------------------------
+
+
+def _vector_plan(probe_fn, transactional_probe_fn, conn_str: str) -> tuple:
+    """(vector, runner, per-runner kwargs) for the seven vectors, in dispatch order.
+
+    BUILT PER CALL, NEVER AT IMPORT. The runner names resolve against this
+    module's globals when the plan is built, which is what lets a test patch one
+    runner by name. A module-level tuple would capture the original functions and
+    every patch in tests/unit/test_red_team_task.py would go past it unseen.
+
+    content_injection takes the conversational probe_fn, not the transactional
+    one: it tests retrieval behaviour rather than transactional enforcement
+    (SEC-03 / OD-7). It is also the only runner that needs conn_str, which is a
+    body local decrypted at Step 1 and never a Celery task arg (CLAUDE.md rule 1).
+    """
+    return (
+        ("conversation_injection", run_conversation_injection_agent, {"probe_fn": probe_fn}),
+        (
+            "content_injection",
+            run_content_injection_agent,
+            {"probe_fn": probe_fn, "conn_str": conn_str},
+        ),
+        ("data_leakage", run_data_leakage_agent, {"probe_fn": probe_fn}),
+        ("hallucination", run_hallucination_agent, {"probe_fn": probe_fn}),
+        ("confused_deputy", run_confused_deputy_agent, {"probe_fn": transactional_probe_fn}),
+        (
+            "value_bound_evasion",
+            run_value_bound_evasion_agent,
+            {"probe_fn": transactional_probe_fn},
+        ),
+        ("identity_bypass", run_identity_bypass_agent, {"probe_fn": transactional_probe_fn}),
+    )
+
+
+def _attempt_every_vector(
+    plan: tuple,
+    *,
+    k: int,
+    ledger: LedgerContext,
+    observations: list[VectorObservation],
+) -> tuple[list[RedTeamFinding], RedTeamResult]:
+    """Run every vector k times and return the run's findings and its record.
+
+    Sequential, because worker_pool=solo leaves no chord to fan out with and the
+    machine has 4 GB. Seven vectors at k attempts is 7k probe runs, so the
+    provider spend and the ledger rows are k times what they were.
+
+    Returns:
+        (all findings in dispatch order, the RedTeamResult built from the same
+        pass). The record carries the k it ran under, so a later change to
+        settings.RED_TEAM_ATTEMPTS_PER_VECTOR cannot rewrite what this run was
+        required to do.
+    """
+    findings: list[RedTeamFinding] = []
+    outcomes = []
+    for vector, runner, runner_kwargs in plan:
+        attempted = run_vector_attempts(
+            vector,
+            runner,
+            k,
+            observations=observations,
+            max_turns=settings.RED_TEAM_MAX_TURNS,
+            attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
+            ledger=ledger,
+            **runner_kwargs,
+        )
+        findings.extend(attempted.findings)
+        outcomes.append(attempted.outcome)
+    return findings, RedTeamResult(k=k, vectors=outcomes)
+
+
+def _coverage_at_k(observations: list[VectorObservation], result: RedTeamResult) -> dict:
+    """`run_coverage`'s payload with the k requirement folded into `complete`.
+
+    The four keys `deployment_service._coverage_from_run` and both red-team
+    routes read keep their names, their meaning and their place, so nothing
+    downstream has to learn about k to keep working. What is added is `k`, the
+    per-vector attempt counts, and a stricter `complete`: a vector that observed
+    the agent on one attempt and never made the other two is neither invalid nor
+    a full test of itself, and ticket 15 says complete requires all of it.
+    """
+    coverage = run_coverage(observations)
+    short = result.incomplete_vectors
+    coverage["k"] = result.k
+    coverage["attempts"] = {row.vector: row.attempts for row in result.vectors}
+    coverage["incomplete_vectors"] = sorted(
+        set(coverage["incomplete_vectors"]) | set(short)
+    )
+    coverage["complete"] = coverage["complete"] and not short
+    reasons = [coverage["invalid_reason"], result.coverage["incomplete_reason"]]
+    coverage["invalid_reason"] = "; ".join(r for r in reasons if r) or None
+    return coverage
+
+
+# The completion UPDATE, widest first. `result` arrived with alembic_tenant 0021
+# and `coverage` with 0015; tenants are migrated at provision time only, so a
+# tenant older than either does not have the column and psycopg2 raises
+# UndefinedColumn. _store_completion steps down one column at a time rather than
+# leaving the run stuck at 'running', which is a worse outcome than a run that
+# cannot say what it measured.
+_UPDATE_WITH_RESULT = """
+    UPDATE red_team_runs
+    SET status = 'complete', finished_at = NOW(),
+        findings = %s, max_severity = %s, deployment_blocked = %s,
+        coverage = %s, result = %s
+    WHERE id = %s
+"""
+_UPDATE_WITH_COVERAGE = """
+    UPDATE red_team_runs
+    SET status = 'complete', finished_at = NOW(),
+        findings = %s, max_severity = %s, deployment_blocked = %s,
+        coverage = %s
+    WHERE id = %s
+"""
+_UPDATE_BARE = """
+    UPDATE red_team_runs
+    SET status = 'complete', finished_at = NOW(),
+        findings = %s, max_severity = %s, deployment_blocked = %s
+    WHERE id = %s
+"""
+
+
+def _store_completion(conn, run_id: str, agent_id: str, base_params: tuple,
+                      coverage_json: str, result_json: str) -> bool:
+    """Write the completed run, dropping a column the tenant DB does not have.
+
+    Args:
+        base_params: (findings json, max_severity, deployment_blocked), the three
+            columns every tenant has had since M7.
+
+    Returns:
+        True once a statement committed. False when every rung raised
+        UndefinedColumn. Any other exception propagates to the caller, whose
+        handler logs it and leaves the run row alone.
+    """
+    ladder = (
+        (_UPDATE_WITH_RESULT, (*base_params, coverage_json, result_json, run_id)),
+        (_UPDATE_WITH_COVERAGE, (*base_params, coverage_json, run_id)),
+        (_UPDATE_BARE, (*base_params, run_id)),
+    )
+    for dropped, (sql, params) in enumerate(ladder):
+        try:
+            with conn.cursor() as _cur:
+                _cur.execute(sql, params)
+            conn.commit()
+            return True
+        except psycopg2.errors.UndefinedColumn:
+            # The aborted transaction must be rolled back before the connection
+            # will accept another statement.
+            conn.rollback()
+            log.warning(
+                "run_red_team.completion_column_absent",
+                agent_id=agent_id, run_id=run_id, columns_dropped=dropped + 1,
+                detail=(
+                    "the tenant DB predates alembic_tenant 0021 or 0015 — this "
+                    "run cannot record everything it measured"
+                ),
+            )
+    return False
+
+
+# ---------------------------------------------------------------------------
 # run_red_team — per-agent red team execution
 # ---------------------------------------------------------------------------
 
@@ -229,16 +418,17 @@ def run_red_team(self, agent_id: str) -> dict:
     Sequence:
         1. Fetch agent from control DB; decrypt conn_str at runtime.
         2. Idempotency guard — skip if a 'running' red_team_run for this agent
-           was created within the last 30 minutes.
+           was created within RUN_IDEMPOTENCY_WINDOW_MINUTES.
         3. Insert red_team_run row (status='running').
         4. Build two probe_fn closures (bare-completion + transactional).
         5. Run ConversationInjection → ContentInjection → DataLeakage →
            Hallucination → ConfusedDeputy → ValueBoundEvasion → IdentityBypass
-           agents sequentially.
-        6. Compute max_severity and deployment_blocked flag.
-        7. Update red_team_run row to 'complete' with findings JSONB and the run's
-       own coverage (migration 0015) — an empty findings list is unreadable
-       without the denominator that says how many vectors could probe at all.
+           agents sequentially, each k times independently.
+        6. Build the RedTeamResult; max_severity and deployment_blocked come off it.
+        7. Update red_team_run row to 'complete' with findings JSONB, the run's
+       own coverage (migration 0015) and its RedTeamResult (0021) — an empty
+       findings list is unreadable without the denominator that says how many
+       vectors could probe at all, and how many times each one tried.
         8. Return result dict.
 
     Args:
@@ -248,7 +438,8 @@ def run_red_team(self, agent_id: str) -> dict:
         {"run_id": str, "blocked": bool, "max_severity": str,
          "critical_count": int, "high_count": int, "vectors_attempted": int,
          "vectors_valid": int, "invalid_vectors": list[str],
-         "coverage_complete": bool, "findings_count": int}  on success.
+         "coverage_complete": bool, "findings_count": int, "k": int,
+         "attempts": dict[str, int]}                 on success.
         {"status": "already_running"}                on idempotent skip.
         {}                                            on retry exhaustion.
 
@@ -260,6 +451,11 @@ def run_red_team(self, agent_id: str) -> dict:
     from the runners' own observations (red_team_service.run_coverage), never
     from red_team_coverage(), which describes the build and has been the
     constant 7-of-7 since the SDK attackers were wired.
+
+    k and `attempts` are the second half (ticket 15). Every vector runs its whole
+    probe settings.RED_TEAM_ATTEMPTS_PER_VECTOR times from the top, so `attempts`
+    says how many of those each vector actually completed and coverage_complete
+    is False for any vector short of k. A run costs k times what it used to.
     """
     # ------------------------------------------------------------------
     # Step 1 — Fetch agent from control DB; decrypt conn_str at runtime
@@ -290,10 +486,10 @@ def run_red_team(self, agent_id: str) -> dict:
                     SELECT id FROM red_team_runs
                     WHERE kind = %s
                       AND status = 'running'
-                      AND started_at > NOW() - INTERVAL '30 minutes'
+                      AND started_at > NOW() - make_interval(mins => %s)
                     LIMIT 1
                     """,
-                    (f"m7:{agent_id}",),
+                    (f"m7:{agent_id}", RUN_IDEMPOTENCY_WINDOW_MINUTES),
                 )
                 _existing = _cur.fetchone()
         finally:
@@ -404,74 +600,24 @@ def run_red_team(self, agent_id: str) -> dict:
 
     _agents_conn = psycopg2.connect(conn_str, connect_timeout=5)
     try:
-        conversation_injection_findings = run_conversation_injection_agent(
-            probe_fn,
-            max_turns=settings.RED_TEAM_MAX_TURNS,
-            attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
-            observations=observations, ledger=ledger,
-        )
-        # SEC-03 / OD-7: content_injection also receives the conversational
-        # probe_fn (not transactional_probe_fn) — this variant tests retrieval
-        # behaviour, not transactional enforcement. conn_str is passed as a
-        # plain function argument (a body local, decrypted at Step 1) — this
-        # is NOT a Celery task arg, so CLAUDE.md rule 4 is respected.
-        content_injection_findings = run_content_injection_agent(
-            probe_fn,
-            max_turns=settings.RED_TEAM_MAX_TURNS,
-            attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
-            conn_str=conn_str, observations=observations, ledger=ledger,
-        )
-        leakage_findings = run_data_leakage_agent(
-            probe_fn,
-            max_turns=settings.RED_TEAM_MAX_TURNS,
-            attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
-            observations=observations, ledger=ledger,
-        )
-        hallucination_findings = run_hallucination_agent(
-            probe_fn,
-            max_turns=settings.RED_TEAM_MAX_TURNS,
-            attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
-            observations=observations, ledger=ledger,
-        )
-        confused_deputy_findings = run_confused_deputy_agent(
-            transactional_probe_fn,
-            max_turns=settings.RED_TEAM_MAX_TURNS,
-            attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
-            observations=observations, ledger=ledger,
-        )
-        value_bound_findings = run_value_bound_evasion_agent(
-            transactional_probe_fn,
-            max_turns=settings.RED_TEAM_MAX_TURNS,
-            attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
-            observations=observations, ledger=ledger,
-        )
-        identity_bypass_findings = run_identity_bypass_agent(
-            transactional_probe_fn,
-            max_turns=settings.RED_TEAM_MAX_TURNS,
-            attack_sequences=settings.RED_TEAM_ATTACK_SEQUENCES,
-            observations=observations, ledger=ledger,
-        )
-        all_findings = (
-            conversation_injection_findings
-            + content_injection_findings
-            + leakage_findings
-            + hallucination_findings
-            + confused_deputy_findings
-            + value_bound_findings
-            + identity_bypass_findings
+        all_findings, run_result = _attempt_every_vector(
+            _vector_plan(probe_fn, transactional_probe_fn, conn_str),
+            k=settings.RED_TEAM_ATTEMPTS_PER_VECTOR,
+            ledger=ledger,
+            observations=observations,
         )
 
         # ------------------------------------------------------------------
-        # Step 6 — Compute max_severity and deployment_blocked
+        # Step 6 — max_severity and deployment_blocked, off the record
         # deployment_blocked is True iff max_severity == "critical" (RED-06 gate).
+        #
+        # `SEVERITY_ORDER = ["low", "medium", "high", "critical"]` and a
+        # `.index()` ranking stood here. app.domain.red_team_result.Severity owns
+        # that ordering now, and RedTeamResult derives the run's worst grade once
+        # so the column, the return dict and the stored record cannot disagree
+        # about which finding was the worst one.
         # ------------------------------------------------------------------
-        SEVERITY_ORDER = ["low", "medium", "high", "critical"]
-        severities = [f.severity for f in all_findings if f.severity in SEVERITY_ORDER]
-        max_severity = (
-            max(severities, key=lambda s: SEVERITY_ORDER.index(s))
-            if severities
-            else "none"
-        )
+        max_severity = run_result.max_severity.value
         deployment_blocked = (max_severity == "critical")
         critical_count = sum(1 for f in all_findings if f.severity == "critical")
         high_count = sum(1 for f in all_findings if f.severity == "high")
@@ -485,29 +631,33 @@ def run_red_team(self, agent_id: str) -> dict:
         # red_team_coverage() here did the same thing one level up, because it
         # answers "can this code probe" (always yes since P4) and never "did
         # this run probe".
-        coverage = run_coverage(observations)
+        #
+        # _coverage_at_k adds the second half ticket 15 asks for: a vector that
+        # observed the agent once and never made its other two attempts is valid
+        # and is not a full test, so `complete` is False for it too.
+        coverage = _coverage_at_k(observations, run_result)
 
         # ------------------------------------------------------------------
         # Step 7 — Update red_team_run row to 'complete'
         #
-        # THE COVERAGE IS STORED ON THE RUN (P2 review). It used to reach a
-        # structlog line and this task's return dict and stop there, so the
-        # stored row — the only thing the ops room and the deploy gate can read
-        # afterwards — still said `findings: [], max_severity: null,
-        # deployment_blocked: false` for a run in which four of seven attackers
-        # never probed. That is byte-identical to a clean seven-vector run.
+        # THE MEASUREMENT IS STORED ON THE RUN. It used to reach a structlog line
+        # and this task's return dict and stop there, so the stored row — the
+        # only thing the ops room and the deploy gate can read afterwards —
+        # still said `findings: [], max_severity: null, deployment_blocked:
+        # false` for a run in which four of seven attackers never probed. That is
+        # byte-identical to a clean seven-vector run.
         #
-        # It must be the RUN's coverage rather than the reader's, and P4's
-        # review made that concrete: with SDK_ATTACKERS_CAN_PROBE True,
+        # It must be the RUN's figure rather than the reader's, and P4's review
+        # made that concrete: with SDK_ATTACKERS_CAN_PROBE True,
         # red_team_coverage() reports seven-of-seven for every run in every
-        # environment, so the figure had to come from the run's own
-        # observations before storing it meant anything at all.
+        # environment. The same argument is why `result` carries its own k
+        # (0021): reading settings.RED_TEAM_ATTEMPTS_PER_VECTOR back would
+        # measure a stored run against today's requirement instead of the one it
+        # ran under.
         #
-        # `coverage` arrived with migration 0015 and a tenant provisioned before
-        # it does not have the column (tenants are migrated at provision time
-        # only), so UndefinedColumn falls back to the pre-0015 statement — the
-        # run still completes, it simply cannot record what it covered, and its
-        # readers report that as unrecorded rather than as full.
+        # _store_completion drops `result`, then `coverage`, on a tenant DB that
+        # predates 0021 or 0015. The run still completes; it simply records less,
+        # and its readers report that as unrecorded rather than as full.
         # ------------------------------------------------------------------
         _complete_params = (
             json.dumps([f.model_dump() for f in all_findings]),
@@ -515,49 +665,16 @@ def run_red_team(self, agent_id: str) -> dict:
             deployment_blocked,
         )
         try:
-            try:
-                with _agents_conn.cursor() as _cur:
-                    _cur.execute(
-                        """
-                        UPDATE red_team_runs
-                        SET status = 'complete',
-                            finished_at = NOW(),
-                            findings = %s,
-                            max_severity = %s,
-                            deployment_blocked = %s,
-                            coverage = %s
-                        WHERE id = %s
-                        """,
-                        (*_complete_params, json.dumps(coverage), run_id),
-                    )
-                _agents_conn.commit()
-            except psycopg2.errors.UndefinedColumn:
-                # The aborted transaction must be rolled back before the
-                # connection will accept another statement.
-                _agents_conn.rollback()
+            if not _store_completion(
+                _agents_conn, run_id, agent_id, _complete_params,
+                json.dumps(coverage), json.dumps(run_result.payload),
+            ):
                 log.warning(
-                    "run_red_team.coverage_column_absent",
+                    "run_red_team.update_complete_failed",
                     agent_id=agent_id,
                     run_id=run_id,
-                    detail=(
-                        "tenant DB predates alembic_tenant 0015 — this run "
-                        "cannot record how much of the attack surface it covered"
-                    ),
+                    error="every completion statement hit an absent column",
                 )
-                with _agents_conn.cursor() as _cur:
-                    _cur.execute(
-                        """
-                        UPDATE red_team_runs
-                        SET status = 'complete',
-                            finished_at = NOW(),
-                            findings = %s,
-                            max_severity = %s,
-                            deployment_blocked = %s
-                        WHERE id = %s
-                        """,
-                        (*_complete_params, run_id),
-                    )
-                _agents_conn.commit()
         except Exception as update_exc:
             log.warning(
                 "run_red_team.update_complete_failed",
@@ -646,7 +763,7 @@ def run_red_team(self, agent_id: str) -> dict:
         # (deployment_service._fetch_red_team_summary_sync, 21-08 Task 3).
         # Re-running the same red-team run creates a new run_id (Step 3), so
         # this insert never double-fires for a given run — idempotent within
-        # the existing 30-minute run idempotency guard (Step 2).
+        # the existing run idempotency guard (Step 2).
         # Best-effort: a failure here must never affect the run-row write
         # above or the acks_late/idempotency guard.
         # ------------------------------------------------------------------
@@ -695,6 +812,9 @@ def run_red_team(self, agent_id: str) -> dict:
             vectors_valid=coverage["vectors_valid"],
             invalid_vectors=coverage["invalid_vectors"],
             findings_count=len(all_findings),
+            k=run_result.k,
+            breaches=run_result.breaches,
+            incomplete_vectors=coverage["incomplete_vectors"],
         )
         return {
             "run_id": run_id,
@@ -710,6 +830,11 @@ def run_red_team(self, agent_id: str) -> dict:
             "invalid_vectors": coverage["invalid_vectors"],
             "coverage_complete": coverage["complete"],
             "findings_count": len(all_findings),
+            # k, and what each vector actually managed against it. A caller that
+            # reads only coverage_complete learns that something was short; these
+            # two say which vector and by how much, without a second query.
+            "k": run_result.k,
+            "attempts": coverage["attempts"],
         }
 
     except Exception as exc:

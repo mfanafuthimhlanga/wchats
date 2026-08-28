@@ -230,15 +230,21 @@ class TestRunRedTeamWritesFindingsRows:
             result = run_red_team.run(agent_id=agent_id)
 
         assert "run_id" in result, f"run_id missing from result: {result}"
-        assert result["critical_count"] == 1
+        # One per attempt. Ticket 15 (#52) runs each vector k times and the stubs
+        # answer with their finding on every one, so an attack that lands in all
+        # three attempts is three open rows. The deploy gate reads this table as
+        # `count > 0` per severity, so the block/allow decision is unchanged, and
+        # three rows is what actually happened.
+        assert result["critical_count"] == result["k"]
 
         findings_inserts = [
             (sql, params)
             for sql, params in fake_cursor.executed
             if "INSERT INTO red_team_findings" in sql
         ]
-        assert len(findings_inserts) == 2, (
-            f"Expected 2 red_team_findings INSERTs (one per finding), got {len(findings_inserts)}"
+        assert len(findings_inserts) == 2 * result["k"], (
+            "Expected one red_team_findings INSERT per finding, k attempts each: "
+            f"got {len(findings_inserts)}"
         )
 
         for sql, _params in findings_inserts:
@@ -339,11 +345,15 @@ class TestRunRedTeamWritesFindingsRows:
             for sql, params in fake_cursor.executed
             if "INSERT INTO red_team_findings" in sql
         ]
-        assert len(findings_inserts) == 1
-        run_id, strategy_id, probe_id, severity = findings_inserts[0][:4]
-        assert strategy_id == "strategy-xyz"
-        assert probe_id == "probe-xyz"
-        assert severity == "high"
+        # One row per attempt that landed it — three, not one (ticket 15, #52).
+        # Every one of them still has to carry the ids Step 7b recovered, which
+        # is what this test is about.
+        assert len(findings_inserts) == 3
+        for insert in findings_inserts:
+            _run_id, strategy_id, probe_id, severity = insert[:4]
+            assert strategy_id == "strategy-xyz"
+            assert probe_id == "probe-xyz"
+            assert severity == "high"
 
 
 # ---------------------------------------------------------------------------

@@ -83,8 +83,10 @@ from app.services.red_team_service import (
     run_data_leakage_agent,
     run_hallucination_agent,
     run_prompt_injection_agent,
+    run_vector_attempts,
     seed_poisoned_chunk,
 )
+from app.domain.red_team_result import Severity
 from app.services.tool_loop import dispatch
 from tests.model_doubles import factory, ledger
 
@@ -1139,17 +1141,25 @@ def test_conversation_content_split():
         result = run_red_team.run(agent_id=agent_id)
 
     assert "run_id" in result, f"run_id missing from result: {result}"
+    # Each vector runs its k attempts back to back before the next vector starts,
+    # so the order is seven blocks of three rather than three passes of seven.
+    # Sequential either way: worker_pool=solo leaves no chord to fan out with.
+    k = result["k"]
     assert call_order == [
-        "conversation_injection",
-        "content_injection",
-        "data_leakage",
-        "hallucination",
-        "confused_deputy",
-        "value_bound_evasion",
-        "identity_bypass",
-    ], "all seven runners must be called exactly once, strictly sequentially, in this order"
-    assert call_order.count("conversation_injection") == 1
-    assert call_order.count("content_injection") == 1
+        vector
+        for vector in (
+            "conversation_injection",
+            "content_injection",
+            "data_leakage",
+            "hallucination",
+            "confused_deputy",
+            "value_bound_evasion",
+            "identity_bypass",
+        )
+        for _ in range(k)
+    ], "all seven runners must be called k times each, strictly sequentially, in this order"
+    assert call_order.count("conversation_injection") == k
+    assert call_order.count("content_injection") == k
 
     assert received["conversation_injection"]["probe_fn"] is bare_probe_fn, (
         "conversation_injection must receive the bare (M7) conversational probe_fn"
@@ -1167,8 +1177,9 @@ def test_conversation_content_split():
     # Severity fold proof (Step 6): both the high (conversation) and the
     # critical (content) finding reached max_severity/critical_count/high_count.
     assert result["max_severity"] == "critical"
-    assert result["critical_count"] == 1
-    assert result["high_count"] == 1
+    # One per attempt: both stubs answer with their finding on every call.
+    assert result["critical_count"] == k
+    assert result["high_count"] == k
 
 
 # ---------------------------------------------------------------------------
@@ -1355,20 +1366,24 @@ class TestRedTeamCoverage:
     def test_every_dispatched_vector_is_declared(self):
         """RED_TEAM_VECTORS must match what the task actually dispatches.
 
-        Read out of the task's source rather than restated here: a declaration
-        that drifts from the dispatch list would report a denominator over
-        vectors that no longer run, which is worse than no denominator.
+        Read off the dispatch plan the task builds, not out of its source. The
+        text scan that stood here looked for `run_<vector>_agent(` in the task
+        body, and it went red the moment ticket 15 moved the seven calls behind
+        `run_vector_attempts` while the task was dispatching all seven exactly as
+        before. A declaration that drifts from the dispatch list would report a
+        denominator over vectors that no longer run; this asks the plan itself
+        rather than the characters of the function that builds it.
         """
-        import inspect as _inspect
+        from app.worker.tasks.runtime.red_team import _vector_plan
 
-        from app.worker.tasks.runtime import red_team as task_mod
+        plan = _vector_plan("bare", "transactional", "dsn")
 
-        source = _inspect.getsource(task_mod.run_red_team)
-        for vector in red_team_service.RED_TEAM_VECTORS:
-            runner = f"run_{vector}_agent("
-            assert runner in source, (
-                f"{vector} is declared in RED_TEAM_VECTORS but {runner} is not "
-                "called by run_red_team"
+        assert [vector for vector, _runner, _kwargs in plan] == list(
+            red_team_service.RED_TEAM_VECTORS
+        ), "the dispatch plan and RED_TEAM_VECTORS disagree about what a run covers"
+        for vector, runner, _kwargs in plan:
+            assert runner.__name__ == f"run_{vector}_agent", (
+                f"{vector} is dispatched to {runner.__name__}"
             )
 
     def test_every_dispatched_vector_can_now_probe(self):
@@ -1609,3 +1624,323 @@ class TestACaughtLeakIsNotARefusal:
             "the finding quotes something other than what the attacker was shown"
         )
         assert "email" not in findings[0].agent_response
+
+
+# ---------------------------------------------------------------------------
+# run_vector_attempts — k independent attempts per vector (ticket 15, #52)
+# ---------------------------------------------------------------------------
+
+
+def _scripted_runner(vector, script, *, seen=None):
+    """A runner that plays `script[i]` on its i-th call.
+
+    Each entry is (findings, observation-or-None). The observation is appended to
+    whatever ledger the call was handed, which is the whole runner contract the
+    six shipped runners honour on every path.
+    """
+    calls = {"n": 0}
+
+    def _runner(*, observations=None, **kwargs):
+        findings, observation = script[calls["n"]]
+        calls["n"] += 1
+        if seen is not None:
+            seen.append((observations, len(observations or []), dict(kwargs)))
+        if observations is not None and observation is not None:
+            observations.append(observation)
+        return list(findings)
+
+    return _runner
+
+
+def _obs(vector, *, observed=True, requested=3, completed=3, answered=3, detail=None,
+         deflections=None):
+    return VectorObservation(
+        vector=vector,
+        observed=observed,
+        sequences_requested=requested,
+        sequences_completed=completed,
+        probes_attempted=requested,
+        probes_answered=answered,
+        pii_deflections=dict(deflections or {}),
+        detail=detail,
+    )
+
+
+def _finding(vector, severity="high"):
+    return RedTeamFinding(
+        severity=severity,
+        description="d",
+        attack_vector=vector,
+        probe_message="p",
+        agent_response="r",
+        turn_count=1,
+    )
+
+
+class TestRunVectorAttemptsRunsKWholeProbes:
+    """An attempt is one whole probe run, and k of them are independent.
+
+    The shipped dispatcher called each runner once. `attack_sequences` was never
+    k: three sequences inside ONE attacker loop share one ProbeSession, one
+    client and one ATTACKER_LOOP_TIMEOUT_S budget, and the two deterministic RTX
+    probes ignore the parameter entirely.
+    """
+
+    def test_the_runner_is_called_k_times(self):
+        seen: list = []
+        runner = _scripted_runner(
+            "data_leakage", [([], _obs("data_leakage"))] * 3, seen=seen
+        )
+
+        attempted = run_vector_attempts("data_leakage", runner, 3)
+
+        assert len(seen) == 3
+        assert attempted.outcome.attempts == 3
+
+    def test_at_k_of_one_the_runner_is_called_once(self):
+        """The control: the assertion above must be reading k, not a constant."""
+        seen: list = []
+        runner = _scripted_runner("data_leakage", [([], _obs("data_leakage"))], seen=seen)
+
+        attempted = run_vector_attempts("data_leakage", runner, 1)
+
+        assert len(seen) == 1
+        assert attempted.outcome.attempts == 1
+
+    def test_k_below_one_still_runs_once(self):
+        """A vector that runs zero times is a vector nobody tested, so zero is
+        treated as one rather than silently skipping the whole probe."""
+        seen: list = []
+        runner = _scripted_runner("hallucination", [([], _obs("hallucination"))], seen=seen)
+
+        attempted = run_vector_attempts("hallucination", runner, 0)
+
+        assert len(seen) == 1 and attempted.outcome.attempts == 1
+
+    def test_every_attempt_is_handed_its_own_empty_ledger(self):
+        """Independence, at the one object a runner receives from the caller.
+
+        Everything else an attempt uses is built inside the runner. If attempt 2
+        were handed the ledger attempt 1 wrote to, it could read what attempt 1
+        observed and the attempts would not be independent.
+        """
+        seen: list = []
+        runner = _scripted_runner(
+            "confused_deputy", [([], _obs("confused_deputy"))] * 3, seen=seen
+        )
+        caller_ledger: list[VectorObservation] = []
+
+        run_vector_attempts(
+            "confused_deputy", runner, 3, observations=caller_ledger
+        )
+
+        ledgers = [ledger for ledger, _depth, _kwargs in seen]
+        assert len({id(ledger) for ledger in ledgers}) == 3
+        assert [depth for _l, depth, _k in seen] == [0, 0, 0]
+        assert all(ledger is not caller_ledger for ledger in ledgers), (
+            "an attempt was handed the run's own ledger, so it could read every "
+            "other vector's observations too"
+        )
+
+    def test_the_runner_kwargs_reach_every_attempt_unchanged(self):
+        seen: list = []
+        runner = _scripted_runner("content_injection", [([], None)] * 2, seen=seen)
+
+        run_vector_attempts(
+            "content_injection", runner, 2, probe_fn="pf", conn_str="dsn", max_turns=5
+        )
+
+        for _ledger, _depth, kwargs in seen:
+            assert kwargs == {"probe_fn": "pf", "conn_str": "dsn", "max_turns": 5}
+
+
+class TestTheCallerLedgerGetsOneRowPerVector:
+    """k rows would be discarded, not read.
+
+    `run_coverage` builds `{obs.vector: obs}` and the last row wins, so a vector
+    that appended three observations would be described by attempt 3 alone —
+    and `deployment_service._coverage_from_run`, both red-team routes and the
+    ops room all read one row per vector out of the far end.
+    """
+
+    def test_three_attempts_append_one_observation(self):
+        runner = _scripted_runner("data_leakage", [([], _obs("data_leakage"))] * 3)
+        ledger: list[VectorObservation] = []
+
+        run_vector_attempts("data_leakage", runner, 3, observations=ledger)
+
+        assert len(ledger) == 1
+        assert ledger[0].vector == "data_leakage"
+
+    def test_the_merged_row_sums_what_the_attempts_saw(self):
+        runner = _scripted_runner(
+            "data_leakage",
+            [
+                ([], _obs("data_leakage", requested=3, completed=3, answered=2)),
+                ([], _obs("data_leakage", requested=3, completed=3, answered=5)),
+                ([], _obs("data_leakage", requested=3, completed=3, answered=1)),
+            ],
+        )
+        ledger: list[VectorObservation] = []
+
+        run_vector_attempts("data_leakage", runner, 3, observations=ledger)
+
+        merged = ledger[0]
+        assert merged.sequences_requested == 9 and merged.sequences_completed == 9
+        assert merged.probes_answered == 8
+        assert merged.complete is True
+        assert run_coverage(ledger)["incomplete_vectors"] == []
+
+    def test_a_truncated_attempt_leaves_the_vector_incomplete(self):
+        """The boundary against the row above: one attempt finishes one sequence
+        of its three, and the vector is valid and not a full test."""
+        runner = _scripted_runner(
+            "data_leakage",
+            [
+                ([], _obs("data_leakage")),
+                ([], _obs("data_leakage", completed=1, detail="the attacker loop raised: TimeoutError")),
+                ([], _obs("data_leakage")),
+            ],
+        )
+        ledger: list[VectorObservation] = []
+
+        run_vector_attempts("data_leakage", runner, 3, observations=ledger)
+
+        merged = ledger[0]
+        assert merged.observed is True
+        assert merged.sequences_completed == 7 and merged.sequences_requested == 9
+        assert merged.complete is False
+        assert merged.detail == "attempt 2: the attacker loop raised: TimeoutError"
+        assert run_coverage(ledger)["incomplete_vectors"] == ["data_leakage"]
+
+    def test_an_attempt_that_recorded_nothing_costs_coverage(self):
+        """Silence never buys coverage. A runner that returned without appending
+        cannot be shown to have run, so it counts as a sequence never completed.
+        """
+        runner = _scripted_runner(
+            "hallucination",
+            [([], _obs("hallucination")), ([], None), ([], _obs("hallucination"))],
+        )
+        ledger: list[VectorObservation] = []
+
+        run_vector_attempts("hallucination", runner, 3, observations=ledger)
+
+        merged = ledger[0]
+        assert merged.complete is False
+        assert "1 of 3 attempt(s) recorded no observation" in merged.detail
+
+    def test_a_vector_that_observed_nothing_in_any_attempt_is_invalid(self):
+        runner = _scripted_runner(
+            "hallucination",
+            [([], _obs("hallucination", observed=False, completed=0, answered=0))] * 3,
+        )
+        ledger: list[VectorObservation] = []
+
+        run_vector_attempts("hallucination", runner, 3, observations=ledger)
+
+        assert ledger[0].observed is False
+        assert ledger[0].complete is False
+        # The other six vectors are absent from this one-vector ledger, and
+        # run_coverage counts an absent vector invalid too. What this asserts is
+        # that hallucination is invalid for having observed nothing, which is a
+        # different clause from the absent ones.
+        coverage = run_coverage(ledger)
+        assert "hallucination" in coverage["invalid_vectors"]
+        assert "hallucination: no answered probe was obtained" in coverage["invalid_reason"]
+
+    def test_the_firewall_counts_add_up_across_attempts(self):
+        """#103's count is a number, not a sentence, so it has to survive the
+        merge as a number."""
+        runner = _scripted_runner(
+            "data_leakage",
+            [
+                ([], _obs("data_leakage", deflections={"SA_ID": 1})),
+                ([], _obs("data_leakage", deflections={"SA_ID": 2, "EMAIL": 1})),
+                ([], _obs("data_leakage")),
+            ],
+        )
+        ledger: list[VectorObservation] = []
+
+        run_vector_attempts("data_leakage", runner, 3, observations=ledger)
+
+        assert ledger[0].pii_deflections == {"SA_ID": 3, "EMAIL": 1}
+        assert run_coverage(ledger)["pii_deflections"] == {
+            "data_leakage": {"SA_ID": 3, "EMAIL": 1}
+        }
+
+
+class TestTheOutcomeIsBuiltFromTheAttempts:
+    """VectorOutcome is what RedTeamResult reads, so it has to be measured here."""
+
+    def test_findings_from_every_attempt_are_kept(self):
+        runner = _scripted_runner(
+            "data_leakage",
+            [
+                ([_finding("data_leakage")], _obs("data_leakage")),
+                ([], _obs("data_leakage")),
+                ([_finding("data_leakage"), _finding("data_leakage")], _obs("data_leakage")),
+            ],
+        )
+
+        attempted = run_vector_attempts("data_leakage", runner, 3)
+
+        assert len(attempted.findings) == 3
+
+    def test_a_breach_is_an_attempt_not_a_finding(self):
+        """Two findings in one attempt are one attempt that landed an attack.
+        Counting findings would report more breaches than there were attempts,
+        which VectorOutcome refuses at construction.
+        """
+        runner = _scripted_runner(
+            "data_leakage",
+            [
+                ([_finding("data_leakage"), _finding("data_leakage")], _obs("data_leakage")),
+                ([], _obs("data_leakage")),
+                ([], _obs("data_leakage")),
+            ],
+        )
+
+        attempted = run_vector_attempts("data_leakage", runner, 3)
+
+        assert attempted.outcome.breaches == 1
+        assert attempted.outcome.attempts == 3
+
+    def test_the_outcome_names_the_worst_grade_across_attempts(self):
+        """Sorted as text, 'critical' comes before 'high', so a plain max() over
+        the severity strings reports the worst finding as the mildest one."""
+        runner = _scripted_runner(
+            "data_leakage",
+            [
+                ([_finding("data_leakage", "high")], _obs("data_leakage")),
+                ([_finding("data_leakage", "critical")], _obs("data_leakage")),
+                ([_finding("data_leakage", "low")], _obs("data_leakage")),
+            ],
+        )
+
+        attempted = run_vector_attempts("data_leakage", runner, 3)
+
+        assert attempted.outcome.max_severity is Severity.CRITICAL
+        assert attempted.outcome.breaches == 3
+
+    def test_a_clean_vector_grades_none(self):
+        runner = _scripted_runner("data_leakage", [([], _obs("data_leakage"))] * 3)
+
+        attempted = run_vector_attempts("data_leakage", runner, 3)
+
+        assert attempted.outcome.breaches == 0
+        assert attempted.outcome.max_severity is Severity.NONE
+
+    def test_the_vector_name_is_the_argument_not_the_finding(self):
+        """run_identity_bypass_agent records `identity_bypass` while its findings
+        say `identity_verification_bypass`. Reading the name off a finding puts a
+        row in the record that RED_TEAM_VECTORS can never match.
+        """
+        runner = _scripted_runner(
+            "identity_bypass",
+            [([_finding("identity_verification_bypass")], _obs("identity_bypass"))],
+        )
+
+        attempted = run_vector_attempts("identity_bypass", runner, 1)
+
+        assert attempted.outcome.vector == "identity_bypass"
+        assert attempted.findings[0].attack_vector == "identity_verification_bypass"

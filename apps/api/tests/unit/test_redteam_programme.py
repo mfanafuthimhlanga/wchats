@@ -70,7 +70,14 @@ def _make_psycopg2_conn(fetchone_value=None, fetchall_value=None):
 class TestRunRedTeamProgrammeWrites:
     def test_writes_one_strategy_per_distinct_attack_vector_and_one_probe_per_finding(self):
         """Two findings share an attack_vector, one has a different vector ->
-        2 distinct strategy upserts, 3 probe inserts (one per finding)."""
+        2 distinct strategy upserts, one probe insert per finding.
+
+        Ticket 15 (#52) multiplies the findings, not the strategies. Each vector
+        runs k independent attempts and the stubs below answer with their
+        findings on every one, so three findings become 3k probe rows while the
+        two distinct attack_vector values stay two strategy rows — the upsert is
+        keyed on the vector name and ON CONFLICT DO NOTHING absorbs the repeats.
+        """
         from app.services.red_team_service import RedTeamFinding
         from app.worker.tasks.runtime.red_team import run_red_team
 
@@ -179,8 +186,9 @@ class TestRunRedTeamProgrammeWrites:
             assert "DO NOTHING" in s
 
         probe_inserts = [s for s in executed_sql if "INSERT INTO red_team_probes" in s]
-        assert len(probe_inserts) == 3, (
-            f"Expected 3 probe inserts (one per finding), got {len(probe_inserts)}"
+        assert len(probe_inserts) == 3 * result["k"], (
+            "Expected one probe insert per finding, and k attempts each produce "
+            f"the stubs' findings again: got {len(probe_inserts)}"
         )
 
         # The existing run-row UPDATE (Step 7) must still occur.

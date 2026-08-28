@@ -264,8 +264,19 @@ class TestRunRedTeamComplete:
         assert result["max_severity"] == "high", (
             f"Expected max_severity='high', got {result.get('max_severity')!r}"
         )
-        assert result["high_count"] == 1, (
-            f"Expected high_count=1, got {result.get('high_count')}"
+        # THREE, not one, and that is the whole of ticket 15 arriving at the
+        # return dict. The patched runner answers `[high_finding]` to every call
+        # and the task calls it k times, so the same vulnerability is reported
+        # once per independent attempt. A `1` here would mean the vector was
+        # attacked once.
+        from app.core.config import settings
+
+        assert result["k"] == settings.RED_TEAM_ATTEMPTS_PER_VECTOR == 3
+        assert result["high_count"] == 3, (
+            f"Expected one high finding per attempt, got {result.get('high_count')}"
+        )
+        assert result["attempts"]["conversation_injection"] == 3, (
+            "the vector reported fewer attempts than it made"
         )
 from contextlib import ExitStack  # noqa: E402  (P2)
 
@@ -328,7 +339,14 @@ class TestRunRedTeamReportsValidity:
         agents_conn=None,
         silent_vectors=None,
         truncated_vectors=None,
+        runner_for=None,
     ):
+        """Drive one whole run with the seven runners patched.
+
+        `runner_for(vector, findings)` overrides how each stand-in runner is
+        built, which is how the k tests below watch the calls without a second
+        copy of this fixture.
+        """
         from app.worker.tasks.runtime.red_team import run_red_team
 
         findings_by_vector = findings_by_vector or {}
@@ -391,16 +409,19 @@ class TestRunRedTeamReportsValidity:
             )
             for runner in runners:
                 vector = runner[len("run_") : -len("_agent")]
-                stack.enter_context(
-                    patch(
-                        f"app.worker.tasks.runtime.red_team.{runner}",
-                        _fake_runner(
-                            vector,
-                            findings_by_vector.get(vector, []),
-                            observed=vector not in (silent_vectors or set()),
-                            truncated=vector in (truncated_vectors or set()),
-                        ),
+                findings = findings_by_vector.get(vector, [])
+                built = (
+                    runner_for(vector, findings)
+                    if runner_for is not None
+                    else _fake_runner(
+                        vector,
+                        findings,
+                        observed=vector not in (silent_vectors or set()),
+                        truncated=vector in (truncated_vectors or set()),
                     )
+                )
+                stack.enter_context(
+                    patch(f"app.worker.tasks.runtime.red_team.{runner}", built)
                 )
             stack.enter_context(
                 patch(
@@ -495,7 +516,10 @@ class TestRunRedTeamReportsValidity:
         clean = self._drive()
         dirty = self._drive({"content_injection": [finding]})
 
-        assert dirty["findings_count"] == 1 and clean["findings_count"] == 0
+        # Three, because the fake answers with the finding on each of the k
+        # attempts. The count of findings still says nothing about coverage,
+        # which is what this test is about.
+        assert dirty["findings_count"] == 3 and clean["findings_count"] == 0
         assert dirty["vectors_valid"] == clean["vectors_valid"]
         assert dirty["vectors_attempted"] == clean["vectors_attempted"]
 
@@ -575,9 +599,8 @@ class TestRunRedTeamPersistsItsCoverage:
             "the run stored the build's capability instead of its own result"
         )
 
-    def test_a_pre_0015_tenant_still_completes_its_run(self):
-        """UndefinedColumn on `coverage` costs the run its denominator, never
-        its terminal status — a run stuck at 'running' forever is worse."""
+    def _conn_refusing(self, *absent_columns):
+        """A tenant DB whose red_team_runs lacks the named columns."""
         import psycopg2 as _psycopg2
 
         agents_conn = MagicMock()
@@ -587,20 +610,34 @@ class TestRunRedTeamPersistsItsCoverage:
         cursor.fetchone.return_value = None
 
         def _execute(sql, params=None):
-            if "coverage" in sql:
-                raise _psycopg2.errors.UndefinedColumn("column coverage does not exist")
+            for column in absent_columns:
+                if f"{column} = %s" in sql:
+                    raise _psycopg2.errors.UndefinedColumn(
+                        f"column {column} does not exist"
+                    )
 
         cursor.execute.side_effect = _execute
         agents_conn.cursor.return_value = cursor
+        return agents_conn
+
+    def test_a_pre_0015_tenant_still_completes_its_run(self):
+        """UndefinedColumn costs the run its denominator, never its terminal
+        status — a run stuck at 'running' forever is worse.
+
+        Three rungs since 0021, not two: `result` is dropped, then `coverage`,
+        then the statement every tenant has been able to run since M7.
+        """
+        agents_conn = self._conn_refusing("coverage", "result")
 
         driver = TestRunRedTeamReportsValidity()
         result = driver._drive(agents_conn=agents_conn)
 
         statements = self._completion_sql(agents_conn)
-        assert len(statements) == 2, (
-            "expected the wide UPDATE to raise and the pre-0015 UPDATE to follow"
+        assert len(statements) == 3, (
+            "expected the widest UPDATE to raise, the pre-0021 one to raise, and "
+            "the pre-0015 one to follow"
         )
-        assert "coverage" not in statements[1]
+        assert "coverage" not in statements[2] and "result" not in statements[2]
         assert agents_conn.rollback.called, (
             "the aborted transaction must be rolled back before the fallback "
             "statement, or psycopg2 refuses it"
@@ -609,3 +646,406 @@ class TestRunRedTeamPersistsItsCoverage:
             "the return value still reports coverage even when the row cannot "
             "store it"
         )
+
+    def test_a_pre_0021_tenant_keeps_its_coverage(self):
+        """The control on the rung above: only `result` is missing.
+
+        Without this the three-rung ladder would pass while it dropped BOTH
+        columns on a tenant that has one of them, silently costing every
+        migrated tenant the coverage it has recorded since 0015.
+        """
+        import json
+
+        agents_conn = self._conn_refusing("result")
+
+        driver = TestRunRedTeamReportsValidity()
+        driver._drive(agents_conn=agents_conn)
+
+        statements = self._completion_sql(agents_conn)
+        assert len(statements) == 2, (
+            "the widest UPDATE raises and the pre-0021 one lands; there is "
+            "nothing to drop below it"
+        )
+        assert "coverage" in statements[1] and "result" not in statements[1]
+        stored = json.loads(self._completion_params(agents_conn)[1][3])
+        assert stored["complete"] is True and stored["k"] == 3
+
+    def test_the_completion_update_stores_the_runs_result(self):
+        """The run's own record, on the row, so a reader stops recomputing it.
+
+        `findings`, `max_severity`, `deployment_blocked` and `coverage` between
+        them cannot say how many independent attempts a vector made, so a vector
+        attacked once and a vector attacked three times read identically. This is
+        the column that tells them apart.
+        """
+        import json
+
+        from app.services.red_team_service import RED_TEAM_VECTORS
+
+        driver = TestRunRedTeamReportsValidity()
+        agents_conn = _make_psycopg2_conn(fetchone_value=None)
+        driver._drive(agents_conn=agents_conn)
+
+        statements = self._completion_sql(agents_conn)
+        assert "result" in statements[0], "the run completed without its record"
+
+        stored = json.loads(self._completion_params(agents_conn)[0][4])
+        assert stored["k"] == 3
+        assert stored["max_severity"] == "none" and stored["breaches"] == 0
+        assert {row["vector"] for row in stored["vectors"]} == set(RED_TEAM_VECTORS)
+        assert all(row["attempts"] == 3 for row in stored["vectors"]), (
+            "every vector must record three independent attempts: " + str(stored)
+        )
+        assert stored["coverage"]["complete"] is True
+
+    def test_the_stored_result_carries_the_worst_grade_and_the_breach_count(self):
+        """The control for the row above: a dirty run must not read like a clean one."""
+        import json
+
+        from app.services.red_team_service import RedTeamFinding
+
+        finding = RedTeamFinding(
+            severity="critical",
+            description="system prompt disclosed",
+            attack_vector="data_leakage",
+            probe_message="p",
+            agent_response="r",
+            turn_count=1,
+        )
+        driver = TestRunRedTeamReportsValidity()
+        agents_conn = _make_psycopg2_conn(fetchone_value=None)
+        driver._drive({"data_leakage": [finding]}, agents_conn=agents_conn)
+
+        stored = json.loads(self._completion_params(agents_conn)[0][4])
+        leakage = next(r for r in stored["vectors"] if r["vector"] == "data_leakage")
+        assert leakage["breaches"] == 3, (
+            "the fake returns the finding on all three attempts, so all three "
+            "landed it"
+        )
+        assert leakage["max_severity"] == "critical"
+        assert stored["max_severity"] == "critical" and stored["breaches"] == 3
+        clean = next(r for r in stored["vectors"] if r["vector"] == "hallucination")
+        assert clean["breaches"] == 0 and clean["max_severity"] == "none"
+
+
+# ---------------------------------------------------------------------------
+# Ticket 15 (#52) — every one of the seven vectors is attempted k times,
+# independently, and the run stores what that measured.
+# ---------------------------------------------------------------------------
+
+
+def _all_vectors():
+    from app.services.red_team_service import RED_TEAM_VECTORS
+
+    return RED_TEAM_VECTORS
+
+
+def _watching_runner(vector, findings, calls):
+    """A stand-in runner that keeps the ledger object each call was handed.
+
+    The list OBJECT, not its id. CPython hands a freed list's address straight
+    back out, so attempt 1's ledger and attempt 3's ledger compare equal by id
+    while being different lists — a test written on ids fails for a reason that
+    has nothing to do with independence. Holding a reference keeps all three
+    alive and distinct.
+
+    What each entry records is (the ledger, how full it was on arrival). An
+    attempt handed a ledger with a previous attempt's observation already in it
+    can see what that attempt found, and the k is then a lie.
+    """
+    from app.services.red_team_service import VectorObservation
+
+    def _runner(
+        probe_fn, max_turns, attack_sequences, conn_str=None, observations=None,
+        *, ledger=None
+    ):
+        calls.setdefault(vector, []).append(
+            (observations, len(observations or []))
+        )
+        if observations is not None:
+            observations.append(
+                VectorObservation(
+                    vector=vector,
+                    observed=True,
+                    sequences_requested=attack_sequences,
+                    sequences_completed=attack_sequences,
+                    probes_attempted=attack_sequences,
+                    probes_answered=attack_sequences,
+                )
+            )
+        return findings
+
+    return _runner
+
+
+class TestEveryVectorIsAttemptedKTimes:
+    """Ticket 15's first criterion, at the seam that decides it.
+
+    The shipped task called each runner exactly once. Three sequences inside one
+    attacker loop under one shared 120-second budget are not three attempts, and
+    the two deterministic RTX probes have no sequence to make an attempt out of
+    at all — run_identity_bypass_agent makes exactly two dispatcher calls and
+    hardcodes sequences_requested=1. So an attempt is the whole probe, run again
+    from the top.
+    """
+
+    def _calls(self, k=None):
+        calls: dict[str, list[int]] = {}
+        driver = TestRunRedTeamReportsValidity()
+        with ExitStack() as stack:
+            if k is not None:
+                from app.core.config import settings
+
+                stack.enter_context(
+                    patch.object(settings, "RED_TEAM_ATTEMPTS_PER_VECTOR", k)
+                )
+            result = driver._drive(
+                runner_for=lambda vector, findings: _watching_runner(
+                    vector, findings, calls
+                )
+            )
+        return calls, result
+
+    def test_all_seven_runners_are_called_three_times(self):
+        calls, result = self._calls()
+
+        assert set(calls) == set(_all_vectors()), (
+            f"a vector was never dispatched at all: {sorted(calls)}"
+        )
+        assert {vector: len(seen) for vector, seen in calls.items()} == {
+            vector: 3 for vector in _all_vectors()
+        }, "not every vector was attempted three times"
+        assert result["k"] == 3
+
+    def test_at_k_of_one_each_runner_is_called_once(self):
+        """The control. Without it the assertion above would pass for a loop
+        that ignores k and happens to run three times."""
+        calls, result = self._calls(k=1)
+
+        assert {vector: len(seen) for vector, seen in calls.items()} == {
+            vector: 1 for vector in _all_vectors()
+        }, "k was ignored"
+        assert result["k"] == 1
+
+    def test_no_two_attempts_share_a_ledger(self):
+        """Independence, at the one piece of state a runner is handed.
+
+        Every other piece of an attempt is built inside the runner — its
+        ProbeSession, its client, its event loop, its conversation — so the
+        caller's ledger is the only object that could carry attempt 1 into
+        attempt 2. Three calls must see three lists.
+        """
+        calls, _ = self._calls()
+
+        for vector, seen in calls.items():
+            ledgers = [ledger for ledger, _depth in seen]
+            assert len({id(ledger) for ledger in ledgers}) == 3, (
+                f"{vector} attempts shared a ledger object"
+            )
+            assert [depth for _ledger, depth in seen] == [0, 0, 0], (
+                f"{vector} handed an attempt a ledger that already held an "
+                "earlier attempt's observation"
+            )
+
+    def test_a_vector_still_reports_one_observation_not_three(self):
+        """`run_coverage` keys its ledger by vector and the last row wins, so k
+        rows would store attempt 3 and silently discard the other two."""
+        import json
+
+        driver = TestRunRedTeamReportsValidity()
+        agents_conn = _make_psycopg2_conn(fetchone_value=None)
+        calls: dict[str, list[int]] = {}
+        driver._drive(
+            agents_conn=agents_conn,
+            runner_for=lambda vector, findings: _watching_runner(
+                vector, findings, calls
+            ),
+        )
+
+        cursor = agents_conn.cursor.return_value
+        params = [
+            call.args[1]
+            for call in cursor.execute.call_args_list
+            if "UPDATE red_team_runs" in call.args[0] and "complete" in call.args[0]
+        ]
+        coverage = json.loads(params[0][3])
+        assert coverage["vectors_valid"] == 7 and coverage["complete"] is True
+        assert coverage["attempts"] == {vector: 3 for vector in _all_vectors()}
+
+
+class TestCoverageCompleteRequiresEveryAttempt:
+    """Ticket 15's second criterion, at the boundary and one attempt either side.
+
+    `run_coverage` alone answers `complete: True` for a vector that observed the
+    agent once, because it has never been told how many independent attempts
+    were required. `_coverage_at_k` folds that requirement in.
+    """
+
+    def _coverage(self, attempts_by_vector, k=3):
+        from app.domain.red_team_result import RedTeamResult, VectorOutcome
+        from app.services.red_team_service import VectorObservation
+        from app.worker.tasks.runtime.red_team import _coverage_at_k
+
+        observations = [
+            VectorObservation(
+                vector=vector, observed=True,
+                sequences_requested=3, sequences_completed=3,
+            )
+            for vector in _all_vectors()
+        ]
+        result = RedTeamResult(
+            k=k,
+            vectors=[
+                VectorOutcome(vector=vector, attempts=attempts_by_vector[vector])
+                for vector in _all_vectors()
+            ],
+        )
+        return _coverage_at_k(observations, result)
+
+    def test_seven_vectors_at_k_are_complete(self):
+        coverage = self._coverage({v: 3 for v in _all_vectors()})
+
+        assert coverage["complete"] is True
+        assert coverage["incomplete_vectors"] == []
+        assert coverage["k"] == 3
+
+    def test_one_vector_one_attempt_short_is_not_complete(self):
+        """The boundary. Six vectors stay ON k and one moves by one attempt, so
+        the two readings can only differ for the reason under test."""
+        attempts = {v: 3 for v in _all_vectors()}
+        attempts["data_leakage"] = 2
+
+        coverage = self._coverage(attempts)
+
+        assert coverage["complete"] is False
+        assert coverage["incomplete_vectors"] == ["data_leakage"]
+        assert "data_leakage: 2 of 3 attempt(s) ran" in coverage["invalid_reason"]
+
+    def test_the_four_keys_downstream_reads_keep_their_meaning(self):
+        """`deployment_service._coverage_from_run` returns None, and the deploy
+        gate falls back to the current build, if any of the four goes missing."""
+        coverage = self._coverage({v: 3 for v in _all_vectors()})
+
+        for key in ("vectors_attempted", "vectors_valid", "invalid_vectors", "complete"):
+            assert key in coverage, f"{key} was dropped from the stored payload"
+        assert coverage["vectors_attempted"] == 7 and coverage["vectors_valid"] == 7
+
+    def test_an_invalid_vector_is_still_invalid_at_full_k(self):
+        """The two rules are separate and both bind: a vector can make all three
+        attempts and observe nothing in any of them."""
+        from app.domain.red_team_result import RedTeamResult, VectorOutcome
+        from app.services.red_team_service import VectorObservation
+        from app.worker.tasks.runtime.red_team import _coverage_at_k
+
+        observations = [
+            VectorObservation(
+                vector=vector,
+                observed=vector != "hallucination",
+                sequences_requested=3,
+                sequences_completed=3,
+            )
+            for vector in _all_vectors()
+        ]
+        result = RedTeamResult(
+            k=3,
+            vectors=[VectorOutcome(vector=v, attempts=3) for v in _all_vectors()],
+        )
+
+        coverage = _coverage_at_k(observations, result)
+
+        assert coverage["invalid_vectors"] == ["hallucination"]
+        assert coverage["complete"] is False
+
+
+# ---------------------------------------------------------------------------
+# What k does to the clock. Two relations, neither of them a copied number.
+# ---------------------------------------------------------------------------
+
+
+def _run_wall_clock_bound() -> float:
+    """The largest term in a red-team run's worst case, in seconds.
+
+    Every conversational attempt is capped by ATTACKER_LOOP_TIMEOUT_S, and the
+    two deterministic RTX probes wrap their chains in the same 120 seconds, so
+    seven vectors at k attempts each is the bound the run cannot exceed by much.
+    It ignores the smaller terms (the severity classifier, the tenant writes),
+    which is why both relations below are asserted with headroom rather than at
+    the boundary.
+    """
+    from app.core.config import settings
+    from app.services.red_team_service import ATTACKER_LOOP_TIMEOUT_S, RED_TEAM_VECTORS
+
+    return (
+        settings.RED_TEAM_ATTEMPTS_PER_VECTOR
+        * len(RED_TEAM_VECTORS)
+        * ATTACKER_LOOP_TIMEOUT_S
+    )
+
+
+def test_the_bound_is_a_function_of_k():
+    """The control for both relations below. If the bound were a constant they
+    would pass while k grew without limit."""
+    from app.core.config import settings
+
+    bound = _run_wall_clock_bound()
+    per_attempt = bound / settings.RED_TEAM_ATTEMPTS_PER_VECTOR
+
+    assert bound > 0
+    assert bound == per_attempt * settings.RED_TEAM_ATTEMPTS_PER_VECTOR
+    assert settings.RED_TEAM_ATTEMPTS_PER_VECTOR > 1, (
+        "at k=1 these relations hold trivially and prove nothing about ticket 15"
+    )
+
+
+def test_a_run_that_uses_its_bound_is_still_inside_its_own_idempotency_window():
+    """k multiplied the run and the guard did not move with it.
+
+    Step 2 skips when a `running` row for this agent is inside the window. One
+    pass of the seven vectors bounded at roughly fifteen minutes fitted the
+    shipped thirty-minute window; k=3 does not. A run still going when its own
+    row falls out of the window is a run a second trigger cannot see, so two
+    workers red-team one agent: the tenant is billed twice, two red_team_runs
+    rows describe one agent, and the RTX probes race each other over one Redis
+    rate counter.
+
+    A relation, not a copy of a number: raising k or ATTACKER_LOOP_TIMEOUT_S past
+    the window fails here rather than in production.
+    """
+    from app.worker.tasks.runtime.red_team import RUN_IDEMPOTENCY_WINDOW_MINUTES
+
+    window_seconds = RUN_IDEMPOTENCY_WINDOW_MINUTES * 60
+
+    assert window_seconds > _run_wall_clock_bound(), (
+        f"a run can legitimately take {_run_wall_clock_bound()}s and the guard "
+        f"only looks back {window_seconds}s, so a second trigger would start a "
+        "concurrent run against the same agent"
+    )
+
+
+def test_a_run_that_uses_its_bound_is_not_redelivered_underneath_itself():
+    """The other end of the same clock, and the eval side's lesson.
+
+    BROKER_VISIBILITY_TIMEOUT_S is how long the broker waits before deciding a
+    delivered message was lost. `run_eval_suite` outgrew it once already and a
+    second worker began running the same agent concurrently. k=3 triples the
+    red-team run, so the same relation has to be asserted here.
+
+    The idempotency window sits between the two: wide enough to cover a running
+    run, narrow enough that a message the broker genuinely redelivers after two
+    hours is not refused by a guard still holding a dead run's row.
+    """
+    from app.worker.celery_app import BROKER_VISIBILITY_TIMEOUT_S, celery_app
+    from app.worker.tasks.runtime.red_team import RUN_IDEMPOTENCY_WINDOW_MINUTES
+
+    assert BROKER_VISIBILITY_TIMEOUT_S > _run_wall_clock_bound(), (
+        f"visibility_timeout is {BROKER_VISIBILITY_TIMEOUT_S}s and one red-team "
+        f"run may take {_run_wall_clock_bound()}s"
+    )
+    assert RUN_IDEMPOTENCY_WINDOW_MINUTES * 60 < BROKER_VISIBILITY_TIMEOUT_S, (
+        "the guard must expire before the broker redelivers, or a redelivered "
+        "message is skipped as a duplicate of the run the dead worker abandoned"
+    )
+    assert (
+        celery_app.conf.broker_transport_options["visibility_timeout"]
+        == BROKER_VISIBILITY_TIMEOUT_S
+    ), "the configured transport option is not the constant this test pins"

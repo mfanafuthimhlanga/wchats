@@ -28,6 +28,7 @@ HOW THE BOUNDARY FIXTURE IS BUILT, AND WHY IT LOOKS FUSSY
 from __future__ import annotations
 
 import dataclasses
+import json
 
 import pytest
 
@@ -37,6 +38,7 @@ from app.domain.red_team_result import (
     RedTeamResult,
     Severity,
     VectorOutcome,
+    worst_severity,
 )
 
 #: The k ticket 15 asks for. Three independent attempts per vector.
@@ -287,3 +289,113 @@ class TestTheCompletenessBoundary:
         coverage = _result_with(_all_at(K)).coverage
 
         assert coverage["vectors_attempted"] == len(RED_TEAM_VECTORS) == 7
+
+
+# ---------------------------------------------------------------------------
+# worst_severity — the ordering, exported so nobody keeps a second copy
+# ---------------------------------------------------------------------------
+
+
+class TestWorstSeverity:
+    """`SEVERITY_ORDER = ["low", "medium", "high", "critical"]` and a `.index()`
+    ranking lived in the red-team task, deciding what went into
+    `red_team_runs.max_severity`. Two copies of one ordering is one copy that can
+    disagree, and the task's copy would have raised ValueError inside the
+    completion write the day a fifth grade was added here and not there.
+    """
+
+    def test_the_worst_grade_wins_however_the_list_is_ordered(self):
+        assert worst_severity(["low", "critical", "high"]) is Severity.CRITICAL
+        assert worst_severity(["critical", "low"]) is Severity.CRITICAL
+
+    def test_text_order_would_get_it_wrong(self):
+        """The reason this is an enum with a rank and not a `max()` over strings.
+
+        Sorted as text, 'critical' < 'high', so a plain max() over the severity
+        strings reports a run's worst finding as its mildest one.
+        """
+        assert max(["critical", "high"]) == "high"
+        assert worst_severity(["critical", "high"]) is Severity.CRITICAL
+
+    def test_nothing_at_all_grades_none(self):
+        assert worst_severity([]) is Severity.NONE
+
+    def test_an_unknown_grade_stops_the_write(self):
+        """A run's worst finding is not something to guess at, so an
+        unrecognised string raises rather than being ranked as the mildest one.
+        """
+        with pytest.raises(InvalidRedTeamResult):
+            worst_severity(["low", "catastrophic"])
+
+
+# ---------------------------------------------------------------------------
+# payload — the stored shape of the record (red_team_runs.result, 0021)
+# ---------------------------------------------------------------------------
+
+
+class TestThePayloadIsTheStoredShape:
+    """One place decides what the column holds, so the task that writes it and
+    any reader that grows a parser for it are looking at the same keys."""
+
+    def _dirty(self) -> RedTeamResult:
+        return RedTeamResult(
+            k=K,
+            vectors=[
+                VectorOutcome(vector=vector, attempts=K)
+                for vector in RED_TEAM_VECTORS
+                if vector != SHORT_VECTOR
+            ]
+            + [
+                VectorOutcome(
+                    vector=SHORT_VECTOR, attempts=K, breaches=2, max_severity="critical"
+                )
+            ],
+        )
+
+    def test_the_payload_is_json_safe(self):
+        """It goes through json.dumps on the way to the column, so a Severity
+        enum member that survived into it would raise there instead of here."""
+        payload = self._dirty().payload
+
+        assert json.loads(json.dumps(payload)) == payload
+
+    def test_every_number_a_reader_needs_is_written_out(self):
+        payload = self._dirty().payload
+
+        assert payload["k"] == K
+        assert payload["breaches"] == 2
+        assert payload["max_severity"] == "critical"
+        assert {row["vector"] for row in payload["vectors"]} == set(RED_TEAM_VECTORS)
+        short = next(
+            row for row in payload["vectors"] if row["vector"] == SHORT_VECTOR
+        )
+        assert short == {
+            "vector": SHORT_VECTOR,
+            "attempts": K,
+            "breaches": 2,
+            "max_severity": "critical",
+        }
+
+    def test_a_clean_run_reads_as_clean_and_not_as_unmeasured(self):
+        """The control. Every field has to move when the run does, or the
+        assertions above would pass against a constant.
+        """
+        payload = _result_with(_all_at(K)).payload
+
+        assert payload["breaches"] == 0
+        assert payload["max_severity"] == "none"
+        assert all(row["breaches"] == 0 for row in payload["vectors"])
+        assert payload["coverage"]["complete"] is True
+
+    def test_the_payload_carries_the_coverage_rule_it_was_measured_by(self):
+        """k on the row is the whole point of 0021: a reader that looked
+        settings.RED_TEAM_ATTEMPTS_PER_VECTOR up instead would measure a stored
+        run against today's requirement rather than the one it ran under."""
+        attempts = _all_at(K)
+        attempts[SHORT_VECTOR] = K - 1
+
+        payload = _result_with(attempts).payload
+
+        assert payload["k"] == K
+        assert payload["coverage"]["complete"] is False
+        assert payload["coverage"]["incomplete_vectors"] == [SHORT_VECTOR]
