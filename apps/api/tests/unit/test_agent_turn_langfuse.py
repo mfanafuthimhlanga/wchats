@@ -10,57 +10,36 @@ Behavior under test:
       the turn still returns/completes normally.
 
 Mock strategy (mirrors test_agent_turn_metrics.py / test_agent_task.py):
-  - claude_agent_sdk is monkeypatched before any import of agent.py.
   - `app.worker.tasks.runtime.agent._langfuse` (module-level client) is
     patched directly per test — no real Langfuse network calls.
-  - asyncio.run is mocked at the boundary with a canned ResultMessage-shaped
-    dict (including total_cost_usd/num_turns/stop_reason).
+  - asyncio.run is mocked at the boundary with a canned loop-result dict
+    (num_turns and stop_reason; the cost is derived from the turn's own
+    `model_calls` rows, not from the dict).
+  - build_agent_turn is patched, because the real seam builds a provider client.
 """
 
 from __future__ import annotations
 
-import sys
-import types
 import uuid
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-
-# ---------------------------------------------------------------------------
-# Monkeypatch claude_agent_sdk BEFORE importing the agent task module.
-# ---------------------------------------------------------------------------
-
-def _make_fake_claude_agent_sdk() -> types.ModuleType:
-    fake = types.ModuleType("claude_agent_sdk")
-    fake.ClaudeSDKClient = MagicMock(name="ClaudeSDKClient")
-    fake.ClaudeAgentOptions = MagicMock(name="ClaudeAgentOptions")
-    fake.AssistantMessage = MagicMock(name="AssistantMessage")
-    fake.ResultMessage = MagicMock(name="ResultMessage")
-    fake.TextBlock = MagicMock(name="TextBlock")
-    fake.ToolUseBlock = MagicMock(name="ToolUseBlock")
-    fake.ToolResultBlock = MagicMock(name="ToolResultBlock")
-    fake.ClaudeSDKError = type("ClaudeSDKError", (Exception,), {})
-    fake.CLINotFoundError = type("CLINotFoundError", (Exception,), {})
-    fake.CLIConnectionError = type("CLIConnectionError", (Exception,), {})
-    fake.ProcessError = type("ProcessError", (Exception,), {})
-    fake.CLIJSONDecodeError = type("CLIJSONDecodeError", (Exception,), {})
-
-    def _tool_decorator(name, description, schema):
-        def wrapper(fn):
-            fn._tool_name = name
-            return fn
-        return wrapper
-
-    fake.tool = _tool_decorator
-    fake.create_sdk_mcp_server = MagicMock(return_value=MagicMock(name="mcp_server"))
-    return fake
-
-
-if "claude_agent_sdk" not in sys.modules:
-    sys.modules["claude_agent_sdk"] = _make_fake_claude_agent_sdk()
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _seam(**_kwargs):
+    """Stand-in for `build_agent_turn`, and the one boundary these tests replace.
+
+    The real seam builds a provider client and a live tool server bound to the
+    tenant connection string; neither belongs in a test about the task body. The
+    only field the task reads off the turn is `calls`, the ledger rows the loop
+    accumulates, so that is what this carries. An empty list prices the turn at
+    zero, which is correct for a turn that made no model call.
+    """
+    return SimpleNamespace(calls=[])
+
 
 def _make_agent() -> MagicMock:
     agent = MagicMock()
@@ -100,8 +79,6 @@ _CANNED_RESULT_WITH_METRICS = {
     "escalated": False,
     "escalation_reason": None,
     "escalation_context": None,
-    "sdk_session_id": "sdk-lf-001",
-    "total_cost_usd": 0.0456,
     "num_turns": 2,
     "stop_reason": "end_turn",
 }
@@ -120,11 +97,9 @@ def _run_turn(job_id: str, agent_id: str, agent: MagicMock, job: MagicMock, loca
         patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://tenant"),
         patch("app.worker.tasks.runtime.agent.psycopg2.connect"),
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
-        patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
         patch("app.worker.tasks.runtime.agent._persist_messages"),
         patch("app.worker.tasks.runtime.agent._write_turn_metrics"),
-        patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
-        patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys"),
+        patch("app.worker.tasks.runtime.agent.build_agent_turn", side_effect=_seam),
         patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_RESULT_WITH_METRICS),
         patch("app.worker.tasks.runtime.agent.emit") as mock_emit,
     ):

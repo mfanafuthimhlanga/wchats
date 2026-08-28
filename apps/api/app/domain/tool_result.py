@@ -106,10 +106,13 @@ def to_wire(result: ToolResult) -> dict:
 def wire_text(wire: dict | None) -> str:
     """Join the text blocks of a wire dict. The reading half of `to_wire`.
 
-    Two callers read a wire dict they did not build: the idempotency replay
-    branch, which reads a result stored by an earlier call, and the red-team
-    probe, which reads what the SDK delivers as a ToolResultBlock. Both get the
-    same joining rule from here rather than each writing their own.
+    Three callers read a wire dict they did not build.
+    `agent_loop._run_tool_call` is the busiest of the three. It runs on every
+    tool call of every customer turn and turns what a handler returned into the
+    `tool` message the model reads next. The idempotency replay branch reads a
+    result an earlier call stored, and the red-team probe reads what the SDK
+    delivers as a ToolResultBlock. All three take the same joining rule from
+    here rather than each writing their own.
     """
     blocks = (wire or {}).get("content") or []
     return "\n".join(block.get("text", "") for block in blocks if isinstance(block, dict))

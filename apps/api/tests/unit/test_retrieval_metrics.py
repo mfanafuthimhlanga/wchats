@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import types
+from importlib.util import find_spec as _find_spec
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -71,7 +72,9 @@ def _make_fake_sdk():
     return fake
 
 
-if "claude_agent_sdk" not in sys.modules:
+# THE RULE: install the fake only when the real package is absent. Why the
+# `find_spec` half is load-bearing is in test_agent_tools.py's module docstring.
+if "claude_agent_sdk" not in sys.modules and _find_spec("claude_agent_sdk") is None:
     sys.modules["claude_agent_sdk"] = _make_fake_sdk()
 
 import app.services.agent_tools as agent_tools  # noqa: E402

@@ -865,6 +865,9 @@ EVERY_PURPOSE = [
     "strategist",
     "gatekeeper",
     "auditor",
+    # Ticket #48. The owned loop builds its client here like every other purpose,
+    # so the Agent turn leaves a `model_calls` row on every iteration.
+    "agent_turn",
 ]
 
 #: The purposes decision #34 priced at effort `none`.
@@ -875,6 +878,10 @@ JUDGE_PURPOSES = [
     "judge_context_recall",
     "judge_retrieval_faithfulness",
 ]
+
+#: Every purpose whose route names an effort. The Agent turn joins the judges at
+#: `none`, and the owned loop sends that effort on each call it makes.
+EFFORT_NONE_PURPOSES = [*JUDGE_PURPOSES, "agent_turn"]
 
 
 class TestTheRoutingTable:
@@ -890,10 +897,24 @@ class TestTheRoutingTable:
         """The $0.62 per thousand floor holds only at effort none (decision #34)."""
         assert route_for(purpose).reasoning_effort == "none"
 
-    @pytest.mark.parametrize("purpose", [p for p in EVERY_PURPOSE if p not in JUDGE_PURPOSES])
-    def test_a_non_judge_purpose_names_no_effort(self, purpose):
+    @pytest.mark.parametrize(
+        "purpose", [p for p in EVERY_PURPOSE if p not in EFFORT_NONE_PURPOSES]
+    )
+    def test_a_purpose_outside_that_set_names_no_effort(self, purpose):
         """Nobody has measured what an effort buys here, so the factory asks for none."""
         assert route_for(purpose).reasoning_effort is None
+
+    def test_the_agent_turn_runs_at_effort_none_too(self):
+        """Decision #34 prices the turn at $0.76 per thousand, and only at effort none."""
+        assert route_for("agent_turn").reasoning_effort == "none"
+
+    def test_the_agent_turn_reads_its_model_from_the_one_constant(self):
+        """A second literal would attribute an eval score to a model that never ran."""
+        from app.core.config import AGENT_TURN_MODEL
+
+        route = route_for("agent_turn")
+        assert route.model == AGENT_TURN_MODEL
+        assert route.provider == "openai"
 
     def test_the_table_covers_exactly_these_purposes(self):
         assert sorted(PURPOSE_ROUTES) == sorted(EVERY_PURPOSE)
@@ -975,6 +996,13 @@ class TestTheRawPathChecksThePurpose:
         client running at the provider's own effort."""
         with pytest.raises(EffortNeedsInstructor):
             self._ledger().client("judge_faithfulness")
+
+    def test_the_agent_turn_is_refused_on_the_raw_path_as_well(self):
+        """The owned loop builds an async client and passes the route's effort per
+        call. A raw synchronous client would drop it and bill the turn at whatever
+        effort the provider picks."""
+        with pytest.raises(EffortNeedsInstructor, match="agent_turn"):
+            make_client("agent_turn", tenant_id=TENANT, recorder=lambda call: None)
 
     def test_effort_needs_instructor_is_a_value_error(self):
         assert issubclass(EffortNeedsInstructor, ValueError)

@@ -10,11 +10,12 @@ WHY THE HOOK IS ON THE HTTP LAYER
     not construct, which is what keeps the seam intact under instructor.
 
 TWO PROVIDERS, TWO USAGE SHAPES, ONE ROW
-    Decision #34 routes every direct-API purpose to OpenAI `gpt-5.6-luna`, and
-    DeepSeek's Anthropic-format endpoint still serves the SDK Agent turn until the
-    owned loop lands (#48). So the hook reads both shapes and writes one
-    `ModelCall` either way. Anthropic reports fresh input, output and the two
-    cache counts separately. OpenAI reports `prompt_tokens` with the cached ones
+    Decision #34 routes every purpose to OpenAI `gpt-5.6-luna`, the Agent turn
+    included since #48 replaced the SDK harness with an owned loop. The hook
+    still reads both shapes and writes one `ModelCall` either way, because the
+    nine `messages` call sites below stay on DeepSeek's Anthropic-format
+    endpoint until #76 rewrites them. Anthropic reports fresh input, output
+    and the two cache counts separately. OpenAI reports `prompt_tokens` with the cached ones
     INCLUDED, so fresh input is the difference and cache creation is zero. A body
     whose `usage` matches neither shape records nothing and logs
     `model_ledger.shape_skipped`, the same treatment a stream gets, because spend
@@ -23,8 +24,9 @@ TWO PROVIDERS, TWO USAGE SHAPES, ONE ROW
 WHERE A PURPOSE GOES
     `PURPOSE_ROUTES` is the whole routing decision as data, one row per purpose,
     and `route_for` raises on anything else. A default provider here would send a
-    mistyped purpose to a model nobody chose. The SDK Agent turn is deliberately
-    absent from the table, because it does not come through this factory.
+    mistyped purpose to a model nobody chose. The Agent turn is a row here since
+    #48, and the owned loop builds its client through this factory like every
+    other purpose, so each loop iteration leaves a `model_calls` row.
 
     A ROUTE IS NOT YET A REDIRECT FOR THE messages SITES. `make_instructor_client`
     reads the table and builds on the provider it names. `make_client` does not:
@@ -118,7 +120,7 @@ import openai as _openai
 import psycopg2
 import structlog
 
-from app.core.config import settings
+from app.core.config import AGENT_TURN_MODEL, settings
 from app.domain.model_call import ModelCall, ModelSource
 
 log = structlog.get_logger(__name__)
@@ -361,10 +363,26 @@ _JUDGE = ModelRoute(OPENAI_PROVIDER, LUNA_MODEL, reasoning_effort="none")
 # an effort buys on these purposes.
 _LUNA = ModelRoute(OPENAI_PROVIDER, LUNA_MODEL)
 
-#: Every purpose the direct-API half calls a model for, and where it goes.
-#: Decision #34 routes all of them to one provider under one DPA. The SDK
-#: Agent-turn path is not here. It stays on DeepSeek until the owned loop lands
-#: (#48), and it never comes through this factory.
+# Decision #34 prices the Agent turn at effort none, $0.76 per thousand turns.
+# The model comes off AGENT_TURN_MODEL so the eval run record and the wire name
+# the same model.
+#
+# WHAT KEEPS THE EFFORT ON THE WIRE is `agent_loop._request_kwargs`, which puts
+# `turn.route.reasoning_effort` on every request body it builds. `make_client`'s
+# EffortNeedsInstructor refusal never fires for this purpose, because the loop
+# builds its client through `make_async_client`, and that function runs no
+# purpose check at all.
+#
+# THE CONSEQUENCE THAT FOLLOWS: `make_async_client` hardcodes the OpenAI
+# provider. Re-point this route at another provider and the loop would build an
+# OpenAI client while `turn.route.model` named the other one, with nothing
+# between the two to refuse it.
+_AGENT_TURN = ModelRoute(OPENAI_PROVIDER, AGENT_TURN_MODEL, reasoning_effort="none")
+
+#: Every purpose this platform calls a model for, and where it goes. Decision #34
+#: routes all of them to one provider under one DPA, and #48 brought the Agent
+#: turn in with the owned loop, so every model call the platform makes is routed
+#: from here.
 #:
 #: A read-only view, because each `ModelRoute` is frozen and the dict holding
 #: them was not. Rebinding a key at import time would send a purpose to a model
@@ -379,6 +397,9 @@ PURPOSE_ROUTES: Mapping[str, ModelRoute] = MappingProxyType({
     "judge_context_precision": _JUDGE,
     "judge_context_recall": _JUDGE,
     "judge_retrieval_faithfulness": _JUDGE,
+    # The customer turn, added by ticket #48 when it left the SDK harness for the
+    # owned loop in `app.services.agent_loop`.
+    "agent_turn": _AGENT_TURN,
     # Everything else the direct API serves.
     "scenario_generation": _LUNA,
     "metadata_enrichment": _LUNA,
@@ -722,9 +743,12 @@ def attach_async_ledger_hook(
     bytes is the shared code above, so the two providers' usage shapes are parsed
     in exactly one place.
 
-    Ragas is why this exists. Its collections metrics await `llm.agenerate(...)`
-    and `InstructorLLM` refuses that on a sync client, so the judge seam in #47
-    needs an async OpenAI client and this hook underneath it.
+    Two call paths need an async client, so two need this hook. Ragas'
+    collections metrics await `llm.agenerate(...)` and
+    `InstructorLLM` refuses that on a sync client, so the judge seam in #47 needs
+    an async OpenAI client with this hook underneath. The owned Agent loop is the
+    other. Since #48 it awaits `chat.completions.create` once per iteration of a
+    customer turn, and this hook writes the `model_calls` row for each one.
     """
 
     async def on_response(response: httpx.Response) -> None:
@@ -880,17 +904,29 @@ def make_async_client(
     http_client: httpx.AsyncClient | None = None,
     clock: Clock = _utc_now,
 ) -> _openai.AsyncOpenAI:
-    """The async half of `make_client`, for the one caller that needs one.
+    """The async half of `make_client`, for the two callers that need one.
 
-    Ragas is that caller. Its collections metrics await `llm.agenerate(...)`, and
-    `InstructorLLM` raises `TypeError("Cannot use agenerate() with a synchronous
-    client")` for anything whose underlying `chat.completions.create` is not a
-    coroutine function (`ragas/llms/base.py`, `_check_client_async`, ragas 0.4.3).
+    Ragas is the first, and it arrives through `make_instructor_client`. Its
+    collections metrics await `llm.agenerate(...)`, and `InstructorLLM` raises
+    `TypeError("Cannot use agenerate() with a synchronous client")` for anything
+    whose underlying `chat.completions.create` is not a coroutine function
+    (`ragas/llms/base.py`, `_check_client_async`, ragas 0.4.3).
 
-    OpenAI is the only provider here, because decision #34 routes every judge to
-    `gpt-5.6-luna` and no other async site exists. `make_instructor_client` is its
-    caller, which is why no purpose check runs here. A second provider gets added
-    when a second provider has an async caller, not before.
+    `app.services.agent_loop._turn_client` is the second, and it calls this
+    function directly. The owned loop awaits `chat.completions.create` once per
+    iteration of a customer turn, so nothing sync would serve it either.
+
+    NEITHER CALLER RUNS THE PURPOSE CHECK, and this function runs none for them.
+    `_check_raw_purpose` refuses a route that names a reasoning effort, because a
+    raw client sends no effort field. `make_instructor_client` stores the route's
+    effort as an instructor default, and the loop puts the route's effort on every
+    request body in `_request_kwargs`, so both already carry what the raw path
+    would drop. Each caller reads `PURPOSE_ROUTES` itself, so a purpose the table
+    does not hold still raises `UnknownPurpose`.
+
+    OpenAI is the only provider here, because decision #34 routes every purpose to
+    `gpt-5.6-luna`. A second provider gets added when a second provider has an
+    async caller, not before.
 
     Args:
         purpose:     what these calls are for, the key a rollup groups by.

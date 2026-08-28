@@ -1,5 +1,5 @@
 """
-agent_tools — Four MCP tool definitions + build_tool_server factory.
+agent_tools, the eleven tool definitions and the two factories over them.
 
 Provides the tool layer that the Claude Agent SDK invokes inside a Celery task.
 All four tools are defined at module level and read per-task state from ContextVars
@@ -18,8 +18,8 @@ Security (G-04 hard block):
 Design decisions:
     - Per-task state (_conn_str, _agent_id, etc.) is stored in contextvars.ContextVar
       so workers running multiple tasks concurrently carry no cross-request state bleed
-      (PROD-14).  build_tool_server() calls .set() on each ContextVar at the start of
-      every run_agent_turn invocation.
+      (PROD-14).  bind_tool_context() calls .set() on each ContextVar at the start of
+      every run_agent_turn invocation, and build_tool_server() calls it in turn.
     - retrieve_tool reads all ContextVars into local variables in the async body BEFORE
       passing lambdas to run_in_executor — executor threads do not inherit the asyncio
       context automatically, so ContextVar.get() calls inside executor lambdas would
@@ -154,7 +154,7 @@ RETRIEVED_CONTEXT_HEADER = _RETRIEVED_CONTEXT_HEADER
 RETRIEVED_CONTEXT_FOOTER = _RETRIEVED_CONTEXT_FOOTER
 
 # ---------------------------------------------------------------------------
-# Per-task ContextVars — injected by build_tool_server (PROD-14)
+# Per-task ContextVars, published by bind_tool_context (PROD-14)
 #
 # Replacing the former module-level globals (_conn_str, _agent_id, etc.) with
 # ContextVar gives per-task state isolation so a worker running multiple tasks
@@ -162,7 +162,7 @@ RETRIEVED_CONTEXT_FOOTER = _RETRIEVED_CONTEXT_FOOTER
 #
 # asyncio.run() propagation (RESEARCH.md Cluster 7, note A3):
 #   asyncio.run(coro) runs coro in a copy of the caller's context, so values
-#   set by build_tool_server (sync) are visible inside _run_sdk_turn (async).
+#   set by bind_tool_context (sync) are visible inside run_agent_loop (async).
 #
 # Executor-thread caveat:
 #   run_in_executor() threads do NOT automatically receive the asyncio context.
@@ -180,7 +180,7 @@ _notify_fn_var: ContextVar = ContextVar("notify_fn", default=None)
 _tenant_id_var: ContextVar[str] = ContextVar("tenant_id", default="")
 
 # D-10 (suspenders): per-turn retrieve call counter — ContextVar for isolation.
-# Reset to 0 by build_tool_server() at the start of each run_agent_turn invocation.
+# Reset to 0 by bind_tool_context() at the start of each run_agent_turn invocation.
 # Raised from 2 (Voyage 3 RPM free-tier guard) to 8 (DoS-only ceiling) now that
 # embeddings move to Bedrock which has no such RPM cap (PROD-06 throttle removal).
 _RETRIEVE_CALLS_PER_TURN_MAX: int = 8
@@ -189,7 +189,7 @@ _retrieve_call_count_var: ContextVar[int] = ContextVar("retrieve_call_count", de
 # IDV-05 (Phase 17): verified session token transport rail.
 # Empty-string default means "no verified session — all non-IDV tool calls pass through".
 # The token is NEVER logged (parity with `message`, T-04-03-05).
-# Set by build_tool_server() from the run_agent_turn task arg; read by the
+# Set by bind_tool_context() from the run_agent_turn task arg; read by the
 # Step 2.5 gate in transactional/tools.py (wired in 17-06).
 _verified_session_token_var: ContextVar[str] = ContextVar("verified_session_token", default="")
 
@@ -228,8 +228,8 @@ CONTEXT_WINDOW_BUDGET: int = 200_000
 # Actor seam are identical in both modes.
 #
 # On the default being "live": that is the safe direction here, not the reckless
-# one. Every path that reaches these tools calls build_tool_server, and the seam
-# above it (agent.build_agent_options) takes the mode as a MANDATORY parameter
+# one. Every path that reaches these tools calls bind_tool_context, and the seam
+# above it (agent_loop.build_agent_turn) takes the mode as a MANDATORY parameter
 # with no default, so the eval cannot arrive here by forgetting to choose. A
 # "recorded" default would instead mean that a caller who forgot silently stops
 # refunding real customers — a failure that produces no error anywhere and would
@@ -249,7 +249,7 @@ SIDE_EFFECT_MODES: tuple[str, ...] = ("live", "recorded")
 _side_effects_var: ContextVar[str] = ContextVar("side_effects", default="live")
 
 #: Per-turn sink for suppressed side effects. Holds the LIST OBJECT itself, set
-#: once by build_tool_server in the sync task body: asyncio.run() copies the
+#: once by bind_tool_context in the sync task body. asyncio.run() copies the
 #: context, so a .set() inside the turn would not be visible to the caller
 #: afterwards, but appends to a list installed BEFORE the copy are — the list is
 #: one shared object, not a per-context value. That is what lets P2 read back,
@@ -298,7 +298,7 @@ def record_suppressed_side_effect(kind: str, detail: dict) -> dict:
             kind=kind,
             note=(
                 "recorded mode suppressed a side effect but no sink was installed "
-                "— build_tool_server was not called for this context"
+                "bind_tool_context was not called for this context"
             ),
         )
     else:
@@ -322,13 +322,13 @@ def reset_side_effect_context() -> None:
 
     The mode is process-context sticky and nothing resets it between Celery
     tasks — the prefork pool does not isolate contextvars per task. Today every
-    entry point calls `build_tool_server`, which republishes the mode, so a
+    entry point calls `bind_tool_context`, which republishes the mode, so a
     leaked "recorded" is closed by a coincidence of the call graph rather than
     by construction. It stops being a coincidence the moment a caller raises
-    BEFORE reaching `build_tool_server`: `build_agent_options` validates its
+    BEFORE reaching `bind_tool_context`. `build_agent_turn` validates its
     arguments and parses `RetrievalStrategy` first, and either can throw.
 
-    So `build_agent_options` calls this before it can fail. The direction is
+    So `build_agent_turn` calls this before it can fail. The direction is
     deliberate: a stale "recorded" surviving into a customer's chat turn stops
     refunding real customers with no error anywhere, and would be found by a
     customer rather than by us. A stale "live" surviving into an eval turn is
@@ -456,7 +456,7 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     D-10 (suspenders): blocks the call and returns is_error when the per-turn
     counter exceeds _RETRIEVE_CALLS_PER_TURN_MAX (now 8 — DoS guard only; was 2
     to protect the Voyage 3 RPM free tier which Bedrock removes).
-    Counter is reset by build_tool_server() at the start of each task invocation.
+    Counter is reset by bind_tool_context() at the start of each task invocation.
 
     Executor-thread safety: all ContextVars are read into local variables at the
     TOP of this async body before any run_in_executor call.  Executor threads do
@@ -571,20 +571,15 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     # -------------------------------------------------------------------
     # OPS-05/06: retrieval-health instrumentation (T-21-03-01/02/03).
     #
-    # Written from inside this tool's closure because rank/score data from
-    # rrf_fuse/rerank never crosses back into the SDK loop (module docstring,
-    # 21-RESEARCH.md Pattern 1). job_id/conn_str/conversation_id were already
-    # read into locals above — never .get() inside the executor lambda below
-    # (Pitfall 4).
+    # Written from inside this tool's closure, because the rank and score data
+    # rrf_fuse and rerank produce never leaves it. job_id, conn_str and
+    # conversation_id were read into locals above (Pitfall 4).
     #
-    # No live per-query ground truth exists, so recall_at_k/ndcg_at_10/mrr
-    # treat the reranker's own final selection as the best available
-    # relevance signal and measure how well the pre-rerank RRF fusion ranked
-    # those same chunks BEFORE reranking reordered/filtered them. This is the
-    # standard "use the stronger downstream ranker as a pseudo-label"
-    # technique for unlabeled production retrieval evaluation, and it is
-    # exactly what makes "reranker lift" a meaningful, honest number
-    # (21-DOMAIN-NOTES.md §3).
+    # No live per-query ground truth exists, so recall_at_k, ndcg_at_10 and mrr
+    # take the reranker's final selection as the relevance signal and measure how
+    # well the PRE-RERANK RRF fusion ranked those same chunks. That is the
+    # "stronger downstream ranker as a pseudo-label" technique, and it is what
+    # makes "reranker lift" a number rather than a guess (21-DOMAIN-NOTES.md §3).
     # -------------------------------------------------------------------
     # Each context reports its own engine's number as `score`, so the four
     # top-score reads below are the four numbers the field names promise.
@@ -690,11 +685,16 @@ async def retrieve_tool(args: dict[str, Any]) -> dict[str, Any]:
     # sanitize_chunk_text at ingest is complementary rather than superseded — this
     # is the retrieval-time layer, that is the admit-time layer, against the same
     # indirect-prompt-injection threat.
-    # THE REPR SEAM. app/worker/tasks/runtime/agent.py reads this string back with
-    # ast.literal_eval, so the text stays the repr of a list of chunk dicts and
-    # `to_json` decides those keys and their order. The owned-loop ticket replaces it.
-    model_text = _frame_retrieved_context(str(retrieved.to_json()["chunks"]))
-    return {"content": [{"type": "text", "text": model_text}], "_citations": citations}
+    # THE JSON SEAM (#48). The framed text is JSON for the MODEL to read, and
+    # nothing calls `json.loads` on it. The loop takes its chunks from the
+    # `_retrieved_context` ride-along, which is why `to_json` still decides keys.
+    context = retrieved.to_json()
+    model_text = _frame_retrieved_context(json.dumps(context["chunks"]))
+    return {
+        "content": [{"type": "text", "text": model_text}],
+        "_citations": citations,
+        "_retrieved_context": context,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -852,7 +852,7 @@ async def escalate_to_human_tool(args: dict[str, Any]) -> dict[str, Any]:
 
     # -------------------------------------------------------------------
     # D1/P1b: the escalation edge has TWO outer effects, not one. The mail is
-    # swapped at the seam (agent.build_agent_options builds a recording
+    # swapped at the seam (agent_loop.build_agent_turn builds a recording
     # notify_fn), but this UPDATE is the other half and it lands in the
     # TENANT's `conversations` table. An eval scenario that escalates would
     # otherwise mark a real customer conversation as escalated — changing what
@@ -954,6 +954,127 @@ async def clarify_tool(args: dict[str, Any]) -> dict[str, Any]:
 # Factory: build_tool_server
 # ---------------------------------------------------------------------------
 
+def agent_tool_definitions() -> tuple:
+    """The eleven tools an Agent turn may call, in registration order.
+
+    Two callers read this list. `build_tool_server` registers it with the MCP
+    server the SDK path uses, and `app.services.agent_loop` turns it into the
+    JSON schemas the owned loop sends on the wire. One list means the two cannot
+    disagree about which tools an agent has, and only one of them serves a
+    customer.
+
+    The seven transactional tools are imported inside this function rather than
+    at module scope. `transactional.tools` imports `_agent_id_var` from this
+    module at call time, so importing it here, after the ContextVar definitions
+    above, is what keeps the pair out of a circular import.
+    """
+    from app.services.transactional.tools import (  # noqa: PLC0415
+        book_slot_tool,
+        cancel_order_tool,
+        confirm_action_tool,
+        issue_refund_tool,
+        place_order_tool,
+        update_customer_record_tool,
+        update_subscription_tool,
+    )
+
+    return (
+        # The original 4, retained (TXN-04 / PLAN.md prohibition).
+        retrieve_tool,
+        lookup_structured_tool,
+        escalate_to_human_tool,
+        clarify_tool,
+        # The 7 transactional tools, added by Phase 14 Plan 04.
+        place_order_tool,
+        cancel_order_tool,
+        issue_refund_tool,
+        update_subscription_tool,
+        book_slot_tool,
+        update_customer_record_tool,
+        confirm_action_tool,
+    )
+
+
+def _require_side_effect_mode(caller: str, side_effects: str) -> None:
+    """Refuse a mode this layer cannot serve, naming the caller that asked for it.
+
+    One check, two entry points. `Literal` is a type-checker annotation and stops
+    nothing at run time, so an unrecognised value would compare unequal to
+    "recorded" and be served as live, which on the eval path means a real refund
+    against the tenant's provider (BACKLOG 2.5).
+    """
+    if side_effects in SIDE_EFFECT_MODES:
+        return
+    raise ValueError(
+        f"{caller}: side_effects must be one of {SIDE_EFFECT_MODES}, "
+        f"got {side_effects!r}. An unrecognised value would compare unequal to "
+        f"'recorded' and be served as live, which on the eval path means a "
+        f"real refund against the tenant's provider (BACKLOG 2.5)."
+    )
+
+
+def bind_tool_context(
+    conn_str: str,
+    agent_id: str,
+    agent_name: str,
+    strategy: RetrievalStrategy,
+    conversation_id: str,
+    notify_fn,
+    tenant_id: str = "",
+    verified_session_token: str = "",
+    job_id: str = "",
+    side_effects: str = "live",
+) -> None:
+    """Publish one turn's tenant-scoped state into the per-task ContextVars.
+
+    Every tool handler reads its tenant, its agent and its mode from here, and
+    whoever publishes last owns the turn. `build_tool_server` calls this for the
+    SDK paths that still need a server; `agent_loop.build_agent_turn` calls it
+    alone, because the owned loop dispatches tools itself.
+
+    Called once per turn in the sync Celery task body, before asyncio.run(), so
+    every value is visible inside the async turn and its tool callees. ContextVar
+    .set() writes only the current context's copy, so prefork concurrency > 1
+    bleeds nothing between tasks (PROD-14).
+
+    THE MODE AND THE SINK GO LAST, after every step that can raise. The mode is
+    process-context sticky and the prefork pool does not isolate contextvars per
+    task, so a bind that dies halfway through would otherwise leave a "recorded"
+    behind for whatever runs next in this worker's context. That next thing is a
+    customer turn that silently stops refunding, with no error anywhere.
+
+    Args: as `build_tool_server` documents them.
+
+    Raises:
+        ValueError: side_effects is neither "live" nor "recorded".
+    """
+    _require_side_effect_mode("bind_tool_context", side_effects)
+
+    _conn_str_var.set(conn_str)
+    _agent_id_var.set(agent_id)
+    _tenant_id_var.set(tenant_id)
+    _agent_name_var.set(agent_name)
+    _strategy_var.set(strategy)
+    _conversation_id_var.set(conversation_id)
+    _notify_fn_var.set(notify_fn)
+    _job_id_var.set(job_id)
+
+    # D-10 (suspenders): this turn's retrieve counter starts at zero.
+    _retrieve_call_count_var.set(0)
+    # IDV-05: the enforcement gate in transactional/tools.py (17-06) reads this
+    # token. NEVER referenced in any log call (T-04-03-05).
+    _verified_session_token_var.set(verified_session_token)
+
+    log.debug("bind_tool_context.ready", agent_id=agent_id, conversation_id=conversation_id)
+
+    # D1/P1b: the mode and a FRESH sink, last, for the reason in the docstring. The
+    # sink matters as much as the mode: one carried over from the previous turn
+    # reports one eval scenario's refund attempt as another's, which is worse than
+    # no recording at all. It is a wrong observation that looks right.
+    _side_effects_var.set(side_effects)
+    _recorded_side_effects_var.set([])
+
+
 def build_tool_server(
     conn_str: str,
     agent_id: str,
@@ -966,18 +1087,11 @@ def build_tool_server(
     job_id: str = "",
     side_effects: str = "live",
 ) -> object:
-    """Inject tenant-scoped state into ContextVars and return the MCP server.
+    """Build the MCP server for one turn, over a freshly bound tool context.
 
-    Called once per ``run_agent_turn`` invocation in the sync Celery task body
-    (before asyncio.run()).  Sets every per-task ContextVar (including _job_id_var,
-    added in Phase 21 Plan 03 for OPS-05/06) so they are visible inside the async
-    SDK turn and its tool callees (Python 3.7+ asyncio.run propagation guarantee —
-    see RESEARCH.md Cluster 7, note A3).
-
-    Concurrency safety (PROD-14):
-        ContextVar.set() mutates only the *current context's* copy of the variable.
-        With prefork concurrency > 1, each worker process has its own context per
-        task, so no cross-request state bleed occurs.
+    The remaining callers are `red_team_probe` and `deployment_service`, which
+    drive the SDK's own client and need a server object. `bind_tool_context` above
+    does the ContextVar half, and this adds the server.
 
     Args:
         conn_str:                Decrypted tenant DB connection string.
@@ -997,7 +1111,7 @@ def build_tool_server(
                                  "live" so every pre-existing caller — notably the red-team
                                  probes, which must read REAL dispatcher verdict tags —
                                  keeps the behaviour it had. The mandatory-no-default rule
-                                 lives one layer up, on agent.build_agent_options, which is
+                                 lives one layer up, on agent_loop.build_agent_turn, which is
                                  where the eval path is chosen. See the SideEffectMode block
                                  above for why the default points this way.
 
@@ -1012,86 +1126,32 @@ def build_tool_server(
         7 transactional tools added in Phase 14 Plan 04 (place_order, cancel_order,
         issue_refund, update_subscription, book_slot, update_customer_record, confirm_action).
     """
-    if side_effects not in SIDE_EFFECT_MODES:
-        raise ValueError(
-            f"build_tool_server: side_effects must be one of {SIDE_EFFECT_MODES}, "
-            f"got {side_effects!r}. An unrecognised value would compare unequal to "
-            f"'recorded' and be served as live — which on the eval path means a "
-            f"real refund against the tenant's provider (BACKLOG 2.5)."
-        )
+    _require_side_effect_mode("build_tool_server", side_effects)
 
-    _conn_str_var.set(conn_str)
-    _agent_id_var.set(agent_id)
-    _tenant_id_var.set(tenant_id)
-    _agent_name_var.set(agent_name)
-    _strategy_var.set(strategy)
-    _conversation_id_var.set(conversation_id)
-    _notify_fn_var.set(notify_fn)
-    _job_id_var.set(job_id)
-
-    # D-10 (suspenders): reset per-turn retrieve counter for this new task invocation.
-    # ContextVar.set() ensures the reset is scoped to this task's context only.
-    _retrieve_call_count_var.set(0)
-
-    # IDV-05: thread the verified session token into the task-scoped ContextVar.
-    # The enforcement gate in transactional/tools.py (17-06) reads this value.
-    # NEVER referenced in any log call (T-04-03-05).
-    _verified_session_token_var.set(verified_session_token)
-
-    log.debug(
-        "build_tool_server.ready",
-        agent_id=agent_id,
-        conversation_id=conversation_id,
-    )
-
-    # Phase 14 Plan 04: append the 7 transactional tools to the existing 4.
-    # The import is deferred to avoid circular-import issues at module level:
-    # tools.py imports _agent_id_var from this module at function call time, so
-    # importing tools here (after the ContextVar definitions above) is safe.
-    from app.services.transactional.tools import (  # noqa: PLC0415
-        book_slot_tool,
-        cancel_order_tool,
-        confirm_action_tool,
-        issue_refund_tool,
-        place_order_tool,
-        update_customer_record_tool,
-        update_subscription_tool,
-    )
-
+    # CONSTRUCT FIRST, BIND SECOND, and that ordering is the reason this function
+    # still exists as a wrapper. `bind_tool_context` publishes the side-effect
+    # mode last, so a `create_sdk_mcp_server` that raises here leaves no mode
+    # behind at all. A half-built server can never hand the next thing in this
+    # worker's context a stale "recorded".
+    #
+    # The tool list lives in `agent_tool_definitions` above, because the owned
+    # loop reads the same eleven tools and two literals would let the SDK path
+    # and the loop grant an agent different capabilities.
     server = create_sdk_mcp_server(
         name="customer-tools",
         version="1.0.0",
-        tools=[
-            # Original 4 tools — must be retained (TXN-04 / PLAN.md prohibition)
-            retrieve_tool,
-            lookup_structured_tool,
-            escalate_to_human_tool,
-            clarify_tool,
-            # Phase 14 Plan 04 — 7 transactional tools
-            place_order_tool,
-            cancel_order_tool,
-            issue_refund_tool,
-            update_subscription_tool,
-            book_slot_tool,
-            update_customer_record_tool,
-            confirm_action_tool,
-        ],
+        tools=list(agent_tool_definitions()),
     )
-
-    # D1/P1b: publish the mode and install a FRESH recording sink for this turn.
-    #
-    # LAST, after every step that can raise. The mode is process-context sticky
-    # and the prefork pool does not isolate contextvars per task, so publishing
-    # it before create_sdk_mcp_server would mean a half-built tool server leaves
-    # a "recorded" behind for whatever runs next in this worker's context — a
-    # customer turn that then silently stops refunding, with no error anywhere.
-    # Nothing between here and the return reads either variable, so the move
-    # costs nothing.
-    #
-    # Fresh sink matters as much as the mode: one carried over from the previous
-    # turn would report one eval scenario's refund attempt as another's, which
-    # is worse than no recording at all — a wrong observation that looks right.
-    _side_effects_var.set(side_effects)
-    _recorded_side_effects_var.set([])
-
+    bind_tool_context(
+        conn_str=conn_str,
+        agent_id=agent_id,
+        agent_name=agent_name,
+        strategy=strategy,
+        conversation_id=conversation_id,
+        notify_fn=notify_fn,
+        tenant_id=tenant_id,
+        verified_session_token=verified_session_token,
+        job_id=job_id,
+        side_effects=side_effects,
+    )
     return server

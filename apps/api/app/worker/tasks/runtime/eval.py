@@ -62,9 +62,10 @@ the deploy gate's eval half — was reasoning about a number that measured
 nothing. Three years of scaffolding on one line of scaffolding.
 
 Now each scenario's question is put to the customer agent, through the SAME
-constructor run_agent_turn uses (agent.build_agent_options — the seam, P1), and
-the agent's own response is what gets scored. Four properties, each of which is
-a way this could have gone wrong and been invisible:
+seam run_agent_turn uses (agent_loop.build_agent_turn) and the SAME loop
+(agent_loop.run_agent_loop), and the agent's own response is what gets scored.
+Four properties, each of which is a way this could have gone wrong and been
+invisible:
 
   * ALWAYS side_effects="recorded", never "live". The seam grants eleven tools
     and six of them reach a real ProviderAdapter; one eval scenario in which the
@@ -190,26 +191,23 @@ def _agent_turn_timeout_s() -> int:
 # ---------------------------------------------------------------------------
 # Invoking the agent, per scenario (audit D1 / plan P2)
 # ---------------------------------------------------------------------------
-# WHY THE IMPORTS BELOW ARE LAZY. `agent.py` and `agent_tools.py` both import
-# `claude_agent_sdk` at module scope, and several test modules install a FAKE
-# `claude_agent_sdk` into `sys.modules` at import time. Pulling either into THIS
-# module's import graph would make `tests/unit/test_eval_task.py` — which has
-# nothing to do with the SDK — depend on pytest's collection order for whether it
-# gets the real package or a stand-in. `test_agent_options_seam.py` records that
-# exact failure ("a guard whose meaning depends on collection order is not a
-# guard"), and `eval_service.build_eval_run_config` already imports
+# WHY THE IMPORTS BELOW ARE LAZY. `agent.py` pulls in Langfuse, the validators
+# and the retrieval-faithfulness task at module scope, and it is a Celery task
+# module besides. Putting that whole graph into THIS module's import graph would
+# make `tests/unit/test_eval_task.py` carry it too, and that file has nothing to
+# do with the customer turn. `eval_service.build_eval_run_config` already imports
 # `deployment_service` inside the function body for the same class of reason.
 #
 # They are imported BY NAME rather than through an accessor, because the static
 # half of tests/unit/test_eval_agent_invocation.py reads this module's AST to
-# prove every `build_agent_options(...)` call asks for recorded side effects, and
-# a computed callee has no name to read.
+# prove every `build_agent_turn(...)` call asks for recorded side effects, and a
+# computed callee has no name to read.
 
 
 class _EvalEventSink:
-    """The db/redis double `_run_sdk_turn` emits SSE events through.
+    """The db/redis double `run_agent_loop` emits SSE events through.
 
-    `_run_sdk_turn` calls `emit(job_id, "agent.tool_call", …, db, redis)` for
+    `run_agent_loop` calls `emit(job_id, "agent.tool_call", …, db, redis)` for
     every tool use it observes. On the chat path those rows are the durable
     replay log a late-joining widget reads. On the eval path there is no widget,
     no SSE subscriber and — this is the part that matters — NO `jobs` ROW: the
@@ -238,18 +236,44 @@ class _EvalEventSink:
         return None
 
 
+def _drive_eval_turn(turn, *, question: str, run_id: str) -> dict:
+    """Run one assembled eval turn to its end, then write what it spent.
+
+    The ledger rows are written here rather than during the loop, for the reason
+    `record_turn_calls` gives. Writing one opens a tenant connection, and the loop
+    runs on an event loop with a wall-clock ceiling over it. On BOTH paths, because
+    a scenario that timed out still paid for the calls it made.
+    """
+    from app.services.agent_loop import record_turn_calls, run_agent_loop  # noqa: PLC0415
+    from app.worker.tasks.runtime.agent import AGENT_TURN_TIMEOUT_S  # noqa: PLC0415
+
+    sink = _EvalEventSink()
+    try:
+        return asyncio.run(
+            asyncio.wait_for(
+                run_agent_loop(
+                    question, history=[], turn=turn, job_id=run_id, db=sink, redis=sink
+                ),
+                timeout=AGENT_TURN_TIMEOUT_S,
+            )
+        )
+    finally:
+        record_turn_calls(turn)
+
+
 def _run_one_eval_turn(
     *,
     agent_id: str,
     conn_str: str,
+    run_id: str,
     question: str,
     prompt_version_id: str | None,
 ) -> dict:
-    """Put one scenario question to the customer agent. Returns `_run_sdk_turn`'s dict.
+    """Put one scenario question to the customer agent. Returns `run_agent_loop`'s dict.
 
-    Same constructor as the chat path (`build_agent_options` — the seam, P1) and
-    same turn loop (`_run_sdk_turn`), so what is measured is what is served. What
-    differs is stated here rather than discovered later:
+    Same seam as the chat path (`build_agent_turn`) and same loop
+    (`run_agent_loop`), so what is measured is what is served. What differs is
+    stated here rather than discovered later:
 
       * `side_effects="recorded"` — ALWAYS, never "live". Six of the eleven tools
         the seam grants reach a real ProviderAdapter, and this loop runs nightly,
@@ -258,9 +282,14 @@ def _run_one_eval_turn(
         Every identity-gated skill therefore refuses, which is the correct
         posture for a question that arrived with no IDV session, and it is the
         posture a mined production scenario carries no evidence against.
-      * `resume=None` and a fresh conversation id per scenario — scenarios are
-        independent by construction; a shared session would let scenario 12's
-        answer be shaped by scenario 11.
+      * `history=[]` and a fresh conversation id per scenario, because scenarios
+        are independent by construction. A shared conversation would let scenario
+        12's answer be shaped by scenario 11.
+      * `job_id=run_id`, the eval run's own id and the id `_run_ledger` bills
+        the judges under. A synthesised uuid per scenario names no job, so
+        `model_calls WHERE job_id = <run_id>` returned the judge half of a run and
+        none of the agent turns, and this run's agent traffic was indistinguishable
+        from live customer traffic under `purpose='agent_turn'`.
       * No `conversations` row is created. Nothing writes one because recorded
         mode suppresses every tenant write the tools would make, and creating one
         would put eval traffic into the table `mine_production_scenarios` reads —
@@ -275,20 +304,17 @@ def _run_one_eval_turn(
     production version — a score attributed to a prompt that never produced it,
     which is BACKLOG 2.3's defect exactly.
     """
+    from app.services.agent_loop import build_agent_turn  # noqa: PLC0415
     from app.worker.tasks.runtime.agent import (  # noqa: PLC0415
-        AGENT_TURN_TIMEOUT_S,
         _resolve_turn_prompt_version,
-        _run_sdk_turn,
-        build_agent_options,
     )
 
     conversation_id = str(uuid.uuid4())
-    job_id = str(uuid.uuid4())
 
-    # The control-DB session is held only for as long as the options need it.
-    # build_agent_options reads every field it wants off the agent row before it
-    # returns, so the SDK turn — up to AGENT_TURN_TIMEOUT_S of it, sixty times a
-    # night — runs with no session open.
+    # The control-DB session is held only for as long as the seam needs it.
+    # build_agent_turn reads every field it wants off the agent row before it
+    # returns, so the turn runs with no session open. That turn takes up to
+    # AGENT_TURN_TIMEOUT_S, sixty times a night.
     with get_sync_db() as db:
         agent = db.get(Agent, agent_id)
         if agent is None:
@@ -303,38 +329,25 @@ def _run_one_eval_turn(
                 existing_prompt_version_id=prompt_version_id,
             )
 
-        options = build_agent_options(
+        turn = build_agent_turn(
             agent=agent,
             conn_str=conn_str,
             conversation_id=conversation_id,
-            job_id=job_id,
+            job_id=run_id,
             side_effects="recorded",
             verified_session_token="",
             soul_override=soul_override,
-            resume=None,
+            ledger=ledger_recorder(conn_str),
         )
 
-    sink = _EvalEventSink()
-    return asyncio.run(
-        asyncio.wait_for(
-            _run_sdk_turn(
-                message=question,
-                options=options,
-                job_id=job_id,
-                local_conversation_id=conversation_id,
-                conn_str=conn_str,
-                db=sink,
-                redis=sink,
-            ),
-            timeout=AGENT_TURN_TIMEOUT_S,
-        )
-    )
+    return _drive_eval_turn(turn, question=question, run_id=run_id)
 
 
 def _invoke_agent_for_scenarios(
     *,
     agent_id: str,
     conn_str: str,
+    run_id: str,
     scenarios: list[dict],
     prompt_version_id: str | None,
 ) -> tuple[list[dict], dict]:
@@ -347,6 +360,7 @@ def _invoke_agent_for_scenarios(
     and the observation says how many there were and why.
 
     Args:
+        run_id: the eval run these turns belong to, and the job_id they bill under.
         scenarios: the VALID rows of the run (those carrying a label), golden
             first. Order is load-bearing: the per-run ceiling takes a prefix, so
             golden-first means the fixed set is invoked before the rotating one.
@@ -365,23 +379,23 @@ def _invoke_agent_for_scenarios(
     is a programming error in this file, not a runtime condition, and it fires
     before any turn has cost anything.
     """
-    from app.services.agent_tools import (  # noqa: PLC0415
-        CHUNK_CONTENT_CHAR_LIMIT,
-        get_recorded_side_effects,
-        reset_side_effect_context,
-    )
-    from app.worker.tasks.runtime.agent import (  # noqa: PLC0415
-        AGENT_TURN_TIMEOUT_S,
+    from app.services.agent_loop import (  # noqa: PLC0415
         RETRIEVE_CHUNKS_KEY,
         RETRIEVE_CHUNKS_SOURCE_KEY,
         RETRIEVE_CHUNKS_UNPARSED,
         RETRIEVE_RESULT_CAPTURE_CHARS,
     )
+    from app.services.agent_tools import (  # noqa: PLC0415
+        CHUNK_CONTENT_CHAR_LIMIT,
+        get_recorded_side_effects,
+        reset_side_effect_context,
+    )
+    from app.worker.tasks.runtime.agent import AGENT_TURN_TIMEOUT_S  # noqa: PLC0415
 
     # The provenance says concurrency=1 and the loop below is sequential. Rather
     # than let those two drift into disagreement — a run whose record claims a
     # bound it did not run under is this phase's whole subject — raise. 4 GB of
-    # RAM and one Agent SDK subprocess per turn is why the number is 1.
+    # RAM and one turn's worth of retrieval in flight is why the number is 1.
     if AGENT_INVOCATION_CONCURRENCY != 1:
         raise RuntimeError(
             "AGENT_INVOCATION_CONCURRENCY is "
@@ -416,7 +430,7 @@ def _invoke_agent_for_scenarios(
     try:
         for scenario in invocable:
             # THE SINK IS EMPTIED BEFORE THE TURN, NOT ONLY INSIDE IT.
-            # build_agent_options resets it on entry, but everything
+            # build_agent_turn resets it on entry, but everything
             # _run_one_eval_turn does BEFORE reaching the seam can raise:
             # get_sync_db(), the agent row lookup (which raises when the row is
             # gone), _resolve_turn_prompt_version. The unconditional read below
@@ -441,17 +455,15 @@ def _invoke_agent_for_scenarios(
             turn: dict | None = None
             try:
                 turn = _run_one_eval_turn(
-                    agent_id=agent_id,
-                    conn_str=conn_str,
-                    question=scenario.get("question", ""),
-                    prompt_version_id=prompt_version_id,
+                    agent_id=agent_id, conn_str=conn_str, run_id=run_id,
+                    question=scenario.get("question", ""), prompt_version_id=prompt_version_id,
                 )
             except Exception as exc:
                 # EXCLUDED AND COUNTED, never scored 0 — the lesson
                 # tests/evals/calibration/compute_correlation.py:485 learned
                 # about a judge that errors, applied one layer earlier. A zero
-                # here would move every metric with the failure rate of the
-                # Agent SDK rather than with the agent's behaviour, and it would
+                # here would move every metric with the turn's failure rate
+                # rather than with the agent's behaviour, and it would
                 # do it in the direction that looks like a quality regression.
                 record["error"] = type(exc).__name__
                 log.warning(
@@ -469,12 +481,12 @@ def _invoke_agent_for_scenarios(
 
             if turn is not None:
                 # ONE STRING PER CHUNK, not one repr per tool call. `result` is
-                # the audit capture — a Python repr of the SDK content block, cut
-                # at RETRIEVE_RESULT_CAPTURE_CHARS, which is below one full
-                # retrieval — and scoring it made the capture format the dominant
+                # the audit capture, the tool result text cut at
+                # RETRIEVE_RESULT_CAPTURE_CHARS, which is below one full
+                # retrieval. Scoring it made the capture format the dominant
                 # term in Faithfulness and collapsed ContextPrecision's ranking
-                # to a single element. agent.py decodes the framed payload back
-                # into the chunks the agent was shown; those are what is scored.
+                # to a single element. The loop captures the chunks the tool
+                # handed over; those are what is scored.
                 contexts: list[str] = []
                 for tc in turn.get("tool_calls_log", []):
                     if tc.get("tool_name") != "retrieve" or "result" not in tc:
@@ -526,7 +538,7 @@ def _invoke_agent_for_scenarios(
         # The mode is process-context sticky and the Celery prefork pool does not
         # isolate contextvars per task. Leaving "recorded" in force would mean the
         # next thing to run in this context stops refunding real customers with no
-        # error anywhere — a failure a customer finds, not us. build_agent_options
+        # error anywhere. That is a failure a customer finds, not us. build_agent_turn
         # resets on entry too; this closes the window between the two.
         reset_side_effect_context()
 
@@ -1028,7 +1040,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
             return {}
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
 
-    # Set the moment the first SDK turn could have run. A retry after that point
+    # Set the moment the first turn could have run. A retry after that point
     # re-invokes the whole set — see the `except` below.
     agent_was_invoked = False
     try:
@@ -1048,8 +1060,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # against their own reference answer, which is the defect being closed.
         # ------------------------------------------------------------------
         scored_scenarios, invocation = _invoke_agent_for_scenarios(
-            agent_id=agent_id,
-            conn_str=conn_str,
+            agent_id=agent_id, conn_str=conn_str, run_id=run_id,
             scenarios=valid_scenarios,
             prompt_version_id=attribution["prompt_version_id"],
         )
@@ -1230,7 +1241,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
                 run_id=run_id,
                 detail=(
                     "the agent was already invoked for this run; retrying would "
-                    "re-run every SDK turn. The run is recorded failed and the "
+                    "re-run every turn. The run is recorded failed and the "
                     "next nightly dispatch is the retry."
                 ),
             )

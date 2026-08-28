@@ -4,9 +4,9 @@ The defect, stated as what it cost rather than as a slice:
 
     `agent.py` built the Auditor's context as
     `json.dumps([str(r)[:600] for r in retrieve_results][:3])`, where `r` is
-    `tc["result"]` — the AUDIT capture, a Python repr of the SDK content block
-    already cut at RETRIEVE_RESULT_CAPTURE_CHARS because it reaches a jsonb
-    column. Three losses in one line: 600 chars per call against the 10,000
+    `tc["result"]`, the AUDIT capture, already cut at
+    RETRIEVE_RESULT_CAPTURE_CHARS because it reaches a jsonb column. Three losses
+    in one line: 600 chars per call against the 10,000
     (MAX_CHUNKS x CHUNK_CONTENT_CHAR_LIMIT) the agent was shown, retrieve calls
     4+ dropped, and a repr in place of the chunk text.
 
@@ -29,18 +29,17 @@ Guard the value the consumer gets, never the syntax that produces it.
 
 from __future__ import annotations
 
-import importlib
 import json
-import sys
 from unittest.mock import patch
 
-import pytest
-
+from app.domain.retrieved_context import RetrievedChunk, RetrievedContext
+from app.domain.tool_result import wire_text
+from app.services import agent_loop
 from app.services.agent_tools import (
+    _RETRIEVE_CALLS_PER_TURN_MAX,
     CHUNK_CONTENT_CHAR_LIMIT,
     MAX_CHUNKS,
     _frame_retrieved_context,
-    _RETRIEVE_CALLS_PER_TURN_MAX,
 )
 from app.worker.tasks.runtime import agent as agent_module
 
@@ -48,41 +47,6 @@ from app.worker.tasks.runtime import agent as agent_module
 #: half of the defect it stands on.
 OLD_PER_CALL_CHAR_CAP = 600
 OLD_RESULT_COUNT_CAP = 3
-
-
-def _real_tool_result_block():
-    """Import the REAL `ToolResultBlock`, whatever fake sits in `sys.modules`.
-
-    Duplicated from `test_agent_tool_result_stream.py` rather than imported from
-    it: importing another test module for a helper makes this module's meaning
-    depend on that one keeping the name. The hazard is BACKLOG 2.24 —
-    `test_agent_task.py` installs a fake `claude_agent_sdk` into `sys.modules`
-    and never removes it, so by collection order this module would otherwise
-    capture a MagicMock and prove nothing.
-    """
-    saved = {
-        name: mod
-        for name, mod in sys.modules.items()
-        if name == "claude_agent_sdk" or name.startswith("claude_agent_sdk.")
-    }
-    for name in saved:
-        del sys.modules[name]
-    try:
-        real = importlib.import_module("claude_agent_sdk")
-        block_cls = real.ToolResultBlock
-        assert isinstance(block_cls, type), (
-            "claude_agent_sdk.ToolResultBlock is not a class — a fake SDK survived "
-            "the sys.modules swap and these tests would prove nothing"
-        )
-        return block_cls
-    finally:
-        for name in list(sys.modules):
-            if name == "claude_agent_sdk" or name.startswith("claude_agent_sdk."):
-                del sys.modules[name]
-        sys.modules.update(saved)
-
-
-ToolResultBlock = _real_tool_result_block()
 
 
 # ---------------------------------------------------------------------------
@@ -101,31 +65,48 @@ def _chunk_text(label: str, length: int) -> str:
 #: it cannot see that defect — the first version of this module built chunks as
 #: `{"content": t, "score": 0.9}` and was structurally blind to the finding.
 DOC_ID = "PRICE-LIST.pdf"
-SECTION = "Tariffs"
 
 
 def _chunk_dicts(chunk_texts: list[str]) -> list[dict]:
-    return [
-        {
-            "content": t,
-            "chunk_id": f"chunk-{i}",
-            "document_id": DOC_ID,
-            "section": SECTION,
-            "score": 0.9,
-        }
-        for i, t in enumerate(chunk_texts)
-    ]
+    """The chunk dicts a retrieve hands over, built by the type that emits them.
+
+    Through `RetrievedContext.to_json` rather than by hand, so this fixture
+    carries exactly the five keys the product carries. A hand-built dict here
+    once carried a `section` the retrieval layer has never emitted, and the test
+    below then asserted the judge was shown it: 1.26's shape, a fixture
+    manufacturing a contract the product abandoned.
+    """
+    return RetrievedContext(
+        query="what do you charge?",
+        strategy="rerank",
+        chunks=tuple(
+            RetrievedChunk(
+                chunk_id=f"chunk-{i}",
+                document_id=DOC_ID,
+                content=t,
+                score=0.9,
+                rank=i + 1,
+            )
+            for i, t in enumerate(chunk_texts)
+        ),
+    ).to_json()["chunks"]
 
 
-def _framed(chunk_texts: list[str]) -> str:
-    """Frame chunk dicts with the REAL producer.
+def _wire(chunk_texts: list[str]) -> dict:
+    """The wire dict `retrieve_tool` returns, built by the REAL framer.
 
-    `retrieve_tool` returns `_frame_retrieved_context(str(chunks))`. Building the
-    fixture with the production framer rather than a literal means it cannot
+    Two halves, and both are production's. `content` is the framed JSON the MODEL
+    reads; `_retrieved_context` carries the same chunks structurally, and that is
+    what the capture writes to `tool_calls_log`. Building the text with
+    `_frame_retrieved_context` rather than a literal means this fixture cannot
     drift away from what the tool emits — which is how 1.26 survived: a fixture
     that manufactured a contract the product had abandoned.
     """
-    return _frame_retrieved_context(str(_chunk_dicts(chunk_texts)))
+    chunks = _chunk_dicts(chunk_texts)
+    return {
+        "content": [{"type": "text", "text": _frame_retrieved_context(json.dumps(chunks))}],
+        "_retrieved_context": {"chunks": chunks},
+    }
 
 
 def _carries(elements: list[str], text: str) -> bool:
@@ -134,45 +115,27 @@ def _carries(elements: list[str], text: str) -> bool:
 
 
 def _capture(calls: list[str | list[str]], *, is_error: bool = False) -> list[dict]:
-    """Drive `_record_tool_result` once per retrieve call; return tool_calls_log.
+    """Drive `agent_loop._log_entry` once per retrieve call; return tool_calls_log.
 
-    Each entry is either a list of chunk texts (framed by the real producer) or a
-    raw string, which is how an undecodable or errored payload is expressed.
+    Each entry is either a list of chunk texts (framed by the real producer, with
+    the ride-along the tool hands over) or a raw string, which is a result the
+    tool returned as TEXT ONLY. That is an errored result, or one whose retrieval
+    never reached the capture.
     """
     tool_calls_log: list[dict] = []
-    tool_names_by_use_id: dict[str, str] = {}
     for i, call in enumerate(calls):
-        use_id = f"toolu_{i}"
-        tool_names_by_use_id[use_id] = "retrieve"
-        # `tool_use_id` because production sets it (BACKLOG 5.21). Without it
-        # every test here would exercise the positional FALLBACK rather than the
-        # path a real turn takes, which is the shape of defect 1.26: a fixture
-        # quietly describing a contract the product no longer uses.
-        tool_calls_log.append({
-            "tool_name": "retrieve",
-            "input": {"query": f"q{i}"},
-            "tool_use_id": use_id,
-        })
-        payload = _framed(call) if isinstance(call, list) else call
-        agent_module._record_tool_result(
-            ToolResultBlock(
-                tool_use_id=use_id,
-                content=[{"type": "text", "text": payload}],
-                is_error=is_error,
-            ),
-            tool_names_by_use_id=tool_names_by_use_id,
-            tool_calls_log=tool_calls_log,
-            job_id="job-5-16",
-            db=object(),
-            redis=object(),
+        if isinstance(call, list):
+            wire = _wire(call)
+        else:
+            wire = {"content": [{"type": "text", "text": call}]}
+        if is_error:
+            wire["is_error"] = True
+        tool_calls_log.append(
+            agent_loop._log_entry(
+                "retrieve", {"query": f"q{i}"}, f"toolu_{i}", wire, wire_text(wire)
+            )
         )
     return tool_calls_log
-
-
-@pytest.fixture(autouse=True)
-def _emit_is_not_a_database(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`_record_tool_result` emits an SSE event; this module is not testing that."""
-    monkeypatch.setattr(agent_module, "emit", lambda *_a, **_k: None)
 
 
 # ---------------------------------------------------------------------------
@@ -254,10 +217,10 @@ class TestWhatTheAuditorIsActuallyHanded:
     def test_the_provenance_the_agent_saw_reaches_the_judge(self) -> None:
         """BACKLOG 5.18. A claim naming a document cannot be supported without it.
 
-        `retrieve_tool` hands the agent the repr of full chunk dicts, so the agent
-        sees `document_id`, `section`, `chunk_id` and `score`. Sending the judge
-        content alone reproduces 5.16's own failure mode one level down: the
-        judge marks a claim unsupported because it was not shown the evidence.
+        `retrieve_tool` hands the agent the JSON of full chunk dicts, so the agent
+        sees `document_id`, `chunk_id` and `score`. Sending the judge content
+        alone reproduces 5.16's own failure mode one level down: the judge marks
+        a claim unsupported because it was not shown the evidence.
         """
         _returned, args = self._dispatch(_capture([[_chunk_text("prices", 400)]]))
         handed_to_judge = json.loads(args[4])
@@ -266,8 +229,8 @@ class TestWhatTheAuditorIsActuallyHanded:
             f"the source document {DOC_ID!r} is absent from the judge's context, "
             "so an answer citing it by name has nothing to be grounded against"
         )
-        assert any(SECTION in e for e in handed_to_judge), (
-            f"the section {SECTION!r} is absent from the judge's context"
+        assert any("chunk-0" in e for e in handed_to_judge), (
+            "the chunk id the agent saw is absent from the judge's context"
         )
         assert not any("'content':" in e for e in handed_to_judge), (
             "the raw dict repr reached the judge; provenance must be rendered, "
@@ -319,12 +282,19 @@ class TestTheFourStatesAreNotCollapsed:
             "reads cannot tell 'found nothing' from 'could not read it'"
         )
 
-    def test_an_undecodable_payload_falls_back_and_is_counted_as_unparsed(self) -> None:
-        """Reachable only via the SOURCE key, which is why the product reads it."""
-        log = _capture(["<<<RETRIEVED CONTEXT>>> not-a-python-literal <<<END>>>"])
-        assert log[0][agent_module.RETRIEVE_CHUNKS_SOURCE_KEY] == (
-            agent_module.RETRIEVE_CHUNKS_UNPARSED
-        ), "the fixture did not actually produce an undecodable payload"
+    def test_a_result_with_no_ride_along_falls_back_and_is_counted_as_unparsed(self) -> None:
+        """A hand-built capture, driven against a branch production cannot reach.
+
+        `retrieve_tool` attaches its ride-along on its one success path and every
+        other producer sets `is_error`, and the error check runs first here, so
+        `counts["unparsed"]` reads 0 in production. The fixture builds the wire
+        by hand so the degraded fallback is still proven working on the day a new
+        producer returns a success carrying no ride-along.
+        """
+        log = _capture(["<<<RETRIEVED CONTEXT>>> text with no ride-along <<<END>>>"])
+        assert log[0][agent_loop.RETRIEVE_CHUNKS_SOURCE_KEY] == (
+            agent_loop.RETRIEVE_CHUNKS_UNPARSED
+        ), "the fixture did not actually produce a result without its retrieval"
 
         contexts, counts = agent_module._judge_retrieved_context(log)
 
@@ -436,101 +406,18 @@ def test_the_worst_case_is_bounded_by_the_retrieval_contract() -> None:
     )
 
 
-class TestResultsAttachToTheCallThatProducedThem:
-    """BACKLOG 5.21. Parallel tool use, and the rule that used to decide this.
-
-    `_record_tool_result` matched "the most recent retrieve entry without a
-    result", walking in reverse. The SDK may emit several ToolUseBlocks before
-    any result returns, so the first result to arrive landed on the LAST call
-    issued and the chunks were attributed to the wrong query — silently, and in a
-    way that made `_judge_retrieved_context`'s "in retrieval order" false.
-    """
-
-    @staticmethod
-    def _two_calls_results_out_of_order() -> list[dict]:
-        """Both tool_use blocks first, THEN results in issue order.
-
-        Issue order is the case that breaks positional attachment, and getting
-        this backwards is how the first version of this test was a tautology: a
-        reverse-order arrival paired up correctly by accident under
-        `reversed(tool_calls_log)`, so the mutation that removed id-matching
-        stayed 25/25 green. With both calls outstanding and A's result arriving
-        first, the reverse walk finds B — the most recent entry without a result
-        — and attaches A's chunks to B's query.
-        """
-        tool_calls_log = [
-            {"tool_name": "retrieve", "input": {"query": "refunds"},
-             "tool_use_id": "toolu_refunds"},
-            {"tool_name": "retrieve", "input": {"query": "shipping"},
-             "tool_use_id": "toolu_shipping"},
-        ]
-        names = {"toolu_refunds": "retrieve", "toolu_shipping": "retrieve"}
-        for use_id, text in (
-            ("toolu_refunds", "REFUNDS are accepted within 30 days."),
-            ("toolu_shipping", "SHIPPING is free above R500."),
-        ):
-            agent_module._record_tool_result(
-                ToolResultBlock(
-                    tool_use_id=use_id,
-                    content=[{"type": "text", "text": _framed([text])}],
-                    is_error=False,
-                ),
-                tool_names_by_use_id=names,
-                tool_calls_log=tool_calls_log,
-                job_id="job-5-21",
-                db=object(),
-                redis=object(),
-            )
-        return tool_calls_log
-
-    def test_each_result_lands_on_its_own_query(self) -> None:
-        log = self._two_calls_results_out_of_order()
-
-        refunds, shipping = log[0], log[1]
-        assert "REFUNDS" in str(refunds[agent_module.RETRIEVE_CHUNKS_KEY]), (
-            "the 'refunds' query carries the shipping result — chunks are "
-            "attributed to the wrong question, so the judge is told the agent "
-            "retrieved something it did not"
-        )
-        assert "SHIPPING" in str(shipping[agent_module.RETRIEVE_CHUNKS_KEY])
-
-    def test_a_log_entry_without_an_id_still_gets_its_result(self) -> None:
-        """The fallback path, kept because hand-built logs and old traces lack ids.
-
-        It must still capture, or a caller that predates 5.21 silently loses the
-        judge's evidence entirely — a worse outcome than the mis-attribution the
-        id match exists to prevent.
-        """
-        tool_calls_log = [{"tool_name": "retrieve", "input": {"query": "refunds"}}]
-        agent_module._record_tool_result(
-            ToolResultBlock(
-                tool_use_id="toolu_unknown_to_the_log",
-                content=[{"type": "text", "text": _framed(["REFUNDS within 30 days."])}],
-                is_error=False,
-            ),
-            tool_names_by_use_id={"toolu_unknown_to_the_log": "retrieve"},
-            tool_calls_log=tool_calls_log,
-            job_id="job-5-21",
-            db=object(),
-            redis=object(),
-        )
-
-        contexts, counts = agent_module._judge_retrieved_context(tool_calls_log)
-        assert counts["chunks"] == 1, (
-            "a log entry carrying no tool_use_id captured nothing, so a caller "
-            "predating 5.21 hands the grounding judge an empty context"
-        )
-        assert _carries(contexts, "REFUNDS within 30 days.")
-
-    def test_the_judges_context_is_in_retrieval_order(self) -> None:
-        """The ordering claim in the helper's docstring, made observable."""
-        contexts, _counts = agent_module._judge_retrieved_context(
-            self._two_calls_results_out_of_order()
-        )
-        joined = "\n".join(contexts)
-        assert joined.index("REFUNDS") < joined.index("SHIPPING"), (
-            "the judge's context is in result-arrival order, not retrieval order"
-        )
+# ---------------------------------------------------------------------------
+# GONE WITH THE STREAM: TestResultsAttachToTheCallThatProducedThem (BACKLOG 5.21)
+#
+# Its subject was attribution under parallel tool use. `_record_tool_result`
+# matched "the most recent retrieve entry without a result", walking in reverse,
+# so the first result to arrive landed on the LAST call issued and the chunks
+# were attributed to the wrong query. ADR 0008's loop makes that shape
+# unreachable: `_run_tool_call` awaits ONE tool and builds ITS log entry from ITS
+# own result, so there is no arrival order to get wrong and no entry to search
+# for. What survives of the pin is `tool_use_id` on every entry, which
+# `tests/unit/test_agent_loop.py` asserts against the call ids the model sent.
+# ---------------------------------------------------------------------------
 
 
 def test_the_judge_gets_one_element_per_chunk_not_one_repr_per_call() -> None:

@@ -1,15 +1,21 @@
 """
-run_agent_turn — Celery task: Orchestrates a single Claude Agent SDK turn.
+run_agent_turn, the Celery task that runs one customer turn of the owned loop.
 
 Position in M4 runtime flow:
     API route /v1/chat/agent/{agent_id}/message
       → dispatch run_agent_turn (runtime queue)
       → SSE stream back to widget client
 
+ADR 0008 took this turn off the Agent SDK harness. `app.services.agent_loop` owns
+the assembly seam and the bounded tool loop now, and this module is what a Celery
+task adds around them: the tenant connection, the conversation row, the history
+the loop resumes from, the PII firewall, the persisted messages, the telemetry
+and the validation chain.
+
 Idempotency mechanism:
     READ guard on job_events: if an "agent.response" row already exists for this
-    job_id, the task returns immediately — safe to retry without duplicate SDK
-    calls or duplicate SSE events.
+    job_id, the task returns immediately, so a retry costs no duplicate model
+    calls and no duplicate SSE events.
 
 Security constraints (CLAUDE.md non-negotiable rules):
     - Task args: (job_id, agent_id, message, conversation_id) ONLY.
@@ -19,10 +25,10 @@ Security constraints (CLAUDE.md non-negotiable rules):
     - structlog lines reference only job_id, agent_id, conversation_id, counts.
 
 SSE event sequence:
-    agent.thinking      ← task begins, SDK turn starting
-    agent.tool_call     ← each MCP tool invocation observed in stream
-    agent.tool_result   ← each MCP tool result observed in stream
-    agent.escalated     ← (optional) escalate_to_human ToolUseBlock detected
+    agent.thinking      ← task begins, the turn is starting
+    agent.tool_call     ← each tool the model calls (emitted by the loop)
+    agent.tool_result   ← each tool result (emitted by the loop)
+    agent.escalated     ← (optional) the model called escalate_to_human
     agent.response      ← terminal event with text, citations, conversation_id
     agent.failed        ← terminal failure only (retries exhausted). Payload
                           carries error_type beside error, because str() of
@@ -31,7 +37,6 @@ SSE event sequence:
 Queue: runtime (CLAUDE.md non-negotiable: both Celery queues always present)
 """
 
-import ast
 import asyncio
 import json
 import os
@@ -45,38 +50,28 @@ import psycopg2
 import redis as redis_lib
 import structlog
 from celery import chain as celery_chain
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ClaudeSDKClient,
-    ResultMessage,
-    TextBlock,
-    ToolResultBlock,
-    ToolUseBlock,
-    UserMessage,
-)
 from langfuse import Langfuse
 from sqlalchemy import text as sa_text
 
 from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db
+from app.core.model_client import ledger_recorder
 from app.core.security import fernet_decrypt, require_ciphertext
 from app.domain.pii_firewall import detect_pii, scan_response
+from app.domain.pricing import UnknownPrice, cost_usd
 from app.models.agent import Agent
 from app.models.job import Job
 from app.models.prompt_version import PromptVersion
-from app.services.agent_prompt import build_system_prompt
-from app.services.agent_tools import (
-    RETRIEVED_CONTEXT_FOOTER,
-    RETRIEVED_CONTEXT_HEADER,
-    SIDE_EFFECT_MODES,
-    RetrievalStrategy,
-    SideEffectMode,
-    build_tool_server,
-    record_suppressed_side_effect,
-    reset_side_effect_context,
+from app.services.agent_loop import (
+    RETRIEVE_CHUNKS_KEY,
+    RETRIEVE_CHUNKS_SOURCE_KEY,
+    RETRIEVE_CHUNKS_UNPARSED,
+    RETRIEVE_JUDGE_CHUNKS_KEY,
+    RETRIEVE_RESULT_IS_ERROR_KEY,
+    build_agent_turn,
+    record_turn_calls,
+    run_agent_loop,
 )
-from app.services.escalation import send_escalation_email
 from app.services.events import emit
 from app.services.prompt_version_service import resolve_prompt_version
 from app.worker.celery_app import celery_app
@@ -113,335 +108,25 @@ CITATIONS_REGEX = re.compile(r"CITATIONS:\n((?:- Document: .+ \| Section: .+\n?)
 _CITATION_ENTRY = re.compile(r"- Document: (.+) \| Section: (.+)")
 
 # ---------------------------------------------------------------------------
-# Two bounds on a turn that were literals inside the functions below and are now
-# named, because a SECOND caller reads them (D1/P2, .dev/plans/260807-d1-agent-
-# invocation.md). Neither value changes; this is extraction, not tuning.
+# The one bound this module still owns. The retrieve-capture keys and the
+# per-turn ceilings live in `app.services.agent_loop`, which is where the turn is
+# assembled and run; this file imports them rather than keeping a second copy,
+# because a second copy of either is the audit's D3 defect wearing new clothes.
+# One call site kept its own copy of a column name and the deploy gate's eval
+# query fails open to this day.
 #
-# The eval task drives the same `_run_sdk_turn` with the same wall-clock ceiling,
-# and it stamps the retrieve cap on the run's provenance. A second copy of either
-# number in eval.py would be the audit's D3 defect wearing new clothes: the
-# deploy gate's eval query fails open to this day because one call site kept its
-# own copy of a column name. So there is one copy, here, and the other reader
+# The eval task drives the same loop with the same wall-clock ceiling and stamps
+# it on the run's provenance, so there is one copy, here, and the other reader
 # imports it.
 # ---------------------------------------------------------------------------
 
-#: How much of a `retrieve` tool result is captured onto `tool_calls_log`.
-#:
-#: CHANGED MEANING 2026-08-15 (BACKLOG 5.16), and the old comment here described
-#: the behaviour this constant no longer has. It used to say the Auditor read
-#: this value "further trimmed to 600 chars per context in the validator
-#: dispatch below". **The Auditor no longer reads it on the happy path and
-#: nothing trims to 600 chars anywhere.** This is now the AUDIT capture only: it
-#: bounds a value that reaches a jsonb column, and it is what the judge falls
-#: back to when a payload cannot be decoded at all.
-RETRIEVE_RESULT_CAPTURE_CHARS = 1800
-
-#: Whether the SDK marked this retrieve result an error. `retrieve_tool` returns
-#: its DoS-guard refusal as ordinary text with is_error set, so the judge context
-#: builder needs the flag to tell a refusal apart from a passage.
-RETRIEVE_RESULT_IS_ERROR_KEY = "result_is_error"
-
-#: The key on a `tool_calls_log` retrieve entry that carries the retrieved
-#: chunks as ONE STRING PER CHUNK, untruncated. Beside it, `result` keeps the
-#: audit capture unchanged — `str(block.content)[:RETRIEVE_RESULT_CAPTURE_CHARS]`,
-#: which is a Python repr of the SDK content block cut mid-structure.
-#:
-#: WHY BOTH. The eval scores Faithfulness / ContextPrecision / ContextRecall
-#: against what this turn retrieved. Handing it `result` handed the judge (a) a
-#: repr — `[{'type': 'text', 'text': "<<<HEADER>>>\n[{'chunk_id': ...` — whose
-#: dict-syntax noise is most of the token budget, (b) cut at 1800 chars, which is
-#: below ONE full chunk on any realistic corpus, so essentially every retrieving
-#: turn was at the cap and `retrieved_context_at_cap` was a constant rather than
-#: an observation, and (c) as a SINGLE element, which collapses ContextPrecision's
-#: ranking semantics to a coin flip over one blob. Three ways for the capture
-#: format to dominate the score of the thing being measured.
-#:
-#: `result` is deliberately NOT changed: the Auditor and the retrieval-faithfulness
-#: sampler read it and the chat path stays byte-for-byte.
-RETRIEVE_CHUNKS_KEY = "retrieved_chunks"
-
-#: The key carrying the same chunks rendered FOR THE GROUNDING JUDGE: content
-#: plus the provenance the agent saw (document_id, section, chunk_id, score).
-#:
-#: Separate from RETRIEVE_CHUNKS_KEY because the two readers need different
-#: things and BACKLOG 5.18 is what happens when one serves both. Ragas scores
-#: text against text, so provenance is noise to it. The Auditor is asked whether
-#: a claim is supported, and a claim naming a document or a section cannot be
-#: supported by a context that contains neither.
-RETRIEVE_JUDGE_CHUNKS_KEY = "judge_chunks"
-
-#: Companion to the key above: 'chunks' when the framed payload was split back
-#: into per-chunk strings, 'unparsed' when it could not be. Never absent, so the
-#: eval reports a turn whose contexts could not be read as an unparsed
-#: observation instead of as a turn that retrieved nothing.
-RETRIEVE_CHUNKS_SOURCE_KEY = "retrieved_chunks_source"
-RETRIEVE_CHUNKS_PARSED = "chunks"
-RETRIEVE_CHUNKS_UNPARSED = "unparsed"
-
-#: Wall-clock ceiling on one SDK turn, enforced by asyncio.wait_for.
-#: D-11 raised it from 30s to 90s — a warm-but-not-hot Agent SDK subprocess needs
-#: up to 90s on slower ARM VMs; the SSE layer retains 120s (30s headroom). The
-#: eval's per-run cost ceiling is derived from this value rather than from a
-#: guess about it.
+#: Wall-clock ceiling on one turn, enforced by asyncio.wait_for.
+#: D-11 raised it from 30s to 90s. The number outlived the subprocess it was
+#: chosen for. The turn now runs in this process against a provider API, and 90s
+#: still covers a slow retrieve, a synthesis and a follow-up while staying under
+#: the SSE layer's 120s (30s headroom). The eval's per-run cost ceiling is
+#: derived from this value rather than from a guess about it.
 AGENT_TURN_TIMEOUT_S = 90
-
-
-# ---------------------------------------------------------------------------
-# Reading a retrieve tool result back out of the SDK stream (D1/P2 review)
-# ---------------------------------------------------------------------------
-
-
-def _tool_result_text(content: object) -> str:
-    """The TEXT of a ToolResultBlock, whatever shape the SDK handed it in.
-
-    `str(block.content)` — what the audit capture below still does — is a Python
-    repr when the block carries the MCP list-of-blocks shape our tools return
-    (`[{'type': 'text', 'text': '...'}]`). Reprs are fine for an audit column and
-    ruinous for a judge: the dict syntax is noise the metric cannot distinguish
-    from evidence.
-    """
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, dict):
-                if block.get("type") == "text":
-                    parts.append(str(block.get("text", "")))
-            else:
-                text = getattr(block, "text", None)
-                if text is not None:
-                    parts.append(str(text))
-        if parts:
-            return "\n".join(parts)
-    return str(content)
-
-
-def _retrieved_chunk_records(result_text: str) -> list | None:
-    """Split a framed retrieve result back into the CHUNK OBJECTS it carried.
-
-    `agent_tools.retrieve_tool` returns `_frame_retrieved_context(str(chunks))` —
-    the header, then the repr of a list of chunk dicts, then the footer. This
-    undoes exactly that.
-
-    THE ONLY PARSER. Two renderings hang off it and both must describe the same
-    retrieval: `_retrieved_chunk_texts` (content only, what `eval.py` scores) and
-    `_judge_chunk_record` (content plus provenance, what the Auditor judges).
-    Parsing twice would let them disagree about what a turn retrieved.
-
-    Returns None — never `[]` — when the payload cannot be read, because "this
-    turn retrieved nothing" and "this turn retrieved something this function
-    could not parse" are different observations and the second must not be
-    reported as the first. `ast.literal_eval` (never `eval`) is the parser: the
-    payload originates from a tool result and is therefore attacker-influenced
-    text, so it may only ever become data.
-    """
-    text = result_text
-    header_at = text.find(RETRIEVED_CONTEXT_HEADER)
-    if header_at == -1:
-        return None
-    payload = text[header_at + len(RETRIEVED_CONTEXT_HEADER):]
-    footer_at = payload.rfind(RETRIEVED_CONTEXT_FOOTER)
-    if footer_at != -1:
-        payload = payload[:footer_at]
-
-    try:
-        chunks = ast.literal_eval(payload.strip())
-    except (ValueError, SyntaxError, MemoryError, RecursionError):
-        return None
-    if not isinstance(chunks, list):
-        return None
-    return chunks
-
-
-def _chunk_texts_from_records(records: list) -> list[str]:
-    """The eval's rendering: one content string per chunk, empties dropped.
-
-    Extracted unchanged from `_retrieved_chunk_texts` when `_judge_chunk_record`
-    was added, so `eval.py`'s input is byte-identical to what it was before.
-    """
-    texts: list[str] = []
-    for chunk in records:
-        if isinstance(chunk, dict):
-            content = chunk.get("content", "")
-        else:
-            content = chunk
-        rendered = str(content) if content is not None else ""
-        if rendered:
-            texts.append(rendered)
-    return texts
-
-
-def _retrieved_chunk_texts(result_text: str) -> list[str] | None:
-    """ONE STRING PER CHUNK, content only. Read by `eval.py`; see the parser above."""
-    records = _retrieved_chunk_records(result_text)
-    if records is None:
-        return None
-    return _chunk_texts_from_records(records)
-
-
-def _judge_chunk_record(chunk: object) -> str:
-    """Render ONE retrieved chunk for the grounding judge, metadata included.
-
-    BACKLOG 5.18. `retrieve_tool` returns the repr of full chunk dicts, so the
-    agent sees `chunk_id`, `document_id`, `section` and `score` alongside the
-    text. `_retrieved_chunk_texts` keeps `content` alone, which is right for the
-    eval (Ragas scores text against text) and wrong for the Auditor: **an answer
-    that cites a document or section name has no support in a context that
-    contains neither.** That is 5.16's own failure mode one level down — the
-    judge marking a claim unsupported because it was not shown the evidence.
-
-    Not fixed by changing `_retrieved_chunk_texts`: `eval.py` imports it, and
-    changing what it returns changes Ragas scoring, which is a measurement
-    decision of its own. One parse, two renderings, one reader each.
-
-    The rendering is a labelled header line then the content, rather than the raw
-    dict repr the agent saw. Same information, without the dict syntax that
-    `RETRIEVE_CHUNKS_KEY`'s own docstring records as dominating the token budget.
-    """
-    if not isinstance(chunk, dict):
-        return str(chunk)
-    fields = [
-        f"{label}: {chunk[key]}"
-        for label, key in (
-            ("source", "document_id"),
-            ("section", "section"),
-            ("chunk", "chunk_id"),
-            ("score", "score"),
-        )
-        if chunk.get(key) not in (None, "")
-    ]
-    content = str(chunk.get("content", "") or "")
-    return f"[{' | '.join(fields)}]\n{content}" if fields else content
-
-
-def _attach_retrieve_capture(tc: dict, raw: object, block: "ToolResultBlock") -> None:
-    """Write every retrieve capture onto one `tool_calls_log` entry.
-
-    One function so the id-matched path and the positional fallback cannot drift
-    apart. They did not, when this was two copies of the same block, but 5.1's
-    lesson is that two writers of one rule is how two answers start disagreeing.
-    """
-    tc["result"] = str(raw)[:RETRIEVE_RESULT_CAPTURE_CHARS]
-    # BACKLOG 5.16: an errored retrieve is not evidence. retrieve_tool returns
-    # its DoS-guard refusal as ordinary text with is_error set, so without this
-    # the sentence "Retrieve quota exceeded for this turn" reaches the grounding
-    # judge as a retrieved passage.
-    tc[RETRIEVE_RESULT_IS_ERROR_KEY] = bool(getattr(block, "is_error", False))
-    records = _retrieved_chunk_records(_tool_result_text(raw))
-    tc[RETRIEVE_CHUNKS_KEY] = _chunk_texts_from_records(records or [])
-    tc[RETRIEVE_JUDGE_CHUNKS_KEY] = [
-        rendered
-        for rendered in (_judge_chunk_record(r) for r in (records or []))
-        if rendered
-    ]
-    tc[RETRIEVE_CHUNKS_SOURCE_KEY] = (
-        RETRIEVE_CHUNKS_PARSED if records is not None else RETRIEVE_CHUNKS_UNPARSED
-    )
-
-
-def _record_tool_result(
-    block: "ToolResultBlock",
-    *,
-    tool_names_by_use_id: dict[str, str],
-    tool_calls_log: list[dict],
-    job_id: str,
-    db,
-    redis,
-) -> None:
-    """Record one MCP tool result: the SSE event plus the two retrieve captures.
-
-    Module scope, not nested inside `_run_sdk_turn`, because
-    `test_agent_options_seam.test_agent_py_has_no_nested_function_definitions`
-    forbids nested defs in this file — the static seam guards attribute calls to
-    the module-scope function containing them, and a nested def can hide a second
-    `ClaudeAgentOptions` construction from that attribution.
-
-    The tool NAME comes from `tool_names_by_use_id`, never from the block: a
-    `ToolResultBlock` declares only `tool_use_id` / `content` / `is_error`
-    (claude_agent_sdk types.py:944-949) and has no `name` at all. The previous
-    `getattr(block, "name", "unknown")` could therefore only ever produce
-    "unknown", and `retrieval_eval.py:194` selects job_events on
-    `payload["tool_name"] == "retrieve"` — which "unknown" never matches. That
-    was a second defect stacked under the dead-branch one (BACKLOG 5.9): fixing
-    the message type alone would have emitted events that still joined to
-    nothing. Fields are read as attributes rather than via `getattr` defaults so
-    a shape mismatch raises instead of quietly becoming a plausible value.
-    """
-    use_id = block.tool_use_id
-    tool_name_short = tool_names_by_use_id.get(use_id, "unknown")
-    if tool_name_short == "unknown":
-        # Should be unreachable: a result always follows the ToolUseBlock that
-        # produced it, and every one of those is recorded by the caller. Logged
-        # rather than silently tolerated, because "unknown" is exactly the value
-        # the old defect produced for EVERY result and it joins to nothing
-        # downstream. If this line ever appears, the retrieve capture below was
-        # skipped and the Auditor's context for that turn is short.
-        log.warning(
-            "_run_sdk_turn.tool_result_unresolved",
-            job_id=job_id,
-            tool_use_id=use_id,
-            known_ids=len(tool_names_by_use_id),
-        )
-    raw = block.content
-    emit(
-        job_id,
-        "agent.tool_result",
-        {
-            "tool_name": tool_name_short,
-            "summary": str(raw)[:200],
-        },
-        db,
-        redis,
-    )
-    # TWO captures of one retrieve result, for two readers.
-    #
-    # `result` — unchanged, byte-for-byte: the Auditor's retrieved_context_json
-    # and the retrieval-faithfulness sampler read it, and
-    # RETRIEVE_RESULT_CAPTURE_CHARS bounds it because it also reaches a jsonb
-    # column.
-    #
-    # RETRIEVE_CHUNKS_KEY — the same result decoded into one string per CHUNK,
-    # untruncated, for the eval (D1/P2 review). Handing Ragas `result` handed it
-    # a repr, cut below one full chunk, in a single-element list; the capture
-    # format then dominated Faithfulness and ContextPrecision. Not persisted:
-    # _persist_messages writes tool_name / input / result only.
-    if tool_name_short != "retrieve":
-        return
-    # BACKLOG 5.21: attach to the call that PRODUCED this result, by id.
-    #
-    # The old rule was "the most recent retrieve entry without a result", walking
-    # in reverse. The SDK may emit several ToolUseBlocks before any result
-    # returns, and then the first result to arrive lands on the LAST call issued
-    # — so the chunks are attributed to the wrong query, silently, and the
-    # ordering claim in _judge_retrieved_context's docstring would be false.
-    # `red_team_probe.py`'s single `pending_skill` variable had this defect by
-    # construction (5.9); this is the same shape and the block carries the id
-    # that settles it.
-    target = next(
-        (tc for tc in tool_calls_log if tc.get("tool_use_id") == use_id), None
-    )
-    if target is not None:
-        if "result" not in target:
-            _attach_retrieve_capture(target, raw, block)
-        return
-    # No entry carries the id. Pre-5.21 logs and hand-built fixtures look like
-    # this, so the positional walk stays as a fallback — but it is LOGGED,
-    # because it is the shape that produced the mis-attribution and a silent
-    # fallback would hide a regression in the id plumbing above.
-    log.warning(
-        "_record_tool_result.no_tool_use_id_match",
-        job_id=job_id,
-        tool_use_id=use_id,
-        note="falling back to positional attachment; attribution is unreliable "
-             "if this turn used parallel tool calls",
-    )
-    for tc in reversed(tool_calls_log):
-        if tc.get("tool_name") == "retrieve" and "result" not in tc:
-            _attach_retrieve_capture(tc, raw, block)
-            break
 
 
 def _judge_retrieved_context(tool_calls_log: list[dict]) -> tuple[list[str], int]:
@@ -454,10 +139,9 @@ def _judge_retrieved_context(tool_calls_log: list[dict]) -> tuple[list[str], int
         [:600]        600 chars per call, against MAX_CHUNKS(5) *
                       CHUNK_CONTENT_CHAR_LIMIT(2000) = 10,000 the agent was shown
         [:3]          retrieve calls 4+ dropped entirely (the cap is 8)
-        tc["result"]  a Python REPR of the SDK block, itself already cut at
-                      RETRIEVE_RESULT_CAPTURE_CHARS — the AUDIT capture, bounded
-                      because it reaches a jsonb column, not because 1800 chars
-                      is a meaningful amount of evidence
+        tc["result"]  the tool result's own text, already cut at
+                      RETRIEVE_RESULT_CAPTURE_CHARS, a bound that exists because
+                      it reaches a jsonb column and not because 1800 is evidence
 
     So the judge was asked "is this answer supported by its context?" while being
     shown roughly half of it. The first valid verdict in the platform's history
@@ -477,44 +161,47 @@ def _judge_retrieved_context(tool_calls_log: list[dict]) -> tuple[list[str], int
     away from that contract the first time any of them moved, which is 2.13's
     history exactly.
 
-    **The bounding constant is the retrieve-call cap, NOT `max_turns`.**
-    `max_turns=6` bounds assistant turns and parallel tool use puts several
-    retrieves in one turn, so citing it here was wrong in the first version of
-    this docstring and understated the worst case by a third.
+    **The bounding constant is the retrieve-call cap, NOT the model-call ceiling.**
+    `MAX_MODEL_CALLS_PER_TURN` is 6 and parallel tool use puts several retrieves
+    into one call, so citing it here understated the worst case by a third.
 
     The scope of what travels is deliberately narrow: only `retrieve` results.
     `lookup_structured` returns customer rows and has never been in this channel,
     which is what keeps BACKLOG 0.4's egress question separate from this one.
 
-    FOUR STATES, COUNTED SEPARATELY, because collapsing them is how the first
-    version of this function was wrong. A retrieve call is one of:
+    THREE LIVE STATES AND ONE RETIRED, counted separately, because collapsing
+    them is how the first version of this function was wrong. A retrieve call is:
 
-        chunks    decoded, with hits      -> every chunk, untruncated
-        empty     decoded, zero hits      -> contributes NOTHING, and that is
-                                             the honest answer: the corpus had
-                                             no match, so there is no evidence
-        unparsed  payload undecodable     -> the audit capture, degraded
-        errored   is_error on the block   -> contributes NOTHING
+        chunks    decoded, with hits    -> every chunk, untruncated
+        empty     decoded, zero hits    -> contributes NOTHING, and that is the
+                                           honest answer. The corpus had no
+                                           match, so there is no evidence
+        errored   is_error on the entry -> contributes NOTHING
+        unparsed  RETIRED. See below
 
-    `errored` matters more than it looks. When a turn trips the DoS guard,
-    retrieve_tool returns "Retrieve quota exceeded for this turn" with
-    is_error set (agent_tools.py:454-475). That is a control message the AGENT
-    read as a failure. Feeding it to the judge as evidence puts a sentence about
-    quotas into the RETRIEVED CONTEXT block of the turn least likely to be well
-    grounded.
+    `unparsed` NO LONGER REACHES THIS FUNCTION. `agent_tools.retrieve_tool`
+    attaches its `_retrieved_context` ride-along on its one success path, and
+    every other producer of a retrieve wire sets `is_error`: a raising handler,
+    an unknown tool, unreadable arguments, the DoS-guard refusal. The error check
+    below runs first and skips, so the unparsed branch never runs and
+    `counts["unparsed"]` reads 0 in production. It stays as a guard, because a
+    future ride-along-less SUCCESS would otherwise be reported as a retrieval
+    that found nothing, and that is a verdict about the reader.
 
-    WHERE THIS DELIBERATELY DIFFERS FROM eval.py:489-498, which reads the same
-    capture: the eval contributes nothing for an undecodable call and excludes
-    the row as unscorable. This function hands over the audit capture instead,
-    because the judge chain has no "unscorable" verdict. An empty context makes
-    every claim unsupported, so silence here manufactures an `ungrounded` that
-    is about the decoder rather than the answer. Degraded-and-counted beats
-    absent-and-silent when the consumer cannot abstain.
+    `errored` matters more than it looks. A turn that trips the DoS guard gets
+    "Retrieve quota exceeded for this turn" back with is_error set. That is a
+    control message the AGENT read as a failure, and feeding it to the judge as
+    evidence puts a sentence about quotas into the RETRIEVED CONTEXT block of the
+    turn least likely to be well grounded.
+
+    THE DEGRADED FALLBACK IN THAT BRANCH hands over the audit `result` text
+    rather than nothing, because the judge chain has no "unscorable" verdict and
+    an empty context makes every claim unsupported. `run_eval_suite` can abstain
+    and does, which is why it excludes such a row instead of degrading it.
 
     Returns:
-        (contexts, counts) — one string per CHUNK in retrieval order, and a
-        per-state tally. The tally is the only way a later reader can tell a
-        short context apart from a broken one.
+        (contexts, counts). One string per CHUNK in retrieval order, and a
+        per-state tally that tells a short context apart from a broken one.
     """
     contexts: list[str] = []
     counts = {"calls": 0, "chunks": 0, "empty": 0, "unparsed": 0, "errored": 0}
@@ -525,11 +212,8 @@ def _judge_retrieved_context(tool_calls_log: list[dict]) -> tuple[list[str], int
         if tc.get(RETRIEVE_RESULT_IS_ERROR_KEY):
             counts["errored"] += 1
             continue
-        # The SOURCE key, never an inference from an empty chunk list. Those are
-        # different observations (agent_tools returns zero hits for a corpus miss
-        # and _retrieved_chunk_texts returns None for a payload it cannot read),
-        # and _retrieved_chunk_texts returns None rather than [] precisely so the
-        # two stay distinguishable.
+        # The SOURCE key, never an inference from an empty chunk list. A corpus
+        # miss and a result carrying no retrieval are different observations.
         if tc.get(RETRIEVE_CHUNKS_SOURCE_KEY) == RETRIEVE_CHUNKS_UNPARSED:
             counts["unparsed"] += 1
             contexts.append(str(tc.get("result") or ""))
@@ -554,18 +238,18 @@ def _published_context(tool_calls_log: list[dict]) -> list[str]:
     deflection, because the best-matching chunk was the corpus's "Contact and
     Escalation" section and a correct answer quotes the address in it.
 
-    A THIRD RENDERING OF ONE PARSE, joining `_retrieved_chunk_texts` (what the
-    eval scores) and `_judge_chunk_record` (what the Auditor judges). It differs
+    A THIRD READING OF ONE CAPTURE, joining RETRIEVE_CHUNKS_KEY (what the eval
+    scores) and RETRIEVE_JUDGE_CHUNKS_KEY (what the Auditor judges). It differs
     from `_judge_retrieved_context` in the two places that decide whether an
     exemption is safe, so it cannot borrow that function:
 
         content only   RETRIEVE_CHUNKS_KEY, not RETRIEVE_JUDGE_CHUNKS_KEY. The
                        judge needs provenance; an allowlist needs the smallest
                        surface that answers the question.
-        unparsed -> nothing   the judge falls back to the audit `result` repr
-                       because it has no "unscorable" verdict. The firewall does
-                       have one: contribute nothing, and today's behaviour (no
-                       exemption, deflect) is what happens. Fail closed.
+        unparsed -> nothing   RETIRED, and kept as a guard. `retrieve_tool`
+                       attaches its ride-along on its one success path, so an
+                       unparsed entry always carries is_error and the check above
+                       has already skipped it. Fail closed on both routes.
 
     WHAT IS DELIBERATELY NOT IN HERE, because each would be a bypass:
 
@@ -617,10 +301,10 @@ def _dispatch_validation_chain(
 
     THIS FUNCTION EXISTS TO BE TESTABLE, and that is the whole point of the seam.
     An adversarial review of the first version of BACKLOG 5.16 reintroduced the
-    defect five different ways — a truncating helper, a differently named
+    defect five different ways. A truncating helper, a differently named
     variable, `itertools.islice`, a second assignment on the next line, and
-    rebuilding the old repr while still calling `_judge_retrieved_context` — and
-    the guards stayed green through all five, because they inspected the SHAPE OF
+    rebuilding the old capture while still calling `_judge_retrieved_context`.
+    The guards stayed green through all five, because they inspected the SHAPE OF
     A LINE rather than the VALUE `run_auditor` receives. Nothing in the repo
     observed that value: `retrieved_context_json` was built inside a 400-line
     task body no test could reach.
@@ -717,37 +401,60 @@ def _validate_conversation_owner(conn, conv_id: str, agent_id: str) -> dict | No
     return {"id": str(row_id), "metadata": metadata or {}}
 
 
-def _set_sdk_session_id(conn, conv_id: str, sdk_session_id: str) -> None:
-    """Store the SDK's internal session_id in conversations.metadata.
+#: How many `messages` rows one turn resumes from.
+#:
+#: Session state lives in `conversations` and `messages` (ADR 0008), so the
+#: history a turn is given is a query rather than an SDK session file. Forty rows
+#: is twenty exchanges, which bounds a long conversation's context cost. Every
+#: row travels on every model call of the turn, so an uncapped read makes the
+#: hundredth turn of a conversation cost more than the first hundred put
+#: together.
+TURN_HISTORY_MAX_MESSAGES = 40
 
-    Resolves R-02: SDK session_id captured from ResultMessage and persisted
-    so subsequent turns can pass resume=sdk_session_id to ClaudeAgentOptions.
 
-    Security (T-04-03-07): jsonb_set update uses parameterised %s values —
-    sdk_session_id is never string-concatenated into SQL.
+def _read_turn_history(conn, conv_id: str) -> list[dict]:
+    """The conversation so far, oldest first, as the loop's `history` argument.
+
     The caller owns the connection lifecycle — this helper does NOT open or
     close the connection (PROD-05: one pooled connection per turn).
     """
     sql = """
-        UPDATE conversations
-        SET metadata = jsonb_set(
-            COALESCE(metadata, '{}'),
-            '{sdk_session_id}',
-            to_jsonb(%s::text)
-        )
-        WHERE id = %s
+        SELECT role, content
+        FROM messages
+        WHERE conversation_id = %s AND role IN ('user', 'assistant')
+        ORDER BY created_at DESC,
+                 CASE role WHEN 'assistant' THEN 0 ELSE 1 END
+        LIMIT %s
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (sdk_session_id, conv_id))
-    conn.commit()
+        cur.execute(sql, (conv_id, TURN_HISTORY_MAX_MESSAGES))
+        rows = list(cur.fetchall())
 
-    log.debug("_set_sdk_session_id.done", conversation_id=conv_id)
+    # THE CASE IS LOAD-BEARING (issue #79). `_persist_messages` writes a turn's
+    # user row and assistant row in ONE transaction, so both carry the same
+    # `transaction_timestamp()` and `created_at` alone leaves their order to the
+    # plan. Within one timestamp the user row precedes the assistant row, so a
+    # DESC scan has to take the assistant row FIRST, which is what the CASE
+    # says. Without it a turn's own answer can come back before its question and
+    # the model reads the conversation inside out.
+    rows.reverse()
+    # An assistant row with no text is what a turn that exhausted
+    # `max_model_calls` persists. The loop ran out of calls while the model was
+    # still asking for tools, so `response_text` joined to "". Replaying it puts
+    # an empty assistant message into the next turn's context, where the model
+    # reads it as a turn in which it chose to say nothing. The row stays in the
+    # table, because it is the record of what happened; it just does not travel.
+    return [
+        {"role": role, "content": content}
+        for role, content in rows
+        if content and str(content).strip()
+    ]
 
 
 def _set_prompt_version_id(conn, conv_id: str, prompt_version_id: str) -> None:
     """Store the resolved prompt_version_id in conversations.metadata (OPS-16).
 
-    Mirrors _set_sdk_session_id's jsonb_set path exactly, so subsequent turns
+    A `jsonb_set` update, so subsequent turns
     on this conversation can read it back and reuse it without re-rolling
     (A-CANARY: canary is sticky per-conversation — no mid-conversation persona
     flip). Called exactly once, on the turn that first resolves a version for
@@ -787,10 +494,10 @@ def _resolve_turn_prompt_version(
     conversations.metadata, and P1 moved the whole thing ahead of the seam
     because the soul fields it returns are an input to the system prompt. The
     write came along for the ride, so a turn that then died in
-    build_agent_options left the conversation permanently sticky to a version
-    that never served it, where the Celery retry previously re-rolled (BACKLOG
-    2.6). Settled 2026-08-07: resolve before, commit after. The read stays here;
-    the write is the caller's, behind a successful options build.
+    the seam left the conversation permanently sticky to a version that never
+    served it, where the Celery retry previously re-rolled (BACKLOG 2.6). Settled
+    2026-08-07: resolve before, commit after. The read stays here; the write is
+    the caller's, behind a successful seam call.
 
     First turn of a conversation (existing_prompt_version_id is None): calls
     resolve_prompt_version (weighted pick, control DB) and reports back that the
@@ -863,13 +570,19 @@ def _persisted_chunks(tc: dict) -> str | None:
     NULL AND `[]` ARE DIFFERENT OBSERVATIONS and this function is where they
     stay apart:
 
-        None  this call retrieves nothing, or its capture could not be decoded,
-              or the retrieve errored and its "refusal" text is not evidence
+        None  this call is not a retrieve, or the retrieve errored and its
+              "refusal" text is not evidence, or its capture could not be decoded
         []    a retrieve ran and the corpus matched nothing
 
-    Collapsing them is BACKLOG 5.16 one level down: an empty context makes every
+    Collapsing them is BACKLOG 5.16 one level down. An empty context makes every
     claim unsupported, so reporting a decode failure as "retrieved nothing"
     manufactures an ungrounded verdict about the decoder rather than the answer.
+
+    THE UNPARSED CHECK BELOW IS RETIRED AND KEPT. `retrieve_tool` attaches its
+    ride-along on its one success path, so an unparsed entry always carries
+    is_error and the check above it has already returned None. It stays because a
+    future ride-along-less success would otherwise be stored as `[]`, which is
+    the collapse this docstring exists to prevent.
     """
     if tc.get("tool_name") != "retrieve":
         return None
@@ -940,8 +653,8 @@ def _persist_messages(
                     json.dumps(tc.get("input", {})),
                     json.dumps(tc.get("result", {})),
                     # BACKLOG 7.34. `result` is unchanged beside it: that column
-                    # is the 1800-char audit repr, and one column holding either
-                    # a repr or a chunk list depending on when the row was
+                    # is the 1800-char audit capture, and one column holding
+                    # either that or a chunk list depending on when the row was
                     # written gets read as whichever the reader had in mind.
                     _persisted_chunks(tc),
                 ),
@@ -955,6 +668,43 @@ def _persist_messages(
     )
 
     return assistant_msg_id
+
+
+def _turn_cost_usd(calls: list, *, job_id: str, agent_id: str) -> float | None:
+    """What one turn cost, priced from its own `model_calls` rows (OPS-01).
+
+    The rows are the ones the ledger recorder teed into `AgentTurn.calls`, and
+    the price comes from the versioned book. The SDK's `total_cost_usd` went with
+    the harness, because it priced calls from a book nobody here controls.
+
+    None, never zero, in the two cases where the cost is unknown. The book cannot
+    price a call, or there is no call to price. Zero would report the turn as
+    free, which is the claim #46 exists to stop making. `turn_metrics` already
+    reads a NULL cost as unknown.
+
+    An empty `calls` is not an unbilled turn. The ledger hook fails open, so it
+    skips a response it cannot read, a streamed body, any status >= 400, and
+    anything that raised inside it. A turn that asked the model six times and
+    recorded none of them costs exactly as much as one that recorded all six.
+    """
+    if not calls:
+        log.warning(
+            "run_agent_turn.turn_cost_unrecorded",
+            job_id=job_id,
+            agent_id=agent_id,
+            detail="no model_calls rows for this turn; the cost is unknown, not zero",
+        )
+        return None
+    try:
+        return float(sum(cost_usd(call)[0] for call in calls))
+    except UnknownPrice as exc:
+        log.warning(
+            "run_agent_turn.turn_cost_unpriced",
+            job_id=job_id,
+            agent_id=agent_id,
+            error=str(exc),
+        )
+        return None
 
 
 def _write_turn_metrics(
@@ -1112,394 +862,50 @@ def _extract_citations(text: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# THE SEAM — the one place ClaudeAgentOptions is constructed
+# THE SEAM lives in `app.services.agent_loop` now, and this file goes through it.
 #
 # D1 (.dev/plans/260807-d1-agent-invocation.md, P1). The nightly eval scored
 # reference answers against the contexts those answers were written from and
-# never invoked the agent at all. The fix is to make the eval invoke it — and
-# the only version of that fix worth having is one where the eval and the
-# customer are served by the SAME agent. "Same agent" is not the same model id;
-# it is the system prompt, the tool server (which is where the capability
-# envelope is enforced), the allowed-tool list, the turn and budget ceilings and
-# the model, together. Assemble any of those twice and the eval measures
-# something adjacent to the product, which the measurement-layer audit records
-# as this repo's recurring defect.
+# never invoked the agent at all. The fix is to make the eval invoke it, and the
+# only version of that fix worth having is one where the eval and the customer
+# are served by the SAME agent. "Same agent" is not the same model id; it is the
+# system prompt, the tool server (which is where the capability envelope is
+# enforced), the tool list, the two ceilings and the model, together. Assemble
+# any of those twice and the eval measures something adjacent to the product,
+# which the measurement-layer audit records as this repo's recurring defect.
 #
-# So they are assembled exactly once, here, and both callers go through it.
-# tests/unit/test_agent_options_seam.py fails if run_agent_turn constructs
-# options — or a tool server, or a system prompt — by any other route. That test
-# is the mechanism; this comment is only its explanation.
+# So they are assembled exactly once, in `build_agent_turn`, and both callers go
+# through it. ADR 0008 moved that function out of this module together with the
+# loop it feeds, because the loop is service code and this file is a Celery task;
+# `build_agent_options` held the same line for the SDK path and this is its
+# successor. tests/unit/test_agent_options_seam.py fails if `run_agent_turn`
+# builds a turn (or a tool server, or a system prompt) by any other route. That
+# test is the mechanism; this comment is only its explanation.
 #
-# SETTLED, AND IT IS WHY P2 CAN NOW PROCEED (BACKLOG 2.5, owner, 2026-08-07).
-# The options this returns carry a LIVE tool server bound to the tenant's real
-# connection string. Every caller of this seam therefore reaches, by default:
+# SETTLED (BACKLOG 2.5, owner, 2026-08-07). The turn the seam returns carries a
+# LIVE tool server bound to the tenant's real connection string. Every caller
+# therefore reaches, by default:
 #   * retrieve            -> write_retrieval_metrics(conn_str, …) into the tenant DB
 #   * escalate_to_human   -> _mark_conversation_escalated(…) + send_escalation_email
 #   * the 6 mutating transactional skills -> a tool_calls_audit row AND the real
 #     ProviderAdapter: place_order, cancel_order, issue_refund,
 #     update_subscription, book_slot, update_customer_record.
-# The plan chose approach (b) over (a) precisely to keep eval traffic out of
-# tenant data; (b) as built still wrote to tenant tables and could move money —
-# one eval scenario in which the agent decides to refund executed a refund.
+# The answer is `side_effects`: MANDATORY, no default. A default is exactly the
+# mechanism by which the eval path silently ends up live, so a caller that does
+# not state which it wants raises TypeError at the call site rather than
+# discovering the question against a real tenant at 3am.
 #
-# The answer is `side_effects`, below: MANDATORY, no default. A default is
-# exactly the mechanism by which the eval path silently ends up live, so a caller
-# that does not state which it wants raises TypeError at the call site rather
-# than discovering the question against a real tenant at 3am.
-#
-# The alternative — a read-only allowed_tools subset for the eval — was rejected,
-# and the reason is worth keeping here because it constrains every future change
-# to this function: removing the mutating skills would make the eval measure an
-# agent with fewer capabilities than production serves, and a scenario testing
-# "the agent should refuse to refund here" could no longer FAIL, because the
-# agent could not even try. An agent that cannot attempt the wrong thing cannot
-# be measured on refusing it. So allowed_tools is identical in both modes, and
-# the capability envelope, IDV gate and Actor seam all still run; what changes is
-# only the outer edge, where a call would leave this process. notify_fn is now a
-# parameter of that edge (it was deliberately hardcoded in P1 — "an unused escape
-# hatch added before the caller that needs it exists is how a seam starts
-# drifting"; P2 is that caller, so the hatch is no longer unused).
+# The alternative, a read-only tool subset for the eval, was rejected, and the
+# reason still constrains every future change to the seam. Removing the mutating
+# skills would make the eval measure an agent with fewer capabilities than
+# production serves, and a scenario testing "the agent should refuse to refund
+# here" could no longer FAIL, because the agent could not even try. An agent that
+# cannot attempt the wrong thing cannot be measured on refusing it. So the tool
+# list is identical in both modes, and the capability envelope, IDV gate and
+# Actor seam all still run; what changes is only the outer edge, where a call
+# would leave this process.
 # ---------------------------------------------------------------------------
 
-def build_agent_options(
-    *,
-    agent,
-    conn_str: str,
-    conversation_id: str,
-    job_id: str,
-    side_effects: SideEffectMode,
-    verified_session_token: str = "",
-    soul_override: dict | None = None,
-    resume: str | None = None,
-) -> "ClaudeAgentOptions":
-    """Build the ClaudeAgentOptions for one turn of `agent`.
-
-    Side effect, and it is the point: build_tool_server sets the per-task
-    ContextVars (conn_str, agent_id, tenant_id, strategy, conversation_id,
-    notify_fn, job_id, verified session token, retrieve counter) that every tool
-    handler reads. Calling this twice for one turn would leave the second call's
-    context in force — hence the "exactly once" pin in the seam test.
-
-    Args:
-        agent:                  Control-DB Agent row. Supplies id, tenant_id,
-                                name, retrieval_strategy and the soul fields
-                                build_system_prompt reads.
-        conn_str:               Decrypted tenant DB connection string. Never
-                                logged, never a task arg (CTL-08).
-        conversation_id:        Conversation UUID string — escalation writes and
-                                tool-side conversation scoping.
-        job_id:                 Celery job id (OPS-05/06 retrieval metrics).
-        side_effects:           MANDATORY, no default (BACKLOG 2.5). "live" is
-                                production, byte for byte what the chat path has
-                                always done. "recorded" is the eval path: the
-                                escalation notification, the retrieval_metrics
-                                write and the transactional ProviderAdapter are
-                                suppressed and recorded instead. Everything the
-                                agent can see or choose is identical.
-        verified_session_token: IDV-05 token, "" when there is no verified
-                                session. NEVER logged (T-04-03-05).
-        soul_override:          Prompt-version soul fields (OPS-16) or None to
-                                serve the agent's live soul_* columns.
-        resume:                 SDK session id to continue, or None to start one.
-
-    Raises:
-        ValueError: side_effects is neither "live" nor "recorded". Literal is a
-            type-checker annotation and enforces nothing at run time, so an
-            unrecognised value would compare unequal to "recorded" and be served
-            as live — a real refund on the eval path.
-    """
-    # The mode is process-context sticky and the Celery prefork pool does not
-    # isolate contextvars per task, so a previous turn's value is still in force
-    # on entry. Today build_tool_server below always republishes it — but only
-    # if we REACH it, and three things above it raise: this validation, the
-    # RetrievalStrategy parse, and build_tool_server's own. A turn that dies in
-    # any of them would leave a stale "recorded" behind for whatever ran next in
-    # this context. Resetting FIRST, before anything that can throw, makes that
-    # a property of this function rather than of the call graph's current shape.
-    reset_side_effect_context()
-
-    if side_effects not in SIDE_EFFECT_MODES:
-        raise ValueError(
-            f"build_agent_options: side_effects must be one of {SIDE_EFFECT_MODES}, "
-            f"got {side_effects!r}. There is no third mode and no fallback: an "
-            f"unrecognised value read as live is how an eval scenario issues a real "
-            f"refund against the tenant's provider (BACKLOG 2.5)."
-        )
-
-    strategy = RetrievalStrategy.model_validate(agent.retrieval_strategy or {})
-
-    # The escalation edge. On the eval path the mail is recorded rather than
-    # sent — a scenario that drives the agent to escalate would otherwise page
-    # the owner about a customer who does not exist, and would do it nightly.
-    # A conditional expression rather than two `def`s: nested function
-    # definitions in this module are banned by the seam suite, which attributes
-    # every call to the module-scope function containing it.
-    notify_fn = (
-        (lambda reason, context: send_escalation_email(agent, reason, context))
-        if side_effects == "live"
-        else (
-            lambda reason, context: record_suppressed_side_effect(
-                "escalation.notify",
-                {
-                    "agent_id": str(agent.id),
-                    "conversation_id": str(conversation_id),
-                    "reason": reason,
-                    "context": context,
-                },
-            )
-        )
-    )
-
-    tool_server = build_tool_server(
-        conn_str=conn_str,
-        agent_id=str(agent.id),
-        agent_name=agent.name,
-        strategy=strategy,
-        conversation_id=str(conversation_id),
-        notify_fn=notify_fn,
-        tenant_id=str(agent.tenant_id),
-        verified_session_token=verified_session_token,
-        job_id=job_id,
-        side_effects=side_effects,
-    )
-
-    system_prompt = build_system_prompt(agent, soul_override=soul_override)
-
-    # D-10 note (13-07): The Voyage 3 RPM free-tier prompt-level retrieve-cap
-    # instruction was removed now that embeddings move to Bedrock (PROD-06).
-    # Bedrock has no comparable RPM constraint; the per-turn retrieve counter in
-    # agent_tools.retrieve_tool remains active as a DoS guard (ceiling raised to 8).
-
-    # R-05: allowed_tools use full MCP namespace mcp__customer-tools__*
-    # D-10 fix phase 1 (2026-06-01): max_turns raised from 3 to 6.
-    #   Root cause: max_turns=3 cut the agent off after the retrieve tool
-    #   round-trip (tool_use + tool_result = 2 turns), leaving no turn to
-    #   compose the final text answer → empty response_text.
-    #   The Voyage RPM guard is now enforced solely by the tool-level counter
-    #   in agent_tools.retrieve_tool (blocks the 3rd call per turn), making
-    #   max_turns free to cover the full retrieve → synthesis cycle.
-    #   6 turns is sufficient for: thinking + retrieve + synthesis + any
-    #   clarify/escalate follow-ups while still bounding DoS risk (T-04-03-06).
-    # D-10 fix phase 2 (2026-06-01): max_budget_usd raised from 0.05 to
-    #   settings.AGENT_MAX_BUDGET_USD (default 0.50).
-    #   Root cause (additional): the 0.05 USD cap was too tight for a
-    #   turn that uses extended thinking (~38s) + retrieved context + synthesis.
-    #   A Haiku extended-thinking + retrieve + synthesis turn can exceed $0.05.
-    #   When the budget is exceeded the CLI emits result{subtype:error_max_budget,
-    #   is_error:true} → receive_response() terminates → response_text stays ""
-    #   with no exception raised (identical empty-text signature to max_turns).
-    #   0.50 USD gives headroom while still serving as a DoS guardrail.
-    #   Configure via AGENT_MAX_BUDGET_USD env var for tighter prod limits.
-    # R-05: allowed_tools suppresses SDK permission prompts only.
-    # The capability envelope check inside each transactional tool handler
-    # is the real access gate (fail-closed) — T-14-04-03.
-    return ClaudeAgentOptions(
-        # AGENT_TURN_MODEL, not a literal — eval_runs.config.model_id
-        # reads the same constant, so a score can never be attributed
-        # to a model that did not serve the turn (migration 0013).
-        model=AGENT_TURN_MODEL,
-        system_prompt=system_prompt,
-        mcp_servers={"customer-tools": tool_server},  # type: ignore[dict-item]  # agent-sdk/anthropic stubs are narrower than the runtime contract
-        allowed_tools=[
-            # Original 4 tools — retained (TXN-04 requirement)
-            "mcp__customer-tools__retrieve",
-            "mcp__customer-tools__lookup_structured",
-            "mcp__customer-tools__escalate_to_human",
-            "mcp__customer-tools__clarify",
-            # Phase 14 Plan 04 — 7 transactional tools
-            # Listing here suppresses SDK permission prompts only;
-            # the capability envelope in each handler is the real gate.
-            "mcp__customer-tools__place_order",
-            "mcp__customer-tools__cancel_order",
-            "mcp__customer-tools__issue_refund",
-            "mcp__customer-tools__update_subscription",
-            "mcp__customer-tools__book_slot",
-            "mcp__customer-tools__update_customer_record",
-            "mcp__customer-tools__confirm_action",
-        ],
-        resume=resume,
-        max_turns=6,   # D-10 fix: was 3 (too low — cut off synthesis after retrieve)
-        max_budget_usd=settings.AGENT_MAX_BUDGET_USD,  # D-10 fix phase 2: was 0.05 (too low for thinking+retrieve+synthesis)
-    )
-
-
-# ---------------------------------------------------------------------------
-# Async SDK turn helper — bridged into sync Celery task via asyncio.run()
-# ---------------------------------------------------------------------------
-
-async def _run_sdk_turn(
-    message: str,
-    options: "ClaudeAgentOptions",
-    job_id: str,
-    local_conversation_id: str,
-    conn_str: str,
-    db,
-    redis,
-) -> dict:
-    """Run one Claude Agent SDK turn and collect all streaming output.
-
-    Opened and closed by the async context manager — do NOT close the client
-    manually. Called via asyncio.run(asyncio.wait_for(_run_sdk_turn(...), timeout=90)).
-
-    Returns:
-        dict with keys:
-            response_text       — accumulated text from TextBlock messages
-            tool_calls_log      — list of dicts per ToolUseBlock observed
-            escalated           — True if escalate_to_human ToolUseBlock was seen
-            escalation_reason   — reason from escalate_to_human input, or None
-            escalation_context  — context from escalate_to_human input, or None
-            sdk_session_id      — ResultMessage.session_id, or None
-            total_cost_usd      — ResultMessage.total_cost_usd, or None (OPS-01)
-            num_turns           — ResultMessage.num_turns, or None (OPS-01)
-            stop_reason         — ResultMessage.stop_reason, or None (OPS-01)
-
-    Security (T-04-03-02, T-04-03-03):
-        - Tool-call streaming is the evidence source for escalation detection.
-          Escalation is set based on ToolUseBlock.name — not on parsed text prose.
-        - system_prompt enforces persona lock via build_system_prompt().
-    """
-    response_text = ""
-    tool_calls_log: list[dict] = []
-    # tool_use_id -> short tool name. ToolResultBlock carries ONLY tool_use_id,
-    # content and is_error (claude_agent_sdk types.py:944-949) — it has no `name`
-    # field, so the result's tool can be known only by joining back to the
-    # ToolUseBlock that produced it. See the block comment at the UserMessage
-    # branch below for why this replaced `getattr(block, "name", "unknown")`.
-    tool_names_by_use_id: dict[str, str] = {}
-    escalated = False
-    escalation_reason: str | None = None
-    escalation_context: str | None = None
-    sdk_session_id_out: str | None = None
-    total_cost_usd_out: float | None = None
-    num_turns_out: int | None = None
-    stop_reason_out: str | None = None
-
-    async with ClaudeSDKClient(options=options) as client:
-        await client.query(message)
-        async for msg in client.receive_response():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        response_text += block.text
-
-                    elif isinstance(block, ToolUseBlock):
-                        tool_name_short = block.name.removeprefix("mcp__customer-tools__")
-                        tool_names_by_use_id[block.id] = tool_name_short
-                        emit(
-                            job_id,
-                            "agent.tool_call",
-                            {"tool_name": tool_name_short, "input": block.input},
-                            db,
-                            redis,
-                        )
-                        tool_calls_log.append({
-                            "tool_name": tool_name_short,
-                            "input": block.input,
-                            # BACKLOG 5.21: carried so _record_tool_result can
-                            # attach a result to the call that PRODUCED it.
-                            # Without it the only available rule is "the most
-                            # recent entry without a result", which mis-attributes
-                            # under parallel tool use.
-                            "tool_use_id": block.id,
-                        })
-                        # Escalation detection: based on ToolUseBlock evidence only (T-04-03-03)
-                        if block.name.endswith("escalate_to_human"):
-                            escalated = True
-                            escalation_reason = block.input.get("reason")
-                            escalation_context = block.input.get("context")
-
-                    elif isinstance(block, ToolResultBlock):
-                        # Kept for tolerance, not relied upon: message_parser.py:148
-                        # can build one here, but no observed CLI output ever has.
-                        _record_tool_result(
-                            block,
-                            tool_names_by_use_id=tool_names_by_use_id,
-                            tool_calls_log=tool_calls_log,
-                            job_id=job_id,
-                            db=db,
-                            redis=redis,
-                        )
-
-            elif isinstance(msg, UserMessage):
-                # WHERE TOOL RESULTS ACTUALLY ARRIVE (BACKLOG 5.9).
-                #
-                # This branch did not exist. The loop read ToolResultBlock only
-                # inside AssistantMessage, and the CLI emits tool results as
-                # `{"type":"user", "message":{"role":"user","content":[{"type":
-                # "tool_result",...}]}}` — so the branch was unreachable and every
-                # downstream reader of a tool result was reading a channel nothing
-                # ever wrote:
-                #   - `agent.tool_result` job_events: never emitted, so
-                #     retrieval_eval._fetch_turn_context always built [].
-                #   - tc["result"]: never set, so the Auditor — the GROUNDING
-                #     judge — was handed retrieved_context_json == "[]" on every
-                #     single turn (agent.py's dispatch below).
-                #   - RETRIEVE_CHUNKS_KEY: never set, so eval.py:495 always saw
-                #     zero chunks and excluded the row as `no_retrieval`.
-                #
-                # Evidence for the message type, gathered before the change: the
-                # SDK's own transcript readers treat tool_result as a user-entry
-                # phenomenon (_internal/sessions.py:277-280 and
-                # _internal/session_summary.py:81-92), and 42,334 tool_result
-                # entries across 782 real CLI session transcripts are ALL
-                # type:"user" — assistant-carried count zero.
-                if isinstance(msg.content, list):
-                    for block in msg.content:
-                        if isinstance(block, ToolResultBlock):
-                            _record_tool_result(
-                                block,
-                                tool_names_by_use_id=tool_names_by_use_id,
-                                tool_calls_log=tool_calls_log,
-                                job_id=job_id,
-                                db=db,
-                                redis=redis,
-                            )
-
-            elif isinstance(msg, ResultMessage):
-                sdk_session_id_out = msg.session_id
-                # D-10 fix phase 2: log the full stop reason so we can distinguish
-                # error_max_turns / error_max_budget / error_during_execution / success.
-                # These fields are the ONLY reliable disambiguator when response_text
-                # is empty — all stop paths produce the same empty-text signature.
-                # (See ResultMessage dataclass in claude_agent_sdk; field names are stable
-                # in 0.1.81 and confirmed by inspection of the installed package.)
-                log.info(
-                    "_run_sdk_turn.result",
-                    job_id=job_id,
-                    subtype=msg.subtype,
-                    is_error=msg.is_error,
-                    num_turns=msg.num_turns,
-                    total_cost_usd=msg.total_cost_usd,
-                    stop_reason=msg.stop_reason,
-                    api_error_status=msg.api_error_status,
-                    response_length=len(response_text),
-                )
-                if msg.is_error:
-                    log.warning(
-                        "_run_sdk_turn.sdk_error",
-                        job_id=job_id,
-                        subtype=msg.subtype,
-                        is_error=msg.is_error,
-                        num_turns=msg.num_turns,
-                        total_cost_usd=msg.total_cost_usd,
-                    )
-                # OPS-01: carry these through the return dict — previously logged
-                # only, now persisted to turn_metrics by run_agent_turn (below).
-                total_cost_usd_out = msg.total_cost_usd
-                num_turns_out = msg.num_turns
-                stop_reason_out = msg.stop_reason
-
-    return {
-        "response_text": response_text,
-        "tool_calls_log": tool_calls_log,
-        "escalated": escalated,
-        "escalation_reason": escalation_reason,
-        "escalation_context": escalation_context,
-        "sdk_session_id": sdk_session_id_out,
-        "total_cost_usd": total_cost_usd_out,
-        "num_turns": num_turns_out,
-        "stop_reason": stop_reason_out,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -1523,6 +929,18 @@ async def _run_sdk_turn(
 #: wake exhausting all three attempts; at 10s it is 20s, which covers the
 #: ceiling. Changing max_retries changes this number.
 TENANT_WAKE_RETRY_COUNTDOWN_S = 10
+
+
+def _retry_countdown(exc: Exception, retries: int) -> int:
+    """How long to wait before the next attempt at this turn.
+
+    An OperationalError is overwhelmingly the tenant endpoint waking rather than a
+    defect, and the wake outlasts the generic exponential countdown, so it retries
+    on the wake window instead.
+    """
+    if isinstance(exc, psycopg2.OperationalError):
+        return TENANT_WAKE_RETRY_COUNTDOWN_S
+    return 2 ** retries
 
 
 @celery_app.task(
@@ -1570,7 +988,7 @@ def run_agent_turn(
     with get_sync_db() as db:
         # ------------------------------------------------------------------
         # Idempotency guard — exit immediately if agent.response already exists
-        # for this job_id. Prevents duplicate SDK calls and duplicate SSE events
+        # for this job_id. Prevents duplicate model calls and duplicate events
         # on Celery retry or at-least-once redelivery from Redis.
         # ------------------------------------------------------------------
         existing = db.execute(
@@ -1611,13 +1029,12 @@ def run_agent_turn(
         # ------------------------------------------------------------------
         conn_str = fernet_decrypt(require_ciphertext(agent.neon_connection_string, "agents.neon_connection_string"))
 
-        # PROD-05: open ONE pooled tenant-DB connection for all per-turn write
-        # helpers (_create_conversation_row, _validate_conversation_owner,
-        # _set_sdk_session_id, _persist_messages).  Reduces connection churn
+        # PROD-05: open ONE pooled tenant-DB connection for all per-turn read and
+        # write helpers (_create_conversation_row, _validate_conversation_owner,
+        # _read_turn_history, _persist_messages).  Reduces connection churn
         # from 4 opens/closes per turn to 1.  Uses the pooled endpoint
         # (agent.neon_connection_string) — PgBouncer transaction-mode
         # compatible: no named prepared statements, no SET session vars.
-        # Closed in finally even when _run_sdk_turn raises.
         #
         # The connect is INSIDE the try. It used to sit outside it, and a
         # suspended endpoint is the NORMAL state of a tenant DB idle for ~5
@@ -1625,7 +1042,8 @@ def run_agent_turn(
         # psycopg2.OperationalError that escaped this task's own except entirely:
         # no retry, no agent.failed, zero job_events, and a widget waiting on a
         # job that had already died. Observed on three live jobs, 2026-08-16.
-        tenant_conn = None
+        # Both are read in the `finally`, which runs even when the connect failed.
+        tenant_conn, turn = None, None
         try:
             tenant_conn = psycopg2.connect(
                 conn_str, connect_timeout=settings.TENANT_DB_CONNECT_TIMEOUT_S
@@ -1636,12 +1054,14 @@ def run_agent_turn(
             emit(job_id, "agent.thinking", {"agent_id": agent_id}, db, _redis)
 
             # --------------------------------------------------------------
-            # Conversation branching (R-02 resolution):
-            #   First turn  (conversation_id is None) → create row, resume=None
-            #   Subsequent  (conversation_id provided) → validate ownership,
-            #               sdk_resume = metadata.get("sdk_session_id")
+            # Conversation branching. A first turn creates the row and carries no
+            # history; a subsequent turn validates ownership and reads what the
+            # turn resumes from. ADR 0008 keeps session state in `conversations`
+            # and `messages`, so a follow-up resumes on any container. The SDK's
+            # `resume` went with the harness. It stored session files on the
+            # container filesystem, and Railway replaces that on every deploy.
             # --------------------------------------------------------------
-            sdk_resume: str | None = None
+            history: list[dict] = []
             # OPS-16: only set on subsequent turns when the conversation already
             # carries a resolved prompt_version_id — see _resolve_turn_prompt_version.
             existing_prompt_version_id: str | None = None
@@ -1673,7 +1093,7 @@ def run_agent_turn(
                     )
                     return {}
                 local_conversation_id = conv_row["id"]
-                sdk_resume = conv_row["metadata"].get("sdk_session_id")
+                history = _read_turn_history(tenant_conn, local_conversation_id)
                 existing_prompt_version_id = conv_row["metadata"].get("prompt_version_id")
 
             # ----------------------------------------------------------------
@@ -1681,21 +1101,17 @@ def run_agent_turn(
             # never fails a turn (T-21-09-05). See _resolve_turn_prompt_version's
             # own docstring for the first-turn-vs-subsequent-turn distinction.
             #
-            # This RESOLUTION runs BEFORE the tool server is built rather than
-            # after. The soul fields it returns are an input to the system
-            # prompt, and the system prompt is built inside build_agent_options
-            # together with the tool server, so the resolution has to precede the
-            # one call that consumes both. That part of P1's move stands.
+            # This RESOLUTION runs BEFORE the seam. The soul fields it returns
+            # are an input to the system prompt the seam assembles, so it has to
+            # precede the one call that consumes them. That part of P1 stands.
             #
-            # The WRITE does not: it now happens after build_agent_options
-            # returns (BACKLOG 2.6, settled 2026-08-07 — "resolve before, commit
-            # after"). _resolve_turn_prompt_version used to call
-            # _set_prompt_version_id itself, so P1's move carried the commit
-            # forward with the read, and a turn that then died in
-            # RetrievalStrategy.model_validate or build_tool_server left the
-            # conversation permanently sticky to a version that never served it
-            # — where before P1 the Celery retry re-rolled. Pinned in both
-            # directions by test_the_canary_choice_is_not_committed_when_the_
+            # The WRITE does not. It happens after build_agent_turn returns
+            # (BACKLOG 2.6, settled 2026-08-07, "resolve before, commit after").
+            # _resolve_turn_prompt_version used to commit itself, so P1's move
+            # carried the write forward with the read, and a turn that then died
+            # in the seam left the conversation permanently sticky to a version
+            # that never served it, where the Celery retry had re-rolled. Pinned
+            # both ways by test_the_canary_choice_is_not_committed_when_the_
             # options_build_fails and ..._is_committed_once_the_options_exist.
             # ----------------------------------------------------------------
             prompt_version_id, soul_override, canary_needs_persist = _resolve_turn_prompt_version(
@@ -1706,18 +1122,24 @@ def run_agent_turn(
             )
 
             # --------------------------------------------------------------
-            # THE SEAM (D1/P1). Retrieval strategy, tool server, system prompt,
-            # model, allowed tools and the turn/budget ceilings are assembled in
-            # build_agent_options above — the same callable the eval task goes
-            # through — so the agent measured is the agent served. Constructing
-            # any of them here instead is what test_agent_options_seam.py fails on.
+            # THE SEAM (ADR 0008). The route, the system prompt, the tool
+            # server, the tool list and the two ceilings are assembled in
+            # build_agent_turn, the same callable the eval task goes through, so
+            # the agent measured is the agent served. Constructing any of them
+            # here instead is what test_agent_options_seam.py fails on.
             #
             # side_effects="live" is the chat path, stated rather than defaulted
             # (BACKLOG 2.5). This is the turn a customer is waiting on: its
             # refunds are real, its escalation mail must arrive, and its
             # retrieval_metrics row is what the ops room reads.
+            #
+            # The ledger takes the DSN rather than `tenant_conn`, deliberately. A
+            # per-row connect commits each `model_calls` row as it is made, so a
+            # turn that crashes mid-loop keeps the rows for the calls it already
+            # paid for. Rows on this pooled connection would sit uncommitted and
+            # vanish with it, which is the failure #46 ended.
             # --------------------------------------------------------------
-            options = build_agent_options(
+            turn = build_agent_turn(
                 agent=agent,
                 conn_str=conn_str,
                 conversation_id=str(local_conversation_id),
@@ -1725,7 +1147,7 @@ def run_agent_turn(
                 side_effects="live",
                 verified_session_token=verified_session_token,
                 soul_override=soul_override,
-                resume=sdk_resume,
+                ledger=ledger_recorder(conn_str),
             )
 
             # --------------------------------------------------------------
@@ -1734,11 +1156,10 @@ def run_agent_turn(
             # re-rolls on retry, as it did before P1.
             #
             # Wrapped, and never fatal (T-21-09-05): a tenant-DB failure here
-            # must not fail a turn whose options are already built. The
-            # consequence of that failure is narrower than it was — the version
-            # still served this turn and turn_metrics still attributes the turn
-            # to it, which is the honest record; only the stickiness is lost, so
-            # the next turn of this conversation re-rolls.
+            # must not fail a turn whose seam has already run. The version still
+            # served this turn and turn_metrics still attributes it there, which
+            # is the honest record; only the stickiness is lost, so the next turn
+            # of this conversation re-rolls.
             # --------------------------------------------------------------
             if canary_needs_persist and prompt_version_id:
                 try:
@@ -1755,25 +1176,23 @@ def run_agent_turn(
                     )
 
             # --------------------------------------------------------------
-            # Bridge async SDK into sync Celery worker.
-            # asyncio.run() is the required pattern for Python 3.12 (see CLAUDE.md).
-            # Wall-clock safety: asyncio.wait_for(timeout=90) is inside the run()
-            # call. T-04-03-06 DoS guard: max_turns=6, max_budget_usd=settings.AGENT_MAX_BUDGET_USD.
-            # D-11: raised from 30s to 90s — warm-but-not-hot Agent SDK subprocess
-            # needs up to 90s on slower ARM VMs; SSE layer retains 120s (30s headroom).
+            # Bridge the async loop into the sync Celery worker. asyncio.run()
+            # is the required pattern for Python 3.12 (see CLAUDE.md), and
+            # asyncio.wait_for(timeout=AGENT_TURN_TIMEOUT_S) sits inside it.
+            # T-04-03-06 DoS guard: the turn's own max_model_calls and
+            # max_budget_usd, both set by the seam.
             #
             # OPS-01: monotonic start captured immediately before the call so
-            # latency_ms reflects only the SDK turn itself, not queueing/setup.
+            # latency_ms reflects only the turn itself, not queueing/setup.
             # --------------------------------------------------------------
             _turn_start_monotonic = time.monotonic()
             result = asyncio.run(
                 asyncio.wait_for(
-                    _run_sdk_turn(
-                        message=message,
-                        options=options,
+                    run_agent_loop(
+                        message,
+                        history=history,
+                        turn=turn,
                         job_id=job_id,
-                        local_conversation_id=local_conversation_id,
-                        conn_str=conn_str,
                         db=db,
                         redis=_redis,
                     ),
@@ -1787,10 +1206,14 @@ def run_agent_turn(
             escalated: bool = result["escalated"]
             escalation_reason: str | None = result["escalation_reason"]
             escalation_context: str | None = result["escalation_context"]
-            sdk_session_id_out: str | None = result["sdk_session_id"]
-            total_cost_usd: float | None = result.get("total_cost_usd")
             num_turns: int | None = result.get("num_turns")
             stop_reason: str | None = result.get("stop_reason")
+
+            # OPS-01: derived from this turn's own ledger rows, never reported by
+            # the provider. See _turn_cost_usd.
+            total_cost_usd: float | None = _turn_cost_usd(
+                turn.calls, job_id=job_id, agent_id=agent_id
+            )
 
             # --------------------------------------------------------------
             # SEC-01/L4: synchronous PII output firewall (T-18-SEC-01, T-18-SEC-02).
@@ -1844,13 +1267,6 @@ def run_agent_turn(
             # Citation extraction — missing block yields [] + warning (not failure)
             # --------------------------------------------------------------
             citations_list = _extract_citations(response_text)
-
-            # --------------------------------------------------------------
-            # R-02 resolution: persist SDK session_id for next-turn resume
-            # Only on first turn; only when sdk_session_id was returned
-            # --------------------------------------------------------------
-            if conversation_id is None and sdk_session_id_out:
-                _set_sdk_session_id(tenant_conn, local_conversation_id, sdk_session_id_out)
 
             # --------------------------------------------------------------
             # Persist messages and tool calls to tenant DB
@@ -2022,19 +1438,18 @@ def run_agent_turn(
                 except Exception:
                     pass
             else:
-                # An OperationalError is overwhelmingly the tenant endpoint
-                # waking rather than a defect, and the wake outlasts the generic
-                # exponential countdown, so it retries on the wake window.
-                if isinstance(exc, psycopg2.OperationalError):
-                    countdown = TENANT_WAKE_RETRY_COUNTDOWN_S
-                else:
-                    countdown = 2 ** self.request.retries
-                raise self.retry(exc=exc, countdown=countdown)
+                raise self.retry(
+                    exc=exc, countdown=_retry_countdown(exc, self.request.retries)
+                )
         finally:
-            # PROD-05: close the single pooled tenant-DB connection.
-            # Runs even when _run_sdk_turn raises or self.retry() re-raises,
-            # preventing connection leaks on the exception paths. None only when
-            # the connect above is what failed — nothing to close then.
+            # Two debts this attempt owes, on the served path, the timeout path and
+            # the retry path alike. THE LEDGER ROWS GO FIRST: writing one opens,
+            # commits and closes a tenant connection, which is why the loop only
+            # appended them and why they are not written on the event loop a
+            # customer waits on. `record_turn_calls` never raises. Then PROD-05's
+            # single pooled connection closes, and it is None only if connect failed.
+            if turn is not None:
+                record_turn_calls(turn)
             if tenant_conn is not None:
                 tenant_conn.close()
 

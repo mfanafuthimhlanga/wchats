@@ -2,7 +2,7 @@
 Unit tests for PROD-05: single pooled tenant-DB connection per run_agent_turn.
 
 Plan 13-03 refactored the four per-turn psycopg2.connect() calls
-(_create_conversation_row, _validate_conversation_owner, _set_sdk_session_id,
+(_create_conversation_row, _validate_conversation_owner, _read_turn_history,
 _persist_messages) into a single connection opened in run_agent_turn and closed
 in a finally block.  These tests assert the 4→1 reduction.
 
@@ -10,59 +10,37 @@ Mock strategy:
   - patch app.worker.tasks.runtime.agent.psycopg2.connect with a MagicMock;
     its return_value is the shared mock connection.
   - patch asyncio.run at the asyncio.run() boundary (same convention as
-    test_agent_task.py — do NOT use AsyncMock for SDK calls).
+    test_agent_task.py, and do NOT use AsyncMock for the turn).
   - patch all four helpers at module level so they exercise the CALL SIGNATURE
     (conn object, not conn_str) without touching any real DB.
+  - patch build_agent_turn, because the real seam builds a provider client and
+    a live tool server bound to the tenant connection string. This file is about
+    connection lifecycle, not about what the turn contains.
   - Control-DB session mocked via get_sync_db.
-
-IMPORTANT: claude_agent_sdk must be monkeypatched before any import of agent.py
-(same pattern as test_agent_task.py).
 """
 
 from __future__ import annotations
 
-import sys
-import types
 import uuid
+from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
-
-# ---------------------------------------------------------------------------
-# Monkeypatch claude_agent_sdk BEFORE importing the agent task module.
-# ---------------------------------------------------------------------------
-
-def _make_fake_claude_agent_sdk() -> types.ModuleType:
-    fake = types.ModuleType("claude_agent_sdk")
-    fake.ClaudeSDKClient = MagicMock(name="ClaudeSDKClient")
-    fake.ClaudeAgentOptions = MagicMock(name="ClaudeAgentOptions")
-    fake.AssistantMessage = MagicMock(name="AssistantMessage")
-    fake.ResultMessage = MagicMock(name="ResultMessage")
-    fake.TextBlock = MagicMock(name="TextBlock")
-    fake.ToolUseBlock = MagicMock(name="ToolUseBlock")
-    fake.ToolResultBlock = MagicMock(name="ToolResultBlock")
-    fake.ClaudeSDKError = type("ClaudeSDKError", (Exception,), {})
-    fake.CLINotFoundError = type("CLINotFoundError", (Exception,), {})
-    fake.CLIConnectionError = type("CLIConnectionError", (Exception,), {})
-    fake.ProcessError = type("ProcessError", (Exception,), {})
-    fake.CLIJSONDecodeError = type("CLIJSONDecodeError", (Exception,), {})
-
-    def _tool_decorator(name, description, schema):
-        def wrapper(fn):
-            fn._tool_name = name
-            return fn
-        return wrapper
-
-    fake.tool = _tool_decorator
-    fake.create_sdk_mcp_server = MagicMock(return_value=MagicMock(name="mcp_server"))
-    return fake
-
-
-if "claude_agent_sdk" not in sys.modules:
-    sys.modules["claude_agent_sdk"] = _make_fake_claude_agent_sdk()
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _seam(**_kwargs):
+    """Stand-in for `build_agent_turn`, and the one boundary these tests replace.
+
+    The real seam builds a provider client and a live tool server bound to the
+    tenant connection string; neither belongs in a test about the task body. The
+    only field the task reads off the turn is `calls`, the ledger rows the loop
+    accumulates, so that is what this carries. An empty list prices the turn at
+    zero, which is correct for a turn that made no model call.
+    """
+    return SimpleNamespace(calls=[])
+
 
 def _make_agent() -> MagicMock:
     agent = MagicMock()
@@ -92,7 +70,7 @@ def _make_db_ctx(db: MagicMock) -> MagicMock:
     return ctx
 
 
-_CANNED_SDK_RESULT = {
+_CANNED_TURN_RESULT = {
     "response_text": (
         "Here is the answer.\n\n"
         "CITATIONS:\n"
@@ -102,12 +80,6 @@ _CANNED_SDK_RESULT = {
     "escalated": False,
     "escalation_reason": None,
     "escalation_context": None,
-    "sdk_session_id": "sdk-batch-001",
-}
-
-_CANNED_SDK_RESULT_NO_SESSION = {
-    **_CANNED_SDK_RESULT,
-    "sdk_session_id": None,
 }
 
 
@@ -135,11 +107,9 @@ def test_first_turn_opens_exactly_one_tenant_connection():
         patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://pooled-host/tenant"),
         patch("app.worker.tasks.runtime.agent.psycopg2.connect") as mock_connect,
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
-        patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
         patch("app.worker.tasks.runtime.agent._persist_messages"),
-        patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
-        patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys"),
-        patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_SDK_RESULT),
+        patch("app.worker.tasks.runtime.agent.build_agent_turn", side_effect=_seam),
+        patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_TURN_RESULT),
         patch("app.worker.tasks.runtime.agent.emit"),
     ):
         run_agent_turn.run(
@@ -188,13 +158,11 @@ def test_subsequent_turn_opens_exactly_one_tenant_connection():
         patch("app.worker.tasks.runtime.agent.psycopg2.connect") as mock_connect,
         patch(
             "app.worker.tasks.runtime.agent._validate_conversation_owner",
-            return_value={"id": existing_conv_id, "metadata": {"sdk_session_id": "stored-sid"}},
+            return_value={"id": existing_conv_id, "metadata": {}},
         ),
-        patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
         patch("app.worker.tasks.runtime.agent._persist_messages"),
-        patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
-        patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys"),
-        patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_SDK_RESULT_NO_SESSION),
+        patch("app.worker.tasks.runtime.agent.build_agent_turn", side_effect=_seam),
+        patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_TURN_RESULT),
         patch("app.worker.tasks.runtime.agent.emit"),
     ):
         run_agent_turn.run(
@@ -217,7 +185,7 @@ def test_subsequent_turn_opens_exactly_one_tenant_connection():
 # ---------------------------------------------------------------------------
 
 def test_helpers_receive_shared_connection_not_conn_str():
-    """PROD-05: all four write helpers must receive the shared conn object."""
+    """PROD-05: every per-turn helper must receive the shared conn object."""
     from app.worker.tasks.runtime.agent import run_agent_turn
 
     job_id = str(uuid.uuid4())
@@ -231,7 +199,7 @@ def test_helpers_receive_shared_connection_not_conn_str():
     mock_db.get.side_effect = [agent, job]
 
     mock_create = MagicMock(return_value=local_conv_id)
-    mock_set_session = MagicMock()
+    mock_history = MagicMock(return_value=[])
     mock_persist = MagicMock()
 
     with (
@@ -239,11 +207,10 @@ def test_helpers_receive_shared_connection_not_conn_str():
         patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://pooled-host/tenant"),
         patch("app.worker.tasks.runtime.agent.psycopg2.connect") as mock_connect,
         patch("app.worker.tasks.runtime.agent._create_conversation_row", mock_create),
-        patch("app.worker.tasks.runtime.agent._set_sdk_session_id", mock_set_session),
+        patch("app.worker.tasks.runtime.agent._read_turn_history", mock_history),
         patch("app.worker.tasks.runtime.agent._persist_messages", mock_persist),
-        patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
-        patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys"),
-        patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_SDK_RESULT),
+        patch("app.worker.tasks.runtime.agent.build_agent_turn", side_effect=_seam),
+        patch("app.worker.tasks.runtime.agent.asyncio.run", return_value=_CANNED_TURN_RESULT),
         patch("app.worker.tasks.runtime.agent.emit"),
     ):
         run_agent_turn.run(
@@ -261,10 +228,13 @@ def test_helpers_receive_shared_connection_not_conn_str():
         f"got: {mock_create.call_args[0][0]!r}"
     )
 
-    # _set_sdk_session_id called with (conn_object, conv_id, sdk_session_id)
-    assert mock_set_session.call_args[0][0] is shared_conn, (
-        f"_set_sdk_session_id must receive the shared conn object, "
-        f"got: {mock_set_session.call_args[0][0]!r}"
+    # _read_turn_history is the read half of the same rule. It runs only on a
+    # subsequent turn, which this fixture is not, so the assertion is that it was
+    # NOT called rather than that it took the shared connection: a first turn has
+    # no history and a query for one is a round trip nobody needs.
+    assert mock_history.call_count == 0, (
+        "a first turn read conversation history. There is none, because the "
+        "conversation row was created seconds earlier in this same task."
     )
 
     # _persist_messages called with conn=conn_object
@@ -276,11 +246,11 @@ def test_helpers_receive_shared_connection_not_conn_str():
 
 
 # ---------------------------------------------------------------------------
-# Test 4: Connection closed in finally even when SDK turn raises
+# Test 4: Connection closed in finally even when the turn raises
 # ---------------------------------------------------------------------------
 
-def test_connection_closed_in_finally_when_sdk_raises():
-    """PROD-05 (T-13-03-03): tenant_conn.close() must run even when _run_sdk_turn raises.
+def test_connection_closed_in_finally_when_the_turn_raises():
+    """PROD-05 (T-13-03-03): tenant_conn.close() must run even when the turn raises.
 
     When asyncio.run() raises, Celery calls self.retry() which re-raises the
     original exception out of run_agent_turn.  The finally block must still
@@ -298,8 +268,8 @@ def test_connection_closed_in_finally_when_sdk_raises():
     mock_db.execute.return_value.fetchone.return_value = None
     mock_db.get.side_effect = [agent, job]
 
-    # Simulate SDK turn raising an exception
-    sdk_error = RuntimeError("SDK subprocess crashed")
+    # Simulate the turn raising an exception
+    turn_error = RuntimeError("the provider call never returned")
 
     mock_connect = MagicMock()
 
@@ -308,12 +278,10 @@ def test_connection_closed_in_finally_when_sdk_raises():
         patch("app.worker.tasks.runtime.agent.fernet_decrypt", return_value="postgresql://pooled-host/tenant"),
         patch("app.worker.tasks.runtime.agent.psycopg2.connect", mock_connect),
         patch("app.worker.tasks.runtime.agent._create_conversation_row", return_value=local_conv_id),
-        patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
         patch("app.worker.tasks.runtime.agent._persist_messages"),
-        patch("app.worker.tasks.runtime.agent.build_tool_server", return_value=MagicMock()),
-        patch("app.worker.tasks.runtime.agent.build_system_prompt", return_value="sys"),
-        # asyncio.run raises — simulates _run_sdk_turn failure
-        patch("app.worker.tasks.runtime.agent.asyncio.run", side_effect=sdk_error),
+        patch("app.worker.tasks.runtime.agent.build_agent_turn", side_effect=_seam),
+        # asyncio.run raises, standing in for a run_agent_loop failure
+        patch("app.worker.tasks.runtime.agent.asyncio.run", side_effect=turn_error),
         patch("app.worker.tasks.runtime.agent.emit"),
     ):
         # Celery's self.retry() re-raises the original exception.

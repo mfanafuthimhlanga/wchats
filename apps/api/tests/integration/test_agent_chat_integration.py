@@ -25,18 +25,21 @@ WHY THE BROKER HOP IS REPLAYED IN-PROCESS RATHER THAN RUN "EAGERLY".
     that one hop is real: the HTTP route runs against real Postgres, and the
     real task body runs against the same real Postgres and real Redis.
 
-SDK / side-effect mock strategy — every one of these is a boundary that would
+Model and side-effect mock strategy. Every one of these is a boundary that would
 otherwise leave this process:
-    - `agent.asyncio.run`        -> canned dict. This is THE seam that keeps the
-                                    Claude Agent SDK (and any model call) out of
-                                    the test. Patched only around `.apply()`,
-                                    never around the httpx client: the target
-                                    resolves to the global asyncio module, so a
-                                    wider window would break `asyncio.run` for
-                                    anything else running in it.
+    - `agent.asyncio.run`        -> canned dict. This is THE seam that keeps any
+                                    model call out of the test. Patched only
+                                    around `.apply()`, never around the httpx
+                                    client: the target resolves to the global
+                                    asyncio module, so a wider window would break
+                                    `asyncio.run` for anything else running in it.
+    - `agent.build_agent_turn`   -> the turn assembly. The real seam builds a
+                                    provider client from live credentials and a
+                                    tool server bound to the tenant connection
+                                    string; both are boundaries this test has no
+                                    business crossing.
     - `_create_conversation_row`,
       `_persist_messages`,
-      `_set_sdk_session_id`,
       `_write_turn_metrics`      -> tenant-DB writes. There is no tenant DB on
                                     this machine, and turn_metrics has no
                                     control-DB migration at all.
@@ -54,12 +57,13 @@ otherwise leave this process:
     key) of a real, reachable URL, so the CTL-08 decrypt-at-runtime path
     executes for real.
 
-Canned dict contract — must match _run_sdk_turn's return shape (agent.py:1014).
+Canned dict contract. It must match run_agent_loop's return shape.
 """
 
 import json
 import os
 import uuid
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -88,9 +92,17 @@ _ASYNC_DB_URL = _SYNC_DB_URL.replace("postgresql://", "postgresql+asyncpg://")
 
 
 # ---------------------------------------------------------------------------
-# Canned SDK result — matches run_agent_turn's contract from Plan 04-03
+# The turn's two doubles. One is the seam that would build a provider client, and
+# the other is the canned loop result standing in for the model call itself.
 # ---------------------------------------------------------------------------
-CANNED_SDK_RESULT = {
+
+
+def _seam(**_kwargs):
+    """Stand-in for build_agent_turn. `calls` is the only field the task reads."""
+    return SimpleNamespace(calls=[])
+
+
+CANNED_TURN_RESULT = {
     "response_text": (
         "Our business hours are Monday-Friday, 8am-6pm.\n\n"
         "CITATIONS:\n- Document: FAQ.pdf | Section: Business Hours\n"
@@ -99,8 +111,6 @@ CANNED_SDK_RESULT = {
     "escalated": False,
     "escalation_reason": None,
     "escalation_context": None,
-    "sdk_session_id": "sdk-test-session-123",
-    "total_cost_usd": None,
     "num_turns": 1,
     "stop_reason": "end_turn",
 }
@@ -323,8 +333,8 @@ async def test_post_agent_chat_emits_thinking_then_response(seed_tenant_agent):
         with (
             patch(
                 "app.worker.tasks.runtime.agent.asyncio.run",
-                return_value=CANNED_SDK_RESULT,
-            ) as sdk_seam,
+                return_value=CANNED_TURN_RESULT,
+            ) as turn_seam,
             patch(
                 "app.worker.tasks.runtime.agent._create_conversation_row",
                 return_value=sentinel_conversation_id,
@@ -338,7 +348,7 @@ async def test_post_agent_chat_emits_thinking_then_response(seed_tenant_agent):
                 # precisely the row this test exists to assert on.
                 return_value=sentinel_message_id,
             ),
-            patch("app.worker.tasks.runtime.agent._set_sdk_session_id"),
+            patch("app.worker.tasks.runtime.agent.build_agent_turn", side_effect=_seam),
             patch("app.worker.tasks.runtime.agent._write_turn_metrics"),
             patch("app.worker.tasks.runtime.agent._emit_langfuse_turn_trace"),
             patch("app.worker.tasks.runtime.agent.celery_chain") as validator_chain,
@@ -346,7 +356,7 @@ async def test_post_agent_chat_emits_thinking_then_response(seed_tenant_agent):
             eager = run_agent_turn.apply(args=task_args, throw=True)
 
         assert eager.successful(), f"run_agent_turn raised: {eager.traceback}"
-        sdk_seam.assert_called_once()
+        turn_seam.assert_called_once()
         validator_chain.assert_called_once()
 
         # ------------------------------------------------------------------
@@ -467,14 +477,14 @@ def test_post_agent_chat_idempotent_on_retry(seed_tenant_agent):
 
         # Tripwires, not mocks. Neither should be reachable behind the guard; if
         # the guard ever stops firing, this fails loudly here rather than
-        # attempting a Claude Agent SDK turn or queueing the judge chain.
+        # attempting a model turn or queueing the judge chain.
         with (
             patch(
                 "app.worker.tasks.runtime.agent.asyncio.run",
                 side_effect=AssertionError(
-                    "idempotency guard did not fire — the SDK turn was attempted"
+                    "idempotency guard did not fire, so the turn was attempted"
                 ),
-            ) as sdk_seam,
+            ) as turn_seam,
             patch(
                 "app.worker.tasks.runtime.agent.celery_chain",
                 side_effect=AssertionError(
@@ -505,7 +515,7 @@ def test_post_agent_chat_idempotent_on_retry(seed_tenant_agent):
         "the idempotent short-circuit is the only path returning already_complete; "
         f"got {eager.result!r}"
     )
-    sdk_seam.assert_not_called()
+    turn_seam.assert_not_called()
     validator_chain.assert_not_called()
     assert rows_after == rows_before, (
         f"Idempotency guard failed: rows grew from {rows_before} to {rows_after}"

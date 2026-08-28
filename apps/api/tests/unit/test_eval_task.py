@@ -183,7 +183,7 @@ def wired(monkeypatch):
     # `agent_response` that is deliberately NOT the reference answer, so any
     # test in this module that starts scoring self-answers fails loudly.
     # tests/unit/test_eval_agent_invocation.py drives the real helper.
-    def _fake_invoke(*, agent_id, conn_str, scenarios, prompt_version_id):
+    def _fake_invoke(*, agent_id, conn_str, run_id, scenarios, prompt_version_id):
         rec["invoked"].append(
             {
                 "agent_id": agent_id,

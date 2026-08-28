@@ -21,6 +21,7 @@ import asyncio
 import contextvars
 import sys
 import types
+from importlib.util import find_spec as _find_spec
 from unittest.mock import MagicMock
 
 # ---------------------------------------------------------------------------
@@ -28,7 +29,9 @@ from unittest.mock import MagicMock
 # agent_tools.py imports ``tool`` and ``create_sdk_mcp_server`` at module load
 # time, so the fake must be installed in sys.modules first.
 # ---------------------------------------------------------------------------
-if "claude_agent_sdk" not in sys.modules:
+# THE RULE: install the fake only when the real package is absent. Why the
+# `find_spec` half is load-bearing is in test_agent_tools.py's module docstring.
+if "claude_agent_sdk" not in sys.modules and _find_spec("claude_agent_sdk") is None:
     _fake_sdk = types.ModuleType("claude_agent_sdk")
 
     def _tool_decorator(name: str, description: str, schema: dict):
@@ -64,7 +67,7 @@ def test_asyncio_run_propagation():
 
     Python 3.7+ guarantees that asyncio.run() inherits the caller's context via an
     implicit copy_context() on task creation.  This proves that values set by
-    build_tool_server (sync Celery task body) are visible inside _run_sdk_turn (async,
+    build_tool_server (sync Celery task body) are visible inside run_agent_loop (async,
     entered via asyncio.run) — closing the RESEARCH.md Cluster 7 propagation question.
     """
     # Set a sentinel value in the current (sync) context.

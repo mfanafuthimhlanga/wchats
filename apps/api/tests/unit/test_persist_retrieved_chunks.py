@@ -17,15 +17,17 @@ from __future__ import annotations
 
 import json
 
-from app.worker.tasks.runtime.agent import (
+# The capture keys belong to the loop that writes them (ADR 0008); the column
+# writer belongs to the task that persists them. Two imports, one for each.
+from app.services.agent_loop import (
     RETRIEVE_CHUNKS_KEY,
     RETRIEVE_CHUNKS_PARSED,
     RETRIEVE_CHUNKS_SOURCE_KEY,
     RETRIEVE_CHUNKS_UNPARSED,
     RETRIEVE_JUDGE_CHUNKS_KEY,
     RETRIEVE_RESULT_IS_ERROR_KEY,
-    _persisted_chunks,
 )
+from app.worker.tasks.runtime.agent import _persisted_chunks
 
 JUDGE_CHUNK = (
     "[source: ACME-HANDBOOK.pdf | section: Returns | chunk: c-1 | score: 0.91]\n"
