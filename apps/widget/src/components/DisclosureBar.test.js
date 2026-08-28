@@ -32,7 +32,7 @@ describe('DisclosureBar', () => {
     expect(PROCESSING_NOTICE).toMatch(/OpenAI/)
   })
 
-  it('stays inside the one-line budget the 380px bar allows', () => {
+  it('holds the copy to the character count the width budget assumes', () => {
     expect(PROCESSING_NOTICE.length).toBeLessThanOrEqual(NOTICE_MAX_CHARS)
   })
 
