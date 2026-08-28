@@ -25,6 +25,8 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
+from tests.agent_loop_doubles import canned_turn_result
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -70,17 +72,11 @@ def _make_db_ctx(db: MagicMock) -> MagicMock:
     return ctx
 
 
-_CANNED_TURN_RESULT = {
-    "response_text": (
-        "Here is the answer.\n\n"
-        "CITATIONS:\n"
-        "- Document: Policy.pdf | Section: 2\n"
-    ),
-    "tool_calls_log": [],
-    "escalated": False,
-    "escalation_reason": None,
-    "escalation_context": None,
-}
+_CANNED_TURN_RESULT = canned_turn_result(
+    "Here is the answer.\n\n"
+    "CITATIONS:\n"
+    "- Document: Policy.pdf | Section: 2\n"
+)
 
 
 # ---------------------------------------------------------------------------

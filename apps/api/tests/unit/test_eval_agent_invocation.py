@@ -59,6 +59,8 @@ import pytest
 from app.services import eval_service
 from app.worker.tasks.runtime import eval as mod
 
+from tests.agent_loop_doubles import canned_turn_result
+
 _EVAL_PY = Path(mod.__file__).with_suffix(".py")
 
 PRODUCTION = "postgresql://production/tenant"
@@ -496,15 +498,12 @@ def _turn(
             _retrieve_entry([c], unparsed=unparsed)
             for c in contexts[:retrieve_calls]
         ]
-    return {
-        "response_text": response_text,
-        "tool_calls_log": log,
-        "escalated": False,
-        "escalation_reason": None,
-        "escalation_context": None,
-        "num_turns": 3,
-        "stop_reason": "end_turn",
-    }
+    return canned_turn_result(
+        response_text,
+        tool_calls_log=log,
+        num_turns=3,
+        stop_reason="end_turn",
+    )
 
 
 def test_the_turn_goes_through_the_seam_and_asks_for_recorded_side_effects():

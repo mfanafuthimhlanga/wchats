@@ -25,6 +25,8 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from tests.agent_loop_doubles import canned_turn_result
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -96,58 +98,20 @@ def _make_db_ctx(db: MagicMock) -> MagicMock:
     return ctx
 
 
-def _canned_turn_result(response_text: str, **overrides) -> dict:
-    """What `run_agent_loop` hands back, in ONE place.
-
-    Eleven tests in this file each carried their own copy of that dict, so #50
-    adding the four `pii_` keys to `agent_loop._turn_result` turned eleven tests
-    red for one reason, none of them in the body of the test that failed. The
-    task's read of `result["pii_detector"]` is deliberately fail-loud: a turn
-    whose seam did not scan is a turn nobody may serve, so the fakes are what
-    move, never that read.
-
-    The defaults describe a CLEAN turn, which is what every fake below is. The
-    firewall served the model's own words, so `pii_detector` is None, and no
-    chunk was retrieved, so nothing was exempted. `pii_original_length` is the
-    length of the text as it was BEFORE the scan, which for a clean turn is the
-    text itself. A test about a deflected turn passes `pii_detector=`.
-
-    The parity between these values and the real ones is not asserted here.
-    tests/unit/test_pii_firewall_seam_parity.py drives this task over the real
-    loop and the real firewall, which is where a fake that drifted would show.
-    """
-    return {
-        "response_text": response_text,
-        "tool_calls_log": [],
-        "escalated": False,
-        "escalation_reason": None,
-        "escalation_context": None,
-        # Always returned by _turn_result, read with .get() by the task.
-        "num_turns": 2,
-        "stop_reason": "stop",
-        # SEC-01/L4, added by #50 when the firewall moved inside the seam.
-        "pii_detector": None,
-        "pii_published_chunks": 0,
-        "pii_original_length": len(response_text),
-        "pii_published_exemption": False,
-        **overrides,
-    }
-
-
 # Canned SDK result -- happy path with one citation
-_CANNED_RESULT_WITH_CITATION = _canned_turn_result(
+_CANNED_RESULT_WITH_CITATION = canned_turn_result(
     "You can return items within 14 days.\n\n"
     "CITATIONS:\n"
     "- Document: FAQ.pdf | Section: 1\n"
 )
 
 # Canned result with no CITATIONS block
-_CANNED_RESULT_NO_CITATIONS = _canned_turn_result(
+_CANNED_RESULT_NO_CITATIONS = canned_turn_result(
     "Some answer text with no citations block."
 )
 
 # Canned result with escalation
-_CANNED_RESULT_ESCALATED = _canned_turn_result(
+_CANNED_RESULT_ESCALATED = canned_turn_result(
     "I'm connecting you to a human agent.\n\nCITATIONS:\n- Document: N/A | Section: N/A\n",
     escalated=True,
     escalation_reason="Customer expressed frustration",
@@ -730,7 +694,7 @@ def test_citations_missing_returns_empty_list_and_warns():
 # ---------------------------------------------------------------------------
 
 # Canned result with a retrieve tool call carrying a captured result
-_CANNED_RESULT_WITH_RETRIEVE = _canned_turn_result(
+_CANNED_RESULT_WITH_RETRIEVE = canned_turn_result(
     "You can return items within 14 days.\n\n"
     "CITATIONS:\n"
     "- Document: FAQ.pdf | Section: 1\n",
@@ -924,7 +888,7 @@ def test_an_empty_answer_still_records_why_the_turn_stopped():
     mock_db.execute.return_value.fetchone.return_value = None
     mock_db.get.side_effect = [agent, job]
 
-    exhausted = _canned_turn_result("", num_turns=6, stop_reason="max_model_calls")
+    exhausted = canned_turn_result("", num_turns=6, stop_reason="max_model_calls")
 
     written: list[dict] = []
 

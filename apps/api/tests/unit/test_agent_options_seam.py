@@ -84,6 +84,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.agent_loop_doubles import canned_turn_result
+
 _APP_ROOT = Path(__file__).resolve().parents[2] / "app"
 _LOOP_PY = _APP_ROOT / "services" / "agent_loop.py"
 _AGENT_PY = _APP_ROOT / "worker" / "tasks" / "runtime" / "agent.py"
@@ -668,19 +670,12 @@ def test_only_allowlisted_modules_construct_claude_agent_options():
 # Dynamic half — drive the real task
 # ---------------------------------------------------------------------------
 
-_CANNED_TURN_RESULT = {
-    "response_text": (
-        "Returns are accepted within 14 days.\n\n"
-        "CITATIONS:\n"
-        "- Document: FAQ.pdf | Section: 1\n"
-    ),
-    "tool_calls_log": [],
-    "escalated": False,
-    "escalation_reason": None,
-    "escalation_context": None,
-    "num_turns": 2,
-    "stop_reason": "end_turn",
-}
+_CANNED_TURN_RESULT = canned_turn_result(
+    "Returns are accepted within 14 days.\n\n"
+    "CITATIONS:\n"
+    "- Document: FAQ.pdf | Section: 1\n",
+    stop_reason="end_turn",
+)
 
 _CONN_STR = "postgresql://tenant"
 _VERIFIED_TOKEN = "verified-session-token-for-seam"
