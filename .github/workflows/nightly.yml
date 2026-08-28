@@ -11,7 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17-alpine
+        # pgvector's image, not plain postgres:17-alpine. The tenant migration
+        # `0001_tenant_v1_schema` runs `CREATE EXTENSION IF NOT EXISTS vector`, and
+        # the plain image has no extension control file, so the migration failed and
+        # `test_full_chain_completes` reported it as an agent that would not go ready.
+        # Same Postgres 17, extension present. Matches the local cluster's pgvector.
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: wchats
           POSTGRES_PASSWORD: wchats
@@ -87,7 +92,12 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17-alpine
+        # pgvector's image, not plain postgres:17-alpine. The tenant migration
+        # `0001_tenant_v1_schema` runs `CREATE EXTENSION IF NOT EXISTS vector`, and
+        # the plain image has no extension control file, so the migration failed and
+        # `test_full_chain_completes` reported it as an agent that would not go ready.
+        # Same Postgres 17, extension present. Matches the local cluster's pgvector.
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: wchats
           POSTGRES_PASSWORD: wchats
