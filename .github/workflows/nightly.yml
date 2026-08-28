@@ -151,7 +151,11 @@ jobs:
       - name: Set up Node 20
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # 22, not 20. pnpm 11 refuses to start on Node 20 ("requires at least
+          # Node.js v22.13"), and it dies reaching for node:sqlite, which Node 20
+          # does not carry. vite 8 asks for ^20.19.0 || >=22.12.0, so 22 satisfies
+          # both, and the runner has been deprecating Node 20 for actions anyway.
+          node-version: "22"
 
       - name: Install Python dependencies
         run: pip install -e "apps/api[dev]"
