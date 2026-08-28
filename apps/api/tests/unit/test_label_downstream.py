@@ -247,7 +247,6 @@ def _wire(monkeypatch, *, exploratory_rows, silent_ids=(), scores_by_id=None):
             per_turn_timeout_s=90,
             audit_capture_char_cap=1800,
             retrieved_context_chunk_char_cap=2000,
-            pii_firewall_applied=False,
         )
         return rows, summary
 

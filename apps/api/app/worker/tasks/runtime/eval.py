@@ -83,6 +83,16 @@ invisible:
   * A run where too few scenarios answered reports 'unknown', never 'pass', at
     the MIN_RESPONSE_RATE floor.
 
+THE PII FIREWALL RUNS ON THIS PATH TOO, since #50. It used to run in the live
+Celery task body only, so an eval scored the agent's own words while a customer
+read the deflection — and a response carrying a customer's email address, card
+number or ID number was posted verbatim to a third-party judge API.
+`agent_loop._turn_result` scans inside the seam now, so what Ragas scores is what
+a customer would have read. The cost of that is stated rather than left implicit:
+a deflected turn is scored AS the deflection, which measures the firewall rather
+than the answer behind it, and a run whose firewall fires often will read as a
+grounding regression.
+
 And the mutating-skill attempts recorded mode captured travel out with the run.
 That the agent CHOSE to call issue_refund is capability-envelope adherence and
 one of the more valuable things an eval can observe; it is invisible unless it
@@ -555,13 +565,6 @@ def _invoke_agent_for_scenarios(
         # therefore a constant dressed as an observation.
         audit_capture_char_cap=RETRIEVE_RESULT_CAPTURE_CHARS,
         retrieved_context_chunk_char_cap=CHUNK_CONTENT_CHAR_LIMIT,
-        # The served path deflects a response that trips the PII firewall
-        # (agent.py's scan_response) before a customer sees it. The eval does
-        # NOT, and the reason is that the deflection is not an answer: scoring it
-        # would measure the firewall's hit rate as if it were the agent's
-        # grounding. Recorded rather than left implicit, because it is a real
-        # difference between the text scored here and the text a customer reads.
-        pii_firewall_applied=False,
     )
     log.info(
         "run_eval_suite.invocation_complete",

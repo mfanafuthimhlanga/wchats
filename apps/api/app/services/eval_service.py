@@ -604,7 +604,6 @@ def summarise_agent_invocation(
     per_turn_timeout_s: int,
     audit_capture_char_cap: int,
     retrieved_context_chunk_char_cap: int,
-    pii_firewall_applied: bool,
 ) -> dict:
     """Turn per-scenario invocation records into the run's observation. Pure.
 
@@ -640,8 +639,6 @@ def summarise_agent_invocation(
             was consequently true on essentially every retrieving turn.
         retrieved_context_chunk_char_cap: the cap that DOES bound the scored
             evidence — agent_tools.CHUNK_CONTENT_CHAR_LIMIT, applied per chunk.
-        pii_firewall_applied: whether the served-path PII deflection ran over
-            these responses. False, and stated: see eval.py's invocation block.
 
     Returns:
         The `agent_invocation` provenance object. `status` is
@@ -783,9 +780,6 @@ def summarise_agent_invocation(
             and r.get("retrieve_calls")
             and not r.get("scorable")
         ),
-        # False, and said out loud: the eval scores the agent's own text, not the
-        # deflection a customer would receive if the output firewall fired.
-        "pii_firewall_applied": pii_firewall_applied,
         "side_effect_attempts": {
             "counts": counts,
             "capability_attempts": capability_attempts,

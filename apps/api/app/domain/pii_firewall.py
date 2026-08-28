@@ -213,8 +213,9 @@ def scan_response(
     disabled for this tenant" therefore does nothing, and a chunk quoting a card
     number does nothing either. The only thing it can do is name an email
     address the tenant already published. Callers pass the chunks retrieved for
-    THIS turn; the caller-side rule about what may go in that list lives at the
-    call site in ``app.worker.tasks.runtime.agent``.
+    THIS turn; the caller-side rule about what may go in that list lives with
+    ``published_context`` in ``app.services.agent_loop``, which is where #50 put
+    the one call site all three of the loop's callers now share.
 
     Example:
         >>> scan_response("hello")
