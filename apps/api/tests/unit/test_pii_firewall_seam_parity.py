@@ -7,7 +7,9 @@ address, card number or SA ID was carried into the Ragas sample as
 `agent_response` and posted verbatim to a third-party judge API. Meanwhile
 `pii_firewall`'s own module docstring said the scan was called unconditionally,
 which two of the loop's three callers not calling it made false by construction
-(the third is `red_team_probe._build_transactional_probe_fn`).
+(the third is `red_team_probe._build_transactional_probe_fn`, pinned in
+tests/unit/test_red_team_probe.py section 17, beside the `_drive` harness
+that already stands its victim turn up).
 
 WHY BOTH PATHS ARE DRIVEN FOR REAL. The claim is about a shared function, and a
 test that drove one path and asserted about the other by inspection is how the
@@ -15,15 +17,17 @@ gap survived in the first place. So both halves here run the real
 `agent_loop.run_agent_loop` over the same scripted client and the same tool:
 
     live   `run_agent_loop` as `run_agent_turn` calls it. What it returns IS the
-           served text now — the task body reads `result["response_text"]` and
-           does not filter again.
+           served text now, and the pair at the BOTTOM of this file drives
+           `run_agent_turn` itself to prove it, asserting on the `agent.response`
+           payload the widget renders rather than on a return value.
     eval   `_invoke_agent_for_scenarios` down through the real `_run_one_eval_turn`
            and `_drive_eval_turn`, so the assertion lands on the `agent_response`
            that would reach Ragas.
 
 Only two boundaries are replaced, and neither touches the text: the provider
 client (a script of canned completions) and the control-DB session the eval task
-opens to read its agent row.
+opens to read its agent row. The served pair at the bottom replaces three more,
+all of them a database the test has no server for, and none of them the text.
 
 THE CONTROL IS THE SECOND TEST. A pair that only ever observes the deflection
 cannot tell parity from a constant, and "both paths always return
@@ -49,6 +53,7 @@ from app.services.agent_loop import (
 )
 from app.services.agent_tools import _frame_retrieved_context
 from app.worker.tasks.runtime import eval as eval_mod
+from app.worker.tasks.runtime.agent import run_agent_turn
 
 RUN_ID = "55555555-5555-5555-5555-555555555555"
 JOB_ID = "33333333-3333-3333-3333-333333333333"
@@ -259,3 +264,138 @@ def test_a_clean_response_is_the_agents_own_text_on_both_paths() -> None:
         "the eval scored contexts the agent did not retrieve, so the turn under "
         "test is not the turn that ran"
     )
+
+
+# ---------------------------------------------------------------------------
+# The live path, driven as a customer drives it (#50 follow-up)
+#
+# `_live_response` above calls `run_agent_loop` directly and calls that "live".
+# It is the right function, but nothing between it and the customer's browser is
+# under test there, and the sentence at the top of this file, "the task body
+# reads `result['response_text']` and does not filter again", was asserted by
+# reading the task rather than by running it. The failure that leaves open: a
+# diagnostics ticket adds `pii_original_text` to the seam's dict, a well-meaning
+# line in the task body reads it back into the emit, and every test in this file
+# stays green while the address reaches the widget.
+#
+# So this pair drives `run_agent_turn` itself, over the same scripted client and
+# the same real loop, and asserts on the payload `emit` is handed for
+# `agent.response`. That payload IS what the customer's browser renders; a return
+# value is not.
+# ---------------------------------------------------------------------------
+
+TENANT_DSN = "postgresql://tenant/served"
+SERVED_CONVERSATION_ID = "00000000-0000-0000-0000-0000000000f1"
+SERVED_MESSAGE_ID = "test-assistant-msg-id-pii-parity"
+
+
+def _db_ctx(db: MagicMock) -> MagicMock:
+    ctx = MagicMock()
+    ctx.__enter__ = MagicMock(return_value=db)
+    ctx.__exit__ = MagicMock(return_value=False)
+    return ctx
+
+
+def _control_db_for(agent) -> MagicMock:
+    """The control session the task reads its agent and its job row from."""
+    job = MagicMock()
+    job.id = JOB_ID
+    job.status = "running"
+    job.finished_at = None
+
+    db = MagicMock()
+    db.execute.return_value.fetchone.return_value = None  # no idempotency row
+    db.get.side_effect = [agent, job]
+    return db
+
+
+def _served_turn(answer: str) -> dict:
+    """Drive `run_agent_turn` for real; return what the widget and the table get.
+
+    The five replaced boundaries are the ones test_agent_task.py already replaces
+    for this task, and none of them touches the response text: the control-DB
+    session, the tenant DSN's decryption, the tenant connection, the conversation
+    INSERT and the message INSERT. `asyncio.run`, `asyncio.wait_for` and
+    `run_agent_loop` are all left real, which is the whole point: the seam runs,
+    the firewall inside it runs, and the task body does whatever it does with what
+    comes back.
+    """
+    agent = MagicMock()
+    agent.id = uuid.uuid4()
+    agent.name = "Refunds Agent"
+    agent.soul_role = "customer service representative"
+    agent.soul_voice = "helpful"
+    agent.soul_do_list = []
+    agent.soul_donot_list = []
+    agent.retrieval_strategy = {}
+    agent.neon_connection_string = b"encrypted-bytes"
+
+    emitted: list[tuple[str, dict]] = []
+    persisted: list[dict] = []
+
+    def _record_emit(_jid, event_type, payload, _db, _redis):
+        emitted.append((event_type, payload or {}))
+
+    def _record_persist(**kwargs):
+        persisted.append(kwargs)
+        return SERVED_MESSAGE_ID
+
+    task = "app.worker.tasks.runtime.agent."
+    with (
+        patch(task + "get_sync_db", return_value=_db_ctx(_control_db_for(agent))),
+        patch(task + "fernet_decrypt", return_value=TENANT_DSN),
+        patch(task + "psycopg2.connect"),
+        patch(task + "_create_conversation_row", return_value=SERVED_CONVERSATION_ID),
+        patch(task + "_persist_messages", side_effect=_record_persist),
+        patch(task + "build_agent_turn", side_effect=lambda **_kw: _turn_saying(answer)),
+        patch(task + "emit", side_effect=_record_emit),
+        patch("app.services.agent_loop.emit", lambda *a, **k: None),
+    ):
+        run_agent_turn.run(
+            job_id=JOB_ID,
+            agent_id=str(agent.id),
+            message=QUESTION,
+            conversation_id=None,
+        )
+
+    responses = [payload for event_type, payload in emitted if event_type == "agent.response"]
+    assert len(responses) == 1, (
+        f"expected exactly one agent.response, got {[e for e, _ in emitted]}. "
+        "A turn that emitted none proves nothing about what it serves."
+    )
+    assert len(persisted) == 1, f"expected one _persist_messages call, got {persisted}"
+    return {"payload": responses[0], "assistant_msg": persisted[0]["assistant_msg"]}
+
+
+def test_the_served_agent_response_payload_carries_the_deflection() -> None:
+    """What reaches the browser, not what the loop returned to its caller.
+
+    The task is free to read any key off the seam's dict; only `response_text` is
+    the served one. This asserts on the SSE payload, so a body that read the
+    pre-scan text back from a diagnostics key would fail here while every
+    return-value assertion above stayed green.
+    """
+    served = _served_turn(LEAKING_ANSWER)
+
+    assert served["payload"]["text"] == PII_DEFLECTION, (
+        f"the widget was sent {served['payload']['text']!r}. The customer's own "
+        "address left the system in the terminal SSE event."
+    )
+    assert CUSTOMER_ADDRESS not in served["payload"]["text"]
+    assert CUSTOMER_ADDRESS not in served["assistant_msg"], (
+        f"the pre-scan text was written to `messages` as {served['assistant_msg']!r}, "
+        "so it is at rest in the tenant database and replays into the next turn's "
+        "history whatever the SSE event said."
+    )
+    assert served["payload"]["citations"] == [], "a deflection cites nothing"
+
+
+def test_the_served_agent_response_payload_is_the_agents_own_clean_text() -> None:
+    """The control. Without it, an emit hardcoded to the deflection reads as a pass."""
+    served = _served_turn(CLEAN_ANSWER)
+
+    assert served["payload"]["text"] == CLEAN_ANSWER, (
+        f"a clean answer was altered on the way to the widget: "
+        f"{served['payload']['text']!r}"
+    )
+    assert served["assistant_msg"] == CLEAN_ANSWER
