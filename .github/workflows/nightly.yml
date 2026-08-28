@@ -11,7 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17-alpine
+        # pgvector's image, not plain postgres:17-alpine. The tenant migration
+        # `0001_tenant_v1_schema` runs `CREATE EXTENSION IF NOT EXISTS vector`, and
+        # the plain image has no extension control file, so the migration failed and
+        # `test_full_chain_completes` reported it as an agent that would not go ready.
+        # Same Postgres 17, extension present. Matches the local cluster's pgvector.
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: wchats
           POSTGRES_PASSWORD: wchats
@@ -87,7 +92,12 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17-alpine
+        # pgvector's image, not plain postgres:17-alpine. The tenant migration
+        # `0001_tenant_v1_schema` runs `CREATE EXTENSION IF NOT EXISTS vector`, and
+        # the plain image has no extension control file, so the migration failed and
+        # `test_full_chain_completes` reported it as an agent that would not go ready.
+        # Same Postgres 17, extension present. Matches the local cluster's pgvector.
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: wchats
           POSTGRES_PASSWORD: wchats
@@ -131,17 +141,28 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up pnpm
+        # apps/widget is a pnpm workspace and `pnpm-lock.yaml` is the lockfile the
+        # repo maintains. This step must precede setup-node.
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
       - name: Set up Node 20
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # 22, not 20. pnpm 11 refuses to start on Node 20 ("requires at least
+          # Node.js v22.13"), and it dies reaching for node:sqlite, which Node 20
+          # does not carry. vite 8 asks for ^20.19.0 || >=22.12.0, so 22 satisfies
+          # both, and the runner has been deprecating Node 20 for actions anyway.
+          node-version: "22"
 
       - name: Install Python dependencies
         run: pip install -e "apps/api[dev]"
 
       - name: Build widget (required for D7)
         working-directory: apps/widget
-        run: npm ci && npm run build
+        run: pnpm install --frozen-lockfile && pnpm run build
 
       - name: Run control DB migration
         working-directory: apps/api
