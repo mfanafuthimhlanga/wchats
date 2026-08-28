@@ -73,6 +73,7 @@ from app.services.agent_loop import (
     RETRIEVE_JUDGE_CHUNKS_KEY,
     RETRIEVE_RESULT_IS_ERROR_KEY,
     build_agent_turn,
+    log_pii_firewall,
     record_turn_calls,
     run_agent_loop,
 )
@@ -1177,36 +1178,20 @@ def run_agent_turn(
             # extracted from the deflection when a flag fires, which correctly
             # yields an empty citation list — a deflection cites nothing.
             #
-            # THE TWO LINES BELOW ARE TELEMETRY, NOT THE CONTROL, and they stayed
-            # here for two reasons. They name agent_id and conversation_id, which
-            # the seam has no reason to know; and `original_length` and the
-            # exemption flag come from the pre-scan text, which is exactly what
-            # the seam refuses to hand back. A caller that dropped both lines
-            # would still serve the deflection.
-            pii_detector: str | None = result["pii_detector"]
-            published_chunks: int = result.get("pii_published_chunks", 0)
-            if pii_detector is not None:
-                log.warning(
-                    "pii_firewall.response_deflected",
-                    job_id=job_id,
-                    agent_id=agent_id,
-                    conversation_id=str(local_conversation_id),
-                    detector=pii_detector,
-                    original_length=result.get("pii_original_length", 0),
-                    published_chunks=published_chunks,
-                )
-            elif result.get("pii_published_exemption"):
-                # Passed only BECAUSE the address was published. Logged so the
-                # exemption is observable rather than silent: this is the one
-                # line that tells a later reader an address left the system on
-                # the strength of the corpus, and which turn it was.
-                log.info(
-                    "pii_firewall.published_contact_allowed",
-                    job_id=job_id,
-                    agent_id=agent_id,
-                    conversation_id=str(local_conversation_id),
-                    published_chunks=published_chunks,
-                )
+            # THE LINE BELOW IS TELEMETRY, NOT THE CONTROL. The ids are this
+            # path's, which is why the two log calls used to live here in full:
+            # `agent_id` and `conversation_id` are things the seam has no reason
+            # to know. #103 moved the SHAPE into agent_loop.log_pii_firewall and
+            # left the ids at the call site, because the eval and the red-team
+            # probe deflected in total silence while this was the only copy. A
+            # caller that dropped this line would still serve the deflection.
+            log_pii_firewall(
+                log,
+                result,
+                job_id=job_id,
+                agent_id=agent_id,
+                conversation_id=str(local_conversation_id),
+            )
 
             # --------------------------------------------------------------
             # Citation extraction — missing block yields [] + warning (not failure)

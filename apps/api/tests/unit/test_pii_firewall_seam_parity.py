@@ -44,6 +44,8 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from structlog.testing import capture_logs
+
 from app.core.model_client import route_for
 from app.domain.pii_firewall import PII_DEFLECTION
 from app.services.agent_loop import (
@@ -176,8 +178,8 @@ def _live_response(answer: str) -> dict:
         )
 
 
-def _eval_scored_row(answer: str) -> dict:
-    """The Ragas sample the eval path builds, down through the real loop.
+def _eval_invocation(answer: str) -> tuple[list[dict], dict, list[dict]]:
+    """One whole invocation phase: (scored rows, the run's observation, the logs).
 
     `build_agent_turn` is replaced rather than `_run_one_eval_turn`, so
     `_drive_eval_turn` and `run_agent_loop` both run for real — the firewall lives
@@ -208,15 +210,21 @@ def _eval_scored_row(answer: str) -> dict:
             "app.services.agent_loop.build_agent_turn",
             return_value=_turn_saying(answer),
         ),
+        capture_logs() as logs,
     ):
-        rows, _summary = eval_mod._invoke_agent_for_scenarios(
+        rows, summary = eval_mod._invoke_agent_for_scenarios(
             agent_id=str(agent.id),
             conn_str=PRODUCTION,
             run_id=RUN_ID,
             scenarios=[scenario],
             prompt_version_id=None,
         )
+    return rows, summary, logs
 
+
+def _eval_scored_row(answer: str) -> dict:
+    """The Ragas sample the eval path builds, down through the real loop."""
+    rows, _summary, _logs = _eval_invocation(answer)
     assert rows, (
         "the eval scored nothing, so this proves nothing about what it scores. "
         "A row reaches the scorer only when the turn responded AND retrieved."
@@ -289,6 +297,11 @@ SERVED_CONVERSATION_ID = "00000000-0000-0000-0000-0000000000f1"
 SERVED_MESSAGE_ID = "test-assistant-msg-id-pii-parity"
 
 
+def _deflection_lines(logs: list[dict]) -> list[dict]:
+    """The `pii_firewall.response_deflected` lines in one captured run."""
+    return [line for line in logs if line.get("event") == "pii_firewall.response_deflected"]
+
+
 def _db_ctx(db: MagicMock) -> MagicMock:
     ctx = MagicMock()
     ctx.__enter__ = MagicMock(return_value=db)
@@ -350,6 +363,7 @@ def _served_turn(answer: str) -> dict:
         patch(task + "build_agent_turn", side_effect=lambda **_kw: _turn_saying(answer)),
         patch(task + "emit", side_effect=_record_emit),
         patch("app.services.agent_loop.emit", lambda *a, **k: None),
+        capture_logs() as logs,
     ):
         run_agent_turn.run(
             job_id=JOB_ID,
@@ -364,7 +378,11 @@ def _served_turn(answer: str) -> dict:
         "A turn that emitted none proves nothing about what it serves."
     )
     assert len(persisted) == 1, f"expected one _persist_messages call, got {persisted}"
-    return {"payload": responses[0], "assistant_msg": persisted[0]["assistant_msg"]}
+    return {
+        "payload": responses[0],
+        "assistant_msg": persisted[0]["assistant_msg"],
+        "logs": logs,
+    }
 
 
 def test_the_served_agent_response_payload_carries_the_deflection() -> None:
@@ -389,6 +407,16 @@ def test_the_served_agent_response_payload_carries_the_deflection() -> None:
     )
     assert served["payload"]["citations"] == [], "a deflection cites nothing"
 
+    # The live path's own log line, which nothing asserted on before #103 moved
+    # its SHAPE into agent_loop.log_pii_firewall. The eval and the red-team probe
+    # call the same function with their own ids.
+    deflected = _deflection_lines(served["logs"])
+    assert len(deflected) == 1, f"the served turn logged {len(deflected)} line(s)"
+    assert deflected[0]["detector"] == "email"
+    assert deflected[0]["job_id"] == JOB_ID
+    assert deflected[0]["conversation_id"] == SERVED_CONVERSATION_ID
+    assert CUSTOMER_ADDRESS not in str(deflected[0])
+
 
 def test_the_served_agent_response_payload_is_the_agents_own_clean_text() -> None:
     """The control. Without it, an emit hardcoded to the deflection reads as a pass."""
@@ -399,3 +427,66 @@ def test_the_served_agent_response_payload_is_the_agents_own_clean_text() -> Non
         f"{served['payload']['text']!r}"
     )
     assert served["assistant_msg"] == CLEAN_ANSWER
+    assert _deflection_lines(served["logs"]) == [], (
+        "the live path logged a deflection for a turn the firewall left alone"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The eval says how many answers it substituted, and logs each one (#103)
+#
+# #50 deleted `pii_firewall_applied=False` and put nothing in its place, so a run
+# whose Faithfulness fell because three answers were deflected was byte-identical
+# to a run where the model was wrong three times. The two tests below drive the
+# same real harness as the parity pair above — one leaking answer, one clean —
+# and the CONTROL is what makes the count a reading rather than a constant: a
+# clean run through the identical code must report zero.
+# ---------------------------------------------------------------------------
+
+
+def test_the_eval_counts_and_logs_the_answer_the_firewall_substituted() -> None:
+    """The run's observation says one of its scored answers was not the agent's."""
+    rows, summary, logs = _eval_invocation(LEAKING_ANSWER)
+
+    assert rows and rows[0]["agent_response"] == PII_DEFLECTION
+    assert summary["responses_deflected"] == 1, (
+        f"the run reported {summary['responses_deflected']} deflected answer(s) "
+        "for a scenario the firewall substituted. Faithfulness for this run was "
+        "computed over the firewall's sentence and the run cannot say so."
+    )
+    assert summary["scored_responses_deflected"] == 1, (
+        "the count beside `scorable`, the denominator the metrics were actually "
+        f"computed over, is {summary['scored_responses_deflected']}"
+    )
+    assert summary["deflection_detectors"] == {"email": 1}, (
+        f"the run named {summary['deflection_detectors']} as what was caught"
+    )
+
+    deflected = _deflection_lines(logs)
+    assert len(deflected) == 1, (
+        f"the eval path logged {len(deflected)} deflection line(s). The live task "
+        "carried the only copy of this line, so the eval substituted in silence."
+    )
+    assert deflected[0]["detector"] == "email"
+    assert deflected[0]["scenario_id"] == "s0"
+    assert deflected[0]["run_id"] == RUN_ID
+    assert deflected[0]["original_length"] == len(LEAKING_ANSWER)
+    assert CUSTOMER_ADDRESS not in str(deflected[0]), (
+        "the log line carries the text it exists to report the removal of"
+    )
+
+
+def test_a_run_the_firewall_left_alone_counts_and_logs_nothing() -> None:
+    """THE CONTROL. Without it, a hardcoded 1 and a hardcoded log line pass above."""
+    rows, summary, logs = _eval_invocation(CLEAN_ANSWER)
+
+    assert rows and rows[0]["agent_response"] == CLEAN_ANSWER
+    assert summary["responses_deflected"] == 0, (
+        "a clean answer was counted as substituted, so the number above is a "
+        "constant and says nothing about the run"
+    )
+    assert summary["scored_responses_deflected"] == 0
+    assert summary["deflection_detectors"] == {}
+    assert _deflection_lines(logs) == [], (
+        "the deflection line fires on a turn the firewall left alone"
+    )

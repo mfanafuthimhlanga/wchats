@@ -56,6 +56,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.domain.pii_firewall import PII_DEFLECTION
 from app.services import eval_service
 from app.worker.tasks.runtime import eval as mod
 
@@ -477,6 +478,7 @@ def _turn(
     *,
     retrieve_calls=None,
     unparsed=False,
+    pii_detector=None,
 ):
     """The dict `run_agent_loop` returns.
 
@@ -485,6 +487,10 @@ def _turn(
     shape (`retrieve` returns up to MAX_CHUNKS chunks in one result).
     `retrieve_calls` splits them across N calls when a test needs that;
     `retrieve_calls=0` is a turn the agent answered without retrieving at all.
+
+    `pii_detector` is what the output firewall found in this turn's answer. The
+    seam has already substituted `response_text` by the time a caller sees it, so
+    a test that wants a deflected turn passes BOTH.
     """
     contexts = list(contexts)
     if retrieve_calls is None:
@@ -503,6 +509,7 @@ def _turn(
         tool_calls_log=log,
         num_turns=3,
         stop_reason="end_turn",
+        pii_detector=pii_detector,
     )
 
 
@@ -1992,3 +1999,90 @@ def test_the_row_exists_before_the_first_turn_and_is_corrected_after_the_last(
         "judge outage must not take the record of what the agent did with it)."
     )
 
+
+# ---------------------------------------------------------------------------
+# The run says how many of its answers the output firewall substituted (#103)
+#
+# #50 moved the scan inside the seam and deleted `pii_firewall_applied=False`,
+# which was a constant rather than a reading. What replaced it has to be a number
+# BESIDE THE DENOMINATOR IT IS OUT OF: three deflections in a four-scenario run
+# and three in a sixty-scenario run are different runs, and one count cannot tell
+# them apart. There are two denominators already on this object and they are not
+# the same set — `responded` is every answer, `scorable` is the subset the
+# metrics were computed over — so there are two counts.
+# ---------------------------------------------------------------------------
+
+#: What the seam serves for a flagged turn. The eval scores THIS, which is
+#: #50's acceptance criterion, and the counts below are how a reader knows.
+DEFLECTION = PII_DEFLECTION
+
+
+def test_the_run_counts_deflections_against_both_denominators() -> None:
+    """The two counts differ, and the run names what was caught.
+
+    Scenario 1 is why they differ: it was deflected AND it never retrieved, so it
+    is a substituted answer that no metric was computed over. A single count
+    would have to be wrong about one of the two questions a reader asks.
+    """
+    turns = {
+        "Question 0?": _turn(DEFLECTION, pii_detector="email"),
+        "Question 1?": _turn(DEFLECTION, contexts=(), pii_detector="card"),
+        "Question 2?": _turn("A real answer."),
+        "Question 3?": _turn("Another real answer."),
+    }
+    _rows, summary, _calls = _invoke(_scenarios(4), lambda q: turns[q])
+
+    assert summary["responded"] == 4 and summary["scorable"] == 3
+    assert summary["responses_deflected"] == 2, (
+        f"{summary['responses_deflected']} of the 4 answered turns were reported "
+        "as substituted"
+    )
+    assert summary["scored_responses_deflected"] == 1, (
+        f"{summary['scored_responses_deflected']} of the 3 SCORED rows were "
+        "reported as substituted. This is the count that explains a Faithfulness "
+        "that fell, and it is not the same number as the one above."
+    )
+    assert summary["deflection_detectors"] == {"email": 1, "card": 1}, (
+        f"the run named {summary['deflection_detectors']} as what was caught"
+    )
+
+
+def test_a_run_the_firewall_never_fired_on_reports_zero() -> None:
+    """THE CONTROL. Four answered, three scored, nothing substituted.
+
+    Without it every assertion above is satisfied by counters wired to `responded`
+    and `scorable`, which move with the run for reasons that have nothing to do
+    with the firewall.
+    """
+    turns = {
+        "Question 0?": _turn("A real answer."),
+        "Question 1?": _turn("Another real answer.", contexts=()),
+        "Question 2?": _turn("A third."),
+        "Question 3?": _turn("A fourth."),
+    }
+    _rows, summary, _calls = _invoke(_scenarios(4), lambda q: turns[q])
+
+    assert summary["responded"] == 4 and summary["scorable"] == 3
+    assert summary["responses_deflected"] == 0
+    assert summary["scored_responses_deflected"] == 0
+    assert summary["deflection_detectors"] == {}
+
+
+def test_a_deflection_is_still_a_response_and_still_reaches_the_scorer() -> None:
+    """The counts REPORT the substitution; they never exclude it.
+
+    #50's acceptance criterion is that what the eval scores is what a customer
+    would have been served, so a deflected answer stays in `responded`, stays in
+    `scorable`, and stays in the rows handed to Ragas. Excluding it here would be
+    the exemption #103 exists to refuse, wearing a counter's clothes.
+    """
+    rows, summary, _calls = _invoke(
+        _scenarios(3), lambda q: _turn(DEFLECTION, pii_detector="email")
+    )
+
+    assert summary["responded"] == 3 and summary["scorable"] == 3
+    assert summary["responses_deflected"] == 3
+    assert [row["agent_response"] for row in rows] == [DEFLECTION] * 3, (
+        "a deflected answer was dropped from the scored set, which measures the "
+        "firewall's hit rate by removing the rows it fired on"
+    )

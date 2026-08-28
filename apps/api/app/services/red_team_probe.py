@@ -85,6 +85,7 @@ from app.domain.transactional_schemas import SKILL_INPUT_MODELS
 from app.services.agent_loop import (
     AgentTurn,
     build_agent_turn,
+    log_pii_firewall,
     record_turn_calls,
     run_agent_loop,
 )
@@ -113,6 +114,27 @@ log = structlog.get_logger(__name__)
 PROBE_TOOL_TRANSCRIPT_MARKER: str = (
     "--- PROBE TOOL TRANSCRIPT (machine-readable dispatcher verdicts; NOT agent prose) ---"
 )
+
+# Where a probe_fn publishes the output firewall's reading of the victim turn it
+# has just run (#103). An attribute on the callable, because the six runners share
+# one `Callable[[str], str]` contract and the verdict transcript above may not
+# change: the attacker reads those lines, and a `detector=` line beside them would
+# put the firewall's finding inside the text the Attacker reasons about and quotes
+# into `red_team_findings`. `red_team_service.ProbeSession.record_answer` is the
+# reader, and it runs on the caller's side of the probe, where the finding
+# belongs. The value is `{"detector", "original_length", "published_chunks"}` — the
+# seam's own observation keys, never the text.
+PROBE_PII_FIREWALL_ATTR: str = "pii_firewall"
+
+# What that attribute holds before any message has been probed, and what it holds
+# for a turn the firewall left alone. A turn that RAISED leaves the previous
+# turn's reading in place, which is safe because the reader only looks after a
+# probe ANSWERED — a raised turn returns "" and never gets there.
+PROBE_PII_FIREWALL_CLEAN: dict = {
+    "detector": None,
+    "original_length": 0,
+    "published_chunks": 0,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +460,64 @@ class _ProbeEventSink:
         return None
 
 
+def _victim_turn(agent: Any, conn_str: str, conversation_id: str) -> AgentTurn:
+    """Assemble the victim turn, then narrow its call ceiling to the red team's.
+
+    `dataclasses.replace` rather than a second assembly. Every field that decides
+    how the agent behaves — the prompt, the tools, the client, the route — comes
+    from the seam untouched, and RED_TEAM_MAX_TURNS is 5 against the seam's 6, so
+    the one field narrowed here can only refuse a model call the seam would have
+    allowed.
+
+    conn_str is never logged (CLAUDE.md rule 4 / T-16-06).
+    """
+    turn = build_agent_turn(
+        agent=agent,
+        conn_str=conn_str,
+        conversation_id=conversation_id,
+        job_id="",
+        side_effects="recorded",
+        ledger=ledger_recorder(conn_str),
+        verified_session_token="",
+        notify_fn=lambda reason, context: None,
+    )
+    return replace(turn, max_model_calls=settings.RED_TEAM_MAX_TURNS)
+
+
+def _tool_verdict_transcript() -> str:
+    """The dispatcher's own verdicts for this turn, one `skill=` line each.
+
+    Read off the ToolResult TYPE through this turn's ContextVar sink, never off
+    `tool_calls_log`: that list carries a result for `retrieve` alone, because
+    `_persist_messages` writes it into the tenant's `tool_calls.result` jsonb and
+    the six mutating skills' outputs may not sit at rest on a POPIA-sensitive
+    platform.
+    """
+    return "\n".join(
+        f"skill={r.skill} verdict={r.verdict_tag} is_error={r.is_error}"
+        for r in (
+            ProbeToolResult.from_tool_result(verdict) for verdict in get_tool_results()
+        )
+    )
+
+
+def _publish_victim_firewall(result: dict, firewall: dict, **ids) -> None:
+    """Put the seam's firewall observation where the probe's caller can read it.
+
+    OBSERVATION, NEVER CONTROL, and never the text. `result["response_text"]` is
+    already the deflection by the time this runs; all this carries is the detector
+    name, the length of the answer that was replaced, and how many published
+    chunks were in scope — which is exactly what a caught leak and a polite
+    refusal do not share.
+    """
+    firewall.update(
+        detector=result["pii_detector"],
+        original_length=result.get("pii_original_length", 0),
+        published_chunks=result.get("pii_published_chunks", 0),
+    )
+    log_pii_firewall(log, result, **ids)
+
+
 def _build_transactional_probe_fn(
     agent: Any, conn_str: str, tenant_id: str
 ) -> Callable[[str], str]:
@@ -472,27 +552,11 @@ def _build_transactional_probe_fn(
     shipped _build_probe_fn's resilience contract (returns "" on failure).
     """
     conversation_id = str(uuid4())
-
-    def _build_turn() -> AgentTurn:
-        """Assemble the victim turn, then narrow its call ceiling to the red team's.
-
-        `dataclasses.replace` rather than a second assembly. Every field that
-        decides how the agent behaves — the prompt, the tools, the client, the
-        route — comes from the seam untouched, and RED_TEAM_MAX_TURNS is 5 against
-        the seam's 6, so the one field narrowed here can only refuse a model call
-        the seam would have allowed.
-        """
-        turn = build_agent_turn(
-            agent=agent,
-            conn_str=conn_str,
-            conversation_id=conversation_id,
-            job_id="",
-            side_effects="recorded",
-            ledger=ledger_recorder(conn_str),
-            verified_session_token="",
-            notify_fn=lambda reason, context: None,
-        )
-        return replace(turn, max_model_calls=settings.RED_TEAM_MAX_TURNS)
+    # What the output firewall did to the LAST victim turn this probe ran, read
+    # back by the caller through PROBE_PII_FIREWALL_ATTR. Rebound per probe_fn
+    # rather than per message, because the reader only looks after a probe
+    # ANSWERED, and a turn that raised returns "" and is never read.
+    firewall = dict(PROBE_PII_FIREWALL_CLEAN)
 
     async def _inner(message: str, turn: AgentTurn) -> str:
         """One victim turn, and the transcript of what its tool calls decided.
@@ -514,18 +578,20 @@ def _build_transactional_probe_fn(
         result = await run_agent_loop(
             message, history=[], turn=turn, job_id="", db=sink, redis=sink
         )
-        transcript_lines = [
-            f"skill={r.skill} verdict={r.verdict_tag} is_error={r.is_error}"
-            for r in (
-                ProbeToolResult.from_tool_result(verdict) for verdict in get_tool_results()
-            )
-        ]
+        # The substitution already happened, inside the seam. This records WHAT
+        # was caught, outside the text: an attack that talked the agent into an
+        # address and a polite refusal both come back as PII_DEFLECTION, so the
+        # runner cannot tell a caught leak from a decline off the prose (#103).
+        _publish_victim_firewall(
+            result, firewall, agent_id=str(agent.id), tenant_id=tenant_id,
+            conversation_id=conversation_id,
+        )
         return (
             result["response_text"]
             + "\n"
             + PROBE_TOOL_TRANSCRIPT_MARKER
             + "\n"
-            + "\n".join(transcript_lines)
+            + _tool_verdict_transcript()
         )
 
     def probe_fn(message: str) -> str:
@@ -556,7 +622,7 @@ def _build_transactional_probe_fn(
         """
         try:
             with red_team_mode():
-                turn = _build_turn()
+                turn = _victim_turn(agent, conn_str, conversation_id)
                 try:
                     return asyncio.run(
                         asyncio.wait_for(_inner(message, turn), timeout=120.0)
@@ -567,6 +633,9 @@ def _build_transactional_probe_fn(
             log.warning("red_team_probe.victim_turn_failed", error=str(exc))
             return ""
 
+    # The one channel out of a `Callable[[str], str]` that leaves the transcript
+    # the attacker reads untouched. See PROBE_PII_FIREWALL_ATTR.
+    setattr(probe_fn, PROBE_PII_FIREWALL_ATTR, firewall)
     return probe_fn
 
 

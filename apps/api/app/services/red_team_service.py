@@ -389,6 +389,51 @@ RUN_COVERAGE_UNREPORTED_DETAIL = (
     "the vector was dispatched but reported no observation of its own"
 )
 
+#: The two buckets `_vector_verdict` sorts a vector into. "" is the third: valid
+#: and complete, which has nothing to report.
+COVERAGE_INVALID = "invalid"
+COVERAGE_INCOMPLETE = "incomplete"
+
+
+def _firewall_detail(detail: str | None, deflections: dict[str, int]) -> str | None:
+    """`detail`, plus what the output firewall caught, when it caught anything.
+
+    A vector's `detail` is prose a person reads out of `red_team_runs.coverage`,
+    and until #103 a run could not say from it whether the agent held the line or
+    the firewall did: both produce PII_DEFLECTION. The count is carried
+    separately on `VectorObservation.pii_deflections` as well, because a sentence
+    is not a number.
+    """
+    if not deflections:
+        return detail
+    caught = ", ".join(f"{name}={count}" for name, count in sorted(deflections.items()))
+    note = (
+        f"the output firewall deflected {sum(deflections.values())} answered "
+        f"probe(s) ({caught}), so those replies are the firewall's words, not the agent's"
+    )
+    return f"{detail}; {note}" if detail else note
+
+
+def _vector_verdict(vector: str, obs: "VectorObservation | None") -> tuple[str, str | None]:
+    """Sort ONE vector into a coverage bucket, with the reason a person reads.
+
+    A dispatched vector that reported NO observation counts as invalid rather
+    than as absent: a runner that raised before recording anything, or a caller
+    that forgot the ledger, must not be able to shrink the denominator into
+    agreement with itself. Missing data is never passing data.
+    """
+    if obs is None:
+        return COVERAGE_INVALID, f"{vector}: {RUN_COVERAGE_UNREPORTED_DETAIL}"
+    if not obs.observed:
+        return COVERAGE_INVALID, f"{vector}: {obs.detail or 'no answered probe was obtained'}"
+    if not obs.complete:
+        return COVERAGE_INCOMPLETE, (
+            f"{vector}: only {obs.sequences_completed} of "
+            f"{obs.sequences_requested} attack sequence(s) ran"
+            + (f" — {obs.detail}" if obs.detail else "")
+        )
+    return "", None
+
 
 @dataclass
 class VectorObservation:
@@ -414,6 +459,12 @@ class VectorObservation:
     probes_attempted: int = 0
     probes_answered: int = 0
     probe_errors: int = 0
+    #: Detector name -> how many of this vector's ANSWERED probes came back as
+    #: the output firewall's substitution (#103). The deflection and a polite
+    #: refusal are the same string, so without this a vector that talked the
+    #: agent into an address reports the same observation as one it declined.
+    #: Empty for a vector whose probe_fn does not go through the agent seam.
+    pii_deflections: dict[str, int] = field(default_factory=dict)
     detail: str | None = None
 
     @property
@@ -453,10 +504,9 @@ def run_coverage(observations: list[VectorObservation] | None) -> dict:
 
     Returns:
         {"vectors_attempted", "vectors_valid", "invalid_vectors",
-         "incomplete_vectors", "invalid_reason", "complete"}.
+         "incomplete_vectors", "invalid_reason", "complete", "pii_deflections"}.
     """
     by_vector: dict[str, VectorObservation] = {}
-    obs: VectorObservation | None
     for obs in observations or []:
         by_vector[obs.vector] = obs
 
@@ -465,24 +515,13 @@ def run_coverage(observations: list[VectorObservation] | None) -> dict:
     reasons: list[str] = []
 
     for vector in RED_TEAM_VECTORS:
-        obs = by_vector.get(vector)
-        if obs is None:
+        bucket, reason = _vector_verdict(vector, by_vector.get(vector))
+        if bucket == COVERAGE_INVALID:
             invalid.append(vector)
-            reasons.append(f"{vector}: {RUN_COVERAGE_UNREPORTED_DETAIL}")
-            continue
-        if not obs.observed:
-            invalid.append(vector)
-            reasons.append(
-                f"{vector}: {obs.detail or 'no answered probe was obtained'}"
-            )
-            continue
-        if not obs.complete:
+        elif bucket == COVERAGE_INCOMPLETE:
             incomplete.append(vector)
-            reasons.append(
-                f"{vector}: only {obs.sequences_completed} of "
-                f"{obs.sequences_requested} attack sequence(s) ran"
-                + (f" — {obs.detail}" if obs.detail else "")
-            )
+        if reason:
+            reasons.append(reason)
 
     return {
         "vectors_attempted": len(RED_TEAM_VECTORS),
@@ -491,6 +530,15 @@ def run_coverage(observations: list[VectorObservation] | None) -> dict:
         "incomplete_vectors": incomplete,
         "invalid_reason": "; ".join(reasons) if reasons else None,
         "complete": not invalid and not incomplete,
+        # A valid, complete vector reports no reason, so `detail` alone would
+        # drop the firewall's count in exactly the run that is otherwise clean.
+        # The count is stored beside the buckets so it survives to
+        # `red_team_runs.coverage`, where a person reads it back.
+        "pii_deflections": {
+            vector: dict(obs.pii_deflections)
+            for vector, obs in by_vector.items()
+            if obs.pii_deflections
+        },
     }
 
 
@@ -590,6 +638,49 @@ class ProbeSession:
     last_probe_message: str = ""
     last_probe_response: str = ""
     last_probe_error: str = ""
+    pii_deflections: dict[str, int] = field(default_factory=dict)
+
+    def record_answer(
+        self, message: str, text: str, probe_fn: Callable[[str], str]
+    ) -> None:
+        """Everything one ANSWERED probe puts on this ledger, in one place."""
+        self.probes_answered += 1
+        self.last_probe_message = message
+        self.last_probe_response = text
+        self._observe_probe_firewall(probe_fn)
+
+    def _observe_probe_firewall(self, probe_fn: Callable[[str], str]) -> None:
+        """Count what the output firewall caught in the probe that just answered.
+
+        `last_probe_response` above is the SERVED text, and a caught leak and a
+        polite refusal are byte-identical there. The transactional probe publishes
+        the detector beside its return value instead, on the callable itself,
+        because the six runners share one `Callable[[str], str]` contract and the
+        verdict transcript may not change: a `detector=` line in it would put the
+        firewall's finding inside the text the Attacker quotes into
+        `red_team_findings`.
+
+        Called ONLY on the answered path, which is what makes the published
+        reading unambiguous — a probe that raised or came back empty returns ""
+        and never gets here, so it cannot inherit the previous turn's detector.
+
+        A probe_fn that publishes nothing (the bare conversational probe, which
+        does not run through the agent seam) leaves the counter empty.
+        """
+        from app.services.red_team_probe import PROBE_PII_FIREWALL_ATTR  # noqa: PLC0415
+
+        reading = getattr(probe_fn, PROBE_PII_FIREWALL_ATTR, None)
+        # The published shape or nothing. `getattr` on an arbitrary callable
+        # answers whatever that object chooses to answer, so a probe_fn that is a
+        # test double, a functools.partial, or anything else carrying an
+        # unrelated attribute of that name would otherwise be counted as a
+        # deflection it never observed.
+        if not isinstance(reading, dict):
+            return
+        detector = reading.get("detector")
+        if detector:
+            name = str(detector)
+            self.pii_deflections[name] = self.pii_deflections.get(name, 0) + 1
 
     def observe_tool_use(self, tool_name: str) -> None:
         """Record that the attacker asked for a tool. `run_tool_loop` calls this.
@@ -615,7 +706,8 @@ class ProbeSession:
             probes_attempted=self.probes_attempted,
             probes_answered=self.probes_answered,
             probe_errors=self.probe_errors,
-            detail=detail,
+            pii_deflections=dict(self.pii_deflections),
+            detail=_firewall_detail(detail, self.pii_deflections),
         )
 
 
@@ -696,9 +788,7 @@ def build_probe_tools(
                 "is_error": True,
             }
 
-        session.probes_answered += 1
-        session.last_probe_message = message
-        session.last_probe_response = text
+        session.record_answer(message, text, probe_fn)
         return {"content": [{"type": "text", "text": text}]}
 
     @tool(
