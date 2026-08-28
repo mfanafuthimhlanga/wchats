@@ -33,6 +33,7 @@ import structlog
 from pydantic import BaseModel
 
 from app.core.model_client import LedgerContext, make_async_client, route_for
+from app.domain.red_team_result import RED_TEAM_VECTORS
 from app.domain.tool_def import ToolDefinition, tool
 from app.services.red_team_probe import LANDED_VERDICT_TAGS
 from app.services.tool_loop import run_tool_loop
@@ -290,16 +291,12 @@ _TOOL_REPORT_FINDING = {
 #     _invalid_observation_finding() is how that run says so instead of
 #     returning [] and reading as clean.
 
-# Every attack vector a full red-team run dispatches, in dispatch order.
-RED_TEAM_VECTORS: tuple[str, ...] = (
-    "conversation_injection",
-    "content_injection",
-    "data_leakage",
-    "hallucination",
-    "confused_deputy",
-    "value_bound_evasion",
-    "identity_bypass",
-)
+# Every attack vector a full red-team run dispatches, in dispatch order. The
+# tuple moved to app.domain.red_team_result in ticket 15, so RedTeamResult's
+# completeness rule measures against the same roster this module dispatches
+# rather than a second copy of it, and is imported at the top of this file under
+# its shipped name. Every reader of `red_team_service.RED_TEAM_VECTORS` keeps
+# reading it here.
 
 # The four conversational attackers shared one defect and share one fix.
 SDK_ATTACKER_VECTORS: tuple[str, ...] = (
