@@ -169,6 +169,13 @@ jobs:
       - name: Install Python dependencies
         run: pip install -e "apps/api[dev]"
 
+      - name: Set up pnpm
+        # apps/widget is a pnpm workspace and `pnpm-lock.yaml` is the lockfile the
+        # repo maintains. This step must precede setup-node.
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -176,7 +183,7 @@ jobs:
 
       - name: Build widget bundle
         working-directory: apps/widget
-        run: npm ci && npm run build
+        run: pnpm install --frozen-lockfile && pnpm run build
 
       - name: Run deterministic evals (D3, D5, D6, D7, G-06)
         working-directory: apps/api
