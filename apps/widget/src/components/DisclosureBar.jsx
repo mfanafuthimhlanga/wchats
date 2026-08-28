@@ -5,16 +5,20 @@ import { h } from 'preact'
 // receives the message. The previous copy, "Powered by AI", said an AI was
 // involved and said nothing about where the text goes.
 //
-// The bar is one 32px row inside a 380px widget and it stays one row. The
-// notice shares 356px with the version tag, which is 380 less 12px of padding
-// each side. How much of that 356 the tag takes has not been measured.
+// The bar is one 32px row inside a 380px widget and it stays one row.
+// Measured in headless Chromium against embed/index.html, 2026-08-28:
 //
-// NOTICE_MAX_CHARS is therefore a PROXY, and it is worth knowing which way it
-// is wrong. It counts characters; the constraint is rendered width, and a
-// 41-character string of capitals is wider than one of commas. It holds
-// because this copy is ordinary sentence case in an 11px system font. A test
-// asserting character count may not claim the line fits, and the one below
-// does not.
+//     bar content width   356px   (380 less 12px padding each side)
+//     version tag          55px
+//     this notice         208px   at 11px / 16.5px system-ui, 41 chars
+//     rendered height    16.5px   one line-height, so it does not wrap
+//
+// That leaves the notice 301px. NOTICE_MAX_CHARS is still a PROXY, because it
+// counts characters while the constraint is rendered width and a string of
+// capitals is wider than one of commas. The measurement is what makes 48 safe
+// rather than hopeful: at the 5.07px average this copy renders, 48 characters
+// come to about 243px, and overflowing 301px needs an average of 6.27px that
+// sentence case does not reach. Re-measure before raising it.
 //
 // OpenAI is hardcoded because ADR 0008 makes it the only provider for every
 // model call on the platform. When a second provider serves a Customer turn,
