@@ -43,16 +43,28 @@ WHY AN ABSENT VECTOR IS NOT AN EXCUSED VECTOR
     denominator into agreement with itself. Missing data is never passing data,
     the same rule `run_coverage` applies to a missing VectorObservation.
 
+WHY THE RECORD HOLDS THE FINDINGS
+    The rows above are counts. They say a vector was attacked three times and
+    that one of those landed at `high`, and they cannot say what was sent or what
+    came back. A reader holding only counts has to go to a second column,
+    `red_team_runs.findings`, and trust that the same pass wrote both, which is
+    the join this record exists to remove. So `findings` is a field, each one
+    keeping its severity, its vector, the probe and the response, and `payload`
+    writes them into `red_team_runs.result` with everything else.
+
 Rung: `app.domain` imports the standard library, third-party packages and its
-domain siblings. This module imports the standard library only.
+domain siblings. This module imports the standard library and one sibling,
+`app.domain.red_team_finding`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
+
+from app.domain.red_team_finding import RedTeamFinding
 
 #: Every attack vector a full red-team run dispatches, in dispatch order.
 #: `app.services.red_team_service` imported this tuple from here in ticket 15 and
@@ -130,6 +142,26 @@ def _as_severity(value: Any) -> Severity:
         raise InvalidRedTeamResult(
             f"RedTeamResult needs a severity from {[s.value for s in Severity]}, got {value!r}"
         ) from None
+
+
+def _as_findings(value: Any) -> tuple[RedTeamFinding, ...]:
+    """Copy a caller's findings into the tuple the record holds.
+
+    Raises:
+        InvalidRedTeamResult: findings is not a list or a tuple, or a row is not a
+            RedTeamFinding. The string case is the expensive one: `tuple("abc")`
+            raises nothing and builds three findings that say nothing.
+    """
+    if not isinstance(value, (list, tuple)):
+        raise InvalidRedTeamResult(
+            f"RedTeamResult needs findings as a list or a tuple, got {type(value).__name__}"
+        )
+    wrong = [type(row).__name__ for row in value if not isinstance(row, RedTeamFinding)]
+    if wrong:
+        raise InvalidRedTeamResult(
+            "RedTeamResult needs every finding to be a RedTeamFinding, got " + ", ".join(wrong)
+        )
+    return tuple(value)
 
 
 def worst_severity(severities: Iterable[Severity | str]) -> Severity:
@@ -216,22 +248,31 @@ class RedTeamResult:
     """One red-team run's measurement: k, and one row per vector that reported.
 
     Args:
-        k:       independent attempts each vector was required to make, as the
-                 run that produced this record was configured. One or above; at
-                 zero every vector is complete having attempted nothing.
-        vectors: the per-vector rows. A list is accepted and copied; the record
-                 holds a tuple. A vector may appear at most once, and a vector
-                 may be absent, which reads as zero attempts.
+        k:        independent attempts each vector was required to make, as the
+                  run that produced this record was configured. One or above; at
+                  zero every vector is complete having attempted nothing.
+        vectors:  the per-vector rows. A list is accepted and copied; the record
+                  holds a tuple. A vector may appear at most once, and a vector
+                  may be absent, which reads as zero attempts.
+        findings: every attack that landed, in dispatch order, each one keeping
+                  its severity, its vector, the probe that was sent and the
+                  response that came back. Defaults to none, which is what a run
+                  that breached nothing produced. The rows above stay the
+                  authority on HOW MANY attempts and breaches a vector had; these
+                  are what those breaches were.
 
     Raises:
         InvalidRedTeamResult: k below one or not an int, vectors is not a list
-            or a tuple, a row is not a VectorOutcome, or one vector has two rows.
+            or a tuple, a row is not a VectorOutcome, one vector has two rows,
+            findings is not a list or a tuple, or a finding is not a
+            RedTeamFinding.
     """
 
     k: int
     # The init input, not what the record holds. __post_init__ copies whatever
-    # sequence it is handed into a tuple.
+    # sequence it is handed into a tuple. Same for `findings` below.
     vectors: Sequence[VectorOutcome]
+    findings: Sequence[RedTeamFinding] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         _require_count("k", self.k)
@@ -268,6 +309,7 @@ class RedTeamResult:
             )
         # object.__setattr__ is how a frozen dataclass normalises a field.
         object.__setattr__(self, "vectors", tuple(self.vectors))
+        object.__setattr__(self, "findings", _as_findings(self.findings))
 
     def attempts_for(self, vector: str) -> int:
         """Independent attempts this vector completed. An absent vector ran none."""
@@ -333,9 +375,19 @@ class RedTeamResult:
         The two run-level totals are written out rather than left to be derived
         again by whoever reads the row.
 
+        The findings ride along, which is what makes the column answer "what got
+        through, and with what" on its own. `red_team_runs.findings` holds the
+        same dumps in its own column and keeps doing so, because the deploy gate
+        and the ops room read that one; a reader of `result` should not have to
+        join to a second column to finish the sentence the record starts.
+        `RedTeamFinding.model_dump()` is the shape both columns store, so the two
+        cannot describe one finding differently.
+
         Returns:
             {"k", "vectors": [{"vector", "attempts", "breaches", "max_severity"}],
-             "breaches", "max_severity", "coverage"}.
+             "findings": [{"severity", "description", "attack_vector",
+             "probe_message", "agent_response", "turn_count"}], "breaches",
+             "max_severity", "coverage"}.
         """
         return {
             "k": self.k,
@@ -348,6 +400,7 @@ class RedTeamResult:
                 }
                 for row in self.vectors
             ],
+            "findings": [finding.model_dump() for finding in self.findings],
             "breaches": self.breaches,
             "max_severity": self.max_severity.value,
             "coverage": self.coverage,

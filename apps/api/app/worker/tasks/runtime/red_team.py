@@ -51,6 +51,7 @@ from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt
+from app.domain.red_team_finding import RedTeamFinding
 from app.domain.red_team_result import RedTeamResult
 from app.models.agent import Agent
 from app.services.agent_tools import (
@@ -60,7 +61,6 @@ from app.services.agent_tools import (
 )
 from app.services.red_team_probe import _build_transactional_probe_fn
 from app.services.red_team_service import (
-    RedTeamFinding,
     VectorObservation,
     run_confused_deputy_agent,
     run_content_injection_agent,
@@ -278,18 +278,19 @@ def _attempt_every_vector(
     k: int,
     ledger: LedgerContext,
     observations: list[VectorObservation],
-) -> tuple[list[RedTeamFinding], RedTeamResult]:
-    """Run every vector k times and return the run's findings and its record.
+) -> RedTeamResult:
+    """Run every vector k times and return the one record of what that measured.
 
     Sequential, because worker_pool=solo leaves no chord to fan out with and the
     machine has 4 GB. Seven vectors at k attempts is 7k probe runs, so the
     provider spend and the ledger rows are k times what they were.
 
     Returns:
-        (all findings in dispatch order, the RedTeamResult built from the same
-        pass). The record carries the k it ran under, so a later change to
+        The RedTeamResult: the per-vector rows and every finding in dispatch
+        order. It carries the k it ran under, so a later change to
         settings.RED_TEAM_ATTEMPTS_PER_VECTOR cannot rewrite what this run was
-        required to do.
+        required to do. Ticket 15 returned the findings list beside the record as
+        well, which was two containers holding one answer; the record holds them.
     """
     findings: list[RedTeamFinding] = []
     outcomes = []
@@ -306,7 +307,7 @@ def _attempt_every_vector(
         )
         findings.extend(attempted.findings)
         outcomes.append(attempted.outcome)
-    return findings, RedTeamResult(k=k, vectors=outcomes)
+    return RedTeamResult(k=k, vectors=outcomes, findings=findings)
 
 
 def _coverage_at_k(observations: list[VectorObservation], result: RedTeamResult) -> dict:
@@ -603,7 +604,7 @@ def run_red_team(self, agent_id: str) -> dict:
         job_id="",
     )
     try:
-        all_findings, run_result = _attempt_every_vector(
+        run_result = _attempt_every_vector(
             _vector_plan(probe_fn, transactional_probe_fn, conn_str),
             k=settings.RED_TEAM_ATTEMPTS_PER_VECTOR,
             ledger=ledger,
@@ -622,8 +623,8 @@ def run_red_team(self, agent_id: str) -> dict:
         # ------------------------------------------------------------------
         max_severity = run_result.max_severity.value
         deployment_blocked = (max_severity == "critical")
-        critical_count = sum(1 for f in all_findings if f.severity == "critical")
-        high_count = sum(1 for f in all_findings if f.severity == "high")
+        critical_count = sum(1 for f in run_result.findings if f.severity == "critical")
+        high_count = sum(1 for f in run_result.findings if f.severity == "high")
 
         # (attempted, valid, findings) — the validity denominator for THIS RUN,
         # derived from what each vector reported observing rather than from what
@@ -663,7 +664,7 @@ def run_red_team(self, agent_id: str) -> dict:
         # and its readers report that as unrecorded rather than as full.
         # ------------------------------------------------------------------
         _complete_params = (
-            json.dumps([f.model_dump() for f in all_findings]),
+            json.dumps([f.model_dump() for f in run_result.findings]),
             max_severity,
             deployment_blocked,
         )
@@ -694,7 +695,7 @@ def run_red_team(self, agent_id: str) -> dict:
         # strategy_id. Uses the same _agents_conn as Step 7 above.
         # RETURNING id on the probe INSERT recovers each finding's probe_id
         # for Step 7c below (findings are inserted in the same order as
-        # all_findings, so finding_probe_ids[i] lines up with all_findings[i]).
+        # run_result.findings, so finding_probe_ids[i] lines up with it).
         # Best-effort: a failure here must never affect the run-row write
         # above or the acks_late/idempotency guard.
         #
@@ -715,7 +716,7 @@ def run_red_team(self, agent_id: str) -> dict:
         strategy_ids: dict[str, str | None] = {}
         finding_probe_ids: list[str | None] = []
         try:
-            distinct_vectors = sorted({f.attack_vector for f in all_findings})
+            distinct_vectors = sorted({f.attack_vector for f in run_result.findings})
             with _agents_conn.cursor() as _cur:
                 for vector in distinct_vectors:
                     _cur.execute(
@@ -733,7 +734,7 @@ def run_red_team(self, agent_id: str) -> dict:
                     _strategy_row = _cur.fetchone()
                     strategy_ids[vector] = _strategy_row[0] if _strategy_row else None
 
-                for finding in all_findings:
+                for finding in run_result.findings:
                     _cur.execute(
                         """
                         INSERT INTO red_team_probes (strategy_id, harm_category, probe_message)
@@ -772,7 +773,7 @@ def run_red_team(self, agent_id: str) -> dict:
         # ------------------------------------------------------------------
         try:
             with _agents_conn.cursor() as _cur:
-                for _finding, _probe_id in zip(all_findings, finding_probe_ids):
+                for _finding, _probe_id in zip(run_result.findings, finding_probe_ids):
                     _cur.execute(
                         """
                         INSERT INTO red_team_findings
@@ -814,7 +815,7 @@ def run_red_team(self, agent_id: str) -> dict:
             vectors_attempted=coverage["vectors_attempted"],
             vectors_valid=coverage["vectors_valid"],
             invalid_vectors=coverage["invalid_vectors"],
-            findings_count=len(all_findings),
+            findings_count=len(run_result.findings),
             k=run_result.k,
             breaches=run_result.breaches,
             incomplete_vectors=coverage["incomplete_vectors"],
@@ -832,7 +833,7 @@ def run_red_team(self, agent_id: str) -> dict:
             "vectors_valid": coverage["vectors_valid"],
             "invalid_vectors": coverage["invalid_vectors"],
             "coverage_complete": coverage["complete"],
-            "findings_count": len(all_findings),
+            "findings_count": len(run_result.findings),
             # k, and what each vector actually managed against it. A caller that
             # reads only coverage_complete learns that something was short; these
             # two say which vector and by how much, without a second query.

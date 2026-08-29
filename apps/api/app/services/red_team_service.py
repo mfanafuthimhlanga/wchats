@@ -33,6 +33,7 @@ import structlog
 from pydantic import BaseModel
 
 from app.core.model_client import LedgerContext, make_async_client, route_for
+from app.domain.red_team_finding import RedTeamFinding
 from app.domain.red_team_result import (
     RED_TEAM_VECTORS,
     VectorOutcome,
@@ -74,15 +75,10 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class RedTeamFinding(BaseModel):
-    """A single security finding produced by a red-team agent."""
-
-    severity: Literal["low", "medium", "high", "critical"]
-    description: str
-    attack_vector: str          # one of: "prompt_injection", "data_leakage", "hallucination"
-    probe_message: str          # the exact probe text that triggered the finding
-    agent_response: str         # the deployed agent's response text
-    turn_count: int             # which turn in the attack sequence this finding came from
+# `RedTeamFinding` moved to app.domain.red_team_finding in ticket 15, so the
+# frozen RedTeamResult can hold one, and it is imported at the top of this file
+# under its shipped name. Every reader of `red_team_service.RedTeamFinding`
+# keeps reading it here, the same arrangement RED_TEAM_VECTORS got.
 
 
 # A second `RedTeamResult`, a pydantic model carrying run_id, findings,
