@@ -760,3 +760,101 @@ class TestWidgetSSESlotsF8:
         assert len(release_called) == 1, (
             "_release_sse_slot not called in finally block after TimeoutError"
         )
+
+
+# ---------------------------------------------------------------------------
+# The public SSE endpoint refuses a job that is not a customer turn (#109)
+# ---------------------------------------------------------------------------
+class TestOnlyACustomerTurnStreamsPublicly:
+    """#109: the endpoint checked that a job EXISTED and never what kind it was.
+
+    An ingestion or provisioning id streamed on a public, unauthenticated endpoint. The
+    payload allowlist (#104) empties an unmapped event type, so the leak was closed
+    before this and the missing check was not: the endpoint still confirmed an id
+    existed, and it still held one of the fifty per-agent SSE slots for up to 120
+    seconds.
+
+    These drive `_customer_turn_agent_id` rather than the streaming response, because
+    that is the seam the check lives on and a test that stood an EventSourceResponse up
+    would be exercising the plumbing around it.
+    """
+
+    @staticmethod
+    def _db_returning(job):
+        db = AsyncMock()
+        result = MagicMock()
+        result.scalar_one_or_none = MagicMock(return_value=job)
+        db.execute = AsyncMock(return_value=result)
+        return db
+
+    @staticmethod
+    def _job(kind, agent_id):
+        job = MagicMock()
+        job.kind = kind
+        job.agent_id = agent_id
+        return job
+
+    async def test_a_customer_turn_resolves_to_its_agent(self):
+        """THE CONTROL. Without it a helper that refused everything would pass below."""
+        from app.api.v1.widget import CUSTOMER_TURN_JOB_KIND, _customer_turn_agent_id
+
+        agent_id = uuid4()
+        db = self._db_returning(self._job(CUSTOMER_TURN_JOB_KIND, agent_id))
+
+        assert await _customer_turn_agent_id(db, uuid4()) == agent_id
+
+    @pytest.mark.parametrize(
+        "kind", ["ingest_documents", "create_agent", "query_agent"]
+    )
+    async def test_a_job_of_any_other_kind_is_refused(self, kind):
+        """Every other kind this control DB carries, not only the ingestion one."""
+        from fastapi import HTTPException
+
+        from app.api.v1.widget import _customer_turn_agent_id
+
+        db = self._db_returning(self._job(kind, uuid4()))
+
+        with pytest.raises(HTTPException) as excinfo:
+            await _customer_turn_agent_id(db, uuid4())
+        assert excinfo.value.status_code == 404
+
+    async def test_a_wrong_kind_is_indistinguishable_from_a_missing_job(self):
+        """404 on both, same detail.
+
+        A 403 on the kind would confirm the id exists, and an id that cannot be
+        confirmed is the whole of the UUID4 argument the endpoint rests on. So the two
+        refusals have to be identical from outside, and that is asserted rather than
+        left to whoever edits the branch next.
+        """
+        from fastapi import HTTPException
+
+        from app.api.v1.widget import _customer_turn_agent_id
+
+        with pytest.raises(HTTPException) as absent:
+            await _customer_turn_agent_id(self._db_returning(None), uuid4())
+        with pytest.raises(HTTPException) as wrong_kind:
+            await _customer_turn_agent_id(
+                self._db_returning(self._job("ingest_documents", uuid4())), uuid4()
+            )
+
+        assert absent.value.status_code == wrong_kind.value.status_code == 404
+        assert absent.value.detail == wrong_kind.value.detail
+
+    async def test_the_kind_the_chat_route_writes_is_the_kind_this_check_accepts(self):
+        """The producer and the check share one name, and this drives both ends of it.
+
+        FM-012's shape: the row is written by the chat route and read by the SSE route,
+        and two spellings would either refuse every customer turn or reopen #109 with
+        nothing going red. The constant makes a typo a NameError rather than a silent
+        divergence, so what is left to test is that the value it holds is one this check
+        actually accepts. A stale constant passes import and fails every customer.
+        """
+        from app.api.v1.widget import CUSTOMER_TURN_JOB_KIND, _customer_turn_agent_id
+
+        agent_id = uuid4()
+        db = self._db_returning(self._job(CUSTOMER_TURN_JOB_KIND, agent_id))
+
+        assert await _customer_turn_agent_id(db, uuid4()) == agent_id, (
+            f"the chat route writes kind={CUSTOMER_TURN_JOB_KIND!r} and this endpoint "
+            "refuses it, so every customer turn would 404 on its own event stream"
+        )

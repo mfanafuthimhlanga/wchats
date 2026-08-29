@@ -52,9 +52,12 @@ def tool(name):
 
 PYTHON = tool("python") if os.path.exists(tool("python")) else sys.executable
 
-# ruff check app exits 1 today on one pre-existing I001, so it cannot be the gate
-# as-is. It is pinned by COUNT: (file, rule) -> how many times that rule may
-# fire in that file. The gate fails three ways.
+# The gate reads `app tests`, the same two trees CI reads
+# (`ruff check apps/api/app/ apps/api/tests/`). It read `app` alone until #95, so
+# 23 violations sat under tests/ where the gate could not look and CI went red on
+# them. It exits 1 today on one pre-existing I001, so it cannot be the gate as-is.
+# It is pinned by COUNT: (file, rule) -> how many times that rule may fire in that
+# file. The gate fails three ways.
 #
 #   - a (file, rule) pair that is not on this list appears
 #   - a pinned pair fires MORE times than its count, e.g. a second I001 in
@@ -65,10 +68,14 @@ PYTHON = tool("python") if os.path.exists(tool("python")) else sys.executable
 # The counts are what make the second case visible. Pinning bare pairs would let any
 # number of same-rule violations in a pinned file collapse onto the one pair and pass.
 #
-#   .venv/Scripts/ruff.exe check app --output-format=concise   (2026-08-15)
-#     app/services/agent_tools.py:33:1: I001 Import block is un-sorted or un-formatted
-#     app/worker/tasks/pipeline/chunk.py:45:1: I001 Import block is un-sorted or un-formatted
-#     Found 2 errors. [*] 2 fixable with the `--fix` option.
+#   .venv/Scripts/python.exe -m ruff check app tests --output-format=concise
+#   (2026-08-29, after #95)
+#     app/worker/tasks/pipeline/chunk.py:50:1: I001 Import block is un-sorted or un-formatted
+#     Found 1 error. [*] 1 fixable with the `--fix` option.
+#
+#   The same command read 28 before #95. Every one of the 27 under tests/ was
+#   auto-fixable, `ruff check tests --fix` took them to nothing, and chunk.py is what
+#   is left. That is why widening the paths did not widen this dict.
 #
 # tests/unit/test_gates.py snapshots this dict and goes red on an addition.
 RUFF_BASELINE = {
@@ -123,7 +130,7 @@ LIZARD_BASELINE = {
     ("app/api/v1/widget.py", "post_widget_feedback"): (4, 88),
     ("app/api/v1/widget.py", "post_widget_identity_request"): (3, 63),
     ("app/api/v1/widget.py", "post_widget_identity_verify"): (5, 88),
-    ("app/api/v1/widget.py", "widget_job_events"): (3, 76),
+    ("app/api/v1/widget.py", "widget_job_events"): (2, 73),
     ("app/services/actor_seam.py", "call_actor_gate"): (13, 183),
     ("app/services/agent_prompt.py", "build_system_prompt"): (14, 81),
     ("app/services/agent_tools.py", "escalate_to_human_tool"): (4, 101),
@@ -326,7 +333,7 @@ def run(command):
 
 def run_ruff():
     """Fail on any ruff violation beyond the counts pinned in RUFF_BASELINE."""
-    command = [tool("ruff"), "check", "app", "--output-format=concise"]
+    command = [tool("ruff"), "check", "app", "tests", "--output-format=concise"]
     print("\n$ " + " ".join(command), flush=True)
     result = subprocess.run(command, cwd=API_DIR, capture_output=True, text=True)
     output = result.stdout + result.stderr
