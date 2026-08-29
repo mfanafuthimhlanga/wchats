@@ -712,6 +712,49 @@ def _turn_result(state: _TurnState) -> dict:
     }
 
 
+def log_pii_firewall(log, result: dict, **ids) -> None:
+    """Log what the firewall did to one turn, through the CALLER's own logger.
+
+    ONE SHAPE FOR ALL THREE CALLERS (#103). #50 moved the scan into the seam and
+    left these two lines in the live Celery task, which was the only caller that
+    had them. So an eval scenario and a red-team victim turn were substituted in
+    silence, and a run whose Faithfulness fell because three answers were
+    deflected read exactly like a run where the model was wrong three times.
+
+    `log` is passed rather than taken from this module, so each line still
+    carries the logger of the path it happened on. `ids` is whatever that path
+    actually has: the live task has a conversation, the eval has a scenario and a
+    run, the red-team probe has a tenant and its own conversation id.
+
+    NEVER THE TEXT. A caller that can log the pre-scan words can leak them, which
+    is the thing the deflection exists to stop, so the record is the detector, the
+    length of what was replaced, and how many published chunks were in scope.
+    `pii_detector` is read by subscript on purpose: a turn whose seam did not scan
+    is a turn nobody may serve, so a missing key raises here rather than logging a
+    clean turn.
+    """
+    detector = result["pii_detector"]
+    published_chunks = result.get("pii_published_chunks", 0)
+    if detector is not None:
+        log.warning(
+            "pii_firewall.response_deflected",
+            detector=detector,
+            original_length=result.get("pii_original_length", 0),
+            published_chunks=published_chunks,
+            **ids,
+        )
+    elif result.get("pii_published_exemption"):
+        # Passed only BECAUSE the address was published. Logged so the exemption
+        # is observable rather than silent: this is the one line that tells a
+        # later reader an address left the system on the strength of the corpus,
+        # and which turn it was.
+        log.info(
+            "pii_firewall.published_contact_allowed",
+            published_chunks=published_chunks,
+            **ids,
+        )
+
+
 async def run_agent_loop(message: str, *, history, turn: AgentTurn, job_id, db, redis) -> dict:
     """Run one customer turn to its end and collect what it produced.
 

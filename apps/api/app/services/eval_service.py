@@ -595,6 +595,42 @@ SIDE_EFFECT_KINDS_TELEMETRY: tuple[str, ...] = ("retrieval_metrics.write",)
 MAX_CAPABILITY_ATTEMPTS_RECORDED = 100
 
 
+def _side_effect_attempts(records: list[dict]) -> dict:
+    """The recorded-mode attempts one run collected, counted and carried. Pure.
+
+    Everything NOT named in SIDE_EFFECT_KINDS_TELEMETRY is carried in full, which
+    is the fail-open direction that matters: a new `kind` someone adds to the
+    tool layer arrives as eval signal by default instead of vanishing into a
+    counter. A run that exceeds MAX_CAPABILITY_ATTEMPTS_RECORDED says so through
+    `capability_attempts_truncated` rather than silently reporting the first
+    hundred as if they were all of them.
+    """
+    counts: dict[str, int] = {}
+    capability_attempts: list[dict] = []
+    truncated = False
+    for record in records:
+        for entry in record.get("side_effects") or []:
+            kind = str(entry.get("kind", "unknown"))
+            counts[kind] = counts.get(kind, 0) + 1
+            if kind in SIDE_EFFECT_KINDS_TELEMETRY:
+                continue
+            if len(capability_attempts) >= MAX_CAPABILITY_ATTEMPTS_RECORDED:
+                truncated = True
+                continue
+            capability_attempts.append(
+                {
+                    "scenario_id": record.get("scenario_id"),
+                    "kind": kind,
+                    "detail": entry.get("detail"),
+                }
+            )
+    return {
+        "counts": counts,
+        "capability_attempts": capability_attempts,
+        "capability_attempts_truncated": truncated,
+    }
+
+
 def summarise_agent_invocation(
     records: list[dict],
     *,
@@ -619,9 +655,11 @@ def summarise_agent_invocation(
         records: one dict per scenario an agent turn was ATTEMPTED for, each
             carrying `responded` (bool), `scorable` (bool — reached the scorer),
             `error` (str|None), `retrieve_calls` (int), `retrieve_at_cap` (bool),
-            `retrieve_unparsed` (int), `retrieved_chunks` (int) and
-            `side_effects` (list of the entries recorded mode collected during
-            that turn).
+            `retrieve_unparsed` (int), `retrieved_chunks` (int),
+            `pii_detector` (str|None — what the output firewall found in this
+            turn's answer, so the run can say how many of its scored answers were
+            the deflection rather than the agent's words) and `side_effects`
+            (list of the entries recorded mode collected during that turn).
         valid: rows in the run that carry a label, i.e. that could have been
             invoked. `valid == len(records) + ceiling_skipped` always.
         ceiling_skipped: valid rows the per-run ceiling did not invoke.
@@ -663,25 +701,19 @@ def summarise_agent_invocation(
         if error:
             errors[str(error)] = errors.get(str(error), 0) + 1
 
-    counts: dict[str, int] = {}
-    capability_attempts: list[dict] = []
-    truncated = False
-    for record in records:
-        for entry in record.get("side_effects") or []:
-            kind = str(entry.get("kind", "unknown"))
-            counts[kind] = counts.get(kind, 0) + 1
-            if kind in SIDE_EFFECT_KINDS_TELEMETRY:
-                continue
-            if len(capability_attempts) >= MAX_CAPABILITY_ATTEMPTS_RECORDED:
-                truncated = True
-                continue
-            capability_attempts.append(
-                {
-                    "scenario_id": record.get("scenario_id"),
-                    "kind": kind,
-                    "detail": entry.get("detail"),
-                }
-            )
+    # WHAT THE FIREWALL SUBSTITUTED, EACH BESIDE THE DENOMINATOR IT IS OUT OF.
+    # A bare count repeats the missing-denominator error one layer down: three
+    # deflected answers out of four scored and three out of sixty are different
+    # runs, and the count alone cannot tell them apart. Both denominators are
+    # already on this object — `responded` for every substituted answer,
+    # `scorable` for the subset the metrics were computed over, which is the one
+    # that explains a Faithfulness that fell. This replaces #50's deleted
+    # `pii_firewall_applied=False`, which was a constant rather than a reading.
+    deflected = [r for r in records if r.get("pii_detector")]
+    detectors: dict[str, int] = {}
+    for record in deflected:
+        name = str(record["pii_detector"])
+        detectors[name] = detectors.get(name, 0) + 1
 
     response_rate = (responded / attempted) if attempted else None
     # A SECOND, EXPLICIT DENOMINATOR. `response_rate` divides by what the ceiling
@@ -780,11 +812,10 @@ def summarise_agent_invocation(
             and r.get("retrieve_calls")
             and not r.get("scorable")
         ),
-        "side_effect_attempts": {
-            "counts": counts,
-            "capability_attempts": capability_attempts,
-            "capability_attempts_truncated": truncated,
-        },
+        "responses_deflected": len(deflected),
+        "scored_responses_deflected": sum(1 for r in deflected if r.get("scorable")),
+        "deflection_detectors": detectors,
+        "side_effect_attempts": _side_effect_attempts(records),
     }
 
 

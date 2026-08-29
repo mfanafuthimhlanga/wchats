@@ -353,6 +353,42 @@ def _run_one_eval_turn(
     return _drive_eval_turn(turn, question=question, run_id=run_id)
 
 
+def _retrieved_contexts(turn: dict, record: dict) -> list[str]:
+    """The chunk texts this turn retrieved, counting what the record reports.
+
+    ONE STRING PER CHUNK, not one repr per tool call. `result` is the audit
+    capture, the tool result text cut at RETRIEVE_RESULT_CAPTURE_CHARS, which is
+    below one full retrieval. Scoring it made the capture format the dominant
+    term in Faithfulness and collapsed ContextPrecision's ranking to a single
+    element. The loop captures the chunks the tool handed over; those are what is
+    scored.
+
+    Writes `retrieve_calls`, `retrieve_unparsed`, `retrieve_at_cap` and
+    `retrieved_chunks` onto `record` as it goes, so the four counters and the
+    list they describe come from one pass over one log.
+    """
+    from app.services.agent_loop import (  # noqa: PLC0415
+        RETRIEVE_CHUNKS_KEY,
+        RETRIEVE_CHUNKS_SOURCE_KEY,
+        RETRIEVE_CHUNKS_UNPARSED,
+    )
+    from app.services.agent_tools import CHUNK_CONTENT_CHAR_LIMIT  # noqa: PLC0415
+
+    contexts: list[str] = []
+    for tc in turn.get("tool_calls_log", []):
+        if tc.get("tool_name") != "retrieve" or "result" not in tc:
+            continue
+        record["retrieve_calls"] += 1
+        if tc.get(RETRIEVE_CHUNKS_SOURCE_KEY) == RETRIEVE_CHUNKS_UNPARSED:
+            record["retrieve_unparsed"] += 1
+        chunks = [str(c) for c in (tc.get(RETRIEVE_CHUNKS_KEY) or []) if c]
+        if any(len(c) >= CHUNK_CONTENT_CHAR_LIMIT for c in chunks):
+            record["retrieve_at_cap"] = True
+        contexts.extend(chunks)
+    record["retrieved_chunks"] = len(contexts)
+    return contexts
+
+
 def _invoke_agent_for_scenarios(
     *,
     agent_id: str,
@@ -390,10 +426,8 @@ def _invoke_agent_for_scenarios(
     before any turn has cost anything.
     """
     from app.services.agent_loop import (  # noqa: PLC0415
-        RETRIEVE_CHUNKS_KEY,
-        RETRIEVE_CHUNKS_SOURCE_KEY,
-        RETRIEVE_CHUNKS_UNPARSED,
         RETRIEVE_RESULT_CAPTURE_CHARS,
+        log_pii_firewall,
     )
     from app.services.agent_tools import (  # noqa: PLC0415
         CHUNK_CONTENT_CHAR_LIMIT,
@@ -461,6 +495,9 @@ def _invoke_agent_for_scenarios(
                 "retrieve_unparsed": 0,
                 "retrieved_chunks": 0,
                 "side_effects": [],
+                # The firewall's reading of this turn, in the seam's own
+                # vocabulary: None, or "email" / "card" / "sa_id" (#103).
+                "pii_detector": None,
             }
             turn: dict | None = None
             try:
@@ -490,25 +527,19 @@ def _invoke_agent_for_scenarios(
             record["side_effects"] = get_recorded_side_effects()
 
             if turn is not None:
-                # ONE STRING PER CHUNK, not one repr per tool call. `result` is
-                # the audit capture, the tool result text cut at
-                # RETRIEVE_RESULT_CAPTURE_CHARS, which is below one full
-                # retrieval. Scoring it made the capture format the dominant
-                # term in Faithfulness and collapsed ContextPrecision's ranking
-                # to a single element. The loop captures the chunks the tool
-                # handed over; those are what is scored.
-                contexts: list[str] = []
-                for tc in turn.get("tool_calls_log", []):
-                    if tc.get("tool_name") != "retrieve" or "result" not in tc:
-                        continue
-                    record["retrieve_calls"] += 1
-                    if tc.get(RETRIEVE_CHUNKS_SOURCE_KEY) == RETRIEVE_CHUNKS_UNPARSED:
-                        record["retrieve_unparsed"] += 1
-                    chunks = [str(c) for c in (tc.get(RETRIEVE_CHUNKS_KEY) or []) if c]
-                    if any(len(c) >= CHUNK_CONTENT_CHAR_LIMIT for c in chunks):
-                        record["retrieve_at_cap"] = True
-                    contexts.extend(chunks)
-                record["retrieved_chunks"] = len(contexts)
+                contexts = _retrieved_contexts(turn, record)
+
+                # WHAT THE FIREWALL DID TO THIS ANSWER, counted and logged
+                # (#103). `response_text` below is the SERVED text, so a
+                # deflected scenario is scored on the firewall's sentence and
+                # nothing said which ones those were: a run whose Faithfulness
+                # fell because three answers were substituted read exactly like
+                # a run where the model was wrong three times.
+                record["pii_detector"] = turn["pii_detector"]
+                log_pii_firewall(
+                    log, turn, agent_id=agent_id, run_id=run_id,
+                    scenario_id=record["scenario_id"],
+                )
 
                 response_text = str(turn.get("response_text") or "")
                 if response_text.strip():

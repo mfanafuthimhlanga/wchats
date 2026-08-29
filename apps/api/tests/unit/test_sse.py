@@ -8,6 +8,8 @@ Tests the SSE event generator:
     - DB replay phase: returns immediately on client disconnect
     - CUSTOMER_TERMINAL_EVENTS closes the widget stream on agent.response, while the
       default set leaves the admin stream open for the judge chain (BACKLOG 7.3)
+    - public=True filters every payload through PUBLIC_EVENT_FIELDS and fails closed,
+      while the authenticated stream reading the same rows keeps the detail (#104, #83)
 """
 
 import json
@@ -381,3 +383,397 @@ def aiter_from(lst):
                 raise StopAsyncIteration
 
     return AsyncIter(lst)
+
+
+# ---------------------------------------------------------------------------
+# #104 / #83 — what a PUBLIC reader of the widget stream may see
+#
+# GET /widget/jobs/{job_id}/events authenticates on nothing but the job id. These
+# tests fix the persist-versus-publish split: job_events keeps every field, and
+# PUBLIC_EVENT_FIELDS decides which of them leave the process to a caller who
+# proved nothing.
+# ---------------------------------------------------------------------------
+
+# The two exception strings #83 measured, verbatim.
+OPENAI_429_BODY = (
+    'Error code: 429 - {"error": {"message": "Rate limited. Your key '
+    'sk-proj-SECRETKEY123 exceeded quota", "type": "rate_limit"}}'
+)
+LIBPQ_DSN_ECHO = (
+    'invalid dsn: missing key/value separator "=" in URI query parameter: "bad"'
+)
+
+CARD_IN_A_TOOL_INPUT = {"query": "refund on card 4111 1111 1111 1111"}
+
+
+def _replay_rows(pairs):
+    """(request, db, redis) mocks whose DB replay yields (event_type, payload) rows."""
+    rows = []
+    for event_type, payload in pairs:
+        evt = MagicMock()
+        evt.id = uuid4()
+        evt.event_type = event_type
+        evt.payload = payload
+        rows.append(evt)
+
+    scalars = MagicMock()
+    scalars.__iter__ = MagicMock(return_value=iter(rows))
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=result)
+
+    request = AsyncMock()
+    request.is_disconnected = AsyncMock(return_value=False)
+
+    pubsub = AsyncMock()
+    pubsub.__aenter__ = AsyncMock(return_value=pubsub)
+    pubsub.__aexit__ = AsyncMock(return_value=None)
+    pubsub.subscribe = AsyncMock()
+    pubsub.listen = AsyncMock()
+    redis = AsyncMock()
+    redis.pubsub = MagicMock(return_value=pubsub)
+
+    return request, db, redis
+
+
+async def _drain(pairs, **kwargs):
+    """Every ServerSentEvent the replay phase yields for `pairs`."""
+    from app.services.sse import CUSTOMER_TERMINAL_EVENTS, event_generator
+
+    request, db, redis = _replay_rows(pairs)
+    return [
+        e
+        async for e in event_generator(
+            request, uuid4(), db, redis,
+            terminal_events=CUSTOMER_TERMINAL_EVENTS,
+            **kwargs,
+        )
+    ]
+
+
+class TestPublicPayload:
+    def test_a_tool_call_publishes_the_tool_name_and_not_the_arguments(self):
+        """`input` is model-authored. Widget.jsx reads p.tool_name and nothing else."""
+        from app.services.sse import public_payload
+
+        visible = public_payload(
+            "agent.tool_call",
+            {
+                "tool_name": "retrieve",
+                "input": CARD_IN_A_TOOL_INPUT,
+                "at": "2026-08-28T09:00:00Z",
+            },
+        )
+
+        assert visible == {"tool_name": "retrieve", "at": "2026-08-28T09:00:00Z"}
+
+    def test_a_tool_result_publishes_the_tool_name_and_not_the_summary(self):
+        """The persisted half of this split is TestSummaryStaysOnThePersistedRow."""
+        from app.services.sse import public_payload
+
+        visible = public_payload(
+            "agent.tool_result",
+            {"tool_name": "retrieve", "summary": "customer.name@example.com, order 8812"},
+        )
+
+        assert visible == {"tool_name": "retrieve"}
+
+    def test_an_escalation_reason_carrying_an_address_publishes_the_deflection(self):
+        """EscalationPanel renders `reason`, so the allowlist alone is not enough."""
+        from app.domain.pii_firewall import PII_DEFLECTION
+        from app.services.sse import public_payload
+
+        row = {
+            "reason": "Customer asked us to write to customer.name@example.com",
+            "context": "card 4111 1111 1111 1111, order 8812",
+            "conversation_id": "c-1",
+        }
+        visible = public_payload("agent.escalated", row)
+
+        assert visible == {"reason": PII_DEFLECTION}
+        assert row["reason"].endswith("customer.name@example.com"), (
+            "public_payload must not mutate the caller's row: the persisted payload "
+            "and the tenant's escalation email keep the real text"
+        )
+
+    def test_a_clean_escalation_reason_is_published_verbatim(self):
+        """The control. The deflection is a detection, never a blanket replacement."""
+        from app.services.sse import public_payload
+
+        visible = public_payload("agent.escalated", {"reason": "Customer is frustrated"})
+
+        assert visible == {"reason": "Customer is frustrated"}
+
+    def test_a_failure_publishes_the_error_type_and_not_the_provider_body(self):
+        """#83. str(APIStatusError) is 'Error code: N - <response body verbatim>'."""
+        from app.services.sse import public_payload
+
+        visible = public_payload(
+            "agent.failed", {"error_type": "APIStatusError", "error": OPENAI_429_BODY}
+        )
+
+        assert visible == {"error_type": "APIStatusError"}
+        assert "sk-proj-SECRETKEY123" not in str(visible)
+
+    def test_a_failure_publishes_the_error_type_and_not_the_dsn_fragment(self):
+        """#83. libpq echoes the offending token of a malformed connection string."""
+        from app.services.sse import public_payload
+
+        visible = public_payload(
+            "agent.failed", {"error_type": "OperationalError", "error": LIBPQ_DSN_ECHO}
+        )
+
+        assert visible == {"error_type": "OperationalError"}
+
+    def test_the_answer_the_widget_renders_survives_the_filter(self):
+        """The control for every drop above.
+
+        agent.response.text was scanned in the turn seam (#50) WITH that turn's
+        published_context, and is deliberately not rescanned here, where no
+        published_context exists. A second scan would deflect a correct answer that
+        quotes the tenant's own published address (BACKLOG 7.29).
+        """
+        from app.services.sse import public_payload
+
+        row = {
+            "text": "Write to us at hello@acme.example.",
+            "citations": [{"document_name": "FAQ.pdf", "section": "1"}],
+            "conversation_id": "c-1",
+            "message_id": "m-1",
+        }
+
+        assert public_payload("agent.response", row) == row
+
+    def test_an_event_type_the_map_does_not_name_publishes_an_empty_payload(self):
+        """Fail closed. A new event type says nothing until someone decides."""
+        from app.services.sse import public_payload
+
+        assert public_payload("job.failed", {"error": LIBPQ_DSN_ECHO}) == {}
+        assert public_payload("query.complete", {"results": ["chunk text"]}) == {}
+
+    def test_a_judge_verdict_publishes_nothing(self):
+        """The chain writes to the same job_id and can share a poll batch with the answer."""
+        from app.services.sse import public_payload
+
+        verdict = {"verdict": "grounded", "confidence": 0.9, "reasoning": "the customer said"}
+
+        assert public_payload("gatekeeper.complete", verdict) == {}
+        assert public_payload("auditor.complete", verdict) == {}
+        assert public_payload("strategist.complete", verdict) == {}
+
+
+@pytest.mark.asyncio
+class TestTheStreamFiltersOnlyForPublicReaders:
+    async def test_the_public_stream_drops_the_card_number_in_a_tool_call(self):
+        rows = [
+            ("agent.tool_call", {"tool_name": "retrieve", "input": CARD_IN_A_TOOL_INPUT}),
+            ("agent.response", {"text": "ok", "citations": [], "conversation_id": "c", "message_id": "m"}),
+        ]
+
+        events = await _drain(rows, public=True)
+
+        assert json.loads(events[0].data) == {"tool_name": "retrieve"}
+        assert "4111" not in events[0].data
+
+    async def test_the_authenticated_stream_still_carries_it(self):
+        """The control. Same rows, same generator, no public flag.
+
+        event_generator is shared with GET /jobs/{job_id}/events, the authenticated
+        operator stream, which must keep the full detail.
+        """
+        rows = [
+            ("agent.tool_call", {"tool_name": "retrieve", "input": CARD_IN_A_TOOL_INPUT}),
+            ("agent.response", {"text": "ok", "citations": [], "conversation_id": "c", "message_id": "m"}),
+        ]
+
+        events = await _drain(rows)
+
+        assert json.loads(events[0].data)["input"] == CARD_IN_A_TOOL_INPUT
+
+    async def test_the_public_stream_deflects_an_escalation_reason(self):
+        from app.domain.pii_firewall import PII_DEFLECTION
+
+        rows = [
+            ("agent.escalated", {"reason": "write to customer.name@example.com", "context": "order 8812"}),
+            # agent.escalated is not terminal; the answer that follows it is.
+            ("agent.response", {"text": "ok", "citations": [], "conversation_id": "c", "message_id": "m"}),
+        ]
+
+        events = await _drain(rows, public=True)
+
+        assert json.loads(events[0].data) == {"reason": PII_DEFLECTION}
+
+    async def test_the_public_stream_drops_the_raw_error(self):
+        rows = [("agent.failed", {"error_type": "APIStatusError", "error": OPENAI_429_BODY})]
+
+        events = await _drain(rows, public=True)
+
+        assert json.loads(events[0].data) == {"error_type": "APIStatusError"}
+        assert "SECRETKEY123" not in events[0].data
+
+    async def test_the_public_stream_empties_an_event_type_the_map_does_not_name(self):
+        rows = [("job.failed", {"error": LIBPQ_DSN_ECHO})]
+
+        events = await _drain(rows, public=True)
+
+        assert json.loads(events[0].data) == {}
+        assert events[0].event == "job.failed", "the event type itself still reaches the client"
+
+
+class TestSummaryStaysOnThePersistedRow:
+    """The regression that would otherwise be silent.
+
+    retrieval_eval._fetch_turn_context reads payload["summary"] off persisted
+    agent.tool_result rows as its retrieved-context proxy. #104 drops `summary` from
+    what is PUBLISHED and must not touch what is WRITTEN.
+    """
+
+    @staticmethod
+    def _db(response_payload, tool_result_payloads):
+        response_result = MagicMock()
+        response_result.fetchone.return_value = (response_payload,)
+        tool_result = MagicMock()
+        tool_result.fetchall.return_value = [(p,) for p in tool_result_payloads]
+        db = MagicMock()
+        db.execute.side_effect = [response_result, tool_result]
+        return db
+
+    def test_fetch_turn_context_still_finds_the_summary(self):
+        from app.worker.tasks.runtime.retrieval_eval import _fetch_turn_context
+
+        db = self._db(
+            {"text": "14 days.", "citations": [], "conversation_id": "c-1"},
+            [{"tool_name": "retrieve", "summary": "Returns accepted within 14 days."}],
+        )
+
+        _, _, _, contexts = _fetch_turn_context(db, "job-1")
+
+        assert contexts == ["Returns accepted within 14 days."]
+
+    def test_a_non_retrieve_tool_result_is_not_context(self):
+        """The control. The join is on tool_name, and it still excludes."""
+        from app.worker.tasks.runtime.retrieval_eval import _fetch_turn_context
+
+        db = self._db(
+            {"text": "14 days.", "citations": [], "conversation_id": "c-1"},
+            [{"tool_name": "clarify", "summary": "Which order?"}],
+        )
+
+        _, _, _, contexts = _fetch_turn_context(db, "job-1")
+
+        assert contexts == []
+
+
+class TestTheMapCoversWhatTheTurnEmits:
+    """The map is hand-written, so this pins it against what the code can emit.
+
+    DERIVATION. `emit` is the one function that writes a job_events row, so the set of
+    event types is the set of second arguments its call sites pass. Those are read off
+    the COMPILED modules (`loader.get_code`, then `dis`), never off source text and
+    never off a syntax tree. The modules scanned are the turn's entry point plus the
+    app modules it imports, taken from the entry point's own IMPORT_NAME instructions
+    and filtered to the ones that bind `emit`.
+
+    WHAT THIS DOES NOT COVER:
+      * An emitter two hops out, a task dispatched by a task the turn dispatches.
+        Today there is none: retrieval_eval, the fourth link in the judge chain, emits
+        nothing at all.
+      * A task reached by name (celery send_task) rather than by import.
+      * The pipeline's own event types, which reach this endpoint only if someone
+        hands it an ingestion job id.
+      * An event type built from a variable rather than a literal. The scanner would
+        take a string from a later argument instead, which fails this test loudly
+        rather than passing it quietly.
+
+    In all four cases PUBLIC_EVENT_FIELDS still fails closed at runtime and publishes
+    an empty payload, so what is uncovered is the WARNING, never the leak.
+    """
+
+    TURN_ENTRY = "app.worker.tasks.runtime.agent"
+
+    @staticmethod
+    def _module_code(name):
+        """The compiled module. Not its source text, not a syntax tree."""
+        import importlib
+
+        return importlib.import_module(name).__spec__.loader.get_code(name)
+
+    @classmethod
+    def _nested(cls, code):
+        import types
+
+        yield code
+        for const in code.co_consts:
+            if isinstance(const, types.CodeType):
+                yield from cls._nested(const)
+
+    @classmethod
+    def _event_types_in(cls, name):
+        """(event types, emit call sites) for one module."""
+        import dis
+
+        found, sites = set(), 0
+        for code in cls._nested(cls._module_code(name)):
+            instructions = list(dis.get_instructions(code))
+            for index, op in enumerate(instructions):
+                if not (op.opname.startswith("LOAD_") and op.argval == "emit"):
+                    continue
+                sites += 1
+                for following in instructions[index + 1:index + 12]:
+                    if following.opname == "LOAD_CONST" and isinstance(following.argval, str):
+                        found.add(following.argval)
+                        break
+        return found, sites
+
+    @classmethod
+    def _turn_path(cls):
+        import dis
+        import importlib
+
+        entry = cls._module_code(cls.TURN_ENTRY)
+        modules = {cls.TURN_ENTRY} | {
+            op.argval
+            for op in dis.get_instructions(entry)
+            if op.opname == "IMPORT_NAME" and str(op.argval).startswith("app.")
+        }
+        found, sites = set(), 0
+        for name in sorted(modules):
+            if getattr(importlib.import_module(name), "emit", None) is None:
+                continue
+            module_found, module_sites = cls._event_types_in(name)
+            found |= module_found
+            sites += module_sites
+        return found, sites
+
+    def test_the_derivation_finds_the_turn_s_emit_call_sites(self):
+        """Guards the guard. A derivation that finds nothing would pass the test below."""
+        found, sites = self._turn_path()
+
+        assert sites >= len(found) >= 6, (found, sites)
+        assert "agent.response" in found and "agent.tool_call" in found
+
+    def test_every_derived_string_looks_like_an_event_type(self):
+        """If the scanner ever took the wrong constant, it says so here."""
+        found, _ = self._turn_path()
+
+        for event_type in sorted(found):
+            assert "." in event_type and event_type == event_type.strip().lower(), event_type
+
+    def test_every_event_type_the_turn_emits_has_a_public_entry(self):
+        from app.services.sse import PUBLIC_EVENT_FIELDS
+
+        found, _ = self._turn_path()
+        missing = sorted(found - set(PUBLIC_EVENT_FIELDS))
+
+        assert not missing, (
+            "these event types reach the public widget stream with no entry in "
+            "PUBLIC_EVENT_FIELDS, so they publish an empty payload: %s" % (missing,)
+        )
+
+    def test_every_scanned_field_is_also_allowlisted(self):
+        """A scanned field that is not allowlisted is a scan that never runs."""
+        from app.services.sse import PUBLIC_EVENT_FIELDS, PUBLIC_SCANNED_FIELDS
+
+        for event_type, fields in PUBLIC_SCANNED_FIELDS.items():
+            assert fields <= PUBLIC_EVENT_FIELDS[event_type], event_type
