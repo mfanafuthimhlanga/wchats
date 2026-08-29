@@ -11,15 +11,25 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-# Walk up from this file to find .env — works whether CWD is the project root,
-# apps/api/, or anywhere else. Stops at the first .env found.
-def _find_env_file() -> str | None:
-    here = Path(__file__).resolve().parent
+# Walk up from this file and return the OUTERMOST .env. The repo-root .env is
+# canonical (owner, 2026-08-29): it carries every credential, and a copy under
+# apps/api/ shadowed it for two days with a stale ADMIN_KEY because this used to
+# stop at the first file found. Works whether CWD is the repo root, apps/api/,
+# or anywhere else. On Railway there is no .env at all and the variables come
+# from the environment, so None is the right answer there.
+#
+# `start` and `stop` exist for the test: it builds its own tree and bounds the
+# walk to it, so no real env file is read.
+def _find_env_file(start: Path | None = None, stop: Path | None = None) -> str | None:
+    here = (start or Path(__file__)).resolve().parent
+    found: Path | None = None
     for parent in [here, *here.parents]:
         candidate = parent / ".env"
         if candidate.exists():
-            return str(candidate)
-    return None
+            found = candidate
+        if stop is not None and parent == stop.resolve():
+            break
+    return str(found) if found is not None else None
 
 
 class Settings(BaseSettings):

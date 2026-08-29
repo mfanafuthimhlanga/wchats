@@ -64,10 +64,13 @@ VERIFIED_COLUMNS = {
 
 
 def read_env_value(key: str) -> str:
-    """One key from apps/api/.env. Returned, never printed."""
-    path = API_DIR / ".env"
-    if not path.exists():
-        raise SystemExit(f"{path} does not exist")
+    """One key from the .env `Settings` itself loads. Returned, never printed."""
+    from app.core.config import _find_env_file  # noqa: PLC0415
+
+    found = _find_env_file()
+    if found is None:
+        raise SystemExit("no .env file exists above app/core/config.py")
+    path = pathlib.Path(found)
     for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:

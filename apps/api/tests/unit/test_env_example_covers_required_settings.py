@@ -33,11 +33,11 @@ from app.core.config import Settings
 #: `apps/api/` — this file is at `apps/api/tests/unit/`.
 API_ROOT = Path(__file__).resolve().parents[2]
 
-#: The example `Settings` itself would load. `_find_env_file()` walks up from
-#: `app/core/config.py`, so `apps/api/.env` is the file that actually loads and
-#: `apps/api/.env.example` is therefore the example that must match `Settings`.
-#: The repo-root `.env.example` is a monorepo-level file covering the front ends
-#: as well; it is checked by `test_the_repo_root_example_also_covers_them` below.
+#: `_find_env_file()` walks up from `app/core/config.py` and returns the
+#: outermost `.env`, so the repo-root file is what `Settings` loads when one
+#: exists and `apps/api/.env` only loads in a checkout without one. Both
+#: examples therefore have to boot the API: this one is checked here, the
+#: repo-root one by `test_the_repo_root_example_also_covers_them` below.
 API_ENV_EXAMPLE = API_ROOT / ".env.example"
 REPO_ROOT_ENV_EXAMPLE = API_ROOT.parents[1] / ".env.example"
 
@@ -129,9 +129,9 @@ def test_the_api_example_covers_every_required_setting():
 def test_the_repo_root_example_also_covers_them():
     """The repo-root example is what a monorepo checkout copies first.
 
-    `Settings` never loads it (`_find_env_file()` stops at `apps/api/.env`), but
-    it is the file the README points a new developer at, so an example that
-    cannot boot the API is the same defect one directory up.
+    `Settings` loads the repo-root `.env` ahead of any copy under `apps/api/`,
+    and this example is the file the README points a new developer at, so an
+    example that cannot boot the API is the same defect one directory up.
     """
     if not REPO_ROOT_ENV_EXAMPLE.is_file():
         # Not a skip: state the absence as the assertion, so it cannot decay
