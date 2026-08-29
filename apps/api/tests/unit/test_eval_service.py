@@ -47,6 +47,7 @@ import os
 import re
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -1970,3 +1971,364 @@ class TestRunRagasEvalAttribution:
             "run_ragas_eval mints a scenario_id again — an unattributable score "
             "must be reported as unattributed, never given an invented identity"
         )
+
+
+# ---------------------------------------------------------------------------
+# The run record (#51 slice 1): build, write, read
+# ---------------------------------------------------------------------------
+
+
+def _validity_report(**overrides) -> dict:
+    """summarise_run_validity's shape, with golden measured and exploratory not.
+
+    The two datasets deliberately disagree. A record built from a report where
+    both halves read the same would pass while the builder pooled them, which is
+    the one thing the per-dataset split exists to prevent.
+    """
+    report = {
+        "attempted": 4,
+        "valid": 4,
+        "scored": 2,
+        "unattributed": 0,
+        "datasets": {
+            "golden": {
+                "attempted": 2,
+                "valid": 2,
+                "scored": 2,
+                "metrics": {
+                    "faithfulness": {"value": 0.8, "measured": True, "observations": 2},
+                    "answer_relevancy": {"value": 0.6, "measured": True, "observations": 2},
+                    "context_precision": {"value": 0.5, "measured": True, "observations": 2},
+                    "context_recall": {"value": 0.4, "measured": True, "observations": 2},
+                },
+            },
+            "exploratory": {
+                "attempted": 2,
+                "valid": 2,
+                "scored": 0,
+                "metrics": {
+                    metric: {"value": None, "measured": False, "observations": 0}
+                    for metric in (
+                        "faithfulness",
+                        "answer_relevancy",
+                        "context_precision",
+                        "context_recall",
+                    )
+                },
+            },
+        },
+    }
+    report.update(overrides)
+    return report
+
+
+def _invocation_observation(**overrides) -> dict:
+    """summarise_agent_invocation's shape, built by the real summariser.
+
+    Built rather than typed, so this fixture can never hand the builder a shape
+    the production summariser does not produce.
+    """
+    from app.services.eval_service import summarise_agent_invocation
+
+    records = [
+        {
+            "scenario_id": f"s{i}",
+            "responded": True,
+            "scorable": True,
+            "error": None,
+            "retrieve_calls": 1,
+            "retrieve_at_cap": False,
+            "retrieve_unparsed": 0,
+            "retrieved_chunks": 1,
+            "side_effects": [],
+            "pii_detector": None,
+        }
+        for i in range(4)
+    ]
+    observation = summarise_agent_invocation(
+        records,
+        valid=4,
+        ceiling_skipped=0,
+        ceiling_skipped_golden=0,
+        per_turn_timeout_s=90,
+        audit_capture_char_cap=1800,
+        retrieved_context_chunk_char_cap=2000,
+    )
+    observation.update(overrides)
+    return observation
+
+
+def _built(**overrides):
+    from app.services.eval_service import build_eval_result
+
+    fields = {
+        "run_id": "3f3a1c66-0000-4000-8000-000000000051",
+        "agent_id": "3f3a1c66-0000-4000-8000-0000000000a9",
+        "prompt_version_id": "pv-1",
+        "validity": _validity_report(),
+        "invocation": _invocation_observation(),
+        "ledger": [],
+    }
+    fields.update(overrides)
+    return build_eval_result(**fields)
+
+
+class TestBuildEvalResult:
+    """The one derivation, assembled from the two summaries the task holds."""
+
+    def test_each_dataset_carries_the_summarisers_own_numbers(self):
+        result = _built()
+        golden = result.datasets["golden"]
+        assert (golden.attempted, golden.valid, golden.scored) == (2, 2, 2)
+        assert golden.metrics["faithfulness"].value == 0.8
+        assert golden.metrics["faithfulness"].observations == 2
+
+    def test_the_two_datasets_are_never_pooled(self):
+        """A golden mean and an exploratory mean answer different questions."""
+        result = _built()
+        assert result.datasets["golden"].metrics["faithfulness"].measured is True
+        assert result.datasets["exploratory"].metrics["faithfulness"].measured is False
+        assert result.datasets["exploratory"].metrics["faithfulness"].value is None
+
+    def test_a_metric_over_nothing_stays_unmeasured_rather_than_zero(self):
+        """Criterion 4, carried from the summariser into the record unchanged."""
+        exploratory = _built().payload["datasets"]["exploratory"]["metrics"]
+        assert all(m == {"value": None, "measured": False, "observations": 0}
+                   for m in exploratory.values()), exploratory
+
+    def test_the_run_level_counts_are_the_summarisers_totals(self):
+        result = _built()
+        report = _validity_report()
+        assert (result.attempted, result.valid, result.scored) == (
+            report["attempted"],
+            report["valid"],
+            report["scored"],
+        )
+
+    def test_the_invocation_counters_come_from_the_observation(self):
+        observation = _invocation_observation()
+        invocation = _built(invocation=observation).invocation
+        for name in ("valid", "attempted", "responded", "scorable", "failed", "empty"):
+            assert getattr(invocation, name) == observation[name], name
+        assert invocation.status.value == observation["status"]
+
+    def test_the_deflection_fields_reach_the_record(self):
+        """#103's three, which are how a fallen Faithfulness gets explained."""
+        observation = _invocation_observation(
+            responses_deflected=2,
+            scored_responses_deflected=1,
+            deflection_detectors={"email": 2},
+        )
+        invocation = _built(invocation=observation).invocation
+        assert invocation.responses_deflected == 2
+        assert invocation.scored_responses_deflected == 1
+        assert invocation.deflection_detectors == {"email": 2}
+
+    def test_an_empty_ledger_reads_as_an_unknown_cost(self):
+        cost = _built(ledger=[]).cost
+        assert cost.measured is False and cost.usd is None
+
+    def test_the_requested_model_is_the_one_the_routing_table_names(self):
+        from app.core.config import AGENT_TURN_MODEL
+
+        assert _built().requested_model == AGENT_TURN_MODEL
+
+    def test_the_context_proxy_version_is_stamped(self):
+        """#84. Two runs on different proxies are not comparable."""
+        from app.domain.eval_result import CONTEXT_PROXY_VERSION
+
+        assert _built().context_proxy_version == CONTEXT_PROXY_VERSION
+
+    def test_the_judge_identity_is_the_one_the_four_routes_agree_on(self):
+        from app.services.eval_service import judge_identity_for
+
+        assert _built().judge_identity == judge_identity_for("faithfulness")
+
+
+class TestServedAgentModel:
+    """What actually served the turns, when one thing did."""
+
+    def _call(self, **overrides):
+        from app.domain.model_call import ModelCall
+
+        fields = {
+            "purpose": "agent_turn",
+            "provider": "openai",
+            "requested_model": "gpt-5.6-luna",
+            "served_model": "gpt-5.6-luna-2026-08",
+            "model_source": "reported",
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "at": datetime(2026, 8, 29, 10, 0, tzinfo=timezone.utc),
+            "tenant_id": "t-1",
+            "job_id": "run-1",
+        }
+        fields.update(overrides)
+        return ModelCall(**fields)
+
+    def test_one_agreeing_model_is_reported(self):
+        from app.services.eval_service import served_agent_model
+
+        assert served_agent_model([self._call(), self._call()]) == "gpt-5.6-luna-2026-08"
+
+    def test_a_ledger_of_judge_calls_alone_names_no_served_agent_model(self):
+        """The judges' served model is a different claim about a different call."""
+        from app.services.eval_service import served_agent_model
+
+        assert served_agent_model([self._call(purpose="judge_faithfulness")]) is None
+
+    def test_two_disagreeing_models_report_neither(self):
+        """A run served by two models has no single served model."""
+        from app.services.eval_service import served_agent_model
+
+        pair = [self._call(), self._call(served_model="gpt-5.6-luna-2026-09")]
+        assert served_agent_model(pair) is None
+
+    def test_an_empty_ledger_names_no_model(self):
+        from app.services.eval_service import served_agent_model
+
+        assert served_agent_model([]) is None
+
+
+class TestWriteAndReadEvalResult:
+    """The column write, and the read that refuses to invent a measurement."""
+
+    def _connect(self, monkeypatch, cursor, conn_strings=None):
+        from app.services import eval_service
+
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        connect, _ = _recording_connect(cursor, conn_strings if conn_strings is not None else [])
+        monkeypatch.setattr(eval_service.psycopg2, "connect", connect)
+        return conn
+
+    def test_the_record_is_written_to_production_as_jsonb(self, monkeypatch):
+        from app.services.eval_service import write_eval_result
+
+        cursor = _RecordingCursor()
+        conn_strings: list[str] = []
+        self._connect(monkeypatch, cursor, conn_strings)
+        result = _built()
+
+        assert write_eval_result("run-1", result, "postgresql://production") is True
+        sql, params = cursor.executed[0]
+        assert "UPDATE eval_runs" in sql and "result" in sql
+        assert json.loads(params["result"]) == result.payload
+        assert conn_strings == ["postgresql://production"], (
+            "the record is an observation about a run and belongs on production, "
+            "never on the eval branch the run deletes"
+        )
+
+    def test_a_tenant_without_the_column_reports_false_rather_than_raising(
+        self, monkeypatch
+    ):
+        """Migration 0022 arrives at provision time. A pre-0022 run still scores."""
+        from app.services.eval_service import write_eval_result
+
+        cursor = _RecordingCursor(
+            raise_on="UPDATE eval_runs",
+            exc=psycopg2.errors.UndefinedColumn("column result does not exist"),
+        )
+        self._connect(monkeypatch, cursor)
+
+        assert write_eval_result("run-1", _built(), "postgresql://production") is False
+
+    def test_a_failed_write_reports_false_rather_than_failing_a_scored_run(
+        self, monkeypatch
+    ):
+        from app.services import eval_service
+
+        def _boom(*args, **kwargs):
+            raise psycopg2.OperationalError("connection refused")
+
+        monkeypatch.setattr(eval_service.psycopg2, "connect", _boom)
+        assert eval_service.write_eval_result(
+            "run-1", _built(), "postgresql://production"
+        ) is False
+
+    def test_a_stored_record_round_trips_back_through_the_reader(self, monkeypatch):
+        from app.services.eval_service import read_eval_result
+
+        result = _built()
+        cursor = _RecordingCursor(fetchone_result=(result.payload,))
+        self._connect(monkeypatch, cursor)
+
+        assert read_eval_result("run-1", "postgresql://production") == result
+
+    def test_a_null_column_reads_as_no_record_rather_than_as_zero(self, monkeypatch):
+        from app.services.eval_service import read_eval_result
+
+        cursor = _RecordingCursor(fetchone_result=(None,))
+        self._connect(monkeypatch, cursor)
+
+        assert read_eval_result("run-1", "postgresql://production") is None
+
+    def test_a_run_that_does_not_exist_reads_as_no_record(self, monkeypatch):
+        from app.services.eval_service import read_eval_result
+
+        cursor = _RecordingCursor(fetchone_result=None)
+        self._connect(monkeypatch, cursor)
+
+        assert read_eval_result("run-1", "postgresql://production") is None
+
+    def test_a_tenant_without_the_column_reads_as_no_record(self, monkeypatch):
+        from app.services.eval_service import read_eval_result
+
+        cursor = _RecordingCursor(
+            raise_on="SELECT result",
+            exc=psycopg2.errors.UndefinedColumn("column result does not exist"),
+        )
+        self._connect(monkeypatch, cursor)
+
+        assert read_eval_result("run-1", "postgresql://production") is None
+
+    def test_a_stored_payload_that_breaks_a_rule_reads_as_unmeasured(self, monkeypatch):
+        """Already being written down is not evidence that a shape is honest."""
+        from app.services.eval_service import read_eval_result
+
+        payload = _built().payload
+        payload["datasets"]["exploratory"]["metrics"]["faithfulness"]["measured"] = True
+        cursor = _RecordingCursor(fetchone_result=(payload,))
+        self._connect(monkeypatch, cursor)
+
+        assert read_eval_result("run-1", "postgresql://production") is None
+
+
+class TestReadRunLedger:
+    """The run's own `model_calls` rows, and what an unreadable ledger means."""
+
+    def test_the_rows_come_back_as_records_keyed_by_the_writers_columns(
+        self, monkeypatch
+    ):
+        from app.core.model_client import _COLUMNS
+        from app.services import eval_service
+
+        row = (
+            "judge_faithfulness", "openai", "gpt-5.6-luna", "gpt-5.6-luna",
+            "reported", 100, 20, 0, 0,
+            datetime(2026, 8, 29, 10, 0, tzinfo=timezone.utc),
+            "t-1", "a-1", "run-1",
+        )
+        assert len(row) == len(_COLUMNS)
+        cursor = _RecordingCursor()
+        cursor.fetchall = lambda: [row]
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        monkeypatch.setattr(eval_service.psycopg2, "connect", lambda *a, **kw: conn)
+
+        calls = eval_service.read_run_ledger("run-1", "postgresql://production")
+        assert len(calls) == 1
+        assert calls[0].purpose == "judge_faithfulness"
+        assert calls[0].input_tokens == 100
+
+    def test_a_ledger_that_cannot_be_read_leaves_the_cost_unknown(self, monkeypatch):
+        """A scored run must not fail because its bill could not be added up."""
+        from app.services import eval_service
+
+        def _boom(*args, **kwargs):
+            raise psycopg2.OperationalError("connection refused")
+
+        monkeypatch.setattr(eval_service.psycopg2, "connect", _boom)
+        assert eval_service.read_run_ledger("run-1", "postgresql://production") == []

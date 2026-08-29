@@ -22,6 +22,7 @@ WHAT EACH FIXTURE IS BUILT TO AVOID
 from __future__ import annotations
 
 import dataclasses
+from datetime import datetime, timezone
 
 import pytest
 
@@ -37,8 +38,10 @@ from app.domain.eval_result import (
     Invocation,
     InvocationStatus,
     Measurement,
+    cost_of_run,
 )
 from app.domain.judge_identity import JudgeIdentity
+from app.domain.model_call import ModelCall
 
 RUN_ID = "3f3a1c66-0000-4000-8000-000000000051"
 AGENT_ID = "3f3a1c66-0000-4000-8000-0000000000a9"
@@ -47,6 +50,26 @@ AGENT_ID = "3f3a1c66-0000-4000-8000-0000000000a9"
 #: them once keeps every assertion below about the same two states.
 UNMEASURED_METRIC = "context_recall"
 ABSENT_METRIC = "context_precision"
+
+
+def _call(**overrides) -> ModelCall:
+    """One priced ledger row. `at` is inside the fx table and the price book."""
+    fields = {
+        "purpose": "judge_faithfulness",
+        "provider": "openai",
+        "requested_model": "gpt-5.6-luna",
+        "served_model": "gpt-5.6-luna",
+        "model_source": "reported",
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "at": datetime(2026, 8, 29, 10, 0, tzinfo=timezone.utc),
+        "tenant_id": AGENT_ID,
+        "job_id": RUN_ID,
+    }
+    fields.update(overrides)
+    return ModelCall(**fields)
 
 
 def _identity() -> JudgeIdentity:
@@ -362,6 +385,41 @@ class TestTheCost:
     def test_negative_money_is_refused(self):
         with pytest.raises(InvalidEvalResult):
             Cost(input_tokens=1, output_tokens=1, usd=-0.01, zar=None, measured=True)
+
+
+class TestCostOfRun:
+    """The arithmetic between a run's ledger rows and the figure on its record."""
+
+    def test_no_ledger_rows_is_unknown_rather_than_free(self):
+        """The ledger hook fails open, so an empty ledger is not an unbilled run."""
+        assert cost_of_run([]) == COST_UNKNOWN
+
+    def test_the_tokens_are_summed_across_the_rows(self):
+        cost = cost_of_run([_call(), _call(input_tokens=50, output_tokens=5)])
+        assert (cost.input_tokens, cost.output_tokens) == (150, 25)
+        assert cost.measured is True
+
+    def test_the_money_is_a_positive_figure_in_both_currencies(self):
+        cost = cost_of_run([_call()])
+        assert cost.usd > 0 and cost.zar > cost.usd
+
+    def test_a_model_the_book_refuses_costs_the_run_its_whole_figure(self):
+        """A partial sum understates the run while reading as a whole figure."""
+        cost = cost_of_run([_call(), _call(served_model="some-model-nobody-priced")])
+        assert cost.usd is None and cost.zar is None
+        assert cost.input_tokens == 200, (
+            "the tokens are a fact the provider reported and they survive a "
+            "price the book cannot supply"
+        )
+        assert cost.measured is True, (
+            "the run found its ledger rows. measured=False would say it did not"
+        )
+
+    def test_a_call_before_the_fx_table_loses_the_rand_and_keeps_the_dollars(self):
+        """The two currencies fail separately; one gap never hides the other."""
+        cost = cost_of_run([_call(at=datetime(2020, 1, 1, tzinfo=timezone.utc))])
+        assert cost.usd is not None
+        assert cost.zar is None
 
 
 # ---------------------------------------------------------------------------

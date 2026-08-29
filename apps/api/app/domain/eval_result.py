@@ -52,19 +52,22 @@ WHY THE PROXY VERSION IS STAMPED
 ADR 0007 is ticket 17's and is not written yet. This record cites it as pending.
 
 Rung: `app.domain` imports the standard library, third-party packages and its
-domain siblings. This module imports the standard library and
-`app.domain.judge_identity`.
+domain siblings. This module imports the standard library, `app.domain.judge_identity`,
+`app.domain.model_call` and `app.domain.pricing`.
 """
 
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
 from app.domain.judge_identity import JudgeIdentity
+from app.domain.model_call import ModelCall
+from app.domain.pricing import UnknownFxRate, UnknownPrice, cost_usd, cost_zar
 
 #: The two datasets a run reports, and the only two names `datasets` accepts.
 #: `app.services.eval_service` spells the same two as DATASET_GOLDEN and
@@ -577,6 +580,52 @@ class Cost:
 #: The one unmeasured cost, so a run with no ledger rows names the same object
 #: every time instead of five call sites each spelling five zeros.
 COST_UNKNOWN = Cost(input_tokens=0, output_tokens=0, usd=None, zar=None, measured=False)
+
+
+def cost_of_run(calls: Sequence[ModelCall]) -> Cost:
+    """What one run's `model_calls` rows spent, priced against the versioned book.
+
+    No rows is COST_UNKNOWN, not zero. The ledger hook fails open, so a run whose
+    every call went unrecorded costs exactly as much as one that recorded them
+    all, and only the log can tell the two apart. `_turn_cost_usd` reports None
+    rather than zero for the same reason one grain down.
+
+    THE RUN LOSES ITS MONEY ENTIRELY when the book refuses one of its models,
+    rather than reporting the sum of the calls that did price. A partial sum
+    understates the run while reading as a whole figure, and no field here would
+    say how much was missing. `usage_rollup` applies the same rule per purpose per
+    day. The rand fails separately from the dollars, because a call whose CAT date
+    predates the fx table still has a known price in dollars.
+
+    Decimal in, float out: `eval_runs.result` is jsonb, and a Decimal has no
+    representation there. The exact arithmetic happens first and the rounding
+    happens once, at the boundary.
+
+    Args:
+        calls: the run's ledger rows, i.e. `model_calls WHERE job_id = run_id`.
+    """
+    if not calls:
+        return COST_UNKNOWN
+    usd = Decimal(0)
+    zar = Decimal(0)
+    priced = True
+    rated = True
+    for call in calls:
+        try:
+            usd += cost_usd(call)[0]
+        except UnknownPrice:
+            priced = False
+        try:
+            zar += cost_zar(call)[0]
+        except (UnknownPrice, UnknownFxRate):
+            rated = False
+    return Cost(
+        input_tokens=sum(call.input_tokens for call in calls),
+        output_tokens=sum(call.output_tokens for call in calls),
+        usd=float(usd) if priced else None,
+        zar=float(zar) if priced and rated else None,
+        measured=True,
+    )
 
 
 @dataclass(frozen=True)

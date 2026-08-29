@@ -62,7 +62,7 @@ import dataclasses
 import hashlib
 import json
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 
 import pandas as pd
@@ -86,8 +86,23 @@ from sqlalchemy import text as sa_text
 
 from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db
+
+# The ledger's column list, imported from the module that WRITES it. `usage.py`
+# keeps a second copy under a test pinning the two together; a third copy here
+# would be a third thing to keep in step, and a reader that disagreed with the
+# writer would build ModelCall rows with the fields shuffled.
+from app.core.model_client import _COLUMNS as LEDGER_COLUMNS
 from app.core.model_client import OPENAI_PROVIDER, LedgerContext, route_for
+from app.domain.eval_result import (
+    DatasetOutcome,
+    EvalResult,
+    InvalidEvalResult,
+    Invocation,
+    Measurement,
+    cost_of_run,
+)
 from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity
+from app.domain.model_call import ModelCall
 from app.services.embedding_service import EMBEDDING_MODEL, _get_vo
 
 log = structlog.get_logger(__name__)
@@ -1953,3 +1968,330 @@ def update_eval_run_config(run_id: str, patch: dict, conn_str: str) -> bool:
             ),
         )
         return False
+
+
+# ---------------------------------------------------------------------------
+# The run record (migration 0022)
+# ---------------------------------------------------------------------------
+# ONE DERIVATION OF A RUN'S NUMBERS, WRITTEN DOWN. Until this, three existed:
+# this module's caller assembling a return dict, api/v1/evals.py's COUNT/AVG,
+# and deployment_service._fetch_eval_summary_sync's second COUNT/AVG. Nothing
+# held them to each other, and the deploy gate read whichever it read. The task
+# now builds one `EvalResult` from the summaries it already has, stores it on
+# the run, and derives its own return dict from `payload`. Slices 3 and 4 point
+# the readers at `read_eval_result` and the recomputation goes.
+#
+# Every claim here follows `.dev/reference/260818-llm-eval-fundamentals.md`
+# section 11: a number travels with the observation count it came from, and
+# there is no pooled figure across the two datasets anywhere in the record.
+
+_WRITE_EVAL_RUN_RESULT_SQL = """
+    UPDATE eval_runs
+    SET result = %(result)s::jsonb
+    WHERE id = %(id)s::uuid
+"""
+
+_READ_EVAL_RUN_RESULT_SQL = """
+    SELECT result FROM eval_runs WHERE id = %(id)s::uuid
+"""
+
+#: `model_calls WHERE job_id = <run_id>` is the run's own ledger — its judge
+#: calls and, since the job_id fix in _run_one_eval_turn, its agent turns too.
+#: The column list is imported from the writer rather than typed again here:
+#: `usage.py` keeps its own copy under a test that pins the two together, and a
+#: third copy would be a third thing to keep in step.
+_SELECT_RUN_LEDGER_SQL = (
+    "SELECT " + ", ".join(LEDGER_COLUMNS)
+    + " FROM model_calls WHERE job_id = %(id)s::uuid"
+)
+
+#: The counters `summarise_agent_invocation` reports that `Invocation` holds,
+#: under the summariser's own names. A rename on either side breaks the unpack
+#: below rather than quietly filing one count under another's name.
+_INVOCATION_COUNTS = (
+    "valid",
+    "attempted",
+    "responded",
+    "scorable",
+    "failed",
+    "empty",
+    "responses_deflected",
+    "scored_responses_deflected",
+)
+
+
+def read_run_ledger(run_id: str, conn_str: str) -> list[ModelCall]:
+    """The ledger rows one eval run billed, as records. PRODUCTION.
+
+    An empty list comes back for a run with no rows AND for a ledger this
+    function could not read. The two are told apart in the log rather than in the
+    return, because they mean the same thing to the record — the cost is unknown
+    — and a run that has already been scored must not fail because its bill could
+    not be added up.
+
+    A tenant DB that predates migration 0019 has no `model_calls` table at all.
+    That is the narrow `UndefinedTable` catch below, the same tolerance shape
+    `insert_eval_run` applies to a pre-0013 tenant.
+
+    Args:
+        run_id: UUID string of the eval run, which is the `job_id` on its rows.
+        conn_str: PRODUCTION tenant connection string.
+    """
+    try:
+        conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_SELECT_RUN_LEDGER_SQL, {"id": run_id})
+                rows = list(cur.fetchall())
+        finally:
+            conn.close()
+        return [
+            ModelCall(**dict(zip(LEDGER_COLUMNS, row, strict=True))) for row in rows
+        ]
+    except psycopg2.errors.UndefinedTable:
+        log.warning(
+            "read_run_ledger.table_absent",
+            run_id=run_id,
+            detail="tenant DB predates alembic_tenant 0019 — this run cannot say what it cost",
+        )
+        return []
+    except Exception as exc:
+        log.error(
+            "read_run_ledger.failed",
+            run_id=run_id,
+            error=str(exc),
+            detail="the run's cost reads as unknown rather than as zero",
+        )
+        return []
+
+
+def run_judge_identity() -> JudgeIdentity | None:
+    """The one Judge behind all four dimensions, or None when there is not one.
+
+    Every metric has its own route, so four Judges are possible and today they
+    are the same one. None when they differ, and None when any route named no
+    reasoning effort: a run-level field that picked the first of four would
+    report the Judge that produced one score as the Judge that produced all of
+    them. The per-call identity on the `eval_results` rows is finer grained than
+    this either way, and slice 2 is what puts it there.
+    """
+    identities = [judge_identity_for(metric) for metric in METRIC_KEYS]
+    if len(set(identities)) == 1 and identities[0] is not None:
+        return identities[0]
+    log.warning(
+        "run_judge_identity.not_one_judge",
+        identities=[
+            dataclasses.asdict(identity) if identity else None
+            for identity in identities
+        ],
+        detail=(
+            "the run records no single Judge; the per-metric identity is on the "
+            "eval_results rows"
+        ),
+    )
+    return None
+
+
+def served_agent_model(ledger: Sequence[ModelCall]) -> str | None:
+    """Which model actually served this run's agent turns, when exactly one did.
+
+    None when no ledger row named one, and None when two rows disagree. A run
+    served by two models has no single served model, and picking one would invent
+    it. `requested_model` on the record is the model the routing table names, and
+    the pair is only worth carrying while the two stay separate claims.
+    """
+    from app.services.agent_loop import AGENT_TURN_PURPOSE  # noqa: PLC0415
+
+    served = {
+        call.served_model for call in ledger if call.purpose == AGENT_TURN_PURPOSE
+    }
+    if len(served) == 1:
+        return served.pop()
+    if served:
+        log.warning(
+            "served_agent_model.disagreement",
+            served=sorted(served),
+            detail="this run's agent turns were served by more than one model",
+        )
+    return None
+
+
+def dataset_outcomes(validity: dict) -> dict[str, DatasetOutcome]:
+    """summarise_run_validity's per-dataset buckets as records. Pure.
+
+    Every metric the summariser reported becomes a Measurement, including the
+    ones it reported over zero observations — those arrive `measured=False` and
+    stay that way, which is the ticket's criterion 4. A metric it did not report
+    at all is simply absent, and `DatasetOutcome` keeps it absent rather than
+    filling in a default nobody measured.
+    """
+    return {
+        name: DatasetOutcome(
+            attempted=bucket["attempted"],
+            valid=bucket["valid"],
+            scored=bucket["scored"],
+            metrics={
+                metric: Measurement.from_payload(reading)
+                for metric, reading in (bucket.get("metrics") or {}).items()
+            },
+        )
+        for name, bucket in validity["datasets"].items()
+    }
+
+
+def build_eval_result(
+    *,
+    run_id: str,
+    agent_id: str,
+    prompt_version_id: str | None,
+    validity: dict,
+    invocation: dict,
+    ledger: Sequence[ModelCall],
+) -> EvalResult:
+    """Assemble the run's record from the summaries the task already holds. Pure.
+
+    The three per-dataset counts all come from `summarise_run_validity` and none
+    from `dataset_composition`, even though composition reports `attempted` too.
+    Both count the same fetched rows by the same rule, so taking one number from
+    each would be two derivations of one figure — the defect this record exists
+    to remove, reintroduced inside the thing removing it.
+
+    Args:
+        run_id:            UUID string of the eval_runs row.
+        agent_id:          UUID string of the agent evaluated.
+        prompt_version_id: the production prompt version, or None.
+        validity:          summarise_run_validity()'s report.
+        invocation:        summarise_agent_invocation()'s observation.
+        ledger:            read_run_ledger()'s rows. Empty means the cost is
+                           unknown, which is not the same as free.
+
+    Raises:
+        InvalidEvalResult: a summary carried a shape the record refuses. That is
+            a defect in this function or in a summariser, not a runtime
+            condition, so nothing here catches it.
+    """
+    return EvalResult(
+        run_id=run_id,
+        agent_id=agent_id,
+        prompt_version_id=prompt_version_id,
+        judge_identity=run_judge_identity(),
+        requested_model=AGENT_TURN_MODEL,
+        served_model=served_agent_model(ledger),
+        invocation=Invocation(
+            status=invocation["status"],
+            **{name: invocation[name] for name in _INVOCATION_COUNTS},
+            deflection_detectors=invocation.get("deflection_detectors") or {},
+        ),
+        datasets=dataset_outcomes(validity),
+        cost=cost_of_run(ledger),
+    )
+
+
+def write_eval_result(run_id: str, result: EvalResult, conn_str: str) -> bool:
+    """Store the run's record on `eval_runs.result`. PRODUCTION. Never raises.
+
+    Called after the scores are in, so the expensive half of the run is already
+    paid for. An exception here would mark a scored run failed over a column, so
+    the failure is reported as False and logged instead. The run still ends
+    terminally and its scores still land; what is lost is the one-derivation
+    reading, and a reader that finds no record reports the absence.
+
+    Tolerates a tenant DB that predates migration 0022 by the same narrow
+    `UndefinedColumn` catch `update_eval_run_config` uses for 0013. A broad
+    `except` there would swallow a genuine write failure and report the record as
+    stored.
+
+    Args:
+        run_id: UUID string of the eval_runs row.
+        result: the record. Serialised as jsonb by this function.
+        conn_str: PRODUCTION tenant connection string — never the eval branch.
+
+    Returns:
+        True when the record landed; False when the column is absent or the write
+        failed.
+    """
+    try:
+        conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
+        try:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        _WRITE_EVAL_RUN_RESULT_SQL,
+                        {"result": json.dumps(result.payload), "id": run_id},
+                    )
+                conn.commit()
+                log.info("write_eval_result.complete", run_id=run_id)
+                return True
+            except psycopg2.errors.UndefinedColumn:
+                conn.rollback()
+                log.warning(
+                    "write_eval_result.column_absent",
+                    run_id=run_id,
+                    detail=(
+                        "tenant DB predates alembic_tenant 0022 — this run cannot "
+                        "record what it measured"
+                    ),
+                )
+                return False
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.error(
+            "write_eval_result.failed",
+            run_id=run_id,
+            error=str(exc),
+            detail="the run's numbers live only in this task's return value",
+        )
+        return False
+
+
+def read_eval_result(run_id: str, conn_str: str) -> EvalResult | None:
+    """The run's record, or None when there is not one. PRODUCTION.
+
+    None covers three states and every one of them reads the same way to a
+    caller: the tenant predates migration 0022, the column is NULL because the
+    run never wrote one, or the stored payload broke a construction rule on the
+    way out. All three mean the run recorded no measurement, which is unknown and
+    never a pass. The log says which.
+
+    A stored payload is validated on the way out exactly as it was on the way in.
+    Already being written down is not evidence that a shape is honest.
+
+    Args:
+        run_id: UUID string of the eval_runs row.
+        conn_str: PRODUCTION tenant connection string.
+    """
+    conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
+    try:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_READ_EVAL_RUN_RESULT_SQL, {"id": run_id})
+                row = cur.fetchone()
+        except psycopg2.errors.UndefinedColumn:
+            conn.rollback()
+            log.warning(
+                "read_eval_result.column_absent",
+                run_id=run_id,
+                detail=(
+                    "tenant DB predates alembic_tenant 0022 — no run on it "
+                    "records a result"
+                ),
+            )
+            return None
+    finally:
+        conn.close()
+    if not row or row[0] is None:
+        return None
+    try:
+        return EvalResult.from_payload(row[0])
+    except InvalidEvalResult as exc:
+        log.error(
+            "read_eval_result.unreadable",
+            run_id=run_id,
+            error=str(exc),
+            detail=(
+                "the stored record breaks a construction rule; the run reads as "
+                "unmeasured"
+            ),
+        )
+        return None
