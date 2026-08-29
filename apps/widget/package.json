@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "postbuild": "node scripts/check-size.mjs && node scripts/check-theming-contract.mjs && node scripts/sync-embed.mjs && node scripts/check-rendered-notice.mjs",
+    "postbuild": "node scripts/check-size.mjs && node scripts/check-theming-contract.mjs && node scripts/check-rendered-notice.mjs && node scripts/sync-embed.mjs",
     "check-size": "node scripts/check-size.mjs",
     "check:theming-contract": "node scripts/check-theming-contract.mjs",
     "check:embed-sync": "node scripts/sync-embed.mjs --check",
