@@ -177,7 +177,7 @@ LIZARD_BASELINE = {
     ("app/services/transactional/audit.py", "write_audit_row"): (2, 69),
     ("app/services/transactional/confirmation_resolution.py", "execute_approved_confirmation"): (12, 290),
     ("app/services/transactional/credential_service.py", "_fetch_credential_config"): (3, 69),
-    ("app/services/transactional/enforcement.py", "apply_rate_and_constraint_checks"): (9, 117),
+    ("app/services/transactional/enforcement.py", "apply_rate_and_constraint_checks"): (8, 96),
     ("app/services/transactional/enforcement.py", "check_capability_access"): (4, 76),
     ("app/services/transactional/idempotency.py", "reserve_idempotency"): (1, 185),
     ("app/services/transactional/idempotency.py", "reserve_idempotency._inner"): (14, 150),

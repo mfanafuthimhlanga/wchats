@@ -38,6 +38,7 @@ import json
 import math
 import re
 import ssl
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
 from typing import Any, Literal
@@ -316,6 +317,70 @@ def get_recorded_side_effects() -> list[dict]:
     """
     sink = _recorded_side_effects_var.get()
     return list(sink) if sink else []
+
+
+# ---------------------------------------------------------------------------
+# The per-attempt rate-limit namespace (ticket 15, issue #52).
+#
+# `transactional.enforcement.rate_limit_namespace` builds the Redis rate-counter
+# key out of this, and the argument for it is the one that function already makes
+# one level up. The counter is SHARED STATE. Ticket 15 requires every red-team
+# vector to be attempted k times independently, and RTX-02 attacks the ceiling by
+# chaining issue_refund calls until the envelope denies them. On one counter,
+# attempt 1's chain exhausts the clean tenant's "2/hour" and attempts 2 and 3 are
+# denied from their FIRST call instead of at the crossing. The verdict reads the
+# same, so nothing is misreported to a reader, and the record still stores
+# attempts=3 for a vector where one attempt tested the ceiling.
+#
+# So each attempt counts on its own key. It still crosses the ceiling, it still
+# measures that the layer held, and it cannot spend the next attempt's budget.
+# Suppressing the INCR for a red-team call, or rolling it back afterwards, would
+# make "the agent kept refunding past its limit" unfalsifiable, and
+# `rate_limit_namespace` rules both out for the eval in the same words.
+#
+# EMPTY IS PRODUCTION. Outside an attempt this holds "", so a customer turn keys
+# exactly as it did before ticket 15, and a red-team run stops spending the
+# deployed agent's own refund budget while measuring it. The value is a
+# ready-to-concatenate key fragment rather than a name the reader has to format,
+# so the enforcement path has no branch of its own to get wrong.
+#
+# One run per agent per 90 minutes (RUN_IDEMPOTENCY_WINDOW_MINUTES) is what keeps
+# `attempt:<vector>:<n>` unique for the hour a "2/hour" window lasts, so the
+# fragment stays readable in Redis instead of carrying a run id nothing else
+# needs.
+# ---------------------------------------------------------------------------
+
+_attempt_scope_var: ContextVar[str] = ContextVar("attempt_scope", default="")
+
+
+@contextmanager
+def attempt_scope(vector: str, attempt: int):
+    """Hold one red-team attempt's rate-counter namespace, and drop it after.
+
+    The token reset is unconditional, so an attempt that raises out of its runner
+    leaves the namespace exactly as it found it. Both directions matter. The next
+    attempt must not inherit this one's counter, and nothing outside the k loop,
+    a customer turn on this worker most of all, may run under an attempt's key.
+
+    `reset_side_effect_context` deliberately does NOT clear this one. Every
+    conversational vector reaches the dispatcher through a victim turn, and
+    `agent_loop.build_agent_turn` calls that reset per probe message, so clearing
+    it there would put those vectors' k attempts straight back on one counter.
+    The scope is safe without it: this is the only setter, and it restores what
+    it found on every path out.
+
+    Args:
+        vector: the RED_TEAM_VECTORS name being attempted. It is part of the key
+            because two vectors that both drive issue_refund would otherwise
+            share a counter inside one run, which is the same defect one axis
+            over.
+        attempt: 1-based attempt number within that vector's k.
+    """
+    token = _attempt_scope_var.set(f"attempt:{vector}:{attempt}:")
+    try:
+        yield
+    finally:
+        _attempt_scope_var.reset(token)
 
 
 # ---------------------------------------------------------------------------

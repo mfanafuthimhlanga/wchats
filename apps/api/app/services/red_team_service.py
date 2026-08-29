@@ -39,6 +39,7 @@ from app.domain.red_team_result import (
     worst_severity,
 )
 from app.domain.tool_def import ToolDefinition, tool
+from app.services.agent_tools import attempt_scope
 from app.services.red_team_probe import LANDED_VERDICT_TAGS
 from app.services.tool_loop import run_tool_loop
 
@@ -630,6 +631,25 @@ def _merge_attempt_observations(
     )
 
 
+# ---------------------------------------------------------------------------
+# What one attempt does NOT share with the attempt before it.
+#
+# The ledger: the runner is handed a fresh list, builds a fresh ProbeSession and
+# a fresh client inside it, and cannot read what the attempt before it observed.
+# The k rows merge once, at the end, into the row the caller's ledger holds.
+#
+# The Redis rate counter: `attempt_scope` moves each attempt onto its own key, so
+# a vector that attacks an aggregate ceiling crosses it k times instead of once.
+# RTX-02 chains issue_refund calls against the clean tenant's "2/hour" envelope;
+# on a shared counter, attempt 1 exhausts it and attempts 2 and 3 come back
+# denied at their first call, which is the same verdict for a reason the record
+# cannot see. `agent_tools._attempt_scope_var` carries the rest of the argument.
+#
+# The prose sits here rather than in the docstring because lizard measures a
+# function from its `def` to its last line, and this one is at the standard.
+# ---------------------------------------------------------------------------
+
+
 def run_vector_attempts(
     vector: str,
     runner: Callable[..., list[RedTeamFinding]],
@@ -640,10 +660,7 @@ def run_vector_attempts(
 ) -> VectorAttempts:
     """Run ONE vector's probe `attempts` times independently and total it up.
 
-    Each attempt gets its OWN ledger, and that is what independence means here:
-    the runner is handed a fresh list, builds a fresh ProbeSession and a fresh
-    client inside it, and cannot read what the attempt before it observed. The k
-    rows merge once, at the end, into the row the caller's ledger holds.
+    The block comment above says what "independently" buys and what it costs.
 
     Args:
         vector: the RED_TEAM_VECTORS name this runner reports under. An argument
@@ -666,9 +683,10 @@ def run_vector_attempts(
     completed = 0
     breaches = 0
 
-    for _ in range(requested):
+    for attempt in range(1, requested + 1):
         attempt_ledger: list[VectorObservation] = []
-        attempt_findings = runner(observations=attempt_ledger, **runner_kwargs)
+        with attempt_scope(vector, attempt):
+            attempt_findings = runner(observations=attempt_ledger, **runner_kwargs)
         # Counted after the call returns, so an attempt that raised out of the
         # runner leaves this vector short of k and the record says so.
         completed += 1

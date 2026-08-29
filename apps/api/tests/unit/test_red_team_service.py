@@ -57,6 +57,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.services import red_team_service
+from app.services import agent_tools
+from app.services.transactional import enforcement
 from app.domain.pii_firewall import PII_DEFLECTION
 from app.services.red_team_service import (
     ALLOWED_PROBE_TOOLS,
@@ -1944,3 +1946,188 @@ class TestTheOutcomeIsBuiltFromTheAttempts:
 
         assert attempted.outcome.vector == "identity_bypass"
         assert attempted.findings[0].attack_vector == "identity_verification_bypass"
+
+
+# ---------------------------------------------------------------------------
+# The rate counter one attempt does not share with the next (ticket 15, #52)
+# ---------------------------------------------------------------------------
+
+#: The clean tenant's issue_refund envelope, the ceiling RTX-02 attacks by
+#: chaining calls until it denies them. Spelled out rather than imported from
+#: red_team_probe.CLEAN_TENANT_ENVELOPES so a change to the fixture arrives as a
+#: failure to explain, not as a test that quietly measures something else.
+CLEAN_TENANT_RATE_LIMIT = "2/hour"
+
+#: RTX-02's chain length at the shipped settings, max(3, attack_sequences * 2).
+RTX_02_CHAIN = 3
+
+#: A fixed clock, so `int(time.time()) // window_secs` cannot roll the window
+#: over between two calls of one chain and hand a test a fresh counter.
+FROZEN_CLOCK = 1_700_000_000.0
+FROZEN_WINDOW = int(FROZEN_CLOCK) // 3600
+
+RTX_02_AGENT = "agent-rtx-02"
+
+
+class _CountingPipe:
+    """One Redis pipeline, counting per key exactly as INCR does."""
+
+    def __init__(self, counts):
+        self._counts = counts
+        self._key = None
+
+    def incr(self, key):
+        self._key = key
+        self._counts[key] = self._counts.get(key, 0) + 1
+
+    def expire(self, key, ttl):
+        pass
+
+    def execute(self):
+        return [self._counts[self._key], True]
+
+
+class _CountingRedis:
+    """A Redis double that COUNTS, because the count is the measurement here.
+
+    A mock returning a fixed count cannot tell a shared counter from a
+    per-attempt one, which is the only question these tests ask.
+    """
+
+    def __init__(self):
+        self.counts: dict[str, int] = {}
+
+    def pipeline(self):
+        return _CountingPipe(self.counts)
+
+
+@contextmanager
+def _counting_redis():
+    """The real enforcement path against a counting Redis and a frozen window."""
+    redis = _CountingRedis()
+    frozen = SimpleNamespace(time=lambda: FROZEN_CLOCK)
+    with patch.object(enforcement, "_get_redis", return_value=redis):
+        with patch.object(enforcement, "time", frozen):
+            yield redis
+
+
+async def _refund_chain(calls: int) -> list:
+    """RTX-02's shape: one chain of issue_refund calls in one asyncio.run window."""
+    snapshot = {"enabled": True, "rate_limit": CLEAN_TENANT_RATE_LIMIT, "constraints": {}}
+    return [
+        await enforcement.apply_rate_and_constraint_checks(
+            RTX_02_AGENT, "issue_refund", snapshot, MagicMock(spec=[])
+        )
+        for _ in range(calls)
+    ]
+
+
+def _chain_runner(verdicts: list, calls: int = RTX_02_CHAIN):
+    """A runner shaped like RTX-02, recording each attempt's chain of verdicts.
+
+    Not the shipped runner. `run_value_bound_evasion_agent` reaches the counter
+    through `invoke_probe_tool` and the whole transactional dispatcher, and every
+    unit test of it patches that call out (tests/unit/test_red_team_rtx_runners.py),
+    so no test of the runner reaches Redis at all. What is reproduced here is the
+    part that matters to the counter: one chain per attempt, inside the attempt's
+    own asyncio.run, through the real apply_rate_and_constraint_checks.
+    """
+
+    def _runner(*, observations=None, **kwargs):
+        verdicts.append(asyncio.run(_refund_chain(calls)))
+        return []
+
+    return _runner
+
+
+class TestEveryAttemptCrossesTheCeilingItself:
+    """Ticket 15 asks for k independent attempts. On a shared rate counter,
+    RTX-02 gets one.
+
+    The verdict is identical either way, so nothing is misreported to a reader
+    and no finding changes. What changes is what `attempts=3` on the stored
+    RedTeamResult means: three chains that each reached the ceiling, or one that
+    reached it and two that were denied at their first call by the attempt
+    before them.
+    """
+
+    def test_attempt_two_reaches_the_ceiling_instead_of_starting_denied(self):
+        verdicts: list = []
+
+        with _counting_redis():
+            run_vector_attempts("value_bound_evasion", _chain_runner(verdicts), 3)
+
+        assert verdicts == [[None, None, "rate_limit"]] * 3, (
+            "an attempt that is denied from call 1 never tested the crossing. "
+            f"Per-attempt verdicts: {verdicts!r}"
+        )
+
+    def test_each_attempt_incremented_a_key_of_its_own(self):
+        verdicts: list = []
+
+        with _counting_redis() as redis:
+            run_vector_attempts("value_bound_evasion", _chain_runner(verdicts), 3)
+
+        assert sorted(redis.counts) == [
+            f"ratelimit:attempt:value_bound_evasion:{n}:"
+            f"{RTX_02_AGENT}:issue_refund:{FROZEN_WINDOW}"
+            for n in (1, 2, 3)
+        ]
+        assert set(redis.counts.values()) == {RTX_02_CHAIN}, (
+            f"the chains did not land one per key: {redis.counts!r}"
+        )
+
+    def test_a_turn_after_the_loop_keys_with_no_attempt_segment(self):
+        """The leak test, in the direction that costs a real customer a refund.
+
+        A namespace that survived the k loop keys the next customer turn under an
+        attempt, which is a counter three refunds deep before the customer asks
+        for their first one.
+        """
+        verdicts: list = []
+
+        with _counting_redis() as redis:
+            run_vector_attempts("value_bound_evasion", _chain_runner(verdicts), 3)
+            customer = asyncio.run(_refund_chain(1))
+
+        assert customer == [None]
+        assert f"ratelimit:{RTX_02_AGENT}:issue_refund:{FROZEN_WINDOW}" in redis.counts, (
+            "the turn after the k loop did not key the way it keyed before "
+            f"ticket 15 existed: {sorted(redis.counts)!r}"
+        )
+        assert enforcement.rate_limit_namespace() == ""
+
+    def test_an_attempt_that_raised_leaves_no_namespace_behind(self):
+        """The runner is the third-party code here, and it is allowed to throw."""
+
+        def _boom(*, observations=None, **kwargs):
+            raise RuntimeError("attempt 1 died mid-chain")
+
+        with pytest.raises(RuntimeError):
+            run_vector_attempts("value_bound_evasion", _boom, 3)
+
+        assert enforcement.rate_limit_namespace() == ""
+
+
+class TestTheNamespaceInProduction:
+    """`rate_limit_namespace` outside a red-team attempt, which is every customer."""
+
+    def test_a_live_turn_carries_no_namespace_at_all(self):
+        assert enforcement.rate_limit_namespace() == ""
+
+    def test_the_attempt_and_the_mode_compose(self):
+        """A conversational vector's victim turn runs recorded INSIDE an attempt.
+
+        `agent_loop.build_agent_turn` sets side_effects="recorded" for that turn,
+        so both namespaces are in force at once and the key has to carry both.
+        """
+        token = agent_tools._side_effects_var.set("recorded")
+        try:
+            with agent_tools.attempt_scope("confused_deputy", 2):
+                assert enforcement.rate_limit_namespace() == (
+                    "recorded:attempt:confused_deputy:2:"
+                )
+        finally:
+            agent_tools._side_effects_var.reset(token)
+
+        assert enforcement.rate_limit_namespace() == ""
