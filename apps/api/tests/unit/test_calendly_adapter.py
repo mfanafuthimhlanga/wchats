@@ -98,10 +98,10 @@ async def test_book_slot() -> None:
     - start_time is built from preferred_date + preferred_time + "Z"
     - Returns BookSlotOutput(status="confirmed", booking_id from resource.uri)
     """
+    from app.domain.transactional_schemas import BookSlotInput
     from app.services.transactional.adapters.calendly_adapter import (
         CALENDLY_API_BASE,
     )
-    from app.domain.transactional_schemas import BookSlotInput
 
     adapter = _make_adapter()
     args = BookSlotInput(

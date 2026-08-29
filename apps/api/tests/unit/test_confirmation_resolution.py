@@ -49,9 +49,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.domain.transactional_schemas import IssueRefundOutput
 from app.services.transactional import confirmation_resolution as cr
 from app.services.transactional.idempotency import Reservation
-from app.domain.transactional_schemas import IssueRefundOutput
 
 # ---------------------------------------------------------------------------
 # Fixtures / constants

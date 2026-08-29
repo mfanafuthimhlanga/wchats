@@ -674,7 +674,6 @@ _CANNED_TURN_RESULT = canned_turn_result(
     "Returns are accepted within 14 days.\n\n"
     "CITATIONS:\n"
     "- Document: FAQ.pdf | Section: 1\n",
-    stop_reason="end_turn",
 )
 
 _CONN_STR = "postgresql://tenant"

@@ -112,7 +112,7 @@ CANNED_TURN_RESULT = {
     "escalation_reason": None,
     "escalation_context": None,
     "num_turns": 1,
-    "stop_reason": "end_turn",
+    "stop_reason": "stop",
 }
 
 CHAT_MESSAGE = "What are your hours?"

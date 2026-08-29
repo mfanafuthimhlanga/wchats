@@ -75,7 +75,6 @@ _CANNED_RESULT_WITH_METRICS = canned_turn_result(
     "You can return items within 14 days.\n\n"
     "CITATIONS:\n"
     "- Document: FAQ.pdf | Section: 1\n",
-    stop_reason="end_turn",
 )
 
 

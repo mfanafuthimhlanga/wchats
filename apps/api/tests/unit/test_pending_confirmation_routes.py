@@ -75,10 +75,10 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api.deps import get_async_db, get_current_tenant
 from app.api.v1 import pending_confirmations as pc
+from app.domain.transactional_schemas import SKILL_INPUT_MODELS
 from app.main import app
 from app.models.agent import Agent
 from app.models.tenant import Tenant
-from app.domain.transactional_schemas import SKILL_INPUT_MODELS
 
 MUTATING_SKILL = "issue_refund"
 assert MUTATING_SKILL in SKILL_INPUT_MODELS

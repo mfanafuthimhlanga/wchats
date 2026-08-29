@@ -59,7 +59,6 @@ import pytest
 from app.domain.pii_firewall import PII_DEFLECTION
 from app.services import eval_service
 from app.worker.tasks.runtime import eval as mod
-
 from tests.agent_loop_doubles import canned_turn_result
 
 _EVAL_PY = Path(mod.__file__).with_suffix(".py")
@@ -508,7 +507,6 @@ def _turn(
         response_text,
         tool_calls_log=log,
         num_turns=3,
-        stop_reason="end_turn",
         pii_detector=pii_detector,
     )
 

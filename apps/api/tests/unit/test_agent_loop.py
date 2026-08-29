@@ -70,6 +70,7 @@ from app.services.agent_tools import (
     get_recorded_side_effects,
     reset_side_effect_context,
 )
+from tests.agent_loop_doubles import STOP_REASONS
 
 TENANT = "11111111-1111-1111-1111-111111111111"
 JOB = "33333333-3333-3333-3333-333333333333"
@@ -1237,6 +1238,84 @@ class TestTheCeilings:
 
         assert out["stop_reason"] == "max_model_calls"
         assert out["num_turns"] == 2
+
+
+# ---------------------------------------------------------------------------
+# The stop_reason vocabulary
+# ---------------------------------------------------------------------------
+
+
+class TestTheStopReasonVocabulary:
+    """Every ending records a word `tests.agent_loop_doubles.STOP_REASONS` holds.
+
+    WHAT WENT WRONG WITHOUT IT. `stop_reason` is a passthrough of the provider's
+    `finish_reason` wherever the loop does not name the ending itself, so #49
+    changed the values without touching a line that mentions them. Five test
+    files went on spelling it `end_turn`, Anthropic's word, and one of them
+    ASSERTED the turn_metrics row held `end_turn` while the double a hundred
+    lines above supplied that same string. Nothing in the suite compared the
+    vocabulary the tests use against the vocabulary the loop emits.
+
+    WHAT THIS ADDS THAT THE TESTS ABOVE DO NOT. Each ending is already pinned by
+    name, one assertion per ending. That is five literals, and a sixth ending
+    arrives with no literal at all. This drives all five and reads them against
+    one declared set, so a new ending is red here until the set is told about it,
+    and the set stays evidence rather than another hand-written guess.
+
+    WHAT IT DOES NOT CATCH. The client is scripted, so a real provider inventing
+    a new `finish_reason` reaches production before it reaches this test. What is
+    pinned is the loop's own vocabulary and the doubles' agreement with it.
+    """
+
+    def _always_calls_a_tool(self):
+        return _completion(
+            tool_calls=[_tool_call("call-1", "retrieve", '{"query": "again"}')],
+            finish_reason="tool_calls",
+        )
+
+    async def test_every_ending_records_a_word_the_doubles_know(self):
+        endings = {
+            "the provider said stop": _turn(_Client(_completion(content="ok"))),
+            "the provider said length": _turn(
+                _Client(_completion(content="ok", finish_reason="length"))
+            ),
+            "the reply carried no choices": _turn(_Client(SimpleNamespace(choices=[]))),
+            "the call ceiling": _turn(
+                _Client(self._always_calls_a_tool()),
+                tools=[_tool("retrieve", _echo_handler)],
+                max_model_calls=2,
+            ),
+            # 1000 in and 500 out of Luna is $0.0008, over a $0.0005 ceiling.
+            "the budget ceiling": _turn(
+                _Client(self._always_calls_a_tool()),
+                tools=[_tool("retrieve", _echo_handler)],
+                max_budget_usd=0.0005,
+                calls=[_luna_call(1000, 500)],
+            ),
+        }
+
+        recorded = {}
+        for name, turn in endings.items():
+            out, _ = await _drive(turn)
+            recorded[name] = out["stop_reason"]
+
+        # The control. Five endings that all recorded the same word would satisfy
+        # the membership check below without any of them being driven.
+        assert len(set(recorded.values())) == len(recorded), (
+            f"two of the five endings recorded the same word: {recorded}. The "
+            "harness stopped reaching the endings it names, so the membership "
+            "check under it is reading one ending five times."
+        )
+
+        unknown = {n: r for n, r in recorded.items() if r not in STOP_REASONS}
+        assert not unknown, (
+            f"the loop recorded {unknown}, and STOP_REASONS holds "
+            f"{sorted(STOP_REASONS)}. Either the loop grew an ending the doubles "
+            "do not know, or the provider vocabulary moved the way it did at #49 "
+            "when `end_turn` became `stop`. Add the word to "
+            "tests/agent_loop_doubles.py and correct every double still handing "
+            "out the old one."
+        )
 
 
 # ---------------------------------------------------------------------------
