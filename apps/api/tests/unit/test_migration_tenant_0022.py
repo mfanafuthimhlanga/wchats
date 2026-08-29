@@ -1,14 +1,14 @@
-"""Tests for TENANT migration 0021, red_team_runs.result (ticket 15, issue #52).
+"""Tests for TENANT migration 0022, eval_runs.result (ticket 14, issue #51).
 
-Named test_migration_tenant_0021 rather than test_migration_0021 for the same
-reason as its 0014 to 0020 siblings: the CONTROL-DB tree numbers its revisions
+Named test_migration_tenant_0022 rather than test_migration_0022 for the same
+reason as its 0014 to 0021 siblings: the CONTROL-DB tree numbers its revisions
 independently and a reader who assumes one tree looks in the wrong directory.
 
 What the migration is for, stated where its constraints are checked: a completed
-run wrote `findings`, `max_severity`, `deployment_blocked` and `coverage`, and
-between them they cannot say how many independent attempts a vector made. A
-vector attacked once and a vector attacked three times read identically off the
-row. `result` holds `RedTeamResult.payload`, which says.
+eval run left its scores in `eval_results` and its configuration in
+`eval_runs.config`, and neither holds the run's numbers. Three readers each
+derived them again and were free to disagree. `result` holds
+`EvalResult.payload`, which is the one derivation.
 
 The constraints this file holds the migration to:
 
@@ -17,12 +17,14 @@ The constraints this file holds the migration to:
                              run did not record its result, which is every row
                              written before this revision, and that is a
                              different claim from "the run measured nothing"
-  - one table touched      — red_team_runs, nothing else
+  - one table touched      — eval_runs, nothing else
+  - `config` is left alone — the configuration a run asserts and the measurement
+                             it produced stay two columns
   - downgrade drops only what upgrade added, every statement IF EXISTS
 
-APPLIED AND VERIFIED 2026-08-29 against the local `wchats_tenant_probe` cluster
+APPLIED AND VERIFIED 2026-08-30 against the local `wchats_tenant_probe` cluster
 through the production path (`app.services.migrations.run_tenant_migrations`):
-0020 to 0021, the column arrives `jsonb` and nullable with no DEFAULT, downgrade
+0021 to 0022, the column arrives `jsonb` and nullable with no DEFAULT, downgrade
 drops it, re-upgrade restores it. So the assertions below are not the only
 evidence, and they keep a different job: they constrain what the migration is
 allowed to CONTAIN, which a successful apply does not.
@@ -48,11 +50,11 @@ _TESTS_DIR = os.path.dirname(__file__)
 VERSIONS_DIR = os.path.normpath(
     os.path.join(_TESTS_DIR, "../../alembic_tenant/versions")
 )
-MIGRATION_FILE = os.path.join(VERSIONS_DIR, "0021_red_team_run_result.py")
+MIGRATION_FILE = os.path.join(VERSIONS_DIR, "0022_eval_run_result.py")
 
 
 def _load_migration():
-    spec = importlib.util.spec_from_file_location("tenant_0021", MIGRATION_FILE)
+    spec = importlib.util.spec_from_file_location("tenant_0022", MIGRATION_FILE)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -83,11 +85,11 @@ def test_migration_file_exists():
 
 
 def test_migration_revision():
-    assert _load_migration().revision == "0021"
+    assert _load_migration().revision == "0022"
 
 
 def test_migration_down_revision():
-    assert _load_migration().down_revision == "0020"
+    assert _load_migration().down_revision == "0021"
 
 
 def _all_tenant_revisions() -> dict[str, str | None]:
@@ -105,18 +107,18 @@ def _all_tenant_revisions() -> dict[str, str | None]:
     return revisions
 
 
-def test_0021_is_the_sole_child_of_0020_and_the_tree_is_unforked():
+def test_0022_is_the_sole_child_of_0021_and_the_tree_is_unforked():
     """A fork is invisible here and fatal on a live tenant.
 
     `alembic upgrade head` refuses to run with two heads, so a second child of
-    0020 breaks every subsequent tenant provision.
+    0021 breaks every subsequent tenant provision.
     """
     revisions = _all_tenant_revisions()
-    assert "0021" in revisions, "0021 was not discovered in alembic_tenant/versions"
+    assert "0022" in revisions, "0022 was not discovered in alembic_tenant/versions"
 
-    children_of_0020 = [rev for rev, down in revisions.items() if down == "0020"]
-    assert children_of_0020 == ["0021"], (
-        f"0020 must have exactly one child, found {sorted(children_of_0020)}"
+    children_of_0021 = [rev for rev, down in revisions.items() if down == "0021"]
+    assert children_of_0021 == ["0022"], (
+        f"0021 must have exactly one child, found {sorted(children_of_0021)}"
     )
 
     parents = [down for down in revisions.values() if down is not None]
@@ -126,24 +128,25 @@ def test_0021_is_the_sole_child_of_0020_and_the_tree_is_unforked():
     )
 
 
-def test_0021_is_no_longer_the_tenant_head_and_0022_took_the_assertion():
-    """The head assertion left this file for test_migration_tenant_0022.py.
+def test_0022_is_the_tenant_head():
+    """Head IDENTITY, moved here from test_migration_tenant_0021.py.
 
-    It said "0022 moves this line and only this line", 0022 landed, and it moved.
-    What stays here is the half that is still about 0021: this revision is no
-    longer the end of the tree, and the assertion naming the new end lives with
-    the revision that took it. Deleting the line outright would have left nothing
-    saying where the tree ends, which is the failure the instruction was written
-    to prevent.
+    That file carried this assertion with a docstring saying 0022 would move this
+    line and only this line, and it caught 0022 landing. Moving it is the
+    instruction the test itself gives, and it is not the same as deleting it.
+    Relaxing it to `len(heads) == 1` would leave nothing asserting which revision
+    the tree ends at, and an assertion getting weaker inside a test that still
+    passes is invisible.
+
+    0023 moves this line and only this line.
     """
     revisions = _all_tenant_revisions()
     parents = {down for down in revisions.values() if down is not None}
     heads = set(revisions) - parents
-    assert heads != {"0021"}, (
-        "0021 is the head again. Either 0022 was removed, in which case this "
-        "assertion comes back here, or the tree forked"
+    assert heads == {"0022"}, (
+        f"the tenant head is {sorted(heads)}, not 0022. If a later revision "
+        "landed, move this assertion to its test file rather than deleting it"
     )
-    assert "0021" in parents, "0021 lost its child; 0022 must descend from it"
 
 
 # ---------------------------------------------------------------------------
@@ -153,54 +156,64 @@ def test_0021_is_no_longer_the_tenant_head_and_0022_took_the_assertion():
 
 def test_upgrade_adds_the_column_as_jsonb():
     sql = _executed("upgrade")
-    assert "RESULT JSONB" in sql, "0021 must add result as jsonb: " + sql
+    assert "RESULT JSONB" in sql, "0022 must add result as jsonb: " + sql
     assert "ADD COLUMN IF NOT EXISTS" in sql, (
-        "the add must be guarded so a re-run is a no-op, matching 0017 to 0020"
+        "the add must be guarded so a re-run is a no-op, matching 0017 to 0021"
     )
 
 
 def test_the_column_is_nullable_and_takes_no_default():
-    """Every pre-0021 row recorded no result, and NULL is how it says so.
+    """Every pre-0022 run recorded no result, and NULL is how it says so.
 
-    NOT NULL would refuse those rows outright. A default would assert a k and a
-    set of per-vector attempt counts about runs that never measured any, which is
-    the reverse of what the column exists for.
+    NOT NULL would refuse those rows outright. A default would assert a set of
+    per-dataset measurements about runs that never took any, which is the reverse
+    of what the column exists for.
     """
     sql = _executed("upgrade")
     assert "NOT NULL" not in sql
     assert "DEFAULT" not in sql
 
 
-def test_upgrade_touches_only_red_team_runs():
+def test_upgrade_touches_only_eval_runs():
     sql = _executed("upgrade")
     tables = set(re.findall(r"ALTER TABLE\s+(\w+)", sql))
-    assert tables == {"RED_TEAM_RUNS"}, (
-        f"0021 must touch red_team_runs and nothing else, found {sorted(tables)}"
+    assert tables == {"EVAL_RUNS"}, (
+        f"0022 must touch eval_runs and nothing else, found {sorted(tables)}"
     )
 
 
 def test_upgrade_adds_exactly_one_column():
     sql = _executed("upgrade")
     assert sql.count("ADD COLUMN") == 1, (
-        "0021 adds one column; a second one landing here without its own "
+        "0022 adds one column; a second one landing here without its own "
         "rationale is the kind of drift this file exists to catch"
     )
 
 
 def test_the_column_carries_its_comment():
     """A reader of the catalogue learns what NULL means without opening the repo."""
-    assert "COMMENT ON COLUMN RED_TEAM_RUNS.RESULT" in _executed("upgrade")
+    assert "COMMENT ON COLUMN EVAL_RUNS.RESULT" in _executed("upgrade")
 
 
-def test_the_coverage_column_is_left_alone():
-    """0015's column keeps its meaning and its readers.
+def test_the_config_column_is_left_alone():
+    """0013's column keeps its meaning and its writer.
 
-    `deployment_service._coverage_from_run` and both red-team routes read four
-    keys out of `coverage`. This migration adds a place for the record beside it
-    rather than repurposing it, so nothing downstream has to change to keep
-    working.
+    `config` is the configuration tuple a run is an assertion ABOUT, written at
+    INSERT and patched once by `update_eval_run_config`'s shallow `||` merge. The
+    measurement goes beside it in its own column rather than inside it, so that
+    merge can never half-overwrite a dataset.
     """
-    assert "COVERAGE" not in _executed("upgrade")
+    assert "CONFIG" not in _executed("upgrade")
+
+
+def test_eval_results_is_left_alone():
+    """The per-scenario rows are slice 2's, and they are a different grain.
+
+    This migration adds the RUN's record. `eval_results.binary_verdict`,
+    `threshold` and `judge_identity` belong to the same ticket and arrive on
+    their own revision, so a rollback of either does not take the other with it.
+    """
+    assert "EVAL_RESULTS" not in _executed("upgrade")
 
 
 @pytest.mark.parametrize(
@@ -210,7 +223,7 @@ def test_the_coverage_column_is_left_alone():
 def test_upgrade_is_strictly_additive(forbidden):
     """No backfill. There is no measurement to attribute to a historical run."""
     assert forbidden not in _executed("upgrade"), (
-        f"0021 upgrade must not contain {forbidden!r}. It adds a column and "
+        f"0022 upgrade must not contain {forbidden!r}. It adds a column and "
         "comments it, and nothing else"
     )
 
@@ -238,5 +251,5 @@ def test_every_downgrade_statement_is_guarded():
 
 
 def test_downgrade_drops_no_table():
-    """red_team_runs predates this migration by twenty revisions."""
+    """eval_runs predates this migration by twenty-one revisions."""
     assert "DROP TABLE" not in _executed("downgrade")
