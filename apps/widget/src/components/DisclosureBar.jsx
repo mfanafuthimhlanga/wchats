@@ -5,26 +5,16 @@ import { h } from 'preact'
 // receives the message. The previous copy, "Powered by AI", said an AI was
 // involved and said nothing about where the text goes.
 //
-// The bar is one 32px row inside a 380px widget and it stays one row.
-// Measured in headless Chromium against embed/index.html, 2026-08-28:
-//
-//     bar content width   356px   (380 less 12px padding each side)
-//     version tag          55px
-//     this notice         208px   at 11px / 16.5px system-ui, 41 chars
-//     rendered height    16.5px   one line-height, so it does not wrap
-//
-// That leaves the notice 301px. NOTICE_MAX_CHARS is still a PROXY, because it
-// counts characters while the constraint is rendered width and a string of
-// capitals is wider than one of commas. The measurement is what makes 48 safe
-// rather than hopeful: at the 5.07px average this copy renders, 48 characters
-// come to about 243px, and overflowing 301px needs an average of 6.27px that
-// sentence case does not reach. Re-measure before raising it.
+// The bar is one 32px row inside a 380px widget and it stays one row. That is
+// a rendered width, not a character count, so scripts/check-rendered-notice.mjs
+// measures it in headless Chromium on every build and fails when this notice
+// wraps, clips, or overflows the bar (#106). Change the copy and the gate
+// reports whether it still fits.
 //
 // OpenAI is hardcoded because ADR 0008 makes it the only provider for every
 // model call on the platform. When a second provider serves a Customer turn,
 // this becomes a prop fed by the run record's served provider.
 export const PROCESSING_NOTICE = 'AI-generated replies, processed by OpenAI'
-export const NOTICE_MAX_CHARS = 48
 
 export function DisclosureBar() {
   return (

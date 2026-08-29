@@ -1,9 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import {
-  DisclosureBar,
-  PROCESSING_NOTICE,
-  NOTICE_MAX_CHARS,
-} from './DisclosureBar.jsx'
+import { DisclosureBar, PROCESSING_NOTICE } from './DisclosureBar.jsx'
 
 // Preact vnodes are plain objects, so the component's output is readable
 // without a DOM or a renderer. Asserting on the vnode tests what the Customer
@@ -30,10 +26,6 @@ describe('DisclosureBar', () => {
 
   it('names the processor, not just the fact of AI', () => {
     expect(PROCESSING_NOTICE).toMatch(/OpenAI/)
-  })
-
-  it('holds the copy to the character count the width budget assumes', () => {
-    expect(PROCESSING_NOTICE.length).toBeLessThanOrEqual(NOTICE_MAX_CHARS)
   })
 
   it('keeps the version tag beside the notice', () => {
