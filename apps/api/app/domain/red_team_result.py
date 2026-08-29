@@ -191,7 +191,7 @@ def worst_severity(severities: Iterable[Severity | str]) -> Severity:
 
 
 def _require_findings_agree(
-    findings: tuple[RedTeamFinding, ...], breaches: int, max_severity: Severity
+    findings: Sequence[RedTeamFinding], breaches: int, max_severity: Severity
 ) -> None:
     """Refuse a record whose findings and whose vector rows describe different runs.
 
