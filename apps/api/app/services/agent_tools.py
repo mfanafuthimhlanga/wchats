@@ -39,7 +39,7 @@ import math
 import re
 import ssl
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import replace
 from typing import Any, Literal
 
@@ -448,6 +448,59 @@ def get_tool_results() -> list[ToolResult]:
     """
     sink = _tool_results_var.get()
     return list(sink) if sink else []
+
+
+# ---------------------------------------------------------------------------
+# The restore, and the one ContextVar it deliberately leaves alone (#98).
+#
+# `ContextVar.set` hands back a Token and `reset(token)` is the restore. Until
+# #98 `bind_tool_context` threw every token away, so the mode it published
+# outlived the turn: the var is process-context sticky, the Celery prefork pool
+# does not isolate contextvars per task, and a "recorded" from an eval turn was
+# still in force for whatever ran next in that worker's context. Production was
+# closed twice over by accident — `build_agent_turn` resets before it can fail,
+# and `asyncio.to_thread` hands each red-team probe a fresh context — and
+# neither of those is the seam holding the invariant.
+#
+# `attempt_scope` above is the same argument one var over, and takes the
+# context-manager shape because its callers have a `with` to put it in. This one
+# takes a token instead: `build_agent_turn` must RETURN with the context still
+# published, because the turn it hands back is what `run_agent_loop` then drives.
+# So the turn carries its tokens and `agent_loop.close_turn` spends them in the
+# `finally` all three callers already had.
+#
+# ONE VAR IS DELIBERATELY NOT RESTORED: `_recorded_side_effects_var`. Its reader
+# is one frame ABOVE the turn. `worker.tasks.runtime.eval._invoke_agent_for_scenarios`
+# reads `get_recorded_side_effects()` after `_run_one_eval_turn` returns, on the
+# success path AND the failure path, because a scenario that talked the agent
+# into a refund and then timed out still observed the attempt, and the attempt is
+# the eval signal. Restoring that token would hand back the PREVIOUS turn's list
+# and the whole confusion matrix would read empty. Freshness there comes from
+# every bind installing a new list, plus `reset_side_effect_context`.
+# ---------------------------------------------------------------------------
+
+#: What one `bind_tool_context` call published: each ContextVar it set, paired
+#: with the token that `.set()` returned. `release_tool_context` is the only
+#: reader, and an empty tuple means nothing was published and nothing is owed.
+BoundToolContext = tuple[tuple[ContextVar, Token], ...]
+
+
+def release_tool_context(bound: BoundToolContext) -> None:
+    """Put every ContextVar one bind published back to what that bind found.
+
+    In reverse, so the mode goes back before the identity it was published with.
+
+    A RESET THAT CANNOT BE MADE IS LOGGED, NOT RAISED. A token belongs to the
+    context that made it, and `reset` throws when it is spent twice or crosses a
+    context boundary. Either is a caller bug worth seeing, and neither may replace
+    the exception a `finally` is unwinding — a turn that failed on a tenant
+    connection would otherwise be reported as a contextvars error.
+    """
+    for var, token in reversed(bound):
+        try:
+            var.reset(token)
+        except (ValueError, RuntimeError) as exc:
+            log.warning("tool_context.not_released", var=var.name, error=str(exc))
 
 
 def reset_side_effect_context() -> None:
@@ -1158,7 +1211,7 @@ def _require_side_effect_mode(caller: str, side_effects: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# bind_tool_context — the one entry point, and the three rules it follows.
+# bind_tool_context — the one entry point, and the four rules it follows.
 #
 # Every tool handler reads its tenant, its agent and its mode from the ContextVars
 # below, and whoever publishes last owns the turn. Every caller reaches this
@@ -1188,9 +1241,31 @@ def _require_side_effect_mode(caller: str, side_effects: str) -> None:
 # another's, or one red-team message's verdicts as the next message's. That is
 # worse than no recording: it is a wrong observation that looks right.
 #
-# The prose sits here rather than in the docstring because lizard measures a
-# function from its `def` to its last line, and this one was 30 lines over the
-# standard with every word of it inside.
+# WHAT IT PUBLISHES, IT HANDS BACK THE KEY TO (#98). The return value pairs each
+# ContextVar with the token its `.set()` returned, and `release_tool_context`
+# spends them. The mode used to be published and never restored, which made a
+# leak into the next task the default and correctness a property of the call
+# graph. `release_tool_context`'s own block above carries the rest of it,
+# including the one var this pair deliberately leaves in place.
+#
+# The arguments are described one line each below and at length here, because
+# lizard measures a function from its `def` to its last line and every word
+# inside the docstring counts against the standard.
+#
+#   conn_str                 decrypted tenant DSN. Never logged (CTL-08).
+#   agent_id / agent_name    the agent row's id and display name, for logging.
+#   strategy                 RetrievalStrategy parsed from agent.retrieval_strategy.
+#   conversation_id          conversation UUID the escalation writes go under.
+#   notify_fn                Callable(reason, context), fire and forget.
+#   tenant_id                HKDF salt source for credential derivation (INT-01).
+#   verified_session_token   IDV-05 token off the task arg, "" when there is no
+#                            verified session, which lets every non-IDV tool call
+#                            pass through. NEVER logged (T-04-03-05).
+#   job_id                   OPS-05/06, threaded into retrieve_tool's
+#                            retrieval_metrics write. Empty when omitted.
+#   side_effects             "live" or "recorded", defaulting to "live" so every
+#                            pre-existing caller keeps the behaviour it had. The
+#                            SideEffectMode block above says why it points there.
 # ---------------------------------------------------------------------------
 
 
@@ -1205,27 +1280,16 @@ def bind_tool_context(
     verified_session_token: str = "",
     job_id: str = "",
     side_effects: str = "live",
-) -> None:
-    """Publish one turn's tenant-scoped state into the per-task ContextVars.
+) -> BoundToolContext:
+    """Publish one turn's tenant-scoped state, and hand back the way to unpublish it.
 
-    The block comment above carries the three rules this follows.
+    The block comment above carries the four rules this follows and describes
+    every argument.
 
-    Args:
-        conn_str:                Decrypted tenant DB connection string.
-        agent_id:                Agent UUID string (for logging / metadata).
-        agent_name:              Agent display name (for logging / metadata).
-        strategy:                RetrievalStrategy parsed from agent.retrieval_strategy JSONB.
-        conversation_id:         Conversation UUID for escalation DB writes.
-        notify_fn:               Callable(reason: str, context: str) — fire-and-forget notification.
-        tenant_id:               Tenant UUID string for credential derivation (INT-01).
-        verified_session_token:  IDV-05 token from the Celery task arg. NEVER logged (T-04-03-05).
-                                 Empty when no verified session is present, which lets every
-                                 non-IDV tool call pass through.
-        job_id:                  OPS-05/06: Celery job_id, threaded into retrieve_tool's
-                                 retrieval_metrics write path via _job_id_var. Empty when omitted.
-        side_effects:            D1/P1b (BACKLOG 2.5): "live" or "recorded", defaulting to "live" so
-                                 every pre-existing caller keeps the behaviour it had. The
-                                 SideEffectMode block above says why the default points that way.
+    Returns:
+        BoundToolContext: what was published, for `release_tool_context`. The
+            caller owns it for the life of the turn and spends it in a `finally`;
+            `agent_loop.close_turn` is where the three turn callers do that.
 
     Raises:
         ValueError: side_effects is neither "live" nor "recorded". Loud on purpose, because a
@@ -1233,23 +1297,27 @@ def bind_tool_context(
     """
     _require_side_effect_mode("bind_tool_context", side_effects)
 
-    _conn_str_var.set(conn_str)
-    _agent_id_var.set(agent_id)
-    _tenant_id_var.set(tenant_id)
-    _agent_name_var.set(agent_name)
-    _strategy_var.set(strategy)
-    _conversation_id_var.set(conversation_id)
-    _notify_fn_var.set(notify_fn)
-    _job_id_var.set(job_id)
-
-    # D-10 (suspenders): this turn's retrieve counter starts at zero.
-    _retrieve_call_count_var.set(0)
-    # IDV-05: read by the gate in transactional/tools.py. NEVER logged (T-04-03-05).
-    _verified_session_token_var.set(verified_session_token)
-
+    published = (
+        (_conn_str_var, conn_str),
+        (_agent_id_var, agent_id),
+        (_tenant_id_var, tenant_id),
+        (_agent_name_var, agent_name),
+        (_strategy_var, strategy),
+        (_conversation_id_var, conversation_id),
+        (_notify_fn_var, notify_fn),
+        (_job_id_var, job_id),
+        (_retrieve_call_count_var, 0),  # D-10: this turn's retrieve counter starts at zero
+        (_verified_session_token_var, verified_session_token),  # IDV-05, never logged
+        (_side_effects_var, side_effects),  # the mode, after every step that can raise
+        (_tool_results_var, []),  # a fresh sink, never the previous turn's verdicts
+    )
     log.debug("bind_tool_context.ready", agent_id=agent_id, conversation_id=conversation_id)
+    # NOTHING BETWEEN HERE AND THE RETURN MAY RAISE. The tokens exist only in this
+    # tuple, so a step that threw after the mode was set would leave "recorded" in
+    # force with nothing holding the key to it.
+    bound: BoundToolContext = tuple((var, var.set(value)) for var, value in published)
 
-    # D1/P1b: the mode and two fresh sinks, last. Reason in the block above.
-    _side_effects_var.set(side_effects)
+    # Fresh, and outside `bound` on purpose: the eval reads this sink after the
+    # turn returns. `release_tool_context`'s block comment carries the argument.
     _recorded_side_effects_var.set([])
-    _tool_results_var.set([])
+    return bound

@@ -253,8 +253,13 @@ def _drive_eval_turn(turn, *, question: str, run_id: str) -> dict:
     `record_turn_calls` gives. Writing one opens a tenant connection, and the loop
     runs on an event loop with a wall-clock ceiling over it. On BOTH paths, because
     a scenario that timed out still paid for the calls it made.
+
+    `close_turn` also hands this turn's tool ContextVars back, so the run's
+    "recorded" mode dies with the scenario that asked for it (#98). The recorded
+    side-effect sink deliberately survives: `_invoke_agent_for_scenarios` reads it
+    once this returns, and on the failure path too.
     """
-    from app.services.agent_loop import record_turn_calls, run_agent_loop  # noqa: PLC0415
+    from app.services.agent_loop import close_turn, run_agent_loop  # noqa: PLC0415
     from app.worker.tasks.runtime.agent import AGENT_TURN_TIMEOUT_S  # noqa: PLC0415
 
     sink = _EvalEventSink()
@@ -268,7 +273,7 @@ def _drive_eval_turn(turn, *, question: str, run_id: str) -> dict:
             )
         )
     finally:
-        record_turn_calls(turn)
+        close_turn(turn)
 
 
 def _run_one_eval_turn(

@@ -38,9 +38,10 @@ def _seam(**_kwargs):
     tenant connection string; neither belongs in a test about the task body. The
     only field the task reads off the turn is `calls`, the ledger rows the loop
     accumulates, so that is what this carries. An empty list prices the turn at
-    zero, which is correct for a turn that made no model call.
+    zero, which is correct for a turn that made no model call. `bound` is empty
+    beside it: `close_turn` reads it to hand the tool ContextVars back (#98).
     """
-    return SimpleNamespace(calls=[])
+    return SimpleNamespace(calls=[], bound=())
 
 
 def _make_agent() -> MagicMock:

@@ -350,7 +350,6 @@ class TestWidgetJobEvents:
         so the SSE response opens and closes immediately without blocking.
         Updated for F8: mock DB must return a Job row (agent_id lookup added).
         """
-        from app.models.job import Job
 
         job_id = uuid4()
         agent_id = uuid4()
@@ -395,7 +394,6 @@ class TestWidgetJobEvents:
         The route, not the generator, chooses the terminal set; a route wired to the
         default set would still hold a slot for 120s after the answer.
         """
-        from app.models.job import Job
         from app.services.sse import CUSTOMER_TERMINAL_EVENTS
 
         job_id = uuid4()
@@ -637,7 +635,6 @@ class TestWidgetSSESlotsF8:
         _release_sse_slot as a no-op; verifies both helpers are called.
         Security: T-04.1-02-02 — _release_sse_slot must run even on disconnect.
         """
-        from app.models.job import Job
 
         job_id = uuid4()
         agent_id = uuid4()
@@ -688,7 +685,6 @@ class TestWidgetSSESlotsF8:
         Mocks _acquire_sse_slot to return False (capacity exceeded).
         Security: T-04.1-02-02 — connection exhaustion DoS prevention.
         """
-        from app.models.job import Job
 
         job_id = uuid4()
         agent_id = uuid4()

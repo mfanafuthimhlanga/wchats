@@ -53,7 +53,11 @@ from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt
 from app.domain.red_team_result import RedTeamResult
 from app.models.agent import Agent
-from app.services.agent_tools import RetrievalStrategy, bind_tool_context
+from app.services.agent_tools import (
+    RetrievalStrategy,
+    bind_tool_context,
+    release_tool_context,
+)
 from app.services.red_team_probe import _build_transactional_probe_fn
 from app.services.red_team_service import (
     RedTeamFinding,
@@ -558,31 +562,6 @@ def run_red_team(self, agent_id: str) -> dict:
     probe_fn = _build_probe_fn(agent, conn_str, ledger)
     transactional_probe_fn = _build_transactional_probe_fn(agent, conn_str, tenant_id_str)
 
-    # RTX-02 (ValueBoundEvasion) and RTX-03 (IdentityBypass) are deterministic —
-    # they call red_team_probe.invoke_probe_tool directly instead of driving a
-    # conversational model turn, so (unlike transactional_probe_fn,
-    # which seeds the dispatcher ContextVars itself inside its own
-    # asyncio.run() call for every probe message) they need those ContextVars
-    # seeded once here, synchronously, before Step 5 begins.
-    # red_team_probe.invoke_probe_tool's own contract is explicit: "The caller
-    # must have already populated the dispatcher ContextVars via
-    # bind_tool_context()." asyncio.run()/Task creation copies the *current*
-    # thread context (contextvars.copy_context()) at Task-creation time, so
-    # values set here — before any asyncio.run() call in Step 5 — propagate
-    # into each runner's own event loop. conn_str is never logged.
-    _rtx_strategy = RetrievalStrategy.model_validate(agent.retrieval_strategy or {})
-    bind_tool_context(
-        conn_str=conn_str,
-        agent_id=str(agent.id),
-        agent_name=agent.name,
-        strategy=_rtx_strategy,
-        conversation_id=str(uuid.uuid4()),
-        notify_fn=lambda reason, context: None,  # never send a real escalation email
-        tenant_id=tenant_id_str,
-        verified_session_token="",  # RTX-03's unverified posture (attempt 1)
-        job_id="",
-    )
-
     # ------------------------------------------------------------------
     # Step 5 — Run six agents sequentially (no chord — worker_pool=solo)
     # Wrapped in a single try so a partial failure can update status='failed'.
@@ -599,6 +578,30 @@ def run_red_team(self, agent_id: str) -> dict:
     observations: list[VectorObservation] = []
 
     _agents_conn = psycopg2.connect(conn_str, connect_timeout=5)
+    # RTX-02 (ValueBoundEvasion) and RTX-03 (IdentityBypass) are deterministic — they
+    # call red_team_probe.invoke_probe_tool directly instead of driving a conversational
+    # model turn, so (unlike transactional_probe_fn, which seeds the dispatcher
+    # ContextVars itself inside its own asyncio.run() call for every probe message) they
+    # need those ContextVars seeded once here, synchronously, before Step 5 begins.
+    # invoke_probe_tool's own contract is explicit: "The caller must have already
+    # populated the dispatcher ContextVars via bind_tool_context()." asyncio.run()/Task
+    # creation copies the *current* thread context (contextvars.copy_context()) at
+    # Task-creation time, so values set here — before any asyncio.run() call in Step 5 —
+    # propagate into each runner's own event loop. conn_str is never logged. The bind
+    # is the last statement before the `try` and, once the strategy has parsed, cannot
+    # raise, so the release in that `finally` owes exactly what it published (#98).
+    _rtx_strategy = RetrievalStrategy.model_validate(agent.retrieval_strategy or {})
+    _rtx_bound = bind_tool_context(
+        conn_str=conn_str,
+        agent_id=str(agent.id),
+        agent_name=agent.name,
+        strategy=_rtx_strategy,
+        conversation_id=str(uuid.uuid4()),
+        notify_fn=lambda reason, context: None,  # never send a real escalation email
+        tenant_id=tenant_id_str,
+        verified_session_token="",  # RTX-03's unverified posture (attempt 1)
+        job_id="",
+    )
     try:
         all_findings, run_result = _attempt_every_vector(
             _vector_plan(probe_fn, transactional_probe_fn, conn_str),
@@ -870,4 +873,5 @@ def run_red_team(self, agent_id: str) -> dict:
         return {}
 
     finally:
+        release_tool_context(_rtx_bound)
         _agents_conn.close()

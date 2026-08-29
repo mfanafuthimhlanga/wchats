@@ -108,7 +108,9 @@ def _seam_with(calls):
     `calls` is what the task prices the turn from and `ledger` is where the task
     sends those rows afterwards, so both are here.
     """
-    return lambda **_kwargs: SimpleNamespace(calls=list(calls), ledger=lambda call: None)
+    return lambda **_kwargs: SimpleNamespace(
+        calls=list(calls), ledger=lambda call: None, bound=()
+    )
 
 
 def _seam(**kwargs):

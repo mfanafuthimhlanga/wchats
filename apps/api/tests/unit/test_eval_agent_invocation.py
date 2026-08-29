@@ -357,12 +357,15 @@ class _Options:
     must be recognisably the seam's own object in a failure message.
 
     It carries `calls` and `ledger` because the eval writes the turn's ledger rows
-    after the turn, off the event loop, and reads both to do it.
+    after the turn, off the event loop, and reads both to do it. `bound` is the
+    third: `close_turn` reads it to hand this turn's tool ContextVars back (#98),
+    and a double without the field would fail there for a reason about the double.
     """
 
     def __init__(self, ledger=None, calls=None) -> None:
         self.calls: list = list(calls or [])
         self.ledger = ledger if ledger is not None else (lambda call: None)
+        self.bound: tuple = ()
 
     def __repr__(self) -> str:  # pragma: no cover - only read on failure
         return "<options returned by the seam>"
