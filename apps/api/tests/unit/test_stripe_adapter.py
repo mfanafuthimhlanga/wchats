@@ -57,9 +57,9 @@ async def test_issue_refund_idempotency_key() -> None:
       with a currency field; the currency is derived from the original charge)
     - Returns IssueRefundOutput(refund_id=<mock id>, status="refunded")
     """
+    from app.domain.transactional_schemas import IssueRefundInput
     from app.services.transactional.adapters.stripe_adapter import StripeAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.domain.transactional_schemas import IssueRefundInput
 
     handle = CredentialHandle(_raw=json.dumps({"api_key": "sk_test_xxx"}))
     adapter = StripeAdapter(handle=handle, currency_code="USD")
@@ -110,9 +110,9 @@ async def test_currency_from_config_not_args() -> None:
     is no path for user-controlled currency to reach the Stripe API. The adapter stores
     self._currency_code from config but correctly does NOT forward it for charge-based refunds.
     """
+    from app.domain.transactional_schemas import IssueRefundInput
     from app.services.transactional.adapters.stripe_adapter import StripeAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.domain.transactional_schemas import IssueRefundInput
 
     handle = CredentialHandle(_raw=json.dumps({"api_key": "sk_test_zzz"}))
     # Configured with ZAR (South African Rand) — deliberately non-default to show
@@ -156,9 +156,9 @@ async def test_update_subscription() -> None:
     - idempotency_key is forwarded via options dict
     - Returns UpdateSubscriptionOutput(subscription_id=updated_sub.id, status="updated")
     """
+    from app.domain.transactional_schemas import UpdateSubscriptionInput
     from app.services.transactional.adapters.stripe_adapter import StripeAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.domain.transactional_schemas import UpdateSubscriptionInput
 
     handle = CredentialHandle(_raw=json.dumps({"api_key": "sk_test_sub"}))
     adapter = StripeAdapter(handle=handle, currency_code="USD")
@@ -215,9 +215,9 @@ async def test_sync_offloaded() -> None:
     """
     import inspect
 
+    from app.domain.transactional_schemas import IssueRefundInput
     from app.services.transactional.adapters.stripe_adapter import StripeAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.domain.transactional_schemas import IssueRefundInput
 
     handle = CredentialHandle(_raw=json.dumps({"api_key": "sk_test_async"}))
     adapter = StripeAdapter(handle=handle, currency_code="GBP")
@@ -273,9 +273,9 @@ async def test_place_order_checkout_session() -> None:
     - Returns PlaceOrderOutput(status="pending_confirmation", order_id=<session.id>)
     - No card-number/CVC/expiry field in the params (PCI boundary preserved)
     """
+    from app.domain.transactional_schemas import PlaceOrderInput
     from app.services.transactional.adapters.stripe_adapter import StripeAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.domain.transactional_schemas import PlaceOrderInput
 
     handle = CredentialHandle(_raw=json.dumps({"api_key": "sk_test_order"}))
     adapter = StripeAdapter(handle=handle, currency_code="EUR")
@@ -358,13 +358,13 @@ async def test_unsupported_methods_raise() -> None:
     StripeAdapter only supports refund, subscription, and checkout. The dispatcher's
     except Exception handler catches NotImplementedError and returns is_error=True.
     """
-    from app.services.transactional.adapters.stripe_adapter import StripeAdapter
-    from app.services.transactional.credential_service import CredentialHandle
     from app.domain.transactional_schemas import (
         BookSlotInput,
         CancelOrderInput,
         UpdateCustomerRecordInput,
     )
+    from app.services.transactional.adapters.stripe_adapter import StripeAdapter
+    from app.services.transactional.credential_service import CredentialHandle
 
     handle = CredentialHandle(_raw=json.dumps({"api_key": "sk_test_stub"}))
     adapter = StripeAdapter(handle=handle, currency_code="USD")

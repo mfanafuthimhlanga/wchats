@@ -79,6 +79,12 @@ _CORS_MAX_AGE = "3600"
 # ---------------------------------------------------------------------------
 # SSE slot cap constant (F8 — T-04.1-02-02)
 # ---------------------------------------------------------------------------
+#: The one job kind this router creates and the only one its public SSE endpoint will
+#: stream. ONE definition for the producer and the check, because two spellings of one
+#: vocabulary is FM-012: the row is written here and read forty lines down, and a typo in
+#: either would 404 every customer turn or reopen #109, with nothing going red.
+CUSTOMER_TURN_JOB_KIND = "agent_turn"
+
 _MAX_CONCURRENT_SSE_PER_AGENT = 50
 
 # ---------------------------------------------------------------------------
@@ -449,7 +455,7 @@ async def post_widget_chat(
     job = Job(
         tenant_id=agent.tenant_id,
         agent_id=agent.id,
-        kind="agent_turn",
+        kind=CUSTOMER_TURN_JOB_KIND,
         status="pending",
     )
     db.add(job)
@@ -517,6 +523,32 @@ async def post_widget_chat(
 # ---------------------------------------------------------------------------
 
 
+async def _customer_turn_agent_id(db: AsyncSession, job_id: UUID) -> UUID | None:
+    """The job's agent_id, or 404 if it is not a customer turn this router served.
+
+    404 rather than 403 on the kind, deliberately. A 403 confirms the id exists, and an
+    id that cannot be confirmed is the whole of the UUID4 argument the endpoint's
+    docstring rests on. The two refusals are indistinguishable from outside.
+
+    Extracted so the check has a seam of its own: the endpoint around it is SSE
+    plumbing, and a test that had to stand a streaming response up to prove a pipeline
+    job is refused would be testing the plumbing instead.
+
+    Returns:
+        The job's agent_id, which is nullable on the model and is used only as the
+        per-agent SSE slot key.
+
+    Raises:
+        HTTPException: 404, for a job that does not exist and for one that is not a
+            customer turn.
+    """
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job_row = result.scalar_one_or_none()
+    if job_row is None or job_row.kind != CUSTOMER_TURN_JOB_KIND:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job_row.agent_id
+
+
 @router.get("/widget/jobs/{job_id}/events")
 async def widget_job_events(
     request: Request,
@@ -529,8 +561,13 @@ async def widget_job_events(
     R-03 resolution: EventSource cannot send Authorization headers, so this public
     sibling reuses event_generator from sse.py with public=True, which filters every
     payload through PUBLIC_EVENT_FIELDS and fails closed on an event type that map does
-    not name (#104, #83). Security: job_id is a server-generated UUID4 (~122 bits
-    entropy), unguessable and short-lived (a terminal event closes the stream).
+    not name (#104, #83).
+
+    Security is TWO checks, not one. The job id is a server-generated UUID4, so it
+    cannot be guessed; and its kind must be a customer turn, so an ingestion or
+    provisioning id cannot be replayed here (#109). Entropy alone was the whole argument
+    until #109, and "short-lived" was only ever true of a turn: a pipeline job runs for
+    minutes and its id travels through admin routes and task arguments.
 
     F8 controls (T-04.1-02-02, T-04.1-02-03): a per-agent_id concurrent SSE connection
     cap (_MAX_CONCURRENT_SSE_PER_AGENT=50) and an asyncio.timeout(120) on the loop.
@@ -544,15 +581,7 @@ async def widget_job_events(
     Headers: X-Accel-Buffering: no, so nginx does not buffer; Cache-Control: no-store;
     and Access-Control-Allow-Origin: *, which the cross-origin widget requires.
     """
-    # ------------------------------------------------------------------
-    # 1. Resolve agent_id from Job row (needed for per-agent slot key)
-    # ------------------------------------------------------------------
-    result = await db.execute(select(Job).where(Job.id == job_id))
-    job_row = result.scalar_one_or_none()
-    if job_row is None:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    agent_id_for_job = job_row.agent_id
+    agent_id_for_job = await _customer_turn_agent_id(db, job_id)
 
     # ------------------------------------------------------------------
     # 2. Acquire SSE slot — returns 503 if agent at connection capacity

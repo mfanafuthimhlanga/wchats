@@ -43,8 +43,14 @@ def _seam(**kwargs):
     fields the task reads off the turn are here: `calls`, the rows the loop
     accumulates, and `ledger`, where the task sends them once the turn is over.
     An empty `calls` prices the turn at unknown, never at zero.
+
+    `bound` is the third, and it is empty because this turn published no tool
+    context. `close_turn` reads it to hand the ContextVars back (#98), and a
+    double without the field would fail there for a reason about the double.
     """
-    return SimpleNamespace(calls=[], ledger=kwargs.get("ledger", lambda call: None))
+    return SimpleNamespace(
+        calls=[], ledger=kwargs.get("ledger", lambda call: None), bound=()
+    )
 
 
 def _a_model_call():
@@ -274,7 +280,7 @@ def _seam_holding(*calls):
     """
     def _seam_with_rows(**kwargs):
         return SimpleNamespace(
-            calls=list(calls), ledger=kwargs.get("ledger", lambda call: None)
+            calls=list(calls), ledger=kwargs.get("ledger", lambda call: None), bound=()
         )
 
     return _seam_with_rows

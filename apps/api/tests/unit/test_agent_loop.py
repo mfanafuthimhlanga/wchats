@@ -40,6 +40,7 @@ WHAT THE BUDGET TESTS PRICE
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -60,6 +61,7 @@ from app.services.agent_loop import (
     RETRIEVE_RESULT_IS_ERROR_KEY,
     AgentTurn,
     build_agent_turn,
+    close_turn,
     record_turn_calls,
     run_agent_loop,
 )
@@ -68,8 +70,10 @@ from app.services.agent_tools import (
     agent_tool_definitions,
     current_side_effect_mode,
     get_recorded_side_effects,
-    reset_side_effect_context,
+    get_tool_results,
+    record_suppressed_side_effect,
 )
+from tests.agent_loop_doubles import STOP_REASONS
 
 TENANT = "11111111-1111-1111-1111-111111111111"
 JOB = "33333333-3333-3333-3333-333333333333"
@@ -267,14 +271,6 @@ def _build(client=None, **overrides) -> AgentTurn:
         return build_agent_turn(**_seam_kwargs(**overrides))
 
 
-@pytest.fixture(autouse=True)
-def _clean_side_effect_context():
-    """The mode is process sticky, so each test starts and ends at the default."""
-    reset_side_effect_context()
-    yield
-    reset_side_effect_context()
-
-
 # ---------------------------------------------------------------------------
 # The seam: build_agent_turn
 # ---------------------------------------------------------------------------
@@ -429,8 +425,15 @@ class TestTheSeam:
             build_agent_turn(**_seam_kwargs())
 
     def test_the_mode_reaches_the_tool_layer(self):
-        _build(side_effects="recorded")
+        """The publish half. `TestClosingTheTurn` below is the restore half.
+
+        Closed at the end because a test that opens a turn owns it, exactly as
+        the three production callers do. The autouse fixture that used to do this
+        for the whole file is what #98 removed.
+        """
+        turn = _build(side_effects="recorded")
         assert current_side_effect_mode() == "recorded"
+        close_turn(turn)
 
     def test_live_mode_reaches_the_tool_layer_too(self):
         _build(side_effects="live")
@@ -439,11 +442,12 @@ class TestTheSeam:
     def test_recorded_mode_records_the_escalation_instead_of_sending_it(self):
         agent = _agent()
         with patch("app.services.agent_loop.send_escalation_email") as send:
-            _build(agent=agent, side_effects="recorded")
+            turn = _build(agent=agent, side_effects="recorded")
             from app.services.agent_tools import _notify_fn_var
 
             _notify_fn_var.get()("frustrated customer", "third repeat")
 
+        close_turn(turn)
         send.assert_not_called()
         recorded = get_recorded_side_effects()
         assert [entry["kind"] for entry in recorded] == ["escalation.notify"]
@@ -495,6 +499,128 @@ class TestTheSeam:
 
         send.assert_not_called()
         assert seen == [("frustrated customer", "third repeat")]
+
+
+# ---------------------------------------------------------------------------
+# close_turn: the two debts a finished turn owes (#98)
+#
+# The seam PUBLISHES the tool context and returns with it still in force, because
+# the turn it hands back is what `run_agent_loop` then drives. So the restore
+# cannot live inside the seam. It lives in `close_turn`, in the `finally` all
+# three turn callers already had for the ledger.
+#
+# Until #98 there was no restore at all. The mode is process-context sticky and
+# the Celery prefork pool does not isolate contextvars per task, so an eval
+# turn's "recorded" stayed in force for the customer turn that ran next in that
+# worker's context — and that customer stops being refunded with no error
+# anywhere. Two autouse fixtures, one in this file and one in
+# test_red_team_probe.py, were undoing it for the suite; both are gone.
+# ---------------------------------------------------------------------------
+
+
+class TestClosingTheTurn:
+    def test_closing_the_turn_hands_the_mode_back(self):
+        turn = _build(side_effects="recorded")
+        assert current_side_effect_mode() == "recorded"
+
+        close_turn(turn)
+
+        assert current_side_effect_mode() == "live"
+
+    def test_the_mode_goes_back_even_when_the_ledger_step_dies(self):
+        """THE PIN ON THE `finally`, and the reason `close_turn` has one.
+
+        `record_turn_calls` swallows a ledger row that will not write, but the
+        read of `turn.calls` itself can still die. Spelling the pair as two
+        statements instead of a try/finally passes every other test in this class
+        and leaks on exactly this path, which is how #98 arrived in the first
+        place: a restore that runs only when nothing went wrong.
+
+        `calls=None` kills it where `record_turn_calls` does `list(turn.calls)`.
+        """
+        turn = replace(_build(side_effects="recorded"), calls=None)
+        assert current_side_effect_mode() == "recorded"
+
+        with pytest.raises(TypeError):
+            close_turn(turn)
+
+        assert current_side_effect_mode() == "live", (
+            "the ledger step raised and took the restore with it. Drop the "
+            "`finally` from close_turn and this is the test that notices."
+        )
+
+    def test_closing_the_turn_still_writes_the_ledger_rows(self):
+        """The other debt. A restore that swallowed the ledger would pass above."""
+        written = []
+        turn = _build(side_effects="live", ledger=written.append)
+        turn.calls.append(_luna_call(10, 5))
+
+        assert close_turn(turn) == 1
+        assert len(written) == 1
+
+    def test_a_seam_that_dies_after_the_bind_hands_the_mode_back(self):
+        """No turn exists to carry the tokens, so the seam spends them itself.
+
+        `reset_side_effect_context` at the top of the seam covers a failure
+        BEFORE the bind. This is the window after it: `route_for` and
+        `agent_tool_definitions` both run once the mode is already published.
+        """
+        with (
+            patch(
+                "app.services.agent_loop.make_async_client",
+                return_value=_Client(_completion(content="ok")),
+            ),
+            patch(
+                "app.services.agent_loop.agent_tool_definitions",
+                side_effect=RuntimeError("the tool definitions could not be built"),
+            ),
+            pytest.raises(RuntimeError, match="tool definitions"),
+        ):
+            build_agent_turn(**_seam_kwargs(side_effects="recorded"))
+
+        assert current_side_effect_mode() == "live"
+
+    def test_closing_the_turn_takes_the_tool_result_sink_with_it(self):
+        """The verdict sink is a per-turn observation and it dies with the turn.
+
+        A sink surviving into the next turn reports one message's verdicts as the
+        next message's, which the red-team probe reads as its transcript.
+        """
+        from app.domain.tool_result import Outcome, ToolResult
+        from app.services.agent_tools import publish_tool_result
+
+        turn = _build(side_effects="recorded")
+        publish_tool_result(
+            ToolResult(skill="issue_refund", outcome=Outcome.ok, text="R2000 refunded")
+        )
+        assert len(get_tool_results()) == 1
+
+        close_turn(turn)
+
+        assert get_tool_results() == []
+
+    def test_closing_the_turn_leaves_the_recorded_sink_for_its_reader(self):
+        """The ONE var the restore deliberately does not touch, and why.
+
+        `eval._invoke_agent_for_scenarios` reads `get_recorded_side_effects()`
+        after `_run_one_eval_turn` returns, on the success path AND the failure
+        path, because a scenario that talked the agent into a refund and then
+        timed out still observed the attempt. Restoring this token would hand
+        back the PREVIOUS turn's list and the confusion matrix would read empty.
+        Freshness comes from every bind installing a new list instead.
+        """
+        turn = _build(side_effects="recorded")
+        record_suppressed_side_effect("transactional.adapter", {"skill": "issue_refund"})
+
+        close_turn(turn)
+
+        assert [entry["kind"] for entry in get_recorded_side_effects()] == [
+            "transactional.adapter"
+        ], (
+            "the recorded side-effect sink went back with the mode. The eval "
+            "reads it one frame above the turn and would score every scenario "
+            "as having attempted nothing."
+        )
 
 
 class TestTheClientFactory:
@@ -1237,6 +1363,84 @@ class TestTheCeilings:
 
         assert out["stop_reason"] == "max_model_calls"
         assert out["num_turns"] == 2
+
+
+# ---------------------------------------------------------------------------
+# The stop_reason vocabulary
+# ---------------------------------------------------------------------------
+
+
+class TestTheStopReasonVocabulary:
+    """Every ending records a word `tests.agent_loop_doubles.STOP_REASONS` holds.
+
+    WHAT WENT WRONG WITHOUT IT. `stop_reason` is a passthrough of the provider's
+    `finish_reason` wherever the loop does not name the ending itself, so #49
+    changed the values without touching a line that mentions them. Five test
+    files went on spelling it `end_turn`, Anthropic's word, and one of them
+    ASSERTED the turn_metrics row held `end_turn` while the double a hundred
+    lines above supplied that same string. Nothing in the suite compared the
+    vocabulary the tests use against the vocabulary the loop emits.
+
+    WHAT THIS ADDS THAT THE TESTS ABOVE DO NOT. Each ending is already pinned by
+    name, one assertion per ending. That is five literals, and a sixth ending
+    arrives with no literal at all. This drives all five and reads them against
+    one declared set, so a new ending is red here until the set is told about it,
+    and the set stays evidence rather than another hand-written guess.
+
+    WHAT IT DOES NOT CATCH. The client is scripted, so a real provider inventing
+    a new `finish_reason` reaches production before it reaches this test. What is
+    pinned is the loop's own vocabulary and the doubles' agreement with it.
+    """
+
+    def _always_calls_a_tool(self):
+        return _completion(
+            tool_calls=[_tool_call("call-1", "retrieve", '{"query": "again"}')],
+            finish_reason="tool_calls",
+        )
+
+    async def test_every_ending_records_a_word_the_doubles_know(self):
+        endings = {
+            "the provider said stop": _turn(_Client(_completion(content="ok"))),
+            "the provider said length": _turn(
+                _Client(_completion(content="ok", finish_reason="length"))
+            ),
+            "the reply carried no choices": _turn(_Client(SimpleNamespace(choices=[]))),
+            "the call ceiling": _turn(
+                _Client(self._always_calls_a_tool()),
+                tools=[_tool("retrieve", _echo_handler)],
+                max_model_calls=2,
+            ),
+            # 1000 in and 500 out of Luna is $0.0008, over a $0.0005 ceiling.
+            "the budget ceiling": _turn(
+                _Client(self._always_calls_a_tool()),
+                tools=[_tool("retrieve", _echo_handler)],
+                max_budget_usd=0.0005,
+                calls=[_luna_call(1000, 500)],
+            ),
+        }
+
+        recorded = {}
+        for name, turn in endings.items():
+            out, _ = await _drive(turn)
+            recorded[name] = out["stop_reason"]
+
+        # The control. Five endings that all recorded the same word would satisfy
+        # the membership check below without any of them being driven.
+        assert len(set(recorded.values())) == len(recorded), (
+            f"two of the five endings recorded the same word: {recorded}. The "
+            "harness stopped reaching the endings it names, so the membership "
+            "check under it is reading one ending five times."
+        )
+
+        unknown = {n: r for n, r in recorded.items() if r not in STOP_REASONS}
+        assert not unknown, (
+            f"the loop recorded {unknown}, and STOP_REASONS holds "
+            f"{sorted(STOP_REASONS)}. Either the loop grew an ending the doubles "
+            "do not know, or the provider vocabulary moved the way it did at #49 "
+            "when `end_turn` became `stop`. Add the word to "
+            "tests/agent_loop_doubles.py and correct every double still handing "
+            "out the old one."
+        )
 
 
 # ---------------------------------------------------------------------------

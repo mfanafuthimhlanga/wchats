@@ -58,11 +58,11 @@ import structlog
 from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.security import fernet_decrypt, require_ciphertext
-from app.models.agent import Agent
-from app.services.chunking_service import chunk_document
-from app.services import storage_service
 from app.domain.docling_service import parse_document_from_bytes
 from app.domain.ingestion_job import IngestionJob
+from app.models.agent import Agent
+from app.services import storage_service
+from app.services.chunking_service import chunk_document
 from app.services.events import emit
 from app.worker.celery_app import celery_app
 from app.worker.tasks.pipeline.chain_edge import job_in_job_out

@@ -56,10 +56,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.services import red_team_service
-from app.services import agent_tools
-from app.services.transactional import enforcement
 from app.domain.pii_firewall import PII_DEFLECTION
+from app.domain.red_team_result import Severity
+from app.services import agent_tools, red_team_service
 from app.services.red_team_service import (
     ALLOWED_PROBE_TOOLS,
     INJECTION_ATTACK_VECTORS,
@@ -88,8 +87,8 @@ from app.services.red_team_service import (
     run_vector_attempts,
     seed_poisoned_chunk,
 )
-from app.domain.red_team_result import Severity
 from app.services.tool_loop import dispatch
+from app.services.transactional import enforcement
 from tests.model_doubles import factory, ledger
 
 # ---------------------------------------------------------------------------

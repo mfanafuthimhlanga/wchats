@@ -69,10 +69,8 @@ from unittest.mock import MagicMock
 import psycopg2
 import pytest
 
-from app.services import deployment_service
-from app.services import eval_service
+from app.services import deployment_service, eval_service
 from app.worker.tasks.runtime import eval as mod
-
 
 PRODUCTION = "postgresql://production/tenant"
 

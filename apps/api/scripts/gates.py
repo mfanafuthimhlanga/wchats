@@ -52,28 +52,38 @@ def tool(name):
 
 PYTHON = tool("python") if os.path.exists(tool("python")) else sys.executable
 
-# ruff check app exits 1 today on one pre-existing I001, so it cannot be the gate
-# as-is. It is pinned by COUNT: (file, rule) -> how many times that rule may
-# fire in that file. The gate fails three ways.
+# The gate reads `app tests`, the same two trees CI reads
+# (`ruff check apps/api/app/ apps/api/tests/`). It read `app` alone until #95, so
+# 23 violations sat under tests/ where the gate could not look and CI went red on
+# them.
+#
+# The dict is EMPTY as of 2026-08-29, so the gate holds the tree to zero and reaches
+# the same verdict as CI. It held one entry, an auto-fixable I001 in
+# app/worker/tasks/pipeline/chunk.py that #43 put on main. The gate passed on it and
+# CI's Lint job failed on it, so every pull request opened after #43 carried a red
+# check that this gate reported as clean. `ruff check --fix` closed it in one line.
+# Take the fix over the pin. A pinned violation is still a violation CI fails on, and
+# a gate that disagrees with CI tells the next session the tree is clean when it is not.
+#
+# Anything that does go in is pinned by COUNT: (file, rule) -> how many times that
+# rule may fire in that file. The gate fails three ways.
 #
 #   - a (file, rule) pair that is not on this list appears
-#   - a pinned pair fires MORE times than its count, e.g. a second I001 in
-#     chunk.py, which is a new violation wearing an already-pinned name
-#   - a pinned pair fires FEWER times, or stops firing: the line is stale, so lower
-#     it or delete it and the gate holds the tree to the smaller number
+#   - a pinned pair fires MORE times than its count, which is a new violation
+#     wearing an already-pinned name
+#   - a pinned pair fires FEWER times, or stops firing, which makes the line stale.
+#     Lower the count or delete the line, and the gate holds the tree to the
+#     smaller number
 #
 # The counts are what make the second case visible. Pinning bare pairs would let any
 # number of same-rule violations in a pinned file collapse onto the one pair and pass.
 #
-#   .venv/Scripts/ruff.exe check app --output-format=concise   (2026-08-15)
-#     app/services/agent_tools.py:33:1: I001 Import block is un-sorted or un-formatted
-#     app/worker/tasks/pipeline/chunk.py:45:1: I001 Import block is un-sorted or un-formatted
-#     Found 2 errors. [*] 2 fixable with the `--fix` option.
+#   .venv/Scripts/python.exe -m ruff check app tests --output-format=concise
+#   (2026-08-29, after the chunk.py fix)
+#     All checks passed!
 #
 # tests/unit/test_gates.py snapshots this dict and goes red on an addition.
-RUFF_BASELINE = {
-    ("app/worker/tasks/pipeline/chunk.py", "I001"): 1,
-}
+RUFF_BASELINE = {}
 
 # The complexity standard the repo holds itself to from now on. CCN 15 and 60 lines are
 # the numbers a function has to meet. `-a 11` sits on the worst parameter count in the
@@ -123,7 +133,7 @@ LIZARD_BASELINE = {
     ("app/api/v1/widget.py", "post_widget_feedback"): (4, 88),
     ("app/api/v1/widget.py", "post_widget_identity_request"): (3, 63),
     ("app/api/v1/widget.py", "post_widget_identity_verify"): (5, 88),
-    ("app/api/v1/widget.py", "widget_job_events"): (3, 76),
+    ("app/api/v1/widget.py", "widget_job_events"): (2, 73),
     ("app/services/actor_seam.py", "call_actor_gate"): (13, 183),
     ("app/services/agent_prompt.py", "build_system_prompt"): (14, 81),
     ("app/services/agent_tools.py", "escalate_to_human_tool"): (4, 101),
@@ -326,7 +336,7 @@ def run(command):
 
 def run_ruff():
     """Fail on any ruff violation beyond the counts pinned in RUFF_BASELINE."""
-    command = [tool("ruff"), "check", "app", "--output-format=concise"]
+    command = [tool("ruff"), "check", "app", "tests", "--output-format=concise"]
     print("\n$ " + " ".join(command), flush=True)
     result = subprocess.run(command, cwd=API_DIR, capture_output=True, text=True)
     output = result.stdout + result.stderr

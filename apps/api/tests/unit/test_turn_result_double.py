@@ -30,6 +30,12 @@ THE CONTROL IS THE SECOND DRIVE. "Both key sets match" is satisfied by a harness
 that never reached the firewall at all, so the leaking answer runs through the
 same loop and must come back deflected. That also says the branch which SETS
 `pii_detector` returns the same keys as the branch that leaves it None.
+
+THE SECOND TEST IS ABOUT ONE VALUE, NOT THE KEYS. `stop_reason` was the key set's
+blind spot: every double carried it, so no key ever went missing, and three of
+them carried Anthropic's `end_turn`, which the loop has not emitted since #49
+(issue #107). The helper now refuses a word outside `STOP_REASONS`, and the test
+below is the observation that the refusal fires.
 """
 
 from __future__ import annotations
@@ -38,6 +44,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.core.model_client import route_for
 from app.domain.pii_firewall import PII_DEFLECTION
 from app.services.agent_loop import (
@@ -45,8 +53,7 @@ from app.services.agent_loop import (
     AgentTurn,
     run_agent_loop,
 )
-
-from tests.agent_loop_doubles import canned_turn_result
+from tests.agent_loop_doubles import STOP_REASONS, canned_turn_result
 
 JOB_ID = "33333333-3333-3333-3333-333333333333"
 QUESTION = "Did my refund go through?"
@@ -133,3 +140,34 @@ def test_the_shared_double_carries_every_key_the_real_turn_returns() -> None:
             "app/worker/tasks/runtime/agent.py to make them tolerate a missing "
             "key: a turn whose seam did not scan is a turn nobody may serve."
         )
+
+
+def test_the_double_hands_out_the_word_the_real_turn_recorded() -> None:
+    """The helper's default `stop_reason` is what the loop put in the dict."""
+    real = _real_turn_result(CLEAN_ANSWER)
+
+    assert real["stop_reason"] in STOP_REASONS, (
+        f"the loop recorded {real['stop_reason']!r}, which STOP_REASONS does not "
+        "hold. tests/unit/test_agent_loop.py drives every ending against that set "
+        "and is the test to read first."
+    )
+    assert canned_turn_result(CLEAN_ANSWER)["stop_reason"] == real["stop_reason"]
+
+
+def test_the_double_refuses_a_word_the_loop_cannot_record() -> None:
+    """`end_turn` is issue #107 itself, and the helper is where it is caught.
+
+    Three call sites passed it as an override and a fourth asserted the
+    turn_metrics row held it. Every one of those was green, because the double
+    is what the assertion read. The override is checked rather than the default,
+    since the default was never the wrong one.
+    """
+    with pytest.raises(ValueError) as refused:
+        canned_turn_result(CLEAN_ANSWER, stop_reason="end_turn")
+
+    assert "end_turn" in str(refused.value)
+
+    # The positive half: a word the loop does emit still goes through, so the
+    # guard is not simply refusing every override.
+    exhausted = canned_turn_result(CLEAN_ANSWER, stop_reason="max_model_calls")
+    assert exhausted["stop_reason"] == "max_model_calls"

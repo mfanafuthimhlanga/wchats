@@ -90,10 +90,12 @@ from app.domain.tool_result import wire_text
 from app.services.agent_prompt import build_system_prompt
 from app.services.agent_tools import (
     SIDE_EFFECT_MODES,
+    BoundToolContext,
     RetrievalStrategy,
     agent_tool_definitions,
     bind_tool_context,
     record_suppressed_side_effect,
+    release_tool_context,
     reset_side_effect_context,
 )
 from app.services.escalation import send_escalation_email
@@ -242,6 +244,10 @@ class AgentTurn:
                          ceiling and the caller derives the turn's cost from it.
         ledger:          where those calls go once the turn is over.
                          `record_turn_calls` is what takes them there.
+        bound:           the ContextVars `bind_tool_context` published for this
+                         turn, paired with the tokens that put them back (#98).
+                         `close_turn` is what spends them. Defaults to empty, so
+                         a turn assembled without the seam owes nothing.
     """
 
     client: Any
@@ -252,6 +258,7 @@ class AgentTurn:
     max_budget_usd: float
     calls: list[ModelCall]
     ledger: Recorder
+    bound: BoundToolContext = ()
 
 
 def record_turn_calls(turn: AgentTurn) -> int:
@@ -282,6 +289,29 @@ def record_turn_calls(turn: AgentTurn) -> int:
             continue
         written += 1
     return written
+
+
+def close_turn(turn: AgentTurn) -> int:
+    """End one turn: write its ledger rows, then unpublish its tool context.
+
+    The two debts a finished turn owes, in one call, so a caller cannot pay one
+    and forget the other. All three turn callers already had a `finally` for the
+    ledger half; #98 is what happens when the other half is left to the call
+    graph — `bind_tool_context` published a side-effect mode that outlived the
+    turn, and a "recorded" from an eval turn was still in force for the customer
+    turn that ran next in that worker's context.
+
+    THE RELEASE IS IN A `finally`, and that is the whole point of the pair.
+    `record_turn_calls` swallows a ledger row that will not write, but the list
+    read itself can still die, and a release skipped because the ledger blew up
+    is the same leak wearing a different hat.
+
+    Returns what `record_turn_calls` returned: how many rows reached the ledger.
+    """
+    try:
+        return record_turn_calls(turn)
+    finally:
+        release_tool_context(turn.bound)
 
 
 def _escalation_notifier(agent, conversation_id: str, side_effects: str, override=None):
@@ -382,6 +412,29 @@ def _discard_client(client) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# build_agent_turn's arguments. Here rather than in the docstring, for the reason
+# `bind_tool_context`'s own block comment gives: lizard measures a function from
+# its `def` to its last line, and prose inside counts against the standard.
+#
+#   agent                    control-DB Agent row: id, tenant_id, name,
+#                            retrieval_strategy, soul fields.
+#   conn_str                 decrypted tenant DSN. Never logged, never a task
+#                            arg (CTL-08).
+#   conversation_id          conversation UUID string.
+#   job_id                   Celery job id (OPS-05/06 retrieval metrics).
+#   side_effects             "live" or "recorded". Mandatory (BACKLOG 2.5).
+#   ledger                   where each finished `ModelCall` goes once the turn
+#                            is over, through `close_turn`. Mandatory.
+#   verified_session_token   IDV-05 token, "" when there is none. NEVER logged
+#                            (T-04-03-05).
+#   soul_override            prompt-version soul fields (OPS-16), or None.
+#   notify_fn                what `escalate_to_human` calls, or None for the
+#                            notifier this mode implies. One caller passes one;
+#                            `_escalation_notifier` says which and why.
+# ---------------------------------------------------------------------------
+
+
 def build_agent_turn(
     *,
     agent,
@@ -396,16 +449,9 @@ def build_agent_turn(
 ) -> AgentTurn:
     """Assemble one turn of `agent`. THE SEAM, described in the module docstring.
 
-    Args:
-        agent:                  Control-DB Agent row: id, tenant_id, name, retrieval_strategy, soul fields.
-        conn_str:               Decrypted tenant DB connection string. Never logged, never a task arg (CTL-08).
-        conversation_id:        Conversation UUID string.
-        job_id:                 Celery job id (OPS-05/06 retrieval metrics).
-        side_effects:           "live" or "recorded". Mandatory (BACKLOG 2.5).
-        ledger:                 where each finished `ModelCall` goes once the turn is over, through `record_turn_calls`. Mandatory.
-        verified_session_token: IDV-05 token, "" when there is none. NEVER logged (T-04-03-05).
-        soul_override:          Prompt-version soul fields (OPS-16), or None.
-        notify_fn:              What `escalate_to_human` calls, or None for the notifier this mode implies. One caller passes one; `_escalation_notifier` says which and why.
+    The block comment above carries the arguments. The returned turn OWNS the tool
+    context this publishes: `close_turn` puts it back, and a turn that dies in here
+    puts it back before it raises (#98).
 
     Raises:
         TypeError:       `side_effects` or `ledger` was not passed. Neither has a default.
@@ -416,7 +462,7 @@ def build_agent_turn(
     # FIRST, before anything that can raise. `reset_side_effect_context` carries the reasoning.
     reset_side_effect_context()
     _check_mode(side_effects)
-    bind_tool_context(
+    bound = bind_tool_context(
         conn_str=conn_str,
         agent_id=str(agent.id),
         agent_name=agent.name,
@@ -437,10 +483,11 @@ def build_agent_turn(
             client=client, route=route_for(AGENT_TURN_PURPOSE),
             system_prompt=system_prompt, tools=agent_tool_definitions(),
             max_model_calls=MAX_MODEL_CALLS_PER_TURN, max_budget_usd=settings.AGENT_MAX_BUDGET_USD,
-            calls=calls, ledger=ledger,
+            calls=calls, ledger=ledger, bound=bound,
         )
-    except BaseException:
+    except BaseException:  # no turn exists to carry the tokens, so they are spent here
         _discard_client(client)
+        release_tool_context(bound)
         raise
 
 

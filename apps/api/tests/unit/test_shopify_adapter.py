@@ -52,9 +52,9 @@ async def test_issue_refund_calls_refund_create() -> None:
     - shopify.ShopifyResource.clear_session is called after execute (session hygiene)
     - Returns IssueRefundOutput(status="refunded")
     """
+    from app.domain.transactional_schemas import IssueRefundInput
     from app.services.transactional.adapters.shopify_adapter import ShopifyAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.domain.transactional_schemas import IssueRefundInput
 
     handle = CredentialHandle(_raw=json.dumps({"access_token": "shpat_test_abc"}))
     adapter = ShopifyAdapter(
@@ -150,9 +150,9 @@ async def test_place_order_calls_order_create() -> None:
     - Returns PlaceOrderOutput(status in {"placed", "pending_confirmation"})
     - Session is activated and cleared
     """
+    from app.domain.transactional_schemas import PlaceOrderInput
     from app.services.transactional.adapters.shopify_adapter import ShopifyAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.domain.transactional_schemas import PlaceOrderInput
 
     handle = CredentialHandle(_raw=json.dumps({"access_token": "shpat_test_xyz"}))
     adapter = ShopifyAdapter(
@@ -226,9 +226,9 @@ async def test_shop_url_from_constructor() -> None:
     - The access token is extracted from json.loads(handle.use())["access_token"]
     - No field named shop_url or url is read from args
     """
+    from app.domain.transactional_schemas import IssueRefundInput
     from app.services.transactional.adapters.shopify_adapter import ShopifyAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.domain.transactional_schemas import IssueRefundInput
 
     constructor_shop_url = "secure-store.myshopify.com"
     raw_token = "shpat_secure_token_xyz"
@@ -292,9 +292,9 @@ async def test_cancel_order_calls_order_cancel() -> None:
     - Returns CancelOrderOutput(status in {"cancelled", "pending_cancellation"})
     - Session is activated and cleared
     """
+    from app.domain.transactional_schemas import CancelOrderInput
     from app.services.transactional.adapters.shopify_adapter import ShopifyAdapter
     from app.services.transactional.credential_service import CredentialHandle
-    from app.domain.transactional_schemas import CancelOrderInput
 
     handle = CredentialHandle(_raw=json.dumps({"access_token": "shpat_cancel_token"}))
     adapter = ShopifyAdapter(
@@ -360,13 +360,13 @@ async def test_unsupported_methods_raise() -> None:
     except Exception handler catches NotImplementedError and returns is_error=True.
     The error message must mention 'ShopifyAdapter' so logs are clear.
     """
-    from app.services.transactional.adapters.shopify_adapter import ShopifyAdapter
-    from app.services.transactional.credential_service import CredentialHandle
     from app.domain.transactional_schemas import (
         BookSlotInput,
         UpdateCustomerRecordInput,
         UpdateSubscriptionInput,
     )
+    from app.services.transactional.adapters.shopify_adapter import ShopifyAdapter
+    from app.services.transactional.credential_service import CredentialHandle
 
     handle = CredentialHandle(_raw=json.dumps({"access_token": "shpat_stub_token"}))
     adapter = ShopifyAdapter(

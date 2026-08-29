@@ -107,8 +107,6 @@ def test_no_credential_in_tool_schema() -> None:
     The tool contract (T-14-02-01) forbids api_key, credential, secret, password,
     token, and access_token from appearing as input schema property keys.
     """
-    from app.services.transactional.registry import TOOL_REGISTRY
-
     # Pydantic Input model map — import the Input schemas directly
     from app.domain.transactional_schemas import (
         BookSlotInput,
@@ -118,6 +116,7 @@ def test_no_credential_in_tool_schema() -> None:
         UpdateCustomerRecordInput,
         UpdateSubscriptionInput,
     )
+    from app.services.transactional.registry import TOOL_REGISTRY
 
     _INPUT_MODELS = {
         "place_order": PlaceOrderInput,

@@ -85,8 +85,8 @@ from app.domain.transactional_schemas import SKILL_INPUT_MODELS
 from app.services.agent_loop import (
     AgentTurn,
     build_agent_turn,
+    close_turn,
     log_pii_firewall,
-    record_turn_calls,
     run_agent_loop,
 )
 from app.services.agent_tools import get_tool_results
@@ -604,9 +604,9 @@ def _build_transactional_probe_fn(
         read back. A fresh list per message is what keeps one attack's refund attempt
         out of the next attack's transcript.
 
-        `record_turn_calls` runs outside the timeout for the reason its own docstring
-        gives: writing a ledger row opens a tenant connection, and a sleeping Neon
-        endpoint takes 8 to 20 seconds to wake.
+        `close_turn` runs outside the timeout for the reason `record_turn_calls` gives:
+        a ledger row opens a tenant connection and a sleeping Neon endpoint takes 8 to 20
+        seconds to wake. It hands the tool ContextVars back too (#98).
 
         `red_team_mode()` wraps both, so `get_adapter_for_skill` short-circuits to
         the offline StubProviderAdapter before any credential resolution, for every
@@ -628,7 +628,7 @@ def _build_transactional_probe_fn(
                         asyncio.wait_for(_inner(message, turn), timeout=120.0)
                     )
                 finally:
-                    record_turn_calls(turn)
+                    close_turn(turn)
         except Exception as exc:  # noqa: BLE001
             log.warning("red_team_probe.victim_turn_failed", error=str(exc))
             return ""

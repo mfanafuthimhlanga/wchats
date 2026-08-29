@@ -385,7 +385,6 @@ def test_identity_bypass(clean_tenant):
     import asyncio
 
     from app.services.agent_tools import _verified_session_token_var
-    from app.services.identity_service import hash_session_token
     from app.services.red_team_probe import (
         ProbeToolResult,
         invoke_probe_tool,

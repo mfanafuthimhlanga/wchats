@@ -28,8 +28,8 @@ from app.domain.ingestion_job import IngestionJob
 from app.domain.retrieved_context import RetrievedChunk, RetrievedContext
 from app.services.retrieval_service import (
     RetrievalStrategy,
-    _expand_query,
     RrfFusion,
+    _expand_query,
     rrf_fuse_with_expansion,
 )
 from app.services.strategy_service import (

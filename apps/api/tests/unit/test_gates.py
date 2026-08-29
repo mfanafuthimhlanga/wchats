@@ -40,9 +40,7 @@ def test_lizard_flags_pin_the_standard():
 # larger value. Shrinking a baseline therefore needs no edit here. Growing one cannot
 # happen without editing this file, which is the point.
 
-PINNED_RUFF = {
-    ("app/worker/tasks/pipeline/chunk.py", "I001"): 1,
-}
+PINNED_RUFF = {}
 
 PINNED_LIZARD = {
     ("app/api/deps.py", "get_current_tenant"): (19, 120),

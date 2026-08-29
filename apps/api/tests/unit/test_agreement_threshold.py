@@ -32,8 +32,8 @@ from tests.evals.calibration.agreement import (
     cohens_kappa,
     confusion,
     human_ceiling,
-    tails,
     paired_difference,
+    tails,
 )
 
 

@@ -36,7 +36,6 @@ from unittest.mock import MagicMock, patch
 
 from app.domain.model_call import ModelCall, ModelSource
 from app.domain.pricing import cost_usd
-
 from tests.agent_loop_doubles import canned_turn_result
 
 # ---------------------------------------------------------------------------
@@ -109,7 +108,9 @@ def _seam_with(calls):
     `calls` is what the task prices the turn from and `ledger` is where the task
     sends those rows afterwards, so both are here.
     """
-    return lambda **_kwargs: SimpleNamespace(calls=list(calls), ledger=lambda call: None)
+    return lambda **_kwargs: SimpleNamespace(
+        calls=list(calls), ledger=lambda call: None, bound=()
+    )
 
 
 def _seam(**kwargs):
@@ -160,7 +161,7 @@ _CANNED_RESULT_WITH_METRICS = canned_turn_result(
         {"tool_name": "retrieve", "input": {"query": "returns"}, "result": "..."},
     ],
     num_turns=3,
-    stop_reason="end_turn",
+    stop_reason="stop",
 )
 
 
@@ -234,7 +235,7 @@ def test_successful_turn_writes_one_turn_metrics_row():
     assert params[6] >= 0
     assert params[7] is False           # escalated
     assert params[8] == 1               # tool_count == len(tool_calls_log)
-    assert params[9] == "end_turn"      # stop_reason
+    assert params[9] == "stop"          # stop_reason, the provider's finish_reason
 
     # Only one turn_metrics INSERT for the whole turn
     cursor_obj = tenant_conn_mock.cursor.return_value.__enter__.return_value

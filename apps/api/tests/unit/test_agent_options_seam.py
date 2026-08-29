@@ -166,10 +166,12 @@ MUTATING_SKILLS = {
 #: else receiving it is a function that can mutate it out of sight of every
 #: static guard here, the `_tighten_turn(turn)` shape.
 #:
-#: `record_turn_calls` is the second one. It takes the turn's `ModelCall` rows to
-#: the ledger after the turn, off the event loop, and it is in `agent_loop.py`
-#: beside the seam rather than in the task module.
-_TURN_SINKS = {"run_agent_turn": {"run_agent_loop", "record_turn_calls"}}
+#: `close_turn` is the second one. It takes the turn's `ModelCall` rows to the
+#: ledger after the turn, off the event loop, and then hands back the tool
+#: ContextVars the seam published for it (#98). It is in `agent_loop.py` beside
+#: the seam rather than in the task module, which is what keeps the teardown one
+#: object away from the assembly instead of spelled out in each caller.
+_TURN_SINKS = {"run_agent_turn": {"run_agent_loop", "close_turn"}}
 
 #: Dynamic dispatch defeats every syntax-tree guard in this file by construction:
 #: `getattr(agent_loop, "AgentTurn")(...)` is a Call whose func is itself a Call,
@@ -674,7 +676,6 @@ _CANNED_TURN_RESULT = canned_turn_result(
     "Returns are accepted within 14 days.\n\n"
     "CITATIONS:\n"
     "- Document: FAQ.pdf | Section: 1\n",
-    stop_reason="end_turn",
 )
 
 _CONN_STR = "postgresql://tenant"
@@ -701,6 +702,8 @@ class _SeamSentinel:
     def __init__(self) -> None:
         self.calls: list = []
         self.ledger = lambda call: None
+        # `close_turn` reads this to hand the turn's tool ContextVars back (#98).
+        self.bound: tuple = ()
 
     def __repr__(self) -> str:  # pragma: no cover - only read on failure
         return "<turn object returned by the seam>"
@@ -753,30 +756,24 @@ def _db_ctx(db: MagicMock) -> MagicMock:
     return ctx
 
 
-def _tool_server_marker(**kwargs) -> str:
-    """A deterministic stand-in for the tool server.
+def _tool_context_stand_in(**_kwargs) -> tuple:
+    """A stand-in for the bind, returning what a bind that published nothing owes.
 
-    Keyed on every input that decides what the tools can do and whose data they
-    touch, so two calls with the same inputs produce equal markers and any
-    divergence — a blanked `verified_session_token`, a different conn_str, a
-    mutated retrieval strategy, a `side_effects` mode that reached the seam and
-    then never reached the tools — produces unequal ones. `notify_fn` is
-    excluded: it is a closure built inside the seam and would never compare equal
-    across two calls; which of the two closures was chosen is asserted directly
-    in `test_recorded_mode_records_the_escalation_instead_of_sending_it`.
+    THE RETURN VALUE IS LOAD-BEARING since #98: the seam stores it on
+    `AgentTurn.bound` and `close_turn` spends the tokens in it, so a stand-in that
+    returned a description of its arguments would die there. It returned exactly
+    that until #98, and the description was never read — the comparison below is
+    over `call_args.kwargs` directly, which is every input that decides what the
+    tools can do and whose data they touch. A blanked `verified_session_token`, a
+    different conn_str, a mutated retrieval strategy or a `side_effects` mode that
+    reached the seam and never reached the tools all show up there.
+
+    `notify_fn` is excluded from that comparison: it is a closure built inside the
+    seam and would never compare equal across two calls; which of the two closures
+    was chosen is asserted directly in
+    `test_recorded_mode_records_the_escalation_instead_of_sending_it`.
     """
-    return (
-        "tool-server["
-        f"conn_str={kwargs['conn_str']}|"
-        f"agent_id={kwargs['agent_id']}|"
-        f"agent_name={kwargs['agent_name']}|"
-        f"tenant_id={kwargs['tenant_id']}|"
-        f"conversation_id={kwargs['conversation_id']}|"
-        f"strategy={kwargs['strategy']!r}|"
-        f"verified_session_token={kwargs['verified_session_token']}|"
-        f"job_id={kwargs['job_id']}|"
-        f"side_effects={kwargs['side_effects']}]"
-    )
+    return ()
 
 
 def _system_prompt_marker(agent, soul_override=None) -> str:
@@ -808,7 +805,7 @@ def _client_marker(purpose, *, tenant_id, recorder, agent_id, job_id) -> str:
 def _seam_collaborators():
     """Patch the seam's three outward edges with deterministic stand-ins."""
     return (
-        patch("app.services.agent_loop.bind_tool_context", side_effect=_tool_server_marker),
+        patch("app.services.agent_loop.bind_tool_context", side_effect=_tool_context_stand_in),
         patch("app.services.agent_loop.build_system_prompt", side_effect=_system_prompt_marker),
         patch("app.services.agent_loop.make_async_client", side_effect=_client_marker),
     )

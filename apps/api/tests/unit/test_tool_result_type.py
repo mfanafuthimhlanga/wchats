@@ -332,7 +332,6 @@ def test_recorded_mode_keeps_the_head_wire_shape():
 def test_bad_arguments_are_an_error_before_the_dispatcher_runs():
     """A ValidationError never reaches a gate, so it is `error`, never `denied`."""
     from app.domain.tool_result import Outcome  # noqa: PLC0415
-
     from app.services.transactional.tools import run_transactional_skill  # noqa: PLC0415
 
     result = asyncio.run(run_transactional_skill("place_order", {"product_id": "SKU-001"}))

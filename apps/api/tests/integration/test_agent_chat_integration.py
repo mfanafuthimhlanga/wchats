@@ -98,8 +98,8 @@ _ASYNC_DB_URL = _SYNC_DB_URL.replace("postgresql://", "postgresql+asyncpg://")
 
 
 def _seam(**_kwargs):
-    """Stand-in for build_agent_turn. `calls` is the only field the task reads."""
-    return SimpleNamespace(calls=[])
+    """Stand-in for build_agent_turn. `calls` and `bound` are what the task reads."""
+    return SimpleNamespace(calls=[], bound=())
 
 
 CANNED_TURN_RESULT = {
@@ -112,7 +112,7 @@ CANNED_TURN_RESULT = {
     "escalation_reason": None,
     "escalation_context": None,
     "num_turns": 1,
-    "stop_reason": "end_turn",
+    "stop_reason": "stop",
 }
 
 CHAT_MESSAGE = "What are your hours?"

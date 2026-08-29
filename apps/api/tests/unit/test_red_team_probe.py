@@ -78,26 +78,6 @@ from app.services.transactional.provider_adapter import (
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 CONN_STR = "postgresql://test:test@localhost/tenant_probe"
 
-@pytest.fixture(autouse=True)
-def _the_mode_does_not_leave_this_file():
-    """Put `_side_effects_var` back after every test in this file.
-
-    `bind_tool_context` SETS the mode and never resets it, which was harmless
-    while this probe assembled its turn with side_effects="live": the value it
-    left behind equalled the ContextVar's default. Since #90/#91 the victim turn
-    is assembled with "recorded", and the value left behind made every later
-    transactional test in the session stop reaching its adapter mock. Twenty-six
-    of them failed the moment this file ran first, none of them for a reason in
-    its own body.
-    """
-    from app.services import agent_tools  # noqa: PLC0415
-
-    token = agent_tools._side_effects_var.set("live")
-    try:
-        yield
-    finally:
-        agent_tools._side_effects_var.reset(token)
-
 
 # ---------------------------------------------------------------------------
 # 1-2. red_team_mode() — off by default, symmetric set/reset, resets on raise
@@ -1206,32 +1186,82 @@ def test_the_victim_turn_runs_recorded_so_it_writes_nothing_durable():
     `pending_confirmations` row an owner can approve into a real provider call,
     retrieval metrics in the tenant's ops tiles, idempotency keys in the
     customer keyspace, and unmarked audit rows.
+
+    READ FROM INSIDE THE TURN, and that half is #98. This used to read the mode
+    after `probe_fn` returned, and it passed because the mode LEAKED: the bind
+    published it and nothing put it back, so the same assertion held over every
+    later test in the session and 26 of them in `test_transactional_tools.py`
+    failed for it. `close_turn` hands it back now, so the only honest place to
+    observe it is while one of this turn's tool calls is in flight.
+    """
+    seen: list[str] = []
+
+    async def _watching_dispatcher(*_args, **_kwargs):
+        seen.append(current_side_effect_mode())
+        return _refund(Outcome.denied, DENIED_TEXT)
+
+    with patch(
+        "app.services.transactional.tools.run_transactional_skill", _watching_dispatcher
+    ):
+        _drive(_refund_script())
+
+    assert seen == ["recorded"]
+
+
+def test_the_victim_turns_mode_does_not_outlive_it():
+    """The other half of #98, at the file that produced the leak.
+
+    This module drove `build_agent_turn(side_effects="recorded")` and left
+    "recorded" in force for whatever ran next in the process. An autouse fixture
+    in this file used to reset `_side_effects_var` after every test to hide it.
+    The fixture is gone; `close_turn` is what holds the invariant.
     """
     _drive(_refund_script(), verdicts=[_refund(Outcome.denied, DENIED_TEXT)])
 
-    assert current_side_effect_mode() == "recorded"
+    assert current_side_effect_mode() == "live", (
+        "the victim turn's side-effect mode outlived the turn. On a Celery "
+        "prefork worker the next thing in this context is a customer turn, and "
+        "it would stop refunding real customers with no error anywhere."
+    )
 
 
 def test_the_victim_turn_is_unverified():
     """RTX-03's posture: every identity-gated skill must refuse.
 
     THE VAR IS SEEDED FIRST, and that is the whole test. `""` is the
-    ContextVar's own default, so asserting it after a turn passes whether the
-    turn published `""` or never ran at all. Seeding a forged token means only a
-    real `bind_tool_context` can put it back, which is FM-004's prescription:
-    pin what the arrangement would return with the logic removed.
+    ContextVar's own default, so an observation of `""` passes whether the turn
+    published it or never ran at all. Seeding a forged token means only a real
+    `bind_tool_context` can produce the empty string, which is FM-004's
+    prescription: pin what the arrangement would return with the logic removed.
+
+    READ FROM INSIDE THE TURN, since #98. The forged token is what the turn found
+    and what `close_turn` puts back, so after the turn the honest reading is the
+    forgery again. During the turn it must be `""`.
     """
     from app.services.agent_tools import _verified_session_token_var
 
+    seen: list[str] = []
+
+    async def _watching_dispatcher(*_args, **_kwargs):
+        seen.append(_verified_session_token_var.get())
+        return _refund(Outcome.denied, DENIED_TEXT)
+
     token = _verified_session_token_var.set("tok_forged_by_the_attacker")
     try:
-        assert _verified_session_token_var.get() == "tok_forged_by_the_attacker"
-        _drive(_refund_script(), verdicts=[_refund(Outcome.denied, DENIED_TEXT)])
+        with patch(
+            "app.services.transactional.tools.run_transactional_skill",
+            _watching_dispatcher,
+        ):
+            _drive(_refund_script())
 
-        assert _verified_session_token_var.get() == "", (
+        assert seen == [""], (
             "the probe's turn did not publish the unverified posture. RTX-03 exists "
             "to drive identity-gated skills with no session, and a turn that carried "
             "a token over from anywhere would probe the wrong posture."
+        )
+        assert _verified_session_token_var.get() == "tok_forged_by_the_attacker", (
+            "the turn kept the posture it published. It is scoped to the turn and "
+            "`close_turn` hands back whatever the caller had (#98)."
         )
     finally:
         _verified_session_token_var.reset(token)

@@ -423,7 +423,7 @@ def test_write_turn_metrics_binds_prompt_version_id():
         latency_ms=100,
         escalated=False,
         tool_count=1,
-        stop_reason="end_turn",
+        stop_reason="stop",
         prompt_version_id=a_prompt_version_id,
     )
 

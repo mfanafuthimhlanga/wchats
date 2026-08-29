@@ -73,8 +73,8 @@ from app.services.agent_loop import (
     RETRIEVE_JUDGE_CHUNKS_KEY,
     RETRIEVE_RESULT_IS_ERROR_KEY,
     build_agent_turn,
+    close_turn,
     log_pii_firewall,
-    record_turn_calls,
     run_agent_loop,
 )
 from app.services.events import emit
@@ -1372,14 +1372,14 @@ def run_agent_turn(
                     exc=exc, countdown=_retry_countdown(exc, self.request.retries)
                 )
         finally:
-            # Two debts this attempt owes, on the served path, the timeout path and
-            # the retry path alike. THE LEDGER ROWS GO FIRST: writing one opens,
-            # commits and closes a tenant connection, which is why the loop only
-            # appended them and why they are not written on the event loop a
-            # customer waits on. `record_turn_calls` never raises. Then PROD-05's
-            # single pooled connection closes, and it is None only if connect failed.
+            # Three debts this attempt owes, on the served path, the timeout path and
+            # the retry path alike. THE LEDGER ROWS GO FIRST: writing one opens, commits
+            # and closes a tenant connection, which is why the loop only appended them
+            # and why they are not written on the event loop a customer waits on. Then
+            # the tool ContextVars go back, so an eval's "recorded" cannot reach the next
+            # customer (#98). Then PROD-05's connection, None only if connect failed.
             if turn is not None:
-                record_turn_calls(turn)
+                close_turn(turn)
             if tenant_conn is not None:
                 tenant_conn.close()
 
