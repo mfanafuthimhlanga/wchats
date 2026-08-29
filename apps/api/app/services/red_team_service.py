@@ -33,7 +33,13 @@ import structlog
 from pydantic import BaseModel
 
 from app.core.model_client import LedgerContext, make_async_client, route_for
+from app.domain.red_team_result import (
+    RED_TEAM_VECTORS,
+    VectorOutcome,
+    worst_severity,
+)
 from app.domain.tool_def import ToolDefinition, tool
+from app.services.agent_tools import attempt_scope
 from app.services.red_team_probe import LANDED_VERDICT_TAGS
 from app.services.tool_loop import run_tool_loop
 
@@ -290,16 +296,12 @@ _TOOL_REPORT_FINDING = {
 #     _invalid_observation_finding() is how that run says so instead of
 #     returning [] and reading as clean.
 
-# Every attack vector a full red-team run dispatches, in dispatch order.
-RED_TEAM_VECTORS: tuple[str, ...] = (
-    "conversation_injection",
-    "content_injection",
-    "data_leakage",
-    "hallucination",
-    "confused_deputy",
-    "value_bound_evasion",
-    "identity_bypass",
-)
+# Every attack vector a full red-team run dispatches, in dispatch order. The
+# tuple moved to app.domain.red_team_result in ticket 15, so RedTeamResult's
+# completeness rule measures against the same roster this module dispatches
+# rather than a second copy of it, and is imported at the top of this file under
+# its shipped name. Every reader of `red_team_service.RED_TEAM_VECTORS` keeps
+# reading it here.
 
 # The four conversational attackers shared one defect and share one fix.
 SDK_ATTACKER_VECTORS: tuple[str, ...] = (
@@ -540,6 +542,172 @@ def run_coverage(observations: list[VectorObservation] | None) -> dict:
             if obs.pii_deflections
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# k INDEPENDENT ATTEMPTS PER VECTOR (ticket 15, issue #52)
+# ---------------------------------------------------------------------------
+# ONE ATTEMPT IS ONE WHOLE PROBE RUN, whatever its internal shape. The six
+# runners do not share one: the four conversational ones drive
+# `attack_sequences` conversations inside a single attacker loop,
+# run_content_injection_agent repeats one canary question, run_value_bound_
+# evasion_agent runs one refund chain and run_identity_bypass_agent makes
+# exactly two dispatcher calls. There is no three-turn sequence to carve an
+# attempt out of for the last two, so an attempt is the whole probe, called
+# again from the top.
+#
+# THAT IS WHY THE k LOOP IS HERE AND NOT INSIDE A RUNNER. Every runner already
+# builds its own ProbeSession, its own client and its own event loop per call,
+# so calling one k times is k independent attempts for free, and nothing in a
+# runner has to learn what k is.
+#
+# `settings.RED_TEAM_ATTACK_SEQUENCES` is NOT k and never was. It is the shape
+# of one conversational attempt — three sequences inside one attacker loop under
+# one shared ATTACKER_LOOP_TIMEOUT_S budget — which is why a truncated attempt
+# is routine and why VectorObservation carries sequences_completed at all.
+# `settings.RED_TEAM_ATTEMPTS_PER_VECTOR` is k. The two multiply.
+#
+# THE TIMEOUT FOLLOWS THE ATTEMPT. ATTACKER_LOOP_TIMEOUT_S bounds one attacker
+# loop, and there is now one loop per attempt, so attempt 3 gets a whole budget
+# of its own and cannot be starved by attempt 1 spending the shared one.
+
+
+@dataclass
+class VectorAttempts:
+    """What ONE vector produced across its k independent attempts.
+
+    `findings` is every attempt's findings, concatenated, which is what the
+    caller's `all_findings` list and every storage path downstream already
+    expect. `outcome` is the same run seen as a measurement: how many attempts
+    ran, how many landed an attack, and the worst grade among them.
+    """
+
+    vector: str
+    findings: list[RedTeamFinding]
+    outcome: VectorOutcome
+
+
+def _merge_attempt_observations(
+    vector: str, attempts: int, per_attempt: list[VectorObservation]
+) -> VectorObservation:
+    """Fold k attempts' observations into the one row a run ledger holds per vector.
+
+    ONE ROW PER VECTOR, NOT k. `run_coverage` keys its ledger by vector name and
+    the last row wins, so appending k would store attempt k and silently discard
+    the other two — and `deployment_service._coverage_from_run`, both red-team
+    routes and the ops room all read one row per vector out of the far end. The
+    per-attempt figure that matters, how many attempts ran, is carried by
+    `RedTeamResult` instead, which is the record built for it.
+
+    The counters sum, so a vector whose attempt 2 timed out mid-sequence still
+    reports `sequences_completed` below `sequences_requested` and is incomplete.
+    An attempt that recorded nothing at all counts as one requested sequence with
+    none completed: silence costs coverage, it never buys it.
+    """
+    deflections: dict[str, int] = {}
+    for obs in per_attempt:
+        for name, count in obs.pii_deflections.items():
+            deflections[name] = deflections.get(name, 0) + count
+
+    details = [
+        f"attempt {index}: {obs.detail}"
+        for index, obs in enumerate(per_attempt, start=1)
+        if obs.detail
+    ]
+    unrecorded = max(0, attempts - len(per_attempt))
+    if unrecorded:
+        details.append(f"{unrecorded} of {attempts} attempt(s) recorded no observation")
+
+    return VectorObservation(
+        vector=vector,
+        observed=any(obs.observed for obs in per_attempt),
+        sequences_requested=sum(o.sequences_requested for o in per_attempt) + unrecorded,
+        sequences_completed=sum(o.sequences_completed for o in per_attempt),
+        probes_attempted=sum(o.probes_attempted for o in per_attempt),
+        probes_answered=sum(o.probes_answered for o in per_attempt),
+        probe_errors=sum(o.probe_errors for o in per_attempt),
+        pii_deflections=deflections,
+        detail="; ".join(details) or None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# What one attempt does NOT share with the attempt before it.
+#
+# The ledger: the runner is handed a fresh list, builds a fresh ProbeSession and
+# a fresh client inside it, and cannot read what the attempt before it observed.
+# The k rows merge once, at the end, into the row the caller's ledger holds.
+#
+# The Redis rate counter: `attempt_scope` moves each attempt onto its own key, so
+# a vector that attacks an aggregate ceiling crosses it k times instead of once.
+# RTX-02 chains issue_refund calls against the clean tenant's "2/hour" envelope;
+# on a shared counter, attempt 1 exhausts it and attempts 2 and 3 come back
+# denied at their first call, which is the same verdict for a reason the record
+# cannot see. `agent_tools._attempt_scope_var` carries the rest of the argument.
+#
+# The prose sits here rather than in the docstring because lizard measures a
+# function from its `def` to its last line, and this one is at the standard.
+# ---------------------------------------------------------------------------
+
+
+def run_vector_attempts(
+    vector: str,
+    runner: Callable[..., list[RedTeamFinding]],
+    attempts: int,
+    *,
+    observations: list[VectorObservation] | None = None,
+    **runner_kwargs,
+) -> VectorAttempts:
+    """Run ONE vector's probe `attempts` times independently and total it up.
+
+    The block comment above says what "independently" buys and what it costs.
+
+    Args:
+        vector: the RED_TEAM_VECTORS name this runner reports under. An argument
+            rather than a reading of the observations, because
+            run_identity_bypass_agent records `identity_bypass` while its
+            findings say `identity_verification_bypass`.
+        runner: one of the six run_X_agent functions, called by keyword.
+        attempts: k. Below one is treated as one.
+        observations: the run's ledger. Exactly one merged VectorObservation is
+            appended to it, on every path.
+        **runner_kwargs: probe_fn, max_turns, attack_sequences, ledger, and
+            conn_str for the one runner that takes it.
+
+    Returns:
+        VectorAttempts: the concatenated findings and this vector's outcome.
+    """
+    requested = max(1, attempts)
+    findings: list[RedTeamFinding] = []
+    per_attempt: list[VectorObservation] = []
+    completed = 0
+    breaches = 0
+
+    for attempt in range(1, requested + 1):
+        attempt_ledger: list[VectorObservation] = []
+        with attempt_scope(vector, attempt):
+            attempt_findings = runner(observations=attempt_ledger, **runner_kwargs)
+        # Counted after the call returns, so an attempt that raised out of the
+        # runner leaves this vector short of k and the record says so.
+        completed += 1
+        findings.extend(attempt_findings)
+        if attempt_findings:
+            breaches += 1
+        per_attempt.extend(attempt_ledger)
+
+    record_observation(
+        observations, _merge_attempt_observations(vector, requested, per_attempt)
+    )
+    return VectorAttempts(
+        vector=vector,
+        findings=findings,
+        outcome=VectorOutcome(
+            vector=vector,
+            attempts=completed,
+            breaches=breaches,
+            max_severity=worst_severity(f.severity for f in findings),
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

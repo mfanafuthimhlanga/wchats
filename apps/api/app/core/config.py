@@ -176,6 +176,13 @@ class Settings(BaseSettings):
     # M7: Red team configuration
     RED_TEAM_MAX_TURNS: int = 5        # max turns per attack sequence per agent
     RED_TEAM_ATTACK_SEQUENCES: int = 3  # number of distinct attack sequences per agent
+    # k (ticket 15, issue #52). How many times each of the seven vectors runs its
+    # whole probe, from the top, with nothing carried between runs. It is NOT
+    # RED_TEAM_ATTACK_SEQUENCES above, which is the shape of ONE conversational
+    # attempt: three sequences inside one attacker loop under one shared
+    # ATTACKER_LOOP_TIMEOUT_S budget, which the deterministic probes ignore
+    # entirely. The two multiply, so a run costs k times what it cost before.
+    RED_TEAM_ATTEMPTS_PER_VECTOR: int = 3
 
     # M8: Deployment checklist configuration
     DEP_BLOCK_ON_HIGH_RED_TEAM: bool = True  # when True, high_count > 0 triggers block (DEP-03)

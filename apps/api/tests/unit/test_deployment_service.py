@@ -1270,6 +1270,31 @@ class TestEvidenceGate:
         assert [w.warning_id for w in warnings] == ["red_team_coverage_incomplete"]
         assert "3 of 7" in warnings[0].message
 
+    def test_a_run_short_of_its_attempts_refuses_to_ship(self):
+        """The second way a run can be incomplete (ticket 15, #52).
+
+        Every vector observed the agent, so vectors_valid equals
+        vectors_attempted and `invalid_vectors` is empty — and the run still did
+        not test what it set out to, because a vector did not make all k of its
+        independent attempts. `coverage_complete` is the only field that carries
+        that, which is why the gate reads it rather than comparing the two
+        counts, and why the warning may not name a vector shortfall as the cause.
+        """
+        summary = _measured_red_team()
+        summary["coverage_complete"] = False
+
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", _measured_eval(), summary
+        )
+
+        assert recommendation == "block"
+        assert [w.warning_id for w in warnings] == ["red_team_coverage_incomplete"]
+        assert summary["vectors_valid"] == summary["vectors_attempted"] == 7
+        assert "attempt" in warnings[0].message, (
+            "the message said only that some attack types went untested, which "
+            "is false about a run where all seven reported"
+        )
+
     def test_unrecorded_coverage_warns_rather_than_blocking(self):
         """'current_build' means no run-level figure exists at all — a tenant DB
         provisioned before migration 0015, or a run written before the task

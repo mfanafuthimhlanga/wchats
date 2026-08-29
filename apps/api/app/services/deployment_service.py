@@ -187,10 +187,13 @@ Blocking conditions (always use recommendation='block'):
   in both non-measured states.
 
 - red_team_summary.coverage_complete is not True while
-  red_team_summary.coverage_source == 'run' — that run measured its own
-  coverage and reported that only vectors_valid of vectors_attempted attack
-  types were actually tested. A clean result over part of the surface is not a
-  clean result; say so plainly and do not present it as a clean bill of health.
+  red_team_summary.coverage_source == 'run' — that run measured its own coverage
+  and reported that it did not test the whole surface. Either fewer than
+  vectors_attempted attack types reported a result at all, or a type that did
+  report failed to complete every one of its independent attempts. A clean result
+  over part of the surface is not a clean result; say so plainly and do not
+  present it as a clean bill of health. vectors_valid and vectors_attempted
+  answer only the first of the two, so do not read them as the whole reason.
 
 Warning conditions (recommendation='ship_with_warnings'):
 - verified_qa_stats.row_count < 50 (agent answers more from scratch on day 1)
@@ -988,12 +991,18 @@ def _red_team_summary(
 def _coverage_from_run(stored: object) -> dict | None:
     """Read a red_team_runs.coverage JSONB payload, or None for any other shape.
 
-    red_team.py stamps red_team_coverage() onto the run row at completion, so a
+    red_team.py stamps the run's OWN coverage onto the row at completion, so a
     run carries the coverage IT had rather than the coverage the reader's build
     has. A pre-0015 tenant (no column), a run that predates the write, or a
     payload missing any of the four keys all return None and the caller falls
     back to the current build with COVERAGE_SOURCE_CURRENT_BUILD attached —
     labelled, never silently substituted.
+
+    Four keys, and a payload carrying more is read down to them. Ticket 15 added
+    `k` and per-vector attempt counts beside them and folded the k requirement
+    into `complete`, so `complete` is now False for a run whose vectors all
+    reported but did not all finish their attempts — a state vectors_valid alone
+    cannot express.
     """
     if not isinstance(stored, dict):
         return None
@@ -1849,10 +1858,10 @@ def apply_signal_evidence_gate(
                     warning_id="red_team_coverage_incomplete",
                     category="security",
                     message=(
-                        f"Only {valid} of {attempted} attack types were actually "
-                        "tested in the last security check, so its clean result "
-                        "covers part of the picture rather than all of it. Run "
-                        "the check again and approve once all of them report."
+                        f"The last security check did not finish: {valid} of "
+                        f"{attempted} attack types reported a result, and each "
+                        "must also complete every independent attempt it owes. "
+                        "Run the check again and approve once it says complete."
                     ),
                     severity_level="warning",
                 )

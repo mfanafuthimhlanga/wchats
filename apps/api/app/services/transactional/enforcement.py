@@ -265,6 +265,52 @@ async def check_capability_access(
 
 
 # ---------------------------------------------------------------------------
+# Who shares a rate counter, and who gets one of their own
+# ---------------------------------------------------------------------------
+
+
+def rate_limit_namespace() -> str:
+    """What separates one caller's rate counter from another's, "" in production.
+
+    D1/P1b: the rate counter is SHARED STATE, and the eval drives this same
+    dispatcher. Keyed only on (agent, skill, window) an overnight eval with six
+    refund-shaped scenarios exhausts an envelope that allows five refunds an
+    hour, and the next REAL customer refund in that window comes back "Request
+    denied by rate or constraint check (reason: rate_limit)" — silent from the
+    eval's side, and reading as an ordinary envelope denial from the customer's
+    side.
+
+    Namespacing rather than suppressing: the eval still measures the ceiling, on
+    its own counter. Suppressing the INCR would make "the agent kept refunding
+    past its limit" unfalsifiable, which is the same mistake as handing the eval
+    a read-only tool subset. Rolling the INCR back is not an option either — the
+    pipeline is not transactional against a concurrent real caller.
+
+    Ticket 15 (#52) is that same argument one level down. `attempt_scope`, in
+    agent_tools, gives each of a vector's k red-team attempts its own counter,
+    so attempt 1's chain of refunds cannot leave attempts 2 and 3 denied at their
+    first call instead of at the ceiling they exist to cross. The block comment
+    over `_attempt_scope_var` carries the rest of it.
+
+    Returns:
+        "" for a customer turn, which keys exactly as it did before either
+        namespace existed. "recorded:" under the eval's side-effect mode, an
+        "attempt:<vector>:<n>:" fragment inside a red-team attempt, and the two
+        together when a red-team attempt drives a recorded victim turn.
+    """
+    # Lazy import: agent_tools imports transactional.tools (which imports this
+    # module) inside agent_tool_definitions, so a module-level import here would
+    # close that loop.
+    from app.services.agent_tools import (  # noqa: PLC0415
+        _attempt_scope_var,
+        _side_effects_var,
+    )
+
+    mode_prefix = "recorded:" if _side_effects_var.get() == "recorded" else ""
+    return f"{mode_prefix}{_attempt_scope_var.get()}"
+
+
+# ---------------------------------------------------------------------------
 # Split: apply_rate_and_constraint_checks — side-effecting checks
 # ---------------------------------------------------------------------------
 
@@ -309,28 +355,7 @@ async def apply_rate_and_constraint_checks(
     if parsed is not None:
         max_calls, window_secs = parsed
         window_key = int(time.time()) // window_secs
-        # D1/P1b: the rate counter is SHARED STATE, and the eval drives this
-        # same dispatcher. Keyed only on (agent, skill, window) an overnight
-        # eval with six refund-shaped scenarios exhausts an envelope that
-        # allows five refunds an hour, and the next REAL customer refund in
-        # that window comes back "Request denied by rate or constraint check
-        # (reason: rate_limit)" — silent from the eval's side, and reading as
-        # an ordinary envelope denial from the customer's side.
-        #
-        # Namespacing rather than suppressing: the eval still measures the
-        # ceiling, on its own counter. Suppressing the INCR would make
-        # "the agent kept refunding past its limit" unfalsifiable, which is the
-        # same mistake as handing the eval a read-only tool subset. Rolling the
-        # INCR back is not an option either — the pipeline is not transactional
-        # against a concurrent real caller.
-        #
-        # Lazy import: agent_tools imports transactional.tools (which imports
-        # this module) inside agent_tool_definitions, so a module-level import
-        # here would close that loop.
-        from app.services.agent_tools import _side_effects_var  # noqa: PLC0415
-
-        mode_prefix = "recorded:" if _side_effects_var.get() == "recorded" else ""
-        redis_key = f"ratelimit:{mode_prefix}{agent_id_str}:{skill}:{window_key}"
+        redis_key = f"ratelimit:{rate_limit_namespace()}{agent_id_str}:{skill}:{window_key}"
 
         def _do_rate_limit_pipeline() -> tuple[int, Any]:
             client = _get_redis()
