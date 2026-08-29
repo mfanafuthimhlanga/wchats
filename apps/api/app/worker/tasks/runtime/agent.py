@@ -9,8 +9,9 @@ Position in M4 runtime flow:
 ADR 0008 took this turn off the Agent SDK harness. `app.services.agent_loop` owns
 the assembly seam and the bounded tool loop now, and this module is what a Celery
 task adds around them: the tenant connection, the conversation row, the history
-the loop resumes from, the PII firewall, the persisted messages, the telemetry
-and the validation chain.
+the loop resumes from, the persisted messages, the telemetry and the validation
+chain. The PII firewall was on that list until #50 moved it into the seam, where
+the eval path cannot skip it; what is left here is the two log lines it writes.
 
 Idempotency mechanism:
     READ guard on job_events: if an "agent.response" row already exists for this
@@ -57,13 +58,11 @@ from app.core.config import AGENT_TURN_MODEL, settings
 from app.core.database import get_sync_db
 from app.core.model_client import ledger_recorder
 from app.core.security import fernet_decrypt, require_ciphertext
-from app.domain.pii_firewall import detect_pii, scan_response
 from app.domain.pricing import UnknownPrice, cost_usd
 from app.models.agent import Agent
 from app.models.job import Job
 from app.models.prompt_version import PromptVersion
 from app.services.agent_loop import (
-    RETRIEVE_CHUNKS_KEY,
     RETRIEVE_CHUNKS_SOURCE_KEY,
     RETRIEVE_CHUNKS_UNPARSED,
     RETRIEVE_JUDGE_CHUNKS_KEY,
@@ -227,65 +226,6 @@ def _judge_retrieved_context(tool_calls_log: list[dict]) -> tuple[list[str], int
         counts["chunks"] += len(chunks)
         contexts.extend(chunks)
     return contexts, counts
-
-
-def _published_context(tool_calls_log: list[dict]) -> list[str]:
-    """What the TENANT published, for the PII firewall's exemption (BACKLOG 7.29).
-
-    The firewall stops the agent leaking a CUSTOMER's personal data. It is not
-    meant to stop it repeating the BUSINESS's own published contact details, and
-    it was doing exactly that: three of twenty E2E-6 responses came back as the
-    deflection, because the best-matching chunk was the corpus's "Contact and
-    Escalation" section and a correct answer quotes the address in it.
-
-    A THIRD READING OF ONE CAPTURE, joining RETRIEVE_CHUNKS_KEY (what the eval
-    scores) and RETRIEVE_JUDGE_CHUNKS_KEY (what the Auditor judges). It differs
-    from `_judge_retrieved_context` in the two places that decide whether an
-    exemption is safe, so it cannot borrow that function:
-
-        content only   RETRIEVE_CHUNKS_KEY, not RETRIEVE_JUDGE_CHUNKS_KEY. The
-                       judge needs provenance; an allowlist needs the smallest
-                       surface that answers the question.
-        unparsed -> nothing   RETIRED, and kept as a guard. `retrieve_tool`
-                       attaches its ride-along on its one success path, so an
-                       unparsed entry always carries is_error and the check above
-                       has already skipped it. Fail closed on both routes.
-
-    WHAT IS DELIBERATELY NOT IN HERE, because each would be a bypass:
-
-        the framed payload   it echoes the retrieve QUERY, so a customer who
-                             types their own address into the chat would see it
-                             come back exempted
-        the customer message and history   the same bypass, one step shorter
-        the agent soul       `pii_firewall`'s stated property is that nothing in
-                             the soul reaches its behaviour (T-18-SEC-02)
-        errored retrieves    `retrieve_tool` returns its DoS-guard refusal as
-                             ordinary text with is_error set, and a refusal is
-                             not published material
-
-    THE ONE THING THAT WOULD WIDEN THIS SILENTLY, checked 2026-08-18 and clear:
-    `verified_qa`. Those rows are answers derived from CONVERSATIONS, not material
-    the tenant published, so an address a customer typed could reach the allowlist
-    through them. It cannot today, because `verified_qa_lookup` is called from
-    `app.worker.tasks.runtime.retrieve`, not from `agent_tools.retrieve_tool`,
-    which builds its chunks straight from reranked hybrid search. Promotion is
-    also off by the owner's decision of 2026-08-08. **Routing the agent's retrieve
-    through that cache, or adding the lookup to `agent_tools`, widens a security
-    control without touching this file.** If that day comes, filter here on the
-    chunk's provenance rather than trusting the tool name.
-
-    Returns one string per retrieved chunk, in retrieval order.
-    """
-    published: list[str] = []
-    for tc in tool_calls_log:
-        if tc.get("tool_name") != "retrieve" or "result" not in tc:
-            continue
-        if tc.get(RETRIEVE_RESULT_IS_ERROR_KEY):
-            continue
-        if tc.get(RETRIEVE_CHUNKS_SOURCE_KEY) == RETRIEVE_CHUNKS_UNPARSED:
-            continue
-        published.extend(str(c) for c in (tc.get(RETRIEVE_CHUNKS_KEY) or []) if c)
-    return published
 
 
 def _dispatch_validation_chain(
@@ -874,8 +814,8 @@ def _extract_citations(text: str) -> list[dict]:
 # any of those twice and the eval measures something adjacent to the product,
 # which the measurement-layer audit records as this repo's recurring defect.
 #
-# So they are assembled exactly once, in `build_agent_turn`, and both callers go
-# through it. ADR 0008 moved that function out of this module together with the
+# So they are assembled exactly once, in `build_agent_turn`, and all three callers
+# go through it. ADR 0008 moved that function out of this module together with the
 # loop it feeds, because the loop is service code and this file is a Celery task;
 # `build_agent_options` held the same line for the SDK path and this is its
 # successor. tests/unit/test_agent_options_seam.py fails if `run_agent_turn`
@@ -1216,29 +1156,30 @@ def run_agent_turn(
             )
 
             # --------------------------------------------------------------
-            # SEC-01/L4: synchronous PII output firewall (T-18-SEC-01, T-18-SEC-02).
-            # Must run here, synchronously, because the Gatekeeper/Auditor/Strategist
-            # validators dispatch ASYNCHRONOUSLY after the response has already
-            # streamed to the customer (see the validator chord below) — a leak
-            # cannot wait for a post-hoc judge. Rebinding response_text here, before
-            # any consumer reads it, guarantees the served text (SSE emit), the
-            # persisted text (_persist_messages), the cited text (_extract_citations)
-            # and the judged text (the validator chord) can never diverge — a single
-            # substitution covers all four. The firewall call below takes no flag and
-            # reads no config, so nothing in the response text and nothing in the agent
-            # soul can disable it. Citations are extracted from the deflection
-            # when a flag fires, which correctly yields an empty citation list — a
-            # deflection cites nothing.
+            # SEC-01/L4: the PII output firewall ALREADY RAN, inside the seam
+            # (`agent_loop._turn_result`). `response_text` read above is the
+            # SERVED text — a flagged turn arrives here as the deflection and the
+            # model's own words are not returned in any form. It moved for #50:
+            # this task body was the only caller that ran it, so the eval task
+            # scored an unfiltered response and posted it to a third-party judge
+            # API while `pii_firewall`'s docstring called the scan unconditional.
             #
-            # BACKLOG 7.29: the firewall is given what the tenant PUBLISHED this
-            # turn, so an answer quoting the business's own contact address is no
-            # longer deleted. Email only; card and SA ID have no exemption path.
-            # The list is read for one set-membership test and never interpreted,
-            # so a chunk that instructs the firewall off does nothing.
-            published = _published_context(tool_calls_log)
-            filtered_text, pii_detector = scan_response(
-                response_text, published_context=published
-            )
+            # Reading the seam's text rather than filtering again here is what
+            # keeps the served text (SSE emit), the persisted text
+            # (_persist_messages), the cited text (_extract_citations) and the
+            # judged text (the validator chord) from diverging: there is one
+            # substitution and it happened before this line. Citations are
+            # extracted from the deflection when a flag fires, which correctly
+            # yields an empty citation list — a deflection cites nothing.
+            #
+            # THE TWO LINES BELOW ARE TELEMETRY, NOT THE CONTROL, and they stayed
+            # here for two reasons. They name agent_id and conversation_id, which
+            # the seam has no reason to know; and `original_length` and the
+            # exemption flag come from the pre-scan text, which is exactly what
+            # the seam refuses to hand back. A caller that dropped both lines
+            # would still serve the deflection.
+            pii_detector: str | None = result["pii_detector"]
+            published_chunks: int = result.get("pii_published_chunks", 0)
             if pii_detector is not None:
                 log.warning(
                     "pii_firewall.response_deflected",
@@ -1246,10 +1187,10 @@ def run_agent_turn(
                     agent_id=agent_id,
                     conversation_id=str(local_conversation_id),
                     detector=pii_detector,
-                    original_length=len(response_text),
-                    published_chunks=len(published),
+                    original_length=result.get("pii_original_length", 0),
+                    published_chunks=published_chunks,
                 )
-            elif published and detect_pii(response_text) is not None:
+            elif result.get("pii_published_exemption"):
                 # Passed only BECAUSE the address was published. Logged so the
                 # exemption is observable rather than silent: this is the one
                 # line that tells a later reader an address left the system on
@@ -1259,9 +1200,8 @@ def run_agent_turn(
                     job_id=job_id,
                     agent_id=agent_id,
                     conversation_id=str(local_conversation_id),
-                    published_chunks=len(published),
+                    published_chunks=published_chunks,
                 )
-            response_text = filtered_text
 
             # --------------------------------------------------------------
             # Citation extraction — missing block yields [] + warning (not failure)

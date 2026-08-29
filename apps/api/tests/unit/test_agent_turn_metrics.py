@@ -37,6 +37,8 @@ from unittest.mock import MagicMock, patch
 from app.domain.model_call import ModelCall, ModelSource
 from app.domain.pricing import cost_usd
 
+from tests.agent_loop_doubles import canned_turn_result
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -150,21 +152,16 @@ def _make_db_ctx(db: MagicMock) -> MagicMock:
 
 # Canned loop result. `num_turns` and `stop_reason` ride in the dict; the cost
 # does NOT, and that absence is the point of ADR 0008 (see _LEDGER_CALLS above).
-_CANNED_RESULT_WITH_METRICS = {
-    "response_text": (
-        "You can return items within 14 days.\n\n"
-        "CITATIONS:\n"
-        "- Document: FAQ.pdf | Section: 1\n"
-    ),
-    "tool_calls_log": [
+_CANNED_RESULT_WITH_METRICS = canned_turn_result(
+    "You can return items within 14 days.\n\n"
+    "CITATIONS:\n"
+    "- Document: FAQ.pdf | Section: 1\n",
+    tool_calls_log=[
         {"tool_name": "retrieve", "input": {"query": "returns"}, "result": "..."},
     ],
-    "escalated": False,
-    "escalation_reason": None,
-    "escalation_context": None,
-    "num_turns": 3,
-    "stop_reason": "end_turn",
-}
+    num_turns=3,
+    stop_reason="end_turn",
+)
 
 
 def _find_turn_metrics_execute_call(mock_cursor: MagicMock):

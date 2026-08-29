@@ -24,6 +24,8 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from tests.agent_loop_doubles import canned_turn_result
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -69,19 +71,12 @@ def _make_db_ctx(db: MagicMock) -> MagicMock:
     return ctx
 
 
-_CANNED_RESULT_WITH_METRICS = {
-    "response_text": (
-        "You can return items within 14 days.\n\n"
-        "CITATIONS:\n"
-        "- Document: FAQ.pdf | Section: 1\n"
-    ),
-    "tool_calls_log": [],
-    "escalated": False,
-    "escalation_reason": None,
-    "escalation_context": None,
-    "num_turns": 2,
-    "stop_reason": "end_turn",
-}
+_CANNED_RESULT_WITH_METRICS = canned_turn_result(
+    "You can return items within 14 days.\n\n"
+    "CITATIONS:\n"
+    "- Document: FAQ.pdf | Section: 1\n",
+    stop_reason="end_turn",
+)
 
 
 def _run_turn(job_id: str, agent_id: str, agent: MagicMock, job: MagicMock, local_conv_id: str):

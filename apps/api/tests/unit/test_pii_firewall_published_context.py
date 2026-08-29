@@ -9,11 +9,12 @@ tenant published for exactly this purpose, and `_EMAIL_RE` deleted the reply.
 
 WHY THIS MODULE DRIVES THE REAL CAPTURE PATH rather than hand-building a
 `tool_calls_log`. The allowlist is only as true as the agreement between what
-`agent_loop._log_entry` writes and what `_published_context` reads, and that
-agreement is wiring: it is invisible to a test that constructs its own fixture
-dict (`.dev/reference/260815-wiring-is-invisible-to-behavioural-tests.md`). So
-these cases start at the wire dict `retrieve_tool` returns and assert on the
-text `scan_response` actually returns.
+`agent_loop._log_entry` writes and what `agent_loop.published_context` reads, and
+that agreement is wiring: it is invisible to a test that constructs its own
+fixture dict (`.dev/reference/260815-wiring-is-invisible-to-behavioural-tests.md`).
+So these cases start at the wire dict `retrieve_tool` returns and end at
+`agent_loop._turn_result`, which is where the scan runs since #50 and therefore
+what decides the text a customer reads.
 
 **Two do not, and they say so.** The pair under "guards pinned directly" build
 their `tool_calls_log` by hand, because the guards they cover cannot be reached
@@ -34,7 +35,6 @@ from app.domain.pii_firewall import PII_DEFLECTION, scan_response
 from app.domain.tool_result import wire_text
 from app.services import agent_loop
 from app.services.agent_tools import _frame_retrieved_context
-from app.worker.tasks.runtime import agent as agent_module
 
 #: The live tenant's published support address, and the section it sits in.
 PUBLISHED_ADDRESS = "hello@acmecoffee.example"
@@ -109,10 +109,19 @@ def _capture(
 
 
 def _served(answer: str, tool_calls_log: list[dict]) -> tuple[str, str | None]:
-    """The text a customer actually receives, through the production call shape."""
-    return scan_response(
-        answer, published_context=agent_module._published_context(tool_calls_log)
+    """The text a customer actually receives, through the production call shape.
+
+    `_turn_result` is where the scan happens since #50, so this drives it rather
+    than reassembling the call beside it. The state is built here because the
+    loop that fills one needs a provider client; what it carries is what the loop
+    would have left in it — the model's text in `response_parts`, the capture in
+    `tool_calls_log`.
+    """
+    state = agent_loop._TurnState(
+        response_parts=[answer], tool_calls_log=tool_calls_log
     )
+    result = agent_loop._turn_result(state)
+    return result["response_text"], result["pii_detector"]
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +146,7 @@ def test_without_the_exemption_the_same_answer_is_still_deleted() -> None:
 
 def test_the_capture_carries_the_chunk_text_the_allowlist_needs() -> None:
     """The wiring itself: what `_attach_retrieve_capture` wrote is what is read."""
-    published = agent_module._published_context(_capture(_wire([CONTACT_SECTION])))
+    published = agent_loop.published_context(_capture(_wire([CONTACT_SECTION])))
     assert published == [CONTACT_SECTION]
 
 
@@ -157,7 +166,7 @@ def test_a_customers_address_is_not_exempted_by_the_tenants_own_corpus() -> None
 def test_an_errored_retrieve_publishes_nothing() -> None:
     """`retrieve_tool` returns its DoS-guard refusal as ordinary text with is_error."""
     log = _capture(_wire([CONTACT_SECTION]), is_error=True)
-    assert agent_module._published_context(log) == []
+    assert agent_loop.published_context(log) == []
     assert _served(GROUNDED_ANSWER, log) == (PII_DEFLECTION, "email")
 
 
@@ -170,7 +179,7 @@ def test_a_result_with_no_ride_along_publishes_nothing() -> None:
     and today's behaviour (no exemption, deflect) is what happens.
     """
     log = _capture(_wire([CONTACT_SECTION], ride_along=False))
-    assert agent_module._published_context(log) == []
+    assert agent_loop.published_context(log) == []
     assert _served(GROUNDED_ANSWER, log) == (PII_DEFLECTION, "email")
 
 
@@ -179,7 +188,7 @@ def test_another_tools_results_are_not_published_material() -> None:
     log = _capture(
         _wire([f"customer_email: {CUSTOMER_ADDRESS}"]), tool_name="lookup_structured"
     )
-    assert agent_module._published_context(log) == []
+    assert agent_loop.published_context(log) == []
     answer = f"Their address on file is {CUSTOMER_ADDRESS}."
     assert _served(answer, log) == (PII_DEFLECTION, "email")
 
@@ -190,7 +199,7 @@ def test_the_query_is_not_published_material() -> None:
         _wire([CONTACT_SECTION]),
         query=f"please email me at {CUSTOMER_ADDRESS} instead",
     )
-    published = agent_module._published_context(log)
+    published = agent_loop.published_context(log)
     assert not any(CUSTOMER_ADDRESS in chunk for chunk in published)
     answer = f"Certainly, we will write to {CUSTOMER_ADDRESS}."
     assert _served(answer, log) == (PII_DEFLECTION, "email")
@@ -225,7 +234,7 @@ def test_chunks_attached_to_another_tool_publish_nothing() -> None:
             agent_loop.RETRIEVE_CHUNKS_KEY: [f"customer_email: {CUSTOMER_ADDRESS}"],
         }
     ]
-    assert agent_module._published_context(log) == []
+    assert agent_loop.published_context(log) == []
     answer = f"Their address on file is {CUSTOMER_ADDRESS}."
     assert _served(answer, log) == (PII_DEFLECTION, "email")
 
@@ -241,7 +250,7 @@ def test_chunks_from_an_unparsed_capture_publish_nothing() -> None:
             agent_loop.RETRIEVE_CHUNKS_KEY: [CONTACT_SECTION],
         }
     ]
-    assert agent_module._published_context(log) == []
+    assert agent_loop.published_context(log) == []
     assert _served(GROUNDED_ANSWER, log) == (PII_DEFLECTION, "email")
 
 

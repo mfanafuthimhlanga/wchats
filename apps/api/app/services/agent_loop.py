@@ -10,8 +10,8 @@ WHY THIS MODULE EXISTS
     schemas, the dispatch, and the two ceilings.
 
 THE SEAM, AND WHY IT IS ONE FUNCTION
-    `build_agent_turn` assembles a turn exactly once, and both callers go through
-    it. "Same agent" is not the same model id. It is the system prompt, the tool
+    `build_agent_turn` assembles a turn exactly once, and all three callers go
+    through it. "Same agent" is not the same model id. It is the system prompt, the tool
     server that enforces the capability envelope, the tool list, the two ceilings
     and the model, together. Assemble any of those twice and the eval measures
     something adjacent to the product, which the measurement-layer audit records
@@ -34,6 +34,19 @@ THE SEAM, AND WHY IT IS ONE FUNCTION
     to the ledger once the turn is over and off the event loop, because writing a
     row opens a tenant connection and a sleeping tenant endpoint takes 8 to 20
     seconds to wake.
+
+THE PII FIREWALL SCANS THE RESPONSE, AND NO CALLER OF THIS LOOP CAN SKIP IT
+    `_turn_result` scans the turn's finished text through `scan_response` and
+    hands back the SERVED text. Until #50 the live Celery task ran it after
+    `run_agent_loop` returned, and neither the eval nor the red-team victim turn
+    imported the module, so a deflectable response was scored by Ragas verbatim.
+    THREE CALLERS run this loop, not two: `run_agent_turn`, the eval's
+    `_run_one_eval_turn`, and `red_team_probe._build_transactional_probe_fn`.
+
+    The guarantee is the RESPONSE TEXT and nothing wider. `agent.tool_call` and
+    `agent.tool_result` below leave the process per tool call, above this scan
+    (#104), and probes that skip the loop entirely never reach it (#105). ADR
+    0006 lists what is and is not covered.
 
 WHAT THE LOOP COUNTS, AND WHAT IT REFUSES TO INVENT
     The turn's cost is derived from `model_calls` rows at read time, against a
@@ -71,6 +84,7 @@ import structlog
 from app.core.config import settings
 from app.core.model_client import ModelRoute, Recorder, make_async_client, route_for
 from app.domain.model_call import ModelCall
+from app.domain.pii_firewall import detect_pii, scan_response
 from app.domain.pricing import UnknownPrice, cost_usd
 from app.domain.tool_result import wire_text
 from app.services.agent_prompt import build_system_prompt
@@ -144,9 +158,10 @@ RETRIEVE_JUDGE_CHUNKS_KEY = "judge_chunks"
 #: an entry this key marks 'unparsed' is an entry `RETRIEVE_RESULT_IS_ERROR_KEY`
 #: marks errored as well.
 #:
-#: `_judge_retrieved_context`, `_published_context` and `_persisted_chunks` in
-#: `app.worker.tasks.runtime.agent` all read the error flag first and skip, so
-#: their unparsed branches never run and `counts["unparsed"]` reads 0 in
+#: `published_context` below, and `_judge_retrieved_context` and
+#: `_persisted_chunks` in `app.worker.tasks.runtime.agent`, all read the error
+#: flag first and skip, so their unparsed branches never run and
+#: `counts["unparsed"]` reads 0 in
 #: production. `run_eval_suite` reads this key without an error check, so its
 #: `retrieve_unparsed` counts errored retrieves rather than undecodable ones.
 #:
@@ -521,8 +536,9 @@ def _attach_retrieve_capture(entry: dict, wire: dict) -> None:
     NOTHING IN THIS TREE PRODUCES `unparsed` WITHOUT `is_error` BESIDE IT.
     `retrieve_tool` attaches the ride-along on its one success path, and its
     DoS-guard refusal, a raising handler, an unknown tool and unreadable
-    arguments all set the error flag instead. Every reader in
-    `app.worker.tasks.runtime.agent` checks that flag first, so the branch below
+    arguments all set the error flag instead. Every reader checks that flag
+    first — `published_context` below, and `_judge_retrieved_context` and
+    `_persisted_chunks` in `app.worker.tasks.runtime.agent` — so the branch below
     is a guard on a producer this tree does not have yet. It stays for the day
     one arrives, because a success carrying no ride-along would otherwise be
     reported as a turn that retrieved nothing.
@@ -595,16 +611,104 @@ async def _run_tool_call(call, *, messages, state, turn, job_id, db, redis) -> N
     state.tool_calls_log.append(_log_entry(name, args, call.id, wire, text))
 
 
+def published_context(tool_calls_log: list[dict]) -> list[str]:
+    """What the TENANT published, for the PII firewall's exemption (BACKLOG 7.29).
+
+    The firewall stops the agent leaking a CUSTOMER's personal data. It is not
+    meant to stop it repeating the BUSINESS's own published contact details, and
+    it was doing exactly that: three of twenty E2E-6 responses came back as the
+    deflection, because the best-matching chunk was the corpus's "Contact and
+    Escalation" section and a correct answer quotes the address in it.
+
+    A THIRD READING OF ONE CAPTURE, joining RETRIEVE_CHUNKS_KEY (what the eval
+    scores) and RETRIEVE_JUDGE_CHUNKS_KEY (what the Auditor judges). It differs
+    from `agent._judge_retrieved_context` in the two places that decide whether
+    an exemption is safe, so it cannot borrow that function:
+
+        content only   RETRIEVE_CHUNKS_KEY, not RETRIEVE_JUDGE_CHUNKS_KEY. The
+                       judge needs provenance; an allowlist needs the smallest
+                       surface that answers the question.
+        unparsed -> nothing   RETIRED, and kept as a guard. `retrieve_tool`
+                       attaches its ride-along on its one success path, so an
+                       unparsed entry always carries is_error and the check above
+                       has already skipped it. Fail closed on both routes.
+
+    WHAT IS DELIBERATELY NOT IN HERE, because each would be a bypass:
+
+        the framed payload   it echoes the retrieve QUERY, so a customer who
+                             types their own address into the chat would see it
+                             come back exempted
+        the customer message and history   the same bypass, one step shorter
+        the agent soul       `pii_firewall`'s stated property is that nothing in
+                             the soul reaches its behaviour (T-18-SEC-02)
+        errored retrieves    `retrieve_tool` returns its DoS-guard refusal as
+                             ordinary text with is_error set, and a refusal is
+                             not published material
+
+    THE ONE THING THAT WOULD WIDEN THIS SILENTLY, checked 2026-08-18 and clear:
+    `verified_qa`. Those rows are answers derived from CONVERSATIONS, not material
+    the tenant published, so an address a customer typed could reach the allowlist
+    through them. It cannot today, because `verified_qa_lookup` is called from
+    `app.worker.tasks.runtime.retrieve`, not from `agent_tools.retrieve_tool`,
+    which builds its chunks straight from reranked hybrid search. Promotion is
+    also off by the owner's decision of 2026-08-08. **Routing the agent's retrieve
+    through that cache, or adding the lookup to `agent_tools`, widens a security
+    control without touching this file.** If that day comes, filter here on the
+    chunk's provenance rather than trusting the tool name.
+
+    Returns one string per retrieved chunk, in retrieval order. It sits beside
+    the firewall rather than in the Celery task because #50 moved the scan into
+    the seam, and `app.services` may not import `app.worker`.
+    """
+    published: list[str] = []
+    for tc in tool_calls_log:
+        if tc.get("tool_name") != "retrieve" or "result" not in tc:
+            continue
+        if tc.get(RETRIEVE_RESULT_IS_ERROR_KEY):
+            continue
+        if tc.get(RETRIEVE_CHUNKS_SOURCE_KEY) == RETRIEVE_CHUNKS_UNPARSED:
+            continue
+        published.extend(str(c) for c in (tc.get(RETRIEVE_CHUNKS_KEY) or []) if c)
+    return published
+
+
 def _turn_result(state: _TurnState) -> dict:
-    """What one turn hands back to its caller."""
+    """What one turn hands back to its caller, PII firewall already applied.
+
+    THE FIREWALL RUNS HERE, and that is the whole of #50's first half. It ran in
+    the live Celery task body, after `run_agent_loop` returned, so the eval task
+    never called it and never imported it: a response the firewall would deflect
+    was scored by Ragas verbatim and posted to a third-party judge API.
+    `pii_firewall`'s docstring claims the scan is unconditional, and two of three
+    callers simply not calling it is how that claim was false by construction.
+
+    `response_text` is the SERVED text on both paths. The original is not
+    returned in any form, because a caller that can read it can serve it, which
+    is why the length below is a number rather than the text.
+
+    The four `pii_` keys are the OBSERVATION, never the control. The substitution
+    has already happened by the time a caller reads them, so a caller that
+    ignores all four still serves the deflection. `pii_published_exemption` is
+    computed here for the same reason the length is: it needs the text this
+    function refuses to hand back.
+    """
+    text = "\n".join(part for part in state.response_parts if part)
+    published = published_context(state.tool_calls_log)
+    served, detector = scan_response(text, published_context=published)
     return {
-        "response_text": "\n".join(part for part in state.response_parts if part),
+        "response_text": served,
         "tool_calls_log": state.tool_calls_log,
         "escalated": state.escalated,
         "escalation_reason": state.escalation_reason,
         "escalation_context": state.escalation_context,
         "num_turns": state.num_turns,
         "stop_reason": state.stop_reason,
+        "pii_detector": detector,
+        "pii_published_chunks": len(published),
+        "pii_original_length": len(text),
+        "pii_published_exemption": (
+            detector is None and bool(published) and detect_pii(text) is not None
+        ),
     }
 
 
@@ -625,7 +729,7 @@ async def run_agent_loop(message: str, *, history, turn: AgentTurn, job_id, db, 
         response_text, tool_calls_log, escalated, escalation_reason, escalation_context,
         num_turns and stop_reason. `stop_reason` is the provider's finish_reason when the
         model stopped on its own, "budget_exceeded" or "max_model_calls" when a ceiling
-        stopped it, and "no_choices" when a reply carried nothing to read.
+        stopped it, and "no_choices" when a reply carried nothing to read. `response_text` is what the PII firewall SERVES, and `_turn_result` describes it beside the four `pii_` keys.
     """
     state = _TurnState()
     try:

@@ -1270,3 +1270,101 @@ def test_the_probe_never_sends_a_real_escalation_email():
         "is no longer wired and a turn put back on live mode mails the owner"
     )
     assert _transcript(text) == []
+
+
+# ---------------------------------------------------------------------------
+# 17. The PII firewall on the THIRD caller of run_agent_loop (#50 follow-up)
+#
+# `agent_loop._turn_result` scans every turn the loop returns, and #50's parity
+# test drives two of the three callers that reach it: the live task and the eval
+# task. This closure is the third. It was named in that test's docstring, in
+# `agent_loop`'s module docstring and in ADR 0006's caller table, and driven by
+# nothing. Deleting the scan from the seam broke no test that ran this path.
+#
+# A red-team victim turn is where a leak is MOST likely and least expected. The
+# attacker's whole job is to talk the agent into saying something it should not,
+# the transcript it produces is written into `red_team_findings` and read back in
+# the ops room, and an Attacker turn is fed the victim's reply verbatim as the
+# next prompt. An address that survives here is at rest in the control DB and
+# posted back to a model, on the path whose reason for existing is that the agent
+# can be talked into things.
+#
+# `_drive` is the harness above, unchanged. Its two doubles are the client
+# factory and the dispatcher seam, and neither one touches the response text:
+# everything between the scripted reply and the string the runner receives is the
+# shipped path, `_turn_result` and the firewall inside it included.
+# ---------------------------------------------------------------------------
+
+#: A customer's own address. No tenant publishes it, so the BACKLOG 7.29
+#: published-context exemption cannot reach it, and this turn retrieves nothing
+#: anyway, since its one tool call is `issue_refund`.
+VICTIM_CUSTOMER_ADDRESS = "jane.smith@gmail.example"
+
+
+def _refund_script_ending(final: str):
+    """`_refund_script`, with the model's closing line under the caller's control."""
+    return [
+        _completion(
+            content="Certainly, processing that refund.",
+            tool_calls=[
+                _tool_call("call_1", "issue_refund", '{"refund_amount_cents": 5000}')
+            ],
+            finish_reason="tool_calls",
+        ),
+        _completion(content=final, finish_reason="stop"),
+    ]
+
+
+def _probe_prose(text: str) -> str:
+    """The response half of a probe return value, before the transcript marker."""
+    from app.services.red_team_probe import PROBE_TOOL_TRANSCRIPT_MARKER
+
+    return text.split(PROBE_TOOL_TRANSCRIPT_MARKER, 1)[0].strip()
+
+
+def test_a_leaking_victim_turn_comes_back_as_the_deflection():
+    """The victim turn is filtered by the same seam the customer turn is.
+
+    The response half only. `_inner` appends the marker and the tool transcript
+    after `response_text`, and those are the finding, not the agent's words, and
+    the firewall never sees them.
+    """
+    from app.domain.pii_firewall import PII_DEFLECTION
+
+    text, _ = _drive(
+        _refund_script_ending(f"Done. Confirmation sent to {VICTIM_CUSTOMER_ADDRESS}."),
+        verdicts=[_refund(Outcome.denied, DENIED_TEXT)],
+    )
+
+    assert _probe_prose(text) == PII_DEFLECTION, (
+        f"the victim turn handed the runner {_probe_prose(text)!r}. That string "
+        "is written to `red_team_findings` and fed to the Attacker as its next "
+        "prompt, so a customer's address survives at rest and goes back to a model."
+    )
+    assert VICTIM_CUSTOMER_ADDRESS not in text
+    assert _transcript(text) == [
+        "skill=issue_refund verdict=capability_denied is_error=True"
+    ], (
+        "the deflection took the tool transcript with it. RTX-01's finding is "
+        "read off these lines, so a filtered turn that also loses them buys "
+        "privacy with a red-team run that can no longer report anything."
+    )
+
+
+def test_a_clean_victim_turn_keeps_the_agents_own_words():
+    """The control. A probe_fn hardcoded to the deflection passes the test above.
+
+    It also pins the half the finding depends on: the Attacker reasons about this
+    prose, so replacing a clean answer would blind the next attack step.
+    """
+    from app.domain.pii_firewall import PII_DEFLECTION
+
+    text, _ = _drive(
+        _refund_script_ending("Done."),
+        verdicts=[_refund(Outcome.denied, DENIED_TEXT)],
+    )
+
+    assert _probe_prose(text) == "Certainly, processing that refund.\nDone.", (
+        f"a clean victim reply came back as {_probe_prose(text)!r}"
+    )
+    assert PII_DEFLECTION not in text

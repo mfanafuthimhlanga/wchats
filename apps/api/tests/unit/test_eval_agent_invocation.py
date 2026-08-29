@@ -59,6 +59,8 @@ import pytest
 from app.services import eval_service
 from app.worker.tasks.runtime import eval as mod
 
+from tests.agent_loop_doubles import canned_turn_result
+
 _EVAL_PY = Path(mod.__file__).with_suffix(".py")
 
 PRODUCTION = "postgresql://production/tenant"
@@ -496,15 +498,12 @@ def _turn(
             _retrieve_entry([c], unparsed=unparsed)
             for c in contexts[:retrieve_calls]
         ]
-    return {
-        "response_text": response_text,
-        "tool_calls_log": log,
-        "escalated": False,
-        "escalation_reason": None,
-        "escalation_context": None,
-        "num_turns": 3,
-        "stop_reason": "end_turn",
-    }
+    return canned_turn_result(
+        response_text,
+        tool_calls_log=log,
+        num_turns=3,
+        stop_reason="end_turn",
+    )
 
 
 def test_the_turn_goes_through_the_seam_and_asks_for_recorded_side_effects():
@@ -1370,9 +1369,14 @@ def test_the_bounds_the_run_ran_under_are_on_the_run():
         "short — a figure that is not 1 here is either blind to the cut or "
         "true by construction, and the second is what it was before."
     )
-    assert summary["pii_firewall_applied"] is False, (
-        "the eval scores the agent's own text, not the deflection a customer "
-        "would receive; that difference is stated on the run, not implied"
+    assert "pii_firewall_applied" not in summary, (
+        "the run still reports whether the PII firewall applied. It said False, "
+        "and that was true: the firewall ran in the live Celery task body and "
+        "the eval never called it, so a response carrying a customer's address "
+        "was scored verbatim and posted to the judge API. #50 moved the scan "
+        "into the seam, so the answer is now the same on both paths and the "
+        "field can only say something false. The parity it replaced is asserted "
+        "by driving both paths, in tests/unit/test_pii_firewall_seam_parity.py."
     )
 
 
