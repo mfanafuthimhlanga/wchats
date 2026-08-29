@@ -26,13 +26,27 @@ WHY severity IS FOUR STRINGS AND NOT THE Severity ENUM
     the enum's four graded members by a test, because two lists of four strings in one
     package is one list that can drift.
 
-WHY attack_vector IS NOT CHECKED AGAINST RED_TEAM_VECTORS
-    It does not name the dispatch vector. `run_identity_bypass_agent` is dispatched as
-    `identity_bypass` and reports its findings as `identity_verification_bypass`, and
-    the M7 conversational findings still say `prompt_injection`. The roster check
-    belongs on `VectorOutcome.vector`, which is the field the completeness rule reads,
-    and it is there. Putting one here would refuse findings the shipped runners
-    produce today.
+WHY attack_vector IS FREE TEXT AND NOT A RED_TEAM_VECTORS MEMBER
+    The attacker model picks it. `_TOOL_REPORT_FINDING`
+    (`app/services/red_team_service.py:245`) declares `attack_vector` as a bare string
+    with no enum beside it, and `_classify_reported_findings` (`:1115`) reads
+    `raw.get("attack_vector")` ahead of `session.attack_vector`, so the finding carries
+    whatever the model typed. A roster check here would throw away the probe and the
+    response over one word the model chose, which costs more than an unmatchable name.
+
+    EXPECT THE TWO NAMES TO DIFFER. `run_identity_bypass_agent` is dispatched as
+    `identity_bypass` and records that on its VectorObservation
+    (`red_team_service.py:2147`); the findings it returns say
+    `identity_verification_bypass` (`:2122`). That is the pair a reader will meet
+    first.
+
+    WHAT A MODEL-TYPED VECTOR COSTS. `run_red_team` groups the findings by this field
+    and upserts one `red_team_strategies` row per distinct value
+    (`app/worker/tasks/runtime/red_team.py:719-735`), so a name the model invented
+    becomes a strategy row of its own and stays there. Nothing downstream corrects it:
+    `RedTeamResult.coverage` reads the vector rows alone and never matches a finding to
+    a row. The roster check belongs on `VectorOutcome.vector`, which is the field the
+    completeness rule does read, and it is there.
 
 Rung: `app.domain` imports the standard library, third-party packages and its
 domain siblings. This module imports pydantic and nothing else.
@@ -56,8 +70,9 @@ class RedTeamFinding(BaseModel):
         severity:       how bad this landed attack was, one of the four graded
                         values. A finding is a breach, so there is no `none`.
         description:    what the attacker got the agent to do, in a sentence.
-        attack_vector:  the category the runner reports under. See the module
-                        docstring for why this is free text.
+        attack_vector:  the category the attacker model reported under, which is
+                        not always the vector that was dispatched. See the module
+                        docstring.
         probe_message:  the exact probe text that triggered the finding.
         agent_response: the deployed agent's response text.
         turn_count:     which turn of the attack sequence this came from.
@@ -66,7 +81,15 @@ class RedTeamFinding(BaseModel):
     # Frozen, so a finding cannot be edited between the attacker producing it and
     # the run storing it. Nothing in the tree assigns to one today, and this is
     # what keeps that true.
-    model_config = ConfigDict(frozen=True)
+    #
+    # extra="forbid" so a seventh key cannot ride along. `model_dump()` is the
+    # stored shape at two write sites, and pydantic's default would carry a
+    # misspelt key into `red_team_runs.findings` and `red_team_runs.result` with
+    # neither column's reader told it was there. The one place a raw dict reaches
+    # this type, `_classify_reported_findings`, names all six keys itself, so a
+    # key the attacker model invented is dropped at that boundary and never
+    # reaches this refusal.
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     severity: Literal["low", "medium", "high", "critical"]
     description: str

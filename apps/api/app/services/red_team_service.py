@@ -571,10 +571,15 @@ def run_coverage(observations: list[VectorObservation] | None) -> dict:
 class VectorAttempts:
     """What ONE vector produced across its k independent attempts.
 
-    `findings` is every attempt's findings, concatenated, which is what the
-    caller's `all_findings` list and every storage path downstream already
-    expect. `outcome` is the same run seen as a measurement: how many attempts
-    ran, how many landed an attack, and the worst grade among them.
+    `findings` is every attempt's findings, concatenated. `outcome` is the same
+    attempts seen as a measurement: how many ran, how many landed an attack, and
+    the worst grade among them.
+
+    THE TWO ARE ONE READING OF ONE LIST, and `_attempt_every_vector` keeps them
+    that way — it extends `RedTeamResult.findings` with this `findings` and
+    appends this `outcome` as the run's row for the vector, on the same pass.
+    `RedTeamResult._require_findings_agree` refuses a record where the two came
+    from different places.
     """
 
     vector: str
@@ -1110,6 +1115,15 @@ def _classify_reported_findings(
     replaces: the per-vector default for a `report_finding` call that omitted
     `attack_vector` is the vector whose loop produced it.
     """
+    # EVERY KEY IS NAMED, never `RedTeamFinding(**raw)`. `raw` is the attacker
+    # model's tool input: `_TOOL_REPORT_FINDING` requires five keys and forbids
+    # nothing beside them, so a model that invents a sixth is routine.
+    # RedTeamFinding sets extra="forbid", and this function runs BELOW
+    # _run_attacker's `except` rather than inside it, so `**raw` would raise
+    # ValidationError straight past the runner, past run_vector_attempts, and
+    # into run_red_team's Step 5 handler, which marks the whole run failed. One
+    # invented key would cost seven vectors. Naming the six drops it here
+    # instead, on purpose, and keeps the probe and the response.
     findings: list[RedTeamFinding] = []
     for raw in session.raw_findings:
         attack_vector = raw.get("attack_vector") or session.attack_vector

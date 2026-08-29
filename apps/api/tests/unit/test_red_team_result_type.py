@@ -175,6 +175,10 @@ class TestWhatAResultRefuses:
 
 
 class TestTheRunLevelNumbersAreDerivedOnce:
+    """Each fixture below carries the findings its rows claim, because
+    `_require_findings_agree` refuses a record where they disagree. `_finding`
+    is defined further down the file; the name resolves at call time."""
+
     def test_breaches_total_across_vectors(self):
         result = RedTeamResult(
             k=K,
@@ -185,6 +189,11 @@ class TestTheRunLevelNumbersAreDerivedOnce:
                 VectorOutcome(
                     vector="identity_bypass", attempts=K, breaches=1, max_severity="low"
                 ),
+            ],
+            findings=[
+                _finding("medium", "data_leakage"),
+                _finding("medium", "data_leakage"),
+                _finding("low", "identity_bypass"),
             ],
         )
         assert result.breaches == 3
@@ -204,6 +213,10 @@ class TestTheRunLevelNumbersAreDerivedOnce:
                     breaches=1,
                     max_severity="critical",
                 ),
+            ],
+            findings=[
+                _finding("high", "data_leakage"),
+                _finding("critical", "identity_bypass"),
             ],
         )
         assert result.max_severity is Severity.CRITICAL
@@ -349,6 +362,9 @@ class TestThePayloadIsTheStoredShape:
     any reader that grows a parser for it are looking at the same keys."""
 
     def _dirty(self) -> RedTeamResult:
+        """Two of SHORT_VECTOR's attempts landed a critical attack, and the two
+        findings are what they landed. The record refuses the counts on their
+        own, which is `_require_findings_agree`."""
         return RedTeamResult(
             k=K,
             vectors=[
@@ -361,6 +377,7 @@ class TestThePayloadIsTheStoredShape:
                     vector=SHORT_VECTOR, attempts=K, breaches=2, max_severity="critical"
                 )
             ],
+            findings=[_finding("critical"), _finding("critical")],
         )
 
     def test_the_payload_is_json_safe(self):
@@ -435,6 +452,13 @@ def _finding(severity: str = "high", vector: str = SHORT_VECTOR) -> RedTeamFindi
     )
 
 
+def _breached_row(severity: str = "high", breaches: int = 1) -> VectorOutcome:
+    """SHORT_VECTOR's row for a run in which `breaches` of its attempts landed."""
+    return VectorOutcome(
+        vector=SHORT_VECTOR, attempts=K, breaches=breaches, max_severity=severity
+    )
+
+
 class TestAFindingKeepsWhatItMeasured:
     def test_the_four_named_fields_survive_construction(self):
         finding = _finding()
@@ -477,6 +501,27 @@ class TestAFindingKeepsWhatItMeasured:
         with pytest.raises(ValidationError):
             _finding(severity="catastrophic")
 
+    def test_a_seventh_key_is_refused_rather_than_carried(self):
+        """`model_dump()` is the stored shape at two write sites, so a key
+        pydantic accepted and kept would reach `red_team_runs.findings` and
+        `red_team_runs.result` with neither column's reader told it was there.
+
+        The attacker model's `report_finding` input is where such a key comes
+        from, and `_classify_reported_findings` names the six keys itself rather
+        than splatting the raw dict — so this refusal fires on a caller that
+        built one by hand, never on a run.
+        """
+        with pytest.raises(ValidationError):
+            RedTeamFinding(
+                severity="high",
+                description="d",
+                attack_vector=SHORT_VECTOR,
+                probe_message="p",
+                agent_response="r",
+                turn_count=1,
+                confidence=0.9,
+            )
+
     def test_a_finding_may_not_grade_itself_none(self):
         """A finding IS a breach. `none` is the grade a VectorOutcome carries to
         say a vector breached nothing, and it is why this field is four strings
@@ -501,12 +546,12 @@ class TestTheRecordHoldsItsFindings:
         assert _result_with(_all_at(K)).findings == ()
 
     def test_a_list_of_findings_is_held_as_a_tuple(self):
-        result = RedTeamResult(k=K, vectors=[], findings=[_finding()])
+        result = RedTeamResult(k=K, vectors=[_breached_row()], findings=[_finding()])
 
         assert isinstance(result.findings, tuple)
 
     def test_the_findings_field_cannot_be_reassigned(self):
-        result = RedTeamResult(k=K, vectors=[], findings=[_finding()])
+        result = RedTeamResult(k=K, vectors=[_breached_row()], findings=[_finding()])
 
         with pytest.raises(dataclasses.FrozenInstanceError):
             result.findings = ()
@@ -525,7 +570,11 @@ class TestTheRecordHoldsItsFindings:
 
 class TestTheStoredResultCarriesTheFindings:
     """`red_team_runs.result` is written as `json.dumps(run_result.payload)`, so
-    the round trip below is the one the column actually makes."""
+    the round trip below is the one the column actually makes.
+
+    The three refusals after it are the other half: a column that carries both
+    the counts and the findings can still carry two answers to one question, and
+    the record is where that stops."""
 
     def _breached(self) -> RedTeamResult:
         return RedTeamResult(
@@ -558,15 +607,48 @@ class TestTheStoredResultCarriesTheFindings:
         ]
 
     def test_the_stored_findings_agree_with_the_counts_beside_them(self):
-        """The rows say how many attempts breached; the findings say what those
-        breaches were. A column carrying one without the other is the join this
-        record exists to remove."""
-        stored = json.loads(json.dumps(self._breached().payload))
+        """A high finding beside seven rows that all breached nothing.
 
-        assert stored["breaches"] == 1
-        assert stored["max_severity"] == "high"
-        assert [f["severity"] for f in stored["findings"]] == ["high"]
-        assert [f["attack_vector"] for f in stored["findings"]] == [SHORT_VECTOR]
+        This record used to construct, and `payload` then wrote
+        `breaches=0, max_severity="none"` into `red_team_runs.result` beside the
+        high finding the same record held. A deploy gate reading the counts read
+        that run as clean. The fixture it replaces agreed with itself by
+        construction and would have passed against any logic at all.
+        """
+        clean_rows = [VectorOutcome(vector=v, attempts=K) for v in RED_TEAM_VECTORS]
+
+        with pytest.raises(InvalidRedTeamResult) as exc:
+            RedTeamResult(k=K, vectors=clean_rows, findings=[_finding("high")])
+
+        assert "'high'" in str(exc.value) and "'none'" in str(exc.value)
+
+    def test_a_grade_the_findings_never_reached_is_refused(self):
+        """The other direction. The rows claim a critical breach and the record
+        holds one high finding, so the run has two worst findings."""
+        with pytest.raises(InvalidRedTeamResult) as exc:
+            RedTeamResult(
+                k=K,
+                vectors=[_breached_row("critical")],
+                findings=[_finding("high")],
+            )
+
+        assert "'high'" in str(exc.value) and "'critical'" in str(exc.value)
+
+    def test_more_breaches_than_findings_is_refused(self):
+        """Three attempts landed an attack and the record holds one of them.
+
+        The grades agree here, so this is the clause the severity check cannot
+        reach: `run_vector_attempts` counts a breach per attempt that returned a
+        non-empty list, and every one of those lists is in the record.
+        """
+        with pytest.raises(InvalidRedTeamResult) as exc:
+            RedTeamResult(
+                k=K,
+                vectors=[_breached_row("high", breaches=3)],
+                findings=[_finding("high")],
+            )
+
+        assert "1 finding(s)" in str(exc.value) and "3 breached" in str(exc.value)
 
     def test_a_clean_run_stores_an_empty_findings_list(self):
         """The control. `findings` moves with the run, so the assertions above

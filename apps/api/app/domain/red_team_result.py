@@ -52,6 +52,11 @@ WHY THE RECORD HOLDS THE FINDINGS
     keeping its severity, its vector, the probe and the response, and `payload`
     writes them into `red_team_runs.result` with everything else.
 
+    Holding both halves is not the same as them agreeing. A record could carry a
+    high finding beside seven rows that all report zero breaches, and `payload`
+    would write `breaches=0, max_severity="none"` beside that finding.
+    `_require_findings_agree` refuses that record on construction.
+
 Rung: `app.domain` imports the standard library, third-party packages and its
 domain siblings. This module imports the standard library and one sibling,
 `app.domain.red_team_finding`.
@@ -185,6 +190,58 @@ def worst_severity(severities: Iterable[Severity | str]) -> Severity:
     )
 
 
+def _require_findings_agree(
+    findings: tuple[RedTeamFinding, ...], breaches: int, max_severity: Severity
+) -> None:
+    """Refuse a record whose findings and whose vector rows describe different runs.
+
+    THE INVARIANT `_attempt_every_vector` ALREADY SATISFIES, written down. It runs
+    one vector at a time; `run_vector_attempts` extends that vector's finding list
+    with every attempt's findings, counts a `breach` for each attempt whose list
+    came back non-empty, and grades the row `worst_severity` over that same list.
+    The task then extends the record's findings with the identical list. Fold the
+    seven rows together and two equalities hold over the whole run:
+
+        the worst grade over every finding IS the run's max_severity
+        there are never fewer findings than there are breached attempts
+
+    Break either one and the record was not built by a run. The case this exists
+    for is `findings=[one high finding]` beside seven rows reporting zero
+    breaches: `payload` wrote `breaches=0, max_severity="none"` into
+    `red_team_runs.result` next to the high finding the same record held, and a
+    reader acting on the counts read that run as clean.
+
+    RUN LEVEL, NEVER PER VECTOR. `RedTeamFinding.attack_vector` is whatever the
+    attacker model typed rather than the dispatch vector its row is keyed by, so
+    this rung cannot match one finding to one row. `red_team_finding`'s module
+    docstring carries that argument. The totals are matchable, and the totals are
+    what a reader of the column acts on.
+
+    Args:
+        findings:     the record's findings, already type-checked and copied.
+        breaches:     the run's total, summed across the vector rows.
+        max_severity: the run's worst grade, taken across the vector rows.
+
+    Raises:
+        InvalidRedTeamResult: naming both numbers, so a reader of the message
+            knows which half of the record to distrust.
+    """
+    worst = worst_severity(finding.severity for finding in findings)
+    if worst is not max_severity:
+        raise InvalidRedTeamResult(
+            f"RedTeamResult holds {len(findings)} finding(s) whose worst grade is "
+            f"'{worst.value}', beside vector rows reporting "
+            f"'{max_severity.value}'. One run has one worst finding."
+        )
+    if len(findings) < breaches:
+        raise InvalidRedTeamResult(
+            f"RedTeamResult holds {len(findings)} finding(s) beside vector rows "
+            f"reporting {breaches} breached attempt(s). An attempt that landed an "
+            "attack produced at least one finding, so a run can never hold fewer "
+            "findings than breaches."
+        )
+
+
 @dataclass(frozen=True)
 class VectorOutcome:
     """What ONE attack vector produced across its independent attempts.
@@ -264,8 +321,9 @@ class RedTeamResult:
     Raises:
         InvalidRedTeamResult: k below one or not an int, vectors is not a list
             or a tuple, a row is not a VectorOutcome, one vector has two rows,
-            findings is not a list or a tuple, or a finding is not a
-            RedTeamFinding.
+            findings is not a list or a tuple, a finding is not a
+            RedTeamFinding, or the findings and the rows disagree about what
+            this run measured (`_require_findings_agree`).
     """
 
     k: int
@@ -310,6 +368,9 @@ class RedTeamResult:
         # object.__setattr__ is how a frozen dataclass normalises a field.
         object.__setattr__(self, "vectors", tuple(self.vectors))
         object.__setattr__(self, "findings", _as_findings(self.findings))
+        # Last, because it reads `breaches` and `max_severity`, and both are
+        # derived over the rows the two lines above just normalised.
+        _require_findings_agree(self.findings, self.breaches, self.max_severity)
 
     def attempts_for(self, vector: str) -> int:
         """Independent attempts this vector completed. An absent vector ran none."""
