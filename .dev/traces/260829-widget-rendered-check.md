@@ -239,3 +239,27 @@ reported only the two files this pass edits.
 Worth keeping from run 2. The span passed on its own at 329.83px, so the pre-review gate
 would have greened a build where the version tag rendered three lines outside the bar. The
 two flex children trade width, which is why one of them is never enough to watch.
+
+## Third pass
+
+The verifier of `045dc33` found five printed values with no assertion reading them
+(bounding width, font, bar content width and height), the shape FM-016 records. The output
+now separates gated lines from lines marked `measured, not gated`, and the PASS line names
+the three properties it asserts instead of a width it does not.
+
+```
+$ node scripts/check-rendered-notice.mjs
+  bar             scrollWidth 380px within clientWidth 380px, scrollHeight 31px within clientHeight 31px
+  span            "AI-generated replies, processed by OpenAI"
+                  16.5px tall against line-height 16.5px, scrollWidth 208px within clientWidth 208px
+                  measured, not gated: 207.92px wide, font 11px system-ui, -apple-system, "Segoe UI", sans-serif
+  code.mono-tag   "W Chats v0"
+                  15px tall against line-height 15px, scrollWidth 55px within clientWidth 55px
+                  measured, not gated: 54.98px wide, font 10px ui-monospace, "SF Mono", Menlo, monospace
+  measured, not gated: bar 356px content, 32px tall, viewport 380px
+check:rendered-notice: PASS -- all 2 children of the bar render on one row, none is clipped, and the bar overflows in neither axis.
+EXIT=0
+```
+
+The assertions did not change, so the second pass's exit codes still hold. Only the print
+shape moved.

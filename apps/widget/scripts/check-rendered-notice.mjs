@@ -24,11 +24,14 @@
 // unconditionally (src/Widget.jsx:73), so refusing that call costs a socket
 // wait and nothing the gate reads.
 //
-// On pass it prints the bar's content width and, for each child, the text, the
-// rendered box, the line-height and the font, then one PASS line and exit 0.
-// On failure it prints the same numbers, then one line per finding, and exits
-// 1. When the bar never appears it says so, names the file to check, and
-// exits 1.
+// It prints two kinds of line. A gated line carries only numbers an assertion
+// below reads: the bar's scroll box against its client box, and for each child
+// its height against its line-height and its scrollWidth against its
+// clientWidth. A line marked "measured, not gated" carries the bounding width,
+// the font and the bar's content width, which help a reader of a red run and
+// cannot change the exit code. Then one PASS line and exit 0, or one line per
+// finding and exit 1. When the bar never appears it says so, names the file to
+// check, and exits 1.
 //
 // One thing it does not see. embed/widget.js:72 makes the frame 100vw below a
 // 480px screen while widget.css fixes the widget root at 380px, so a 360px
@@ -206,18 +209,29 @@ if (m.barScrollHeight > m.barClientHeight) {
   )
 }
 
+// Every number on the gated lines is read by an assertion above. The
+// "measured, not gated" lines are diagnostics for the reader of a red run;
+// they can change without the exit code changing, and the label says so.
 const gutter = ' '.repeat(18)
 console.log(
-  `  bar             ${round(m.barContentWidth)}px content, ` +
-  `${round(m.barHeight)}px tall  (viewport ${VIEWPORT.width}px)`
+  `  bar             scrollWidth ${m.barScrollWidth}px within clientWidth ${m.barClientWidth}px, ` +
+  `scrollHeight ${m.barScrollHeight}px within clientHeight ${m.barClientHeight}px`
 )
 for (const child of m.children) {
   console.log(`  ${child.name.padEnd(14)}  "${child.text}"`)
   console.log(
-    `${gutter}${round(child.width)}px wide, ${round(child.height)}px tall, ` +
-    `line-height ${child.lineHeight}, font ${child.fontSize} ${child.fontFamily}`
+    `${gutter}${round(child.height)}px tall against line-height ${child.lineHeight}, ` +
+    `scrollWidth ${child.scrollWidth}px within clientWidth ${child.clientWidth}px`
+  )
+  console.log(
+    `${gutter}measured, not gated: ${round(child.width)}px wide, ` +
+    `font ${child.fontSize} ${child.fontFamily}`
   )
 }
+console.log(
+  `  measured, not gated: bar ${round(m.barContentWidth)}px content, ` +
+  `${round(m.barHeight)}px tall, viewport ${VIEWPORT.width}px`
+)
 
 if (findings.length > 0) {
   console.error(`\ncheck:rendered-notice: FAIL -- ${findings.length} finding(s):`)
@@ -227,5 +241,5 @@ if (findings.length > 0) {
 
 console.log(
   `check:rendered-notice: PASS -- all ${m.children.length} children of the bar render ` +
-  `on one row inside ${round(m.barContentWidth)}px of content width.`
+  `on one row, none is clipped, and the bar overflows in neither axis.`
 )
