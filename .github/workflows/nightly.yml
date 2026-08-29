@@ -160,6 +160,16 @@ jobs:
       - name: Install Python dependencies
         run: pip install -e "apps/api[dev]"
 
+      - name: Install Chromium headless shell for the widget
+        # The widget's postbuild runs scripts/check-rendered-notice.mjs, which
+        # measures the disclosure notice in a real browser (#106). ubuntu-latest
+        # ships no Playwright browser, so install the one playwright-core 1.61.1
+        # resolves before the build reaches that step. This installs first
+        # because pnpm exec cannot call playwright-core until it is on disk.
+        # The build step's own install then finds everything already there.
+        working-directory: apps/widget
+        run: pnpm install --frozen-lockfile && pnpm exec playwright-core install --with-deps chromium-headless-shell
+
       - name: Build widget (required for D7)
         working-directory: apps/widget
         run: pnpm install --frozen-lockfile && pnpm run build
