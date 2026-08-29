@@ -77,21 +77,22 @@ def read_env(path: pathlib.Path) -> dict[str, str]:
 def report_env_files() -> dict[str, str]:
     """Which keys each .env carries. Returns the file pydantic will actually load.
 
-    Two tracked examples and two real files exist, and WHICH ONE LOADS IS
-    POSITIONAL: `_find_env_file()` walks up from app/core/config.py and stops at
-    the first `.env`, so `apps/api/.env` wins permanently once it exists
-    (BACKLOG 1.21). Both are reported because a key present in the loser reads as
-    configured and is not.
+    Two tracked examples and two real files exist. `_find_env_file()` walks up
+    from app/core/config.py and returns the OUTERMOST `.env`, so the repo-root
+    file wins whenever it exists (owner, 2026-08-29). Before that the first file
+    won and `apps/api/.env` shadowed the root (BACKLOG 1.21). Both are reported
+    because a key present in the loser reads as configured and is not.
     """
     winner: dict[str, str] = {}
-    for label, path in (("apps/api/.env", API_DIR / ".env"), ("repo-root/.env", REPO_ROOT / ".env")):
+    for label, path in (("repo-root/.env", REPO_ROOT / ".env"), ("apps/api/.env", API_DIR / ".env")):
         env = read_env(path)
         state = "exists" if path.exists() else "MISSING"
-        print(f"\n  {label}  ({state}, {len(env)} keys)")
+        loads = " <- Settings loads this one" if not winner and path.exists() else ""
+        print(f"\n  {label}  ({state}, {len(env)} keys){loads}")
         for key in KEYS:
             value = env.get(key)
             print(f"    {key:26} {'set, len ' + str(len(value)) if value else 'ABSENT'}")
-        if not winner and env:
+        if not winner and path.exists():
             winner = env
     return winner
 
