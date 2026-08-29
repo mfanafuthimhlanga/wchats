@@ -520,7 +520,7 @@ class TestConnectTimeouts:
         [
             lambda svc: svc.write_eval_results(
                 "run-1",
-                [{"scenario_id": "s1", "faithfulness": 0.9}],
+                svc.build_judge_records([{"scenario_id": "s1", "faithfulness": 0.9}]),
                 "postgresql://production",
             ),
             lambda svc: svc.update_eval_run_status(
@@ -621,8 +621,10 @@ class TestPersistenceSplit:
 
         eval_service.write_eval_results(
             str(uuid.uuid4()),
-            [{"scenario_id": "s1", "faithfulness": 0.9, "answer_relevancy": 0.9,
-              "context_precision": 0.9, "context_recall": 0.9}],
+            eval_service.build_judge_records(
+                [{"scenario_id": "s1", "faithfulness": 0.9, "answer_relevancy": 0.9,
+                  "context_precision": 0.9, "context_recall": 0.9}]
+            ),
             "postgresql://production",
         )
 
@@ -647,26 +649,26 @@ class TestPersistenceSplit:
 
 
 # ---------------------------------------------------------------------------
-# The Judge behind each score (ticket #47)
+# The judge row: what it decided, and what it no longer repeats (#47, #51)
 # ---------------------------------------------------------------------------
 
 
-class TestJudgeIdentityLandsOnTheScore:
-    """Which Judge produced a score, recorded where #53 will read it.
+class TestTheJudgeRowCarriesItsOwnDecision:
+    """One eval_results row per (scenario, metric), deciding nothing at read time.
 
-    A calibration figure says how well one Judge agrees with a human, and three
-    things move that agreement: the model, the reasoning effort, and the prompt.
-    A score stored without them cannot be compared to the next one, and grouping
-    two efforts under the word "judge" averages two populations.
+    #47 put the Judge identity in `detail` beside the whole score row, so a
+    scenario's four rows each repeated all four of that scenario's scores. #51
+    criterion 2 takes the blob out and gives the row columns: the dimension, the
+    score, the verdict, the threshold that produced it, the Judge, and the
+    reference to the ledger rows that paid for it.
 
-    `eval_results` is where a judge's score lands, one row per (scenario,
-    metric), and `metric` is the judge dimension. So the identity goes in that
-    row's `detail`, which makes it retrievable per dimension per run out of one
-    column with no second table to join.
+    The verdict matters most. It used to be rebuilt in `api/v1/evals.py` from
+    today's `settings`, so raising a threshold restated every verdict already
+    written down.
     """
 
-    def _details(self, monkeypatch) -> dict[str, dict]:
-        """`detail` per metric, off a real write_eval_results call."""
+    def _rows(self, monkeypatch, score: dict | None = None) -> dict[str, dict]:
+        """The INSERT parameters per metric, off a real write_eval_results call."""
         from app.services import eval_service
 
         cursor = _RecordingCursor()
@@ -675,30 +677,25 @@ class TestJudgeIdentityLandsOnTheScore:
 
         eval_service.write_eval_results(
             str(uuid.uuid4()),
-            [{"scenario_id": "s1", "faithfulness": 0.9, "answer_relevancy": 0.8,
-              "context_precision": 0.7, "context_recall": 0.6}],
+            eval_service.build_judge_records([score or {
+                "scenario_id": "s1", "faithfulness": 0.95, "answer_relevancy": 0.8,
+                "context_precision": 0.7, "context_recall": 0.6,
+            }]),
             "postgresql://production",
         )
-        return {
-            params["metric"]: json.loads(params["detail"])
-            for _sql, params in cursor.executed
-        }
+        return {params["metric"]: params for _sql, params in cursor.executed}
 
-    def test_every_result_row_names_the_judge_that_scored_that_dimension(
-        self, monkeypatch
-    ):
-        """All three fields, on every dimension, in one place."""
+    # -- the identity ------------------------------------------------------
+
+    def test_every_row_names_the_judge_that_scored_that_dimension(self, monkeypatch):
+        """All three fields, on every dimension, in a column of its own now."""
         from app.services.eval_service import METRIC_KEYS
 
-        details = self._details(monkeypatch)
+        rows = self._rows(monkeypatch)
 
-        assert sorted(details) == sorted(METRIC_KEYS)
+        assert sorted(rows) == sorted(METRIC_KEYS)
         for metric in METRIC_KEYS:
-            identity = details[metric].get("judge_identity")
-            assert identity is not None, (
-                f"the {metric} row records no Judge, so a calibration figure "
-                "keyed on the identity has nothing to key on"
-            )
+            identity = json.loads(rows[metric]["judge_identity"])
             assert sorted(identity) == [
                 "model", "prompt_version", "reasoning_effort"
             ], f"the {metric} row's identity is {identity!r}"
@@ -715,10 +712,10 @@ class TestJudgeIdentityLandsOnTheScore:
         """
         from app.services.eval_service import METRIC_KEYS
 
-        details = self._details(monkeypatch)
+        rows = self._rows(monkeypatch)
 
         for metric in METRIC_KEYS:
-            identity = details[metric]["judge_identity"]
+            identity = json.loads(rows[metric]["judge_identity"])
             assert identity["model"] == "gpt-5.6-luna", (
                 f"the {metric} row records model {identity['model']!r}"
             )
@@ -736,24 +733,125 @@ class TestJudgeIdentityLandsOnTheScore:
 
         from app.services.eval_service import METRIC_KEYS
 
-        details = self._details(monkeypatch)
+        rows = self._rows(monkeypatch)
         expected = f"ragas-{importlib.metadata.version('ragas')}"
 
         for metric in METRIC_KEYS:
-            assert details[metric]["judge_identity"]["prompt_version"] == expected
+            identity = json.loads(rows[metric]["judge_identity"])
+            assert identity["prompt_version"] == expected
 
-    def test_the_score_row_survives_alongside_the_identity(self, monkeypatch):
-        """`detail` still carries what it always carried.
+    def test_a_route_with_no_effort_writes_no_judge_rather_than_a_partial_one(
+        self, monkeypatch
+    ):
+        """The fail-open path, observed rather than assumed.
 
-        Nothing reads this column today; #53 is its first reader. Replacing the
-        score row rather than extending it would silently change a shape a later
-        reader is entitled to.
+        Decision #34 priced the Judge floor at effort `none`, and every judge
+        route carries it today, so this branch is unreachable from the shipped
+        table. It exists because a route that dropped the effort would leave the
+        identity a field short, and two efforts filed under one key average two
+        populations. Writing NULL says the Judge is unknown, which is what it
+        would be, and it costs no scored run: the score, the verdict and the
+        threshold all still land.
         """
-        details = self._details(monkeypatch)
+        from app.core.model_client import ModelRoute
+        from app.services import eval_service
 
-        assert details["faithfulness"]["scenario_id"] == "s1"
-        assert details["faithfulness"]["faithfulness"] == 0.9
-        assert details["context_recall"]["context_recall"] == 0.6
+        monkeypatch.setattr(
+            eval_service,
+            "route_for",
+            lambda _purpose: ModelRoute("openai", "gpt-5.6-luna"),
+        )
+
+        assert eval_service.judge_identity_for("faithfulness") is None
+
+        row = self._rows(monkeypatch)["faithfulness"]
+        assert row["judge_identity"] is None
+        assert row["score"] == 0.95, "the score was lost along with the identity"
+        assert row["binary_verdict"] is True, "the verdict was lost with the identity"
+
+    # -- the verdict and its gate -----------------------------------------
+
+    def test_a_gated_metric_carries_its_threshold_and_its_verdict(self, monkeypatch):
+        from app.core.config import settings
+
+        rows = self._rows(monkeypatch)
+
+        assert rows["faithfulness"]["threshold"] == settings.EVAL_FAITHFULNESS_THRESHOLD
+        assert rows["faithfulness"]["binary_verdict"] is True
+        assert rows["answer_relevancy"]["threshold"] == settings.EVAL_RELEVANCY_THRESHOLD
+        assert rows["answer_relevancy"]["binary_verdict"] is False, (
+            "0.8 is below the 0.9 relevancy gate"
+        )
+
+    def test_an_ungated_metric_carries_neither_a_threshold_nor_a_verdict(
+        self, monkeypatch
+    ):
+        """context_precision and context_recall have no setting anywhere.
+
+        NULL on both columns, never a borrowed threshold and never False. A
+        reader aggregating verdicts would otherwise count two extra failures on
+        every scenario in the table.
+        """
+        rows = self._rows(monkeypatch)
+
+        for metric in ("context_precision", "context_recall"):
+            assert rows[metric]["threshold"] is None, f"{metric} was given a gate"
+            assert rows[metric]["binary_verdict"] is None, f"{metric} was given a verdict"
+
+    def test_an_unscored_metric_is_a_row_with_no_score_and_no_verdict(
+        self, monkeypatch
+    ):
+        """The judge returned nothing for one dimension. The row still exists.
+
+        Dropping it would make an unscored dimension indistinguishable from a
+        scenario nobody sent, and `summarise_run_validity`'s per-metric
+        observation counts would lose the denominator rather than show the hole.
+        """
+        rows = self._rows(monkeypatch, score={
+            "scenario_id": "s1", "faithfulness": None, "answer_relevancy": 0.95,
+            "context_precision": None, "context_recall": None,
+        })
+
+        assert len(rows) == 4, "an unscored metric lost its row"
+        assert rows["faithfulness"]["score"] is None
+        assert rows["faithfulness"]["binary_verdict"] is None, (
+            "an unscored gated metric read as a failed one"
+        )
+        assert rows["faithfulness"]["threshold"] is not None, (
+            "the gate the metric WOULD have been judged against is still recorded"
+        )
+        assert rows["answer_relevancy"]["binary_verdict"] is True
+
+    def test_the_verdict_is_the_comparison_and_not_a_copy_of_the_score(
+        self, monkeypatch
+    ):
+        """Both sides of the gate, through the writer rather than the type."""
+        assert self._rows(monkeypatch, score={
+            "scenario_id": "s1", "faithfulness": 0.89,
+        })["faithfulness"]["binary_verdict"] is False
+        assert self._rows(monkeypatch, score={
+            "scenario_id": "s1", "faithfulness": 0.90,
+        })["faithfulness"]["binary_verdict"] is True, (
+            "a score exactly on the gate must pass; the comparison is >="
+        )
+
+    # -- the ledger reference ---------------------------------------------
+
+    def test_every_row_names_the_ledger_bucket_that_paid_for_it(self, monkeypatch):
+        """The reference is (eval_run_id, ledger_purpose), per metric per run.
+
+        The ledger cannot go per scenario: `record_model_call` mints each row's
+        uuid inside itself, the hook that calls it fires under ragas' scoring
+        loop and sees no scenario, and one metric call leaves several rows. So
+        the row stores the bucket, and tenant migration 0023's column comment
+        says that is the grain.
+        """
+        from app.services.eval_service import JUDGE_PURPOSE_BY_METRIC, METRIC_KEYS
+
+        rows = self._rows(monkeypatch)
+
+        for metric in METRIC_KEYS:
+            assert rows[metric]["ledger_purpose"] == JUDGE_PURPOSE_BY_METRIC[metric]
 
     def test_each_metric_maps_to_a_purpose_the_routing_table_routes(self):
         """The map is built from the two tuples, not from a `judge_` prefix rule.
@@ -773,33 +871,109 @@ class TestJudgeIdentityLandsOnTheScore:
         for purpose in JUDGE_PURPOSE_BY_METRIC.values():
             assert purpose in PURPOSE_ROUTES
 
-    def test_a_route_with_no_effort_records_no_judge_rather_than_a_partial_one(
-        self, monkeypatch
-    ):
-        """The fail-open path, observed rather than assumed.
+    # -- the blob that is gone ---------------------------------------------
 
-        Decision #34 priced the Judge floor at effort `none`, and every judge
-        route carries it today, so this branch is unreachable from the shipped
-        table. It exists because a route that dropped the effort would leave the
-        identity a field short, and two efforts filed under one key average two
-        populations. Writing null says the Judge is unknown, which is what it
-        would be, and it costs no scored run.
+    def test_the_detail_blob_no_longer_carries_the_four_scores(self, monkeypatch):
+        """Criterion 2's other half, pinned as an absence.
+
+        Every row used to hold every metric of its scenario, so one number was
+        stored four times and three of the four copies on any row were not that
+        row's own. Nothing in the tree ever read the column; #53 was to be its
+        first reader, and it now has columns to group on instead.
         """
-        from app.core.model_client import ModelRoute
+        rows = self._rows(monkeypatch)
+
+        for metric, params in rows.items():
+            assert params["detail"] is None, (
+                f"the {metric} row still writes a detail blob: {params['detail']!r}"
+            )
+
+    def test_the_row_holds_only_its_own_dimensions_score(self, monkeypatch):
+        """The four scores were different. Each row carries exactly one of them."""
+        rows = self._rows(monkeypatch)
+
+        assert rows["faithfulness"]["score"] == 0.95
+        assert rows["answer_relevancy"]["score"] == 0.8
+        assert rows["context_precision"]["score"] == 0.7
+        assert rows["context_recall"]["score"] == 0.6
+
+    def test_the_writer_inserts_one_row_per_record_and_no_more(self, monkeypatch):
         from app.services import eval_service
+        from app.services.eval_service import METRIC_KEYS
 
-        monkeypatch.setattr(
-            eval_service,
-            "route_for",
-            lambda _purpose: ModelRoute("openai", "gpt-5.6-luna"),
-        )
+        cursor = _RecordingCursor()
+        connect, _conn = _recording_connect(cursor, [])
+        monkeypatch.setattr(eval_service.psycopg2, "connect", connect)
 
-        assert eval_service.judge_identity_for("faithfulness") is None
-        detail = eval_service.result_detail({"scenario_id": "s1"}, "faithfulness")
-        assert detail["judge_identity"] is None
-        assert detail["scenario_id"] == "s1", (
-            "the score row was lost along with the identity"
-        )
+        records = eval_service.build_judge_records([
+            {"scenario_id": "s1", "faithfulness": 0.9},
+            {"scenario_id": "s2", "faithfulness": 0.5},
+        ])
+        eval_service.write_eval_results("run-1", records, "postgresql://production")
+
+        assert len(records) == 2 * len(METRIC_KEYS)
+        assert len(cursor.executed) == len(records)
+        assert {params["scenario_id"] for _sql, params in cursor.executed} == {"s1", "s2"}
+
+
+class TestTheThresholdIsDefinedOnce:
+    """`threshold_for` is the one place the gate is named (#51 slice 2)."""
+
+    def test_only_the_two_gated_metrics_have_a_threshold(self):
+        from app.core.config import settings
+        from app.services.eval_service import threshold_for
+
+        assert threshold_for("faithfulness") == settings.EVAL_FAITHFULNESS_THRESHOLD
+        assert threshold_for("answer_relevancy") == settings.EVAL_RELEVANCY_THRESHOLD
+        assert threshold_for("context_precision") is None
+        assert threshold_for("context_recall") is None
+
+    def test_the_route_reads_the_same_gate_the_writer_stored(self):
+        """One definition, so a scenario's rendered verdict and its stored one agree.
+
+        `api/v1/evals.py` named the two settings itself until this slice. Slice 3
+        drops that recomputation and reads the stored verdict; until then the two
+        at least come from one function.
+        """
+        from app.api.v1.evals import GATED_METRIC_KEYS
+        from app.services.eval_service import threshold_for
+
+        for metric in GATED_METRIC_KEYS:
+            assert threshold_for(metric) is not None, (
+                f"{metric} is gated by the route and has no threshold to gate on"
+            )
+
+    def test_a_metric_with_no_setting_gets_none_rather_than_a_default(self):
+        """An unknown metric name is ungated, not gated at some fallback."""
+        from app.services.eval_service import threshold_for
+
+        assert threshold_for("some_metric_nobody_defined") is None
+
+
+class TestBuildJudgeRecords:
+    """The pairing of scored scenarios to judge rows, before any database."""
+
+    def test_four_records_per_scenario_in_metric_order(self):
+        from app.services.eval_service import METRIC_KEYS, build_judge_records
+
+        records = build_judge_records([{"scenario_id": "s1", "faithfulness": 0.9}])
+
+        assert [r.metric for r in records] == list(METRIC_KEYS)
+        assert all(r.scenario_id == "s1" for r in records)
+
+    def test_no_scores_makes_no_records(self):
+        from app.services.eval_service import build_judge_records
+
+        assert build_judge_records([]) == []
+
+    def test_a_scenario_the_judge_scored_on_one_dimension_still_gets_four_rows(self):
+        from app.services.eval_service import build_judge_records
+
+        records = build_judge_records([{"scenario_id": "s1", "faithfulness": 0.9}])
+
+        assert len(records) == 4
+        assert [r.score for r in records] == [0.9, None, None, None]
+
 
 
 # ---------------------------------------------------------------------------

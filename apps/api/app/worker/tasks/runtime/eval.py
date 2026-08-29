@@ -147,6 +147,24 @@ from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
 
+#: `run_ragas_eval`'s return shape for a run that scored nothing, which is what
+#: the below-measurement-floor branch substitutes rather than calling the judge.
+#:
+#: `judge_records` is the key `write_eval_results` takes, and it is a different
+#: grain from `scores`. One JudgeRecord is one (scenario, metric) decision
+#: carrying its threshold, its verdict, its Judge and the ledger bucket that paid
+#: for it; one `scores` row is one scenario carrying four numbers, which is what
+#: `summarise_run_validity` counts. Both come out of `run_ragas_eval` built from
+#: the same attributed rows. Rebuilding either at the call site would put a
+#: second derivation between the number this task reports and the row it writes,
+#: which is the defect #51 removes one grain up.
+#:
+#: Copied with `dict()` at every use, so a branch cannot mutate the shared shape.
+_NOTHING_SCORED = {
+    "scores": [], "judge_records": [], "means": {},
+    "sent": 0, "returned": 0, "unattributed": 0,
+}
+
 
 def _run_ledger(tenant_id: str, agent_id: str, run_id: str, conn_str: str) -> LedgerContext:
     """Who this run's judge calls are billed to, and which database records them.
@@ -1193,10 +1211,10 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # observation, so "this run measured too little" stays readable — it is
         # the SCORES that are withheld, not the record.
         # ------------------------------------------------------------------
-        # Annotated, because the two branches below assign different literal
-        # types and the join would otherwise be dict[str, object] — which makes
-        # `results["scores"]` an `object` that write_eval_results and
-        # summarise_run_validity both reject.
+        # Annotated, because the two branches assign different literal types and
+        # the join would otherwise be dict[str, object] — which makes both
+        # `results["scores"]` and `results["judge_records"]` an `object` that
+        # summarise_run_validity and write_eval_results reject.
         results: dict
         if invocation["status"] != AGENT_INVOCATION_MEASURED:
             log.warning(
@@ -1217,16 +1235,16 @@ def run_eval_suite(self, agent_id: str) -> dict:
                 ),
             )
             update_eval_run_status(run_id, "complete", finished_at=True, conn_str=conn_str)
-            results = {"scores": [], "means": {}, "sent": 0, "returned": 0, "unattributed": 0}
+            results = dict(_NOTHING_SCORED)
         else:
             # No connection string is passed: scoring reads nothing. It scores the
             # AGENT'S responses against the contexts the AGENT retrieved, and each
             # judge call bills this run through the recorder.
             results = run_ragas_eval(scored_scenarios, _run_ledger(tenant_id, agent_id, run_id, conn_str))
 
-            # Observations about the run land on PRODUCTION, which is the whole
-            # point of the split: the branch below is about to be destroyed.
-            write_eval_results(run_id, results["scores"], conn_str)
+            # Observations land on PRODUCTION because the branch below is about
+            # to be destroyed, and it is the JUDGE RECORDS that go, not `scores`.
+            write_eval_results(run_id, results["judge_records"], conn_str)
             update_eval_run_status(
                 run_id, "complete", finished_at=True, conn_str=conn_str
             )

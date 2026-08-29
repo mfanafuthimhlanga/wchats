@@ -102,6 +102,7 @@ from app.domain.eval_result import (
     cost_of_run,
 )
 from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity
+from app.domain.judge_record import JudgeRecord
 from app.domain.model_call import ModelCall
 from app.services.embedding_service import EMBEDDING_MODEL, _get_vo
 
@@ -494,26 +495,66 @@ def judge_identity_for(metric: str) -> JudgeIdentity | None:
     )
 
 
-def result_detail(score: Mapping[str, object], metric: str) -> dict:
-    """The `eval_results.detail` payload for one (scenario, metric) row.
+def threshold_for(metric: str) -> float | None:
+    """The number this dimension's score is compared against, or None for no gate.
 
-    The whole score row unchanged, plus the identity of the Judge that produced
-    THIS metric. `detail` is where the identity lands because the row is
-    already keyed by run and by dimension, which is the grain #53's
-    CalibrationStatus compares on, and `detail` is the one column on that row
-    that holds three fields at once. So a calibration figure reads one place per
-    verdict and joins nothing to learn what ran. No column and no table is added
-    for it.
+    THE ONLY TWO GATED METRICS ARE THE TWO THAT HAVE A SETTING. D-21 gates a
+    deploy on faithfulness and answer_relevancy; `context_precision` and
+    `context_recall` have no threshold anywhere in this codebase, so they get
+    None and their rows carry no verdict. Inventing one would put a gate nobody
+    chose on every row in the table, and a reader aggregating verdicts would
+    count two extra failures per scenario.
 
-    `judge_identity` is null when `judge_identity_for` could not name a complete
-    Judge. A verdict whose Judge is unknown is unknown, never filed under the
-    Judge that happened to run last.
+    Read off `settings` at call time rather than frozen at import, so a
+    deployment that changes the gate scores the next run against the new one. The
+    number is STORED on each row it produced, which is what stops that change
+    restating the verdicts already written down.
+
+    Args:
+        metric: one of METRIC_KEYS, the dimension the score is about.
     """
-    identity = judge_identity_for(metric)
-    return {
-        **score,
-        "judge_identity": dataclasses.asdict(identity) if identity else None,
-    }
+    if metric == "faithfulness":
+        return settings.EVAL_FAITHFULNESS_THRESHOLD
+    if metric == "answer_relevancy":
+        return settings.EVAL_RELEVANCY_THRESHOLD
+    return None
+
+
+def build_judge_records(scenario_scores: Sequence[Mapping]) -> list[JudgeRecord]:
+    """One JudgeRecord per (scenario, metric), from the judge's attributed rows.
+
+    Four records per scored scenario, in METRIC_KEYS order, and a metric the
+    judge returned nothing for still gets one. Its score is None, its verdict is
+    None, and the row exists. Skipping it would make an unscored dimension
+    indistinguishable from a scenario nobody sent, and a reader counting rows per
+    scenario would lose the denominator rather than see the hole.
+
+    Each record carries the gate it was judged against, the Judge that judged it
+    and the ledger bucket that paid for it, all three read at scoring time and
+    written down, so nothing about the row is recomputed when it is read back.
+
+    Args:
+        scenario_scores: `run_ragas_eval`'s `scores`, one dict per ATTRIBUTED
+            row, each carrying `scenario_id` and a value or None per metric.
+    """
+    return [
+        JudgeRecord.scored(
+            scenario_id=str(score["scenario_id"]),
+            metric=metric,
+            score=score.get(metric),
+            threshold=threshold_for(metric),
+            judge_identity=judge_identity_for(metric),
+            # Which model_calls rows paid for this dimension. With the run id it
+            # is the whole reference the ledger can support: `_run_ledger` binds
+            # job_id to the run and each metric bills its own purpose, so the
+            # grain is the metric within the run and never the scenario. Tenant
+            # migration 0023's column comment says the same to a reader holding
+            # the catalogue instead of this file.
+            ledger_purpose=JUDGE_PURPOSE_BY_METRIC[metric],
+        )
+        for score in scenario_scores
+        for metric in METRIC_KEYS
+    ]
 
 
 def dataset_of(value: str | None) -> str:
@@ -1303,6 +1344,43 @@ async def _score_samples(metrics: list, samples: list) -> list[dict]:
     return rows
 
 
+def _placed_score_rows(
+    returned_rows: list,
+    attribution: Sequence[int | None],
+    valid_scenarios: list[dict],
+    metric_columns: list[str],
+) -> tuple[list[dict], int]:
+    """The judge's returned rows, keyed to the scenarios they are about.
+
+    Returns (score_rows, unattributed). A row that cannot be placed is counted
+    and dropped, never assigned by position.
+
+    NO SYNTHETIC scenario_id. A fabricated one produced an eval_results row that
+    joins no eval_scenarios row, which `summarise_run_validity` drops from both
+    datasets and the eval-runs route counted as exploratory: two denominators for
+    the same run, differing by exactly that row.
+
+    Extracted from `run_ragas_eval` when the judge records joined its return
+    dict, to pay for the lines rather than raise the pin.
+    """
+    score_rows: list[dict] = []
+    unattributed = 0
+    for row, scenario_index in zip(returned_rows, attribution):
+        scenario = (
+            valid_scenarios[scenario_index] if scenario_index is not None else None
+        )
+        scenario_id = str(scenario.get("id", "")) if scenario is not None else ""
+        if not scenario_id:
+            unattributed += 1
+            continue
+        score_row: dict[str, object] = {"scenario_id": scenario_id}
+        for col in metric_columns:
+            raw = row.get(col)
+            score_row[col] = float(raw) if raw is not None and raw == raw else None  # NaN check
+        score_rows.append(score_row)
+    return score_rows, unattributed
+
+
 def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
     """Run Ragas 0.4.x evaluation over a list of eval scenarios.
 
@@ -1339,13 +1417,17 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
         ledger: who every judge call is billed to, and where its row goes.
 
     Returns:
-        Dict with five keys:
+        Dict with six keys:
             "scores": list[dict] — one dict per ATTRIBUTED returned row (not per
                 input row: the judge may return fewer, and a row that cannot be
                 matched to the scenario it scored is dropped, never assigned by
                 position; see attribute_returned_rows).
                 Each dict: {scenario_id, faithfulness, answer_relevancy,
                             context_precision, context_recall}
+            "judge_records": list[JudgeRecord] — the same observations at the
+                grain `eval_results` stores, four per scored scenario, each
+                carrying its threshold, its verdict, its Judge and its ledger
+                bucket. What `write_eval_results` writes.
             "means": dict — per-metric mean over the attributed rows.
             "sent" / "returned" / "unattributed": the judge's own denominators.
                 `returned < sent` is a partial outage; `unattributed > 0` means rows came back that cannot be placed.
@@ -1370,6 +1452,7 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
         log.warning("run_ragas_eval.no_valid_scenarios")
         return {
             "scores": [],
+            "judge_records": [],
             "means": {metric: None for metric in METRIC_KEYS},
             "sent": 0,
             "returned": 0,
@@ -1407,27 +1490,9 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
     ]
     attribution = attribute_returned_rows(returned_keys, valid_scenarios)
 
-    score_rows = []
-    unattributed = 0
-    for row, scenario_index in zip(returned_rows, attribution):
-        scenario = (
-            valid_scenarios[scenario_index] if scenario_index is not None else None
-        )
-        scenario_id = str(scenario.get("id", "")) if scenario is not None else ""
-        if not scenario_id:
-            # No synthetic uuid4 here any more. A fabricated scenario_id
-            # produced an eval_results row that joins no eval_scenarios row,
-            # which summarise_run_validity drops from both datasets and the
-            # eval-runs route counted as exploratory — two denominators for the
-            # same run, differing by exactly this row. A score nobody can place
-            # is reported as unplaced and written nowhere.
-            unattributed += 1
-            continue
-        score_row: dict[str, object] = {"scenario_id": scenario_id}
-        for col in metric_columns:
-            raw = row.get(col)
-            score_row[col] = float(raw) if raw is not None and raw == raw else None  # NaN check
-        score_rows.append(score_row)
+    score_rows, unattributed = _placed_score_rows(
+        returned_rows, attribution, valid_scenarios, metric_columns
+    )
 
     # Per-metric means over the ATTRIBUTED rows only, for the same reason: a
     # mean that includes an observation the run cannot place is a mean over a
@@ -1464,6 +1529,14 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
 
     return {
         "scores": score_rows,
+        # The same observations as one JudgeRecord per (scenario, metric), each
+        # carrying the gate it was judged against, the Judge that judged it and
+        # the ledger bucket that paid for it. `write_eval_results` takes these;
+        # `summarise_run_validity` takes `scores`, which is per scenario and is a
+        # different grain. Both are built from `score_rows` here rather than one
+        # of them being rebuilt at the call site, so the task cannot write a row
+        # that disagrees with the number it reports.
+        "judge_records": build_judge_records(score_rows),
         "means": means,
         # (sent, returned, unattributed) — the judge's own denominators. A run
         # that sent forty and got five back has measured five, and nothing
@@ -1478,19 +1551,62 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
 # Task 1 continued: write eval results to tenant DB
 # ---------------------------------------------------------------------------
 
+#: One (scenario, metric) row, on migration 0001's table widened by 0023.
+_INSERT_EVAL_RESULT = """
+    INSERT INTO eval_results (
+        id, eval_run_id, scenario_id, metric, score, detail,
+        binary_verdict, threshold, judge_identity, ledger_purpose
+    )
+    VALUES (
+        %(id)s::uuid, %(eval_run_id)s::uuid, %(scenario_id)s, %(metric)s,
+        %(score)s, %(detail)s, %(binary_verdict)s, %(threshold)s,
+        %(judge_identity)s::jsonb, %(ledger_purpose)s
+    )
+"""
+
+
+def _judge_row_params(eval_run_id: str, record: JudgeRecord) -> dict:
+    """One decision as INSERT parameters, with `detail` NULL.
+
+    THE FOUR-SCORE BLOB IS GONE. `detail` used to hold the whole score row, so
+    each of a scenario's four rows repeated all four of that scenario's scores
+    and the row's `metric` was the only thing saying which copy was its own. The
+    Judge identity that shared that blob has a column of its own now, beside the
+    verdict and the gate it was reached against, so nothing this writer knows is
+    left to put in a jsonb and it writes none.
+
+    The COLUMN is not dropped, and 0023 says why: the blob stops being WRITTEN,
+    which redeploying the previous build reverses, while a dropped column takes
+    every historical row's blob with it.
+    """
+    identity = record.judge_identity
+    return {
+        "id": str(uuid.uuid4()),
+        "eval_run_id": eval_run_id,
+        "scenario_id": record.scenario_id,
+        "metric": record.metric,
+        "score": record.score,
+        "detail": None,
+        "binary_verdict": record.binary_verdict,
+        "threshold": record.threshold,
+        "judge_identity": (
+            json.dumps(dataclasses.asdict(identity)) if identity else None
+        ),
+        "ledger_purpose": record.ledger_purpose,
+    }
+
+
 def write_eval_results(
     eval_run_id: str,
-    scenario_scores: list[dict],
+    judge_records: Sequence[JudgeRecord],
     conn_str: str,
 ) -> None:
-    """Insert per-scenario, per-metric rows into eval_results on PRODUCTION.
+    """Insert one eval_results row per JudgeRecord on PRODUCTION.
 
-    The eval_results table exists from migration 0001:
-      id UUID, eval_run_id UUID, scenario_id TEXT, metric TEXT, score NUMERIC, detail JSONB
-    `detail` carries the score row and the Judge that produced it (result_detail).
-
-    One row is inserted per (scenario, metric) pair — four rows per scenario for
-    Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall.
+    Each record already carries its verdict, the gate that produced it, the Judge
+    behind it and the ledger bucket that paid for it, all decided at scoring
+    time. This function decides nothing; it spreads a decision across the columns
+    tenant migration 0023 added.
 
     The third argument used to be named `branch_conn_str` and was given the Neon
     branch, which the caller then deleted — so these rows never survived the run
@@ -1501,34 +1617,21 @@ def write_eval_results(
     Uses psycopg2 try/finally/close pattern matching retrieval_service.py (D-11).
 
     Args:
-        eval_run_id: UUID string of the eval_runs row.
-        scenario_scores: List of per-scenario score dicts from run_ragas_eval().
-        conn_str: PRODUCTION tenant connection string — never the eval branch.
+        eval_run_id:   UUID string of the eval_runs row.
+        judge_records: `build_judge_records`' output, one per (scenario, metric).
+        conn_str:      PRODUCTION tenant connection string, never the eval branch.
     """
-    if not scenario_scores:
+    if not judge_records:
         log.info("write_eval_results.no_scores")
         return
-
-    sql = """
-        INSERT INTO eval_results (id, eval_run_id, scenario_id, metric, score, detail)
-        VALUES (%(id)s::uuid, %(eval_run_id)s::uuid, %(scenario_id)s, %(metric)s, %(score)s, %(detail)s::jsonb)
-    """
-
-    metric_columns = list(METRIC_KEYS)
 
     conn = psycopg2.connect(conn_str, connect_timeout=CONNECT_TIMEOUT_S)
     try:
         with conn.cursor() as cur:
-            for score in scenario_scores:
-                for metric in metric_columns:
-                    cur.execute(sql, {
-                        "id": str(uuid.uuid4()),
-                        "eval_run_id": eval_run_id,
-                        "scenario_id": str(score["scenario_id"]),
-                        "metric": metric,
-                        "score": score.get(metric),
-                        "detail": json.dumps(result_detail(score, metric)),
-                    })
+            for record in judge_records:
+                cur.execute(
+                    _INSERT_EVAL_RESULT, _judge_row_params(eval_run_id, record)
+                )
         conn.commit()
     finally:
         conn.close()
@@ -1536,7 +1639,7 @@ def write_eval_results(
     log.info(
         "write_eval_results.complete",
         eval_run_id=eval_run_id,
-        rows_written=len(scenario_scores) * len(metric_columns),
+        rows_written=len(judge_records),
     )
 
 

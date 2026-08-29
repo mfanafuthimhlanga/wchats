@@ -31,6 +31,7 @@ import httpx
 import psycopg2
 import pytest
 
+from app.services.eval_service import build_judge_records
 from app.worker.tasks.runtime import eval as mod
 
 # The canned Judge outputs and the embedding stand-in are borrowed rather than
@@ -114,6 +115,23 @@ def _make_sync_db_context(mock_db):
         yield mock_db
 
     return _ctx
+
+
+def _ragas_return(scores: list[dict], **extra) -> dict:
+    """What `run_ragas_eval` returns, with the judge records derived the real way.
+
+    `build_judge_records` is the shipped function, not a copy. A double that
+    invented its own pairing of scenarios to metrics would let `write_eval_results`
+    be exercised against rows the scorer never produces, and the pin that a
+    metric the judge did not score STILL gets a row would then be a pin on the
+    double.
+    """
+    return {
+        "scores": scores,
+        "judge_records": build_judge_records(scores),
+        "means": {},
+        **extra,
+    }
 
 
 @pytest.fixture
@@ -266,7 +284,15 @@ def wired(monkeypatch):
         # the property under test is that scoring is handed NO connection at
         # all, and that cannot be expressed by a signature that names one.
         rec["ragas"].append((args, kwargs))
-        return {"scores": [{"scenario_id": "s1"}], "means": {"faithfulness": 0.9}}
+        scores = [{"scenario_id": "s1"}]
+        # The records the real function derives from those scores, through
+        # the real deriver. A double inventing its own would let the writer
+        # be tested against a pairing the scorer never produces.
+        return {
+            "scores": scores,
+            "judge_records": build_judge_records(scores),
+            "means": {"faithfulness": 0.9},
+        }
 
     monkeypatch.setattr(mod, "run_ragas_eval", _fake_ragas)
     monkeypatch.setattr(mod, "read_run_ledger", lambda run_id, conn_str: rec["ledger"])
@@ -691,18 +717,15 @@ class TestValidityDenominators:
         monkeypatch.setattr(
             mod,
             "run_ragas_eval",
-            lambda scenarios, ledger: {
-                "scores": [
-                    {
-                        "scenario_id": "g0000000-0000-0000-0000-000000000001",
-                        "faithfulness": 0.9,
-                        "answer_relevancy": 0.9,
-                        "context_precision": None,
-                        "context_recall": None,
-                    }
-                ],
-                "means": {},
-            },
+            lambda scenarios, ledger: _ragas_return([
+                {
+                    "scenario_id": "g0000000-0000-0000-0000-000000000001",
+                    "faithfulness": 0.9,
+                    "answer_relevancy": 0.9,
+                    "context_precision": None,
+                    "context_recall": None,
+                }
+            ]),
         )
 
         result = _run()
@@ -726,19 +749,16 @@ class TestValidityDenominators:
         monkeypatch.setattr(
             mod,
             "run_ragas_eval",
-            lambda scenarios, ledger: {
-                "scores": [
-                    {
-                        "scenario_id": s["id"],
-                        "faithfulness": None,
-                        "answer_relevancy": None,
-                        "context_precision": None,
-                        "context_recall": None,
-                    }
-                    for s in scenarios
-                ],
-                "means": {},
-            },
+            lambda scenarios, ledger: _ragas_return([
+                {
+                    "scenario_id": s["id"],
+                    "faithfulness": None,
+                    "answer_relevancy": None,
+                    "context_precision": None,
+                    "context_recall": None,
+                }
+                for s in scenarios
+            ]),
         )
 
         result = _run()
@@ -967,7 +987,11 @@ def scored(wired, monkeypatch):
 
     def _fake_ragas(*args, **kwargs):
         wired["ragas"].append((args, kwargs))
-        return {"scores": scores, "means": {}, "sent": 4, "returned": 4, "unattributed": 0}
+        return {
+            "scores": scores,
+            "judge_records": build_judge_records(scores),
+            "means": {}, "sent": 4, "returned": 4, "unattributed": 0,
+        }
 
     monkeypatch.setattr(mod, "run_ragas_eval", _fake_ragas)
     return wired

@@ -69,7 +69,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_tenant
-from app.core.config import settings
 from app.core.database import get_async_db
 from app.core.security import fernet_decrypt
 from app.models.agent import Agent
@@ -78,6 +77,7 @@ from app.services.eval_service import (
     DATASET_EXPLORATORY,
     DATASET_GOLDEN,
     EVAL_DATASETS,
+    threshold_for,
 )
 from app.services.eval_service import METRIC_KEYS as EVAL_METRIC_KEYS
 from app.worker.tasks.runtime.eval import run_eval_suite
@@ -154,6 +154,22 @@ METRIC_KEYS = EVAL_METRIC_KEYS
 # The two metrics the promotion gate is defined over (D-21 LOCKED). Kept
 # separate from METRIC_KEYS because `passed` is a claim about these two only.
 GATED_METRIC_KEYS = ("faithfulness", "answer_relevancy")
+
+
+def _gate_thresholds() -> dict[str, float | None]:
+    """The gate each of the two metrics is judged against, from one definition.
+
+    `threshold_for` is the function `write_eval_results` calls to stamp
+    `eval_results.threshold` onto every row it writes (#51 slice 2). This route
+    named the two settings itself until then, so the number a scenario was
+    rendered against here was free to drift from the number the run that
+    produced it was judged against.
+
+    Slice 3 deletes this and reads the stored verdict off the row. Until it
+    does, the two comparisons at least come from one place. It is computed once
+    per request rather than once per scenario, which is also where it used to be.
+    """
+    return {key: threshold_for(key) for key in GATED_METRIC_KEYS}
 
 # P2 — the golden/exploratory split, per run. A golden score and an exploratory
 # score are DIFFERENT MEASUREMENTS: the golden rows are fixed and run in full
@@ -522,12 +538,9 @@ async def get_eval_run_results(
     #    rendered as "it failed" — that is what turns a judge outage into an
     #    apparent quality collapse and an owner-initiated rollback.
     results = []
+    thresholds = _gate_thresholds()
     for scen in scenarios.values():
         measured = scen.pop("measured")
-        thresholds = {
-            "faithfulness": settings.EVAL_FAITHFULNESS_THRESHOLD,
-            "answer_relevancy": settings.EVAL_RELEVANCY_THRESHOLD,
-        }
         if any(measured[key] is None for key in GATED_METRIC_KEYS):
             passed = None
         else:
