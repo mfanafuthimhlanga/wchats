@@ -322,6 +322,26 @@ class TestWidgetChatPost429RateLimit:
 # ---------------------------------------------------------------------------
 
 
+def _customer_turn_job(job_id, agent_id):
+    """A `jobs` row shaped like the one the chat route writes.
+
+    Four tests built this by hand and none set `kind`, so when #109 taught the SSE
+    endpoint to read it, `MagicMock(spec=Job).kind` came back a Mock and every one of
+    them 404'd. Four copies of one row is four places to miss the next column the
+    endpoint learns to read, so there is one now.
+    """
+    from unittest.mock import MagicMock
+
+    from app.api.v1.widget import CUSTOMER_TURN_JOB_KIND
+    from app.models.job import Job
+
+    job = MagicMock(spec=Job)
+    job.id = job_id
+    job.agent_id = agent_id
+    job.kind = CUSTOMER_TURN_JOB_KIND
+    return job
+
+
 class TestWidgetJobEvents:
     async def test_get_events_returns_200_with_event_stream_and_cors(self):
         """GET /widget/jobs/{id}/events → 200, text/event-stream, CORS header.
@@ -335,9 +355,7 @@ class TestWidgetJobEvents:
         job_id = uuid4()
         agent_id = uuid4()
 
-        mock_job = MagicMock(spec=Job)
-        mock_job.id = job_id
-        mock_job.agent_id = agent_id
+        mock_job = _customer_turn_job(job_id, agent_id)
 
         mock_db = AsyncMock()
         mock_result = MagicMock()
@@ -382,9 +400,7 @@ class TestWidgetJobEvents:
 
         job_id = uuid4()
 
-        mock_job = MagicMock(spec=Job)
-        mock_job.id = job_id
-        mock_job.agent_id = uuid4()
+        mock_job = _customer_turn_job(job_id, uuid4())
 
         mock_db = AsyncMock()
         mock_result = MagicMock()
@@ -627,9 +643,7 @@ class TestWidgetSSESlotsF8:
         agent_id = uuid4()
 
         # Build a mock job row with agent_id set
-        mock_job = MagicMock(spec=Job)
-        mock_job.id = job_id
-        mock_job.agent_id = agent_id
+        mock_job = _customer_turn_job(job_id, agent_id)
 
         mock_db = AsyncMock()
         mock_result = MagicMock()
@@ -679,9 +693,7 @@ class TestWidgetSSESlotsF8:
         job_id = uuid4()
         agent_id = uuid4()
 
-        mock_job = MagicMock(spec=Job)
-        mock_job.id = job_id
-        mock_job.agent_id = agent_id
+        mock_job = _customer_turn_job(job_id, agent_id)
 
         mock_db = AsyncMock()
         mock_result = MagicMock()
