@@ -576,7 +576,7 @@ class VectorAttempts:
     the worst grade among them.
 
     THE TWO ARE ONE READING OF ONE LIST, and `_attempt_every_vector` keeps them
-    that way — it extends `RedTeamResult.findings` with this `findings` and
+    that way. It extends `RedTeamResult.findings` with this `findings` and
     appends this `outcome` as the run's row for the vector, on the same pass.
     `RedTeamResult._require_findings_agree` refuses a record where the two came
     from different places.

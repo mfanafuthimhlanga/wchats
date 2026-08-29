@@ -508,7 +508,7 @@ class TestAFindingKeepsWhatItMeasured:
 
         The attacker model's `report_finding` input is where such a key comes
         from, and `_classify_reported_findings` names the six keys itself rather
-        than splatting the raw dict — so this refusal fires on a caller that
+        than splatting the raw dict, so this refusal fires on a caller that
         built one by hand, never on a run.
         """
         with pytest.raises(ValidationError):
