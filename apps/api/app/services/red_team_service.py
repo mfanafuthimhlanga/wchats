@@ -85,15 +85,14 @@ class RedTeamFinding(BaseModel):
     turn_count: int             # which turn in the attack sequence this finding came from
 
 
-class RedTeamResult(BaseModel):
-    """Aggregated result from a complete red team run across all three agents."""
-
-    run_id: str
-    findings: list[RedTeamFinding]
-    max_severity: str           # highest severity string across all findings, or "none" if no findings
-    deployment_blocked: bool    # True iff max_severity == "critical"
-    critical_count: int
-    high_count: int
+# A second `RedTeamResult`, a pydantic model carrying run_id, findings,
+# max_severity, deployment_blocked and two counts, stood here from M7 until
+# ticket 15. No app module ever constructed it: `run_red_team` computes those
+# same six values as loose locals and writes them straight to the columns, and
+# the two tests that exercised the class only checked that pydantic stores what
+# pydantic is handed. Ticket 15 gave the run a real record in
+# `app.domain.red_team_result`, so the name meant two different things in one
+# repo while one of them was dead. The dead one is gone.
 
 
 class SeverityVerdict(BaseModel):

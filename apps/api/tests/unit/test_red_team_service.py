@@ -10,10 +10,6 @@ Tests:
         the four conversational attackers, driven through their real tool
         handlers against a scripted fake provider client
 
-    TestRedTeamResult
-        test_red_team_result_deployment_blocked_on_critical — direct model construction
-        test_red_team_result_not_blocked_on_high — high severity does not block
-
 Mock strategy:
     - the severity classifier's client factory patched at
       app.core.model_client.make_client, since ticket #47 moved construction
@@ -72,7 +68,6 @@ from app.services.red_team_service import (
     SDK_ATTACKER_VECTORS,
     ProbeSession,
     RedTeamFinding,
-    RedTeamResult,
     SeverityVerdict,
     VectorObservation,
     build_probe_tools,
@@ -925,59 +920,6 @@ class TestThePerRunDenominatorEscapes:
         assert session.probes_answered == 0
         assert session.probes_empty == 1
         assert session.observed_anything is False
-
-
-# ---------------------------------------------------------------------------
-# TestRedTeamResult
-# ---------------------------------------------------------------------------
-
-
-class TestRedTeamResult:
-    """Tests for RedTeamResult model construction and deployment gate logic."""
-
-    def test_red_team_result_deployment_blocked_on_critical(self):
-        """deployment_blocked=True when max_severity is 'critical' (RED-06 gate)."""
-        finding = RedTeamFinding(
-            severity="critical",
-            description="Test",
-            attack_vector="prompt_injection",
-            probe_message="test probe",
-            agent_response="test response",
-            turn_count=1,
-        )
-        result = RedTeamResult(
-            run_id="test-run-id",
-            findings=[finding],
-            max_severity="critical",
-            deployment_blocked=True,
-            critical_count=1,
-            high_count=0,
-        )
-
-        assert result.deployment_blocked is True
-        assert result.critical_count == 1
-        assert result.max_severity == "critical"
-
-    def test_red_team_result_not_blocked_on_high(self):
-        """deployment_blocked=False when max_severity is 'high' (not critical)."""
-        finding = RedTeamFinding(
-            severity="high",
-            description="High severity finding",
-            attack_vector="hallucination",
-            probe_message="test probe",
-            agent_response="test response",
-            turn_count=2,
-        )
-        result = RedTeamResult(
-            run_id="test-run-id-2",
-            findings=[finding],
-            max_severity="high",
-            deployment_blocked=False,
-            critical_count=0,
-            high_count=1,
-        )
-
-        assert result.deployment_blocked is False
 
 
 # ---------------------------------------------------------------------------
