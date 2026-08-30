@@ -38,7 +38,11 @@ from app.domain.calibration_status import (
     Interval,
 )
 from app.domain.judge_identity import JudgeIdentity
-from app.services.calibration_service import load_calibration_status
+from app.services.calibration_service import (
+    SUMMARY_KEYS,
+    load_calibration_status,
+    summary_of,
+)
 
 
 def _identity(**overrides) -> JudgeIdentity:
@@ -362,6 +366,51 @@ class TestTheSetting:
         from app.core.config import Settings
 
         assert not Settings.model_fields["CALIBRATION_ARTIFACT_PATH"].is_required()
+
+
+class TestTheDeploySummarySelection:
+    """`summary_of` - the eleven keys the deploy summary carries, and no twelfth.
+
+    The record holds eighteen fields and the deploy summary carries eleven. The
+    seven left off are the harness's working (`difference_interval`, the three
+    verdict parts) and the counts a reader of a deploy report has no use for
+    (`attempted`, `valid`, `artifact_version`). Ticket 17's refusal reads the
+    record itself, so nothing downstream needs them on the dict.
+    """
+
+    def test_it_carries_exactly_the_declared_keys_in_order(self):
+        assert tuple(summary_of(_calibrated(_identity()))) == SUMMARY_KEYS
+
+    def test_every_value_is_the_one_payload_holds(self):
+        """Selected, never re-derived.
+
+        A second spelling of one record is free to disagree with the first, and
+        the one that disagreed would be whichever the deploy summary read.
+        """
+        record = _calibrated(_identity())
+        summary = summary_of(record)
+
+        for key in SUMMARY_KEYS:
+            assert summary[key] == record.payload[key], key
+
+    def test_the_calibrated_verdict_is_not_a_second_key(self):
+        """A consumer reads `status`. Two answers to one question can differ."""
+        summary = summary_of(_calibrated(_identity()))
+
+        assert "calibrated" not in summary
+        assert "beats_chance" not in summary
+        assert summary["status"] == STATUS_CALIBRATED
+
+    def test_an_absence_carries_its_reason_and_no_figures(self):
+        for reason in ABSENT_REASONS:
+            summary = summary_of(CalibrationStatus.absent(reason))
+
+            assert summary["status"] == STATUS_NOT_CALIBRATED_YET, reason
+            assert summary["reason"] == reason
+            assert summary["judge_identity"] is None
+            assert summary["kappa"] is None
+            assert summary["judge_interval"] is None
+            assert summary["harness_version"] is None
 
 
 def _unreadable_status(tmp_path: Path) -> CalibrationStatus:

@@ -37,6 +37,7 @@ from app.domain.eval_result import (
     unmeasured_metrics,
 )
 from app.domain.tool_def import ToolDefinition, tool
+from app.services.calibration_service import load_calibration_status, summary_of
 from app.services.capability_service import canonical_envelope_hash
 from app.services.eval_service import EVAL_RUN_STATUS_COMPLETE, GATED_METRIC_KEYS
 from app.services.tool_loop import run_tool_loop
@@ -261,6 +262,20 @@ Per-question results: eval_summary.failing_scenarios is how many scenarios the
 judge decided against, and eval_summary.unmeasured_scenarios is how many it did
 not decide at all. They are two different counts and the second is not a
 success. Null in either means the results could not be read, which is not zero.
+
+Judge calibration (narrative only, not a blocking and not a warning condition):
+eval_summary.calibration says whether the judge that produced those metrics has
+itself been measured against human labels. Its status is one of 'calibrated',
+'not_calibrated', 'not_calibrated_yet' and 'setup_error', and calibration.reason
+names why when it is not calibrated. 'not_calibrated_yet' is the expected state
+until a calibration run against the platform's own judge exists, and its reason
+says which absence you are looking at: 'no_artifact' for a figure nobody has
+written yet, 'no_single_judge_identity' for a run whose metrics came from more
+than one judge. Do not downgrade a recommendation over any of it and do not emit
+a warning for it. You may say in your summary that the judge behind these scores
+is not calibrated yet. calibration.kappa, calibration.matthews and the two
+intervals are figures about that judge's agreement with human labels, never a
+quality score for the agent, so never quote them as one.
 
 red_team_summary.coverage_source says the same thing for the security half:
 'run' means the stored coverage of the run that produced these counts, while
@@ -657,6 +672,28 @@ def _record_counts(record: EvalResult | None, *, measured: bool) -> dict:
     }
 
 
+def _calibration_block(record: EvalResult | None) -> dict:
+    """What the calibration artifact says about the Judge THIS run scored with.
+
+    THE IDENTITY COMES OFF THE RUN'S OWN RECORD. `EvalResult.judge_identity` is
+    run-level and is already None when the four metric routes disagree, and a
+    payload with no record has no identity to ask about at all. Both reach the
+    loader as None and come back as `no_single_judge_identity`, which is the
+    honest reading: there is no one Judge here for an artifact to be about.
+
+    NOTHING GATES ON THIS YET (#54). apply_signal_evidence_gate does not read the
+    key and no warning is derived from it. It travels so that ticket 17 has a
+    status to read and the orchestrator can name it in prose. The expected value
+    today is `not_calibrated_yet` with reason `no_artifact`: no calibration run
+    against the platform's own Judge exists, because the harness scores rubric
+    dimensions that `judge_identity_for` refuses (#58).
+    """
+    identity = record.judge_identity if record is not None else None
+    return summary_of(
+        load_calibration_status(settings.CALIBRATION_ARTIFACT_PATH, identity)
+    )
+
+
 def _eval_summary(
     signal: str,
     *,
@@ -688,11 +725,10 @@ def _eval_summary(
     `eval_results`, until the review pass; deleting those rows then read as a
     run in which nothing failed.
 
-    `agent_invoked` DEFAULTS TO None, NOT False (audit D1, P3). False is the
-    claim "this run looked and the agent was not invoked"; None is "no run said
-    either way", which is what a state with no run at all — no_runs,
-    unavailable — actually has. Both are refused by apply_signal_evidence_gate,
-    which tests `is not True`.
+    `agent_invoked` DEFAULTS TO None, NOT False (audit D1, P3). False is the claim
+    "this run looked and the agent was not invoked". None is "no run said either
+    way", which is what a state with no run at all (no_runs, unavailable) has. Both
+    are refused by apply_signal_evidence_gate, which tests `is not True`.
     """
     measured = signal == EVAL_SIGNAL_MEASURED
     lifted, lifted_from = run_level_metrics(record)
@@ -719,6 +755,7 @@ def _eval_summary(
         "pass_rates_dataset": lifted_from if measured else None,
         "metrics": metrics,
         "datasets": _dataset_block(record, measured=measured),
+        "calibration": _calibration_block(record),
     }
 
 
@@ -916,7 +953,7 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
     last_run_at, last_run_status, scenario_count, valid_scenario_count,
     scored_scenario_count, denominator_source, result, pass_rates,
     pass_rates_dataset, metrics, datasets, invocation, cost,
-    context_proxy_version, failing_scenarios, unmeasured_scenarios.
+    context_proxy_version, failing_scenarios, unmeasured_scenarios, calibration.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:

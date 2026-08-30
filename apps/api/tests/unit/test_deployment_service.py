@@ -50,6 +50,14 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.model_client import LedgerContext, route_for
+from app.domain.calibration_status import (
+    STATUS_CALIBRATED,
+    STATUS_NOT_CALIBRATED,
+    STATUS_NOT_CALIBRATED_YET,
+    STATUS_SETUP_ERROR,
+    CalibrationStatus,
+    Interval,
+)
 from app.domain.eval_result import (
     Cost,
     DatasetOutcome,
@@ -57,6 +65,8 @@ from app.domain.eval_result import (
     Invocation,
     Measurement,
 )
+from app.domain.judge_identity import JudgeIdentity
+from app.services.calibration_service import SUMMARY_KEYS
 from app.services.deployment_service import (
     _DEPLOYMENT_SYSTEM_PROMPT,
     COVERAGE_SOURCE_CURRENT_BUILD,
@@ -2962,3 +2972,201 @@ class TestRedTeamSummarySignal:
             )[0]
             == "block"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestTheCalibrationBlock - the Judge's own calibration status, on the summary
+# ---------------------------------------------------------------------------
+
+
+def _judge(**overrides) -> JudgeIdentity:
+    fields = {
+        "model": "gpt-5.6-luna",
+        "reasoning_effort": "none",
+        "prompt_version": "ragas-0.4.1",
+    }
+    fields.update(overrides)
+    return JudgeIdentity(**fields)
+
+
+def _calibrated_for(identity: JudgeIdentity) -> CalibrationStatus:
+    """The record a calibration run leaves when the Judge earned it."""
+    return CalibrationStatus(
+        status=STATUS_CALIBRATED,
+        judge_identity=identity,
+        judge_interval=Interval(low=0.41, high=0.83, point=0.62, usable=True),
+        ceiling_interval=Interval(low=0.55, high=0.91, point=0.74, usable=True),
+        difference_interval=Interval(low=-0.09, high=0.24, point=0.12, usable=True),
+        beats_chance=True,
+        ceiling_beats_chance=True,
+        reaches_ceiling=True,
+        kappa=0.62,
+        matthews=0.64,
+        scored_pairs=24,
+        pairs=30,
+        attempted=34,
+        valid=32,
+        labelled_at="2026-08-29T10:15:00+00:00",
+        harness_version="compute_correlation-2026-08-29",
+    )
+
+
+def _collect(record=None):
+    """Run the collector over one complete, agent-invoking run.
+
+    `record=None` is a run that wrote no `eval_runs.result`, which is
+    EVAL_SIGNAL_NO_RECORD and, for calibration, a run with no Judge to ask
+    about.
+    """
+    conn = _make_eval_conn(
+        (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+        record=record,
+    )
+    with patch("app.services.deployment_service.psycopg2.connect", return_value=conn):
+        return _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+
+class TestTheCalibrationBlock:
+    """The deploy summary carries what is known about the Judge behind its numbers.
+
+    The harness that answers this cannot be called from the deploy path, so its
+    verdict arrives as a file and `load_calibration_status` reads it for the one
+    Judge the run actually used. Nothing here gates on the answer. Ticket 17
+    (#54) adds the refusal; this slice makes the status visible so that ticket
+    has something to read and the orchestrator can name it.
+    """
+
+    def test_a_matching_calibrated_artifact_reaches_the_summary(self):
+        """The record's own figures, not a re-derivation of them."""
+        identity = _judge()
+
+        with patch(
+            "app.services.deployment_service.load_calibration_status",
+            return_value=_calibrated_for(identity),
+        ):
+            result = _collect(record=_record(judge_identity=identity))
+
+        calibration = result["calibration"]
+        assert result["eval_signal"] == EVAL_SIGNAL_MEASURED
+        assert calibration["status"] == STATUS_CALIBRATED
+        assert calibration["reason"] is None
+        assert calibration["judge_identity"] == {
+            "model": "gpt-5.6-luna",
+            "reasoning_effort": "none",
+            "prompt_version": "ragas-0.4.1",
+        }
+        assert calibration["judge_interval"] == {
+            "low": 0.41,
+            "high": 0.83,
+            "point": 0.62,
+            "usable": True,
+        }
+        assert calibration["ceiling_interval"] == {
+            "low": 0.55,
+            "high": 0.91,
+            "point": 0.74,
+            "usable": True,
+        }
+        assert calibration["kappa"] == pytest.approx(0.62)
+        assert calibration["matthews"] == pytest.approx(0.64)
+        assert calibration["scored_pairs"] == 24
+        assert calibration["pairs"] == 30
+        assert calibration["labelled_at"] == "2026-08-29T10:15:00+00:00"
+        assert calibration["harness_version"] == "compute_correlation-2026-08-29"
+
+    def test_the_loader_is_asked_about_the_judge_the_run_used(self):
+        """The identity is lifted off the record, never off the artifact.
+
+        An artifact answering for whichever Judge it happens to hold would report
+        yesterday's agreement over today's Judge, which is the alignment decay
+        the three-field key exists to catch.
+        """
+        identity = _judge(prompt_version="ragas-0.4.2")
+        seen: dict = {}
+
+        def _spy(path, judge):
+            seen["path"], seen["judge"] = path, judge
+            return CalibrationStatus.absent("no_artifact")
+
+        with patch("app.services.deployment_service.load_calibration_status", _spy):
+            _collect(record=_record(judge_identity=identity))
+
+        assert seen["judge"] == identity
+        assert seen["path"] == settings.CALIBRATION_ARTIFACT_PATH
+
+    def test_a_run_with_no_record_has_no_identity_to_ask_about(self):
+        """`no_single_judge_identity`, and the real loader reaches it.
+
+        Not doubled here: with an identity and no artifact the reason would be
+        `no_artifact`, so the two answers are distinguishable and this one says
+        the collector handed over None.
+        """
+        result = _collect(record=None)
+
+        assert result["eval_signal"] == EVAL_SIGNAL_NO_RECORD
+        assert result["calibration"]["status"] == STATUS_NOT_CALIBRATED_YET
+        assert result["calibration"]["reason"] == "no_single_judge_identity"
+
+    def test_a_missing_artifact_says_so_and_carries_no_figures(self):
+        """The state every deploy is in until a calibration run ships (#58)."""
+        with patch(
+            "app.services.deployment_service.load_calibration_status",
+            return_value=CalibrationStatus.absent("no_artifact"),
+        ):
+            result = _collect(record=_record(judge_identity=_judge()))
+
+        calibration = result["calibration"]
+        assert calibration["status"] == STATUS_NOT_CALIBRATED_YET
+        assert calibration["reason"] == "no_artifact"
+        assert calibration["judge_identity"] is None
+        assert calibration["kappa"] is None
+        assert calibration["judge_interval"] is None
+
+    def test_the_key_set_is_the_service_selection(self):
+        """One selection, pinned in one place.
+
+        A key added to `SUMMARY_KEYS` and not to the record, or the other way
+        round, goes red here rather than reaching an orchestrator prompt that
+        names a field nobody writes.
+        """
+        result = _collect(record=_record(judge_identity=_judge()))
+
+        assert tuple(result["calibration"]) == SUMMARY_KEYS
+
+    @pytest.mark.parametrize(
+        "status",
+        [
+            STATUS_CALIBRATED,
+            STATUS_NOT_CALIBRATED,
+            STATUS_NOT_CALIBRATED_YET,
+            STATUS_SETUP_ERROR,
+        ],
+    )
+    def test_the_calibration_refusal_is_not_in_force_yet_ticket_17(self, status):
+        """A fully measured, all-passed run still ships on any calibration status.
+
+        Ticket 17 (#54) adds the refusal "ship without a calibrated Judge". Until
+        it lands, an uncalibrated Judge is narrated and never enforced, and this
+        test says so out loud: the day the refusal arrives this goes red, and #54
+        rewrites it rather than discovering the change by accident.
+        """
+        summary = _measured_eval()
+        summary["calibration"] = {**summary["calibration"], "status": status}
+
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", summary, _measured_red_team()
+        )
+
+        assert recommendation == "ship"
+        assert warnings == []
+
+    def test_the_prompt_names_the_key_and_the_state_it_will_see(self):
+        """Drift protection over a string, and read as consistency only.
+
+        No test anywhere observes the model obeying prose, so this pins that the
+        narration names the field the payload carries and the state that field
+        holds today.
+        """
+        assert "eval_summary.calibration" in _DEPLOYMENT_SYSTEM_PROMPT
+        assert "not_calibrated_yet" in _DEPLOYMENT_SYSTEM_PROMPT
+        assert "no_single_judge_identity" in _DEPLOYMENT_SYSTEM_PROMPT

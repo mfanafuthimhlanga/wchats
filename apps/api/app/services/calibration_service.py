@@ -105,3 +105,50 @@ def load_calibration_status(
         return CalibrationStatus.absent("identity_mismatch")
 
     return record
+
+
+#: What the deploy summary carries out of a record, and nothing else. The three
+#: verdict parts, `difference_interval`, `attempted`, `valid` and
+#: `artifact_version` stay off it: the orchestrator narrates the status and the
+#: reason, and ticket 17's refusal reads the record itself rather than this dict.
+#: `tests/unit/test_calibration_service.py` pins the key set.
+SUMMARY_KEYS = (
+    "status",
+    "reason",
+    "judge_identity",
+    "judge_interval",
+    "ceiling_interval",
+    "kappa",
+    "matthews",
+    "scored_pairs",
+    "pairs",
+    "labelled_at",
+    "harness_version",
+)
+
+
+def summary_of(status: CalibrationStatus) -> dict:
+    """Eleven keys off the record, for the deploy summary (ticket #53, slice 3).
+
+    SELECTED OFF `payload`, NEVER RE-DERIVED. `payload` already spells every
+    field the way the artifact holds it, and already turns the identity and the
+    intervals into JSON. Reading the fields a second time here would put a
+    second spelling of one record beside the first, free to disagree, and the
+    one that disagreed would be whichever the deploy summary read.
+
+    `calibrated` is deliberately absent. The record derives that property from
+    `status`, and a consumer reads `status`, so the summary carries no second
+    answer to one question.
+
+    Args:
+        status: the record `load_calibration_status` returned.
+
+    Returns:
+        {"status", "reason", "judge_identity", "judge_interval",
+         "ceiling_interval", "kappa", "matthews", "scored_pairs", "pairs",
+         "labelled_at", "harness_version"}, where `judge_identity` is
+        {"model", "reasoning_effort", "prompt_version"} or None and each
+        interval is {"low", "high", "point", "usable"} or None.
+    """
+    payload = status.payload
+    return {key: payload[key] for key in SUMMARY_KEYS}
