@@ -19,6 +19,15 @@ WHY THE PAYLOAD KEY SET IS PINNED TO A LITERAL
     round-trip test alone stays green through all three because both halves move
     together. The literal below does not move, so the commit that changes the
     shape is the commit that goes red.
+
+WHY A FOUR-KEY ARTIFACT HAS ITS OWN TEST
+    Review pass, 2026-08-30. `from_payload` defaulted every count to 0 and every
+    figure to None, and `calibrated` was earned by two booleans. So a file saying
+    `{status, judge_identity, beats_chance, reaches_ceiling}` loaded as a
+    calibrated Judge with no kappa, no intervals and zero rows behind it, and the
+    round trip never noticed because the writer never produces that file. The
+    tests below drive the shapes the writer cannot produce, which is where a
+    reader's defaults do their damage.
 """
 
 from __future__ import annotations
@@ -60,6 +69,7 @@ PAYLOAD_KEYS = [
     "valid",
     "labelled_at",
     "harness_version",
+    "written_at",
     "artifact_version",
 ]
 
@@ -141,6 +151,49 @@ class TestConstruction:
     def test_calibrated_with_reaches_ceiling_unevaluated_is_refused(self):
         with pytest.raises(InvalidCalibrationStatus, match="reaches_ceiling"):
             _calibrated(reaches_ceiling=None)
+
+    def test_calibrated_with_the_ceiling_never_beating_chance_is_refused(self):
+        """The harness's own third part, carried rather than dropped.
+
+        `agreement.calibration_verdict` returns `ceiling_beats_chance: False`
+        when the labeller's two passes are not distinguishable from labelling the
+        same rows at random, and stops there with `reaches_ceiling: None`. The
+        record read two of the three, so a hand-written artifact could set
+        `reaches_ceiling: true` beside it and claim a Judge that reached a
+        ceiling nobody established.
+        """
+        with pytest.raises(InvalidCalibrationStatus, match="ceiling_beats_chance"):
+            _calibrated(ceiling_beats_chance=False)
+
+    def test_calibrated_with_the_ceiling_part_unevaluated_is_refused(self):
+        with pytest.raises(InvalidCalibrationStatus, match="ceiling_beats_chance"):
+            _calibrated(ceiling_beats_chance=None)
+
+    def test_calibrated_over_no_scored_pairs_is_refused(self):
+        """`scored_pairs <= pairs` already holds, so one scored pair forces one
+        pair. A verdict over zero rows is refused whichever count is missing."""
+        with pytest.raises(InvalidCalibrationStatus, match="0 scored_pairs"):
+            _calibrated(scored_pairs=0)
+
+    def test_calibrated_with_no_kappa_is_refused(self):
+        with pytest.raises(InvalidCalibrationStatus, match="no kappa"):
+            _calibrated(kappa=None)
+
+    def test_calibrated_with_no_matthews_is_refused(self):
+        with pytest.raises(InvalidCalibrationStatus, match="no matthews"):
+            _calibrated(matthews=None)
+
+    def test_calibrated_with_no_judge_interval_is_refused(self):
+        with pytest.raises(InvalidCalibrationStatus, match="judge_interval"):
+            _calibrated(judge_interval=None)
+
+    def test_calibrated_with_an_unusable_interval_is_refused(self):
+        """`usable: False` is never "the judge scored badly". It is "these rows
+        say nothing about any judge", which cannot be what a pass rests on."""
+        with pytest.raises(InvalidCalibrationStatus, match="ceiling_interval"):
+            _calibrated(
+                ceiling_interval=Interval(low=None, high=None, point=None, usable=False)
+            )
 
     def test_more_scored_pairs_than_pairs_is_refused(self):
         """Spearman's denominator is a subset of the gate's, by the harness's own loop."""
@@ -277,6 +330,92 @@ class TestPayload:
         payload["beats_chance"] = None
 
         with pytest.raises(InvalidCalibrationStatus, match="beats_chance"):
+            CalibrationStatus.from_payload(payload)
+
+    def test_the_written_at_stamp_survives_the_round_trip(self):
+        record = _calibrated(written_at="2026-08-30T09:00:00+00:00")
+
+        assert CalibrationStatus.from_payload(record.payload) == record
+
+
+class TestTheStoredArtifactCarriesEveryKey:
+    """A reader's defaults are the one place an artifact can say more than its
+    author wrote. Every key is required, and null is allowed only where the field
+    is optional by design."""
+
+    def test_a_four_key_artifact_claiming_calibrated_is_refused(self):
+        """The finding, driven whole. Every one of these four values is true of a
+        calibrated run and the file is still not a measurement: no rows, no
+        kappa, no intervals, and two of the three verdict parts unstated."""
+        payload = {
+            "status": STATUS_CALIBRATED,
+            "judge_identity": dataclasses.asdict(_identity()),
+            "beats_chance": True,
+            "reaches_ceiling": True,
+        }
+
+        with pytest.raises(InvalidCalibrationStatus):
+            CalibrationStatus.from_payload(payload)
+
+    @pytest.mark.parametrize("key", PAYLOAD_KEYS)
+    def test_an_artifact_missing_any_key_is_refused(self, key):
+        payload = _calibrated().payload
+        del payload[key]
+
+        with pytest.raises(InvalidCalibrationStatus, match=key):
+            CalibrationStatus.from_payload(payload)
+
+    def test_a_null_where_the_field_is_optional_is_read_as_the_absence(self):
+        """Null and absent are different facts. This is the one that is data."""
+        payload = CalibrationStatus.absent("no_artifact").payload
+        assert payload["kappa"] is None and payload["labelled_at"] is None
+
+        record = CalibrationStatus.from_payload(payload)
+
+        assert record.kappa is None
+        assert record.labelled_at is None
+        assert record.reason == "no_artifact"
+
+    def test_a_null_count_is_refused(self):
+        """The counts are the fields with no honest null. Zero pairs is a run
+        that scored nothing, which is a measurement, and null is not."""
+        payload = _calibrated().payload
+        payload["pairs"] = None
+
+        with pytest.raises(InvalidCalibrationStatus, match="pairs"):
+            CalibrationStatus.from_payload(payload)
+
+
+class TestTheArtifactVersionIsCompared:
+    """It was stored and never read, which made it decoration. The constant is
+    bumped when an older artifact would be READ WRONGLY rather than refused, so
+    meeting one and reading it anyway is the exact accident it exists to stop."""
+
+    def test_an_artifact_from_another_version_is_refused(self):
+        payload = _calibrated().payload
+        payload["artifact_version"] = ARTIFACT_VERSION + 1
+
+        with pytest.raises(InvalidCalibrationStatus) as raised:
+            CalibrationStatus.from_payload(payload)
+
+        assert str(ARTIFACT_VERSION) in str(raised.value)
+        assert str(ARTIFACT_VERSION + 1) in str(raised.value), (
+            "the line has to name both, or a reader cannot tell which build wrote it"
+        )
+
+    def test_the_version_this_build_writes_is_accepted(self):
+        record = _calibrated()
+
+        assert CalibrationStatus.from_payload(record.payload).artifact_version == (
+            ARTIFACT_VERSION
+        )
+
+    def test_a_boolean_version_does_not_pass_for_one(self):
+        """`True == 1` in Python, so the type is checked before the value."""
+        payload = _calibrated().payload
+        payload["artifact_version"] = True
+
+        with pytest.raises(InvalidCalibrationStatus, match="artifact_version"):
             CalibrationStatus.from_payload(payload)
 
 

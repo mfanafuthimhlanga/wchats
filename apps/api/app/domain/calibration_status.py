@@ -55,6 +55,16 @@ ZERO IS A MEASUREMENT AND NONE IS AN ABSENCE
     in. None of the four is in the result dict, and the caller is the only thing
     that knows them.
 
+`from_payload` REQUIRES EVERY KEY, AND THE VERSION IT WAS BUILT FOR
+    A stored artifact carries all nineteen keys or it is refused. The reader used
+    to default each count to 0 and each figure to None, so a four-key file saying
+    `{status: calibrated, judge_identity, beats_chance, reaches_ceiling}` loaded
+    as a calibrated Judge measured over zero rows with no kappa. Nothing in that
+    file was a lie; the defaults were. `artifact_version` is compared against
+    ARTIFACT_VERSION rather than merely stored, because a field that means
+    something else under another build's rules is refused rather than read under
+    these.
+
 Rung: `app.domain` imports the standard library, third-party packages and its
 domain siblings. This module imports the standard library and
 `app.domain.judge_identity`.
@@ -133,6 +143,24 @@ def _required_str(payload: Mapping, key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise InvalidCalibrationStatus(f"CalibrationStatus needs a {key}, got {value!r}")
     return value
+
+
+def _required_key(payload: Mapping, key: str) -> Any:
+    """The stored value under `key`, null included. An absent key is a refusal.
+
+    Null and absent are different facts and the reader used to collapse them. A
+    stored `kappa: null` says the harness found the coefficient undefined; no
+    `kappa` key at all says nobody wrote one down, and defaulting it to None
+    turned the second into the first. Applied to the counts the swap was worse,
+    because a defaulted `pairs: 0` reads as a run that scored nothing while a
+    file that never mentioned pairs says nothing about them.
+    """
+    if key not in payload:
+        raise InvalidCalibrationStatus(
+            f"CalibrationStatus needs {key!r} in the stored artifact. A default in "
+            "its place would report a figure nobody wrote down."
+        )
+    return payload[key]
 
 
 def _require_count(name: str, value: Any) -> None:
@@ -263,7 +291,7 @@ def _require_members(record: CalibrationStatus) -> None:
             f"CalibrationStatus takes one of {', '.join(CALIBRATION_STATUSES)}, "
             f"got {record.status!r}"
         )
-    for name in ("reason", "labelled_at", "harness_version"):
+    for name in ("reason", "labelled_at", "harness_version", "written_at"):
         _require_optional_text(name, getattr(record, name))
     if record.judge_identity is not None and not isinstance(
         record.judge_identity, JudgeIdentity
@@ -309,9 +337,16 @@ def _require_calibrated_is_earned(record: CalibrationStatus) -> None:
     """`calibrated` is the one status a reader may act on, so it costs the most.
 
     A record can only say `calibrated` if it names the Judge it measured and if
-    both measured halves of the verdict came back True. `None` is refused as hard
-    as `False`: an unevaluated part is an absence, and a deploy that shipped on an
+    all three parts of the verdict came back True. `None` is refused as hard as
+    `False`. An unevaluated part is an absence, and a deploy that shipped on an
     absence would be shipping on a measurement nobody made.
+
+    ALL THREE PARTS, WHICH IS THE HARNESS'S OWN RULE CARRIED RATHER THAN
+    RECOMPUTED. `tests/evals/calibration/agreement.py:415-490` returns
+    `ceiling_beats_chance: False` when the labeller's two passes are not
+    distinguishable from labelling the same rows at random, and it stops there
+    with `reaches_ceiling: None`. Reading two of the three let an artifact claim
+    `calibrated` over a ceiling that set no ceiling at all.
     """
     if record.status != STATUS_CALIBRATED:
         return
@@ -320,12 +355,48 @@ def _require_calibrated_is_earned(record: CalibrationStatus) -> None:
             "CalibrationStatus cannot be calibrated with no judge_identity. A "
             "calibration figure with no Judge attached covers every Judge and none."
         )
-    for name in ("beats_chance", "reaches_ceiling"):
+    for name in ("beats_chance", "ceiling_beats_chance", "reaches_ceiling"):
         if getattr(record, name) is not True:
             raise InvalidCalibrationStatus(
                 f"CalibrationStatus is calibrated with {name}={getattr(record, name)!r}. "
                 "Only True earns it; None means that part was never evaluated."
             )
+
+
+def _require_calibrated_shows_its_working(record: CalibrationStatus) -> None:
+    """A `calibrated` record also carries the measurement the verdict came from.
+
+    THE FOUR-KEY ARTIFACT IS WHY THIS EXISTS. A file holding `status`,
+    `judge_identity`, `beats_chance` and `reaches_ceiling` and nothing else used
+    to load as a calibrated Judge, because the reader defaulted every count to 0
+    and every figure to None. Three verdict booleans are cheap to write by hand
+    and the numbers behind them are not.
+
+    `scored_pairs >= 1` closes the count half on its own. `_require_counts`
+    already holds `scored_pairs <= pairs`, so one scored pair forces at least one
+    pair, and a verdict reported over zero rows is refused whichever count a
+    hand-written file left out.
+    """
+    if record.status != STATUS_CALIBRATED:
+        return
+    for name in ("judge_interval", "ceiling_interval"):
+        interval = getattr(record, name)
+        if interval is None or not interval.usable:
+            raise InvalidCalibrationStatus(
+                f"CalibrationStatus is calibrated with {name}={interval!r}. The verdict "
+                "is read off two usable intervals, so a record claiming it carries both."
+            )
+    for name in ("kappa", "matthews"):
+        if getattr(record, name) is None:
+            raise InvalidCalibrationStatus(
+                f"CalibrationStatus is calibrated with no {name}. The coefficient a "
+                "verdict was reached from is not optional on the record reporting it."
+            )
+    if record.scored_pairs < 1:
+        raise InvalidCalibrationStatus(
+            "CalibrationStatus is calibrated over 0 scored_pairs. A judge that agreed "
+            "with a human over no rows agreed about nothing."
+        )
 
 
 def _harness_key(source: Mapping, key: str, where: str) -> Any:
@@ -439,6 +510,13 @@ class CalibrationStatus:
         harness_version:      which build of the harness produced it. None when
                               no harness produced this record, which is every
                               record `absent` builds.
+        written_at:           when the writer stamped this file, ISO 8601 UTC.
+                              The writer sets it and nothing else does, so two
+                              runs are distinguishable even when they measured
+                              the same rows to the same figures. None on a record
+                              that was never written to disk. Read it beside
+                              `labelled_at`: that one dates the labels, this one
+                              dates the reading of them.
         artifact_version:     which construction rules built it.
 
     Raises:
@@ -464,12 +542,14 @@ class CalibrationStatus:
     valid: int = 0
     labelled_at: str | None = None
     harness_version: str | None = None
+    written_at: str | None = None
     artifact_version: int = ARTIFACT_VERSION
 
     def __post_init__(self) -> None:
         _require_members(self)
         _require_counts(self)
         _require_calibrated_is_earned(self)
+        _require_calibrated_shows_its_working(self)
 
     @property
     def calibrated(self) -> bool:
@@ -574,9 +654,10 @@ class CalibrationStatus:
              "ceiling_interval", "difference_interval", "beats_chance",
              "ceiling_beats_chance", "reaches_ceiling", "kappa", "matthews",
              "scored_pairs", "pairs", "attempted", "valid", "labelled_at",
-             "harness_version", "artifact_version"} where `judge_identity` is
-            {"model", "reasoning_effort", "prompt_version"} or None and each
-            interval is {"low", "high", "point", "usable"} or None.
+             "harness_version", "written_at", "artifact_version"} where
+            `judge_identity` is {"model", "reasoning_effort", "prompt_version"}
+            or None and each interval is {"low", "high", "point", "usable"} or
+            None.
         """
         return {
             "status": self.status,
@@ -602,6 +683,7 @@ class CalibrationStatus:
             "valid": self.valid,
             "labelled_at": self.labelled_at,
             "harness_version": self.harness_version,
+            "written_at": self.written_at,
             "artifact_version": self.artifact_version,
         }
 
@@ -614,6 +696,10 @@ class CalibrationStatus:
         validated on the way out as it was on the way in, because already being
         written down is not evidence that a shape is honest.
 
+        EVERY KEY IS REQUIRED AND NOTHING IS DEFAULTED. See `_required_key`. A
+        key may hold null only where the field is optional by design, which is
+        every field except `status`, the four counts and `artifact_version`.
+
         EVERY WAY A STORED SHAPE CAN BE WRONG LEAVES HERE AS
         InvalidCalibrationStatus. `JudgeIdentity(**identity)` over an extra key, a
         missing key or a string raises TypeError, and the loader catches this
@@ -621,40 +707,16 @@ class CalibrationStatus:
         documented never to raise.
 
         Raises:
-            InvalidCalibrationStatus: the stored shape is not a mapping, breaks a
-                construction rule, or cannot be read as this record at all.
+            InvalidCalibrationStatus: the stored shape is not a mapping, is
+                missing a key, was built under different construction rules,
+                breaks a rule, or cannot be read as this record at all.
         """
         if not isinstance(payload, Mapping):
             raise InvalidCalibrationStatus(
                 f"CalibrationStatus needs a mapping, got {type(payload).__name__}"
             )
-        identity = payload.get("judge_identity")
-        if identity is not None and not isinstance(identity, Mapping):
-            raise InvalidCalibrationStatus(
-                "CalibrationStatus needs judge_identity as a mapping or None, got "
-                f"{type(identity).__name__}"
-            )
         try:
-            return cls(
-                status=_required_str(payload, "status"),
-                reason=payload.get("reason"),
-                judge_identity=JudgeIdentity(**identity) if identity else None,
-                judge_interval=_interval_from(payload, "judge_interval"),
-                ceiling_interval=_interval_from(payload, "ceiling_interval"),
-                difference_interval=_interval_from(payload, "difference_interval"),
-                beats_chance=payload.get("beats_chance"),
-                ceiling_beats_chance=payload.get("ceiling_beats_chance"),
-                reaches_ceiling=payload.get("reaches_ceiling"),
-                kappa=payload.get("kappa"),
-                matthews=payload.get("matthews"),
-                scored_pairs=payload.get("scored_pairs", 0),
-                pairs=payload.get("pairs", 0),
-                attempted=payload.get("attempted", 0),
-                valid=payload.get("valid", 0),
-                labelled_at=payload.get("labelled_at"),
-                harness_version=payload.get("harness_version"),
-                artifact_version=payload.get("artifact_version", ARTIFACT_VERSION),
-            )
+            return cls(**_stored_fields(payload))
         except InvalidCalibrationStatus:
             # Already this module's refusal, carrying which rule it broke.
             raise
@@ -665,9 +727,79 @@ class CalibrationStatus:
             ) from exc
 
 
-def _interval_from(payload: Mapping, key: str) -> Interval | None:
-    """One stored interval, or None when the harness left that half undefined."""
-    stored = payload.get(key)
+def _stored_fields(payload: Mapping) -> dict:
+    """Every field of a stored artifact, read by name, none of them defaulted.
+
+    Written out one line per field rather than looped over a key list, so the
+    constructor keyword and the stored key are the same word in the same place
+    and a field added to the record with no line here fails loudly.
+    """
+    return {
+        "status": _required_str(payload, "status"),
+        "reason": _required_key(payload, "reason"),
+        "judge_identity": _stored_identity(payload),
+        "judge_interval": _stored_interval(payload, "judge_interval"),
+        "ceiling_interval": _stored_interval(payload, "ceiling_interval"),
+        "difference_interval": _stored_interval(payload, "difference_interval"),
+        "beats_chance": _required_key(payload, "beats_chance"),
+        "ceiling_beats_chance": _required_key(payload, "ceiling_beats_chance"),
+        "reaches_ceiling": _required_key(payload, "reaches_ceiling"),
+        "kappa": _required_key(payload, "kappa"),
+        "matthews": _required_key(payload, "matthews"),
+        "scored_pairs": _required_key(payload, "scored_pairs"),
+        "pairs": _required_key(payload, "pairs"),
+        "attempted": _required_key(payload, "attempted"),
+        "valid": _required_key(payload, "valid"),
+        "labelled_at": _required_key(payload, "labelled_at"),
+        "harness_version": _required_key(payload, "harness_version"),
+        "written_at": _required_key(payload, "written_at"),
+        "artifact_version": _stored_artifact_version(payload),
+    }
+
+
+def _stored_identity(payload: Mapping) -> JudgeIdentity | None:
+    """The stored Judge, rebuilt. Null is a real answer and an absent key is not.
+
+    Most artifacts this repo writes today carry null here, because the harness
+    cannot name the Judge it called. That is a fact about the run. A file with no
+    `judge_identity` key at all is a file this reader cannot vouch for.
+    """
+    identity = _required_key(payload, "judge_identity")
+    if identity is None:
+        return None
+    if not isinstance(identity, Mapping):
+        raise InvalidCalibrationStatus(
+            "CalibrationStatus needs judge_identity as a mapping or None, got "
+            f"{type(identity).__name__}"
+        )
+    return JudgeIdentity(**identity)
+
+
+def _stored_artifact_version(payload: Mapping) -> int:
+    """The stored version, refused unless it is the one these rules were written for.
+
+    It was stored and never compared, which made it decoration. The constant is
+    bumped when an artifact from an older build would be READ WRONGLY rather than
+    refused, so meeting one and reading it anyway is precisely the accident the
+    field exists to stop. The refusal names both versions, and the loader puts
+    them on its log line.
+
+    A bool is refused before the comparison, because `True == 1` in Python and an
+    `artifact_version: true` would otherwise pass for version 1.
+    """
+    stored = _required_key(payload, "artifact_version")
+    if isinstance(stored, bool) or stored != ARTIFACT_VERSION:
+        raise InvalidCalibrationStatus(
+            f"CalibrationStatus reads artifact_version {ARTIFACT_VERSION} and this "
+            f"artifact is version {stored!r}. A field can mean something else under "
+            "another build's construction rules, so it is refused, not read."
+        )
+    return ARTIFACT_VERSION
+
+
+def _stored_interval(payload: Mapping, key: str) -> Interval | None:
+    """One stored interval, or None where the harness left that half undefined."""
+    stored = _required_key(payload, key)
     if stored is None:
         return None
     return Interval.from_payload(stored)

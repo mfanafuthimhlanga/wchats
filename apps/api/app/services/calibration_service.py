@@ -26,6 +26,12 @@ WHY A MISMATCH IS AN ABSENCE AND NOT A FAILURE
     `not_calibrated`, because the second would send somebody to fix a Judge that
     may be fine.
 
+WHAT THE INVALID LOG SAYS
+    Both artifact versions, this reader's and the file's. `from_payload` refuses
+    an artifact built under other construction rules, and the two most likely
+    reasons an operator sees that line are a stale file and a reader that moved
+    on. The line answers which one without opening the file.
+
 WHAT THE MISMATCH LOG SAYS
     All three fields of both identities, so the line shows WHICH ONE moved. It
     carried model and prompt version only until slice 2, and `reasoning_effort`
@@ -44,11 +50,16 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 import structlog
 
-from app.domain.calibration_status import CalibrationStatus, InvalidCalibrationStatus
+from app.domain.calibration_status import (
+    ARTIFACT_VERSION,
+    CalibrationStatus,
+    InvalidCalibrationStatus,
+)
 from app.domain.judge_identity import JudgeIdentity
 
 log = structlog.get_logger(__name__)
@@ -88,7 +99,15 @@ def load_calibration_status(
     try:
         record = CalibrationStatus.from_payload(payload)
     except InvalidCalibrationStatus as exc:
-        log.warning("calibration_artifact_invalid", path=str(artifact), error=str(exc))
+        log.warning(
+            "calibration_artifact_invalid",
+            path=str(artifact),
+            error=str(exc),
+            reader_artifact_version=ARTIFACT_VERSION,
+            artifact_version=(
+                payload.get("artifact_version") if isinstance(payload, Mapping) else None
+            ),
+        )
         return CalibrationStatus.absent("invalid")
 
     stored = record.judge_identity
@@ -108,9 +127,10 @@ def load_calibration_status(
 
 
 #: What the deploy summary carries out of a record, and nothing else. The three
-#: verdict parts, `difference_interval`, `attempted`, `valid` and
-#: `artifact_version` stay off it: the orchestrator narrates the status and the
-#: reason, and ticket 17's refusal reads the record itself rather than this dict.
+#: verdict parts, `difference_interval`, `attempted`, `valid`, `written_at` and
+#: `artifact_version` stay off it. The orchestrator narrates the status and the
+#: reason, `labelled_at` is the date a reader of a deploy report can act on, and
+#: ticket 17's refusal reads the record itself rather than this dict.
 #: `tests/unit/test_calibration_service.py` pins the key set.
 SUMMARY_KEYS = (
     "status",

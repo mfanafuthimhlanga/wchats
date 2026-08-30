@@ -32,6 +32,7 @@ import structlog.testing
 
 from app.domain.calibration_status import (
     ABSENT_REASONS,
+    ARTIFACT_VERSION,
     STATUS_CALIBRATED,
     STATUS_NOT_CALIBRATED_YET,
     CalibrationStatus,
@@ -318,14 +319,58 @@ class TestTheMismatchLog:
         assert entry["error"].startswith("JSONDecodeError")
 
     def test_a_refused_artifact_logs_once_naming_the_rule_it_broke(self, tmp_path):
+        """A whole artifact with one bad field, so the line names the field and
+        not the first key the reader happened to miss."""
+        payload = _calibrated(_identity()).payload
+        payload["status"] = "made_up"
         artifact = tmp_path / "calibration.json"
-        artifact.write_text(json.dumps({"status": "made_up"}), encoding="utf-8")
+        artifact.write_text(json.dumps(payload), encoding="utf-8")
 
         with structlog.testing.capture_logs() as logs:
             load_calibration_status(artifact, _identity())
 
         entry = _one_event(logs, "calibration_artifact_invalid")
         assert "made_up" in entry["error"]
+
+    def test_an_artifact_from_another_version_reads_invalid(self, tmp_path):
+        """The version was stored and never compared until the review pass. A
+        build that changed what a field means would have been read under this
+        build's rules and reported as a measurement."""
+        payload = _calibrated(_identity()).payload
+        payload["artifact_version"] = ARTIFACT_VERSION + 1
+        artifact = tmp_path / "calibration.json"
+        artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+        status = load_calibration_status(artifact, _identity())
+
+        assert status.status == STATUS_NOT_CALIBRATED_YET
+        assert status.reason == "invalid"
+
+    def test_the_invalid_line_names_both_versions(self, tmp_path):
+        payload = _calibrated(_identity()).payload
+        payload["artifact_version"] = 99
+        artifact = tmp_path / "calibration.json"
+        artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+        with structlog.testing.capture_logs() as logs:
+            load_calibration_status(artifact, _identity())
+
+        entry = _one_event(logs, "calibration_artifact_invalid")
+        assert entry["reader_artifact_version"] == ARTIFACT_VERSION
+        assert entry["artifact_version"] == 99
+
+    def test_the_invalid_line_survives_an_artifact_with_no_version_at_all(self, tmp_path):
+        """The refusal comes from a missing key here, so the file cannot answer
+        what version it is. The line says so rather than failing to be written."""
+        artifact = tmp_path / "calibration.json"
+        artifact.write_text(json.dumps(["calibrated"]), encoding="utf-8")
+
+        with structlog.testing.capture_logs() as logs:
+            load_calibration_status(artifact, _identity())
+
+        entry = _one_event(logs, "calibration_artifact_invalid")
+        assert entry["artifact_version"] is None
+        assert entry["reader_artifact_version"] == ARTIFACT_VERSION
 
     def test_a_missing_artifact_logs_nothing(self, tmp_path):
         """The normal state of a container. A warning per deploy summary would
@@ -371,11 +416,11 @@ class TestTheSetting:
 class TestTheDeploySummarySelection:
     """`summary_of` - the eleven keys the deploy summary carries, and no twelfth.
 
-    The record holds eighteen fields and the deploy summary carries eleven. The
-    seven left off are the harness's working (`difference_interval`, the three
-    verdict parts) and the counts a reader of a deploy report has no use for
-    (`attempted`, `valid`, `artifact_version`). Ticket 17's refusal reads the
-    record itself, so nothing downstream needs them on the dict.
+    The record holds nineteen fields and the deploy summary carries eleven. The
+    eight left off are the harness's working (`difference_interval`, the three
+    verdict parts) and the bookkeeping a reader of a deploy report has no use for
+    (`attempted`, `valid`, `written_at`, `artifact_version`). Ticket 17's refusal
+    reads the record itself, so nothing downstream needs them on the dict.
     """
 
     def test_it_carries_exactly_the_declared_keys_in_order(self):
