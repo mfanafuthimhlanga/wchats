@@ -349,3 +349,14 @@ class TestThePayloadRoundTrips:
         del payload["scenario_id"]
         with pytest.raises(InvalidJudgeRecord, match="scenario_id"):
             JudgeRecord.from_payload(payload)
+
+    def test_a_payload_whose_metric_is_not_a_string_is_refused(self):
+        """The row names which of the four scores it is. A number cannot.
+
+        `eval_results.metric` is read back and grouped on, so a metric stored as
+        anything but text puts a score in a bucket no reader asks for.
+        """
+        payload = _record().payload
+        payload["metric"] = 0.9
+        with pytest.raises(InvalidJudgeRecord, match="metric"):
+            JudgeRecord.from_payload(payload)

@@ -77,9 +77,21 @@ class InvalidJudgeRecord(ValueError):
     """
 
 
-def _require_text(name: str, value: Any) -> None:
+def _require_text(name: str, value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         raise InvalidJudgeRecord(f"JudgeRecord needs a {name}, got {value!r}")
+    return value
+
+
+def _required_str(payload: Mapping, key: str) -> str:
+    """The stored text under `key`. An absent key is a refusal, not a None.
+
+    `scenario_id` and `metric` are declared `str`, and `payload.get(key)` reads
+    a missing one as None, so the declared type and what `from_payload` could
+    pass disagreed. `__post_init__` refused that None too, with this same
+    message; the refusal now happens where the key is read.
+    """
+    return _require_text(key, payload.get(key))
 
 
 def _require_optional_text(name: str, value: Any) -> None:
@@ -293,8 +305,8 @@ class JudgeRecord:
         written down.
 
         Raises:
-            InvalidJudgeRecord: the stored shape is not a mapping, or it violates
-                any construction rule above.
+            InvalidJudgeRecord: the stored shape is not a mapping, it carries no
+                scenario_id or metric, or it violates any construction rule above.
         """
         if not isinstance(payload, Mapping):
             raise InvalidJudgeRecord(
@@ -307,8 +319,8 @@ class JudgeRecord:
                 f"{type(identity).__name__}"
             )
         return cls(
-            scenario_id=payload.get("scenario_id"),
-            metric=payload.get("metric"),
+            scenario_id=_required_str(payload, "scenario_id"),
+            metric=_required_str(payload, "metric"),
             score=payload.get("score"),
             threshold=payload.get("threshold"),
             binary_verdict=payload.get("binary_verdict"),

@@ -2341,7 +2341,10 @@ def dataset_verdict_counts(
             ]
         )
         counts[name][2 if verdict is None else (0 if verdict else 1)] += 1
-    return {name: tuple(three) for name, three in counts.items()}
+    return {
+        name: (passed, failed, unmeasured)
+        for name, (passed, failed, unmeasured) in counts.items()
+    }
 
 
 def dataset_outcomes(

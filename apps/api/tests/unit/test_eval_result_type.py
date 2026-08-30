@@ -540,6 +540,25 @@ class TestThePayloadRoundTrips:
         with pytest.raises(InvalidEvalResult):
             EvalResult.from_payload(payload)
 
+    def test_a_payload_missing_its_run_id_is_refused(self):
+        """The record is one run's account of itself, and it has to name the run.
+
+        Reading an absent key as None handed a None to a field declared `str` and
+        left the refusal to the constructor. `_required_str` raises where the key
+        is read, and the message still names the missing key.
+        """
+        payload = _result().payload
+        del payload["run_id"]
+        with pytest.raises(InvalidEvalResult, match="run_id"):
+            EvalResult.from_payload(payload)
+
+    def test_a_payload_missing_its_requested_model_is_refused_the_same_way(self):
+        """Every `str` field `from_payload` reads goes through the one helper."""
+        payload = _result().payload
+        del payload["requested_model"]
+        with pytest.raises(InvalidEvalResult, match="requested_model"):
+            EvalResult.from_payload(payload)
+
     def test_a_malformed_judge_identity_is_this_modules_refusal(self):
         """A TypeError out of `JudgeIdentity(**identity)` escaped as a TypeError.
 

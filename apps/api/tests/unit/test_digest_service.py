@@ -239,6 +239,29 @@ class TestDigestFaithfulnessReadsTheRecord:
         assert stats["faithfulness_score"] is None
         assert stats["faithfulness_dataset"] is None
 
+    def test_the_digest_query_cannot_reach_back_past_a_failed_run(self):
+        """Where the reach-back is actually refused, on the digest's own path.
+
+        The test above hands its double one row and gets that row back, so it
+        would pass just as well against a query filtering `status = 'complete'`,
+        which on a real tenant skips the failed newest run and answers with an
+        older completed one. The predicate is the whole guard, and until now only
+        `test_alert_service.py` pinned it, over the other reader of the same SQL.
+        """
+        from uuid import uuid4
+
+        record = _eval_record({"exploratory": _scored(0.77)})
+        _, conn = self._stats((str(uuid4()), record.payload), status="failed")
+
+        sql = " ".join(
+            c.args[0] for c in conn.cursor.return_value.execute.call_args_list
+        )
+        assert "status <> 'running'" in sql
+        assert "status = 'complete'" not in sql, (
+            "filtering to complete runs in SQL reaches back past a failed run to "
+            "an older one and mails last week's number as this week's"
+        )
+
     def test_a_run_without_a_record_reads_as_unmeasured(self):
         """Not zero, and not last week's number. The email says so."""
         from uuid import uuid4

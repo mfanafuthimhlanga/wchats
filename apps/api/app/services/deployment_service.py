@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from collections.abc import Mapping
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -832,11 +833,22 @@ def _latest_run(cur, conn, agent_id: str) -> tuple[tuple | None, object, object]
 def _record_of(run_id: str, payload: object) -> EvalResult | None:
     """One run's stored record, or None when it has none that can be read.
 
-    `EvalResult.from_payload` decides whether the payload is readable. None
-    reaches the collector as EVAL_SIGNAL_NO_RECORD, which blocks the deploy, so
-    a record this function cannot read costs a refusal and never a shipped run.
+    `eval_runs.result` is jsonb, so the column can hold a list or a bare string
+    as readily as the object the writer put there. `EvalResult.from_payload`
+    needs a mapping, and the check below refuses anything else, naming what the
+    row holds. None reaches the collector as EVAL_SIGNAL_NO_RECORD,
+    which blocks the deploy, so a record this function cannot read costs a
+    refusal and never a shipped run.
     """
     if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        log.error(
+            "deployment_service.eval_summary.record_unreadable",
+            run_id=run_id,
+            error=f"the stored record is a {type(payload).__name__}, not a mapping",
+            detail="the stored record breaks a rule; the run reads as unmeasured",
+        )
         return None
     try:
         return EvalResult.from_payload(payload)

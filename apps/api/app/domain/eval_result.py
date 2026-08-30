@@ -185,9 +185,21 @@ def _require_count(name: str, value: Any) -> None:
         raise InvalidEvalResult(f"EvalResult needs {name} at zero or above, got {value}")
 
 
-def _require_text(name: str, value: Any) -> None:
+def _require_text(name: str, value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         raise InvalidEvalResult(f"EvalResult needs a {name}, got {value!r}")
+    return value
+
+
+def _required_str(payload: Mapping, key: str) -> str:
+    """The stored text under `key`. An absent key is a refusal, not a None.
+
+    Every key read through here lands on a field declared `str`, and
+    `payload.get(key)` reads a missing one as None, so the declared type and
+    what `from_payload` could pass disagreed. `__post_init__` refused that None
+    too, with this same message; the refusal now happens where the key is read.
+    """
+    return _require_text(key, payload.get(key))
 
 
 def _require_optional_text(name: str, value: Any) -> None:
@@ -396,7 +408,7 @@ class Invocation:
                 f"Invocation needs a mapping, got {type(payload).__name__}"
             )
         return cls(
-            status=payload.get("status"),
+            status=_as_status(payload.get("status")),
             **{name: payload.get(name, 0) for name in _COUNT_FIELDS_INVOCATION},
             deflection_detectors=payload.get("deflection_detectors") or {},
         )
@@ -464,8 +476,8 @@ class ScenarioFailure:
             )
         return cls(
             scenario_id=payload.get("scenario_id", ""),
-            error_type=payload.get("error_type"),
-            message=payload.get("message"),
+            error_type=_required_str(payload, "error_type"),
+            message=_required_str(payload, "message"),
         )
 
 
@@ -765,9 +777,9 @@ def _require_totals_agree(payload: Mapping, record: EvalResult) -> None:
     `payload` writes attempted, valid and scored at the top level AND inside each
     dataset. `from_payload` re-sums the datasets, so a payload claiming
     `attempted: 999` over two datasets attempting thirty read back as thirty and
-    the row held two answers with nothing choosing between them. Writing a number
-    down and then ignoring it is how a reader comes to trust the one that is
-    wrong.
+    the row held two answers with nothing choosing between them. So each stored
+    total has to equal the sum of the datasets under it, and a record where one
+    does not is refused rather than read as its datasets.
 
     A payload missing a total is not refused. The datasets are the source and a
     total is a convenience for a reader that has them; absence is silence, while
@@ -1033,14 +1045,14 @@ class EvalResult:
             )
         try:
             record = cls(
-                run_id=payload.get("run_id"),
-                agent_id=payload.get("agent_id"),
+                run_id=_required_str(payload, "run_id"),
+                agent_id=_required_str(payload, "agent_id"),
                 invocation=Invocation.from_payload(payload.get("invocation") or {}),
                 datasets={
                     name: DatasetOutcome.from_payload(value)
                     for name, value in datasets.items()
                 },
-                requested_model=payload.get("requested_model"),
+                requested_model=_required_str(payload, "requested_model"),
                 cost=Cost.from_payload(payload.get("cost") or {}),
                 served_model=payload.get("served_model"),
                 prompt_version_id=payload.get("prompt_version_id"),
