@@ -70,11 +70,14 @@ from app.domain.model_call import ModelCall
 from app.domain.pricing import UnknownFxRate, UnknownPrice, cost_usd, cost_zar
 
 #: The two datasets a run reports, and the only two names `datasets` accepts.
-#: `app.services.eval_service` spells the same two as DATASET_GOLDEN and
-#: DATASET_EXPLORATORY and its `EVAL_DATASETS` is this tuple's twin. They are
-#: repeated here rather than imported because `app.domain` sits below
-#: `app.services` and may not import upwards; the pin is a test, not an import.
-EVAL_DATASETS: tuple[str, ...] = ("golden", "exploratory")
+#: `app.services.eval_service` spells the same two and its `EVAL_DATASETS` is
+#: this tuple's twin, repeated there rather than imported; that pin is a test,
+#: not an import. `app.services.scenario_service` DOES import these two, because
+#: a producer holding its own copy of the vocabulary is how #27's column stayed
+#: NULL on every generated row while three readers folded NULL to exploratory.
+DATASET_GOLDEN = "golden"
+DATASET_EXPLORATORY = "exploratory"
+EVAL_DATASETS: tuple[str, ...] = (DATASET_GOLDEN, DATASET_EXPLORATORY)
 
 #: The four dimensions a run scores, in the order the console reads them.
 #: `eval_service.METRIC_KEYS` is the same tuple, for the same reason as above.

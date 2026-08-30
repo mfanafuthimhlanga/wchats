@@ -581,11 +581,21 @@ def build_judge_records(scenario_scores: Sequence[Mapping]) -> list[JudgeRecord]
 def dataset_of(value: str | None) -> str:
     """Resolve an eval_scenarios.dataset value to one of EVAL_DATASETS.
 
-    Anything that is not exactly DATASET_GOLDEN — NULL (every row that predates
-    migration 0014), an empty string, an unrecognised value — resolves to
-    'exploratory'. Membership of the golden set is an assertion somebody has to
-    make; it is never inherited by default, because a golden set that fills
-    itself is just the old random sample wearing a stable name.
+    Anything that is not exactly DATASET_GOLDEN resolves to 'exploratory': NULL,
+    an empty string, an unrecognised value. Membership of the golden set is an
+    assertion somebody has to make. It is never inherited by default, because a
+    golden set that fills itself is just the old random sample wearing a stable
+    name.
+
+    THE NULL FOLD IS FOR ROWS WRITTEN BEFORE #27, AND FOR NOTHING ELSE. Every
+    row that predates migration 0014 has no dataset, and so does every row the
+    four `scenario_service` writers produced while they omitted the column: the
+    twenty generated rows of eval run 29754ceb among them. Those rows are still
+    in the table and this fold is what they read as. Nothing written after #27
+    reaches here as NULL, because `store_scenarios` refuses a row that does not
+    name its dataset before it opens a connection. No migration backfilled the
+    old rows: which existing row belongs in a golden set is the owner's call to
+    make once, not a default an ALTER can guess.
     """
     return DATASET_GOLDEN if value == DATASET_GOLDEN else DATASET_EXPLORATORY
 
