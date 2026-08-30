@@ -1122,10 +1122,10 @@ def summarise_run_validity(
     scenario is not in the fetched set joins NEITHER dataset — it cannot, and
     inventing a bucket for it puts an unplaceable observation inside a
     comparable measurement. It is counted in `unattributed` so nothing vanishes
-    silently. api/v1/evals.py's _LIST_EVAL_RUN_DATASETS_SQL applies the same
-    rule to the same rows (its own third bucket, also counted and never
-    averaged); the two used to disagree, each calling itself the honest one,
-    which meant one run had two denominators differing by exactly these rows.
+    silently. api/v1/evals.py applied the same rule in its own SQL until #51
+    slice 3, and the two disagreed for a while, so one run had two denominators
+    differing by exactly these rows. That SQL is gone and this is the only place
+    the rule lives. `EvalResult` stores no such count, so the route reports null.
     run_ragas_eval no longer produces such a row at all — this stays as the
     fail-closed floor under rows written by older builds.
     """
