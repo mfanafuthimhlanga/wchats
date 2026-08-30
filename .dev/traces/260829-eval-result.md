@@ -1253,16 +1253,213 @@ halves rather than in one of them.
 
 ---
 
-## Open after six slices
+## Review pass, the tier-1 adversarial findings
 
-Every open item the six slice sections recorded, in one place. Items without an
-issue number have none, and that is the reading, not an omission.
+Four commits on top of slice 6, one per group of findings. Every claim below is
+an observed output, quoted from the run that produced it.
+
+### F1 + F4, the run counts its own scenario verdicts (`08bed8d`)
+
+**What the reviewer found.** `deployment_service` derived `failing_scenarios` and
+`unmeasured_scenarios` at read time with a `COUNT(*) FILTER` over
+`eval_results.binary_verdict`, and `get_eval_run_results` spelled the same
+conjunction again in Python. Neither compared the scenarios it decided to the
+`scored` the record already held, so a run with zero result rows and a record
+saying `scored=30` produced `failing=0, unmeasured=0` and
+`apply_signal_evidence_gate` returned **ship**.
+`test_the_measurements_survive_every_result_row_being_deleted` asserted that
+`unmeasured_scenarios == 0`, so the test held the defect in place.
+
+**What changed.**
+
+- `DatasetOutcome` carries `scenarios_passed`, `scenarios_failed` and
+  `scenarios_unmeasured`, and `__post_init__` refuses a dataset whose three do
+  not sum to `scored`. `payload` writes them and `from_payload` reads them, so a
+  stored record with no verdict counts over a scored dataset is refused rather
+  than read as a run in which nothing failed.
+- `EvalResult` sums them across datasets. Counts add; the means still may not.
+- `eval_service.dataset_verdict_counts` counts them ONCE, from the JudgeRecords
+  the run built, and `build_eval_result` takes `scenarios` and `judge_records` to
+  do it. `judge_record.scenario_verdict` is the one conjunction, called by the
+  counting and by the results route, so the console and the deploy report cannot
+  describe one scenario two ways.
+- `deployment_service._SCENARIO_VERDICTS_SQL` and `_scenario_verdicts` are gone.
+  The collector issues ONE statement now, for the run row, and reads nothing out
+  of `eval_results`. `_record_counts` carries the two counts, suppressed outside
+  `measured` for the same reason `pass_rates` is: `failing_scenarios: 0` beside a
+  refusal is the nearest thing the payload has to a quality claim.
+- The list route renders the three per dataset.
+
+**What the fixed gate does with the reviewer's case.** A record whose exploratory
+dataset scored 30 rows on `context_precision` alone, with the run's own count
+saying all 30 undecided:
+
+```
+eval_signal            measured
+pass_rates             {"context_precision": 0.71}
+scored_scenario_count  30
+failing_scenarios      0
+unmeasured_scenarios   30
+gate                   block, warning eval_quality_unmeasured
+```
+
+Deleting every `eval_results` row changes none of those numbers, which is what
+the rewritten test asserts.
+
+**Mutation** (the record accepts counts that do not sum to `scored`):
+
+```
+MUTATION APPLIED: DatasetOutcome accepts verdict counts that do not sum to scored
+FAILED test_eval_result_type.py::TestTheVerdictCountsPartitionTheScoredScenarios::test_counts_that_do_not_add_up_to_scored_are_refused
+FAILED test_eval_result_type.py::TestTheVerdictCountsPartitionTheScoredScenarios::test_a_verdict_over_more_scenarios_than_scored_is_refused_too
+FAILED test_eval_result_type.py::TestTheVerdictCountsPartitionTheScoredScenarios::test_a_stored_dataset_with_no_verdict_counts_is_refused_on_the_way_out
+FAILED test_deployment_service.py::TestScenarioVerdictCounts::test_a_record_that_counted_no_verdicts_is_refused_rather_than_read
+4 failed, 188 passed in 33.08s
+
+    E  AssertionError: assert 'measured' == 'no_record'
+```
+
+Restored with `git checkout HEAD -- app/domain/eval_result.py`: `192 passed`.
+
+### F5, one meaning for `scenario_count` (`08bed8d`)
+
+The task returned `len(valid_scenarios)` under the key the console fills with
+`record.attempted`. `_run_report` takes no `scenario_count` argument any more and
+returns `result.attempted`; the `run_eval_suite.complete` log dropped the field,
+which was a third copy of `valid`.
+`test_the_returned_scenario_count_is_the_records_attempted` pins the two
+together.
+
+### F2, F6, F9, the record's shape checks (`307ccc8`)
+
+- **F2.** `from_payload` called `JudgeIdentity(**identity)` bare, so an identity
+  with an extra key, a missing key or a string raised TypeError past every
+  reader's `except InvalidEvalResult` and one bad row returned 500 for the whole
+  of `GET /eval-runs`. The construction is wrapped; TypeError, KeyError,
+  ValueError and AttributeError all leave as `InvalidEvalResult`. The route test
+  drives a malformed identity through the list route and asserts that run reads
+  `result: "absent"` while the other run on the agent is intact.
+- **F6.** `payload` wrote `attempted`/`valid`/`scored` at the top level and
+  `from_payload` re-summed the datasets, so a stored `attempted=999` read back as
+  30. `_require_totals_agree` refuses the disagreement. An absent total still
+  reads, because the datasets are where the numbers were measured and absence is
+  silence.
+- **F9.** `run_judge_identity` read `route_for` live at record-build time. It
+  takes the run's JudgeRecords and returns the identity every one of them
+  carries: None when they differ, None when one carries none, None when there are
+  no records.
+
+**Mutation** (`from_payload` ignores the stored totals):
+
+```
+MUTATION APPLIED: from_payload ignores the top-level attempted/valid/scored
+FAILED test_eval_result_type.py::TestThePayloadRoundTrips::test_a_stored_total_that_disagrees_with_the_datasets_is_refused
+FAILED test_eval_result_type.py::TestThePayloadRoundTrips::test_each_of_the_three_totals_is_checked
+FAILED test_eval_routes.py::TestListEvalRuns::test_a_stored_total_that_disagrees_with_its_datasets_is_refused
+3 failed, 122 passed in 33.62s
+```
+
+Restored: `125 passed`.
+
+### F3, F15, F7, F8 and the dead mean (`73a157a`)
+
+- **F3, the fixture was half the defect.**
+  `test_the_verdict_is_the_stored_one_and_not_a_fresh_comparison` seeded
+  `score=0.99, threshold=0.995, verdict=False`, so a route recomputing
+  `score >= row.threshold` reached False as well and passed. The row is
+  `score=0.9, threshold=0.7, verdict=False` now, which every fresh comparison
+  disagrees with, and a second test carries `score=0.5, threshold=0.7,
+  verdict=None`: unmeasured, not failed. The reviewer's mutation:
+
+  ```
+  MUTATION APPLIED: _judge_reading recomputes score >= row.threshold instead of
+  reading the stored verdict
+  FAILED test_eval_routes.py::TestGetEvalRunResults::test_the_verdict_is_the_stored_one_and_not_a_fresh_comparison
+  FAILED test_eval_routes.py::TestGetEvalRunResults::test_a_gate_nobody_reached_is_unmeasured_and_not_a_failure
+  2 failed, 44 passed in 33.51s
+  ```
+
+  Restored: `46 passed`.
+
+- **F8, the alert and the digest reached back.** `latest_run_record` selected
+  `status = 'complete'`, so a failed latest run fell through to an older complete
+  one and both readers reported last week's faithfulness as this morning's. It
+  selects the latest non-running run and holds it to the terminal status the
+  writer writes, the same predicate `deployment_service._LATEST_RUN_SQL` uses.
+  `EVAL_RUN_STATUS_COMPLETE` moved to `eval_service`, which `deployment_service`
+  already imports from, so the two cannot drift.
+- **F15, `created_at` is not an order.** `tool_calls.created_at` defaults to
+  `now()`, which is the transaction clock, so every retrieve row a turn writes
+  carries one timestamp and the sort fell through to the heap. It is
+  `ORDER BY created_at, id`. The new tests drive the statement through a psycopg2
+  double and read the SQL back.
+- **The dead mean (FM-016).** `run_ragas_eval` computed and returned per-metric
+  means over both datasets, logged two of them, and nothing in `app/` read one.
+  Gone, with the three tests that asserted on it rewritten onto `judge_records`
+  and `sent`. Nothing in `tests/evals/` reads it.
+- **F7.** `retrieval_eval` and `judge_identity` both said the offline identity is
+  stamped in `eval_results.detail`. It has been `eval_results.judge_identity`
+  since 0023, and `detail` is written NULL.
+
+### F11 and F12, the prose (`d401775`)
+
+Seventy-seven added lines carried an em-dash or an en-dash and each was rewritten
+by hand. Two remain, both in `test_red_team_probe.py`: the fixture string copying
+provider output at 1542 and the section comment at 1512, which the review brief
+exempted.
+
+```
+git diff main...HEAD -U0 | grep -cP '^\+.*[\x{2014}\x{2013}]'
+2
+```
+
+"Already being written down is not evidence that a shape is honest" appeared
+verbatim in three docstrings and four test docstrings. It keeps one home, in
+`EvalResult.from_payload`, which is the function that enforces it; each reader
+now says what it does with a None.
+
+### Observed
+
+Gates, `scripts/gates.py static`:
+
+```
+ruff: clean against the 0 pinned baseline violation(s).
+Contracts: 3 kept, 0 broken.
+complexity: clean against the 115 pinned function(s).
+source assertions: clean against the 44 pinned file(s), 113 site(s).
+static gates passed in 7.4s.
+```
+
+Four pins lowered, none raised, none added:
+
+```
+evals.py            get_eval_run_results        (17, 98)   -> (16, 98)
+deployment_service  _eval_summary               (2, 66)    -> (2, 63)
+deployment_service  _fetch_eval_summary_sync    (12, 207)  -> (12, 204)
+eval_service        run_ragas_eval              (17, 164)  -> (11, 153)
+```
+
+The twenty files this branch touches, one foreground run each time:
+
+```
+before the review pass   958 passed in 58.54s
+after                    997 passed in 57.10s
+```
+
+---
+
+## Open after six slices and the review pass
+
+Every open item the six slice sections and the review pass recorded, in one
+place. Items without an issue number have none, and that is the reading, not an
+omission.
 
 **Has an issue**
 
 - **#119** A golden-set tenant gets no run-level metric number, so the eval page
   plots one line where the record holds two measurements, and `aggregate_scores`
-  reads 0.0 for such a tenant. Recorded in slices 3 and 4. Frontend.
+  reads 0.0 for such a tenant. Recorded in slices 3 and 4. Frontend. The review
+  pass's F14 is this item under another name, so it opens no second issue.
 - **#120** Pre-`280ff05` `retrieval_metrics` rows carry old-proxy faithfulness
   scores with nothing marking the shape. Slice 6, above.
 
@@ -1292,6 +1489,12 @@ issue number have none, and that is the reading, not an omission.
   to `eval_scenarios`. They call the writers slice 5 changed and needed no edit.
   Slice 5.
 - **The read path has no integration coverage.** Slice 6, above. `7.36`.
+- **`_fetch_verified_qa_stats_sync` still reads `COALESCE(AVG(faithfulness), 0.0)`**
+  (`deployment_service.py:1283`), so a `verified_qa` table with no scored row
+  reports 0.0 average faithfulness to the deploy gate rather than reporting that
+  it measured nothing. It is the same substitution this branch removed one
+  collector over, on a different table, and it was out of the review pass's
+  scope. The orchestrator opens its issue.
 
 **Closed by the branch, on merge**
 
