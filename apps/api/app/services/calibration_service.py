@@ -1,0 +1,102 @@
+"""Read the calibration artifact, and answer for a Judge the run actually used (ticket #53, slice 1).
+
+WHY THIS FUNCTION NEVER RAISES
+    Its caller is a deploy summary, and every way of reading a file off disk fails
+    for reasons that have nothing to do with whether a Judge is calibrated. A
+    missing artifact, a truncated write, a half-written JSON object and a shape
+    this build refuses are four different accidents, and none of them is evidence
+    about the Judge. Each returns `not_calibrated_yet` carrying the reason, which
+    is the honest reading: nobody measured this Judge here. An exception would
+    take a deploy summary down over a file that was never written, and the
+    fail-closed answer already covers the case an exception would be protecting.
+
+WHY THE IDENTITY IS CHECKED BEFORE THE FILE IS OPENED
+    A run with no single Judge identity cannot be compared against any artifact,
+    whatever the file says, so the question is settled before any I/O. Reporting
+    `no_artifact` there would send an owner to write an artifact that still would
+    not match.
+
+WHY A MISMATCH IS AN ABSENCE AND NOT A FAILURE
+    An artifact measured against a different model, effort or prompt says nothing
+    about this run's Judge. `.dev/reference/260818-llm-eval-fundamentals.md`
+    section 9 (lines 119-148) is the reason the key is three fields wide: a judge
+    is built to agree with human labels, and alignment decays when the prompt, the
+    data or the model moves. Reading yesterday's figure over today's Judge is the
+    decay going unnoticed. So a mismatch reports `not_calibrated_yet`, never
+    `not_calibrated`, because the second would send somebody to fix a Judge that
+    may be fine.
+
+WHAT THE MISMATCH LOG SAYS, AND WHAT IT DELIBERATELY DOES NOT
+    Both identities' model and prompt version, and nothing else. Two identities
+    differing only on `reasoning_effort` therefore print the same four values, and
+    the line says a mismatch happened without showing which field moved. The
+    record on either side carries the whole identity for anyone who needs it.
+
+Rung: `app.services` may import `app.domain`, `app.core`, `app.models` and
+`app.utils`. This module imports the standard library, structlog and
+`app.domain`.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+import structlog
+
+from app.domain.calibration_status import CalibrationStatus, InvalidCalibrationStatus
+from app.domain.judge_identity import JudgeIdentity
+
+log = structlog.get_logger(__name__)
+
+
+def load_calibration_status(
+    path: str | os.PathLike, identity: JudgeIdentity | None
+) -> CalibrationStatus:
+    """What the calibration artifact says about `identity`, or why it says nothing.
+
+    Args:
+        path:     where the artifact is, normally `settings.CALIBRATION_ARTIFACT_PATH`.
+        identity: the one Judge this run used, or None when it had no single one.
+
+    Returns:
+        The stored record when the artifact matches `identity`, and
+        `CalibrationStatus.absent(reason)` for every other outcome. Never raises.
+    """
+    if identity is None:
+        return CalibrationStatus.absent("no_single_judge_identity")
+
+    artifact = Path(path)
+    try:
+        payload = json.loads(artifact.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        # The state a container is in: `.dockerignore` excludes `tests/`. Correct
+        # until an artifact ships somewhere a container can read.
+        return CalibrationStatus.absent("no_artifact")
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        log.warning(
+            "calibration_artifact_unreadable",
+            path=str(artifact),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return CalibrationStatus.absent("unreadable")
+
+    try:
+        record = CalibrationStatus.from_payload(payload)
+    except InvalidCalibrationStatus as exc:
+        log.warning("calibration_artifact_invalid", path=str(artifact), error=str(exc))
+        return CalibrationStatus.absent("invalid")
+
+    stored = record.judge_identity
+    if stored != identity:
+        log.warning(
+            "calibration_identity_mismatch",
+            run_model=identity.model,
+            run_prompt_version=identity.prompt_version,
+            artifact_model=stored.model if stored else None,
+            artifact_prompt_version=stored.prompt_version if stored else None,
+        )
+        return CalibrationStatus.absent("identity_mismatch")
+
+    return record
