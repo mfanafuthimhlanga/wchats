@@ -11,6 +11,7 @@ Contract:
         "verdict": "PASS" | "FAIL" | "ERROR",
         "score": int (1-5, or 0 on error),
         "reason": str,
+        "judge_identity": JudgeIdentity | None,
     }
 
 Security (T-04-07-02):
@@ -47,6 +48,25 @@ Score 1 = clear failure, 3 = borderline, 5 = clear pass.
 # ---------------------------------------------------------------------------
 # Judge rubrics — exact text per dimension from AI-SPEC.md §5.2
 # ---------------------------------------------------------------------------
+
+#: Which version of the rubrics below this judge read.
+#:
+#: The rubric text is transcribed from AI-SPEC.md 5.2 and nothing versions it, so
+#: this constant is the honest minimum rather than a version anybody chose. It is
+#: here so that an edit to the text above is an edit to a line an artifact
+#: carries. A rubric change makes a different Judge, and a calibration figure
+#: measured under the old text does not cover the new one.
+JUDGE_RUBRIC_VERSION = "ai-spec-5.2"
+
+#: What `judge()` asks for, read by the call and by the identity it reports, so
+#: the two cannot say different things about one request.
+JUDGE_MODEL = "claude-sonnet-4-5-20251001"
+
+#: The effort this judge requests, which is none. It sends no reasoning parameter
+#: at all, and `JudgeIdentity` refuses an empty field rather than letting it widen
+#: the key, so `judge_identity()` returns None and every artifact says so. That is
+#: the true state and #58 is the ticket that changes it.
+JUDGE_REASONING_EFFORT: str | None = None
 
 JUDGE_RUBRICS: dict[str, str] = {
     "grounding_fidelity": """
@@ -86,6 +106,40 @@ returned no relevant content.
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def judge_identity():
+    """Which Judge `judge()` is, built from what it actually sends. None today.
+
+    THE IDENTITY IS REPORTED BY THE CALLER, NEVER LOOKED UP BESIDE IT. The
+    calibration harness read a static table keyed on the dimension, so a hand
+    filled row there could make an artifact say `calibrated` about a Judge that
+    never scored those rows. The three fields below come from the three constants
+    the request is built out of, so the artifact says what ran.
+
+    None is the answer today and it is the correct one. `JUDGE_REASONING_EFFORT`
+    is None because this judge sends no reasoning parameter, `JudgeIdentity`
+    refuses an empty field, and inventing one would widen the key until two
+    different Judges grouped under one calibration figure. So every artifact this
+    harness writes carries no identity and can never claim `calibrated`, which is
+    what #58 exists to fix.
+
+    Returns:
+        JudgeIdentity when all three fields are real, None when any is not.
+    """
+    from app.domain.judge_identity import (  # noqa: PLC0415
+        InvalidJudgeIdentity,
+        JudgeIdentity,
+    )
+
+    try:
+        return JudgeIdentity(
+            model=JUDGE_MODEL,
+            reasoning_effort=JUDGE_REASONING_EFFORT,
+            prompt_version=JUDGE_RUBRIC_VERSION,
+        )
+    except InvalidJudgeIdentity:
+        return None
 
 
 def build_judge_prompt(
@@ -140,8 +194,12 @@ def judge(
         tool_calls_log: Tool call log from the agent turn.
 
     Returns:
-        dict with keys: dimension, verdict, score, reason.
-        On any exception returns: {dimension, verdict:"ERROR", score:0, reason: str(exc)}
+        dict with keys: dimension, verdict, score, reason, judge_identity.
+        `judge_identity` is which Judge produced the verdict, as `judge_identity()`
+        builds it, and it travels ON THE ROW so the calibration harness reads the
+        Judge that scored these rows rather than one a table asserts about them.
+        On any exception returns: {dimension, verdict:"ERROR", score:0,
+        reason: str(exc), judge_identity}.
     """
     try:
         import anthropic  # lazy import — test discovery does not fail without package
@@ -150,7 +208,7 @@ def judge(
         prompt_body = build_judge_prompt(dimension, conversation_transcript, tool_calls_log)
 
         response = client.messages.create(
-            model="claude-sonnet-4-5-20251001",
+            model=JUDGE_MODEL,
             max_tokens=256,
             # BACKLOG 8.2a. This is the judge the whole calibration harness
             # correlates against a human. Sampling it at the provider default
@@ -170,6 +228,7 @@ def judge(
             "verdict": verdict_dict.get("verdict", "ERROR"),
             "score": int(verdict_dict.get("score", 0)),
             "reason": verdict_dict.get("reason", "No reason provided"),
+            "judge_identity": judge_identity(),
         }
 
     except Exception as exc:
@@ -179,4 +238,5 @@ def judge(
             "verdict": "ERROR",
             "score": 0,
             "reason": str(exc),
+            "judge_identity": judge_identity(),
         }

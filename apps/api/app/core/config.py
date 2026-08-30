@@ -22,6 +22,25 @@ def _find_env_file() -> str | None:
     return None
 
 
+# Where the calibration harness's answer is read from, resolved off this file the
+# same way, so it does not move with the working directory either. This file sits
+# at apps/api/app/core/config.py, so parents[2] is apps/api.
+#
+# The path is absolute and the file need not exist. `load_calibration_status`
+# returns `no_artifact` when it is missing, which is a real and correct answer
+# rather than a failure. `apps/api/.dockerignore` excludes `tests/`, so a
+# container has no calibration directory at all, and no Judge has been shown
+# calibrated there.
+def _calibration_artifact_file() -> str:
+    return str(
+        Path(__file__).resolve().parents[2]
+        / "tests"
+        / "evals"
+        / "calibration"
+        / "calibration.json"
+    )
+
+
 class Settings(BaseSettings):
     # hide_input_in_errors: T-01-01/T-01-02 again, on the path __repr__ does not
     # cover. `__repr__` below suppresses field values, but a pydantic
@@ -89,6 +108,12 @@ class Settings(BaseSettings):
     # Override via UPLOADS_DIR env var; default works for both Linux containers
     # (/vrd-uploads) and Windows native runs (C:/vrd-uploads or any writable path)
     UPLOADS_DIR: str = "/vrd-uploads"
+
+    # Where `calibration_service.load_calibration_status` reads the harness's
+    # answer from. The default points at the calibration directory beside the
+    # harness that writes it (ticket #53, slice 2). Override it to move the
+    # artifact somewhere a deployed process can read.
+    CALIBRATION_ARTIFACT_PATH: str = _calibration_artifact_file()
 
     # Ingestion pipeline, M2 additions (T-02-01-01, keys suppressed by __repr__)
     #

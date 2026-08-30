@@ -37,6 +37,7 @@ from app.domain.eval_result import (
     unmeasured_metrics,
 )
 from app.domain.tool_def import ToolDefinition, tool
+from app.services.calibration_service import load_calibration_status, summary_of
 from app.services.capability_service import canonical_envelope_hash
 from app.services.eval_service import EVAL_RUN_STATUS_COMPLETE, GATED_METRIC_KEYS
 from app.services.tool_loop import run_tool_loop
@@ -261,6 +262,31 @@ Per-question results: eval_summary.failing_scenarios is how many scenarios the
 judge decided against, and eval_summary.unmeasured_scenarios is how many it did
 not decide at all. They are two different counts and the second is not a
 success. Null in either means the results could not be read, which is not zero.
+
+Judge calibration is narrative only. It blocks nothing and warns about nothing.
+eval_summary.calibration says whether the judge that produced those metrics has
+itself been measured against human labels. Its status is one of 'calibrated',
+'not_calibrated', 'not_calibrated_yet' and 'setup_error', and calibration.reason
+names why when it is not calibrated.
+
+Today the status you will see is 'not_calibrated_yet', with a reason naming which
+absence it is. 'no_artifact' means nobody has written a calibration figure yet.
+'no_single_judge_identity' means this run's metrics came from more than one
+judge, so there is no one judge for a figure to be about.
+'artifact_names_no_judge' means a figure exists and names no judge, which is
+every figure this platform's harness can write until it scores with the judge the
+eval run uses. 'identity_mismatch' means a figure exists and measures a different
+judge, so it says nothing about this one. 'unreadable' and 'invalid' mean the file
+could not be read at all or was built under different rules. The other three
+statuses reach you only from an artifact whose judge is the one this run used.
+'calibrated' and 'not_calibrated' are then a measured verdict on that judge, and
+'setup_error' says the harness could not read its own inputs.
+
+Do not downgrade a recommendation over any of it and do not emit a warning for
+it. You may say in your summary that the judge behind these scores is not
+calibrated yet. calibration.kappa, calibration.matthews and the two intervals are
+figures about that judge's agreement with human labels, never a quality score for
+the agent, so never quote them as one.
 
 red_team_summary.coverage_source says the same thing for the security half:
 'run' means the stored coverage of the run that produced these counts, while
@@ -657,6 +683,34 @@ def _record_counts(record: EvalResult | None, *, measured: bool) -> dict:
     }
 
 
+def _calibration_block(record: EvalResult | None) -> dict:
+    """What the calibration artifact says about the Judge THIS run scored with.
+
+    THE IDENTITY COMES OFF THE RUN'S OWN RECORD. `EvalResult.judge_identity` is
+    run-level and is already None when the four metric routes disagree, and a
+    payload with no record has no identity to ask about at all. Both reach the
+    loader as None and come back as `no_single_judge_identity`, which is the
+    honest reading. There is no one Judge here for an artifact to be about.
+
+    NOTHING GATES ON THIS YET (#54). apply_signal_evidence_gate does not read the
+    key and no warning is derived from it. It travels so that ticket 17 has a
+    status to read and the orchestrator can name it in prose.
+
+    THE EXPECTED VALUE TODAY IS `not_calibrated_yet` WITH REASON `no_artifact`.
+    No calibration run against the platform's own Judge exists yet. The harness
+    scores the five AI-SPEC 5.2 rubric dimensions rather than the four Ragas
+    metrics `judge_identity_for` maps, and the judge it calls names no identity
+    at all, so nothing it writes can be about the Judge an eval run stamps. The
+    Slice 2 section of `.dev/traces/260830-calibration-status.md` traces that,
+    and the owner's comment of 2026-08-30 on #58 makes scoring with the
+    platform's Judge that ticket's prerequisite work.
+    """
+    identity = record.judge_identity if record is not None else None
+    return summary_of(
+        load_calibration_status(settings.CALIBRATION_ARTIFACT_PATH, identity)
+    )
+
+
 def _eval_summary(
     signal: str,
     *,
@@ -688,11 +742,10 @@ def _eval_summary(
     `eval_results`, until the review pass; deleting those rows then read as a
     run in which nothing failed.
 
-    `agent_invoked` DEFAULTS TO None, NOT False (audit D1, P3). False is the
-    claim "this run looked and the agent was not invoked"; None is "no run said
-    either way", which is what a state with no run at all — no_runs,
-    unavailable — actually has. Both are refused by apply_signal_evidence_gate,
-    which tests `is not True`.
+    `agent_invoked` DEFAULTS TO None, NOT False (audit D1, P3). False is the claim
+    "this run looked and the agent was not invoked". None is "no run said either
+    way", which is what a state with no run at all (no_runs, unavailable) has. Both
+    are refused by apply_signal_evidence_gate, which tests `is not True`.
     """
     measured = signal == EVAL_SIGNAL_MEASURED
     lifted, lifted_from = run_level_metrics(record)
@@ -719,6 +772,7 @@ def _eval_summary(
         "pass_rates_dataset": lifted_from if measured else None,
         "metrics": metrics,
         "datasets": _dataset_block(record, measured=measured),
+        "calibration": _calibration_block(record),
     }
 
 
@@ -916,7 +970,7 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
     last_run_at, last_run_status, scenario_count, valid_scenario_count,
     scored_scenario_count, denominator_source, result, pass_rates,
     pass_rates_dataset, metrics, datasets, invocation, cost,
-    context_proxy_version, failing_scenarios, unmeasured_scenarios.
+    context_proxy_version, failing_scenarios, unmeasured_scenarios, calibration.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:
