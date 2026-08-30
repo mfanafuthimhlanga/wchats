@@ -71,8 +71,10 @@ What the response says when a number does not exist:
         closed.
     datasets: the record's per-dataset outcomes. The golden half is fixed, runs
         in full every night and is comparable across runs; the exploratory half
-        rotates. Each carries its own three counts and its own four
-        measurements. `datasets.available` is false exactly when the run has no
+        rotates. Each carries its own three counts, its own four measurements,
+        and how its scored scenarios ended: passed, failed, or undecided by a
+        gated verdict. Those three are the run's own count and add up to
+        `scored_scenario_count`; nothing here re-reaches a verdict. `datasets.available` is false exactly when the run has no
         record. `datasets.unattributed` reports nulls, because the record does
         not carry that count and inventing a zero for it would claim a run had
         no unattributable rows when nobody asked.
@@ -99,6 +101,7 @@ from app.domain.eval_result import (
     run_level_metrics,
     unmeasured_metrics,
 )
+from app.domain.judge_record import scenario_verdict
 from app.models.agent import Agent
 from app.models.tenant import Tenant
 from app.services.eval_service import EVAL_DATASETS
@@ -220,6 +223,9 @@ _UNREPORTED_DATASET = {
     "scenario_count": None,
     "valid_scenario_count": None,
     "scored_scenario_count": None,
+    "scenarios_passed": None,
+    "scenarios_failed": None,
+    "scenarios_unmeasured": None,
 }
 
 
@@ -265,6 +271,11 @@ def _dataset_block(record: EvalResult | None) -> dict:
                     "scenario_count": outcomes[name].attempted,
                     "valid_scenario_count": outcomes[name].valid,
                     "scored_scenario_count": outcomes[name].scored,
+                    # How the scored scenarios ended, as the run counted them.
+                    # The three add up to scored_scenario_count.
+                    "scenarios_passed": outcomes[name].scenarios_passed,
+                    "scenarios_failed": outcomes[name].scenarios_failed,
+                    "scenarios_unmeasured": outcomes[name].scenarios_unmeasured,
                     "metrics": _metrics_of(outcomes[name]),
                 }
                 if name in outcomes
@@ -615,26 +626,26 @@ async def get_eval_run_results(
                 score, verdict, threshold
             )
 
-    # 5. The scenario's verdict is the conjunction of its stored ones over the
-    #    two GATED metrics (D-21). Unknown is neither a pass nor a fail: a NULL
-    #    verdict on either gated metric makes the scenario not passed and says
-    #    so with None, because "nobody decided" rendered as "it failed" is what
-    #    turns a judge outage into an apparent quality collapse and an
-    #    owner-initiated rollback.
-    results = []
-    for scen in scenarios.values():
-        verdicts = [scen["metrics"][key]["verdict"] for key in GATED_METRIC_KEYS]
-        results.append(
-            {
-                **scen,
-                # Numeric compatibility projection: unmeasured reads 0.0.
-                "scores": {
-                    key: reading["score"] if reading["measured"] else 0.0
-                    for key, reading in scen["metrics"].items()
-                },
-                "passed": None if None in verdicts else all(verdicts),
-            }
-        )
+    # 5. `scenario_verdict` is the conjunction of the stored verdicts over the
+    #    two GATED metrics (D-21), and it is the rule the run counted its own
+    #    scenarios by, so this screen and the deploy gate describe one scenario
+    #    one way. A NULL verdict on either makes it None rather than False,
+    #    because "nobody decided" rendered as "it failed" turns a judge outage
+    #    into an apparent collapse and an owner-initiated rollback.
+    results = [
+        {
+            **scen,
+            # Numeric compatibility projection: unmeasured reads 0.0.
+            "scores": {
+                key: reading["score"] if reading["measured"] else 0.0
+                for key, reading in scen["metrics"].items()
+            },
+            "passed": scenario_verdict(
+                [scen["metrics"][k]["verdict"] for k in GATED_METRIC_KEYS]
+            ),
+        }
+        for scen in scenarios.values()
+    ]
 
     log.info(
         "get_eval_run_results.ok",

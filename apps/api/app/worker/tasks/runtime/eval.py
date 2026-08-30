@@ -720,7 +720,6 @@ def _run_report(
     provenance: dict,
     invocation: dict,
     composition: dict,
-    scenario_count: int,
     dataset_column_available: bool,
     config_recorded: bool,
     invocation_recorded: bool,
@@ -733,8 +732,9 @@ def _run_report(
     The keys after it are the ones that describe the RUN rather than its
     measurement, and each says something no reader can derive:
 
-      * `scenario_count` is the legacy alias for `valid`, kept so an existing
-        reader does not silently change meaning.
+      * `scenario_count` is the record's `attempted`, the same number the
+        console's `scenario_count` is. It was `len(valid_scenarios)` here and
+        `record.attempted` there, one key with two meanings on two screens.
       * `dataset_column_available` False means the tenant predates migration
         0014, not that it holds no golden rows.
       * `promoted` is a literal 0 and `promotion_enabled` is what tells it apart
@@ -749,7 +749,7 @@ def _run_report(
     """
     return {
         **result.payload,
-        "scenario_count": scenario_count,
+        "scenario_count": result.attempted,
         "dataset_column_available": dataset_column_available,
         "golden_set_present": composition["golden_set_present"],
         "promoted": 0,
@@ -852,12 +852,12 @@ def run_eval_suite(self, agent_id: str) -> dict:
         agent_id: UUID string of the agent to evaluate.
 
     Returns:
-        On success, `EvalResult.payload` (#51) plus the keys the record does not
-        carry: "scenario_count", "dataset_column_available", "golden_set_present",
+        On success, `EvalResult.payload` (#51) plus "scenario_count", the
+        record's `attempted` under the console's name for it, and the keys the
+        record does not carry: "dataset_column_available", "golden_set_present",
         "promoted", "config_recorded", "promotion_enabled",
         "promotion_disabled_reason", "agent_invoked", "agent_invocation",
-        "invocation_recorded", "result_recorded". Every number in it is the
-        record's, by construction rather than by agreement.
+        "invocation_recorded", "result_recorded". Every number is the record's.
         {"status": "already_running"}                            on idempotent skip.
         {"status": "no_scenarios", "run_id", "run_recorded", "attempted",
          "valid", "scored", "dataset_column_available"}          when nothing was
@@ -1302,6 +1302,8 @@ def run_eval_suite(self, agent_id: str) -> dict:
             validity=validity,
             invocation=invocation,
             ledger=read_run_ledger(run_id, conn_str),
+            scenarios=scenarios,
+            judge_records=results["judge_records"],
         )
         result_recorded = write_eval_result(run_id, result, conn_str)
 
@@ -1309,7 +1311,6 @@ def run_eval_suite(self, agent_id: str) -> dict:
             "run_eval_suite.complete",
             agent_id=agent_id,
             run_id=run_id,
-            scenario_count=len(valid_scenarios),
             attempted=result.attempted,
             valid=result.valid,
             scored=result.scored,
@@ -1332,7 +1333,6 @@ def run_eval_suite(self, agent_id: str) -> dict:
             provenance=provenance,
             invocation=invocation,
             composition=composition,
-            scenario_count=len(valid_scenarios),
             dataset_column_available=dataset_column_available,
             config_recorded=config_recorded,
             invocation_recorded=invocation_recorded,

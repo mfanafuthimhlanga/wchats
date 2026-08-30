@@ -62,6 +62,7 @@ from app.services.deployment_service import (
     COVERAGE_SOURCE_CURRENT_BUILD,
     COVERAGE_SOURCE_RUN,
     DENOMINATOR_SOURCE_EVAL_RECORD,
+    EVAL_QUALITY_UNMEASURED_WARNING_ID,
     EVAL_SIGNAL_AGENT_NOT_INVOKED,
     EVAL_SIGNAL_MEASURED,
     EVAL_SIGNAL_NO_RECORD,
@@ -708,17 +709,27 @@ def _measurement(value, observations=10):
     return Measurement(value=value, observations=observations, measured=True)
 
 
-def _outcome(attempted=30, valid=30, scored=30, **metrics):
-    """One dataset's counts and whichever metrics it reported."""
+def _outcome(attempted=30, valid=30, scored=30, *, failed=0, unmeasured=0, **metrics):
+    """One dataset's counts, its per-scenario verdicts and whichever metrics it reported.
+
+    Whatever a caller does not call failed or unmeasured passed. The three add up
+    to `scored` or `DatasetOutcome` refuses to be built, which is the floor under
+    the count the deploy gate reads.
+    """
     return DatasetOutcome(
         attempted=attempted,
         valid=valid,
         scored=scored,
         metrics={name: _measurement(value) for name, value in metrics.items()},
+        scenarios_passed=scored - failed - unmeasured,
+        scenarios_failed=failed,
+        scenarios_unmeasured=unmeasured,
     )
 
 
-def _record(datasets=None, *, attempted=30, valid=30, scored=30, **overrides):
+def _record(
+    datasets=None, *, attempted=30, valid=30, scored=30, failed=0, unmeasured=0, **overrides
+):
     """An EvalResult the collector can lift numbers off.
 
     The default is ONE scoring dataset, exploratory, which is the shape of an
@@ -732,6 +743,8 @@ def _record(datasets=None, *, attempted=30, valid=30, scored=30, **overrides):
                 attempted=attempted,
                 valid=valid,
                 scored=scored,
+                failed=failed,
+                unmeasured=unmeasured,
                 faithfulness=0.92,
                 answer_relevancy=0.88,
             )
@@ -761,16 +774,14 @@ def _record(datasets=None, *, attempted=30, valid=30, scored=30, **overrides):
     return EvalResult(**fields)
 
 
-def _make_eval_conn(
-    run_row, record=None, verdict_rows=None, raise_on=None, verdicts_raise=False
-):
+def _make_eval_conn(run_row, record=None, raise_on=None):
     """psycopg2 connection double for _fetch_eval_summary_sync.
 
-    The function issues at most two statements since #51 slice 4: the latest run
-    (which now selects `result` beside `config`), and the per-scenario gated
-    verdict counts. The AVG/COUNT pair it used to run over `eval_results` is
-    gone, so this double no longer serves metric rows — a test that wants numbers
-    passes a `record`, which is where the run's numbers actually live.
+    The function issues ONE statement: the latest run, selecting `result` beside
+    `config`. The AVG/COUNT pair over `eval_results` went in #51 slice 4 and the
+    per-scenario `COUNT(*) FILTER` went in the review pass, so this double serves
+    no result rows at all — a test that wants numbers passes a `record`, which is
+    where the run's numbers actually live.
 
     `run_row` is the five-column shape the collector selects: (id, finished_at,
     status, config, result). A three- or four-tuple is accepted and padded, which
@@ -808,14 +819,12 @@ def _make_eval_conn(
         run_row = (*run_row, None, payload)[:5]
 
     executed: list[str] = []
-    state = {"run": run_row, "verdicts": verdict_rows or []}
+    state = {"run": run_row}
 
     def _execute(sql, params=None):
         executed.append(sql)
         if raise_on is not None and raise_on in sql:
             raise psycopg2.errors.UndefinedColumn(f"column does not exist: {raise_on}")
-        if verdicts_raise and "binary_verdict" in sql:
-            raise psycopg2.errors.UndefinedColumn("column binary_verdict does not exist")
 
     def _fetchone():
         row = state["run"]
@@ -830,7 +839,6 @@ def _make_eval_conn(
 
     cursor.execute.side_effect = _execute
     cursor.fetchone.side_effect = _fetchone
-    cursor.fetchall.side_effect = lambda: state["verdicts"]
     conn.cursor.return_value = cursor
     conn.executed = executed
     return conn
@@ -917,18 +925,33 @@ class TestSignalCollectionFunctions:
         )
 
     def test_the_measurements_survive_every_result_row_being_deleted(self):
-        """No `eval_results` row exists, and the per-dataset numbers are intact.
+        """No `eval_results` row exists, and every number is still the record's.
 
         The collector used to derive every figure from those rows, so deleting
         them emptied `pass_rates` and the gate read a measured run as unmeasured.
-        The record is a column on `eval_runs` and does not move. What DOES go is
-        the per-scenario verdict count, which is a read of those rows and reports
-        zero decided rather than zero failing.
+        It then kept ONE read of them, the per-scenario verdict counts, and that
+        read is what this test caught: over an empty table the `COUNT(*) FILTER`
+        said nought failing and nought undecided about a run whose record says it
+        scored thirty, and the gate shipped on "nothing failed". The counts are
+        the run's own now and the deleted rows change none of them.
         """
+        # The judge returned context_precision for all thirty rows and neither
+        # gated dimension for any of them, which is the run the reviewer built:
+        # `scored` is thirty and the evidence a deploy needs is nought.
+        record = _record(
+            datasets={
+                "exploratory": _outcome(
+                    attempted=30,
+                    valid=30,
+                    scored=30,
+                    unmeasured=30,
+                    context_precision=0.71,
+                )
+            }
+        )
         mock_conn = _make_eval_conn(
             (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
-            record=_record(),
-            verdict_rows=[],
+            record=record,
         )
 
         with patch(
@@ -938,20 +961,32 @@ class TestSignalCollectionFunctions:
             result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
 
         assert result["eval_signal"] == EVAL_SIGNAL_MEASURED
-        assert result["pass_rates"]["faithfulness"] == pytest.approx(0.92)
+        assert result["pass_rates"] == {"context_precision": pytest.approx(0.71)}
         assert result["datasets"]["exploratory"]["scored_scenario_count"] == 30
         assert result["failing_scenarios"] == 0
-        assert result["unmeasured_scenarios"] == 0, (
-            "no rows means no scenario was decided either way, and the count "
-            "says so rather than claiming forty passes"
+        assert result["unmeasured_scenarios"] == 30, (
+            "thirty scenarios scored and no gated verdict decided one of them; "
+            "the count says thirty undecided rather than nought failing"
         )
 
-    def test_the_collector_aggregates_nothing_over_eval_results(self):
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", result, _measured_red_team()
+        )
+        assert recommendation == "block", (
+            "a run that decided no scenario has no quality evidence, and "
+            "unknown quality may never approve a deploy"
+        )
+        assert [w.warning_id for w in warnings] == [
+            EVAL_QUALITY_UNMEASURED_WARNING_ID
+        ]
+
+    def test_the_collector_reads_nothing_out_of_eval_results(self):
         """Read out of the SQL that ran, not out of the source text.
 
-        Audit D3's `AVG(score) ... GROUP BY metric` is the second derivation this
-        slice removes. The only statement this collector may issue against
-        `eval_results` is the one that reads stored verdicts.
+        Audit D3's `AVG(score) ... GROUP BY metric` was the second derivation of
+        one run's figures and the `COUNT(*) FILTER` over `binary_verdict` was the
+        last of them. This collector now issues one statement, for the run row,
+        and touches `eval_results` not at all.
         """
         mock_conn = _make_eval_conn(
             (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
@@ -971,8 +1006,9 @@ class TestSignalCollectionFunctions:
         )
         assert "GROUP BY metric" not in joined
         assert "COUNT(DISTINCT scenario_id)" not in joined
-        assert "binary_verdict" in joined, (
-            "the per-scenario verdict counts must come off the stored decisions"
+        assert "eval_results" not in joined, (
+            "every figure the deploy gate reads is on eval_runs.result; a "
+            "statement against eval_results is a second derivation of it"
         )
 
     def test_an_in_flight_run_does_not_shadow_the_last_finished_one(self):
@@ -1339,7 +1375,6 @@ class TestTheTwoDatasetsAreNeverPooled:
         mock_conn = _make_eval_conn(
             (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
             record=record,
-            verdict_rows=[("s1", 2, 0)],
         )
         with patch(
             "app.services.deployment_service.psycopg2.connect",
@@ -1431,19 +1466,20 @@ class TestTheTwoDatasetsAreNeverPooled:
 
 
 class TestScenarioVerdictCounts:
-    """`failing_scenarios` counts scenarios, off stored verdicts (#51 slice 4).
+    """`failing_scenarios` and `unmeasured_scenarios` are the RUN's own counts.
 
-    It was `sum(1 for v in rates.values() if v < 0.70)` — a count of failing
-    METRICS under a scenario's name, computed here from averages, and blind to a
-    judge that decided nothing at all.
+    They were `sum(1 for v in rates.values() if v < 0.70)` over the metric
+    averages, then a `COUNT(*) FILTER` over `eval_results` at deploy time. The
+    second still counted at read time, so it answered a question the run had
+    already answered and answered it over rows that can move. The run counts its
+    scenarios once, from the JudgeRecords it built, and stores the three counts
+    per dataset.
     """
 
-    def _summary(self, verdict_rows, verdicts_raise=False):
+    def _summary(self, record):
         mock_conn = _make_eval_conn(
             (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
-            record=_record(),
-            verdict_rows=verdict_rows,
-            verdicts_raise=verdicts_raise,
+            record=record,
         )
         with patch(
             "app.services.deployment_service.psycopg2.connect",
@@ -1451,32 +1487,67 @@ class TestScenarioVerdictCounts:
         ):
             return _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
 
-    def test_a_scenario_fails_when_a_gated_verdict_is_false(self):
-        result = self._summary([("s1", 2, 1), ("s2", 2, 0), ("s3", 2, 2)])
+    def test_the_failures_are_the_ones_the_record_counted(self):
+        result = self._summary(_record(failed=2))
         assert result["failing_scenarios"] == 2
         assert result["unmeasured_scenarios"] == 0
+        assert result["scored_scenario_count"] == 30
 
-    def test_an_undecided_gated_metric_is_unmeasured_not_failed(self):
+    def test_an_undecided_scenario_is_unmeasured_not_failed(self):
         """None-first, the ordering `get_eval_run_results` renders `passed` with.
 
         "Nobody decided" reported as "it failed" is what turns a judge outage
-        into an apparent quality collapse and an owner-initiated rollback.
+        into an apparent quality collapse and an owner-initiated rollback. The
+        record holds the two counts apart; nothing downstream can merge them.
         """
-        result = self._summary([("s1", 1, 1), ("s2", 0, 0), ("s3", 2, 0)])
+        result = self._summary(_record(failed=0, unmeasured=2))
         assert result["unmeasured_scenarios"] == 2
         assert result["failing_scenarios"] == 0, (
             "a scenario with an undecided gated metric is counted once, as "
             "unmeasured, and never also as a failure"
         )
 
-    def test_a_pre_0023_tenant_reports_the_absence_rather_than_zero(self):
-        """No verdict column at all. Null, because zero failures is a claim."""
-        result = self._summary([], verdicts_raise=True)
+    def test_the_two_datasets_add_their_counts_and_never_their_rates(self):
+        """Counts add. Rates do not, and the payload still refuses to pool them."""
+        result = self._summary(
+            _record(
+                datasets={
+                    "golden": _outcome(
+                        attempted=12, valid=12, scored=12, failed=1, faithfulness=0.94
+                    ),
+                    "exploratory": _outcome(
+                        attempted=30, valid=30, scored=30, failed=2, unmeasured=3,
+                        faithfulness=0.81,
+                    ),
+                }
+            )
+        )
+        assert result["failing_scenarios"] == 3
+        assert result["unmeasured_scenarios"] == 3
+        assert result["pass_rates"] is None, (
+            "two scored datasets have no run-level rate, and adding counts is "
+            "not a licence to average the halves"
+        )
+
+    def test_a_record_that_counted_no_verdicts_is_refused_rather_than_read(self):
+        """A stored payload with no verdict counts over 30 scored rows.
+
+        That is a record written by a build that did not count its own verdicts,
+        and reading it would mean deriving the counts here, which is the
+        derivation they exist to replace. It reads as no record at all, and a run
+        with no record cannot ship.
+        """
+        payload = _record().payload
+        for name in ("scenarios_passed", "scenarios_failed", "scenarios_unmeasured"):
+            payload["datasets"]["exploratory"].pop(name)
+        result = self._summary(payload)
+
+        assert result["eval_signal"] == EVAL_SIGNAL_NO_RECORD
         assert result["failing_scenarios"] is None
         assert result["unmeasured_scenarios"] is None
         assert apply_signal_evidence_gate("ship", result, _measured_red_team())[0] == (
             "block"
-        ), "a verdict count that could not be read is not a count of zero"
+        ), "a verdict count nobody wrote down is not a count of zero"
 
 
 # ---------------------------------------------------------------------------
@@ -1484,7 +1555,7 @@ class TestScenarioVerdictCounts:
 # ---------------------------------------------------------------------------
 
 
-def _measured_eval(record=None, *, verdicts=(0, 0)) -> dict:
+def _measured_eval(record=None) -> dict:
     """An admissible eval signal, built through the collector's own constructor.
 
     Hand-writing this dict is how a gate test comes to assert against a payload
@@ -1501,7 +1572,6 @@ def _measured_eval(record=None, *, verdicts=(0, 0)) -> dict:
         last_run_at="2026-05-23T02:00:00",
         last_run_status="complete",
         record=record if record is not None else _record(),
-        verdicts=verdicts,
         agent_invoked=True,
     )
 

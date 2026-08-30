@@ -61,7 +61,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -129,6 +129,32 @@ def verdict_for(score: float | None, threshold: float | None) -> bool | None:
     if score is None or threshold is None:
         return None
     return score >= threshold
+
+
+def scenario_verdict(verdicts: Sequence[bool | None]) -> bool | None:
+    """Did this scenario pass, over the verdicts of its gated dimensions.
+
+    THE ONE CONJUNCTION. The results route renders it per scenario and
+    `eval_service.dataset_verdict_counts` counts scenarios by it, so the console
+    and the deploy report cannot describe one scenario two ways.
+
+    None beats False. A scenario carrying one NULL verdict and one False is
+    undecided, not failed: "nobody decided" reported as "it failed" is what turns
+    a judge outage into an apparent quality collapse and an owner-initiated
+    rollback.
+
+    An empty sequence is None rather than `all([])`, which is True. A caller with
+    no gated verdict to offer has a scenario nobody gated, and reading that as a
+    pass is how every legacy row would clear a gate it was never held to.
+
+    Args:
+        verdicts: one entry per gated metric, in GATED_METRIC_KEYS order. A
+            metric with no row at all contributes None, the same as a row the
+            judge scored nothing for, because both are the same absence.
+    """
+    if not verdicts or any(verdict is None for verdict in verdicts):
+        return None
+    return all(verdicts)
 
 
 @dataclass(frozen=True)

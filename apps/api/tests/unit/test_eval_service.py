@@ -2196,6 +2196,42 @@ def _validity_report(**overrides) -> dict:
     return report
 
 
+#: The four rows the report above describes: two golden, two exploratory.
+#: `dataset_verdict_counts` reads the dataset off these, the same way
+#: `summarise_run_validity` does.
+_RECORD_SCENARIOS = [
+    {"id": "g1", "dataset": "golden", "reference_answer": "a"},
+    {"id": "g2", "dataset": "golden", "reference_answer": "a"},
+    {"id": "e1", "dataset": "exploratory", "reference_answer": "a"},
+    {"id": "e2", "dataset": "exploratory", "reference_answer": "a"},
+]
+
+
+def _record_judge_records(scores=None):
+    """The judge records for the two golden rows the report says scored.
+
+    Built through `build_judge_records`, so the verdicts are the ones the shipped
+    writer reaches. 0.8 faithfulness against a 0.90 gate is a FAILED scenario,
+    which is what the counts below say.
+    """
+    from app.services.eval_service import build_judge_records
+
+    return build_judge_records(
+        scores
+        if scores is not None
+        else [
+            {
+                "scenario_id": scenario_id,
+                "faithfulness": 0.8,
+                "answer_relevancy": 0.6,
+                "context_precision": 0.5,
+                "context_recall": 0.4,
+            }
+            for scenario_id in ("g1", "g2")
+        ]
+    )
+
+
 def _invocation_observation(**overrides) -> dict:
     """summarise_agent_invocation's shape, built by the real summariser.
 
@@ -2242,6 +2278,8 @@ def _built(**overrides):
         "validity": _validity_report(),
         "invocation": _invocation_observation(),
         "ledger": [],
+        "scenarios": _RECORD_SCENARIOS,
+        "judge_records": _record_judge_records(),
     }
     fields.update(overrides)
     return build_eval_result(**fields)
@@ -2374,6 +2412,110 @@ class TestBuildEvalResult:
         from app.services.eval_service import judge_identity_for
 
         assert _built().judge_identity == judge_identity_for("faithfulness")
+
+    def test_the_verdict_counts_reach_the_record_per_dataset(self):
+        """Both golden rows scored 0.8 against a 0.90 gate, so both failed."""
+        golden = _built().datasets["golden"]
+        assert (
+            golden.scenarios_passed,
+            golden.scenarios_failed,
+            golden.scenarios_unmeasured,
+        ) == (0, 2, 0)
+        assert golden.scenarios_failed + golden.scenarios_passed <= golden.scored
+
+    def test_a_dataset_that_scored_nothing_decided_nothing(self):
+        exploratory = _built().datasets["exploratory"]
+        assert exploratory.scored == 0
+        assert exploratory.scenarios_unmeasured == 0, (
+            "a dataset with no scored row has no undecided scenario either; "
+            "the three counts partition the scored ones"
+        )
+
+    def test_the_run_level_counts_are_the_sum_over_the_datasets(self):
+        result = _built()
+        assert result.scenarios_failed == 2
+        assert result.scenarios_passed == 0
+        assert result.scenarios_unmeasured == 0
+
+
+class TestDatasetVerdictCounts:
+    """The run counts its own scenarios, off the JudgeRecords it built (#51 F1).
+
+    `deployment_service` reached these two numbers with a `COUNT(*) FILTER` over
+    `eval_results` at deploy time, so the count moved when those rows did: with
+    the rows deleted it read nought failing over a run the record said scored
+    thirty, and the gate shipped on it.
+    """
+
+    def _counts(self, scores, scenarios=None):
+        from app.services.eval_service import dataset_verdict_counts
+
+        return dataset_verdict_counts(
+            scenarios if scenarios is not None else _RECORD_SCENARIOS,
+            _record_judge_records(scores),
+        )
+
+    def test_a_scenario_whose_gated_verdicts_all_hold_passed(self):
+        counts = self._counts(
+            [{"scenario_id": "g1", "faithfulness": 0.95, "answer_relevancy": 0.92}]
+        )
+        assert counts["golden"] == (1, 0, 0)
+
+    def test_one_false_gated_verdict_fails_the_scenario(self):
+        counts = self._counts(
+            [{"scenario_id": "g1", "faithfulness": 0.95, "answer_relevancy": 0.10}]
+        )
+        assert counts["golden"] == (0, 1, 0)
+
+    def test_a_missing_gated_score_is_unmeasured_and_beats_the_failure(self):
+        """One gate undecided and the other failed. Counted once, as unmeasured.
+
+        "Nobody decided" reported as "it failed" is what turns a judge outage
+        into an apparent quality collapse and an owner-initiated rollback.
+        """
+        counts = self._counts(
+            [
+                {
+                    "scenario_id": "g1",
+                    "faithfulness": None,
+                    "answer_relevancy": 0.10,
+                }
+            ]
+        )
+        assert counts["golden"] == (0, 0, 1)
+
+    def test_an_ungated_metric_alone_leaves_the_scenario_undecided(self):
+        """The judge returned context_precision and neither gated dimension.
+
+        `scored` counts this scenario and no gate decided it, which is the run
+        the deploy gate has to refuse rather than ship on nought failures.
+        """
+        counts = self._counts(
+            [{"scenario_id": "g1", "context_precision": 0.71}]
+        )
+        assert counts["golden"] == (0, 0, 1)
+
+    def test_a_scenario_the_judge_scored_nothing_for_is_counted_in_neither(self):
+        """It is not in `scored` either, so counting it would break the sum."""
+        counts = self._counts([{"scenario_id": "g1"}])
+        assert counts["golden"] == (0, 0, 0)
+
+    def test_a_scenario_that_belongs_to_no_fetched_row_joins_no_dataset(self):
+        """Same rule `summarise_run_validity` applies to an unattributed score."""
+        counts = self._counts(
+            [{"scenario_id": "ghost", "faithfulness": 0.95, "answer_relevancy": 0.95}]
+        )
+        assert counts == {"golden": (0, 0, 0), "exploratory": (0, 0, 0)}
+
+    def test_the_two_datasets_are_counted_apart(self):
+        counts = self._counts(
+            [
+                {"scenario_id": "g1", "faithfulness": 0.95, "answer_relevancy": 0.95},
+                {"scenario_id": "e1", "faithfulness": 0.10, "answer_relevancy": 0.95},
+            ]
+        )
+        assert counts["golden"] == (1, 0, 0)
+        assert counts["exploratory"] == (0, 1, 0)
 
 
 class TestServedAgentModel:

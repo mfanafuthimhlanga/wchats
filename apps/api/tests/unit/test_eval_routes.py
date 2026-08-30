@@ -83,12 +83,23 @@ def _make_mock_db_returning_none() -> AsyncMock:
     return mock_session
 
 
-def _outcome(attempted: int, valid: int, scored: int, *values: float | None) -> DatasetOutcome:
-    """One dataset's three counts and its four metrics, in METRIC_KEYS order.
+def _outcome(
+    attempted: int,
+    valid: int,
+    scored: int,
+    *values: float | None,
+    failed: int = 0,
+    unmeasured: int = 0,
+) -> DatasetOutcome:
+    """One dataset's counts, its per-scenario verdicts and its four metrics.
 
-    A None value is a metric that came back with no number: measured False over
-    zero observations, which is what `Measurement` refuses to let read as a
-    score. Anything else was measured over `scored` rows.
+    The metrics come in METRIC_KEYS order. A None value is a metric that came
+    back with no number: measured False over zero observations, which is what
+    `Measurement` refuses to let read as a score. Anything else was measured over
+    `scored` rows.
+
+    Whatever a caller does not call failed or unmeasured passed, so the three
+    verdict counts add up to `scored` and the record can be built at all.
     """
     return DatasetOutcome(
         attempted=attempted,
@@ -102,6 +113,9 @@ def _outcome(attempted: int, valid: int, scored: int, *values: float | None) -> 
             )
             for metric, value in zip(METRIC_KEYS, values)
         },
+        scenarios_passed=scored - failed - unmeasured,
+        scenarios_failed=failed,
+        scenarios_unmeasured=unmeasured,
     )
 
 
@@ -215,7 +229,9 @@ def _both_datasets_scored_rows() -> list[tuple]:
             _record_payload(
                 run_id,
                 golden=_outcome(10, 10, 10, 0.93, 0.90, 0.88, 0.86),
-                exploratory=_outcome(20, 20, 18, 0.71, 0.70, 0.69, 0.68),
+                exploratory=_outcome(
+                    20, 20, 18, 0.71, 0.70, 0.69, 0.68, failed=6, unmeasured=2
+                ),
             ),
         ),
     ]
@@ -634,6 +650,12 @@ class TestListEvalRuns:
         assert datasets["golden"]["scored_scenario_count"] == 10
         assert datasets["exploratory"]["scenario_count"] == 20
         assert datasets["exploratory"]["scored_scenario_count"] == 18
+        assert datasets["exploratory"]["scenarios_passed"] == 10
+        assert datasets["exploratory"]["scenarios_failed"] == 6
+        assert datasets["exploratory"]["scenarios_unmeasured"] == 2, (
+            "the console reads the run's own verdict counts; recomputing them "
+            "here is the second derivation #51 removes"
+        )
         assert datasets["golden"]["metrics"]["faithfulness"] == {
             "value": 0.93,
             "measured": True,

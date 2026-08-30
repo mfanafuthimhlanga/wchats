@@ -507,6 +507,9 @@ def _measured_eval_signal():
             "faithfulness": Measurement(value=0.92, observations=30, measured=True),
             "answer_relevancy": Measurement(value=0.9, observations=30, measured=True),
         },
+        # Both gates measured and cleared on all thirty. The three verdict
+        # counts add up to `scored` or the record refuses to be built.
+        scenarios_passed=30,
     )
     return _eval_summary(
         EVAL_SIGNAL_MEASURED,
@@ -530,7 +533,6 @@ def _measured_eval_signal():
                 input_tokens=10, output_tokens=5, usd=0.01, zar=0.2, measured=True
             ),
         ),
-        verdicts=(0, 0),
         # D1/P3, and the same argument as `eval_signal` one release later: the
         # gate refuses a 'measured' signal that does not record having invoked
         # the agent, because until P2 the eval scored each scenario's own

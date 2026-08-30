@@ -33,6 +33,14 @@ ZERO OBSERVATIONS IS UNKNOWN, NEVER A PASS
     default is a number, and a number is indistinguishable from a measurement one
     reader later.
 
+THE PER-SCENARIO VERDICTS ARE COUNTED HERE TOO, AND THEY SUM TO `scored`
+    A deploy gate needs to know how many scenarios failed and how many nobody
+    decided, and it used to count both at read time over `eval_results`. That
+    read answers a different question from the one the run answered, and it says
+    nought failing over a run whose result rows were deleted. `DatasetOutcome`
+    carries the three counts the run itself reached, and refuses a set that does
+    not add up to the scenarios it says it scored.
+
 WHY THE COST IS ON THE RUN AND WHY IT CAN BE UNKNOWN
     A run's judges and its agent turns bill to `model_calls WHERE job_id = run_id`.
     Reading them back is how a run says what its measurement cost, and `measured`
@@ -461,9 +469,14 @@ class ScenarioFailure:
         )
 
 
+#: The three ways a scored scenario can end, and every scored scenario ends in
+#: exactly one of them. `__post_init__` holds their sum to `scored`.
+_VERDICT_COUNTS = ("scenarios_passed", "scenarios_failed", "scenarios_unmeasured")
+
+
 @dataclass(frozen=True)
 class DatasetOutcome:
-    """One dataset's three counts and whichever metrics were reported for it.
+    """One dataset's counts, its per-scenario verdicts and whichever metrics it reported.
 
     (attempted, valid, scored) are three different claims and collapsing any two
     is how a run comes to report a rate it never measured. They are stored rather
@@ -471,19 +484,37 @@ class DatasetOutcome:
     set of means: a dataset can attempt forty rows, hold labels on twelve, and
     have Ragas return a number for five.
 
+    THE VERDICT COUNTS ARE STORED FOR THE SAME REASON, AND THEY SUM TO `scored`.
+    The deploy gate used to count them at read time with a `COUNT(*) FILTER` over
+    `eval_results`, which answers a different question from the one the run
+    answered: delete every result row and that query says nought failing and
+    nought undecided over a run the record still says scored thirty, and a gate
+    reading "nothing failed" ships it. The run counts its own verdicts once, from
+    the judge records it built, and the sum check below is what stops the three
+    from describing a different set of scenarios from the one `scored` counts.
+
     Args:
-        attempted: rows the selector returned for this dataset.
-        valid:     rows carrying a label. THE DENOMINATOR.
-        scored:    rows for which at least one metric came back a real number.
-        metrics:   metric name to Measurement, over a subset of METRIC_KEYS. A
-                   metric absent from this mapping is absent from `payload` — it
-                   was not reported, which is a different claim from reported and
-                   unmeasured, and a default would erase the difference.
+        attempted:            rows the selector returned for this dataset.
+        valid:                rows carrying a label. THE DENOMINATOR.
+        scored:               rows for which at least one metric came back a real
+                              number.
+        metrics:              metric name to Measurement, over a subset of
+                              METRIC_KEYS. A metric absent from this mapping is
+                              absent from `payload` — it was not reported, which
+                              is a different claim from reported and unmeasured,
+                              and a default would erase the difference.
+        scenarios_passed:     scored scenarios whose every gated verdict is True.
+        scenarios_failed:     scored scenarios carrying a False gated verdict and
+                              no NULL one.
+        scenarios_unmeasured: scored scenarios missing a gated verdict. Unmeasured
+                              beats failed, so a scenario with one NULL and one
+                              False is counted here (`judge_record.scenario_verdict`).
 
     Raises:
         InvalidEvalResult: a count is negative or not an int, scored exceeds
-            valid, valid exceeds attempted, a metric name is not one of
-            METRIC_KEYS, or a value is not a Measurement.
+            valid, valid exceeds attempted, the three verdict counts do not sum
+            to scored, a metric name is not one of METRIC_KEYS, or a value is not
+            a Measurement.
     """
 
     attempted: int
@@ -491,13 +522,27 @@ class DatasetOutcome:
     scored: int
     # The init input, not what the record holds. __post_init__ copies it.
     metrics: Mapping[str, Measurement] = dataclasses.field(default_factory=dict)
+    scenarios_passed: int = 0
+    scenarios_failed: int = 0
+    scenarios_unmeasured: int = 0
 
     def __post_init__(self) -> None:
-        counts = {name: getattr(self, name) for name in ("attempted", "valid", "scored")}
+        counts = {
+            name: getattr(self, name)
+            for name in ("attempted", "valid", "scored", *_VERDICT_COUNTS)
+        }
         for name, value in counts.items():
             _require_count(name, value)
         _at_most("valid", "attempted", counts)
         _at_most("scored", "valid", counts)
+        decided = sum(counts[name] for name in _VERDICT_COUNTS)
+        if decided != self.scored:
+            raise InvalidEvalResult(
+                f"DatasetOutcome puts {decided} scenario(s) into a verdict over "
+                f"{self.scored} scored. Every scored scenario passed, failed or "
+                "went undecided, so a pair that does not add up is two walks "
+                "over one run disagreeing about which scenarios they counted"
+            )
         if not isinstance(self.metrics, Mapping):
             raise InvalidEvalResult(
                 f"DatasetOutcome needs metrics as a mapping, got {type(self.metrics).__name__}"
@@ -526,7 +571,10 @@ class DatasetOutcome:
 
     @property
     def payload(self) -> dict:
-        """{"attempted", "valid", "scored", "metrics"}, the shape the route already reads.
+        """The three counts, the three verdict counts and the reported metrics.
+
+        {"attempted", "valid", "scored", "scenarios_passed", "scenarios_failed",
+         "scenarios_unmeasured", "metrics"}.
 
         An unreported metric has no key under `metrics`. A reader that finds none
         learns the run did not report it, rather than reading a zero somebody
@@ -536,6 +584,7 @@ class DatasetOutcome:
             "attempted": self.attempted,
             "valid": self.valid,
             "scored": self.scored,
+            **{name: getattr(self, name) for name in _VERDICT_COUNTS},
             "metrics": {
                 metric: self.metrics[metric].payload
                 for metric in METRIC_KEYS
@@ -545,7 +594,14 @@ class DatasetOutcome:
 
     @classmethod
     def from_payload(cls, payload: Mapping) -> DatasetOutcome:
-        """Rebuild one dataset's outcome from its stored form."""
+        """Rebuild one dataset's outcome from its stored form.
+
+        A payload with no verdict counts reads as three zeros, so a dataset that
+        scored anything is refused by the sum check. That is a record written
+        before the run counted its own verdicts, and a reader that filled the
+        three in from the row would be doing the derivation the counts exist to
+        replace.
+        """
         if not isinstance(payload, Mapping):
             raise InvalidEvalResult(
                 f"DatasetOutcome needs a mapping, got {type(payload).__name__}"
@@ -563,6 +619,7 @@ class DatasetOutcome:
                 metric: Measurement.from_payload(value)
                 for metric, value in metrics.items()
             },
+            **{name: payload.get(name, 0) for name in _VERDICT_COUNTS},
         )
 
 
@@ -851,6 +908,27 @@ class EvalResult:
         return sum(outcome.scored for outcome in self.datasets.values())
 
     @property
+    def scenarios_passed(self) -> int:
+        """Scored scenarios that cleared every gate, across every reported dataset."""
+        return sum(outcome.scenarios_passed for outcome in self.datasets.values())
+
+    @property
+    def scenarios_failed(self) -> int:
+        """Scored scenarios a gated verdict went against.
+
+        Adding the two datasets is arithmetic on counts, not on rates, so it says
+        exactly what it says: this many scenarios failed. The MEANS are what may
+        never be pooled, because the golden half is fixed and the exploratory
+        half rotates and one mean over both moves with the draw.
+        """
+        return sum(outcome.scenarios_failed for outcome in self.datasets.values())
+
+    @property
+    def scenarios_unmeasured(self) -> int:
+        """Scored scenarios no gated verdict decided. Counted apart from the failures."""
+        return sum(outcome.scenarios_unmeasured for outcome in self.datasets.values())
+
+    @property
     def payload(self) -> dict:
         """The whole record as JSON, which is how `eval_runs.result` holds it.
 
@@ -865,9 +943,11 @@ class EvalResult:
              "requested_model", "served_model", "invocation", "datasets",
              "attempted", "valid", "scored", "cost", "failures",
              "context_proxy_version", "rule_version"} where `datasets` maps each
-            reported dataset to {"attempted", "valid", "scored", "metrics"},
-            each reported metric to {"value", "measured", "observations"}, and
-            `failures` is a list of {"scenario_id", "error_type", "message"}.
+            reported dataset to {"attempted", "valid", "scored",
+            "scenarios_passed", "scenarios_failed", "scenarios_unmeasured",
+            "metrics"}, each reported metric to {"value", "measured",
+            "observations"}, and `failures` is a list of {"scenario_id",
+            "error_type", "message"}.
         """
         return {
             "run_id": self.run_id,

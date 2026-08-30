@@ -1048,6 +1048,19 @@ class TestTheRunWritesItsRecord:
         assert returned["cost"] == result.cost.payload
         assert returned["served_model"] == result.served_model
 
+    def test_the_returned_scenario_count_is_the_records_attempted(self, scored):
+        """One key, one meaning (#51 F5).
+
+        The task returned `len(valid_scenarios)` under this name while the
+        console route returned `record.attempted` under it, so the same key on
+        the same run answered two questions and neither said which.
+        """
+        returned = _run()
+        _, result, _ = scored["record"][0]
+
+        assert returned["scenario_count"] == result.attempted
+        assert returned["scenario_count"] == returned["attempted"]
+
     def test_the_return_dict_is_the_payload_plus_the_run_keys(self, scored):
         """Every key of the record survives, and the run keys sit beside them."""
         returned = _run()

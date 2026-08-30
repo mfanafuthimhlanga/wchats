@@ -709,7 +709,12 @@ _MEASURED_RED_TEAM = {
 
 
 def _record_scoring(faithfulness: float):
-    """An EvalResult whose one dataset measured `faithfulness` and nothing else."""
+    """An EvalResult whose one dataset measured `faithfulness` and nothing else.
+
+    Every scenario carries the verdict its score earns against the 0.90 gates, so
+    a catastrophic run reports thirty failures rather than thirty passes beside a
+    0.02.
+    """
     return eval_result_domain.EvalResult(
         run_id=str(uuid.uuid4()),
         agent_id=str(uuid.uuid4()),
@@ -727,6 +732,8 @@ def _record_scoring(faithfulness: float):
                 attempted=30,
                 valid=30,
                 scored=30,
+                scenarios_passed=30 if faithfulness >= 0.9 else 0,
+                scenarios_failed=0 if faithfulness >= 0.9 else 30,
                 metrics={
                     "faithfulness": eval_result_domain.Measurement(
                         value=faithfulness, observations=30, measured=True
@@ -939,7 +946,6 @@ class TestALabelChangesWhatTheDeployGateReads:
             last_run_at="2026-05-23T02:00:00",
             last_run_status="complete",
             record=_record_scoring(0.02),
-            verdicts=(30, 0),
             agent_invoked=True,
         )
         recommendation, _warnings = deployment_service.apply_signal_evidence_gate(

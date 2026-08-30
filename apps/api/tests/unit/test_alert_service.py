@@ -124,7 +124,12 @@ def _eval_record(datasets, *, attempted=30, valid=30, scored=30):
 
 
 def _scored(faithfulness, *, attempted=30, valid=30, scored=30):
-    """One dataset that measured faithfulness, or one that measured nothing."""
+    """One dataset that measured faithfulness, or one that measured nothing.
+
+    Every scored scenario is UNMEASURED, because the only dimension this fixture
+    reports is faithfulness and a scenario needs both gated verdicts to pass or
+    fail. The three verdict counts have to add up to `scored` either way.
+    """
     from app.domain.eval_result import DatasetOutcome, Measurement
 
     metrics = {}
@@ -133,7 +138,11 @@ def _scored(faithfulness, *, attempted=30, valid=30, scored=30):
             value=faithfulness, observations=scored, measured=True
         )
     return DatasetOutcome(
-        attempted=attempted, valid=valid, scored=scored, metrics=metrics
+        attempted=attempted,
+        valid=valid,
+        scored=scored,
+        metrics=metrics,
+        scenarios_unmeasured=scored,
     )
 
 

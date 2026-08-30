@@ -614,13 +614,24 @@ def _pass_rates(metrics: dict, *, measured: bool) -> dict | None:
     return rates or None
 
 
-def _record_counts(record: EvalResult | None) -> dict:
-    """The run's three counts, where they came from, what it cost, and its proxy.
+def _record_counts(record: EvalResult | None, *, measured: bool) -> dict:
+    """The run's counts, its verdicts, where they came from, what it cost, its proxy.
 
     Every value is null without a record and none of them is zero. "This run
     covered nothing" is a measurement and a payload with no record did not make
     it. `invocation` is here too: it is the record's own counter block, which is
     absent for the same reason and under the summariser's own names.
+
+    `failing_scenarios` and `unmeasured_scenarios` are the run's own per-scenario
+    counts, summed over its datasets. Summing counts is not pooling means: the
+    two halves may never be averaged into one rate, and "how many scenarios
+    failed" is the same number whichever half they came from.
+
+    THE TWO OF THEM FOLLOW `measured`, WHICH THE THREE DENOMINATORS DO NOT. The
+    denominators describe the run's size and travel on a refusal so the owner can
+    see what was blocked. `failing_scenarios: 0` is the nearest thing this
+    payload has to a quality claim, and beside a refusal the orchestrator would
+    narrate it as one — the same reason `pass_rates` is suppressed there.
     """
     if record is None:
         return {
@@ -632,6 +643,8 @@ def _record_counts(record: EvalResult | None) -> dict:
             "invocation": None,
             "cost": None,
             "context_proxy_version": None,
+            "failing_scenarios": None,
+            "unmeasured_scenarios": None,
         }
     return {
         # attempted, the VALID denominator, and what actually scored.
@@ -643,6 +656,8 @@ def _record_counts(record: EvalResult | None) -> dict:
         "invocation": record.invocation.payload,
         "cost": record.cost.payload,
         "context_proxy_version": record.context_proxy_version,
+        "failing_scenarios": record.scenarios_failed if measured else None,
+        "unmeasured_scenarios": record.scenarios_unmeasured if measured else None,
     }
 
 
@@ -652,17 +667,16 @@ def _eval_summary(
     last_run_at: str | None = None,
     last_run_status: str | None = None,
     record: EvalResult | None = None,
-    verdicts: tuple[int | None, int | None] = (None, None),
     agent_invoked: bool | None = None,
     detail: str | None = None,
 ) -> dict:
     """Build an eval signal payload in which absence is always distinguishable.
 
     EVERY NUMBER IS LIFTED OFF `record` (#51 criterion 1). This function computes
-    no mean, no rate and no denominator. `run_level_metrics` decides which
-    dataset a run-level reading may come from and refuses to pool the two, and
-    the per-scenario verdict counts are read off the stored `binary_verdict`
-    column that the judge wrote against the threshold stored beside it.
+    no mean, no rate, no denominator and no count. `run_level_metrics` decides
+    which dataset a run-level reading may come from and refuses to pool the two,
+    and the per-scenario verdict counts are the ones the run reached at scoring
+    time, off the JudgeRecords it built, and stored per dataset.
 
     THREE COUNTS, THREE CLAIMS. `scenario_count` is what the run attempted,
     `valid_scenario_count` how many of those could be scored at all, and
@@ -671,11 +685,12 @@ def _eval_summary(
     would assert that the run covered nothing.
 
     `failing_scenarios` and `unmeasured_scenarios` are two counts, not one. A
-    scenario fails when a gated metric's stored verdict is False and is
-    unmeasured when one of them is NULL. The second was invisible until this
-    slice: the count was `sum(1 for v in rates.values() if v < 0.70)` over the
-    metric averages, which counted failing METRICS under a scenario's name and
-    could not see a judge outage at all.
+    scenario fails when a gated verdict went against it and is unmeasured when
+    one of them was never reached. Both are null without a record, and the pair
+    is why a judge outage is visible: nought failing out of forty undecided
+    scenarios is not nought failing. The collector counted them itself, over
+    `eval_results`, until the review pass; deleting those rows then read as a
+    run in which nothing failed.
 
     `agent_invoked` DEFAULTS TO None, NOT False (audit D1, P3). False is the
     claim "this run looked and the agent was not invoked"; None is "no run said
@@ -686,7 +701,6 @@ def _eval_summary(
     measured = signal == EVAL_SIGNAL_MEASURED
     lifted, lifted_from = run_level_metrics(record)
     metrics = _readings(lifted, measured=measured)
-    failing, unmeasured = verdicts
     return {
         "eval_signal": signal,
         "signal_detail": detail,
@@ -701,7 +715,7 @@ def _eval_summary(
         # persistence split, still lands a terminal status on production. Its
         # timestamp must not be read as "an eval finished at T".
         "last_run_status": last_run_status,
-        **_record_counts(record),
+        **_record_counts(record, measured=measured),
         "pass_rates": _pass_rates(metrics, measured=measured),
         # Which dataset the run-level reading was lifted from, null when no
         # single dataset produced one. A reader finding numbers here and no name
@@ -709,8 +723,6 @@ def _eval_summary(
         "pass_rates_dataset": lifted_from if measured else None,
         "metrics": metrics,
         "datasets": _dataset_block(record, measured=measured),
-        "failing_scenarios": failing,
-        "unmeasured_scenarios": unmeasured,
     }
 
 
@@ -785,20 +797,6 @@ _LATEST_RUN_PRE_0013_SQL = (
     "ORDER BY started_at DESC LIMIT 1"
 )
 
-#: Per scenario, how many of its GATED rows the judge decided and how many it
-#: decided against. The verdict itself was written at scoring time, against the
-#: threshold stored on the same row, so this reads a decision rather than
-#: reaching one: raising EVAL_FAITHFULNESS_THRESHOLD does not restate the
-#: verdicts of a run already scored under the old gate.
-_SCENARIO_VERDICTS_SQL = (
-    "SELECT scenario_id, "
-    "COUNT(*) FILTER (WHERE binary_verdict IS NOT NULL), "
-    "COUNT(*) FILTER (WHERE binary_verdict IS FALSE) "
-    "FROM eval_results WHERE eval_run_id = %s AND metric = ANY(%s) "
-    "GROUP BY scenario_id"
-)
-
-
 def _latest_run(cur, conn, agent_id: str) -> tuple[tuple | None, object, object]:
     """The newest terminal run for this agent, with its config and its record.
 
@@ -856,51 +854,6 @@ def _record_of(run_id: str, payload: object) -> EvalResult | None:
             detail="the stored record breaks a rule; the run reads as unmeasured",
         )
         return None
-
-
-def _scenario_verdicts(cur, conn, run_id: str) -> tuple[int | None, int | None]:
-    """(failed, unmeasured) scenarios, counted off the stored gated verdicts.
-
-    A scenario is UNMEASURED when any of its gated metrics carries no verdict,
-    and that is checked first. `context_precision` and `context_recall` have no
-    threshold anywhere in this codebase and so carry no verdict at all; counting
-    them would put two extra failures on every scenario in the table.
-
-    Unmeasured beats failed, which is the same None-first ordering
-    `get_eval_run_results` renders `passed` with. "Nobody decided" reported as
-    "it failed" is what turns a judge outage into an apparent quality collapse
-    and an owner-initiated rollback.
-
-    A scenario with fewer gated rows than there are gated metrics is unmeasured
-    too. A missing row and a NULL verdict are the same absence, and a run written
-    before alembic_tenant 0023 gave the verdict a column has neither.
-
-    Returns:
-        (None, None) on a tenant DB that predates alembic_tenant 0023, so the
-        caller reports the absence rather than a zero. Two counts, never one:
-        zero failures out of forty undecided scenarios is not zero failures.
-    """
-    try:
-        cur.execute(_SCENARIO_VERDICTS_SQL, (run_id, list(GATED_METRIC_KEYS)))
-    except psycopg2.errors.UndefinedColumn:
-        conn.rollback()
-        log.warning(
-            "deployment_service.eval_summary.verdict_column_absent",
-            run_id=run_id,
-            detail=(
-                "tenant DB predates alembic_tenant 0023 — no row on it carries "
-                "a verdict"
-            ),
-        )
-        return (None, None)
-    failed = 0
-    unmeasured = 0
-    for _scenario_id, decided, against in cur.fetchall():
-        if int(decided or 0) < len(GATED_METRIC_KEYS):
-            unmeasured += 1
-        elif int(against or 0) > 0:
-            failed += 1
-    return (failed, unmeasured)
 
 
 def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
@@ -1059,7 +1012,6 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                         ),
                     )
 
-                verdicts = _scenario_verdicts(cur, conn, run_id)
                 if not any(
                     reading.measured
                     for outcome in record.datasets.values()
@@ -1080,7 +1032,6 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                         last_run_at=last_run_at,
                         last_run_status=last_run_status,
                         record=record,
-                        verdicts=verdicts,
                         agent_invoked=agent_invoked,
                         detail=(
                             "the most recent eval run produced no valid score "
@@ -1093,7 +1044,6 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                     last_run_at=last_run_at,
                     last_run_status=last_run_status,
                     record=record,
-                    verdicts=verdicts,
                     agent_invoked=agent_invoked,
                 )
             except Exception as exc:

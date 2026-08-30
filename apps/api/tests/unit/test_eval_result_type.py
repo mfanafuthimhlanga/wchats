@@ -95,11 +95,16 @@ def _invocation(**overrides) -> Invocation:
 
 
 def _golden() -> DatasetOutcome:
-    """Two rows, three metrics reported, one of the three over nothing."""
+    """Two rows, three metrics reported, one of the three over nothing.
+
+    Both rows FAILED: 0.75 faithfulness and 0.5 answer relevancy are under the
+    0.90 gates, and the two verdict counts have to add up to `scored` anyway.
+    """
     return DatasetOutcome(
         attempted=2,
         valid=2,
         scored=2,
+        scenarios_failed=2,
         metrics={
             "faithfulness": Measurement(value=0.75, observations=2, measured=True),
             "answer_relevancy": Measurement(value=0.5, observations=2, measured=True),
@@ -113,7 +118,12 @@ def _result(**overrides) -> EvalResult:
         "run_id": RUN_ID,
         "agent_id": AGENT_ID,
         "invocation": _invocation(),
-        "datasets": {"golden": _golden(), "exploratory": DatasetOutcome(2, 2, 2)},
+        "datasets": {
+            "golden": _golden(),
+            # Two rows scored and no metric reported for either, so no gated
+            # verdict decided either: unmeasured, never a pass.
+            "exploratory": DatasetOutcome(2, 2, 2, scenarios_unmeasured=2),
+        },
         "requested_model": "gpt-5.6-luna",
         "served_model": "gpt-5.6-luna-2026-08",
         "prompt_version_id": "pv-1",
@@ -235,13 +245,20 @@ class TestAnUnreportedMetricIsAbsent:
                 attempted=1,
                 valid=1,
                 scored=1,
+                scenarios_passed=1,
                 metrics={"vibes": Measurement(value=1.0, observations=1, measured=True)},
             )
         assert "vibes" in str(exc.value)
 
     def test_a_metric_that_is_not_a_measurement_is_refused(self):
         with pytest.raises(InvalidEvalResult):
-            DatasetOutcome(attempted=1, valid=1, scored=1, metrics={"faithfulness": 0.9})
+            DatasetOutcome(
+                attempted=1,
+                valid=1,
+                scored=1,
+                scenarios_passed=1,
+                metrics={"faithfulness": 0.9},
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +301,76 @@ class TestTheDatasetNames:
     def test_the_run_level_counts_are_the_sum_of_the_datasets(self):
         payload = _result().payload
         assert (payload["attempted"], payload["valid"], payload["scored"]) == (4, 4, 4)
+
+
+class TestTheVerdictCountsPartitionTheScoredScenarios:
+    """Three counts that add up to `scored`, stored rather than counted later.
+
+    The deploy gate reached them with a `COUNT(*) FILTER` over `eval_results`,
+    which is a second walk over one run: delete the rows and it said nought
+    failing and nought undecided about a run this record says scored thirty, and
+    a gate reading "nothing failed" shipped it.
+    """
+
+    def test_counts_that_do_not_add_up_to_scored_are_refused(self):
+        with pytest.raises(InvalidEvalResult) as exc:
+            DatasetOutcome(
+                attempted=30,
+                valid=30,
+                scored=30,
+                scenarios_passed=28,
+                scenarios_failed=1,
+            )
+        assert "29 scenario(s) into a verdict over 30 scored" in str(exc.value)
+
+    def test_a_verdict_over_more_scenarios_than_scored_is_refused_too(self):
+        """The other direction. A verdict about a row nobody scored is invented."""
+        with pytest.raises(InvalidEvalResult):
+            DatasetOutcome(attempted=5, valid=5, scored=2, scenarios_passed=3)
+
+    def test_a_count_that_is_not_a_count_is_refused(self):
+        with pytest.raises(InvalidEvalResult):
+            DatasetOutcome(attempted=1, valid=1, scored=1, scenarios_passed=-1)
+
+    def test_the_three_counts_round_trip_through_the_payload(self):
+        outcome = DatasetOutcome(
+            attempted=10,
+            valid=9,
+            scored=8,
+            scenarios_passed=5,
+            scenarios_failed=2,
+            scenarios_unmeasured=1,
+        )
+        payload = outcome.payload
+        assert payload["scenarios_passed"] == 5
+        assert payload["scenarios_failed"] == 2
+        assert payload["scenarios_unmeasured"] == 1
+        assert DatasetOutcome.from_payload(payload) == outcome
+
+    def test_a_stored_dataset_with_no_verdict_counts_is_refused_on_the_way_out(self):
+        """A record from a build that did not count its own verdicts.
+
+        It reads as unmeasured rather than as a run in which nothing failed.
+        Filling the three in here would be the derivation they replace.
+        """
+        payload = _golden().payload
+        for name in ("scenarios_passed", "scenarios_failed", "scenarios_unmeasured"):
+            payload.pop(name)
+        with pytest.raises(InvalidEvalResult):
+            DatasetOutcome.from_payload(payload)
+
+    def test_the_run_level_verdict_counts_add_the_datasets_up(self):
+        result = _result(
+            datasets={
+                "golden": DatasetOutcome(2, 2, 2, scenarios_failed=2),
+                "exploratory": DatasetOutcome(
+                    5, 5, 4, scenarios_passed=3, scenarios_unmeasured=1
+                ),
+            }
+        )
+        assert result.scenarios_passed == 3
+        assert result.scenarios_failed == 2
+        assert result.scenarios_unmeasured == 1
 
 
 # ---------------------------------------------------------------------------

@@ -104,7 +104,7 @@ from app.domain.eval_result import (
     run_level_metrics,
 )
 from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity
-from app.domain.judge_record import JudgeRecord
+from app.domain.judge_record import JudgeRecord, scenario_verdict
 from app.domain.model_call import ModelCall
 from app.services.embedding_service import EMBEDDING_MODEL, _get_vo
 
@@ -2289,7 +2289,61 @@ def served_agent_model(ledger: Sequence[ModelCall]) -> str | None:
     return None
 
 
-def dataset_outcomes(validity: dict) -> dict[str, DatasetOutcome]:
+#: A dataset the run scored nothing in decided nothing either.
+_NO_VERDICTS = (0, 0, 0)
+
+
+def dataset_verdict_counts(
+    scenarios: Sequence[Mapping],
+    judge_records: Sequence[JudgeRecord],
+) -> dict[str, tuple[int, int, int]]:
+    """(passed, failed, unmeasured) scenarios per dataset, off the run's own records. Pure.
+
+    THE RUN COUNTS ITS OWN VERDICTS, ONCE. `deployment_service` used to reach
+    these two numbers with a `COUNT(*) FILTER` over `eval_results` at deploy
+    time, so the count moved whenever those rows did and read nought failing over
+    a run whose rows had been deleted. These come off the JudgeRecords the run
+    built at scoring time, the same objects `write_eval_results` writes, and they
+    land on the record beside the counts they have to add up to.
+
+    A scenario is counted only if one of its dimensions came back a real number,
+    which is the condition `summarise_run_validity` counts `scored` by. Both
+    walks read the same attributed rows, so the three counts sum to `scored` and
+    `DatasetOutcome` refuses the record if they ever stop.
+
+    An unattributable scenario joins no dataset here either. It is counted in
+    `summarise_run_validity`'s `unattributed` and belongs to neither half.
+
+    Args:
+        scenarios: every row fetched for the run, each carrying `id` and
+            `dataset`. The same list `summarise_run_validity` reads.
+        judge_records: `build_judge_records`' output, four per scored scenario.
+    """
+    dataset_by_scenario_id = {
+        str(s.get("id", "")): dataset_of(s.get("dataset")) for s in scenarios
+    }
+    by_scenario: dict[str, dict[str, JudgeRecord]] = {}
+    for record in judge_records:
+        by_scenario.setdefault(record.scenario_id, {})[record.metric] = record
+
+    counts = {name: [0, 0, 0] for name in EVAL_DATASETS}
+    for scenario_id, records in by_scenario.items():
+        name = dataset_by_scenario_id.get(scenario_id)
+        if name is None or not any(r.score is not None for r in records.values()):
+            continue
+        verdict = scenario_verdict(
+            [
+                records[metric].binary_verdict if metric in records else None
+                for metric in GATED_METRIC_KEYS
+            ]
+        )
+        counts[name][2 if verdict is None else (0 if verdict else 1)] += 1
+    return {name: tuple(three) for name, three in counts.items()}
+
+
+def dataset_outcomes(
+    validity: dict, verdicts: Mapping[str, tuple[int, int, int]]
+) -> dict[str, DatasetOutcome]:
     """summarise_run_validity's per-dataset buckets as records. Pure.
 
     Every metric the summariser reported becomes a Measurement, including the
@@ -2297,6 +2351,12 @@ def dataset_outcomes(validity: dict) -> dict[str, DatasetOutcome]:
     stay that way, which is the ticket's criterion 4. A metric it did not report
     at all is simply absent, and `DatasetOutcome` keeps it absent rather than
     filling in a default nobody measured.
+
+    Args:
+        validity: `summarise_run_validity`'s report.
+        verdicts: `dataset_verdict_counts`' three counts per dataset. A dataset
+            missing from it decided nothing, which only holds when it scored
+            nothing; `DatasetOutcome` raises if it scored and did not.
     """
     return {
         name: DatasetOutcome(
@@ -2307,6 +2367,13 @@ def dataset_outcomes(validity: dict) -> dict[str, DatasetOutcome]:
                 metric: Measurement.from_payload(reading)
                 for metric, reading in (bucket.get("metrics") or {}).items()
             },
+            **dict(
+                zip(
+                    ("scenarios_passed", "scenarios_failed", "scenarios_unmeasured"),
+                    verdicts.get(name, _NO_VERDICTS),
+                    strict=True,
+                )
+            ),
         )
         for name, bucket in validity["datasets"].items()
     }
@@ -2320,6 +2387,8 @@ def build_eval_result(
     validity: dict,
     invocation: dict,
     ledger: Sequence[ModelCall],
+    scenarios: Sequence[Mapping],
+    judge_records: Sequence[JudgeRecord],
 ) -> EvalResult:
     """Assemble the run's record from the summaries the task already holds. Pure.
 
@@ -2337,11 +2406,14 @@ def build_eval_result(
         invocation:        summarise_agent_invocation()'s observation.
         ledger:            read_run_ledger()'s rows. Empty means the cost is
                            unknown, which is not the same as free.
+        scenarios:         the rows the run fetched, carrying the dataset each
+                           scenario belongs to.
+        judge_records:     what the Judge decided, one per (scenario, metric).
+                           The per-dataset verdict counts come off these.
 
     Raises:
-        InvalidEvalResult: a summary carried a shape the record refuses. That is
-            a defect in this function or in a summariser, not a runtime
-            condition, so nothing here catches it.
+        InvalidEvalResult: a summary carried a shape the record refuses, which is
+            a defect here or in a summariser rather than a runtime condition.
     """
     return EvalResult(
         run_id=run_id,
@@ -2355,7 +2427,9 @@ def build_eval_result(
             **{name: invocation[name] for name in _INVOCATION_COUNTS},
             deflection_detectors=invocation.get("deflection_detectors") or {},
         ),
-        datasets=dataset_outcomes(validity),
+        datasets=dataset_outcomes(
+            validity, dataset_verdict_counts(scenarios, judge_records)
+        ),
         cost=cost_of_run(ledger),
         # The summariser's own list, not a second walk over the records. It
         # counted `failed` off the same pass, and the record refuses to hold
