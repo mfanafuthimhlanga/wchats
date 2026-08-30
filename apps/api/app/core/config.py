@@ -212,6 +212,31 @@ class Settings(BaseSettings):
     # M8: Deployment checklist configuration
     DEP_BLOCK_ON_HIGH_RED_TEAM: bool = True  # when True, high_count > 0 triggers block (DEP-03)
 
+    # THE CHECKLIST SEQUENCES THE TWO JOBS IT GRADES (#54, decision 19 rule 5).
+    # It dispatches an eval chain and a red-team run, then waits for both to
+    # reach a terminal status before it reads a single signal, so every summary
+    # in the report describes the run this checklist started. The first checklist
+    # ever run read eval_signal=no_runs seconds after starting the eval it was
+    # asking about; that shape is what these two numbers close.
+    #
+    # 1500s is 25 minutes. It sits above one eval suite and above the k=1 red-team
+    # bound, and BELOW the red-team k=3 bound of roughly forty-five minutes, so a
+    # full red-team run is expected to outlast it. That is the deliberate trade:
+    # the ceiling exists to bound the Celery task, not to guarantee both halves
+    # finish. A half that does not reach terminal reads as an ABSENT record and
+    # decide() blocks on it, which is the fail-closed direction.
+    #
+    # It also has to stay under the checklist's own 60-minute idempotency window,
+    # or a second trigger would find no 'running' row while the first was still
+    # waiting and put two checklists on one agent.
+    CHECKLIST_WAIT_CEILING_S: int = 1500
+
+    # How long the wait sleeps between polls of the tenant DB. Each poll opens one
+    # short psycopg2 connection per job still in flight, so at the 1500s ceiling
+    # the worst case is 150 polls, and lowering this buys latency at the cost of
+    # connections against a per-tenant Neon project.
+    CHECKLIST_WAIT_POLL_S: int = 10
+
     # M10: Maintenance + Observability thresholds and flags
     ALERT_FAITHFULNESS_THRESHOLD: float = 0.6
     ALERT_RED_TEAM_CRITICAL_COUNT: int = 1

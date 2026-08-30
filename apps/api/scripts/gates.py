@@ -213,7 +213,7 @@ LIZARD_BASELINE = {
     ("app/worker/tasks/runtime/bench.py", "promote_trace_to_scenario"): (12, 164),
     ("app/worker/tasks/runtime/confirmations.py", "resolve_approved_confirmation"): (5, 111),
     ("app/worker/tasks/runtime/deployment.py", "_dispatch_eval_run"): (2, 62),
-    ("app/worker/tasks/runtime/deployment.py", "run_deployment_checklist"): (26, 372),
+    ("app/worker/tasks/runtime/deployment.py", "run_deployment_checklist"): (23, 361),
     ("app/worker/tasks/runtime/eval.py", "_invoke_agent_for_scenarios"): (14, 223),
     ("app/worker/tasks/runtime/eval.py", "_run_one_eval_turn"): (3, 80),
     ("app/worker/tasks/runtime/eval.py", "generate_eval_suite"): (8, 81),

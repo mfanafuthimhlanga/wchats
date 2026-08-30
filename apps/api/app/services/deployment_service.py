@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -914,6 +915,159 @@ def _record_of(run_id: str, payload: object) -> EvalResult | None:
             detail="the stored record breaks a rule; the run reads as unmeasured",
         )
         return None
+
+
+# ---------------------------------------------------------------------------
+# The wait the checklist does BEFORE it reads anything (#54, decision 19 rule 5)
+# ---------------------------------------------------------------------------
+# THE CHECKLIST USED TO GRADE WHATEVER IT HAPPENED TO FIND. It dispatched an eval
+# on two of the seven eval signal states, dispatched no red team at all, and then
+# ran the collectors straight away, so the first checklist ever executed reported
+# eval_signal=no_runs about the eval it had started seconds earlier. Every number
+# in that report described the state BEFORE the checklist acted.
+#
+# The three pieces below remove the race by construction rather than by widening
+# a timeout: the task dispatches both jobs, waits here until each has a terminal
+# row of its OWN, and only then collects. A run that does not finish inside the
+# ceiling reads as an ABSENT measurement, never as the pre-dispatch summary, so a
+# slow red team costs a blocked deploy rather than a stale one.
+#
+#   _dispatch_moment          the tenant DB's clock, so the boundary carries no skew
+#   _latest_status_since      "has the run this checklist started finished yet?"
+#   wait_for_terminal_runs    the pure loop, driven by an injected sleep and clock
+
+#: The two statuses that END a run. `run_eval_suite` and `run_red_team` both write
+#: one of them at the end of their bodies. Anything else, including a status this
+#: build has never heard of, keeps the wait waiting: a name we cannot interpret is
+#: not evidence that a run finished.
+TERMINAL_RUN_STATUSES = frozenset({"complete", "failed"})
+
+#: Both runs key on `kind` rather than an agent_id column, which neither table
+#: has: 'm6:{agent_id}' for evals (matching _LATEST_RUN_SQL above) and
+#: 'm7:{agent_id}' for red team (matching run_red_team's own INSERT and guard).
+#: `started_at >= %s` is the whole point of the query. Without it the wait would
+#: be satisfied by last night's terminal run and the checklist would go straight
+#: back to grading a row it did not cause.
+_EVAL_RUN_STATUS_SINCE_SQL = (
+    "SELECT status FROM eval_runs "
+    "WHERE kind = %s AND started_at >= %s "
+    "ORDER BY started_at DESC LIMIT 1"
+)
+
+_RED_TEAM_RUN_STATUS_SINCE_SQL = (
+    "SELECT status FROM red_team_runs "
+    "WHERE kind = %s AND started_at >= %s "
+    "ORDER BY started_at DESC LIMIT 1"
+)
+
+
+def _dispatch_moment(conn_str: str) -> datetime:
+    """The tenant DB's own clock, read at the moment the checklist dispatches.
+
+    The boundary comes from the DB and not from the worker because both jobs
+    INSERT their row with the DB's NOW(), and the wait compares `started_at >=
+    since`. A worker clock a few seconds ahead would place the boundary after the
+    row the checklist just caused, and the wait would then expire on a run that
+    had actually finished. The worker clock is the fallback and it carries that
+    risk, which is why the fallback is logged.
+    """
+    try:
+        conn = psycopg2.connect(conn_str, connect_timeout=10)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT now()")
+                return cur.fetchone()[0]
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning(
+            "deployment_service.dispatch_moment.tenant_clock_unread",
+            error=str(exc),
+            detail="falling back to the worker clock; skew can outlast the wait",
+        )
+        return datetime.now(timezone.utc)
+
+
+def _latest_status_since(
+    sql: str, kind: str, conn_str: str, since: datetime
+) -> str | None:
+    """The status of the newest run of this kind started at or after `since`.
+
+    None means there is no such row yet, or the read failed. Both keep the wait
+    waiting and both end at the ceiling as an absent measurement, which is the
+    fail-closed direction: a tenant DB we cannot reach must not resolve into a
+    finished run.
+    """
+    try:
+        conn = psycopg2.connect(conn_str, connect_timeout=10)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (kind, since))
+                row = cur.fetchone()
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning(
+            "deployment_service.run_status.unread", kind=kind, error=str(exc)
+        )
+        return None
+    return None if row is None else row[0]
+
+
+def latest_eval_run_status_since(
+    agent_id: str, conn_str: str, since: datetime
+) -> str | None:
+    """The newest eval run this checklist could have started, by status."""
+    return _latest_status_since(
+        _EVAL_RUN_STATUS_SINCE_SQL, f"m6:{agent_id}", conn_str, since
+    )
+
+
+def latest_red_team_run_status_since(
+    agent_id: str, conn_str: str, since: datetime
+) -> str | None:
+    """The newest red-team run this checklist could have started, by status."""
+    return _latest_status_since(
+        _RED_TEAM_RUN_STATUS_SINCE_SQL, f"m7:{agent_id}", conn_str, since
+    )
+
+
+def wait_for_terminal_runs(
+    fetchers: Mapping[str, Callable[[], str | None]],
+    *,
+    poll_s: float,
+    ceiling_s: float,
+    sleep: Callable[[float], None],
+    clock: Callable[[], float],
+) -> tuple[dict[str, str | None], float]:
+    """Poll until every named run is terminal, or until the ceiling expires.
+
+    Pure. It owns no clock, no sleep and no database; the caller injects all
+    three. That is what lets a test drive a twenty-five-minute wait in
+    microseconds rather than pinning a duration nobody observed.
+
+    A ceiling of zero polls ONCE and returns. It is not a way to skip the wait:
+    a run that is already terminal is still read and still reported.
+
+    Returns:
+        ({name: terminal status or None}, seconds waited). The None is the point
+        of the return type. It says this run did not finish, so the caller
+        reports an absent measurement rather than reaching for whatever row the
+        table happens to hold.
+    """
+    started_at = clock()
+    statuses: dict[str, str | None] = dict.fromkeys(fetchers, None)
+    while True:
+        for name, fetch in fetchers.items():
+            if statuses[name] is not None:
+                continue
+            status = fetch()
+            if status in TERMINAL_RUN_STATUSES:
+                statuses[name] = status
+        waited_s = clock() - started_at
+        if all(s is not None for s in statuses.values()) or waited_s >= ceiling_s:
+            return statuses, waited_s
+        sleep(poll_s)
 
 
 def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:

@@ -24,19 +24,20 @@ Flow (run_deployment_checklist):
     1. Fetch agent from control DB; decrypt conn_str
     2. Idempotency guard — skip if a running checklist_run for this agent exists within 60 min
     3. Insert checklist_runs row (status='running') in control DB via ORM
+    3b. THE CHECKLIST SEQUENCES THE JOBS IT GRADES (#54, decision 19 rule 5).
+       Dispatch BOTH the eval chain and a red-team run, then wait for each to
+       reach a terminal status before collecting anything, bounded by
+       CHECKLIST_WAIT_CEILING_S. Until this existed the task dispatched an eval
+       on two signal states, never dispatched a red team, and collected
+       immediately, so the first checklist ever executed read eval_signal=no_runs
+       seconds after starting the eval it was asking about. A job that does not
+       reach terminal inside the ceiling reads as an ABSENT record and blocks;
+       the pre-dispatch summary is never read.
     4. Collect all 5 signals plus the BLR-02 envelope hash synchronously (4
        signals via psycopg2 against the tenant DB, the 5th signal —
        blast_radius — and the envelope hash both via get_sync_db() against
-       the control DB)
-    4b. If the agent has never been evaluated, OR its last run recorded nothing
-       about whether the agent was invoked (audit D1 — every run stored before
-       that release), start an eval suite (_dispatch_eval_run) and record that
-       on the eval signal. The verdict is unaffected — an eval that is running
-       is not evidence — but the block becomes one the owner can wait out
-       rather than a dead end no route in the primary journey can clear. Not
-       dispatched for a run that recorded an explicit `false` or a failed run:
-       those states recur, so firing on them is a spend loop rather than
-       convergence.
+       the control DB). Always AFTER the wait, so every summary describes the
+       runs this checklist sequenced.
     5. Run the orchestrator's turn on the owned loop, under ORCHESTRATOR_TIMEOUT_S,
        billed to the assessed tenant through a LedgerContext this task builds
     6. Parse result, apply the deterministic evidence gate (P2 — an eval or
@@ -53,10 +54,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import structlog
 from sqlalchemy import select, text
 
+from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt
@@ -64,12 +67,11 @@ from app.models.agent import Agent
 from app.models.checklist_run import ChecklistRun
 from app.services.deployment_service import (
     BLAST_RADIUS_DEFAULT_SIGNAL,
-    EVAL_SIGNAL_AGENT_NOT_INVOKED,
-    EVAL_SIGNAL_NO_RUNS,
     EVAL_SUMMARY_UNAVAILABLE_SIGNAL,
     RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL,
     DeploymentReport,
     _compute_envelope_hash_sync,
+    _dispatch_moment,
     _fetch_blast_radius_sync,
     _fetch_corpus_stats_sync,
     _fetch_eval_summary_sync,
@@ -77,6 +79,9 @@ from app.services.deployment_service import (
     _fetch_verified_qa_stats_sync,
     apply_signal_evidence_gate,
     derive_blast_radius_warnings,
+    latest_eval_run_status_since,
+    latest_red_team_run_status_since,
+    wait_for_terminal_runs,
 )
 from app.worker.celery_app import celery_app
 
@@ -106,13 +111,13 @@ def _dispatch_eval_run(agent_id: str) -> bool:
     — but the block now converges instead of being terminal.
 
     NO LONGER ONLY THE FIRST (P3 review), hence the rename from
-    `_dispatch_first_eval_run`. P3 made every EXISTING tenant block too, and
-    those agents are not in `no_runs` — they have runs, produced by the
-    tautology, which now report EVAL_SIGNAL_AGENT_NOT_INVOKED. The wall the
-    paragraph above describes had simply moved to the far larger population,
-    with the warning routing them to the same page the onboarding flow does not
-    reach. See the caller for which half of that state dispatches and why the
-    other half must not.
+    `_dispatch_first_eval_run`: existing tenants report AGENT_NOT_INVOKED rather
+    than `no_runs`, so the wall had moved to the larger population.
+
+    AND NO LONGER CONDITIONAL AT ALL (#54). Step 4b chose between those states by
+    reading a signal collected BEFORE the dispatch, the ordering the sequencer
+    removes. The spend bound is the checklist's own 60-minute idempotency guard,
+    one eval per agent per hour, tighter than the conditional ever was.
 
     `generate_eval_suite` runs first because a tenant whose scenario generation
     has never run has nothing to evaluate against; both tasks carry their own
@@ -151,6 +156,114 @@ def _dispatch_eval_run(agent_id: str) -> bool:
         return False
 
 
+def _dispatch_red_team_run(agent_id: str) -> bool:
+    """Start a red-team run for this agent. Returns True iff it was dispatched.
+
+    THE CHECKLIST NEVER STARTED ONE (#54). It dispatched an eval on two of the
+    seven eval signal states and left the security half entirely to the weekly
+    beat, so an agent the beat had not reached was graded against a
+    red_team_runs table the checklist itself could have filled. That is the
+    same wall _dispatch_eval_run's docstring describes, on the other signal.
+
+    run_red_team's own idempotency guard (a 'running' row inside 90 minutes)
+    absorbs a run already in flight, so this costs at most one live run per
+    agent. Only agent_id crosses the task boundary (CTL-08). Imported inside the
+    function: red_team.py pulls in seven attacker runners and the transactional
+    probe builder, and this task has no other reason to load them.
+
+    Best-effort, on _dispatch_eval_run's terms. A broker failure must not fail a
+    checklist that still owes the owner a report; the run then never reaches
+    terminal, the wait reports it absent, and the gate blocks.
+    """
+    try:
+        from app.worker.tasks.runtime.red_team import run_red_team  # noqa: PLC0415
+
+        run_red_team.apply_async(kwargs={"agent_id": agent_id}, queue="runtime")
+        log.info("run_deployment_checklist.red_team_dispatched", agent_id=agent_id)
+        return True
+    except Exception as exc:
+        log.warning(
+            "run_deployment_checklist.red_team_dispatch_failed",
+            agent_id=agent_id,
+            error=str(exc),
+        )
+        return False
+
+
+def _log_wait_outcome(agent_id: str, statuses: dict, waited_s: float) -> None:
+    """Name which half ran out of ceiling, with the wait actually observed.
+
+    The observed number rather than the configured one: a run that expired at
+    1500.4s and a run that expired because the poll returned None instantly are
+    different incidents, and only the measured wait tells them apart.
+    """
+    timed_out = sorted(name for name, status in statuses.items() if status is None)
+    if timed_out:
+        log.warning(
+            "run_deployment_checklist.wait_ceiling_expired",
+            agent_id=agent_id,
+            timed_out=timed_out,
+            waited_s=round(waited_s, 1),
+            ceiling_s=settings.CHECKLIST_WAIT_CEILING_S,
+            detail="each named job reads as an absent measurement and blocks",
+        )
+        return
+    log.info(
+        "run_deployment_checklist.both_runs_terminal",
+        agent_id=agent_id,
+        waited_s=round(waited_s, 1),
+        eval_status=statuses.get("eval"),
+        red_team_status=statuses.get("red_team"),
+    )
+
+
+def _sequence_measurements(agent_id: str, conn_str: str) -> dict:
+    """Start both measurements, then wait for both to end. The checklist's step 3b.
+
+    Returns eval_dispatched, red_team_dispatched, statuses and waited_s.
+    `statuses` maps 'eval' and 'red_team' to a terminal status or to None, and
+    None is what the rest of the task reads as an absent record.
+
+    NO SECOND IDEMPOTENCY GUARD LIVES HERE, and that is deliberate (#85 family).
+    The task is acks_late=True, so a broker redelivery mid-wait re-runs the whole
+    body; what absorbs it is the 60-minute 'running' checklist_runs guard in step
+    2, which is still holding this run's own row while the wait sleeps. A guard
+    added here would be a second answer to a question step 2 has already
+    answered, and the two would drift the way the timeout in BACKLOG 1.33 did.
+
+    The two dispatch calls are made before the first poll, so both jobs are in
+    flight for the whole wait rather than one after the other.
+
+    A JOB ALREADY IN FLIGHT AT DISPATCH TIME IS THE ONE RESIDUAL. Its guard
+    absorbs the dispatch, so no row exists at or after `since`, the wait expires
+    and the record reads absent even though a run will finish shortly after. The
+    owner re-runs the check and gets it. That is the fail-closed direction and it
+    is the price of the boundary that keeps last night's run out.
+    """
+    since = _dispatch_moment(conn_str)
+    eval_dispatched = _dispatch_eval_run(agent_id)
+    red_team_dispatched = _dispatch_red_team_run(agent_id)
+    statuses, waited_s = wait_for_terminal_runs(
+        {
+            "eval": lambda: latest_eval_run_status_since(agent_id, conn_str, since),
+            "red_team": lambda: latest_red_team_run_status_since(
+                agent_id, conn_str, since
+            ),
+        },
+        poll_s=settings.CHECKLIST_WAIT_POLL_S,
+        ceiling_s=settings.CHECKLIST_WAIT_CEILING_S,
+        sleep=time.sleep,
+        clock=time.monotonic,
+    )
+    _log_wait_outcome(agent_id, statuses, waited_s)
+    return {
+        "eval_dispatched": eval_dispatched,
+        "red_team_dispatched": red_team_dispatched,
+        "statuses": statuses,
+        "waited_s": waited_s,
+    }
+
+
 @celery_app.task(
     bind=True,
     acks_late=True,
@@ -172,6 +285,9 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
         2. Idempotency guard — skip if a 'running' checklist_run for this agent
            was created within the last 60 minutes.
         3. Insert checklist_runs row (status='running') in control DB via ORM.
+        3b. Dispatch the eval chain and the red-team run, then wait for both to
+           reach a terminal status (_sequence_measurements), bounded by
+           CHECKLIST_WAIT_CEILING_S.
         4. Collect all 5 signals synchronously (psycopg2 against tenant DB) plus
            the BLR-02 envelope hash (control DB, own guarded block).
         5. Call run_orchestrator via asyncio.run(asyncio.wait_for(..., timeout=120.0)) bridge.
@@ -235,6 +351,17 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
     log.info("run_deployment_checklist.started", agent_id=agent_id, run_id=run_id)
 
     # ------------------------------------------------------------------
+    # Step 3b. THE CHECKLIST SEQUENCES THE JOBS IT GRADES (#54, decision 19
+    # rule 5). Both are dispatched here, unconditionally, and this call does not
+    # return until each has a terminal row of its own or the ceiling expires.
+    # Step 4 used to run first, which is why the first checklist ever executed
+    # reported eval_signal=no_runs about the eval it had started seconds
+    # earlier. A job that never reaches terminal reads as an ABSENT record, so
+    # the gate blocks on it; the pre-dispatch summary is never read.
+    # ------------------------------------------------------------------
+    sequenced = _sequence_measurements(agent_id, conn_str)
+
+    # ------------------------------------------------------------------
     # Step 4 — Collect signals from tenant DB (psycopg2 sync — fine in Celery)
     # Each _fetch_*_sync function opens its own psycopg2 connection and closes it.
     # Wrapped in try/except to handle missing tables or connection errors gracefully.
@@ -256,44 +383,19 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
         # refuses to ship on it.
         eval_summary = dict(EVAL_SUMMARY_UNAVAILABLE_SIGNAL)
 
-    # Step 4b — the day-1 remedy. An agent that has never been evaluated cannot
-    # ship, and until now nothing in the product's primary journey would ever
-    # produce the eval that unblocks it. The dispatch is recorded ON the signal
-    # so the owner-facing warning can say "we started it" instead of naming a
-    # page the onboarding flow does not route to. It does not soften the
-    # verdict: apply_signal_evidence_gate still blocks on the signal, because a
-    # measurement that has been STARTED is not a measurement.
+    # The dispatch is recorded ON the signal so the owner-facing warning can say
+    # the platform started the measurement, rather than naming an Evaluation page
+    # the onboarding flow never routes to. It does not soften the verdict:
+    # apply_signal_evidence_gate still blocks on a signal that is not 'measured',
+    # because a measurement that was STARTED is not a measurement.
     #
-    # TWO STATES REACH IT NOW, AND ONLY ONE HALF OF THE SECOND (P3 review).
-    # P3 blocks every existing tenant, and none of them is in `no_runs` — they
-    # have runs, produced by the tautology, which report AGENT_NOT_INVOKED. So
-    # the convergence mechanism built for day 1 did not fire for the population
-    # P3 actually creates, and the warning routed them to the same unreachable
-    # page.
-    #
-    # But it fires only where it CONVERGES. `agent_invoked is None` is the
-    # historical population: a fresh run on a 0013+ tenant writes the key
-    # either way, so the state cannot recur and the dispatch is one-shot per
-    # agent, exactly like the day-1 case. `agent_invoked is False` is a run
-    # that looked and said no — a broken or unreachable agent produces it again
-    # every night — so dispatching on it would buy a fresh set of up to
-    # AGENT_INVOCATION_MAX_CALLS_PER_RUN live SDK turns on every readiness
-    # check the owner runs, and the state would still be False afterwards. That
-    # is not convergence, it is a spend loop with a button on it; the warning
-    # names the page instead. Same for `run_failed`, which repeats for the same
-    # reason. BACKLOG 2.18 carries the one residual: a pre-0013 tenant DB
-    # cannot record the key at all, so absence recurs there and the dispatch
-    # repeats.
-    #
-    # run_eval_suite's own idempotency guard (a 'running' run inside a window
-    # covering a full run) absorbs repeated readiness checks while one is in
-    # flight, so the bound here is one live run per agent, not one per click.
-    eval_signal = eval_summary.get("eval_signal")
-    if eval_signal == EVAL_SIGNAL_NO_RUNS or (
-        eval_signal == EVAL_SIGNAL_AGENT_NOT_INVOKED
-        and eval_summary.get("agent_invoked") is None
-    ):
-        eval_summary["eval_dispatched"] = _dispatch_eval_run(agent_id)
+    # IT IS UNCONDITIONAL NOW. Step 4b used to fire on EVAL_SIGNAL_NO_RUNS and on
+    # the absent half of EVAL_SIGNAL_AGENT_NOT_INVOKED, reading a signal that
+    # described the state before the dispatch to decide whether to dispatch. The
+    # sequencer above dispatches first and waits, so by the time this signal is
+    # collected it already describes the run the checklist started, and there is
+    # no earlier state left to branch on.
+    eval_summary["eval_dispatched"] = sequenced["eval_dispatched"]
 
     try:
         red_team_summary = _fetch_red_team_summary_sync(agent_id, conn_str)

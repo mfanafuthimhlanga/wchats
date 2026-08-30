@@ -51,7 +51,8 @@ os.environ.setdefault("JWT_SECRET", "test_jwt_secret")
 os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
@@ -66,6 +67,49 @@ def _make_sync_db_ctx(mock_db):
         yield mock_db
 
     return _fake_get_sync_db
+
+
+def _deployment_patch(name, **kwargs):
+    """patch() against a name in the task module's own namespace."""
+    return patch("app.worker.tasks.runtime.deployment." + name, **kwargs)
+
+
+@contextmanager
+def _past_step_3b(eval_status="complete", red_team_status="complete"):
+    """Get a test past the sequencer without a tenant DB (#54).
+
+    Step 3b dispatches both jobs and then polls the tenant DB until each has a
+    terminal row of its own. Every test that reaches step 4 now goes through it,
+    and one whose subject is something else says so by handing both readers a
+    terminal status: the wait returns on its first poll having slept nothing.
+
+    Without this the readers connect to a fake DSN, read None every time, and
+    the task sleeps out the full CHECKLIST_WAIT_CEILING_S. Both dispatches are
+    stubbed for the same class of reason: the dispatch is unconditional now, so
+    every test that reaches step 3b would otherwise put a real message on a
+    broker that is not running.
+
+    A test that asserts on the eval dispatch re-patches it inside its own `with`,
+    after this one, and the inner patcher is the one it reads.
+    """
+    with ExitStack() as stack:
+        stack.enter_context(
+            _deployment_patch(
+                "_dispatch_moment",
+                return_value=datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+            )
+        )
+        stack.enter_context(_deployment_patch("_dispatch_eval_run", return_value=True))
+        stack.enter_context(_deployment_patch("_dispatch_red_team_run", return_value=True))
+        stack.enter_context(
+            _deployment_patch("latest_eval_run_status_since", return_value=eval_status)
+        )
+        stack.enter_context(
+            _deployment_patch(
+                "latest_red_team_run_status_since", return_value=red_team_status
+            )
+        )
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +232,7 @@ class TestRunDeploymentChecklistHappyPath:
                 "warnings": [],
             }
 
-        with patch(
+        with _past_step_3b(), patch(
             "app.worker.tasks.runtime.deployment.get_sync_db",
             _make_sync_db_ctx(mock_db),
         ), patch(
@@ -275,7 +319,7 @@ class TestRunDeploymentChecklistHappyPath:
                 "warnings": [],
             }
 
-        with patch(
+        with _past_step_3b(), patch(
             "app.worker.tasks.runtime.deployment.get_sync_db",
             _make_sync_db_ctx(mock_db),
         ), patch(
@@ -399,7 +443,7 @@ class TestRunDeploymentChecklistFailurePath:
         # Catch either — the important assertion is that db.commit() was called after
         # run.status was set to "failed".
         try:
-            with patch(
+            with _past_step_3b(), patch(
                 "app.worker.tasks.runtime.deployment.get_sync_db",
                 _make_sync_db_ctx(mock_db),
             ), patch(
@@ -606,7 +650,7 @@ class TestBlastRadiusWiring:
                 "recommendation": "ship", "summary": "All good.", "warnings": [],
             }
 
-        with patch(
+        with _past_step_3b(), patch(
             "app.worker.tasks.runtime.deployment.get_sync_db", _make_sync_db_ctx(mock_db),
         ), patch(
             "app.worker.tasks.runtime.deployment.fernet_decrypt",
@@ -653,7 +697,7 @@ class TestBlastRadiusWiring:
                 "recommendation": "ship", "summary": "All good.", "warnings": [],
             }
 
-        with patch(
+        with _past_step_3b(), patch(
             "app.worker.tasks.runtime.deployment.get_sync_db", _make_sync_db_ctx(mock_db),
         ), patch(
             "app.worker.tasks.runtime.deployment.fernet_decrypt",
@@ -722,7 +766,7 @@ class TestBlastRadiusWiring:
                 ],
             }
 
-        with patch(
+        with _past_step_3b(), patch(
             "app.worker.tasks.runtime.deployment.get_sync_db", _make_sync_db_ctx(mock_db),
         ), patch(
             "app.worker.tasks.runtime.deployment.fernet_decrypt",
@@ -787,7 +831,7 @@ class TestBlastRadiusWiring:
                 ],
             }
 
-        with patch(
+        with _past_step_3b(), patch(
             "app.worker.tasks.runtime.deployment.get_sync_db", _make_sync_db_ctx(mock_db),
         ), patch(
             "app.worker.tasks.runtime.deployment.fernet_decrypt",
@@ -872,7 +916,7 @@ class TestEvidenceGateWiring:
             "enabled_skill_count": 0,
         }
 
-        with patch(
+        with _past_step_3b(), patch(
             "app.worker.tasks.runtime.deployment.get_sync_db", _make_sync_db_ctx(mock_db),
         ), patch(
             "app.worker.tasks.runtime.deployment.fernet_decrypt",
@@ -989,7 +1033,7 @@ class TestEvidenceGateWiring:
                 "recommendation": "ship", "summary": "All good.", "warnings": [],
             }
 
-        with patch(
+        with _past_step_3b(), patch(
             "app.worker.tasks.runtime.deployment.get_sync_db", _make_sync_db_ctx(mock_db),
         ), patch(
             "app.worker.tasks.runtime.deployment.fernet_decrypt",
@@ -1040,6 +1084,10 @@ class TestDayOneEvalPath(TestEvidenceGateWiring):
 
     The fix is not to soften the gate. An agent with no measurement still must
     not ship. The checklist starts the measurement it is demanding, and says so.
+
+    THE DISPATCH IS UNCONDITIONAL SINCE #54. What these tests still pin is the
+    half that survives: the block, and the warning that tells the owner to wait
+    for the run the platform started rather than naming a page nothing routes to.
     """
 
     def _never_evaluated(self):
@@ -1103,19 +1151,21 @@ class TestDayOneEvalPath(TestEvidenceGateWiring):
         assert "started" not in matching[0]["message"].lower()
         assert "Evaluation page" in matching[0]["message"]
 
-    def test_nothing_is_dispatched_when_a_run_already_exists(self):
-        """A measured agent, or one whose run scored nothing, has a run on the
-        record. Re-dispatching on every readiness check would run the judge
-        against the whole scenario set each time an owner clicks the button."""
-        self._drive(_measured_eval_signal(), _measured_red_team_signal())
-        self.dispatch_mock.assert_not_called()
+    def test_a_measured_agent_gets_a_fresh_run_as_well(self):
+        """The condition is gone, and so is the state it used to read (#54).
 
-        self._drive(
-            dict(_measured_eval_signal(), eval_signal="no_valid_scores",
-                 pass_rates=None),
-            _measured_red_team_signal(),
-        )
-        self.dispatch_mock.assert_not_called()
+        Step 4b decided whether to dispatch by reading a signal collected BEFORE
+        the dispatch, which is the ordering this slice removes. The checklist
+        dispatches first and waits for both jobs, so no earlier state survives to
+        branch on and a measured agent is re-measured like every other.
+
+        The spend bound moved rather than vanished. It is the checklist's own
+        60-minute idempotency guard, one checklist per agent per hour and so one
+        eval per agent per hour, plus run_eval_suite's own guard on a run already
+        in flight.
+        """
+        self._drive(_measured_eval_signal(), _measured_red_team_signal())
+        self.dispatch_mock.assert_called_once_with(self.agent_id)
 
 
 class TestExistingTenantEvalPath(TestEvidenceGateWiring):
@@ -1129,16 +1179,16 @@ class TestExistingTenantEvalPath(TestEvidenceGateWiring):
     page", which _dispatch_eval_run's own docstring says the onboarding flow
     reaches from nowhere. The wall had moved, not gone.
 
-    IT FIRES FOR THE ABSENT HALF ONLY, and that asymmetry is the design rather
-    than an oversight. `agent_invoked is None` is the historical population and
-    it converges: a fresh run on a 0013+ tenant writes the key either way, so
-    the state cannot recur and the dispatch is one-shot per agent, exactly like
-    day 1. `agent_invoked is False` is a run that looked and said no — a broken
-    or unreachable agent produces it again every night — so dispatching on it
-    would buy up to AGENT_INVOCATION_MAX_CALLS_PER_RUN live SDK turns on every
-    readiness check and leave the state unchanged. BACKLOG 2.18 carries the one
-    residual: a pre-0013 tenant DB cannot record the key, so absence recurs
-    there.
+    IT FIRED FOR THE ABSENT HALF ONLY, and that asymmetry is gone with #54. It
+    was the design while the dispatch could read a signal first: `agent_invoked
+    is None` converges, because a fresh run on a 0013+ tenant writes the key
+    either way, while `agent_invoked is False` recurs every night on a broken
+    agent and firing on it bought live turns that changed nothing. The checklist
+    now dispatches BEFORE any signal for this run exists, so it cannot tell the
+    two apart, and its own 60-minute guard is what bounds the spend.
+
+    What these tests still pin is the warning: the message branches on
+    `agent_invoked`, and only the absent branch may narrate the tautology.
     """
 
     def _tautological(self, **over):
@@ -1202,28 +1252,32 @@ class TestExistingTenantEvalPath(TestEvidenceGateWiring):
         assert "started" not in matching[0]["message"].lower()
         assert "Evaluation page" in matching[0]["message"]
 
-    def test_a_run_that_recorded_false_does_not_re_dispatch(self):
-        """The spend bound. This state repeats — a broken agent produces it
-        every night — so firing on it would buy a fresh set of up to sixty live
-        SDK turns on every readiness check and leave the state unchanged. That
-        is not convergence."""
+    def test_a_run_that_recorded_false_gets_a_fresh_run_too(self):
+        """The asymmetry went with the condition that expressed it (#54).
+
+        `agent_invoked is False` was refused because it recurs: a broken agent
+        produces it every night, so firing on it bought a fresh set of live turns
+        per readiness check and left the state unchanged. The checklist can no
+        longer ask, because it dispatches before any signal for this run exists.
+        Its own 60-minute guard is what bounds the spend now, at one eval per
+        agent per hour, and the old conditional never bounded it that tightly.
+        """
         self._drive(
             self._tautological(agent_invoked=False),
             _measured_red_team_signal(),
         )
 
-        self.dispatch_mock.assert_not_called()
+        self.dispatch_mock.assert_called_once_with(self.agent_id)
 
-    def test_a_failed_run_does_not_re_dispatch_either(self):
-        """Same argument: 'run_failed' recurs for whatever reason produced it,
-        and the owner is the one who decides to spend another run."""
+    def test_a_failed_run_gets_a_fresh_run_too(self):
+        """Same argument, on the state that recurs for whatever produced it."""
         self._drive(
             dict(_measured_eval_signal(), eval_signal="run_failed",
                  last_run_status="failed", pass_rates=None),
             _measured_red_team_signal(),
         )
 
-        self.dispatch_mock.assert_not_called()
+        self.dispatch_mock.assert_called_once_with(self.agent_id)
 
     def test_the_dispatch_helper_passes_only_the_agent_id(self):
         """CLAUDE.md rule 4: no connection string in a Celery task argument.
@@ -1271,3 +1325,609 @@ class TestExistingTenantEvalPath(TestEvidenceGateWiring):
 
         with patch("celery.chain", _boom):
             assert deployment_task._dispatch_eval_run("agent-1") is False
+
+
+# ---------------------------------------------------------------------------
+# The checklist sequences the two jobs it grades (#54 criterion 3)
+# ---------------------------------------------------------------------------
+# THE FIRST CHECKLIST EVER RUN READ eval_signal=no_runs SECONDS AFTER STARTING
+# THE EVAL IT WAS ASKING ABOUT. Step 4 collected first and step 4b dispatched
+# afterwards, on what step 4 had found, so every number in that report described
+# the state before the checklist acted, and no red team was dispatched at all.
+#
+# The tests below drive the real task with no real time in them. The poll
+# interval is patched to zero and the two status readers are stand-ins counting
+# their own calls, so a twenty-five-minute ceiling costs microseconds. The
+# collectors are stand-ins too, and each returns a DIFFERENT payload depending on
+# whether both runs had reported terminal at the moment it was called. That is
+# what makes ordering assertable through the persisted report: a task that
+# collected early gets the stale summary and the assertions fail.
+
+_BLAST_RADIUS_FIXTURE = {
+    "configured_max_single_action_cents": None,
+    "configured_max_hourly_aggregate_cents": None,
+    "observed_max_single_action_cents": None,
+    "observed_max_hourly_aggregate_cents": None,
+    "observed_window_days": 7,
+    "warn_threshold_single_cents": 50000,
+    "warn_threshold_hourly_cents": 200000,
+    "enabled_skill_count": 0,
+}
+
+
+def _never_evaluated_signal():
+    """The eval summary a fresh agent's collector returns before its run ends."""
+    return {
+        "eval_signal": "no_runs",
+        "signal_detail": "no eval run has ever been recorded for this agent",
+        "last_run_at": None,
+        "last_run_status": None,
+        "scenario_count": 0,
+        "valid_scenario_count": None,
+        "scored_scenario_count": 0,
+        "denominator_source": None,
+        "pass_rates": None,
+        "failing_scenarios": None,
+    }
+
+
+def _never_red_teamed_signal():
+    """The security half of the same fresh agent."""
+    from app.services.deployment_service import (
+        RED_TEAM_SIGNAL_NO_RUNS,
+        _red_team_summary,
+    )
+
+    return _red_team_summary(
+        RED_TEAM_SIGNAL_NO_RUNS,
+        detail="no red-team run has ever been recorded for this agent",
+    )
+
+
+def _sequenced_world(eval_polls, red_team_polls):
+    """A tenant DB whose two runs each need N polls before they report terminal.
+
+    Returns (state, fetchers, collectors). `state["events"]` is the interleaving
+    of every poll and every collect in the order the task made them, which is the
+    thing under test.
+    """
+    state = {"eval": 0, "red_team": 0, "events": []}
+
+    def _both_terminal():
+        return state["eval"] > eval_polls and state["red_team"] > red_team_polls
+
+    def _reader(name, needed):
+        def _fetch(*_args, **_kwargs):
+            state[name] += 1
+            value = "complete" if state[name] > needed else "running"
+            state["events"].append(("poll", name, value))
+            return value
+
+        return _fetch
+
+    def _collect_eval(*_args, **_kwargs):
+        state["events"].append(("collect", "eval"))
+        return _measured_eval_signal() if _both_terminal() else _never_evaluated_signal()
+
+    def _collect_red_team(*_args, **_kwargs):
+        state["events"].append(("collect", "red_team"))
+        if _both_terminal():
+            return _measured_red_team_signal()
+        return _never_red_teamed_signal()
+
+    fetchers = (_reader("eval", eval_polls), _reader("red_team", red_team_polls))
+    return state, fetchers, (_collect_eval, _collect_red_team)
+
+
+def _drive_sequenced(
+    fetchers, collectors, *, ceiling_s=1500, mock_log=None, dispatch=None
+):
+    """Run the real task against the fake tenant DB, with no real time in it."""
+    from app.core.config import settings
+    from app.worker.tasks.runtime import deployment as deployment_task
+    from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+    agent_id = str(uuid.uuid4())
+    mock_db, mock_run = _build_full_happy_path_mock_db(str(uuid.uuid4()))
+    dispatch_eval = dispatch[0] if dispatch else (lambda _a: True)
+    dispatch_red_team = dispatch[1] if dispatch else (lambda _a: True)
+
+    async def _report(signals_json, result_container, *, ledger=None):
+        result_container["report"] = {
+            "recommendation": "ship",
+            "summary": "All good.",
+            "warnings": [],
+        }
+
+    def _target(name, **kwargs):
+        return patch("app.worker.tasks.runtime.deployment." + name, **kwargs)
+
+    patches = [
+        _target("get_sync_db", new=_make_sync_db_ctx(mock_db)),
+        _target("fernet_decrypt", return_value="postgresql://test/tenant"),
+        _target(
+            "_dispatch_moment",
+            return_value=datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+        ),
+        _target("_dispatch_eval_run", new=dispatch_eval),
+        _target("_dispatch_red_team_run", new=dispatch_red_team),
+        _target("latest_eval_run_status_since", side_effect=fetchers[0]),
+        _target("latest_red_team_run_status_since", side_effect=fetchers[1]),
+        _target("_fetch_eval_summary_sync", side_effect=collectors[0]),
+        _target("_fetch_red_team_summary_sync", side_effect=collectors[1]),
+        _target(
+            "_fetch_verified_qa_stats_sync",
+            return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+        ),
+        _target(
+            "_fetch_corpus_stats_sync",
+            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+        ),
+        _target("_fetch_blast_radius_sync", return_value=dict(_BLAST_RADIUS_FIXTURE)),
+        _target("_compute_envelope_hash_sync", return_value="test-envelope-hash"),
+        _target("_call_orchestrator_async", side_effect=_report),
+        # Zero sleep is what removes real time. The ceiling is measured against
+        # time.monotonic, so a zero poll spins the loop at full speed and a
+        # 1500s ceiling is never reached inside a test.
+        patch.object(settings, "CHECKLIST_WAIT_POLL_S", 0),
+        patch.object(settings, "CHECKLIST_WAIT_CEILING_S", ceiling_s),
+    ]
+    if mock_log is not None:
+        patches.append(patch.object(deployment_task, "log", mock_log))
+
+    with ExitStack() as stack:
+        for one in patches:
+            stack.enter_context(one)
+        result = run_deployment_checklist.run(agent_id=agent_id)
+
+    return result, mock_run, agent_id
+
+
+class TestTheChecklistSequencesBothJobs:
+    """Criterion 3, written as the failure shape the first real run produced."""
+
+    def test_the_collectors_run_only_after_both_runs_are_terminal(self):
+        """An agent with no prior runs. Both jobs are dispatched, both stay in
+        flight for several polls, and not one signal is read until each has
+        reported terminal."""
+        state, fetchers, collectors = _sequenced_world(eval_polls=2, red_team_polls=4)
+
+        result, _, _ = _drive_sequenced(fetchers, collectors)
+
+        collects = [i for i, e in enumerate(state["events"]) if e[0] == "collect"]
+        in_flight = [
+            i for i, e in enumerate(state["events"])
+            if e[0] == "poll" and e[2] != "complete"
+        ]
+        assert collects, "no collector ran at all"
+        assert in_flight, "the stand-in never reported a run still in flight"
+        assert min(collects) > max(in_flight), (
+            "a signal was collected while a run was still in flight, which is the "
+            f"shape the first checklist ever executed produced: {state['events']}"
+        )
+        assert result["status"] == "complete"
+
+    def test_the_collected_summary_is_the_post_terminal_one(self):
+        """Ordering asserted through what was PERSISTED, not through call order.
+
+        The stand-in collectors return the never-run summaries while either job
+        is in flight and the measured ones afterwards, so a task that collected
+        early persists 'block' with eval_signal='no_runs' about an eval it had
+        just started. That is what the first real run wrote.
+        """
+        _, fetchers, collectors = _sequenced_world(eval_polls=2, red_team_polls=4)
+
+        result, mock_run, _ = _drive_sequenced(fetchers, collectors)
+
+        assert mock_run.report["eval_summary"]["eval_signal"] == "measured"
+        assert mock_run.report["red_team_summary"]["signal"] == "measured"
+        assert result["recommendation"] == "ship", (
+            "both halves were measured after the wait, so nothing should have "
+            f"forced a downgrade: {mock_run.warnings}"
+        )
+
+    def test_both_jobs_are_dispatched_up_front_with_agent_id_only(self):
+        """Unconditional, and before the first poll. The eval used to fire on two
+        of the seven eval signal states and the red team on none of them."""
+        state, fetchers, collectors = _sequenced_world(eval_polls=0, red_team_polls=0)
+        seen = []
+
+        def _record(name):
+            def _dispatch(agent_id):
+                seen.append((name, agent_id))
+                return True
+
+            return _dispatch
+
+        _, _, agent_id = _drive_sequenced(
+            fetchers, collectors, dispatch=(_record("eval"), _record("red_team"))
+        )
+
+        assert seen == [("eval", agent_id), ("red_team", agent_id)], (
+            f"both jobs, dispatched up front, agent_id only (CTL-08): {seen}"
+        )
+        assert state["events"][0][0] == "poll", (
+            "the first event after the dispatch must be a poll, never a collect: "
+            f"{state['events'][:3]}"
+        )
+
+    def test_a_ceiling_expiry_completes_the_run_and_names_the_timed_out_half(self):
+        """The red team is still running when the ceiling expires.
+
+        The task must not raise and must not reach for the pre-dispatch summary.
+        The red-team record reads as the absent state it is, the gate blocks on
+        it, and the log names which half ran out of ceiling with the wait it
+        actually observed.
+        """
+        _, fetchers, collectors = _sequenced_world(eval_polls=0, red_team_polls=10**6)
+        mock_log = MagicMock()
+
+        result, mock_run, _ = _drive_sequenced(
+            fetchers, collectors, ceiling_s=0, mock_log=mock_log
+        )
+
+        assert result["status"] == "complete", (
+            f"a ceiling expiry must never fail the checklist: {result}"
+        )
+        assert mock_run.report["red_team_summary"]["signal"] == "no_runs", (
+            "the red team never finished, so its record is the absent one, never "
+            "a summary that was already there before the checklist dispatched"
+        )
+        assert result["recommendation"] == "block"
+        assert "red_team_never_run" in [w["warning_id"] for w in mock_run.warnings]
+
+        expiries = [
+            call for call in mock_log.warning.call_args_list
+            if call.args
+            and call.args[0] == "run_deployment_checklist.wait_ceiling_expired"
+        ]
+        assert len(expiries) == 1, (
+            f"expected one ceiling-expiry warning: {mock_log.warning.call_args_list}"
+        )
+        assert expiries[0].kwargs["timed_out"] == ["red_team"], (
+            "the log has to name WHICH half timed out. 'A job timed out' sends the "
+            f"reader to both of them: {expiries[0].kwargs}"
+        )
+        assert "waited_s" in expiries[0].kwargs, (
+            "the observed wait, not the configured ceiling. They differ, and only "
+            "the observed one separates a slow run from an unreachable tenant DB."
+        )
+
+    def test_the_eval_dispatch_still_reaches_the_owner_facing_warning(self):
+        """`eval_dispatched` survived the fold from step 4b.
+
+        The warning the owner reads branches on it: "we have started its first
+        evaluation" against "run an eval from the Evaluation page", and the
+        onboarding flow routes to no such page. Losing the key would silently
+        put every owner back on the second sentence.
+        """
+        _, fetchers, _ = _sequenced_world(eval_polls=0, red_team_polls=0)
+        collectors = (
+            lambda *_a, **_k: _never_evaluated_signal(),
+            lambda *_a, **_k: _measured_red_team_signal(),
+        )
+
+        _, mock_run, _ = _drive_sequenced(fetchers, collectors)
+
+        matching = [w for w in mock_run.warnings if w["warning_id"] == "eval_never_run"]
+        assert len(matching) == 1, f"expected one eval_never_run warning: {mock_run.warnings}"
+        assert "started" in matching[0]["message"].lower()
+
+
+class TestWaitForTerminalRuns:
+    """The pure loop, driven directly, with a fake clock and a fake sleep."""
+
+    def _fake_time(self, step=10.0):
+        """A clock that advances only when the loop sleeps."""
+        state = {"now": 0.0, "slept": []}
+
+        def clock():
+            return state["now"]
+
+        def sleep(seconds):
+            state["slept"].append(seconds)
+            state["now"] += step
+
+        return state, clock, sleep
+
+    def test_both_already_terminal_at_the_first_poll_never_sleeps(self):
+        from app.services.deployment_service import wait_for_terminal_runs
+
+        state, clock, sleep = self._fake_time()
+
+        statuses, waited_s = wait_for_terminal_runs(
+            {"eval": lambda: "complete", "red_team": lambda: "complete"},
+            poll_s=10,
+            ceiling_s=1500,
+            sleep=sleep,
+            clock=clock,
+        )
+
+        assert statuses == {"eval": "complete", "red_team": "complete"}
+        assert waited_s == 0.0
+        assert state["slept"] == [], (
+            "a run that has already finished must not cost a poll interval"
+        )
+
+    def test_a_failed_run_is_terminal(self):
+        """'failed' ends a run as surely as 'complete'. Waiting for a run that
+        already gave up would burn the whole ceiling for nothing, and the caller
+        needs the failure to reach the gate rather than a timeout that looks the
+        same as an unreachable DB."""
+        from app.services.deployment_service import wait_for_terminal_runs
+
+        state, clock, sleep = self._fake_time()
+
+        statuses, _ = wait_for_terminal_runs(
+            {"eval": lambda: "complete", "red_team": lambda: "failed"},
+            poll_s=10,
+            ceiling_s=1500,
+            sleep=sleep,
+            clock=clock,
+        )
+
+        assert statuses == {"eval": "complete", "red_team": "failed"}
+        assert state["slept"] == []
+
+    def test_a_ceiling_of_zero_polls_once_and_returns(self):
+        """Not the same as skipping the wait. One look is still taken, so a run
+        that is already terminal is still reported."""
+        from app.services.deployment_service import wait_for_terminal_runs
+
+        state, clock, sleep = self._fake_time()
+        calls = {"eval": 0, "red_team": 0}
+
+        def _counting(name, value):
+            def _fetch():
+                calls[name] += 1
+                return value
+
+            return _fetch
+
+        statuses, waited_s = wait_for_terminal_runs(
+            {
+                "eval": _counting("eval", "complete"),
+                "red_team": _counting("red_team", "running"),
+            },
+            poll_s=10,
+            ceiling_s=0,
+            sleep=sleep,
+            clock=clock,
+        )
+
+        assert calls == {"eval": 1, "red_team": 1}
+        assert statuses == {"eval": "complete", "red_team": None}, (
+            "a run still in flight at the ceiling reads as None, which the caller "
+            "turns into an absent measurement rather than a stale row"
+        )
+        assert waited_s == 0.0
+        assert state["slept"] == []
+
+    def test_a_run_still_in_flight_keeps_the_wait_polling(self):
+        from app.services.deployment_service import wait_for_terminal_runs
+
+        state, clock, sleep = self._fake_time(step=10.0)
+        polls = {"n": 0}
+
+        def _red_team():
+            polls["n"] += 1
+            return "complete" if polls["n"] > 3 else "running"
+
+        statuses, waited_s = wait_for_terminal_runs(
+            {"eval": lambda: "complete", "red_team": _red_team},
+            poll_s=10,
+            ceiling_s=1500,
+            sleep=sleep,
+            clock=clock,
+        )
+
+        assert statuses == {"eval": "complete", "red_team": "complete"}
+        assert polls["n"] == 4
+        assert state["slept"] == [10, 10, 10], (
+            f"the wait slept the poll interval between looks: {state['slept']}"
+        )
+        assert waited_s == 30.0
+
+    def test_a_terminal_run_is_not_polled_again(self):
+        """The eval usually finishes long before the red team. Re-reading it every
+        ten seconds for the rest of the wait would open a Neon connection per
+        poll for an answer that cannot change."""
+        from app.services.deployment_service import wait_for_terminal_runs
+
+        state, clock, sleep = self._fake_time()
+        calls = {"eval": 0, "red_team": 0}
+
+        def _eval():
+            calls["eval"] += 1
+            return "complete"
+
+        def _red_team():
+            calls["red_team"] += 1
+            return "complete" if calls["red_team"] > 2 else "running"
+
+        wait_for_terminal_runs(
+            {"eval": _eval, "red_team": _red_team},
+            poll_s=10,
+            ceiling_s=1500,
+            sleep=sleep,
+            clock=clock,
+        )
+
+        assert calls == {"eval": 1, "red_team": 3}
+
+    def test_an_unrecognised_status_is_not_terminal(self):
+        """A status this build has never heard of is not evidence that a run
+        finished. It keeps the wait waiting and expires as absent, which costs a
+        blocked deploy rather than a shipped one."""
+        from app.services.deployment_service import wait_for_terminal_runs
+
+        state, clock, sleep = self._fake_time()
+
+        statuses, _ = wait_for_terminal_runs(
+            {"eval": lambda: "complete", "red_team": lambda: "cancelled"},
+            poll_s=10,
+            ceiling_s=0,
+            sleep=sleep,
+            clock=clock,
+        )
+
+        assert statuses["red_team"] is None
+
+
+class TestTheRunStatusReaders:
+    """The two queries the wait polls, against a cursor double."""
+
+    def _read(self, reader, row):
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchone.return_value = row
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect", return_value=mock_conn
+        ):
+            status = reader(
+                "agent-1",
+                "postgresql://test/tenant",
+                datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+            )
+        return status, mock_cursor.execute.call_args
+
+    def test_the_eval_reader_keys_on_the_agent_and_the_dispatch_moment(self):
+        """`started_at >= %s` is the whole point of the query. Without it last
+        night's terminal run satisfies the wait instantly and the checklist is
+        straight back to grading a row it did not cause."""
+        from app.services.deployment_service import latest_eval_run_status_since
+
+        since = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+        status, call = self._read(latest_eval_run_status_since, ("complete",))
+
+        assert status == "complete"
+        sql, params = call.args
+        assert "FROM eval_runs" in sql
+        assert "started_at >= %s" in sql, (
+            f"the dispatch boundary is missing from the query: {sql}"
+        )
+        assert "ORDER BY started_at DESC LIMIT 1" in sql
+        assert params == ("m6:agent-1", since), (
+            "m6:{agent_id} is the eval kind, matching _LATEST_RUN_SQL, so a "
+            f"second agent on the same tenant DB is not read as this one: {params}"
+        )
+
+    def test_the_red_team_reader_keys_on_the_m7_kind(self):
+        from app.services.deployment_service import latest_red_team_run_status_since
+
+        since = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+        status, call = self._read(latest_red_team_run_status_since, ("failed",))
+
+        assert status == "failed"
+        sql, params = call.args
+        assert "FROM red_team_runs" in sql
+        assert "started_at >= %s" in sql, (
+            f"the dispatch boundary is missing from the query: {sql}"
+        )
+        assert params == ("m7:agent-1", since), (
+            "m7:{agent_id} is what run_red_team INSERTs and what its own "
+            f"idempotency guard reads: {params}"
+        )
+
+    def test_no_row_yet_reads_as_none(self):
+        """The run has not started, or the boundary excluded it. Either way there
+        is nothing terminal to read."""
+        from app.services.deployment_service import latest_eval_run_status_since
+
+        status, _ = self._read(latest_eval_run_status_since, None)
+
+        assert status is None
+
+    def test_an_unreachable_tenant_db_reads_as_none_rather_than_raising(self):
+        """A read failure mid-wait must not fail a checklist that still owes the
+        owner a report. It keeps the wait waiting and expires as absent."""
+        from app.services.deployment_service import latest_eval_run_status_since
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            side_effect=RuntimeError("tenant DB unreachable"),
+        ):
+            status = latest_eval_run_status_since(
+                "agent-1",
+                "postgresql://test/tenant",
+                datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+            )
+
+        assert status is None
+
+
+class TestTheDispatchMoment:
+    """The boundary comes from the tenant DB's clock, not the worker's."""
+
+    def test_it_reads_the_tenant_clock(self):
+        """Both jobs INSERT with the DB's NOW(), and the wait compares against
+        that column. A worker clock a few seconds ahead would put the boundary
+        after the row the checklist just caused, and the wait would expire on a
+        run that had finished."""
+        from app.services.deployment_service import _dispatch_moment
+
+        tenant_now = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchone.return_value = (tenant_now,)
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect", return_value=mock_conn
+        ):
+            moment = _dispatch_moment("postgresql://test/tenant")
+
+        assert moment == tenant_now
+        assert mock_cursor.execute.call_args.args[0] == "SELECT now()"
+
+    def test_an_unreadable_tenant_clock_falls_back_to_the_worker(self):
+        """A checklist that cannot read the clock still runs. The fallback
+        carries the skew risk, which is why the service logs it."""
+        from app.services.deployment_service import _dispatch_moment
+
+        before = datetime.now(timezone.utc)
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            side_effect=RuntimeError("tenant DB unreachable"),
+        ):
+            moment = _dispatch_moment("postgresql://test/tenant")
+
+        assert moment >= before
+
+
+class TestTheRedTeamDispatchHelper:
+    """CLAUDE.md rule 1 and CTL-08, on the new dispatch."""
+
+    def _dispatch(self, agent_id, fake_task):
+        from app.worker.tasks.runtime import deployment as deployment_task
+
+        module = MagicMock()
+        module.run_red_team = fake_task
+        with patch.dict(
+            "sys.modules", {"app.worker.tasks.runtime.red_team": module}
+        ):
+            return deployment_task._dispatch_red_team_run(agent_id)
+
+    def test_it_passes_only_the_agent_id_to_the_runtime_queue(self):
+        agent_id = str(uuid.uuid4())
+        fake_task = MagicMock()
+
+        assert self._dispatch(agent_id, fake_task) is True
+
+        fake_task.apply_async.assert_called_once_with(
+            kwargs={"agent_id": agent_id}, queue="runtime"
+        )
+
+    def test_a_broker_failure_is_reported_rather_than_raised(self):
+        """The checklist still owes the owner a verdict. The run then never
+        reaches terminal, the wait reports it absent, and the gate blocks."""
+        fake_task = MagicMock()
+        fake_task.apply_async.side_effect = RuntimeError("broker unreachable")
+
+        assert self._dispatch("agent-1", fake_task) is False
