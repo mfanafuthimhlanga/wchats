@@ -91,10 +91,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_tenant
 from app.core.database import get_async_db
 from app.core.security import fernet_decrypt
-from app.domain.eval_result import DatasetOutcome, EvalResult, InvalidEvalResult
+from app.domain.eval_result import (
+    DatasetOutcome,
+    EvalResult,
+    InvalidEvalResult,
+    metrics_of,
+    run_level_metrics,
+    unmeasured_metrics,
+)
 from app.models.agent import Agent
 from app.models.tenant import Tenant
 from app.services.eval_service import EVAL_DATASETS
+from app.services.eval_service import GATED_METRIC_KEYS as EVAL_GATED_METRIC_KEYS
 from app.services.eval_service import METRIC_KEYS as EVAL_METRIC_KEYS
 from app.worker.tasks.runtime.eval import run_eval_suite
 
@@ -170,13 +178,12 @@ _LIST_EVAL_RUNS_PRE_0022_SQL = """
 # waiting to happen.
 METRIC_KEYS = EVAL_METRIC_KEYS
 
-# The two metrics the promotion gate is defined over (D-21 LOCKED). Kept
-# separate from METRIC_KEYS because `passed` is a claim about these two only.
-# The NUMBERS behind them are not read here at all any more, because each row
-# stores the threshold its verdict was reached against. Which metrics carry a
-# verdict is still this route's question, and `threshold_for` returns a number
-# for exactly these two. test_eval_service.py pins the pair together.
-GATED_METRIC_KEYS = ("faithfulness", "answer_relevancy")
+# The two metrics the promotion gate is defined over (D-21 LOCKED). Imported
+# beside `threshold_for`, which returns a number for exactly these two, rather
+# than restated: `deployment_service` counts verdicts over the same pair, and a
+# console that gates on faithfulness while a deploy gate reads three metrics is
+# the same shape of defect as audit D3's copied column name.
+GATED_METRIC_KEYS = EVAL_GATED_METRIC_KEYS
 
 
 # OPS-12: ORRERY ledger — eval provenance (born-in-production vs authored counts).
@@ -206,11 +213,6 @@ DATASET_UNATTRIBUTED = "unattributed"
 RESULT_PRESENT = "present"
 RESULT_ABSENT = "absent"
 
-#: A metric with no reading. `observations` is 0 rather than absent because the
-#: shape has to match `Measurement.payload`, which is what a measured metric is
-#: rendered from, key for key.
-_UNMEASURED_METRIC = {"value": None, "measured": False, "observations": 0}
-
 #: A dataset the record does not report. Counts are null, not zero: "this run
 #: covered no golden rows" and "this response cannot say" are different claims
 #: and a zero asserts the first about a question nobody asked.
@@ -221,27 +223,24 @@ _UNREPORTED_DATASET = {
 }
 
 
+def _rendered(metrics: dict) -> dict:
+    """Four Measurements as JSON, {value, measured, observations} each.
+
+    The observation count travels with every number, so a reader can see that a
+    0.91 came off four rows. `app.domain.eval_result` decides which Measurement
+    belongs to which key; this function only turns it into a response body.
+    """
+    return {metric: reading.payload for metric, reading in metrics.items()}
+
+
 def _unmeasured_metrics() -> dict:
     """Four metrics, none of them read."""
-    return {metric: dict(_UNMEASURED_METRIC) for metric in METRIC_KEYS}
+    return _rendered(unmeasured_metrics())
 
 
 def _metrics_of(outcome: DatasetOutcome) -> dict:
-    """One dataset's four metrics, copied out of the record unchanged.
-
-    `Measurement.payload` is the shape, {value, measured, observations}, so the
-    observation count travels with every number and a reader can see that a 0.91
-    came off four rows. A metric the record does not report reads unmeasured,
-    which is the same thing it read before it had a record at all.
-    """
-    return {
-        metric: (
-            outcome.metrics[metric].payload
-            if metric in outcome.metrics
-            else dict(_UNMEASURED_METRIC)
-        )
-        for metric in METRIC_KEYS
-    }
+    """One dataset's four metrics, copied out of the record unchanged."""
+    return _rendered(metrics_of(outcome))
 
 
 def _dataset_block(record: EvalResult | None) -> dict:
@@ -281,37 +280,16 @@ def _dataset_block(record: EvalResult | None) -> dict:
 
 
 def _run_level_metrics(record: EvalResult | None) -> tuple[dict, str | None]:
-    """The run's four metrics and the dataset they were lifted from.
+    """The run's four metrics as JSON, and the dataset they were lifted from.
 
-    THE RECORD HOLDS NO RUN-LEVEL MEAN and that is the point of it. A golden
-    mean and an exploratory mean answer different questions: the golden rows are
-    fixed and run in full every night, so consecutive runs are a paired per-item
-    comparison, while the exploratory sample rotates and its mean moves whenever
-    the draw moves. One number over both moves with the draw while looking like
-    a quality change, which is why
-    `.dev/reference/260818-llm-eval-fundamentals.md` section 11 forbids a pooled
-    rate outright.
-
-    So a run-level reading exists only when there is nothing to pool: exactly
-    one dataset scored a row. Then its measurements ARE the run's, copied over
-    verbatim. When both scored, this returns four unmeasured metrics and a null
-    dataset name, and the numbers stay under `datasets` where the record keeps
-    them apart. Unknown, never an average nobody computed.
-
-    Returns:
-        (metrics, dataset_name), dataset_name None when no single dataset
-        produced the reading.
+    `app.domain.eval_result.run_level_metrics` is the rule and carries the
+    reasoning: a run-level reading exists only when exactly one dataset scored a
+    row, because there is no pooled mean to fall back on. The deploy gate asks
+    the same function, so the console and the gate cannot name different
+    datasets.
     """
-    if record is None:
-        return _unmeasured_metrics(), None
-    scoring = [
-        name
-        for name in EVAL_DATASETS
-        if name in record.datasets and record.datasets[name].scored > 0
-    ]
-    if len(scoring) != 1:
-        return _unmeasured_metrics(), None
-    return _metrics_of(record.datasets[scoring[0]]), scoring[0]
+    metrics, dataset = run_level_metrics(record)
+    return _rendered(metrics), dataset
 
 
 def _record_of(run_id: str, payload) -> EvalResult | None:

@@ -822,3 +822,66 @@ class EvalResult:
             ),
             rule_version=payload.get("rule_version", RULE_VERSION),
         )
+
+
+#: A metric nothing reported. One shared object, because Measurement is frozen
+#: and every unreported metric is the same absence.
+UNMEASURED = Measurement(value=None, observations=0, measured=False)
+
+
+def unmeasured_metrics() -> dict[str, Measurement]:
+    """The four metrics, none of them read."""
+    return {metric: UNMEASURED for metric in METRIC_KEYS}
+
+
+def metrics_of(outcome: DatasetOutcome) -> dict[str, Measurement]:
+    """One dataset's four metrics, lifted out of the record unchanged.
+
+    A metric the record does not report reads unmeasured, which is the same
+    thing it read before the run had a record at all. Nothing is averaged and
+    nothing is defaulted to a number.
+    """
+    return {metric: outcome.metrics.get(metric, UNMEASURED) for metric in METRIC_KEYS}
+
+
+def scoring_datasets(record: EvalResult | None) -> list[str]:
+    """Which reported datasets scored a row, in EVAL_DATASETS order."""
+    if record is None:
+        return []
+    return [
+        name
+        for name in EVAL_DATASETS
+        if name in record.datasets and record.datasets[name].scored > 0
+    ]
+
+
+def run_level_metrics(record: EvalResult | None) -> tuple[dict[str, Measurement], str | None]:
+    """The run's four metrics and the dataset they were lifted from. THE ONE RULE.
+
+    THIS RECORD HOLDS NO RUN-LEVEL MEAN and that is the point of it. A golden
+    mean and an exploratory mean answer different questions: the golden rows are
+    fixed and run in full every night, so consecutive runs are a paired per-item
+    comparison, while the exploratory sample rotates and its mean moves whenever
+    the draw moves. One number over both moves with the draw while looking like a
+    quality change, which is why
+    `.dev/reference/260818-llm-eval-fundamentals.md` section 11 forbids a pooled
+    rate outright.
+
+    So a run-level reading exists only when there is nothing to pool: exactly one
+    dataset scored a row. Then its measurements ARE the run's, copied over
+    verbatim, and the returned name says which. When both scored, this returns
+    four unmeasured metrics and no name, and the numbers stay per dataset where
+    the record keeps them apart. Unknown, never an average nobody computed.
+
+    It lives here rather than in a reader because the console route and the
+    deploy gate both ask it. Two copies of a selection rule is how a deploy gate
+    and the screen the owner is looking at come to name different datasets.
+
+    Returns:
+        (metrics, dataset_name), dataset_name None when no single dataset
+        produced the reading.
+    """
+    scoring = scoring_datasets(record)
+    if record is None or len(scoring) != 1:
+        return unmeasured_metrics(), None
+    return metrics_of(record.datasets[scoring[0]]), scoring[0]

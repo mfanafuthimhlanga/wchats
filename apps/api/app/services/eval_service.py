@@ -506,6 +506,15 @@ def judge_identity_for(metric: str) -> JudgeIdentity | None:
     )
 
 
+# The two metrics a deploy is gated on (D-21 LOCKED). They are exactly the two
+# `threshold_for` returns a number for, and `test_the_route_reads_the_same_gate_the_writer_stored`
+# pins the pair to that function rather than letting a second list drift from it.
+# It lives beside the gate definition, below both readers, because the console
+# route and the deploy collector each need to know which metrics carry a verdict
+# and two tuples is how they come to disagree about it.
+GATED_METRIC_KEYS: tuple[str, ...] = ("faithfulness", "answer_relevancy")
+
+
 def threshold_for(metric: str) -> float | None:
     """The number this dimension's score is compared against, or None for no gate.
 

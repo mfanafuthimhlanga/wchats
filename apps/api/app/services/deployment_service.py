@@ -27,8 +27,17 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.model_client import LedgerContext, make_async_client, route_for
+from app.domain.eval_result import (
+    EVAL_DATASETS,
+    EvalResult,
+    InvalidEvalResult,
+    metrics_of,
+    run_level_metrics,
+    unmeasured_metrics,
+)
 from app.domain.tool_def import ToolDefinition, tool
 from app.services.capability_service import canonical_envelope_hash
+from app.services.eval_service import GATED_METRIC_KEYS
 from app.services.tool_loop import run_tool_loop
 from app.services.transactional.enforcement import _parse_rate_limit
 
@@ -95,6 +104,20 @@ EVAL_SIGNAL_AGENT_NOT_INVOKED = "agent_not_invoked"
 # reach the end of its own body has no admissible account of what it covered,
 # so its numbers are withheld like the rest.
 EVAL_SIGNAL_RUN_FAILED = "run_failed"
+
+# The seventh state (#51 slice 4). A run that completed, invoked the agent, and
+# wrote no `eval_runs.result` record. Until this slice the collector rebuilt the
+# run's numbers with its own `AVG`/`COUNT` over `eval_results` — a second
+# arithmetic over one run, free to disagree with the console's, and the one that
+# disagreed was whichever the deploy gate happened to read. The record is now the
+# only derivation, so a run without one has no numbers at all and says so.
+#
+# Three things reach it and they read the same way here: a tenant DB that
+# predates alembic_tenant 0022, a run that died before `write_eval_result`, and a
+# stored payload that breaks a construction rule on the way out. The log says
+# which. It is NOT reported as 'no_valid_scores', which is the claim that the
+# judge produced nothing — a different failure with a different remedy.
+EVAL_SIGNAL_NO_RECORD = "no_record"
 
 RED_TEAM_SIGNAL_MEASURED = "measured"
 # An agent that has never been security-tested. This state is the whole reason
@@ -163,15 +186,16 @@ Blocking conditions (always use recommendation='block'):
 - red_team_summary.deployment_blocked == True
 - DEP_BLOCK_ON_HIGH_RED_TEAM is True and red_team_summary.high_count > 0
 - Any eval metric pass_rate < 0.70
-- eval_summary.eval_signal is anything other than 'measured'. The six states
-  are 'measured', 'no_runs' (never evaluated), 'no_valid_scores' (a run that
-  produced no valid score for any metric), 'agent_not_invoked' (a run that
+- eval_summary.eval_signal is anything other than 'measured'. The seven states
+  are 'measured', 'no_runs' (never evaluated), 'no_record' (a run that finished
+  and wrote down nothing about what it measured), 'no_valid_scores' (a run whose
+  record reports no metric on any dataset), 'agent_not_invoked' (a run that
   scored something OTHER than this agent's own answers), 'run_failed' (a run
   whose own terminal status is not 'complete', whatever it managed to score on
   the way) and 'unavailable' (the signal could not be read). Only 'measured' is
   evidence. An absent measurement is UNKNOWN quality, never acceptable quality,
-  and eval_summary.pass_rates is null — not an empty object — in every one of
-  the other five states.
+  and every number on the payload is null — not zero, not an empty object — in
+  every one of the other six states.
 - eval_summary.agent_invoked is anything other than true. Until this release
   the eval scored each scenario's own reference answer instead of asking the
   agent, so its metrics were near-perfect by construction and said nothing
@@ -210,17 +234,37 @@ Ship condition (recommendation='ship'):
 - verified_qa_stats.row_count >= 50
 
 Denominators: eval_summary carries three different counts and you must not
-collapse them. scenario_count is how many scenarios the run ATTEMPTED (read
-from the run's own record of which rows it covered), valid_scenario_count is
-how many of those carried a label and could be scored at all, and
-scored_scenario_count is how many actually produced a score. A pass rate over a
-handful of scored scenarios out of many attempted is a weak signal and you must
-say so rather than reporting the rate alone. eval_summary.denominator_source
-says where the attempted count came from: 'run_config' is the run's own
-figure, 'eval_results' means the run recorded no dataset composition and the
-attempted count is a floor derived from the rows that produced results — in
-that case it CANNOT exceed the scored count and its equality with it is an
-artefact, not evidence of full coverage.
+collapse them. scenario_count is how many scenarios the run ATTEMPTED,
+valid_scenario_count is how many of those carried a label and could be scored at
+all, and scored_scenario_count is how many actually produced a score. A pass
+rate over a handful of scored scenarios out of many attempted is a weak signal
+and you must say so rather than reporting the rate alone. All three are lifted
+off the run's own frozen record and eval_summary.denominator_source says so
+('eval_result'); a null there means the run wrote no record and none of the
+three counts exists.
+
+TWO DATASETS, NEVER AVERAGED TOGETHER. eval_summary.datasets carries 'golden'
+and 'exploratory' separately, each with its own three counts and its own four
+metrics, and each metric as {value, measured, observations}. The golden set is
+fixed and runs in full every night, so two runs of it are a paired comparison;
+the exploratory sample rotates, so its mean moves whenever the draw moves. One
+number over both would move with the draw while looking like a quality change.
+Never add them, never average them, and never present one as the run's.
+
+So eval_summary.pass_rates carries a run-level number ONLY when exactly one
+dataset scored anything, and eval_summary.pass_rates_dataset names which one —
+quote that name whenever you quote those numbers. When both halves scored,
+pass_rates is null and the numbers you must reason about are the per-dataset
+ones under eval_summary.datasets. Apply the blocking and warning thresholds
+below to EACH measured dataset separately: a run ships only if every dataset
+that measured a metric clears the bar for it. A metric whose "measured" is false
+was not scored at all; it is unknown, never a zero and never a pass, and no
+number of unmeasured metrics adds up to evidence.
+
+Per-question results: eval_summary.failing_scenarios is how many scenarios the
+judge decided against, and eval_summary.unmeasured_scenarios is how many it did
+not decide at all. They are two different counts and the second is not a
+success. Null in either means the results could not be read, which is not zero.
 
 red_team_summary.coverage_source says the same thing for the security half:
 'run' means the stored coverage of the run that produced these counts, while
@@ -462,17 +506,144 @@ def _make_iframe_snippet(agent_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-# Where `scenario_count` (attempted) came from. The distinction is the P2 review
-# fix: attempted used to be COUNT(DISTINCT scenario_id) over eval_results, i.e.
-# derived from the rows the judge RETURNED. write_eval_results only ever writes a
-# row per score the judge produced, so a scenario the judge dropped entirely
-# leaves no trace there and `attempted` could not exceed `scored` except in the
-# all-NULL-metric case. The prompt's instruction — "a pass rate over a handful of
-# scored scenarios out of many attempted is a weak signal" — was therefore
-# comparing two numbers computed from the same rows and could never fire. A rate
-# over a denominator that is not the run's is not the run's rate.
-DENOMINATOR_SOURCE_RUN_CONFIG = "run_config"
-DENOMINATOR_SOURCE_EVAL_RESULTS = "eval_results"
+# Where the run's three counts came from. Since #51 slice 4 there is one answer
+# and the constant exists to say so on the payload rather than to choose between
+# sources. `eval_runs.result` is the record `run_eval_suite` writes once, at the
+# end, out of the summaries it already holds. The two figures this collector used
+# to pick between are both gone: the `COUNT(DISTINCT scenario_id)` over
+# `eval_results` counted the scenarios the judge came BACK about, so it was
+# bounded below by `scored` and could never expose the thirty-five rows a partial
+# judge outage dropped, and `config["dataset"]` was the run's own account read
+# through a second parser. A rate over a denominator that is not the run's is not
+# the run's rate, and two parsers for one denominator is how they came to differ.
+DENOMINATOR_SOURCE_EVAL_RECORD = "eval_result"
+
+#: What the run reports when it has a record, and when it has none. Same two
+#: words the console route reports, so an owner reading the deploy report and an
+#: operator reading the eval list see one vocabulary.
+RESULT_PRESENT = "present"
+RESULT_ABSENT = "absent"
+
+#: A metric with no reading, as JSON. `observations` is 0 rather than absent
+#: because the shape has to match `Measurement.payload` key for key.
+UNMEASURED_READING = {"value": None, "measured": False, "observations": 0}
+
+#: A dataset the record does not report. Counts are null, not zero: "this run
+#: covered no golden rows" and "this payload cannot say" are different claims and
+#: a zero asserts the first about a question nobody asked.
+_UNREPORTED_DATASET = {
+    "scenario_count": None,
+    "valid_scenario_count": None,
+    "scored_scenario_count": None,
+}
+
+
+def _readings(metrics: dict, *, measured: bool) -> dict:
+    """Four Measurements as JSON, suppressed whole when the signal is not evidence.
+
+    `measured` is the SIGNAL's state, not the metric's. Every absent-signal state
+    withholds its numbers: a tautological run's 0.99 and a failed run's full set
+    of scores are both about something other than this agent's answer quality,
+    and an orchestrator handed them narrates them above a refusal, which is the
+    part a non-technical owner believes. Withheld reads as unmeasured, which is
+    what those numbers actually are.
+    """
+    return {
+        metric: (reading.payload if measured else dict(UNMEASURED_READING))
+        for metric, reading in metrics.items()
+    }
+
+
+def _dataset_block(record: EvalResult | None, *, measured: bool) -> dict:
+    """Per dataset: the three counts always, the four metrics only as evidence.
+
+    The counts travel on every state, refusals included. A run that attempted
+    forty and scored none is a different event from a run that attempted none,
+    and the orchestrator is told to weigh a rate against its denominator.
+
+    THE TWO HALVES ARE NEVER ADDED TOGETHER. The golden set is fixed and paired
+    across runs; the exploratory sample rotates. One mean over both moves
+    whenever the draw moves while looking like a quality change.
+    """
+    outcomes = record.datasets if record is not None else {}
+    absent = unmeasured_metrics()
+    return {
+        "available": record is not None,
+        **{
+            name: (
+                {
+                    "scenario_count": outcomes[name].attempted,
+                    "valid_scenario_count": outcomes[name].valid,
+                    "scored_scenario_count": outcomes[name].scored,
+                    "metrics": _readings(
+                        metrics_of(outcomes[name]), measured=measured
+                    ),
+                }
+                if name in outcomes
+                else {
+                    **_UNREPORTED_DATASET,
+                    "metrics": _readings(absent, measured=False),
+                }
+            )
+            for name in EVAL_DATASETS
+        },
+    }
+
+
+def _pass_rates(metrics: dict, *, measured: bool) -> dict | None:
+    """The run-level metrics as the bare {metric: value} the prompt has always read.
+
+    None whenever there is no reading, NEVER an empty dict. Audit D3's fail-open
+    was `{}` reaching "any eval metric pass_rate < 0.70", which cannot fire over
+    nothing, and "all eval metrics >= 0.85", which is vacuously true over
+    nothing. A null cannot be iterated into a clean bill of health by accident.
+
+    An unmeasured metric is absent from the dict rather than present as a zero,
+    and the whole dict is None when none of the four was measured. That is the
+    ordinary state of a run whose two datasets both scored: there is no
+    run-level number to pool them into, `datasets` carries the two halves, and
+    apply_signal_evidence_gate reads its evidence there.
+    """
+    if not measured:
+        return None
+    rates = {
+        metric: reading["value"]
+        for metric, reading in metrics.items()
+        if reading["measured"]
+    }
+    return rates or None
+
+
+def _record_counts(record: EvalResult | None) -> dict:
+    """The run's three counts, where they came from, what it cost, and its proxy.
+
+    Every value is null without a record and none of them is zero. "This run
+    covered nothing" is a measurement and a payload with no record did not make
+    it. `invocation` is here too: it is the record's own counter block, which is
+    absent for the same reason and under the summariser's own names.
+    """
+    if record is None:
+        return {
+            "scenario_count": None,
+            "valid_scenario_count": None,
+            "scored_scenario_count": None,
+            "denominator_source": None,
+            "result": RESULT_ABSENT,
+            "invocation": None,
+            "cost": None,
+            "context_proxy_version": None,
+        }
+    return {
+        # attempted, the VALID denominator, and what actually scored.
+        "scenario_count": record.attempted,
+        "valid_scenario_count": record.valid,
+        "scored_scenario_count": record.scored,
+        "denominator_source": DENOMINATOR_SOURCE_EVAL_RECORD,
+        "result": RESULT_PRESENT,
+        "invocation": record.invocation.payload,
+        "cost": record.cost.payload,
+        "context_proxy_version": record.context_proxy_version,
+    }
 
 
 def _eval_summary(
@@ -480,44 +651,42 @@ def _eval_summary(
     *,
     last_run_at: str | None = None,
     last_run_status: str | None = None,
-    scenario_count: int = 0,
-    valid_scenario_count: int | None = None,
-    scored_scenario_count: int = 0,
-    denominator_source: str | None = None,
-    pass_rates: dict | None = None,
+    record: EvalResult | None = None,
+    verdicts: tuple[int | None, int | None] = (None, None),
     agent_invoked: bool | None = None,
     detail: str | None = None,
 ) -> dict:
     """Build an eval signal payload in which absence is always distinguishable.
 
-    `pass_rates` is None for every state except EVAL_SIGNAL_MEASURED. That is
-    the correction to audit D3's second half: the broken query raised, the
-    caller substituted `{"pass_rates": {}}`, and an empty dict reads as "we
-    looked and found no failing metric" to anything that iterates it — which is
-    precisely how the blocking condition "any eval metric pass_rate < 0.70"
-    came to be unable to fire. A None cannot be iterated into a clean bill of
-    health by accident.
-
-    `failing_scenarios` is likewise None when nothing was measured: zero
-    failures is a measurement, and we did not make it.
+    EVERY NUMBER IS LIFTED OFF `record` (#51 criterion 1). This function computes
+    no mean, no rate and no denominator. `run_level_metrics` decides which
+    dataset a run-level reading may come from and refuses to pool the two, and
+    the per-scenario verdict counts are read off the stored `binary_verdict`
+    column that the judge wrote against the threshold stored beside it.
 
     THREE COUNTS, THREE CLAIMS. `scenario_count` is what the run attempted,
     `valid_scenario_count` how many of those could be scored at all, and
-    `scored_scenario_count` how many produced a score. `denominator_source`
-    says which of the two possible origins the attempted count has, because an
-    attempted count derived from eval_results is bounded below by the scored
-    count and its equality with it means nothing.
+    `scored_scenario_count` how many produced a score. All three are null without
+    a record, because a payload with no record knows none of them and a zero
+    would assert that the run covered nothing.
+
+    `failing_scenarios` and `unmeasured_scenarios` are two counts, not one. A
+    scenario fails when a gated metric's stored verdict is False and is
+    unmeasured when one of them is NULL. The second was invisible until this
+    slice: the count was `sum(1 for v in rates.values() if v < 0.70)` over the
+    metric averages, which counted failing METRICS under a scenario's name and
+    could not see a judge outage at all.
 
     `agent_invoked` DEFAULTS TO None, NOT False (audit D1, P3). False is the
     claim "this run looked and the agent was not invoked"; None is "no run said
     either way", which is what a state with no run at all — no_runs,
     unavailable — actually has. Both are refused by apply_signal_evidence_gate,
-    which tests `is not True`, so the distinction costs nothing at the gate and
-    keeps the payload from asserting a measurement it never made. Same
-    discipline as `valid_scenario_count`.
+    which tests `is not True`.
     """
     measured = signal == EVAL_SIGNAL_MEASURED
-    rates = pass_rates if measured else None
+    lifted, lifted_from = run_level_metrics(record)
+    metrics = _readings(lifted, measured=measured)
+    failing, unmeasured = verdicts
     return {
         "eval_signal": signal,
         "signal_detail": detail,
@@ -532,47 +701,17 @@ def _eval_summary(
         # persistence split, still lands a terminal status on production. Its
         # timestamp must not be read as "an eval finished at T".
         "last_run_status": last_run_status,
-        # attempted, the VALID denominator, and what actually scored.
-        "scenario_count": scenario_count,
-        # None means the run recorded no dataset composition, so how many of the
-        # attempted rows carried a label is genuinely unknown — not zero.
-        "valid_scenario_count": valid_scenario_count,
-        "scored_scenario_count": scored_scenario_count,
-        "denominator_source": denominator_source,
-        "pass_rates": rates,
-        "failing_scenarios": (
-            sum(1 for v in rates.values() if v < 0.70) if rates else None
-        ),
+        **_record_counts(record),
+        "pass_rates": _pass_rates(metrics, measured=measured),
+        # Which dataset the run-level reading was lifted from, null when no
+        # single dataset produced one. A reader finding numbers here and no name
+        # would be reading numbers nobody attributed.
+        "pass_rates_dataset": lifted_from if measured else None,
+        "metrics": metrics,
+        "datasets": _dataset_block(record, measured=measured),
+        "failing_scenarios": failing,
+        "unmeasured_scenarios": unmeasured,
     }
-
-
-def _attempted_from_run_config(config: object) -> tuple[int | None, int | None]:
-    """Read (attempted, valid) out of an eval_runs.config JSONB payload.
-
-    eval_service.dataset_composition() stamps the run's own account of which
-    rows it covered into `config["dataset"]` at run start — before the judge is
-    called, so it is unaffected by anything the judge fails to return. That is
-    the only figure in the system that knows a run fetched forty scenarios and
-    got five back.
-
-    Returns (None, None) for any shape that is not that payload — a pre-0013
-    tenant with no config column, a run inserted before the composition was
-    recorded, a config whose `dataset` is null because the caller had none to
-    give. None is not zero here: "this run did not record what it covered" and
-    "this run covered nothing" are different claims and the caller keeps them
-    apart via denominator_source.
-    """
-    if not isinstance(config, dict):
-        return (None, None)
-    dataset = config.get("dataset")
-    if not isinstance(dataset, dict):
-        return (None, None)
-    attempted = dataset.get("attempted")
-    valid = dataset.get("valid")
-    return (
-        int(attempted) if isinstance(attempted, int) else None,
-        int(valid) if isinstance(valid, int) else None,
-    )
 
 
 def _agent_invoked_from_run_config(config: object) -> bool | None:
@@ -617,124 +756,214 @@ def _agent_invoked_from_run_config(config: object) -> bool | None:
     return None
 
 
+#: The run's own columns, its config and its record, newest terminal run first.
+#: `status <> 'running'` rather than an IN-list of terminal names: a status this
+#: query has not heard of is still terminal, and excluding it would let an
+#: in-flight run shadow the last finished one for the whole of a nightly eval.
+#: kind is 'm6:{agent_id}', so a second agent sharing a tenant DB cannot have its
+#: run read as this agent's.
+_LATEST_RUN_SQL = (
+    "SELECT id, finished_at, status, config, result FROM eval_runs "
+    "WHERE kind = %s AND status <> 'running' "
+    "ORDER BY started_at DESC LIMIT 1"
+)
+
+#: The same run on a tenant DB provisioned before alembic_tenant 0022 gave
+#: `eval_runs` its `result` column. No run on such a tenant recorded what it
+#: measured, which is what the collector reports.
+_LATEST_RUN_PRE_0022_SQL = (
+    "SELECT id, finished_at, status, config FROM eval_runs "
+    "WHERE kind = %s AND status <> 'running' "
+    "ORDER BY started_at DESC LIMIT 1"
+)
+
+#: And again before 0013 gave it `config`. Such a run records no invocation
+#: claim either, so it fails closed at the gate.
+_LATEST_RUN_PRE_0013_SQL = (
+    "SELECT id, finished_at, status FROM eval_runs "
+    "WHERE kind = %s AND status <> 'running' "
+    "ORDER BY started_at DESC LIMIT 1"
+)
+
+#: Per scenario, how many of its GATED rows the judge decided and how many it
+#: decided against. The verdict itself was written at scoring time, against the
+#: threshold stored on the same row, so this reads a decision rather than
+#: reaching one: raising EVAL_FAITHFULNESS_THRESHOLD does not restate the
+#: verdicts of a run already scored under the old gate.
+_SCENARIO_VERDICTS_SQL = (
+    "SELECT scenario_id, "
+    "COUNT(*) FILTER (WHERE binary_verdict IS NOT NULL), "
+    "COUNT(*) FILTER (WHERE binary_verdict IS FALSE) "
+    "FROM eval_results WHERE eval_run_id = %s AND metric = ANY(%s) "
+    "GROUP BY scenario_id"
+)
+
+
+def _latest_run(cur, conn, agent_id: str) -> tuple[tuple | None, object, object]:
+    """The newest terminal run for this agent, with its config and its record.
+
+    Two degradations, each narrow. `UndefinedColumn` on the wide SELECT means the
+    tenant DB predates a migration, which is a degradation and not an outage: the
+    narrower query still answers the question the gate is asking, minus a column
+    the tenant cannot have. A broad except would hide a real read failure behind
+    a payload that looks like a successful degraded read. The aborted transaction
+    is rolled back before the connection will accept another statement.
+
+    Returns:
+        (row3, config, result) — row3 is (id, finished_at, status) or None, and
+        config and result are None on the tenants that cannot carry them.
+    """
+    for sql, width in (
+        (_LATEST_RUN_SQL, 5),
+        (_LATEST_RUN_PRE_0022_SQL, 4),
+        (_LATEST_RUN_PRE_0013_SQL, 3),
+    ):
+        try:
+            cur.execute(sql, (f"m6:{agent_id}",))
+            row = cur.fetchone()
+        except psycopg2.errors.UndefinedColumn:
+            conn.rollback()
+            log.warning(
+                "deployment_service.eval_summary.column_absent",
+                agent_id=agent_id,
+                columns=width,
+                detail="the tenant DB predates the migration that added it",
+            )
+            continue
+        if row is None:
+            return (None, None, None)
+        return (tuple(row[:3]), row[3] if width > 3 else None, row[4] if width > 4 else None)
+    return (None, None, None)
+
+
+def _record_of(run_id: str, payload: object) -> EvalResult | None:
+    """One run's stored record, or None when it has none that can be read.
+
+    A payload written under different construction rules is refused here rather
+    than read as this build's shape, the same call `read_eval_result` makes
+    against the same column. Already being written down is not evidence that a
+    shape is honest.
+    """
+    if payload is None:
+        return None
+    try:
+        return EvalResult.from_payload(payload)
+    except InvalidEvalResult as exc:
+        log.error(
+            "deployment_service.eval_summary.record_unreadable",
+            run_id=run_id,
+            error=str(exc),
+            detail="the stored record breaks a rule; the run reads as unmeasured",
+        )
+        return None
+
+
+def _scenario_verdicts(cur, conn, run_id: str) -> tuple[int | None, int | None]:
+    """(failed, unmeasured) scenarios, counted off the stored gated verdicts.
+
+    A scenario is UNMEASURED when any of its gated metrics carries no verdict,
+    and that is checked first. `context_precision` and `context_recall` have no
+    threshold anywhere in this codebase and so carry no verdict at all; counting
+    them would put two extra failures on every scenario in the table.
+
+    Unmeasured beats failed, which is the same None-first ordering
+    `get_eval_run_results` renders `passed` with. "Nobody decided" reported as
+    "it failed" is what turns a judge outage into an apparent quality collapse
+    and an owner-initiated rollback.
+
+    A scenario with fewer gated rows than there are gated metrics is unmeasured
+    too. A missing row and a NULL verdict are the same absence, and a run written
+    before alembic_tenant 0023 gave the verdict a column has neither.
+
+    Returns:
+        (None, None) on a tenant DB that predates alembic_tenant 0023, so the
+        caller reports the absence rather than a zero. Two counts, never one:
+        zero failures out of forty undecided scenarios is not zero failures.
+    """
+    try:
+        cur.execute(_SCENARIO_VERDICTS_SQL, (run_id, list(GATED_METRIC_KEYS)))
+    except psycopg2.errors.UndefinedColumn:
+        conn.rollback()
+        log.warning(
+            "deployment_service.eval_summary.verdict_column_absent",
+            run_id=run_id,
+            detail=(
+                "tenant DB predates alembic_tenant 0023 — no row on it carries "
+                "a verdict"
+            ),
+        )
+        return (None, None)
+    failed = 0
+    unmeasured = 0
+    for _scenario_id, decided, against in cur.fetchall():
+        if int(decided or 0) < len(GATED_METRIC_KEYS):
+            unmeasured += 1
+        elif int(against or 0) > 0:
+            failed += 1
+    return (failed, unmeasured)
+
+
 def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
-    """Fetch the most recent eval run summary from the tenant DB.
+    """Fetch the most recent eval run's own record from the tenant DB.
 
-    Audit D3 lived in this function's second query, which selected `metric_name`
-    and `run_id`. The columns are `metric` and `eval_run_id`
-    (alembic_tenant/0001:165-174), and evals.py's two routes have always used
-    the right names — this was the only call site that did not. It raised
-    UndefinedColumn on every invocation, the Celery task caught it and
-    substituted an empty `pass_rates` dict, and the deploy gate's eval half
-    therefore failed OPEN: "any eval metric pass_rate < 0.70" over `{}` cannot
-    fire, and "all eval metrics >= 0.85" over `{}` is vacuously true.
+    THE RUN OWNS ITS NUMBERS AND THIS FUNCTION READS THEM (#51 criterion 1).
+    Until slice 4 this ran `SELECT metric, AVG(score), COUNT(score) ... GROUP BY
+    metric` and a second `COUNT(DISTINCT scenario_id)` pair, so the deploy gate
+    derived the run's quality figures a second time, in different SQL, from rows
+    the console was aggregating a third way. Three arithmetics over one run, free
+    to disagree, and the one that disagreed was whichever the gate happened to
+    read. `run_eval_suite` now writes one `EvalResult` at the end of its body and
+    every reader lifts from it.
 
-    Repairing the names alone would have made it worse, not better. Before the
-    P1 persistence split there were no `eval_results` rows on production at all,
-    so the repaired query would return nothing and the gate would keep failing
-    open over real data. Hence the second half: the inner try/except returns a
-    DISTINGUISHABLE value — EVAL_SIGNAL_UNAVAILABLE with `pass_rates=None` —
-    and apply_signal_evidence_gate() refuses to ship on it. Missing data is
-    never passing data.
+    Audit D3 lived in the query this replaces. It selected `metric_name` and
+    `run_id` against a table whose columns are `metric` and `eval_run_id`
+    (alembic_tenant/0001:165-174), raised UndefinedColumn on every invocation,
+    and the Celery task caught it and substituted an empty `pass_rates` dict —
+    so the eval half of the gate failed OPEN, because "any eval metric pass_rate
+    < 0.70" over `{}` cannot fire and "all eval metrics >= 0.85" over `{}` is
+    vacuously true. The column names are gone with the query; the discipline they
+    forced is not. Every absent state below returns a DISTINGUISHABLE value and
+    apply_signal_evidence_gate refuses to ship on it.
 
-    The six states this can report, all different claims:
-        measured         — a run exists, it produced at least one real score.
+    The seven states this can report, all different claims:
+        measured         — a run exists, it completed, it invoked the agent, and
+                           it wrote a record.
         no_runs          — no FINISHED eval run exists for this agent: either
                            nothing has ever been measured, or the only run is
                            still in flight. Both mean "there is no result to
                            read", and both are remedied by waiting for or
                            starting a run — the gate's day-1 path dispatches one
-                           and run_eval_suite's own idempotency guard, whose
-                           window now covers a full run, refuses the duplicate.
-        no_valid_scores  — a run exists and every score is NULL. The judge
-                           produced no valid observation; the run measured
-                           nothing.
-        agent_not_invoked— a run exists and may well carry excellent scores,
-                           but it does not record having asked the agent
-                           anything (audit D1). The scores are about the
-                           dataset's own reference answers. Suppressed, for the
-                           same reason the other absent states suppress theirs.
+                           and run_eval_suite's own idempotency guard refuses the
+                           duplicate.
         run_failed       — the run's own terminal status is not 'complete'. It
                            may carry a full set of scores and an invocation
                            claim; it did not reach the end of its own body, so
                            its account of what it covered is unreliable and its
                            numbers are withheld like every other absent state's.
+        agent_not_invoked— a run exists and may well carry excellent scores, but
+                           it does not record having asked the agent anything
+                           (audit D1). The scores are about the dataset's own
+                           reference answers.
+        no_record        — the run completed and invoked the agent and wrote no
+                           `eval_runs.result`. A tenant DB predating migration
+                           0022, a run that died before `write_eval_result`, or a
+                           stored payload that breaks a construction rule. The
+                           run measured nothing that can be read.
+        no_valid_scores  — the record exists and reports no metric on any
+                           dataset. The judge produced no valid observation.
         unavailable      — the query could not be executed. We did not look.
-
-    THE ATTEMPTED COUNT COMES FROM THE RUN, NOT FROM ITS RESULTS (P2 review).
-    `scenario_count` used to be COUNT(DISTINCT scenario_id) over eval_results,
-    which counts the scenarios the judge came back about — so a run that fetched
-    forty scenarios and got five back reported attempted=5, scored=5, and the
-    thirty-five unmeasured scenarios were invisible to the gate and to the
-    orchestrator's "weak signal" instruction alike. The run's own account of
-    what it covered is stamped into eval_runs.config["dataset"] by
-    dataset_composition() BEFORE the judge is called, so it is read from there
-    when present and the eval_results-derived count is used only as a labelled
-    floor. `denominator_source` says which of the two happened.
 
     Returns dict with keys: eval_signal, signal_detail, agent_invoked,
     last_run_at, last_run_status, scenario_count, valid_scenario_count,
-    scored_scenario_count, denominator_source, pass_rates, failing_scenarios.
+    scored_scenario_count, denominator_source, result, pass_rates,
+    pass_rates_dataset, metrics, datasets, invocation, cost,
+    context_proxy_version, failing_scenarios, unmeasured_scenarios.
     """
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:
         with conn.cursor() as cur:
             try:
-                # kind is 'm6:{agent_id}' — filtered so a second agent sharing a
-                # tenant DB cannot have its run read as this agent's.
-                #
-                # `config` arrived with migration 0013 and a tenant provisioned
-                # before it does not have the column (tenant DBs are migrated at
-                # PROVISION time only). UndefinedColumn on the wide SELECT is
-                # therefore a degradation, not an outage: the narrow pre-0013
-                # SELECT still answers the question the gate is asking, minus the
-                # run's own denominator. Same tolerance shape as
-                # eval_service.insert_eval_run's pre-0013 fallback. The narrow
-                # except matters — a broad one would hide a real read failure
-                # behind a payload that looks like a successful degraded read.
-                #
-                # AN IN-FLIGHT RUN MUST NOT SHADOW THE LAST FINISHED ONE. This
-                # took the newest row with no status filter, so for the whole
-                # duration of a run the gate read a 'running' row that has no
-                # eval_results yet, returned EVAL_SIGNAL_NO_VALID_SCORES and
-                # blocked the deploy with "this agent's answer quality has not
-                # been measured" — while a perfectly good completed run sat one
-                # row below. That window was minutes before P2 and is up to
-                # ninety per agent per night after it (the nightly beat fires at
-                # 02:00 UTC and invokes up to sixty live turns at 90 s each).
-                # `status <> 'running'` rather than an IN-list of terminal names:
-                # a status this query has not heard of is still terminal, and
-                # excluding it would resurrect the same shadowing.
-                run_config: object = None
-                try:
-                    cur.execute(
-                        "SELECT id, finished_at, status, config FROM eval_runs "
-                        "WHERE kind = %s AND status <> 'running' "
-                        "ORDER BY started_at DESC LIMIT 1",
-                        (f"m6:{agent_id}",),
-                    )
-                    wide_row = cur.fetchone()
-                    run_row = wide_row[:3] if wide_row is not None else None
-                    run_config = wide_row[3] if wide_row is not None else None
-                except psycopg2.errors.UndefinedColumn:
-                    # The aborted transaction must be rolled back before the
-                    # connection will accept another statement.
-                    conn.rollback()
-                    log.warning(
-                        "deployment_service.eval_summary.config_column_absent",
-                        agent_id=agent_id,
-                        detail=(
-                            "tenant DB predates alembic_tenant 0013 — the run's "
-                            "own attempted count cannot be read"
-                        ),
-                    )
-                    cur.execute(
-                        "SELECT id, finished_at, status FROM eval_runs "
-                        "WHERE kind = %s AND status <> 'running' "
-                        "ORDER BY started_at DESC LIMIT 1",
-                        (f"m6:{agent_id}",),
-                    )
-                    run_row = cur.fetchone()
+                run_row, run_config, stored = _latest_run(cur, conn, agent_id)
                 if run_row is None:
                     log.info(
                         "deployment_service.eval_summary.no_runs", agent_id=agent_id
@@ -744,92 +973,34 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                         detail="no eval run has ever been recorded for this agent",
                     )
 
-                # Schema names, from alembic_tenant 0001: `metric`, not
-                # `metric_name`; `eval_run_id`, not `run_id`. COUNT(score) is
-                # the per-metric observation count — AVG silently ignores NULLs,
-                # so without it a metric averaged over one row out of forty
-                # would be indistinguishable from one averaged over all forty.
-                cur.execute(
-                    "SELECT metric, AVG(score), COUNT(score) FROM eval_results "
-                    "WHERE eval_run_id = %s GROUP BY metric",
-                    (str(run_row[0]),),
-                )
-                rows = cur.fetchall()
-                pass_rates = {
-                    row[0]: float(row[1]) for row in rows if row[1] is not None
-                }
+                run_id = str(run_row[0])
                 last_run_at = run_row[1].isoformat() if run_row[1] else None
                 last_run_status = run_row[2]
-
-                # The denominators, defined exactly as evals.py's list route
-                # defines them (attempted scenarios, and those that produced at
-                # least one real score) so the deploy gate and the console can
-                # never disagree about how much a run measured.
-                cur.execute(
-                    "SELECT COUNT(DISTINCT scenario_id), "
-                    "COUNT(DISTINCT scenario_id) FILTER (WHERE score IS NOT NULL) "
-                    "FROM eval_results WHERE eval_run_id = %s",
-                    (str(run_row[0]),),
-                )
-                count_row = cur.fetchone() or (0, 0)
-                results_attempted = int(count_row[0] or 0)
-                scored = int(count_row[1] or 0)
-
-                # THE ATTEMPTED COUNT IS THE RUN'S, NOT ITS RESULTS'. The
-                # eval_results-derived figure above counts the scenarios the
-                # judge came BACK about, so it is bounded below by `scored` and
-                # can never expose the thirty-five rows a partial judge outage
-                # dropped. The run stamped what it covered into
-                # config["dataset"] before the judge was ever called; that is
-                # the only figure in the system that knows the difference.
                 agent_invoked = _agent_invoked_from_run_config(run_config)
-
-                config_attempted, config_valid = _attempted_from_run_config(run_config)
-                if config_attempted is not None:
-                    attempted = config_attempted
-                    valid = config_valid
-                    denominator_source = DENOMINATOR_SOURCE_RUN_CONFIG
-                else:
-                    attempted = results_attempted
-                    # None, not results_attempted: how many of the attempted
-                    # rows carried a label is genuinely unrecorded here, and
-                    # substituting a number would invent the denominator this
-                    # whole payload exists to carry.
-                    valid = None
-                    denominator_source = DENOMINATOR_SOURCE_EVAL_RESULTS
+                record = _record_of(run_id, stored)
 
                 # A RUN THAT DID NOT COMPLETE IS NOT A COMPLETED MEASUREMENT
-                # (P3 review), and this is checked ahead of everything below it
-                # because it is the coarsest admissibility question there is:
-                # a run that fell out of its own body part-way has no reliable
-                # account of what it covered, so neither its scores nor its
-                # config claims are worth interpreting. `last_run_status` has
-                # travelled on this payload since P1 and nothing gated on it.
-                #
-                # The reachable shape, after P2, is not exotic: the invocation
-                # claim is patched in BEFORE scoring, so a run that scored
-                # everything, wrote its eval_results, marked itself 'complete'
-                # and then raised in summarise_run_validity (eval.py:1155, one
-                # line after the status write) ends as status='failed' carrying
-                # agent_invoked=true and a full set of high pass_rates. That
-                # combination reached this collector as EVAL_SIGNAL_MEASURED
-                # and shipped.
+                # (P3 review), asked first because it is the coarsest
+                # admissibility question there is: a run that fell out of its own
+                # body part-way has no reliable account of what it covered, so
+                # neither its record nor its config claims are worth
+                # interpreting. The reachable shape is not exotic — the
+                # invocation claim is patched in BEFORE scoring, so a run that
+                # scored everything, wrote its eval_results, marked itself
+                # 'complete' and then raised one line later ends as
+                # status='failed' carrying agent_invoked=true and a full record.
                 if last_run_status != EVAL_RUN_STATUS_COMPLETE:
                     log.warning(
                         "deployment_service.eval_summary.run_did_not_complete",
                         agent_id=agent_id,
                         run_status=last_run_status,
                         recorded_claim=agent_invoked,
-                        scored=scored,
                     )
                     return _eval_summary(
                         EVAL_SIGNAL_RUN_FAILED,
                         last_run_at=last_run_at,
                         last_run_status=last_run_status,
-                        scenario_count=attempted,
-                        valid_scenario_count=valid,
-                        scored_scenario_count=scored,
-                        denominator_source=denominator_source,
+                        record=record,
                         agent_invoked=agent_invoked,
                         detail=(
                             "the most recent eval run did not complete "
@@ -838,31 +1009,24 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                     )
 
                 # THE ROOT CAUSE IS REPORTED BEFORE THE SYMPTOM (audit D1, P3).
-                # This is checked ahead of `not pass_rates` because a run can be
-                # in both states at once and only one of them names what is
-                # wrong. A pre-D1 run has scores AND no invocation claim; a
-                # below-floor P2 run writes no eval_results AND records
-                # agent_invoked=false. Reporting the second as
-                # 'no_valid_scores' would send the owner after the judge when
-                # the judge was never the problem, and would leave the far
-                # larger population — every historical run, all of which DO have
-                # scores — with no state of its own at all.
+                # This is asked ahead of the record because a run can be in both
+                # states at once and only one of them names what is wrong. A
+                # pre-D1 run has scores AND no invocation claim; a below-floor
+                # run writes no eval_results AND records agent_invoked=false.
+                # Reporting the second as a missing record would send the owner
+                # after the writer when the judge was never the problem.
                 if agent_invoked is not True:
                     log.warning(
                         "deployment_service.eval_summary.agent_not_invoked",
                         agent_id=agent_id,
                         run_status=last_run_status,
                         recorded_claim=agent_invoked,
-                        scored=scored,
                     )
                     return _eval_summary(
                         EVAL_SIGNAL_AGENT_NOT_INVOKED,
                         last_run_at=last_run_at,
                         last_run_status=last_run_status,
-                        scenario_count=attempted,
-                        valid_scenario_count=valid,
-                        scored_scenario_count=scored,
-                        denominator_source=denominator_source,
+                        record=record,
                         agent_invoked=agent_invoked,
                         detail=(
                             "the most recent eval run recorded that the agent "
@@ -873,28 +1037,50 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                         ),
                     )
 
-                if not pass_rates:
-                    # The run exists and scored nothing — every score NULL, or
-                    # no eval_results rows at all. Unknown, not clean.
-                    #
-                    # The counts travel here too. A run that attempted forty and
-                    # scored none is a different event from a run that attempted
-                    # none, and reporting both as zeros made them identical.
+                if record is None:
+                    # The run has no numbers, so this payload has none either.
+                    # Every count on it is null rather than zero: a zero asserts
+                    # that the run covered nothing, which is a measurement
+                    # nobody made.
+                    log.warning(
+                        "deployment_service.eval_summary.no_record",
+                        agent_id=agent_id,
+                        run_id=run_id,
+                        run_status=last_run_status,
+                    )
+                    return _eval_summary(
+                        EVAL_SIGNAL_NO_RECORD,
+                        last_run_at=last_run_at,
+                        last_run_status=last_run_status,
+                        agent_invoked=agent_invoked,
+                        detail=(
+                            "the most recent eval run recorded no result, so "
+                            "what it measured cannot be read"
+                        ),
+                    )
+
+                verdicts = _scenario_verdicts(cur, conn, run_id)
+                if not any(
+                    reading.measured
+                    for outcome in record.datasets.values()
+                    for reading in outcome.metrics.values()
+                ):
+                    # The record exists and reports no metric on any dataset.
+                    # Unknown, not clean. The counts still travel: a run that
+                    # attempted forty and scored none is a different event from
+                    # a run that attempted none.
                     log.warning(
                         "deployment_service.eval_summary.no_valid_scores",
                         agent_id=agent_id,
                         run_status=last_run_status,
-                        attempted=attempted,
-                        denominator_source=denominator_source,
+                        attempted=record.attempted,
                     )
                     return _eval_summary(
                         EVAL_SIGNAL_NO_VALID_SCORES,
                         last_run_at=last_run_at,
                         last_run_status=last_run_status,
-                        scenario_count=attempted,
-                        valid_scenario_count=valid,
-                        scored_scenario_count=scored,
-                        denominator_source=denominator_source,
+                        record=record,
+                        verdicts=verdicts,
                         agent_invoked=agent_invoked,
                         detail=(
                             "the most recent eval run produced no valid score "
@@ -906,18 +1092,13 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
                     EVAL_SIGNAL_MEASURED,
                     last_run_at=last_run_at,
                     last_run_status=last_run_status,
-                    scenario_count=attempted,
-                    valid_scenario_count=valid,
-                    scored_scenario_count=scored,
-                    denominator_source=denominator_source,
+                    record=record,
+                    verdicts=verdicts,
                     agent_invoked=agent_invoked,
-                    pass_rates=pass_rates,
                 )
             except Exception as exc:
-                # The defensive shape _fetch_verified_qa_stats_sync already had
-                # (:277-298), applied here at last — but returning an UNKNOWN
-                # rather than that function's zeros. Zeros are a measurement;
-                # this is the absence of one.
+                # An UNKNOWN rather than the zeros _fetch_verified_qa_stats_sync
+                # returns. Zeros are a measurement; this is the absence of one.
                 log.warning(
                     "deployment_service.eval_summary.query_failed",
                     agent_id=agent_id,
@@ -1487,27 +1668,17 @@ def _compute_envelope_hash_sync(agent_id: str) -> str:
 # with an honestly absent value rather than a plausible zero — the old eval
 # substitution was `{"pass_rates": {}, "failing_scenarios": 0}`, which asserts
 # "no metric is failing" about a query that never executed.
-EVAL_SUMMARY_UNAVAILABLE_SIGNAL: dict = {
-    "eval_signal": EVAL_SIGNAL_UNAVAILABLE,
-    "signal_detail": "the eval signal collector raised",
-    # None, never False: the collector raised, so no run was asked whether it
-    # invoked the agent. The gate refuses None and False identically, so this
-    # costs nothing and avoids attributing a claim to a run nobody read.
-    "agent_invoked": None,
-    "last_run_at": None,
-    "last_run_status": None,
-    "scenario_count": 0,
-    # None, never 0: the collector raised, so how many rows carried a label is
-    # not something this payload knows.
-    "valid_scenario_count": None,
-    "scored_scenario_count": 0,
-    "denominator_source": None,
-    "pass_rates": None,
-    "failing_scenarios": None,
-}
+# Built through the same constructor the collector uses, so the substitute and a
+# real absent signal cannot drift apart key-for-key. It was a hand-written dict
+# until #51 slice 4, and the two zeros it carried (`scenario_count`,
+# `scored_scenario_count`) were the last place in this module where a collector
+# that never executed still asserted a count. `agent_invoked` is None and not
+# False for the same reason: the collector raised, so no run was asked.
+EVAL_SUMMARY_UNAVAILABLE_SIGNAL: dict = _eval_summary(
+    EVAL_SIGNAL_UNAVAILABLE,
+    detail="the eval signal collector raised",
+)
 
-# Built through the same constructor the collector uses, so the substitute and
-# a real absent signal cannot drift apart key-for-key.
 RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL: dict = _red_team_summary(
     RED_TEAM_SIGNAL_UNAVAILABLE,
     detail="the red-team signal collector raised",
@@ -1592,6 +1763,161 @@ def _agent_not_invoked_warning(eval_summary: dict) -> DeploymentWarning:
     )
 
 
+#: The warning a 'measured' signal carrying no quality evidence produces. One id
+#: for both causes, because the remedy is one thing: run a fresh eval.
+EVAL_QUALITY_UNMEASURED_WARNING_ID = "eval_quality_unmeasured"
+
+
+def _unmeasured_gated_metrics(eval_summary: dict) -> list[str]:
+    """Which gated metrics no reported dataset measured. Fail-closed reading.
+
+    Read off `datasets` rather than off the run-level `metrics`, and the
+    difference is the whole point. A run whose golden and exploratory halves both
+    scored has NO run-level reading at all — there is no pooled mean and this
+    codebase refuses to invent one — so a gate reading `metrics` alone would
+    refuse every tenant with a designated golden set while its numbers sat one
+    key over. A gate reading `pass_rates` alone would do worse: null there is
+    both "we measured nothing" and "we measured both halves", and shipping over
+    the second because it looks like the first is the fail-open this function
+    exists to close.
+
+    `is True` rather than truthiness: a missing key, a missing dataset block and
+    a hand-built summary that dropped the field all read as unmeasured, which is
+    the same discipline the `agent_invoked` arm applies one field over.
+    """
+    datasets = eval_summary.get("datasets") or {}
+    missing = []
+    for metric in GATED_METRIC_KEYS:
+        measured = any(
+            ((datasets.get(name) or {}).get("metrics") or {})
+            .get(metric, {})
+            .get("measured")
+            is True
+            for name in EVAL_DATASETS
+        )
+        if not measured:
+            missing.append(metric)
+    return missing
+
+
+def _quality_evidence_warning(eval_summary: dict) -> DeploymentWarning | None:
+    """Refuse a 'measured' signal that carries no quality evidence, or None.
+
+    TWO CAUSES, ONE REMEDY. A gated metric no dataset measured, and a run whose
+    per-scenario verdicts could not be read at all. Both are missing evidence
+    and neither is a low score, so both refuse rather than being narrated as
+    quality.
+
+    `failing_scenarios is None` is the second. The count is read off the stored
+    `binary_verdict` column, so None means the column could not be read and NOT
+    that no scenario failed. Reading it as zero failures is exactly the
+    substitution audit D3 made with `pass_rates: {}` — an absence iterated into
+    a clean bill of health.
+
+    An `unmeasured_scenarios` above zero does NOT refuse on its own. It is a
+    partial judge outage, both counts travel to the orchestrator beside each
+    other, and the numbers that did survive are real.
+    """
+    missing = _unmeasured_gated_metrics(eval_summary)
+    if missing:
+        cause = (
+            "no answers were scored for "
+            + " or ".join(metric.replace("_", " ") for metric in missing)
+        )
+    elif eval_summary.get("failing_scenarios") is None:
+        cause = "its per-question results could not be read"
+    else:
+        return None
+    return DeploymentWarning(
+        warning_id=EVAL_QUALITY_UNMEASURED_WARNING_ID,
+        category="eval_quality",
+        message=(
+            "This agent's last quality check reports that it ran, but "
+            f"{cause}, so there is nothing to approve a launch on. Run a fresh "
+            "check from the Evaluation page and try again."
+        ),
+        severity_level="warning",
+    )
+
+
+def _never_evaluated_warning(eval_summary: dict) -> DeploymentWarning:
+    """The day-1 state, and the one the owner can actually act on.
+
+    The checklist task starts the first eval itself when it finds this
+    (run_deployment_checklist step 4b) and records the dispatch ON the signal, so
+    the message says "wait" rather than sending a non-technical owner to a page
+    the onboarding flow never routes to.
+    """
+    started = bool(eval_summary.get("eval_dispatched"))
+    return DeploymentWarning(
+        warning_id="eval_never_run",
+        category="eval_quality",
+        message=(
+            "This agent's answer quality has never been measured, so it cannot "
+            "be approved for launch yet. "
+            + (
+                "We have started its first evaluation — it takes a few minutes. "
+                "Run this readiness check again once it finishes."
+                if started
+                else "Run an eval from the Evaluation page and try again."
+            )
+        ),
+        severity_level="warning",
+    )
+
+
+def _signal_unavailable_warning(detail: str) -> DeploymentWarning:
+    """Every remaining absent state, with the collector's own reason quoted."""
+    return DeploymentWarning(
+        warning_id="eval_signal_unavailable",
+        category="eval_quality",
+        message=(
+            "This agent's answer quality has not been measured, so it cannot be "
+            f"approved for launch yet ({detail}). Run an eval from the "
+            "Evaluation page and try again."
+        ),
+        severity_level="warning",
+    )
+
+
+def _eval_evidence_warnings(eval_summary: dict) -> list[DeploymentWarning]:
+    """Every reason this eval signal is not evidence, as owner-facing warnings.
+
+    An empty list means the signal is admissible. Any entry blocks: the caller
+    does not weigh them, because each one is an absence of measurement rather
+    than a degree of it.
+
+    The arms are ordered by which one names the cause. A payload can be in
+    several of these states at once and the owner needs the one they can act on.
+    """
+    warnings: list[DeploymentWarning] = []
+    eval_signal = eval_summary.get("eval_signal")
+    if eval_signal != SHIPPABLE_SIGNAL:
+        detail = eval_summary.get("signal_detail") or "no eval signal was produced"
+        if eval_signal == EVAL_SIGNAL_AGENT_NOT_INVOKED:
+            warnings.append(_agent_not_invoked_warning(eval_summary))
+        elif eval_signal == EVAL_SIGNAL_NO_RUNS:
+            warnings.append(_never_evaluated_warning(eval_summary))
+        else:
+            warnings.append(_signal_unavailable_warning(detail))
+    elif eval_summary.get("agent_invoked") is not True:
+        # A payload that claims 'measured' and does not claim to have invoked
+        # the agent. In production _fetch_eval_summary_sync has already turned
+        # this into EVAL_SIGNAL_AGENT_NOT_INVOKED above, so reaching here means
+        # the payload came from somewhere else — and somewhere else is exactly
+        # where the next fail-open comes from. Unreachable today; see
+        # apply_signal_evidence_gate's THE COLLECTOR IS THE ENFORCEMENT
+        # paragraph, which says so rather than claiming a second live layer.
+        warnings.append(_agent_not_invoked_warning(eval_summary))
+    else:
+        # A signal that says 'measured' is a claim that the run wrote a record,
+        # not a claim that the record holds a number.
+        quality = _quality_evidence_warning(eval_summary)
+        if quality is not None:
+            warnings.append(quality)
+    return warnings
+
+
 def apply_signal_evidence_gate(
     recommendation: str,
     eval_summary: dict,
@@ -1639,7 +1965,17 @@ def apply_signal_evidence_gate(
     were prose in a system prompt and nothing else; run against the shipped
     code, this function returned 'ship' for all three.
 
-    FIVE NOW: `agent_invoked is not True` (audit D1, P3). A signal that says
+    SIX NOW. `_quality_evidence_warning` refuses a 'measured' signal whose gated
+    metrics were measured on no dataset, and one whose per-scenario verdicts
+    could not be read. Both became reachable when the collector stopped
+    computing its own averages over `eval_results` and started lifting the run's
+    own record (#51 slice 4): 'measured' is now a claim that the run wrote a
+    record, and a record can be present and hold no gated number. It reads the
+    per-DATASET measurements rather than the run-level ones, because a run whose
+    two halves both scored has no run-level reading at all and refusing it would
+    block every tenant with a designated golden set over numbers it does hold.
+
+    FIVE: `agent_invoked is not True` (audit D1, P3). A signal that says
     'measured' is a claim that a run produced scores, not a claim that the
     scores are about this agent — and until this release they were not. The
     eval set `agent_response` to the scenario's own `reference_answer`
@@ -1685,61 +2021,10 @@ def apply_signal_evidence_gate(
     warnings: list[DeploymentWarning] = []
     blocked = False
 
-    eval_signal = eval_summary.get("eval_signal")
-    if eval_signal != SHIPPABLE_SIGNAL:
+    eval_warnings = _eval_evidence_warnings(eval_summary)
+    if eval_warnings:
         blocked = True
-        detail = eval_summary.get("signal_detail") or "no eval signal was produced"
-        if eval_signal == EVAL_SIGNAL_AGENT_NOT_INVOKED:
-            warnings.append(_agent_not_invoked_warning(eval_summary))
-        elif eval_signal == EVAL_SIGNAL_NO_RUNS:
-            # The day-1 state, and the one the owner can actually act on. The
-            # checklist task starts the first eval itself when it finds this
-            # (run_deployment_checklist step 4b) and records that on the signal,
-            # so the message says "wait" rather than sending a non-technical
-            # owner to a page the onboarding flow never routes to.
-            started = bool(eval_summary.get("eval_dispatched"))
-            warnings.append(
-                DeploymentWarning(
-                    warning_id="eval_never_run",
-                    category="eval_quality",
-                    message=(
-                        "This agent's answer quality has never been measured, "
-                        "so it cannot be approved for launch yet. "
-                        + (
-                            "We have started its first evaluation — it takes a "
-                            "few minutes. Run this readiness check again once "
-                            "it finishes."
-                            if started
-                            else "Run an eval from the Evaluation page and try "
-                            "again."
-                        )
-                    ),
-                    severity_level="warning",
-                )
-            )
-        else:
-            warnings.append(
-                DeploymentWarning(
-                    warning_id="eval_signal_unavailable",
-                    category="eval_quality",
-                    message=(
-                        "This agent's answer quality has not been measured, so "
-                        f"it cannot be approved for launch yet ({detail}). Run "
-                        "an eval from the Evaluation page and try again."
-                    ),
-                    severity_level="warning",
-                )
-            )
-    elif eval_summary.get("agent_invoked") is not True:
-        # A payload that claims 'measured' and does not claim to have invoked
-        # the agent. In production _fetch_eval_summary_sync has already turned
-        # this into EVAL_SIGNAL_AGENT_NOT_INVOKED above, so reaching here means
-        # the payload came from somewhere else — and somewhere else is exactly
-        # where the next fail-open comes from. Unreachable today; see the
-        # docstring's THE COLLECTOR IS THE ENFORCEMENT paragraph, which says so
-        # rather than claiming a second live layer.
-        blocked = True
-        warnings.append(_agent_not_invoked_warning(eval_summary))
+        warnings.extend(eval_warnings)
 
     red_team_signal = red_team_summary.get("signal")
     if red_team_signal != SHIPPABLE_SIGNAL:

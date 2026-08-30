@@ -59,9 +59,11 @@ not that Postgres accepts any of it.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import os
 import re
+import uuid
 from contextlib import contextmanager
 from types import MappingProxyType
 from unittest.mock import MagicMock
@@ -69,6 +71,7 @@ from unittest.mock import MagicMock
 import psycopg2
 import pytest
 
+from app.domain import eval_result as eval_result_domain
 from app.services import deployment_service, eval_service
 from app.worker.tasks.runtime import eval as mod
 
@@ -267,23 +270,30 @@ def _wire(monkeypatch, *, exploratory_rows, silent_ids=(), scores_by_id=None):
 
     def _fake_ragas(scenarios, ledger):
         rec["scored_input"].append(list(scenarios))
+        scores = [
+            {
+                "scenario_id": s["id"],
+                **{m: overrides.get(s["id"], 0.9) for m in _METRICS},
+            }
+            for s in scenarios
+        ]
+        # `judge_records` since #51 slice 2: `run_ragas_eval` returns the score
+        # rows AND one JudgeRecord per (scenario, metric), and it is the records
+        # that `write_eval_results` persists. A double returning only `scores`
+        # made the task raise KeyError('judge_records') and every count in this
+        # file read as a missing key rather than as a wrong number.
         return {
-            "scores": [
-                {
-                    "scenario_id": s["id"],
-                    **{m: overrides.get(s["id"], 0.9) for m in _METRICS},
-                }
-                for s in scenarios
-            ],
+            "scores": scores,
             "means": {"faithfulness": 0.9},
+            "judge_records": eval_service.build_judge_records(scores),
         }
 
     monkeypatch.setattr(mod, "run_ragas_eval", _fake_ragas)
     monkeypatch.setattr(
         mod,
         "write_eval_results",
-        lambda run_id, scores, conn: rec["results_written"].append(
-            (run_id, list(scores), conn)
+        lambda run_id, records, conn: rec["results_written"].append(
+            (run_id, list(records), conn)
         ),
     )
     monkeypatch.setattr(
@@ -679,6 +689,58 @@ class TestTheCountsStayHonest:
 # ---------------------------------------------------------------------------
 
 
+#: A security signal that is admissible, so an eval-half assertion is not
+#: silently reading a red-team refusal instead.
+_MEASURED_RED_TEAM = {
+    "signal": "measured",
+    "signal_detail": None,
+    "last_run_at": "2026-05-23T03:00:00",
+    "deployment_blocked": False,
+    "critical_count": 0,
+    "high_count": 0,
+    "medium_count": 0,
+    "low_count": 0,
+    "vectors_attempted": 7,
+    "vectors_valid": 7,
+    "invalid_vectors": [],
+    "coverage_complete": True,
+    "coverage_source": deployment_service.COVERAGE_SOURCE_RUN,
+}
+
+
+def _record_scoring(faithfulness: float):
+    """An EvalResult whose one dataset measured `faithfulness` and nothing else."""
+    return eval_result_domain.EvalResult(
+        run_id=str(uuid.uuid4()),
+        agent_id=str(uuid.uuid4()),
+        invocation=eval_result_domain.Invocation(
+            status="measured",
+            valid=30,
+            attempted=30,
+            responded=30,
+            scorable=30,
+            failed=0,
+            empty=0,
+        ),
+        datasets={
+            "exploratory": eval_result_domain.DatasetOutcome(
+                attempted=30,
+                valid=30,
+                scored=30,
+                metrics={
+                    "faithfulness": eval_result_domain.Measurement(
+                        value=faithfulness, observations=30, measured=True
+                    ),
+                    "answer_relevancy": eval_result_domain.Measurement(
+                        value=faithfulness, observations=30, measured=True
+                    ),
+                },
+            )
+        },
+        requested_model="gpt-5.6-luna",
+    )
+
+
 class TestALabelChangesWhatTheDeployGateReads:
     """D6 P3 review, finding 5. P3's downstream analysis stopped at
     `verified_qa`, which has no caller — while the consumer that reads every
@@ -687,7 +749,7 @@ class TestALabelChangesWhatTheDeployGateReads:
     The chain, hop by hop:
 
         run_eval_suite -> write_eval_results        -> eval_results (PRODUCTION)
-        _fetch_eval_summary_sync: AVG(score) GROUP BY metric  -> pass_rates
+        _fetch_eval_summary_sync lifts eval_runs.result, per dataset -> pass_rates
         run_deployment_checklist puts eval_summary on the orchestrator payload
         the orchestrator's ship/warn/block conditions read the rates
 
@@ -720,38 +782,66 @@ class TestALabelChangesWhatTheDeployGateReads:
         _run()
 
         assert len(rec["results_written"]) == 1
-        _run_id, scores, conn = rec["results_written"][0]
+        _run_id, records, conn = rec["results_written"][0]
         assert conn == PRODUCTION, (
             "results went somewhere other than production — the deploy gate "
             "reads production, so a labelled row's score would never reach it"
         )
-        written = {s["scenario_id"]: s for s in scores}
-        assert LABELLED_ID in written, (
+        written = {
+            (r.scenario_id, r.metric): r
+            for r in records
+            if r.scenario_id == LABELLED_ID
+        }
+        assert written, (
             "the labelled row was scored and then not persisted; the deploy "
-            f"gate would never see it. persisted: {sorted(written)}"
+            "gate would never see it"
         )
         for metric in _METRICS:
-            assert written[LABELLED_ID][metric] is not None
+            assert written[(LABELLED_ID, metric)].score is not None
 
-    def test_the_pass_rate_query_cannot_exclude_a_labelled_row(self):
-        """Hop two, at the string level: the aggregation is unfiltered.
+    def test_the_deploy_gate_cannot_exclude_a_labelled_row(self):
+        """Hop two, at the string level: nothing separates the two provenances.
 
-        `pass_rates` is `AVG(score) GROUP BY metric` over one run's
-        `eval_results`. It keys on `eval_run_id` and nothing else, so there is
-        no provenance filter to fall through — a human-authored reference and a
-        Haiku-written one contribute to the same mean, indistinguishably. That
-        is the fact `BACKLOG 4.12` would change, and it is asserted rather than
-        assumed so 4.12 cannot land while this comment quietly goes stale.
+        The `AVG(score) GROUP BY metric` this used to pin is gone (#51 slice 4).
+        The gate now lifts the run's own per-dataset `Measurement`, which is
+        computed once by `run_eval_suite` over every scored row of a dataset and
+        keys on the dataset alone — so a human-authored reference and a
+        Haiku-written one still contribute to the same mean, indistinguishably.
+        The hop moved and the fact did not. `BACKLOG 4.12` is what would change
+        it, and it is asserted rather than assumed so 4.12 cannot land while this
+        comment quietly goes stale.
         """
+        # The record's own vocabulary, read off the dataclasses rather than out
+        # of their source: what the per-dataset mean can possibly be grouped by
+        # is exactly the fields these three carry.
+        record_fields = {
+            field.name
+            for cls in (
+                eval_result_domain.EvalResult,
+                eval_result_domain.DatasetOutcome,
+                eval_result_domain.Measurement,
+            )
+            for field in dataclasses.fields(cls)
+        }
         source = inspect.getsource(deployment_service._fetch_eval_summary_sync)
-        collapsed = " ".join(source.split())
-        assert "AVG(score), COUNT(score) FROM eval_results" in collapsed
-        assert "WHERE eval_run_id = %s GROUP BY metric" in collapsed
+        # The body only. The docstring quotes the removed query by name, which
+        # is how a reader learns what changed and is not a statement the
+        # function executes.
+        collapsed = " ".join(source.split('"""', 2)[-1].split())
+        assert "AVG(" not in collapsed, (
+            "the collector is averaging scores again; the run's own record is "
+            "the one derivation (#51 criterion 1)"
+        )
         for column in ("label_trust_tier", "labelled_by", "labelled_at"):
             assert column not in source, (
-                f"the pass-rate aggregation now mentions {column} — if it has "
-                "learned to separate human-authored references from model ones, "
-                "this test and BACKLOG 4.12 both need rewriting"
+                f"the deploy collector now mentions {column} — if it has learned "
+                "to separate human-authored references from model ones, this "
+                "test and BACKLOG 4.12 both need rewriting"
+            )
+            assert column not in record_fields, (
+                f"the record now carries {column}, so the per-dataset mean is no "
+                "longer blind to provenance — BACKLOG 4.12 has landed and this "
+                "test needs rewriting"
             )
 
     def test_a_hard_negative_label_lowers_the_rate_the_orchestrator_reads(
@@ -773,11 +863,18 @@ class TestALabelChangesWhatTheDeployGateReads:
         from a run that was at 0.9 the night before the owner did the work.
         """
 
-        def _rates(scores: list[dict]) -> dict[str, float]:
+        def _rates(records) -> dict[str, float]:
+            """The per-metric mean over the JudgeRecords the run persisted.
+
+            The records are what `write_eval_results` receives since #51 slice 2,
+            one per (scenario, metric), each carrying its own score.
+            """
             out = {}
             for metric in _METRICS:
                 values = [
-                    s[metric] for s in scores if s.get(metric) is not None
+                    r.score
+                    for r in records
+                    if r.metric == metric and r.score is not None
                 ]
                 if values:
                     out[metric] = sum(values) / len(values)
@@ -815,6 +912,11 @@ class TestALabelChangesWhatTheDeployGateReads:
         prompt, read by a model. Both facts are pinned here because "the deploy
         gate blocks on the pass rate" is the plausible misreading, and it would
         make someone look for a threshold in Python that is not there.
+
+        `_eval_evidence_warnings` is read too since #51 slice 4 moved the eval
+        arms out of the gate's own body. It refuses a run whose gated metrics
+        were measured on NO dataset, which is a floor under evidence and not a
+        bar on quality: it asks whether a number exists, never how big it is.
         """
         gate_source = inspect.getsource(deployment_service.apply_signal_evidence_gate)
         body = gate_source.split('"""', 2)[-1]
@@ -826,6 +928,28 @@ class TestALabelChangesWhatTheDeployGateReads:
         prompt = deployment_service._DEPLOYMENT_SYSTEM_PROMPT
         assert "all eval metrics >= 0.85" in prompt
         assert "Any eval metric pass_rate in [0.70, 0.85)" in prompt
+
+        # And behaviourally, which is what a source read cannot show since #51
+        # slice 4 moved the eval arms into `_eval_evidence_warnings`. A run that
+        # MEASURED a catastrophic faithfulness still leaves the orchestrator's
+        # verdict alone: the deterministic gate asks whether a number exists,
+        # never how big it is.
+        catastrophic = deployment_service._eval_summary(
+            deployment_service.EVAL_SIGNAL_MEASURED,
+            last_run_at="2026-05-23T02:00:00",
+            last_run_status="complete",
+            record=_record_scoring(0.02),
+            verdicts=(30, 0),
+            agent_invoked=True,
+        )
+        recommendation, _warnings = deployment_service.apply_signal_evidence_gate(
+            "ship", catastrophic, _MEASURED_RED_TEAM
+        )
+        assert recommendation == "ship", (
+            "the deterministic gate blocked on a low rate; the 0.85 bar is the "
+            "orchestrator's sentence to apply and a second copy in Python would "
+            "be a second opinion about quality"
+        )
 
 
 # ---------------------------------------------------------------------------

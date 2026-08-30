@@ -42,7 +42,6 @@ import json
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
-from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import psycopg2
@@ -51,14 +50,21 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.model_client import LedgerContext, route_for
+from app.domain.eval_result import (
+    Cost,
+    DatasetOutcome,
+    EvalResult,
+    Invocation,
+    Measurement,
+)
 from app.services.deployment_service import (
     _DEPLOYMENT_SYSTEM_PROMPT,
     COVERAGE_SOURCE_CURRENT_BUILD,
     COVERAGE_SOURCE_RUN,
-    DENOMINATOR_SOURCE_EVAL_RESULTS,
-    DENOMINATOR_SOURCE_RUN_CONFIG,
+    DENOMINATOR_SOURCE_EVAL_RECORD,
     EVAL_SIGNAL_AGENT_NOT_INVOKED,
     EVAL_SIGNAL_MEASURED,
+    EVAL_SIGNAL_NO_RECORD,
     EVAL_SIGNAL_NO_RUNS,
     EVAL_SIGNAL_NO_VALID_SCORES,
     EVAL_SIGNAL_RUN_FAILED,
@@ -72,6 +78,7 @@ from app.services.deployment_service import (
     DeploymentReport,
     DeploymentWarning,
     _compute_envelope_hash_sync,
+    _eval_summary,
     _fetch_blast_radius_sync,
     _fetch_eval_summary_sync,
     _fetch_red_team_summary_sync,
@@ -694,71 +701,136 @@ class TestBlockingConditions:
 # ---------------------------------------------------------------------------
 
 
-def _make_eval_conn(run_row, metric_rows=None, count_row=(0, 0), raise_on=None):
+def _measurement(value, observations=10):
+    """A metric that was measured, or an unmeasured one when value is None."""
+    if value is None:
+        return Measurement(value=None, observations=0, measured=False)
+    return Measurement(value=value, observations=observations, measured=True)
+
+
+def _outcome(attempted=30, valid=30, scored=30, **metrics):
+    """One dataset's counts and whichever metrics it reported."""
+    return DatasetOutcome(
+        attempted=attempted,
+        valid=valid,
+        scored=scored,
+        metrics={name: _measurement(value) for name, value in metrics.items()},
+    )
+
+
+def _record(datasets=None, *, attempted=30, valid=30, scored=30, **overrides):
+    """An EvalResult the collector can lift numbers off.
+
+    The default is ONE scoring dataset, exploratory, which is the shape of an
+    ordinary tenant with no golden rows designated. A test that wants the
+    two-dataset shape passes both, and gets the honest consequence: no run-level
+    number anywhere on the payload.
+    """
+    if datasets is None:
+        datasets = {
+            "exploratory": _outcome(
+                attempted=attempted,
+                valid=valid,
+                scored=scored,
+                faithfulness=0.92,
+                answer_relevancy=0.88,
+            )
+        }
+    fields = {
+        "run_id": str(uuid.uuid4()),
+        "agent_id": str(uuid.uuid4()),
+        # Invocation's `valid` is the DENOMINATOR and `attempted` is the subset
+        # the per-run ceiling let run, which is the opposite nesting from
+        # DatasetOutcome's. Coherent numbers rather than the dataset's, because a
+        # record that would be refused on construction proves nothing about a
+        # reader.
+        "invocation": Invocation(
+            status="measured",
+            valid=valid,
+            attempted=valid,
+            responded=scored,
+            scorable=scored,
+            failed=valid - scored,
+            empty=0,
+        ),
+        "datasets": datasets,
+        "requested_model": "gpt-5.6-luna",
+        "cost": Cost(input_tokens=10, output_tokens=5, usd=0.01, zar=0.2, measured=True),
+    }
+    fields.update(overrides)
+    return EvalResult(**fields)
+
+
+def _make_eval_conn(
+    run_row, record=None, verdict_rows=None, raise_on=None, verdicts_raise=False
+):
     """psycopg2 connection double for _fetch_eval_summary_sync.
 
-    The function issues three statements — the latest run, the per-metric
-    aggregate, then the denominator counts — and fetchone is called twice, so a
-    single-value double cannot drive it.
+    The function issues at most two statements since #51 slice 4: the latest run
+    (which now selects `result` beside `config`), and the per-scenario gated
+    verdict counts. The AVG/COUNT pair it used to run over `eval_results` is
+    gone, so this double no longer serves metric rows — a test that wants numbers
+    passes a `record`, which is where the run's numbers actually live.
 
-    `run_row` is the four-column shape the collector selects since the P2
-    review: (id, finished_at, status, config). A three-tuple is accepted and
-    padded with a NULL config, which is the pre-0013 row the narrow fallback
-    reads — the tests that pass one are asserting behaviour that does not
-    depend on the run's own denominator.
+    `run_row` is the five-column shape the collector selects: (id, finished_at,
+    status, config, result). A three- or four-tuple is accepted and padded, which
+    is the pre-0013 / pre-0022 row the fallbacks read.
 
-    raise_on: substring of the SQL that should raise UndefinedColumn, which is
-    how audit D3 presented itself in production (`metric_name` / `run_id`
-    against a table whose columns are `metric` / `eval_run_id`).
+    `record` is an EvalResult (or a raw payload dict) written into the run row's
+    fifth column, unless the caller supplied a five-tuple itself.
 
-    THE PAD IS STILL NULL AFTER D1/P3, deliberately. A NULL config is a run
-    that recorded no invocation claim, which the collector now reports as
+    raise_on: substring of the SQL that should raise UndefinedColumn. That is how
+    a tenant DB older than the migration presents itself, and the collector
+    degrades to a narrower SELECT rather than reporting an outage.
+
+    THE PAD IS STILL NULL, deliberately. A NULL config is a run that recorded no
+    invocation claim, which the collector reports as
     EVAL_SIGNAL_AGENT_NOT_INVOKED — so a test that wants any other state has to
-    say so with `_invoked_config()`. Defaulting the pad to an invoking config
-    would have made this phase's central refusal invisible to every existing
-    test and to every test written after it.
+    say so with `_invoked_config()`. A NULL result is a run that recorded no
+    numbers, which is EVAL_SIGNAL_NO_RECORD for the same reason.
 
-    THE ROW IS AS WIDE AS THE STATEMENT THAT ASKED FOR IT (P3 review). The pad
-    used to run once, before the double was built, so the pre-0013 test — whose
-    whole point is that the WIDE select raises and the NARROW three-column one
-    answers — got a four-element row back from `SELECT id, finished_at, status`.
-    No production database can do that. It changed no outcome, because the
-    collector only indexes [0..2] on that path, but a double asserting a shape
-    the database cannot produce is a test that would stay green while a future
-    read of run_row[3] on the fallback path failed in production. The row is
-    sliced at fetch time against the SQL that was actually executed instead.
+    THE ROW IS AS WIDE AS THE STATEMENT THAT ASKED FOR IT (P3 review). No
+    production database answers `SELECT id, finished_at, status` with four
+    columns, and a double that does would stay green while a future read of
+    run_row[3] on the fallback path failed in production. The row is sliced at
+    fetch time against the SQL that was actually executed.
     """
     conn = MagicMock()
     cursor = MagicMock()
     cursor.__enter__ = MagicMock(return_value=cursor)
     cursor.__exit__ = MagicMock(return_value=False)
 
-    state = {"fetchone": [run_row, count_row], "fetchall": metric_rows or []}
+    if run_row is not None and len(run_row) == 4 and record is not None:
+        payload = record.payload if isinstance(record, EvalResult) else record
+        run_row = (*run_row, payload)
+    elif run_row is not None and len(run_row) < 5 and record is not None:
+        payload = record.payload if isinstance(record, EvalResult) else record
+        run_row = (*run_row, None, payload)[:5]
+
     executed: list[str] = []
-    calls = {"fetchone": 0}
+    state = {"run": run_row, "verdicts": verdict_rows or []}
 
     def _execute(sql, params=None):
         executed.append(sql)
         if raise_on is not None and raise_on in sql:
             raise psycopg2.errors.UndefinedColumn(f"column does not exist: {raise_on}")
+        if verdicts_raise and "binary_verdict" in sql:
+            raise psycopg2.errors.UndefinedColumn("column binary_verdict does not exist")
 
     def _fetchone():
-        if not state["fetchone"]:
+        row = state["run"]
+        if row is None:
             return None
-        row = state["fetchone"].pop(0)
-        calls["fetchone"] += 1
-        if calls["fetchone"] != 1 or row is None:
-            return row
-        # The run SELECT. Four columns when `config` was asked for, three when
-        # the pre-0013 fallback asked without it — never a width the executed
-        # statement did not select.
-        if "config FROM eval_runs" in (executed[-1] if executed else ""):
-            return row if len(row) == 4 else (*row, None)
+        sql = executed[-1] if executed else ""
+        if "result FROM eval_runs" in sql:
+            return tuple(row) if len(row) == 5 else (*row, *([None] * (5 - len(row))))
+        if "config FROM eval_runs" in sql:
+            return tuple(row[:4]) if len(row) >= 4 else (*row, None)
         return tuple(row[:3])
 
     cursor.execute.side_effect = _execute
     cursor.fetchone.side_effect = _fetchone
-    cursor.fetchall.side_effect = lambda: state["fetchall"]
+    cursor.fetchall.side_effect = lambda: state["verdicts"]
     conn.cursor.return_value = cursor
     conn.executed = executed
     return conn
@@ -767,10 +839,10 @@ def _make_eval_conn(run_row, metric_rows=None, count_row=(0, 0), raise_on=None):
 def _invoked_config(**extra) -> dict:
     """An `eval_runs.config` written by a run that actually invoked the agent.
 
-    Audit D1 / P3: `config["agent_invoked"]` is now a precondition of every eval
-    state other than the refusal, so a test about denominators or column names
-    or in-flight shadowing has to supply one or it is testing the D1 refusal
-    under another name.
+    Audit D1 / P3: `config["agent_invoked"]` is a precondition of every eval
+    state other than the refusal, so a test about denominators or column names or
+    in-flight shadowing has to supply one or it is testing the D1 refusal under
+    another name.
     """
     return {"agent_invoked": True, **extra}
 
@@ -779,17 +851,13 @@ class TestSignalCollectionFunctions:
     """Tests for _fetch_eval_summary_sync signal collection helper."""
 
     def test_fetch_eval_summary_sync_returns_correct_shape(self):
-        """Mock psycopg2 returns two metric rows; verify result shape and values (DEP-01)."""
+        """The payload's numbers are the record's numbers (DEP-01, #51)."""
         run_id = uuid.uuid4()
         run_ts = datetime(2026, 5, 23, 2, 0, 0)
 
         mock_conn = _make_eval_conn(
             (run_id, run_ts, "complete", _invoked_config()),
-            metric_rows=[
-                ("faithfulness", Decimal("0.92"), 30),
-                ("answer_relevance", Decimal("0.88"), 30),
-            ],
-            count_row=(30, 30),
+            record=_record(),
         )
 
         with patch(
@@ -800,32 +868,67 @@ class TestSignalCollectionFunctions:
 
         assert result["eval_signal"] == EVAL_SIGNAL_MEASURED
         assert result["pass_rates"]["faithfulness"] == pytest.approx(0.92)
-        assert result["pass_rates"]["answer_relevance"] == pytest.approx(0.88)
+        assert result["pass_rates"]["answer_relevancy"] == pytest.approx(0.88)
+        assert result["pass_rates_dataset"] == "exploratory", (
+            "a run-level number nobody attributed is a number a reader will "
+            "attribute to the wrong half"
+        )
         assert result["scenario_count"] == 30, "attempted"
-        assert result["scored_scenario_count"] == 30, "valid"
+        assert result["scored_scenario_count"] == 30, "scored"
+        assert result["denominator_source"] == DENOMINATOR_SOURCE_EVAL_RECORD
         assert result["last_run_at"] == run_ts.isoformat()
         assert result["last_run_status"] == "complete"
 
-    def test_an_in_flight_run_does_not_shadow_the_last_finished_one(self):
-        """A run in progress must not block the deploy it is measuring for.
+    def test_the_numbers_follow_an_edited_record(self):
+        """Edit the stored record, and every number on the payload moves with it.
 
-        The selector took the newest eval_runs row with NO status filter, so for
-        the whole duration of a run the gate read a 'running' row that has no
-        eval_results yet, returned EVAL_SIGNAL_NO_VALID_SCORES, and refused the
-        deploy with "this agent's answer quality has not been measured" — while
-        a perfectly good completed run sat one row below it. That window was
-        minutes before D1/P2 and is up to ninety per agent per night after it:
-        the nightly beat fires at 02:00 UTC and drives up to sixty live SDK turns
-        at 90 s each.
-
-        Asserted on the SQL, because the double cannot express "there is also an
-        older row": the filter is the whole behaviour.
+        This is criterion 1 stated as a test. The collector holds no arithmetic
+        of its own, so there is nothing here that could hold the old figure while
+        the record says something else.
         """
-        run_id = uuid.uuid4()
+        edited = _record(
+            datasets={
+                "exploratory": _outcome(
+                    attempted=12, valid=11, scored=7, faithfulness=0.41
+                )
+            },
+            attempted=12,
+            valid=11,
+            scored=7,
+        )
         mock_conn = _make_eval_conn(
-            (run_id, datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
-            metric_rows=[("faithfulness", Decimal("0.92"), 30)],
-            count_row=(30, 30),
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=edited,
+        )
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        assert result["pass_rates"] == {"faithfulness": pytest.approx(0.41)}
+        assert result["scenario_count"] == 12
+        assert result["valid_scenario_count"] == 11
+        assert result["scored_scenario_count"] == 7
+        assert result["datasets"]["exploratory"]["scenario_count"] == 12
+        assert result["metrics"]["answer_relevancy"]["measured"] is False, (
+            "a metric the record does not report reads unmeasured, never zero"
+        )
+
+    def test_the_measurements_survive_every_result_row_being_deleted(self):
+        """No `eval_results` row exists, and the per-dataset numbers are intact.
+
+        The collector used to derive every figure from those rows, so deleting
+        them emptied `pass_rates` and the gate read a measured run as unmeasured.
+        The record is a column on `eval_runs` and does not move. What DOES go is
+        the per-scenario verdict count, which is a read of those rows and reports
+        zero decided rather than zero failing.
+        """
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=_record(),
+            verdict_rows=[],
         )
 
         with patch(
@@ -835,9 +938,70 @@ class TestSignalCollectionFunctions:
             result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
 
         assert result["eval_signal"] == EVAL_SIGNAL_MEASURED
-        run_selects = [
-            sql for sql in mock_conn.executed if "FROM eval_runs" in sql
-        ]
+        assert result["pass_rates"]["faithfulness"] == pytest.approx(0.92)
+        assert result["datasets"]["exploratory"]["scored_scenario_count"] == 30
+        assert result["failing_scenarios"] == 0
+        assert result["unmeasured_scenarios"] == 0, (
+            "no rows means no scenario was decided either way, and the count "
+            "says so rather than claiming forty passes"
+        )
+
+    def test_the_collector_aggregates_nothing_over_eval_results(self):
+        """Read out of the SQL that ran, not out of the source text.
+
+        Audit D3's `AVG(score) ... GROUP BY metric` is the second derivation this
+        slice removes. The only statement this collector may issue against
+        `eval_results` is the one that reads stored verdicts.
+        """
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=_record(),
+        )
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        joined = " ".join(mock_conn.executed)
+        assert "AVG(" not in joined, (
+            "the deploy gate is averaging scores again; the run's own record is "
+            "the one derivation (#51 criterion 1)"
+        )
+        assert "GROUP BY metric" not in joined
+        assert "COUNT(DISTINCT scenario_id)" not in joined
+        assert "binary_verdict" in joined, (
+            "the per-scenario verdict counts must come off the stored decisions"
+        )
+
+    def test_an_in_flight_run_does_not_shadow_the_last_finished_one(self):
+        """A run in progress must not block the deploy it is measuring for.
+
+        The selector took the newest eval_runs row with NO status filter, so for
+        the whole duration of a run the gate read a 'running' row that has no
+        record yet, returned an absent signal, and refused the deploy with "this
+        agent's answer quality has not been measured" — while a perfectly good
+        completed run sat one row below it. That window was minutes before D1/P2
+        and is up to ninety per agent per night after it: the nightly beat fires
+        at 02:00 UTC and drives up to sixty live turns at 90 s each.
+
+        Asserted on the SQL, because the double cannot express "there is also an
+        older row": the filter is the whole behaviour.
+        """
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=_record(),
+        )
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        assert result["eval_signal"] == EVAL_SIGNAL_MEASURED
+        run_selects = [sql for sql in mock_conn.executed if "FROM eval_runs" in sql]
         assert run_selects, "no eval_runs SELECT was issued"
         for sql in run_selects:
             assert "status <> 'running'" in sql, (
@@ -848,7 +1012,7 @@ class TestSignalCollectionFunctions:
             )
 
     def test_fetch_eval_summary_sync_no_runs(self):
-        """No eval run at all is 'no_runs' with a NULL pass_rates, not an empty dict."""
+        """No eval run at all is 'no_runs' with nulls throughout, never zeros."""
         mock_conn = _make_eval_conn(None)
 
         with patch(
@@ -863,12 +1027,16 @@ class TestSignalCollectionFunctions:
             "iterates it — audit D3's fail-open"
         )
         assert result["failing_scenarios"] is None
-        assert result["scenario_count"] == 0
-        assert result["scored_scenario_count"] == 0
+        assert result["scenario_count"] is None, (
+            "a zero here asserts that a run covered nothing, and no run exists "
+            "to have covered anything"
+        )
+        assert result["scored_scenario_count"] is None
+        assert result["result"] == "absent"
 
 
 # ---------------------------------------------------------------------------
-# TestEvalSummaryD3 — the repaired query and its distinguishable absence
+# TestEvalSummaryD3 — the removed query and its distinguishable absence
 # ---------------------------------------------------------------------------
 
 
@@ -879,52 +1047,26 @@ class TestEvalSummaryD3:
     columns are `metric` and `eval_run_id` raised UndefinedColumn on every
     invocation. The Celery task caught it, substituted `pass_rates: {}`, and the
     blocking condition "any eval metric pass_rate < 0.70" then evaluated over an
-    empty dict — which cannot fire. Both halves are tested here: the names, and
-    the behaviour when the query fails anyway.
+    empty dict — which cannot fire.
+
+    The query itself is gone since #51 slice 4, and with it the column names that
+    could be wrong. The discipline it forced is what these tests hold: a read
+    that fails produces a DISTINGUISHABLE value and the gate refuses on it.
     """
 
-    def test_the_query_uses_the_schema_column_names(self):
-        """Read out of the SQL that actually ran, not out of the source text.
-
-        A source-level assertion would pass against a second, unreached copy of
-        the query; this one is about the statement the function issued.
-        """
-        mock_conn = _make_eval_conn(
-            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete"),
-            metric_rows=[("faithfulness", Decimal("0.92"), 30)],
-            count_row=(30, 30),
-        )
-
-        with patch(
-            "app.services.deployment_service.psycopg2.connect",
-            return_value=mock_conn,
-        ):
-            _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
-
-        results_sql = [s for s in mock_conn.executed if "eval_results" in s]
-        assert results_sql, "no statement was issued against eval_results"
-        joined = " ".join(results_sql)
-        assert "eval_run_id" in joined
-        assert "GROUP BY metric" in joined
-        assert "metric_name" not in joined, (
-            "metric_name is audit D3's column — the schema (0001:165-174) says "
-            "`metric`"
-        )
-        assert "run_id = " not in joined.replace("eval_run_id = ", ""), (
-            "run_id is audit D3's column — the schema says `eval_run_id`"
-        )
-
     def test_a_failing_query_is_unavailable_not_clean(self):
-        """The exact D3 failure, reproduced: the query raises.
+        """The exact D3 failure, reproduced: the read raises.
 
         The old behaviour returned `pass_rates: {}` from the caller and the gate
-        read it as 'nothing is failing'. The repaired behaviour has to be
-        DISTINGUISHABLE from a measured-and-clean run, or repairing the column
-        names simply moves the fail-open one layer up.
+        read it as 'nothing is failing'. The behaviour has to be DISTINGUISHABLE
+        from a measured-and-clean run, or the fail-open simply moves one layer up.
         """
         mock_conn = _make_eval_conn(
-            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete"),
-            raise_on="eval_results",
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=_record(),
+        )
+        mock_conn.cursor.return_value.execute.side_effect = psycopg2.OperationalError(
+            "connection reset"
         )
 
         with patch(
@@ -945,17 +1087,20 @@ class TestEvalSummaryD3:
         assert recommendation == "block"
         assert any(w.warning_id == "eval_signal_unavailable" for w in warnings)
 
-    def test_a_run_that_scored_nothing_is_unknown_not_passing(self):
-        """Every score NULL — a judge outage — is 'no_valid_scores'.
+    def test_a_run_whose_record_measured_nothing_is_unknown_not_passing(self):
+        """Every metric unmeasured — a judge outage — is 'no_valid_scores'.
 
         Zero valid observations is unknown quality. Reporting it as an empty
-        pass_rates dict would make a run that measured nothing satisfy "all
-        eval metrics >= 0.85" vacuously.
+        pass_rates dict would make a run that measured nothing satisfy "all eval
+        metrics >= 0.85" vacuously.
         """
+        nothing = _record(
+            datasets={"exploratory": _outcome(attempted=30, valid=30, scored=0)},
+            scored=0,
+        )
         mock_conn = _make_eval_conn(
             (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
-            metric_rows=[("faithfulness", None, 0), ("answer_relevancy", None, 0)],
-            count_row=(30, 0),
+            record=nothing,
         )
 
         with patch(
@@ -974,9 +1119,8 @@ class TestEvalSummaryD3:
         """`kind` is 'm6:{agent_id}'; without the filter a second agent in the
         same tenant DB has its run reported as this agent's."""
         mock_conn = _make_eval_conn(
-            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete"),
-            metric_rows=[("faithfulness", Decimal("0.92"), 30)],
-            count_row=(30, 30),
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=_record(),
         )
 
         with patch(
@@ -993,15 +1137,12 @@ class TestEvalSummaryD3:
         on production, so `last_run_at` alone can describe a run that produced
         nothing. The status travels with it.
 
-        The signal assertion changed in the P3 review: this used to read
-        EVAL_SIGNAL_NO_VALID_SCORES, which it reached only because the fixture
-        passes no metric rows. The status is now admissibility in its own right
-        — see TestFailedRunIsNotEvidence for the case that could not reach it.
+        The status is admissibility in its own right — see
+        TestFailedRunIsNotEvidence for the case that could not otherwise reach it.
         """
         mock_conn = _make_eval_conn(
             (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "failed", _invoked_config()),
-            metric_rows=[],
-            count_row=(0, 0),
+            record=_record(),
         )
 
         with patch(
@@ -1014,31 +1155,44 @@ class TestEvalSummaryD3:
         assert result["eval_signal"] == EVAL_SIGNAL_RUN_FAILED
 
 
-class TestEvalAttemptedCount:
-    """The attempted count is the RUN's, not its results' (P2 review).
+class TestTheRecordIsTheOnlyDenominator:
+    """The attempted count is the RUN's, and now there is only one of it (#51).
 
     `scenario_count` was COUNT(DISTINCT scenario_id) over eval_results — the
     scenarios the judge came BACK about. write_eval_results only ever writes a
     row per score the judge produced, so a scenario the judge dropped entirely
-    leaves no trace there: attempted could not exceed scored except in the
-    all-NULL case, and the orchestrator's instruction — "a pass rate over a
-    handful of scored scenarios out of many attempted is a weak signal and you
-    must say so" — compared two numbers derived from the same five rows.
+    left no trace there: attempted could not exceed scored except in the all-NULL
+    case, and the orchestrator's instruction — "a pass rate over a handful of
+    scored scenarios out of many attempted is a weak signal and you must say so"
+    — compared two numbers derived from the same five rows.
+
+    The P2 fix read `config["dataset"]` when it was there and fell back to the
+    results-derived floor when it was not, with a label saying which. Slice 4
+    deletes both parsers: the record carries all three counts, so there is one
+    source and the label says only that.
     """
 
     def test_a_partial_judge_outage_is_visible_in_the_denominators(self):
         """The failing input, exactly as filed.
 
-        A run fetches 40 valid scenarios; a Ragas/judge partial outage returns
-        5, all scored 0.95. Under the old collector the gate saw
-        scenario_count=5, scored=5, faithfulness=0.95 — a clean measurement of
-        an agent whose other 35 scenarios were never scored at all.
+        A run fetches 40 valid scenarios; a judge partial outage returns 5, all
+        scored 0.95. Under the old collector the gate saw scenario_count=5,
+        scored=5, faithfulness=0.95 — a clean measurement of an agent whose other
+        35 scenarios were never scored at all.
         """
-        run_config = _invoked_config(dataset={"attempted": 40, "valid": 40})
+        outage = _record(
+            datasets={
+                "exploratory": _outcome(
+                    attempted=40, valid=40, scored=5, faithfulness=0.95
+                )
+            },
+            attempted=40,
+            valid=40,
+            scored=5,
+        )
         mock_conn = _make_eval_conn(
-            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", run_config),
-            metric_rows=[("faithfulness", Decimal("0.95"), 5)],
-            count_row=(5, 5),
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=outage,
         )
 
         with patch(
@@ -1053,23 +1207,22 @@ class TestEvalAttemptedCount:
         )
         assert result["valid_scenario_count"] == 40
         assert result["scored_scenario_count"] == 5
-        assert result["denominator_source"] == DENOMINATOR_SOURCE_RUN_CONFIG
+        assert result["denominator_source"] == DENOMINATOR_SOURCE_EVAL_RECORD
         assert result["scored_scenario_count"] < result["scenario_count"], (
             "the pair the orchestrator is told to compare must be able to differ"
         )
 
-    def test_a_run_without_a_recorded_composition_labels_its_floor(self):
-        """A pre-0013 run, or one inserted before the composition was stamped.
+    def test_a_run_with_no_record_reports_no_counts_at_all(self):
+        """A pre-0022 tenant, or a run that died before it wrote its record.
 
-        The eval_results-derived count is still reported — it is better than
-        nothing — but it is LABELLED, because its equality with the scored count
-        is an artefact of where it came from rather than evidence of full
-        coverage, and `valid` is None rather than a number nobody measured.
+        There is no floor to fall back to any more and that is the honest state:
+        the results-derived count this used to report was bounded below by the
+        scored count, so its equality with it was an artefact rather than
+        evidence of coverage. Nulls say the payload cannot answer.
         """
         mock_conn = _make_eval_conn(
-            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", None),
-            metric_rows=[("faithfulness", Decimal("0.95"), 5)],
-            count_row=(5, 5),
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=None,
         )
 
         with patch(
@@ -1078,21 +1231,70 @@ class TestEvalAttemptedCount:
         ):
             result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
 
-        assert result["denominator_source"] == DENOMINATOR_SOURCE_EVAL_RESULTS
-        assert result["scenario_count"] == 5
-        assert result["valid_scenario_count"] is None, (
-            "how many fetched rows carried a label is unrecorded here — not zero, "
-            "and not the scored count wearing another name"
+        assert result["eval_signal"] == EVAL_SIGNAL_NO_RECORD
+        assert result["result"] == "absent"
+        assert result["scenario_count"] is None
+        assert result["valid_scenario_count"] is None
+        assert result["scored_scenario_count"] is None
+        assert result["denominator_source"] is None
+        assert result["pass_rates"] is None
+
+    def test_a_recordless_run_makes_the_gate_refuse(self):
+        """Criterion (c). A run with no record cannot approve a launch."""
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=None,
         )
 
-    def test_a_run_that_scored_nothing_still_reports_what_it_attempted(self):
-        """40 attempted, every score NULL. 'No valid scores' and 'nothing was
-        attempted' are different events and used to report identical zeros."""
-        run_config = _invoked_config(dataset={"attempted": 40, "valid": 40})
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", result, _measured_red_team()
+        )
+        assert recommendation == "block", (
+            "a run that recorded no measurement is unknown quality, and unknown "
+            "quality may never approve a deploy"
+        )
+        assert any(w.warning_id == "eval_signal_unavailable" for w in warnings)
+
+    def test_a_stored_record_that_breaks_a_rule_reads_as_absent(self):
+        """Already being written down is not evidence that a shape is honest."""
+        broken = _record().payload
+        broken["datasets"]["exploratory"]["metrics"]["faithfulness"] = {
+            "value": 0.9,
+            "measured": False,
+            "observations": 0,
+        }
         mock_conn = _make_eval_conn(
-            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", run_config),
-            metric_rows=[("faithfulness", None, 0)],
-            count_row=(40, 0),
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=broken,
+        )
+
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            result = _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+        assert result["eval_signal"] == EVAL_SIGNAL_NO_RECORD
+        assert result["pass_rates"] is None
+
+    def test_a_run_that_scored_nothing_still_reports_what_it_attempted(self):
+        """40 attempted, nothing measured. 'No valid scores' and 'nothing was
+        attempted' are different events and used to report identical zeros."""
+        nothing = _record(
+            datasets={"exploratory": _outcome(attempted=40, valid=40, scored=0)},
+            attempted=40,
+            valid=40,
+            scored=0,
+        )
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=nothing,
         )
 
         with patch(
@@ -1107,10 +1309,174 @@ class TestEvalAttemptedCount:
         assert result["pass_rates"] is None
 
     def test_the_prompt_tells_the_orchestrator_where_the_denominator_came_from(self):
-        """A labelled floor the reader cannot see the label of is just a number."""
+        """A labelled figure the reader cannot see the label of is just a number."""
         assert "denominator_source" in _DEPLOYMENT_SYSTEM_PROMPT
         assert "valid_scenario_count" in _DEPLOYMENT_SYSTEM_PROMPT
         assert "coverage_source" in _DEPLOYMENT_SYSTEM_PROMPT
+
+
+class TestTheTwoDatasetsAreNeverPooled:
+    """A run whose halves both scored has no run-level number, and says so."""
+
+    def _both(self):
+        return _record(
+            datasets={
+                "golden": _outcome(
+                    attempted=12, valid=12, scored=12,
+                    faithfulness=0.94, answer_relevancy=0.90,
+                ),
+                "exploratory": _outcome(
+                    attempted=30, valid=28, scored=25,
+                    faithfulness=0.71, answer_relevancy=0.66,
+                ),
+            },
+            attempted=42,
+            valid=40,
+            scored=37,
+        )
+
+    def _summary(self, record):
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=record,
+            verdict_rows=[("s1", 2, 0)],
+        )
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            return _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+    def test_a_two_dataset_run_has_no_run_level_number(self):
+        """Criterion (d), first half. The golden set is fixed and the
+        exploratory sample rotates, so one mean over both moves with the draw
+        while looking like a quality change."""
+        result = self._summary(self._both())
+
+        assert result["eval_signal"] == EVAL_SIGNAL_MEASURED
+        assert result["pass_rates"] is None, (
+            "a run-level rate over two datasets is the pooled mean this record "
+            "refuses to hold"
+        )
+        assert result["pass_rates_dataset"] is None
+        for reading in result["metrics"].values():
+            assert reading["measured"] is False
+            assert reading["value"] is None
+
+    def test_the_two_halves_travel_beside_each_other(self):
+        """Criterion (d), second half. The gate reads per dataset."""
+        result = self._summary(self._both())
+
+        golden = result["datasets"]["golden"]
+        exploratory = result["datasets"]["exploratory"]
+        assert golden["metrics"]["faithfulness"]["value"] == pytest.approx(0.94)
+        assert exploratory["metrics"]["faithfulness"]["value"] == pytest.approx(0.71)
+        assert golden["scenario_count"] == 12
+        assert exploratory["scenario_count"] == 30
+        assert result["scenario_count"] == 42, "the run's total is the sum it stored"
+
+        assert apply_signal_evidence_gate("ship", result, _measured_red_team())[0] == (
+            "ship"
+        ), (
+            "the gate finds its evidence per dataset; refusing here would block "
+            "every tenant with a designated golden set over numbers it does hold"
+        )
+
+    def test_a_gated_metric_measured_on_no_dataset_refuses(self):
+        """The reachable fail-open the pooled mean used to hide.
+
+        `context_precision` came back and the two gated metrics did not, so the
+        record reports `scored` above zero and the deploy gate has no quality
+        evidence at all. Missing data is never passing data.
+        """
+        ungated_only = _record(
+            datasets={
+                "golden": _outcome(
+                    attempted=12, valid=12, scored=12, context_precision=0.99
+                ),
+                "exploratory": _outcome(
+                    attempted=30, valid=30, scored=30, context_recall=0.98
+                ),
+            },
+            attempted=42,
+            valid=42,
+            scored=42,
+        )
+        result = self._summary(ungated_only)
+
+        assert result["eval_signal"] == EVAL_SIGNAL_MEASURED
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", result, _measured_red_team()
+        )
+        assert recommendation == "block"
+        assert any(w.warning_id == "eval_quality_unmeasured" for w in warnings)
+
+    def test_one_scoring_dataset_names_itself(self):
+        """A golden-only run reports the golden numbers AS the run's, named."""
+        golden_only = _record(
+            datasets={
+                "golden": _outcome(
+                    attempted=12, valid=12, scored=12, faithfulness=0.94
+                ),
+                "exploratory": _outcome(attempted=30, valid=0, scored=0),
+            },
+            attempted=42,
+            valid=12,
+            scored=12,
+        )
+        result = self._summary(golden_only)
+
+        assert result["pass_rates"] == {"faithfulness": pytest.approx(0.94)}
+        assert result["pass_rates_dataset"] == "golden"
+
+
+class TestScenarioVerdictCounts:
+    """`failing_scenarios` counts scenarios, off stored verdicts (#51 slice 4).
+
+    It was `sum(1 for v in rates.values() if v < 0.70)` — a count of failing
+    METRICS under a scenario's name, computed here from averages, and blind to a
+    judge that decided nothing at all.
+    """
+
+    def _summary(self, verdict_rows, verdicts_raise=False):
+        mock_conn = _make_eval_conn(
+            (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", _invoked_config()),
+            record=_record(),
+            verdict_rows=verdict_rows,
+            verdicts_raise=verdicts_raise,
+        )
+        with patch(
+            "app.services.deployment_service.psycopg2.connect",
+            return_value=mock_conn,
+        ):
+            return _fetch_eval_summary_sync("test-agent", "postgresql://test/tenant")
+
+    def test_a_scenario_fails_when_a_gated_verdict_is_false(self):
+        result = self._summary([("s1", 2, 1), ("s2", 2, 0), ("s3", 2, 2)])
+        assert result["failing_scenarios"] == 2
+        assert result["unmeasured_scenarios"] == 0
+
+    def test_an_undecided_gated_metric_is_unmeasured_not_failed(self):
+        """None-first, the ordering `get_eval_run_results` renders `passed` with.
+
+        "Nobody decided" reported as "it failed" is what turns a judge outage
+        into an apparent quality collapse and an owner-initiated rollback.
+        """
+        result = self._summary([("s1", 1, 1), ("s2", 0, 0), ("s3", 2, 0)])
+        assert result["unmeasured_scenarios"] == 2
+        assert result["failing_scenarios"] == 0, (
+            "a scenario with an undecided gated metric is counted once, as "
+            "unmeasured, and never also as a failure"
+        )
+
+    def test_a_pre_0023_tenant_reports_the_absence_rather_than_zero(self):
+        """No verdict column at all. Null, because zero failures is a claim."""
+        result = self._summary([], verdicts_raise=True)
+        assert result["failing_scenarios"] is None
+        assert result["unmeasured_scenarios"] is None
+        assert apply_signal_evidence_gate("ship", result, _measured_red_team())[0] == (
+            "block"
+        ), "a verdict count that could not be read is not a count of zero"
 
 
 # ---------------------------------------------------------------------------
@@ -1118,26 +1484,26 @@ class TestEvalAttemptedCount:
 # ---------------------------------------------------------------------------
 
 
-def _measured_eval(pass_rates=None) -> dict:
-    return {
-        "eval_signal": EVAL_SIGNAL_MEASURED,
-        "signal_detail": None,
-        # D1/P3. These tests are about the other refusals, so they must supply a
-        # run that invoked the agent or the gate blocks every one of them and
-        # they stop testing what their names say — the same reason
-        # `eval_signal` itself is here. Before P2 this key did not exist and
-        # this fixture WAS the shape of a tautological run: measured, clean,
-        # 0.92 faithfulness, and no agent anywhere near it.
-        "agent_invoked": True,
-        "last_run_at": "2026-05-23T02:00:00",
-        "last_run_status": "complete",
-        "scenario_count": 30,
-        "valid_scenario_count": 30,
-        "scored_scenario_count": 30,
-        "denominator_source": DENOMINATOR_SOURCE_RUN_CONFIG,
-        "pass_rates": pass_rates or {"faithfulness": 0.92},
-        "failing_scenarios": 0,
-    }
+def _measured_eval(record=None, *, verdicts=(0, 0)) -> dict:
+    """An admissible eval signal, built through the collector's own constructor.
+
+    Hand-writing this dict is how a gate test comes to assert against a payload
+    shape production never produces, so it goes through `_eval_summary` and the
+    tests below see exactly what `_fetch_eval_summary_sync` emits.
+
+    D1/P3: `agent_invoked` is True because these tests are about the OTHER
+    refusals, and the gate blocks every one of them without it. Before P2 the key
+    did not exist and this fixture WAS the shape of a tautological run — measured,
+    clean, 0.92 faithfulness, and no agent anywhere near it.
+    """
+    return _eval_summary(
+        EVAL_SIGNAL_MEASURED,
+        last_run_at="2026-05-23T02:00:00",
+        last_run_status="complete",
+        record=record if record is not None else _record(),
+        verdicts=verdicts,
+        agent_invoked=True,
+    )
 
 
 def _measured_red_team(coverage_complete=True) -> dict:
@@ -1719,10 +2085,16 @@ class TestAgentInvokedCollector:
     def _conn(self, config, **kw):
         return _make_eval_conn(
             (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete", config),
-            metric_rows=kw.get(
-                "metric_rows", [("faithfulness", Decimal("0.99"), 30)]
+            record=kw.get(
+                "record",
+                _record(
+                    datasets={
+                        "exploratory": _outcome(
+                            attempted=30, valid=30, scored=30, faithfulness=0.99
+                        )
+                    }
+                ),
             ),
-            count_row=kw.get("count_row", (30, 30)),
         )
 
     def _collect(self, mock_conn):
@@ -1744,9 +2116,7 @@ class TestAgentInvokedCollector:
         near-perfect score over thirty scenarios. This is what every eval run
         on the platform looks like today, and it used to be indistinguishable
         from a measurement."""
-        result = self._collect(
-            self._conn({"dataset": {"attempted": 30, "valid": 30}})
-        )
+        result = self._collect(self._conn({"dataset": {"attempted": 30, "valid": 30}}))
 
         assert result["eval_signal"] == EVAL_SIGNAL_AGENT_NOT_INVOKED
         assert result["agent_invoked"] is None
@@ -1813,8 +2183,16 @@ class TestAgentInvokedCollector:
         result = self._collect(
             self._conn(
                 {"dataset": {"attempted": 40, "valid": 38}},
-                metric_rows=[("faithfulness", Decimal("0.99"), 5)],
-                count_row=(5, 5),
+                record=_record(
+                    datasets={
+                        "exploratory": _outcome(
+                            attempted=40, valid=38, scored=5, faithfulness=0.99
+                        )
+                    },
+                    attempted=40,
+                    valid=38,
+                    scored=5,
+                ),
             )
         )
 
@@ -1822,8 +2200,12 @@ class TestAgentInvokedCollector:
         assert result["scenario_count"] == 40
         assert result["valid_scenario_count"] == 38
         assert result["scored_scenario_count"] == 5
-        assert result["denominator_source"] == DENOMINATOR_SOURCE_RUN_CONFIG
+        assert result["denominator_source"] == DENOMINATOR_SOURCE_EVAL_RECORD
         assert result["last_run_status"] == "complete"
+        assert result["datasets"]["exploratory"]["scenario_count"] == 40, (
+            "the per-dataset counts travel on a refusal too; only the numbers "
+            "the orchestrator would narrate are withheld"
+        )
 
     def test_a_pre_0013_tenant_has_no_config_column_and_so_fails_closed(self):
         """The sharpest edge of the settled decision, stated where it bites.
@@ -1837,9 +2219,7 @@ class TestAgentInvokedCollector:
         """
         mock_conn = _make_eval_conn(
             (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete"),
-            metric_rows=[("faithfulness", Decimal("0.99"), 30)],
-            count_row=(30, 30),
-            raise_on="config FROM eval_runs",
+            raise_on="status, config",
         )
         result = self._collect(mock_conn)
 
@@ -1854,9 +2234,7 @@ class TestAgentInvokedCollector:
         agent_invoked=false AND (because run_eval_suite skips the scorer) it
         has written no eval_results. 'no_valid_scores' would send the owner
         after a judge that was never the problem."""
-        result = self._collect(
-            self._conn({"agent_invoked": False}, metric_rows=[], count_row=(0, 0))
-        )
+        result = self._collect(self._conn({"agent_invoked": False}, record=None))
 
         assert result["eval_signal"] == EVAL_SIGNAL_AGENT_NOT_INVOKED, (
             "reported as a judge failure when the agent was the thing that "
@@ -1866,11 +2244,28 @@ class TestAgentInvokedCollector:
     def test_an_invoking_run_that_scored_nothing_is_still_a_judge_failure(self):
         """The converse, so the ordering above is not just always-D1."""
         result = self._collect(
-            self._conn(_invoked_config(), metric_rows=[], count_row=(30, 0))
+            self._conn(
+                _invoked_config(),
+                record=_record(
+                    datasets={"exploratory": _outcome(attempted=30, valid=30, scored=0)},
+                    scored=0,
+                ),
+            )
         )
 
         assert result["eval_signal"] == EVAL_SIGNAL_NO_VALID_SCORES
         assert result["agent_invoked"] is True
+
+    def test_a_recordless_run_is_reported_after_the_invocation_claim(self):
+        """Ordering, stated where it bites. A pre-D1 run predates migration 0022
+        too, so it is in both absent states at once, and the invocation claim is
+        the one that names what is wrong: its scores are about the dataset's own
+        reference answers, and a fresh eval is what fixes it. Reporting the
+        missing record instead would send the owner after the writer."""
+        result = self._collect(self._conn({}, record=None))
+
+        assert result["eval_signal"] == EVAL_SIGNAL_AGENT_NOT_INVOKED
+        assert result["result"] == "absent"
 
 
 class TestNarrowRowWidth:
@@ -1889,8 +2284,7 @@ class TestNarrowRowWidth:
         seen = []
         mock_conn = _make_eval_conn(
             (uuid.uuid4(), datetime(2026, 5, 23, 2, 0, 0), "complete"),
-            metric_rows=[("faithfulness", Decimal("0.99"), 30)],
-            count_row=(30, 30),
+            record=_record(),
             raise_on=raise_on,
         )
         real_cursor = mock_conn.cursor.return_value
@@ -1910,17 +2304,27 @@ class TestNarrowRowWidth:
         return seen
 
     def test_the_pre_0013_fallback_receives_exactly_three_columns(self):
-        seen = self._rows_seen(raise_on="config FROM eval_runs")
+        """Both wider SELECTs name `config`, so both raise and only the narrow
+        `SELECT id, finished_at, status` answers."""
+        seen = self._rows_seen(raise_on="status, config")
 
-        assert len(seen[0]) == 3, (
+        assert len(seen[-1]) == 3, (
             f"the narrow 'SELECT id, finished_at, status' was answered with "
-            f"{len(seen[0])} columns: {seen[0]!r}"
+            f"{len(seen[-1])} columns: {seen[-1]!r}"
         )
 
-    def test_the_wide_select_still_receives_four(self):
+    def test_the_pre_0022_fallback_receives_exactly_four(self):
+        """A tenant at 0013 through 0021 has `config` and no `result`. It keeps
+        its invocation claim, which is what stops the whole population failing
+        closed for a reason it cannot fix."""
+        seen = self._rows_seen(raise_on="config, result")
+
+        assert len(seen[-1]) == 4
+
+    def test_the_wide_select_still_receives_five(self):
         seen = self._rows_seen(raise_on=None)
 
-        assert len(seen[0]) == 4
+        assert len(seen[0]) == 5
 
 
 class TestFailedRunIsNotEvidence:
@@ -1944,7 +2348,7 @@ class TestFailedRunIsNotEvidence:
     no_valid_scores before the question was ever asked.
     """
 
-    def _collect(self, status, config=None, metric_rows=None, count_row=(30, 30)):
+    def _collect(self, status, config=None, record=None):
         mock_conn = _make_eval_conn(
             (
                 uuid.uuid4(),
@@ -1952,12 +2356,17 @@ class TestFailedRunIsNotEvidence:
                 status,
                 config if config is not None else _invoked_config(),
             ),
-            metric_rows=(
-                metric_rows
-                if metric_rows is not None
-                else [("faithfulness", Decimal("0.90"), 30)]
+            record=(
+                record
+                if record is not None
+                else _record(
+                    datasets={
+                        "exploratory": _outcome(
+                            attempted=30, valid=30, scored=30, faithfulness=0.90
+                        )
+                    }
+                )
             ),
-            count_row=count_row,
         )
         with patch(
             "app.services.deployment_service.psycopg2.connect",
@@ -1987,17 +2396,14 @@ class TestFailedRunIsNotEvidence:
         """Same suppression as every other absent state. A 0.90 beside a
         refusal is what the orchestrator narrates.
 
-        A PROPERTY PIN, AND NEITHER LAYER ALONE CAN FALSIFY IT — stated here
-        because P3 drew a stronger conclusion from the same shape and the
-        tier-2 read was right to reject it. The suppression happens twice: this
-        state's return omits the `pass_rates=` argument, and _eval_summary nulls
-        `rates` outside EVAL_SIGNAL_MEASURED. Adding `pass_rates=pass_rates` to
-        the call leaves this green, because the second layer nulls it; removing
-        the second layer leaves it green too, because the first passes nothing
-        and the default is already None. Both were RUN separately and observed
-        green, and only the pair turns it red. Recorded as one mutation in
+        THERE IS ONE LAYER NOW AND IT IS `_readings` (#51 slice 4). The refusal
+        used to omit the `pass_rates=` argument AND _eval_summary nulled the
+        rates outside EVAL_SIGNAL_MEASURED, so either layer alone kept this test
+        green and only removing both turned it red — recorded as one mutation in
         `.dev/reference/p3-review-mutation-proofs.md` rather than dressed up as
-        two independent defences.
+        two defences. The record now travels on every state, because the COUNTS
+        have to, so suppression is a single decision taken in one place against
+        the signal.
         """
         result = self._collect("failed")
 
@@ -2008,14 +2414,22 @@ class TestFailedRunIsNotEvidence:
         """A blocked run whose size the owner cannot see is a dead end."""
         result = self._collect(
             "failed",
-            config=_invoked_config(dataset={"attempted": 40, "valid": 38}),
-            count_row=(30, 30),
+            record=_record(
+                datasets={
+                    "exploratory": _outcome(
+                        attempted=40, valid=38, scored=30, faithfulness=0.90
+                    )
+                },
+                attempted=40,
+                valid=38,
+                scored=30,
+            ),
         )
 
         assert result["scenario_count"] == 40
         assert result["valid_scenario_count"] == 38
         assert result["scored_scenario_count"] == 30
-        assert result["denominator_source"] == DENOMINATOR_SOURCE_RUN_CONFIG
+        assert result["denominator_source"] == DENOMINATOR_SOURCE_EVAL_RECORD
 
     def test_an_unrecognised_terminal_status_also_fails_closed(self):
         """An allow-list of one, not a deny-list containing 'failed'. The

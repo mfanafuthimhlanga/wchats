@@ -796,9 +796,9 @@ def run_eval_suite(self, agent_id: str) -> dict:
     is the live downstream consumer, and the earlier analysis stopped at
     verified_qa, which has no caller. The chain:
 
-        this task -> write_eval_results -> eval_results on PRODUCTION
-        deployment_service._fetch_eval_summary_sync: AVG(score) GROUP BY metric,
-            filtered on eval_run_id and NOTHING else -> `pass_rates`
+        this task -> build_eval_result -> eval_runs.result on PRODUCTION
+        deployment_service._fetch_eval_summary_sync lifts that record, per
+            dataset, pooling nothing (#51 slice 4) -> `pass_rates`
         run_deployment_checklist puts eval_summary on the orchestrator payload
         the orchestrator applies "all eval metrics >= 0.85" (ship) and
             "[0.70, 0.85)" (warn) — prose in _DEPLOYMENT_SYSTEM_PROMPT
@@ -1192,20 +1192,20 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # `agent_invocation.status` was 'unknown' for a below-floor run and the
         # run scored anyway: 2 surviving rows out of 40 produced 2x4 eval_results
         # rows, update_eval_run_status marked it 'complete', and
-        # deployment_service._fetch_eval_summary_sync built a non-empty
-        # pass_rates from them and returned EVAL_SIGNAL_MEASURED. The 'unknown'
+        # deployment_service._fetch_eval_summary_sync averaged them into a
+        # non-empty pass_rates and returned EVAL_SIGNAL_MEASURED. The 'unknown'
         # lived in a config key that nothing outside this module reads, so
         # everything a consumer actually reads reported a pass over two
         # observations. Before P2 that state was unreachable — every fetched row
         # was always 'scored'.
         #
-        # The deploy gate learning to read `agent_invoked` is P3. Until it does,
-        # the refusal has to be here, where the observation is: no eval_results
-        # rows means _fetch_eval_summary_sync finds an empty pass_rates and
-        # returns EVAL_SIGNAL_NO_VALID_SCORES, which apply_signal_evidence_gate
-        # already refuses. Fail-closed with the machinery that exists rather than
-        # a window in which the plan's "reports unknown, never pass" is true of
-        # one key and false of the run.
+        # The deploy gate reads `agent_invoked` since P3 and refuses on it.
+        # The refusal stays here as well, where the observation is: a record
+        # whose metrics are all unmeasured reaches _fetch_eval_summary_sync as
+        # EVAL_SIGNAL_NO_VALID_SCORES, and a gated metric measured on no dataset
+        # is refused by _quality_evidence_warning (#51 slice 4). Two floors under
+        # one hole, because the plan's "reports unknown, never pass" has to be
+        # true of the run and not only of one key.
         #
         # The run still ends terminally and still carries its whole invocation
         # observation, so "this run measured too little" stays readable — it is
