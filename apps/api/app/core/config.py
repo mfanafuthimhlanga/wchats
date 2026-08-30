@@ -219,22 +219,34 @@ class Settings(BaseSettings):
     # ever run read eval_signal=no_runs seconds after starting the eval it was
     # asking about; that shape is what these two numbers close.
     #
-    # 1500s is 25 minutes. It sits above one eval suite and above the k=1 red-team
-    # bound, and BELOW the red-team k=3 bound of roughly forty-five minutes, so a
-    # full red-team run is expected to outlast it. That is the deliberate trade:
-    # the ceiling exists to bound the Celery task, not to guarantee both halves
-    # finish. A half that does not reach terminal reads as an ABSENT record and
-    # decide() blocks on it, which is the fail-closed direction.
+    # THE CHECKLIST DOES NOT HOLD A WORKER SLOT WHILE IT WAITS, and that is what
+    # lets this number be large enough to be useful (#54 review). It used to sleep
+    # inside the task on the same `runtime` queue as the two jobs it had just
+    # dispatched; on the documented local topology — one worker, `-Q
+    # pipeline,runtime`, solo pool, so one execution slot — those jobs could not
+    # start until the checklist returned, and the wait could never be satisfied.
+    # The task now polls once, re-queues itself with CHECKLIST_WAIT_POLL_S of
+    # countdown and returns, so the slot is free between looks.
     #
-    # It also has to stay under the checklist's own 60-minute idempotency window,
-    # or a second trigger would find no 'running' row while the first was still
+    # 2700s is 45 minutes, which covers the red-team k=3 bound rather than
+    # sitting below it. At 1500s a full red-team run was EXPECTED to outlast the
+    # ceiling, so the report's security half was routinely decided on a job that
+    # never finished.
+    #
+    # It stays under the checklist's own 60-minute idempotency window. Past that
+    # a second trigger would find no 'running' row while the first was still
     # waiting and put two checklists on one agent.
-    CHECKLIST_WAIT_CEILING_S: int = 1500
+    #
+    # A half that does not reach terminal inside this still reads as an ABSENT
+    # record and blocks. The ceiling bounds how long the platform is willing to
+    # wait; it never decides what the report may claim.
+    CHECKLIST_WAIT_CEILING_S: int = 2700
 
-    # How long the wait sleeps between polls of the tenant DB. Each poll opens one
-    # short psycopg2 connection per job still in flight, so at the 1500s ceiling
-    # the worst case is 150 polls, and lowering this buys latency at the cost of
-    # connections against a per-tenant Neon project.
+    # The countdown between one poll of the tenant DB and the next. Each poll
+    # opens one short psycopg2 connection per job still in flight and costs one
+    # Celery message, so at the 2700s ceiling the worst case is 270 polls.
+    # Lowering it buys latency at the cost of connections against a per-tenant
+    # Neon project and messages on the broker.
     CHECKLIST_WAIT_POLL_S: int = 10
 
     # M10: Maintenance + Observability thresholds and flags

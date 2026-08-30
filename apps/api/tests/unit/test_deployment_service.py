@@ -75,6 +75,7 @@ from app.services.deployment_service import (
     DENOMINATOR_SOURCE_EVAL_RECORD,
     EVAL_QUALITY_UNMEASURED_WARNING_ID,
     EVAL_SIGNAL_AGENT_NOT_INVOKED,
+    EVAL_SIGNAL_DID_NOT_FINISH,
     EVAL_SIGNAL_MEASURED,
     EVAL_SIGNAL_NO_RECORD,
     EVAL_SIGNAL_NO_RUNS,
@@ -83,8 +84,10 @@ from app.services.deployment_service import (
     EVAL_SIGNAL_UNAVAILABLE,
     EVAL_SUMMARY_UNAVAILABLE_SIGNAL,
     ORCHESTRATOR_PURPOSE,
+    RED_TEAM_SIGNAL_DID_NOT_FINISH,
     RED_TEAM_SIGNAL_MEASURED,
     RED_TEAM_SIGNAL_NO_RUNS,
+    RED_TEAM_SIGNAL_RUN_FAILED,
     RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL,
     SUBMIT_REPORT_TOOL_NAME,
     DeploymentReport,
@@ -97,6 +100,9 @@ from app.services.deployment_service import (
     _resolve_blast_radius_thresholds,
     apply_signal_evidence_gate,
     derive_blast_radius_warnings,
+    eval_summary_did_not_finish,
+    poll_terminal_statuses,
+    red_team_summary_did_not_finish,
     run_orchestrator,
     stored_run_records_agent_invocation,
 )
@@ -2831,12 +2837,16 @@ class TestBlastRadiusWarnings:
 class TestRedTeamSummarySignal:
     """The collector's payload must say it was READ, and how much it covers."""
 
-    def _fetch(self, run_row=(datetime(2026, 5, 23, 3, 0, 0), None), raise_on=None):
+    def _fetch(
+        self,
+        run_row=(datetime(2026, 5, 23, 3, 0, 0), "complete", None),
+        raise_on=None,
+    ):
         """psycopg2 double for _fetch_red_team_summary_sync.
 
-        `run_row` is (started_at, coverage) since migration 0015 — the run's own
-        record of how much of the attack surface it covered. None for coverage
-        is a run written before 0015.
+        `run_row` is (started_at, status, coverage) since migration 0015 — the
+        run's own terminal status and its own record of how much of the attack
+        surface it covered. None for coverage is a run written before 0015.
         """
         conn = MagicMock()
         cursor = MagicMock()
@@ -2853,7 +2863,7 @@ class TestRedTeamSummarySignal:
         cursor.fetchone.side_effect = lambda: (
             None
             if run_row is None
-            else (run_row[:1] if raise_on == "coverage" else run_row)
+            else (run_row[:2] if raise_on == "coverage" else run_row)
         )
         cursor.fetchall.return_value = [("medium", 2)]
         conn.cursor.return_value = cursor
@@ -2934,7 +2944,7 @@ class TestRedTeamSummarySignal:
             "invalid_vectors": ["hallucination"],
             "complete": False,
         }
-        result = self._fetch(run_row=(datetime(2026, 5, 23, 3, 0, 0), stored))
+        result = self._fetch(run_row=(datetime(2026, 5, 23, 3, 0, 0), "complete", stored))
 
         assert result["vectors_valid"] == 3
         assert result["invalid_vectors"] == ["hallucination"]
@@ -2957,7 +2967,7 @@ class TestRedTeamSummarySignal:
         `vectors_attempted` is a numerator wearing a denominator's name.
         """
         result = self._fetch(
-            run_row=(datetime(2026, 5, 23, 3, 0, 0), {"vectors_valid": 3})
+            run_row=(datetime(2026, 5, 23, 3, 0, 0), "complete", {"vectors_valid": 3})
         )
 
         assert result["coverage_source"] == COVERAGE_SOURCE_CURRENT_BUILD
@@ -2972,6 +2982,153 @@ class TestRedTeamSummarySignal:
                 "ship", _measured_eval(), dict(RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL)
             )[0]
             == "block"
+        )
+
+
+class TestAnUnfinishedRedTeamRunIsNotAResult:
+    """The security half of the #54 review: three ways a run is not a measurement."""
+
+    def _fetch(self, run_row, executed=None):
+        conn = MagicMock()
+        cursor = MagicMock()
+        cursor.__enter__ = MagicMock(return_value=cursor)
+        cursor.__exit__ = MagicMock(return_value=False)
+        cursor.execute.side_effect = lambda sql, params=None: (
+            executed.append(sql) if executed is not None else None
+        )
+        cursor.fetchone.side_effect = lambda: run_row
+        cursor.fetchall.return_value = [("medium", 2)]
+        conn.cursor.return_value = cursor
+        with patch(
+            "app.services.deployment_service.psycopg2.connect", return_value=conn
+        ):
+            return _fetch_red_team_summary_sync("test-agent", "postgresql://test/t")
+
+    def test_the_query_excludes_the_row_a_running_job_inserts(self):
+        """The in-flight row used to satisfy 'a run exists'.
+
+        `run_red_team` INSERTs status='running' before it attacks anything. With
+        no status filter the collector read that row, found zero open findings
+        because nothing had been attacked, and reported MEASURED. An agent
+        nothing had ever probed came back clean, which is the exact shape audit
+        D4 named on the eval half.
+        """
+        executed = []
+        self._fetch((datetime(2026, 5, 23, 3, 0, 0), "complete", None), executed)
+
+        assert any("status <> 'running'" in sql for sql in executed), (
+            "the newest-run query must exclude the row a running job inserts: "
+            f"{executed}"
+        )
+
+    def test_a_run_that_did_not_complete_reports_run_failed(self):
+        """`run_red_team` writes 'failed' from its own except handler.
+
+        The open-finding query counts findings across ALL runs, so a run that
+        died on its second attack vector produced a signal claiming the surface
+        had been probed over counts belonging to whatever ran before it.
+        """
+        result = self._fetch((datetime(2026, 5, 23, 3, 0, 0), "failed", None))
+
+        assert result["signal"] == RED_TEAM_SIGNAL_RUN_FAILED
+        assert result["critical_count"] is None, (
+            "a run that fell out of its body has no admissible counts"
+        )
+        assert "failed" in result["signal_detail"]
+
+    def test_a_failed_run_blocks_with_its_own_warning(self):
+        result = self._fetch((datetime(2026, 5, 23, 3, 0, 0), "failed", None))
+
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", _measured_eval(), result
+        )
+        assert recommendation == "block"
+        assert [w.warning_id for w in warnings] == ["red_team_run_failed"]
+
+
+class TestTheCeilingExpirySubstitutes:
+    """A job the wait never saw finish is a named absence, not a stale summary."""
+
+    def test_the_eval_substitute_carries_no_number_and_names_the_wait(self):
+        payload = eval_summary_did_not_finish(2700.4)
+
+        assert payload["eval_signal"] == EVAL_SIGNAL_DID_NOT_FINISH
+        assert payload["pass_rates"] is None
+        assert payload["scenario_count"] is None
+        assert "2700" in payload["signal_detail"], (
+            "the observed wait separates a slow run from an unreachable tenant "
+            f"DB, and both end here: {payload['signal_detail']}"
+        )
+
+    def test_the_red_team_substitute_carries_no_count(self):
+        payload = red_team_summary_did_not_finish(2700.4)
+
+        assert payload["signal"] == RED_TEAM_SIGNAL_DID_NOT_FINISH
+        for key in ("critical_count", "high_count", "medium_count", "low_count"):
+            assert payload[key] is None
+
+    def test_both_substitutes_block_with_a_come_back_later_warning(self):
+        """Three remedies, three warning ids. 'Could not be read' sends the
+        owner looking for a broken thing; the run is simply still going."""
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship",
+            eval_summary_did_not_finish(2700.0),
+            red_team_summary_did_not_finish(2700.0),
+        )
+
+        assert recommendation == "block"
+        assert sorted(w.warning_id for w in warnings) == [
+            "eval_did_not_finish",
+            "red_team_did_not_finish",
+        ]
+        for warning in warnings:
+            assert "again" in warning.message.lower()
+
+
+class TestPollTerminalStatuses:
+    """One look, driven directly. The loop it replaces held the worker slot."""
+
+    def test_a_terminal_status_is_recorded_and_a_running_one_is_not(self):
+        statuses = poll_terminal_statuses(
+            {},
+            {"eval": lambda: "complete", "red_team": lambda: "running"},
+        )
+
+        assert statuses == {"eval": "complete", "red_team": None}
+
+    def test_a_failed_run_is_terminal(self):
+        """'failed' ENDS a run. Waiting past it would wait forever, and the
+        record it left is what decide() reads as absent."""
+        statuses = poll_terminal_statuses({}, {"eval": lambda: "failed"})
+
+        assert statuses == {"eval": "failed"}
+
+    def test_an_unrecognised_status_is_not_terminal(self):
+        """A name this build cannot interpret is not evidence that a run ended."""
+        statuses = poll_terminal_statuses({}, {"eval": lambda: "cancelled"})
+
+        assert statuses == {"eval": None}
+
+    def test_a_run_already_known_terminal_is_never_polled_again(self):
+        """Its status is the answer. A later look could only find a NEWER run
+        that something else started."""
+        calls = []
+
+        def _eval():
+            calls.append(1)
+            return "failed"
+
+        statuses = poll_terminal_statuses({"eval": "complete"}, {"eval": _eval})
+
+        assert calls == [], "a settled run was polled again"
+        assert statuses == {"eval": "complete"}
+
+    def test_a_name_absent_from_known_starts_unobserved(self):
+        statuses = poll_terminal_statuses({"eval": "complete"}, {"red_team": lambda: None})
+
+        assert statuses == {"red_team": None}, (
+            "the returned mapping is keyed by the fetchers, never by whatever "
+            "an older state happened to carry"
         )
 
 

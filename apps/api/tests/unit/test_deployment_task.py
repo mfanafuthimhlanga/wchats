@@ -50,10 +50,13 @@ os.environ.setdefault("VOYAGE_API_KEY", "test_voyage_key")
 os.environ.setdefault("JWT_SECRET", "test_jwt_secret")
 os.environ.setdefault("CLERK_WEBHOOK_SIGNING_SECRET", "test_clerk_secret")
 
+import json
 import uuid
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 # ---------------------------------------------------------------------------
 # Helper: build a mock get_sync_db context manager
@@ -83,11 +86,10 @@ def _past_step_3b(eval_status="complete", red_team_status="complete"):
     and one whose subject is something else says so by handing both readers a
     terminal status: the wait returns on its first poll having slept nothing.
 
-    Without this the readers connect to a fake DSN, read None every time, and
-    the task sleeps out the full CHECKLIST_WAIT_CEILING_S. Both dispatches are
-    stubbed for the same class of reason: the dispatch is unconditional now, so
-    every test that reaches step 3b would otherwise put a real message on a
-    broker that is not running.
+    Without this the readers connect to a fake DSN, read None every time, and the
+    task re-queues itself instead of collecting anything. Both dispatches and the
+    re-queue are stubbed for the same class of reason: all three put a real
+    message on a broker that is not running.
 
     A test that asserts on the eval dispatch re-patches it inside its own `with`,
     after this one, and the inner patcher is the one it reads.
@@ -109,6 +111,7 @@ def _past_step_3b(eval_status="complete", red_team_status="complete"):
                 "latest_red_team_run_status_since", return_value=red_team_status
             )
         )
+        stack.enter_context(_deployment_patch("_requeue_wait"))
         yield
 
 
@@ -1420,9 +1423,16 @@ def _sequenced_world(eval_polls, red_team_polls):
 
 
 def _drive_sequenced(
-    fetchers, collectors, *, ceiling_s=1500, mock_log=None, dispatch=None
+    fetchers, collectors, *, ceiling_s=2700, mock_log=None, dispatch=None
 ):
-    """Run the real task against the fake tenant DB, with no real time in it."""
+    """Run the real task to settlement, driving every continuation by hand.
+
+    The wait is a chain of messages now, so one call to the task is one poll.
+    `_requeue_wait` is captured rather than performed, and this driver feeds the
+    state it captured straight back in. That is the whole production loop with
+    the broker and the countdown taken out of it, so a wait that takes five polls
+    takes five calls here and no real time at all.
+    """
     from app.core.config import settings
     from app.worker.tasks.runtime import deployment as deployment_task
     from app.worker.tasks.runtime.deployment import run_deployment_checklist
@@ -1431,6 +1441,7 @@ def _drive_sequenced(
     mock_db, mock_run = _build_full_happy_path_mock_db(str(uuid.uuid4()))
     dispatch_eval = dispatch[0] if dispatch else (lambda _a: True)
     dispatch_red_team = dispatch[1] if dispatch else (lambda _a: True)
+    queued: list[dict] = []
 
     async def _report(signals_json, result_container, *, ledger=None):
         result_container["report"] = {
@@ -1438,6 +1449,9 @@ def _drive_sequenced(
             "summary": "All good.",
             "warnings": [],
         }
+
+    def _capture_requeue(_agent_id, state):
+        queued.append(state)
 
     def _target(name, **kwargs):
         return patch("app.worker.tasks.runtime.deployment." + name, **kwargs)
@@ -1451,6 +1465,7 @@ def _drive_sequenced(
         ),
         _target("_dispatch_eval_run", new=dispatch_eval),
         _target("_dispatch_red_team_run", new=dispatch_red_team),
+        _target("_requeue_wait", new=_capture_requeue),
         _target("latest_eval_run_status_since", side_effect=fetchers[0]),
         _target("latest_red_team_run_status_since", side_effect=fetchers[1]),
         _target("_fetch_eval_summary_sync", side_effect=collectors[0]),
@@ -1466,9 +1481,6 @@ def _drive_sequenced(
         _target("_fetch_blast_radius_sync", return_value=dict(_BLAST_RADIUS_FIXTURE)),
         _target("_compute_envelope_hash_sync", return_value="test-envelope-hash"),
         _target("_call_orchestrator_async", side_effect=_report),
-        # Zero sleep is what removes real time. The ceiling is measured against
-        # time.monotonic, so a zero poll spins the loop at full speed and a
-        # 1500s ceiling is never reached inside a test.
         patch.object(settings, "CHECKLIST_WAIT_POLL_S", 0),
         patch.object(settings, "CHECKLIST_WAIT_CEILING_S", ceiling_s),
     ]
@@ -1479,6 +1491,18 @@ def _drive_sequenced(
         for one in patches:
             stack.enter_context(one)
         result = run_deployment_checklist.run(agent_id=agent_id)
+        # A ceiling this driver cannot exceed. Without it a fetcher that never
+        # reports terminal, against a ceiling wall-clock time cannot reach inside
+        # a test, would spin here rather than failing.
+        for _ in range(60):
+            if result.get("status") != "waiting":
+                break
+            assert queued, "the task said it was waiting and re-queued nothing"
+            result = run_deployment_checklist.run(
+                agent_id=agent_id, wait_state=queued.pop()
+            )
+        else:
+            raise AssertionError("the wait never settled inside 60 polls")
 
     return result, mock_run, agent_id
 
@@ -1569,12 +1593,12 @@ class TestTheChecklistSequencesBothJobs:
         assert result["status"] == "complete", (
             f"a ceiling expiry must never fail the checklist: {result}"
         )
-        assert mock_run.report["red_team_summary"]["signal"] == "no_runs", (
+        assert mock_run.report["red_team_summary"]["signal"] == "did_not_finish", (
             "the red team never finished, so its record is the absent one, never "
             "a summary that was already there before the checklist dispatched"
         )
         assert result["recommendation"] == "block"
-        assert "red_team_never_run" in [w["warning_id"] for w in mock_run.warnings]
+        assert "red_team_did_not_finish" in [w["warning_id"] for w in mock_run.warnings]
 
         expiries = [
             call for call in mock_log.warning.call_args_list
@@ -1614,164 +1638,205 @@ class TestTheChecklistSequencesBothJobs:
         assert "started" in matching[0]["message"].lower()
 
 
-class TestWaitForTerminalRuns:
-    """The pure loop, driven directly, with a fake clock and a fake sleep."""
+class TestTheWaitIsAChainOfMessages:
+    """The worker slot is free between polls (#54 review).
 
-    def _fake_time(self, step=10.0):
-        """A clock that advances only when the loop sleeps."""
-        state = {"now": 0.0, "slept": []}
+    The wait used to sleep inside the task body, on the same `runtime` queue as
+    the two jobs it had dispatched. On the documented local topology that is one
+    execution slot: the checklist held it for the whole ceiling, neither job
+    could start, and the wait could never be satisfied. Every test here observes
+    one pass at a time.
+    """
 
-        def clock():
-            return state["now"]
+    @contextmanager
+    def _world(self, eval_status, red_team_status, queued, collected):
+        from app.core.config import settings
 
-        def sleep(seconds):
-            state["slept"].append(seconds)
-            state["now"] += step
+        mock_db, mock_run = _build_full_happy_path_mock_db(str(uuid.uuid4()))
+        self.mock_db = mock_db
+        self.mock_run = mock_run
 
-        return state, clock, sleep
+        async def _report(signals_json, result_container, *, ledger=None):
+            result_container["report"] = {
+                "recommendation": "ship",
+                "summary": "All good.",
+                "warnings": [],
+            }
 
-    def test_both_already_terminal_at_the_first_poll_never_sleeps(self):
-        from app.services.deployment_service import wait_for_terminal_runs
-
-        state, clock, sleep = self._fake_time()
-
-        statuses, waited_s = wait_for_terminal_runs(
-            {"eval": lambda: "complete", "red_team": lambda: "complete"},
-            poll_s=10,
-            ceiling_s=1500,
-            sleep=sleep,
-            clock=clock,
-        )
-
-        assert statuses == {"eval": "complete", "red_team": "complete"}
-        assert waited_s == 0.0
-        assert state["slept"] == [], (
-            "a run that has already finished must not cost a poll interval"
-        )
-
-    def test_a_failed_run_is_terminal(self):
-        """'failed' ends a run as surely as 'complete'. Waiting for a run that
-        already gave up would burn the whole ceiling for nothing, and the caller
-        needs the failure to reach the gate rather than a timeout that looks the
-        same as an unreachable DB."""
-        from app.services.deployment_service import wait_for_terminal_runs
-
-        state, clock, sleep = self._fake_time()
-
-        statuses, _ = wait_for_terminal_runs(
-            {"eval": lambda: "complete", "red_team": lambda: "failed"},
-            poll_s=10,
-            ceiling_s=1500,
-            sleep=sleep,
-            clock=clock,
-        )
-
-        assert statuses == {"eval": "complete", "red_team": "failed"}
-        assert state["slept"] == []
-
-    def test_a_ceiling_of_zero_polls_once_and_returns(self):
-        """Not the same as skipping the wait. One look is still taken, so a run
-        that is already terminal is still reported."""
-        from app.services.deployment_service import wait_for_terminal_runs
-
-        state, clock, sleep = self._fake_time()
-        calls = {"eval": 0, "red_team": 0}
-
-        def _counting(name, value):
-            def _fetch():
-                calls[name] += 1
-                return value
+        def _collect(name):
+            def _fetch(*_a, **_k):
+                collected.append(name)
+                return (
+                    _measured_eval_signal()
+                    if name == "eval"
+                    else _measured_red_team_signal()
+                )
 
             return _fetch
 
-        statuses, waited_s = wait_for_terminal_runs(
-            {
-                "eval": _counting("eval", "complete"),
-                "red_team": _counting("red_team", "running"),
-            },
-            poll_s=10,
-            ceiling_s=0,
-            sleep=sleep,
-            clock=clock,
+        patches = [
+            _deployment_patch("get_sync_db", new=_make_sync_db_ctx(mock_db)),
+            _deployment_patch("fernet_decrypt", return_value="postgresql://test/tenant"),
+            _deployment_patch(
+                "_dispatch_moment",
+                return_value=datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+            ),
+            _deployment_patch("_dispatch_eval_run", return_value=True),
+            _deployment_patch("_dispatch_red_team_run", return_value=True),
+            _deployment_patch(
+                "_requeue_wait", new=lambda _a, state: queued.append(state)
+            ),
+            _deployment_patch("latest_eval_run_status_since", return_value=eval_status),
+            _deployment_patch(
+                "latest_red_team_run_status_since", return_value=red_team_status
+            ),
+            _deployment_patch("_fetch_eval_summary_sync", new=_collect("eval")),
+            _deployment_patch("_fetch_red_team_summary_sync", new=_collect("red_team")),
+            _deployment_patch(
+                "_fetch_verified_qa_stats_sync",
+                return_value={
+                    "row_count": 60,
+                    "avg_faithfulness": 0.9,
+                    "avg_relevance": 0.9,
+                },
+            ),
+            _deployment_patch(
+                "_fetch_corpus_stats_sync",
+                return_value={
+                    "document_count": 5,
+                    "chunk_count": 100,
+                    "last_ingested_at": None,
+                },
+            ),
+            _deployment_patch(
+                "_fetch_blast_radius_sync", return_value=dict(_BLAST_RADIUS_FIXTURE)
+            ),
+            _deployment_patch(
+                "_compute_envelope_hash_sync", return_value="test-envelope-hash"
+            ),
+            _deployment_patch("_call_orchestrator_async", side_effect=_report),
+            patch.object(settings, "CHECKLIST_WAIT_CEILING_S", 2700),
+            patch.object(settings, "CHECKLIST_WAIT_POLL_S", 10),
+        ]
+        with ExitStack() as stack:
+            for one in patches:
+                stack.enter_context(one)
+            yield
+
+    def test_a_job_still_in_flight_re_queues_and_collects_nothing(self):
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        queued: list[dict] = []
+        collected: list[str] = []
+        with self._world("complete", "running", queued, collected):
+            result = run_deployment_checklist.run(agent_id=str(uuid.uuid4()))
+
+        assert result["status"] == "waiting"
+        assert result["pending"] == ["red_team"], (
+            f"the pass has to name which half it is still waiting on: {result}"
+        )
+        assert collected == [], (
+            "a collector ran while a job was in flight, which is the staleness "
+            "the sequencing exists to remove"
+        )
+        assert len(queued) == 1, f"exactly one continuation per pass: {queued}"
+
+    def test_a_continuation_neither_re_guards_nor_inserts_a_second_row(self):
+        """The row the guard would find is this run's own.
+
+        A continuation that ran step 2 would skip itself with 'already_running'
+        and abandon the wait it was carrying; one that ran step 3 would leave a
+        second 'running' row behind on every poll.
+        """
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        queued: list[dict] = []
+        with self._world("running", "running", queued, []):
+            run_deployment_checklist.run(agent_id=str(uuid.uuid4()))
+            first_adds = self.mock_db.add.call_count
+            self.mock_db.execute.reset_mock()
+            run_deployment_checklist.run(
+                agent_id=str(uuid.uuid4()), wait_state=queued.pop()
+            )
+
+        assert first_adds == 1, "the first pass inserts the checklist row"
+        assert self.mock_db.add.call_count == first_adds, (
+            "a continuation inserted a second checklist_runs row"
+        )
+        assert self.mock_db.execute.call_count == 0, (
+            "a continuation re-ran the idempotency guard and would skip itself"
         )
 
-        assert calls == {"eval": 1, "red_team": 1}
-        assert statuses == {"eval": "complete", "red_team": None}, (
-            "a run still in flight at the ceiling reads as None, which the caller "
-            "turns into an absent measurement rather than a stale row"
-        )
-        assert waited_s == 0.0
-        assert state["slept"] == []
+    def test_a_half_already_terminal_is_not_polled_again(self):
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
 
-    def test_a_run_still_in_flight_keeps_the_wait_polling(self):
-        from app.services.deployment_service import wait_for_terminal_runs
+        queued: list[dict] = []
+        with self._world("complete", "running", queued, []):
+            run_deployment_checklist.run(agent_id=str(uuid.uuid4()))
+            state = queued.pop()
 
-        state, clock, sleep = self._fake_time(step=10.0)
-        polls = {"n": 0}
-
-        def _red_team():
-            polls["n"] += 1
-            return "complete" if polls["n"] > 3 else "running"
-
-        statuses, waited_s = wait_for_terminal_runs(
-            {"eval": lambda: "complete", "red_team": _red_team},
-            poll_s=10,
-            ceiling_s=1500,
-            sleep=sleep,
-            clock=clock,
+        assert state["statuses"] == {"eval": "complete", "red_team": None}, (
+            "the continuation carries what was already observed, so the settled "
+            f"half is never re-read: {state['statuses']}"
         )
 
-        assert statuses == {"eval": "complete", "red_team": "complete"}
-        assert polls["n"] == 4
-        assert state["slept"] == [10, 10, 10], (
-            f"the wait slept the poll interval between looks: {state['slept']}"
+    def test_the_continuation_carries_the_run_it_belongs_to(self):
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        queued: list[dict] = []
+        with self._world("running", "running", queued, []):
+            result = run_deployment_checklist.run(agent_id=str(uuid.uuid4()))
+            state = queued.pop()
+
+        assert state["run_id"] == result["run_id"]
+        assert state["since"] == "2026-08-30T12:00:00+00:00", (
+            "the boundary is the tenant DB's clock at dispatch, and it must "
+            f"survive the trip across the broker unchanged: {state['since']}"
         )
-        assert waited_s == 30.0
+        assert state["eval_dispatched"] is True
 
-    def test_a_terminal_run_is_not_polled_again(self):
-        """The eval usually finishes long before the red team. Re-reading it every
-        ten seconds for the rest of the wait would open a Neon connection per
-        poll for an answer that cannot change."""
-        from app.services.deployment_service import wait_for_terminal_runs
+    def test_a_continuation_missing_its_state_refuses_rather_than_starting_over(self):
+        """Defaulting `since` would grade runs this checklist did not start."""
+        from app.worker.tasks.runtime.deployment import _require_wait_state
 
-        state, clock, sleep = self._fake_time()
-        calls = {"eval": 0, "red_team": 0}
+        with pytest.raises(KeyError) as excinfo:
+            _require_wait_state({"run_id": "abc"})
 
-        def _eval():
-            calls["eval"] += 1
-            return "complete"
+        message = str(excinfo.value)
+        for key in ("since", "started_at", "statuses"):
+            assert key in message, f"the refusal must name {key}: {message}"
 
-        def _red_team():
-            calls["red_team"] += 1
-            return "complete" if calls["red_team"] > 2 else "running"
+    def test_a_continuation_handed_something_that_is_not_state_refuses(self):
+        from app.worker.tasks.runtime.deployment import _require_wait_state
 
-        wait_for_terminal_runs(
-            {"eval": _eval, "red_team": _red_team},
-            poll_s=10,
-            ceiling_s=1500,
-            sleep=sleep,
-            clock=clock,
+        with pytest.raises(TypeError):
+            _require_wait_state("resume please")
+
+    def test_the_re_queue_carries_only_the_agent_and_the_state(self):
+        """CTL-08 across the broker: no conn_str in a task kwarg, ever."""
+        from app.core.config import settings
+        from app.worker.tasks.runtime import deployment as deployment_task
+
+        state = {
+            "run_id": "run-1",
+            "since": "2026-08-30T12:00:00+00:00",
+            "started_at": "2026-08-30T12:00:01+00:00",
+            "statuses": {"eval": "complete", "red_team": None},
+            "eval_dispatched": True,
+            "red_team_dispatched": True,
+        }
+        with patch.object(
+            deployment_task.run_deployment_checklist, "apply_async"
+        ) as apply_async:
+            deployment_task._requeue_wait("agent-1", state)
+
+        kwargs = apply_async.call_args.kwargs
+        assert kwargs["kwargs"] == {"agent_id": "agent-1", "wait_state": state}
+        assert kwargs["queue"] == "runtime"
+        assert kwargs["countdown"] == settings.CHECKLIST_WAIT_POLL_S, (
+            "the countdown is what the sleep used to be, and the broker holds it"
         )
-
-        assert calls == {"eval": 1, "red_team": 3}
-
-    def test_an_unrecognised_status_is_not_terminal(self):
-        """A status this build has never heard of is not evidence that a run
-        finished. It keeps the wait waiting and expires as absent, which costs a
-        blocked deploy rather than a shipped one."""
-        from app.services.deployment_service import wait_for_terminal_runs
-
-        state, clock, sleep = self._fake_time()
-
-        statuses, _ = wait_for_terminal_runs(
-            {"eval": lambda: "complete", "red_team": lambda: "cancelled"},
-            poll_s=10,
-            ceiling_s=0,
-            sleep=sleep,
-            clock=clock,
-        )
-
-        assert statuses["red_team"] is None
+        assert "conn_str" not in json.dumps(kwargs["kwargs"])
 
 
 class TestTheRunStatusReaders:

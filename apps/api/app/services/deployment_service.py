@@ -122,6 +122,18 @@ EVAL_SIGNAL_RUN_FAILED = "run_failed"
 # judge produced nothing, which is a different failure with a different remedy.
 EVAL_SIGNAL_NO_RECORD = "no_record"
 
+# The eighth state (#54 review). The checklist STARTED this run and the run had
+# not reached a terminal status when the checklist's ceiling expired. It is not
+# `no_runs` — a run exists — and it is emphatically not the previous night's
+# run, which is what the collector returns when asked: `_LATEST_RUN_SQL` filters
+# `status <> 'running'`, so the in-flight run this checklist caused is invisible
+# to it and the newest PRIOR terminal run answers in its place. The task
+# therefore never calls the collector for a half the wait did not see finish,
+# and substitutes this instead. Without it the report's eval numbers describe a
+# run the checklist did not sequence, which is the exact staleness #54 exists to
+# remove.
+EVAL_SIGNAL_DID_NOT_FINISH = "did_not_finish"
+
 RED_TEAM_SIGNAL_MEASURED = "measured"
 # An agent that has never been security-tested. This state is the whole reason
 # the signal field exists on the security half, and the P2 review found it
@@ -133,6 +145,25 @@ RED_TEAM_SIGNAL_MEASURED = "measured"
 # absence of a result, and 'measured' must never describe it.
 RED_TEAM_SIGNAL_NO_RUNS = "no_runs"
 RED_TEAM_SIGNAL_UNAVAILABLE = "unavailable"
+
+# The security half's answer to EVAL_SIGNAL_RUN_FAILED (#54 review). The eval
+# half has refused a run whose own terminal status is not 'complete' since the
+# P3 review; the security half had no such state, so `run_red_team` writing
+# status='failed' at its own except handler still produced a 'measured' signal
+# with whatever open findings the table happened to hold. A run that fell out of
+# its body part-way has no admissible account of what it attacked.
+RED_TEAM_SIGNAL_RUN_FAILED = "run_failed"
+
+# And the security half's answer to EVAL_SIGNAL_DID_NOT_FINISH, with a sharper
+# edge on it. `_fetch_red_team_summary_sync` read `red_team_runs ORDER BY
+# started_at DESC LIMIT 1` with NO status filter, so the 'running' row
+# `run_red_team` inserts before it attacks anything satisfied "a run exists" and
+# the collector returned MEASURED with zero open findings and the current
+# build's coverage. An agent that had never been attacked read as clean. The
+# status filter below closes the collector's half of that; the task substituting
+# this signal, rather than calling the collector at all for a half the wait did
+# not see finish, closes the other half.
+RED_TEAM_SIGNAL_DID_NOT_FINISH = "did_not_finish"
 
 # The only state either signal may be in for `ship` to survive the gate.
 SHIPPABLE_SIGNAL = "measured"
@@ -1032,42 +1063,40 @@ def latest_red_team_run_status_since(
     )
 
 
-def wait_for_terminal_runs(
+def poll_terminal_statuses(
+    known: Mapping[str, str | None],
     fetchers: Mapping[str, Callable[[], str | None]],
-    *,
-    poll_s: float,
-    ceiling_s: float,
-    sleep: Callable[[float], None],
-    clock: Callable[[], float],
-) -> tuple[dict[str, str | None], float]:
-    """Poll until every named run is terminal, or until the ceiling expires.
+) -> dict[str, str | None]:
+    """One look at every named run that has not already reported terminal.
 
-    Pure. It owns no clock, no sleep and no database; the caller injects all
-    three. That is what lets a test drive a twenty-five-minute wait in
-    microseconds rather than pinning a duration nobody observed.
+    Pure apart from the fetchers the caller injects, and it takes ONE look
+    rather than owning a loop. That is the whole shape of the #54 review's third
+    finding: the loop it replaces slept inside the Celery task, on the same
+    `runtime` queue as the two jobs it was waiting for, so on the documented
+    local topology (one solo worker, `-Q pipeline,runtime`) the checklist held
+    the only execution slot for the whole ceiling and neither job it had just
+    dispatched could start. The wait could never be satisfied. The caller now
+    polls once, re-queues itself with a countdown and returns, so the slot is
+    free between looks.
 
-    A ceiling of zero polls ONCE and returns. It is not a way to skip the wait:
-    a run that is already terminal is still read and still reported.
+    `known` carries the statuses already observed across earlier polls. A run
+    that reported terminal once is never re-read: its status is the answer, and
+    a later poll could only find a NEWER run started by something else.
 
     Returns:
-        ({name: terminal status or None}, seconds waited). The None is the point
-        of the return type. It says this run did not finish, so the caller
-        reports an absent measurement rather than reaching for whatever row the
-        table happens to hold.
+        {name: terminal status, or None while the run has not finished}. The
+        None is the point of the return type. It says this run did not finish,
+        so the caller reports an absent measurement rather than reaching for
+        whatever row the table happens to hold.
     """
-    started_at = clock()
-    statuses: dict[str, str | None] = dict.fromkeys(fetchers, None)
-    while True:
-        for name, fetch in fetchers.items():
-            if statuses[name] is not None:
-                continue
-            status = fetch()
-            if status in TERMINAL_RUN_STATUSES:
-                statuses[name] = status
-        waited_s = clock() - started_at
-        if all(s is not None for s in statuses.values()) or waited_s >= ceiling_s:
-            return statuses, waited_s
-        sleep(poll_s)
+    statuses: dict[str, str | None] = {name: known.get(name) for name in fetchers}
+    for name, fetch in fetchers.items():
+        if statuses[name] is not None:
+            continue
+        status = fetch()
+        if status in TERMINAL_RUN_STATUSES:
+            statuses[name] = status
+    return statuses
 
 
 def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
@@ -1287,6 +1316,33 @@ def _fetch_eval_summary_sync(agent_id: str, conn_str: str) -> dict:
 COVERAGE_SOURCE_RUN = "run"
 COVERAGE_SOURCE_CURRENT_BUILD = "current_build"
 
+#: The one `red_team_runs.status` that means the run reached the end of its own
+#: body. `run_red_team` writes it in the three `_store_completion` UPDATEs and
+#: writes 'failed' from its own except handler, both in raw SQL — that module
+#: holds no constant to import, so the name lives here beside the reader that
+#: needs it.
+RED_TEAM_RUN_STATUS_COMPLETE = "complete"
+
+#: The newest run that FINISHED, and its status. `status <> 'running'` is the
+#: whole correction (#54 review): without it the 'running' row `run_red_team`
+#: INSERTs before it attacks anything satisfied "a run exists", and the collector
+#: answered MEASURED with zero open findings for an agent nothing had ever
+#: probed. Same predicate and same reasoning as `_LATEST_RUN_SQL` on the eval
+#: half: a status this query has not heard of is still terminal, so it is
+#: excluded by naming the one non-terminal status rather than by listing the
+#: terminal ones.
+_RED_TEAM_LATEST_SQL = (
+    "SELECT started_at, status, coverage FROM red_team_runs "
+    "WHERE status <> 'running' ORDER BY started_at DESC LIMIT 1"
+)
+
+#: The same row on a tenant DB provisioned before alembic_tenant 0015 gave
+#: `red_team_runs` its `coverage` column.
+_RED_TEAM_LATEST_PRE_0015_SQL = (
+    "SELECT started_at, status FROM red_team_runs "
+    "WHERE status <> 'running' ORDER BY started_at DESC LIMIT 1"
+)
+
 
 def _red_team_summary(
     signal: str,
@@ -1362,6 +1418,37 @@ def _coverage_from_run(stored: object) -> dict | None:
     }
 
 
+def _latest_red_team_run(cur, conn, agent_id: str) -> tuple[tuple | None, object]:
+    """The newest FINISHED red-team run, and whatever coverage it recorded.
+
+    `coverage` arrived with migration 0015 and a tenant provisioned before it
+    does not have the column (tenant DBs are migrated at PROVISION time only).
+    Same narrow-except degradation shape as the eval collector's pre-0013
+    fallback: UndefinedColumn drops the run's own coverage and nothing else.
+
+    Returns (row, stored_coverage) where row is (started_at, status) or
+    (started_at, status, coverage). A None row means no run has finished.
+    """
+    try:
+        cur.execute(_RED_TEAM_LATEST_SQL)
+        run_row = cur.fetchone()
+        return run_row, (run_row[2] if run_row is not None else None)
+    except psycopg2.errors.UndefinedColumn:
+        # The aborted transaction must be rolled back before the connection will
+        # accept another statement.
+        conn.rollback()
+        log.warning(
+            "deployment_service.red_team_summary.coverage_column_absent",
+            agent_id=agent_id,
+            detail=(
+                "tenant DB predates alembic_tenant 0015 — the run's own "
+                "coverage cannot be read"
+            ),
+        )
+        cur.execute(_RED_TEAM_LATEST_PRE_0015_SQL)
+        return cur.fetchone(), None
+
+
 def _fetch_red_team_summary_sync(agent_id: str, conn_str: str) -> dict:
     """Fetch the live open-finding severity summary from the tenant DB.
 
@@ -1376,26 +1463,25 @@ def _fetch_red_team_summary_sync(agent_id: str, conn_str: str) -> dict:
     last_run_at still comes from the most recent red_team_runs row —
     red_team_findings has no run timestamp of its own.
 
-    NO RUNS IS NOT A CLEAN RESULT (P2 review). This function used to log
-    `red_team_summary.no_runs` when red_team_runs was empty and then return
-    RED_TEAM_SIGNAL_MEASURED anyway, so a brand-new agent — zero open findings
-    because zero attacks had ever been run against it — carried a signal
-    asserting the security surface HAD been measured, and
-    apply_signal_evidence_gate, which only refuses a signal that is not
-    'measured', let it ship. The eval half already had four states; the security
-    half had two, and the missing one was the state every agent is in on day 1.
+    THREE WAYS A RUN IS NOT A MEASUREMENT, and all three used to read 'measured'.
+    An EMPTY table gave a brand-new agent zero open findings, which is also what
+    a surviving agent has (P2 review). An IN-FLIGHT row satisfied "a run exists",
+    because the query had no status filter, so a never-probed agent read as clean
+    whenever its own run outlasted the checklist's ceiling. A FAILED run reported
+    findings belonging to whatever ran before it. `_RED_TEAM_LATEST_SQL` excludes
+    'running' and a newest run that is not 'complete' reports
+    RED_TEAM_SIGNAL_RUN_FAILED (#54 review).
 
     Coverage (P2) travels with the counts. Zero open findings means one of two
     very different things — "seven attack vectors ran and none succeeded" or
     "three ran and four could not probe at all" (audit D4) — and a gate reading
     only the counts cannot tell them apart. The figures come from the RUN when
     it recorded them (migration 0015's red_team_runs.coverage), and only from
-    red_team_service.red_team_coverage() — the shipped build's own capability —
-    when it did not, with `coverage_source` saying which. Deriving them from the
-    current build unconditionally would re-describe every historical run with
-    today's numbers the moment P4 flips SDK_ATTACKERS_CAN_PROBE. red_team_service
-    is imported inside the function. It pulled the Agent SDK there until #49 and
-    a provider client until #47, so the deferral now buys only its own load.
+    red_team_service.red_team_coverage() when it did not, with `coverage_source`
+    saying which. Deriving them from the current build unconditionally would
+    re-describe every historical run with today's numbers the moment P4 flips
+    SDK_ATTACKERS_CAN_PROBE. red_team_service is imported inside the function: it
+    pulled the Agent SDK there until #49, so the deferral buys its own load now.
 
     Returns dict with keys: signal, signal_detail, last_run_at,
     deployment_blocked, critical_count, high_count, medium_count, low_count,
@@ -1407,38 +1493,9 @@ def _fetch_red_team_summary_sync(agent_id: str, conn_str: str) -> dict:
     conn = psycopg2.connect(conn_str, connect_timeout=10)
     try:
         with conn.cursor() as cur:
-            # `coverage` arrived with migration 0015 and a tenant provisioned
-            # before it does not have the column (tenant DBs are migrated at
-            # PROVISION time only). Same narrow-except degradation shape as the
-            # eval collector's pre-0013 fallback: UndefinedColumn drops the
-            # run's own coverage, nothing else.
-            stored_coverage: object = None
-            try:
-                cur.execute(
-                    "SELECT started_at, coverage FROM red_team_runs "
-                    "ORDER BY started_at DESC LIMIT 1"
-                )
-                run_row = cur.fetchone()
-                stored_coverage = run_row[1] if run_row is not None else None
-            except psycopg2.errors.UndefinedColumn:
-                # The aborted transaction must be rolled back before the
-                # connection will accept another statement.
-                conn.rollback()
-                log.warning(
-                    "deployment_service.red_team_summary.coverage_column_absent",
-                    agent_id=agent_id,
-                    detail=(
-                        "tenant DB predates alembic_tenant 0015 — the run's own "
-                        "coverage cannot be read"
-                    ),
-                )
-                cur.execute(
-                    "SELECT started_at FROM red_team_runs "
-                    "ORDER BY started_at DESC LIMIT 1"
-                )
-                run_row = cur.fetchone()
-
+            run_row, stored_coverage = _latest_red_team_run(cur, conn, agent_id)
             last_run_at = run_row[0].isoformat() if run_row and run_row[0] else None
+            last_run_status = run_row[1] if run_row else None
 
             if run_row is None:
                 # Never security-tested. The findings query below would return
@@ -1452,6 +1509,28 @@ def _fetch_red_team_summary_sync(agent_id: str, conn_str: str) -> dict:
                     detail=(
                         "no red-team run has ever been recorded for this agent, "
                         "so its security surface is unmeasured"
+                    ),
+                )
+
+            # A RUN THAT DID NOT COMPLETE IS NOT A COMPLETED MEASUREMENT, the
+            # same question the eval collector asks first and the security half
+            # never asked (#54 review). `run_red_team` writes status='failed'
+            # from its own except handler, and the open-finding query below
+            # counts findings across ALL runs, so a run that died on its second
+            # attack vector produced a signal saying the surface had been probed
+            # over counts belonging to whatever ran before it.
+            if last_run_status != RED_TEAM_RUN_STATUS_COMPLETE:
+                log.warning(
+                    "deployment_service.red_team_summary.run_did_not_complete",
+                    agent_id=agent_id,
+                    run_status=last_run_status,
+                )
+                return _red_team_summary(
+                    RED_TEAM_SIGNAL_RUN_FAILED,
+                    last_run_at=last_run_at,
+                    detail=(
+                        "the most recent red-team run did not complete "
+                        f"(status {last_run_status!r})"
                     ),
                 )
 
@@ -1849,6 +1928,48 @@ RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL: dict = _red_team_summary(
 )
 
 
+# ---------------------------------------------------------------------------
+# The two payloads the checklist substitutes for a job that never finished
+# ---------------------------------------------------------------------------
+# NEITHER COLLECTOR IS CALLED FOR A HALF THE WAIT DID NOT SEE REACH TERMINAL,
+# and this is the #54 review's first two findings in one decision. Both
+# collectors answer a question the checklist is not asking. `_latest_run`
+# filters `status <> 'running'`, so asking it about a still-running eval returns
+# LAST NIGHT'S run, graded as `measured`, in a report that claims every number
+# describes the run the checklist sequenced. `_fetch_red_team_summary_sync` had
+# no filter at all, so asking it about a still-running red team returned the
+# in-flight row as `measured` with zero open findings, and a never-probed agent
+# read as clean. One reads a stale run, the other reads a phantom one, and both
+# are the same mistake: a collector reports on the table, and only the wait
+# knows whether the run in the table is the one this checklist started.
+#
+# The observed wait travels in the detail because it is what separates the two
+# incidents a reader has to tell apart: a red team that needs forty minutes and
+# a tenant DB the poller could not reach both end here with None.
+
+
+def eval_summary_did_not_finish(waited_s: float) -> dict:
+    """The eval half of a ceiling expiry. Every number null, and it says why."""
+    return _eval_summary(
+        EVAL_SIGNAL_DID_NOT_FINISH,
+        detail=(
+            "the eval run this readiness check started had not finished after "
+            f"{round(waited_s)}s, so there is nothing it measured to read"
+        ),
+    )
+
+
+def red_team_summary_did_not_finish(waited_s: float) -> dict:
+    """The security half of the same expiry."""
+    return _red_team_summary(
+        RED_TEAM_SIGNAL_DID_NOT_FINISH,
+        detail=(
+            "the red-team run this readiness check started had not finished "
+            f"after {round(waited_s)}s, so its security surface is unmeasured"
+        ),
+    )
+
+
 def _agent_not_invoked_warning(eval_summary: dict) -> DeploymentWarning:
     """The owner-facing half of the D1 refusal (P3).
 
@@ -2031,6 +2152,29 @@ def _never_evaluated_warning(eval_summary: dict) -> DeploymentWarning:
     )
 
 
+def _eval_did_not_finish_warning() -> DeploymentWarning:
+    """The eval half of a ceiling expiry, told as a wait rather than an outage.
+
+    Distinct from `eval_signal_unavailable` because the remedy is distinct.
+    "Your quality results could not be read" sends the owner looking for a
+    broken thing; the run is running and the answer is to come back. Distinct
+    from `eval_never_run` too: that one says the platform has just started the
+    first measurement, and this one says a measurement it started is still
+    going.
+    """
+    return DeploymentWarning(
+        warning_id="eval_did_not_finish",
+        category="eval_quality",
+        message=(
+            "The quality check for this agent was still running when this "
+            "readiness check gave up waiting, so there are no results to "
+            "approve on yet. Run the readiness check again once the Evaluation "
+            "page shows the run has finished."
+        ),
+        severity_level="warning",
+    )
+
+
 def _signal_unavailable_warning(detail: str) -> DeploymentWarning:
     """Every remaining absent state, with the collector's own reason quoted."""
     return DeploymentWarning(
@@ -2063,6 +2207,8 @@ def _eval_evidence_warnings(eval_summary: dict) -> list[DeploymentWarning]:
             warnings.append(_agent_not_invoked_warning(eval_summary))
         elif eval_signal == EVAL_SIGNAL_NO_RUNS:
             warnings.append(_never_evaluated_warning(eval_summary))
+        elif eval_signal == EVAL_SIGNAL_DID_NOT_FINISH:
+            warnings.append(_eval_did_not_finish_warning())
         else:
             warnings.append(_signal_unavailable_warning(detail))
     elif eval_summary.get("agent_invoked") is not True:
@@ -2081,6 +2227,172 @@ def _eval_evidence_warnings(eval_summary: dict) -> list[DeploymentWarning]:
         if quality is not None:
             warnings.append(quality)
     return warnings
+
+
+#: The security half's absent states, one warning each, keyed by the signal.
+#:
+#: FOUR ABSENCES WITH FOUR REMEDIES, and telling them apart is the whole table.
+#: "Never security-tested" sends the owner to start a run; "still going when we
+#: gave up waiting" sends them back in half an hour; "stopped before it
+#: finished" says run it again; "could not be read" describes an outage. Every
+#: one of them was reported as a clean measurement at some point in this
+#: module's history, and every one of them blocks.
+_RED_TEAM_ABSENCE_WARNINGS: dict[str, tuple[str, str]] = {
+    RED_TEAM_SIGNAL_NO_RUNS: (
+        "red_team_never_run",
+        "This agent has never been security-tested, so it cannot be approved "
+        "for launch yet. Run a red-team check from the Security page and try "
+        "again.",
+    ),
+    # The k=3 red-team bound is roughly forty-five minutes, so this is the state
+    # a slow run lands in rather than an exotic one.
+    RED_TEAM_SIGNAL_DID_NOT_FINISH: (
+        "red_team_did_not_finish",
+        "The security check for this agent was still running when this "
+        "readiness check gave up waiting, so its safety cannot be confirmed "
+        "yet. Run the readiness check again once the Security page shows the "
+        "run has finished.",
+    ),
+    RED_TEAM_SIGNAL_RUN_FAILED: (
+        "red_team_run_failed",
+        "The last security check stopped before it finished, so what it managed "
+        "to attack cannot be trusted and this agent cannot be approved for "
+        "launch. Run the check again from the Security page.",
+    ),
+}
+
+#: What a signal this build cannot name reads as. A MISSING key lands here too,
+#: which is the fail-closed direction: a caller that hand-builds a summary and
+#: forgets the state field is refused rather than believed.
+_RED_TEAM_UNREADABLE_WARNING: tuple[str, str] = (
+    "red_team_signal_unavailable",
+    "The security-test results for this agent could not be read, so its safety "
+    "cannot be confirmed. Try the readiness check again in a few minutes.",
+)
+
+
+def _red_team_evidence_warnings(red_team_signal: object) -> list[DeploymentWarning]:
+    """The security half's absent states, one warning each. Empty means measured."""
+    if red_team_signal == SHIPPABLE_SIGNAL:
+        return []
+    warning_id, message = _RED_TEAM_ABSENCE_WARNINGS.get(
+        red_team_signal, _RED_TEAM_UNREADABLE_WARNING  # type: ignore[arg-type]  # a non-str signal is unhashable-safe here: every produced signal is a str or None
+    )
+    return [
+        DeploymentWarning(
+            warning_id=warning_id,
+            category="security",
+            message=message,
+            severity_level="warning",
+        )
+    ]
+
+
+def _red_team_finding_warnings(
+    red_team_summary: dict,
+) -> tuple[bool, list[DeploymentWarning]]:
+    """Open critical and high findings. Returns (blocked, warnings).
+
+    ENFORCED HERE RATHER THAN ONLY IN THE PROMPT (P4 review).
+    `deployment_blocked == True` and `DEP_BLOCK_ON_HIGH_RED_TEAM is True and
+    high_count > 0` were stated in _DEPLOYMENT_SYSTEM_PROMPT and enforced
+    nowhere: DEP_BLOCK_ON_HIGH_RED_TEAM appeared in config.py and in that prompt
+    string and in no other Python. Executed against the shipped code, the gate
+    returned 'ship' over one open CRITICAL finding and over four open high ones.
+    A gate that depends on an LLM correctly reading a state field fails open the
+    first time the model is confident and wrong.
+    """
+    warnings: list[DeploymentWarning] = []
+    blocked = False
+    critical_count = red_team_summary.get("critical_count") or 0
+    high_count = red_team_summary.get("high_count") or 0
+
+    if red_team_summary.get("deployment_blocked") or critical_count > 0:
+        blocked = True
+        warnings.append(
+            DeploymentWarning(
+                warning_id="red_team_critical_finding",
+                category="security",
+                message=(
+                    "The security check found a critical problem that is still "
+                    "open, so this agent cannot be approved for launch. Fix it, "
+                    "then mark it contained on the Security page and run this "
+                    "check again."
+                ),
+                severity_level="warning",
+            )
+        )
+
+    if settings.DEP_BLOCK_ON_HIGH_RED_TEAM and high_count > 0:
+        blocked = True
+        warnings.append(
+            DeploymentWarning(
+                warning_id="red_team_high_finding",
+                category="security",
+                message=(
+                    f"The security check left {high_count} serious finding(s) "
+                    "open, so this agent cannot be approved for launch. Review "
+                    "each one on the Security page — a finding that says the "
+                    "check itself could not observe the agent means the test "
+                    "did not run, not that the agent is safe."
+                ),
+                severity_level="warning",
+            )
+        )
+    return blocked, warnings
+
+
+def _red_team_coverage_warnings(
+    red_team_summary: dict,
+) -> tuple[bool, list[DeploymentWarning]]:
+    """How much of the attack surface was tested. Returns (blocked, warnings).
+
+    A run that RECORDED incomplete coverage refuses to ship; a run that recorded
+    none warns. The distinction is the remedy, not the severity.
+    `coverage_source == 'run'` means this run measured its own coverage and said
+    part of the surface went untested, and the owner can re-run the check on a
+    worker that can reach the attack tooling, so refusing is actionable and "a
+    clean result over 3 of 7 vectors" is not a clean result. `current_build`
+    means no run-level figure exists at all (a tenant DB provisioned before
+    migration 0015, or a run written before the task stored it); nothing the
+    owner can do produces one, so blocking there would be a permanent, unfixable
+    refusal. It is still not evidence, and it says so.
+
+    `is not True` rather than `is False`: None must fail the same way.
+    """
+    coverage_complete = red_team_summary.get("coverage_complete")
+    coverage_source = red_team_summary.get("coverage_source")
+    attempted = red_team_summary.get("vectors_attempted")
+    valid = red_team_summary.get("vectors_valid")
+
+    if coverage_source == COVERAGE_SOURCE_RUN and coverage_complete is not True:
+        return True, [
+            DeploymentWarning(
+                warning_id="red_team_coverage_incomplete",
+                category="security",
+                message=(
+                    f"The last security check did not finish: {valid} of "
+                    f"{attempted} attack types reported a result, and each must "
+                    "also complete every independent attempt it owes. Run the "
+                    "check again and approve once it says complete."
+                ),
+                severity_level="warning",
+            )
+        ]
+    if coverage_source != COVERAGE_SOURCE_RUN:
+        return False, [
+            DeploymentWarning(
+                warning_id="red_team_coverage_unrecorded",
+                category="security",
+                message=(
+                    "The last security check did not record how many attack "
+                    "types it managed to test, so we cannot confirm it covered "
+                    "all of them. Run it again for a result that says so."
+                ),
+                severity_level="warning",
+            )
+        ]
+    return False, []
 
 
 def apply_signal_evidence_gate(
@@ -2117,6 +2429,13 @@ def apply_signal_evidence_gate(
     second was being reported as 'measured' until the P2 review — an agent with
     zero red-team runs has zero open findings, which is what a clean run also
     has.
+
+    AND BOTH HALVES NOW HAVE A did_not_finish STATE, which is the one a slow run
+    lands in (#54 review). The red-team k=3 bound is around forty-five minutes,
+    so a checklist that dispatches its own red team and then stops waiting is an
+    ordinary event, not an exotic one. Its warning says "come back once the run
+    finishes" rather than "you have never been tested" or "we could not read
+    it", because those are three different remedies. All three block.
 
     A MISSING key is treated as an absent signal, not as a measured one. A
     caller constructing a summary dict by hand and forgetting the state field
@@ -2192,144 +2511,19 @@ def apply_signal_evidence_gate(
         warnings.extend(eval_warnings)
 
     red_team_signal = red_team_summary.get("signal")
-    if red_team_signal != SHIPPABLE_SIGNAL:
+    red_team_warnings = _red_team_evidence_warnings(red_team_signal)
+    if red_team_warnings:
         blocked = True
-        if red_team_signal == RED_TEAM_SIGNAL_NO_RUNS:
-            # Distinct from 'unavailable' because the remedy is distinct, and
-            # because telling an owner their security results "could not be
-            # read" when no attack has ever been run describes a transient
-            # outage where the truth is a permanent absence.
-            warnings.append(
-                DeploymentWarning(
-                    warning_id="red_team_never_run",
-                    category="security",
-                    message=(
-                        "This agent has never been security-tested, so it "
-                        "cannot be approved for launch yet. Run a red-team "
-                        "check from the Security page and try again."
-                    ),
-                    severity_level="warning",
-                )
-            )
-        else:
-            warnings.append(
-                DeploymentWarning(
-                    warning_id="red_team_signal_unavailable",
-                    category="security",
-                    message=(
-                        "The security-test results for this agent could not be "
-                        "read, so its safety cannot be confirmed. Try the "
-                        "readiness check again in a few minutes."
-                    ),
-                    severity_level="warning",
-                )
-            )
+        warnings.extend(red_team_warnings)
 
-    # ------------------------------------------------------------------
-    # The severity conditions, enforced HERE rather than only in the prompt
-    # (P4 review).
-    #
-    # `red_team_summary.deployment_blocked == True` and
-    # `DEP_BLOCK_ON_HIGH_RED_TEAM is True and high_count > 0` were stated at
-    # lines 113-114 of _DEPLOYMENT_SYSTEM_PROMPT and enforced nowhere:
-    # DEP_BLOCK_ON_HIGH_RED_TEAM appeared in config.py and in that prompt
-    # string and in no other Python. Executed against the shipped code, the
-    # gate returned 'ship' over one open CRITICAL finding and over four open
-    # high ones. That is the failure this module's own comment at :176-192
-    # predicts — "a gate that depends on an LLM correctly reading a state field
-    # is a gate that fails open the first time the model is confident and
-    # wrong" — and the remedy is the same one derive_blast_radius_warnings
-    # uses: the platform decides, the orchestrator narrates.
-    # ------------------------------------------------------------------
+    # The severity conditions only ask their question of a MEASURED result. An
+    # absent signal has already blocked above, and counting findings from a run
+    # nobody read would be the fail-open this module exists to close.
     if red_team_signal == SHIPPABLE_SIGNAL:
-        critical_count = red_team_summary.get("critical_count") or 0
-        high_count = red_team_summary.get("high_count") or 0
-
-        if red_team_summary.get("deployment_blocked") or critical_count > 0:
-            blocked = True
-            warnings.append(
-                DeploymentWarning(
-                    warning_id="red_team_critical_finding",
-                    category="security",
-                    message=(
-                        "The security check found a critical problem that is "
-                        "still open, so this agent cannot be approved for "
-                        "launch. Fix it, then mark it contained on the "
-                        "Security page and run this check again."
-                    ),
-                    severity_level="warning",
-                )
-            )
-
-        if settings.DEP_BLOCK_ON_HIGH_RED_TEAM and high_count > 0:
-            blocked = True
-            warnings.append(
-                DeploymentWarning(
-                    warning_id="red_team_high_finding",
-                    category="security",
-                    message=(
-                        f"The security check left {high_count} serious "
-                        "finding(s) open, so this agent cannot be approved for "
-                        "launch. Review each one on the Security page — a "
-                        "finding that says the check itself could not observe "
-                        "the agent means the test did not run, not that the "
-                        "agent is safe."
-                    ),
-                    severity_level="warning",
-                )
-            )
-
-        # ------------------------------------------------------------------
-        # Coverage. A run that RECORDED incomplete coverage refuses to ship;
-        # a run that recorded none warns.
-        #
-        # The distinction is the remedy, not the severity. `coverage_source ==
-        # 'run'` means this run measured its own coverage and said part of the
-        # attack surface went untested — the owner can re-run the check on a
-        # worker that can reach the attack tooling, so refusing is actionable
-        # and "a clean result over 3 of 7 vectors" is not a clean result.
-        # `current_build` means no run-level figure exists at all (a tenant DB
-        # provisioned before migration 0015, or a run written before the task
-        # stored it); nothing the owner can do produces one, so blocking there
-        # would be a permanent, unfixable refusal. It is still not evidence,
-        # and it says so.
-        #
-        # `is not True` rather than `is False`: None must fail the same way.
-        # ------------------------------------------------------------------
-        coverage_complete = red_team_summary.get("coverage_complete")
-        coverage_source = red_team_summary.get("coverage_source")
-        attempted = red_team_summary.get("vectors_attempted")
-        valid = red_team_summary.get("vectors_valid")
-
-        if coverage_source == COVERAGE_SOURCE_RUN and coverage_complete is not True:
-            blocked = True
-            warnings.append(
-                DeploymentWarning(
-                    warning_id="red_team_coverage_incomplete",
-                    category="security",
-                    message=(
-                        f"The last security check did not finish: {valid} of "
-                        f"{attempted} attack types reported a result, and each "
-                        "must also complete every independent attempt it owes. "
-                        "Run the check again and approve once it says complete."
-                    ),
-                    severity_level="warning",
-                )
-            )
-        elif coverage_source != COVERAGE_SOURCE_RUN:
-            warnings.append(
-                DeploymentWarning(
-                    warning_id="red_team_coverage_unrecorded",
-                    category="security",
-                    message=(
-                        "The last security check did not record how many attack "
-                        "types it managed to test, so we cannot confirm it "
-                        "covered all of them. Run it again for a result that "
-                        "says so."
-                    ),
-                    severity_level="warning",
-                )
-            )
+        for find in (_red_team_finding_warnings, _red_team_coverage_warnings):
+            refused, found = find(red_team_summary)
+            blocked = blocked or refused
+            warnings.extend(found)
 
     if blocked:
         return "block", warnings

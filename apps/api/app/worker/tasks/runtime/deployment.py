@@ -33,6 +33,10 @@ Flow (run_deployment_checklist):
        seconds after starting the eval it was asking about. A job that does not
        reach terminal inside the ceiling reads as an ABSENT record and blocks;
        the pre-dispatch summary is never read.
+       THE WAIT IS A CHAIN OF MESSAGES, NOT A SLEEP. Each pass polls once and
+       re-queues itself with a countdown, because sleeping in the task body held
+       the only `runtime` execution slot on the documented local topology and the
+       two jobs it was waiting for could never start.
     4. Collect all 5 signals plus the BLR-02 envelope hash synchronously (4
        signals via psycopg2 against the tenant DB, the 5th signal —
        blast_radius — and the envelope hash both via get_sync_db() against
@@ -54,7 +58,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
+from datetime import datetime, timezone
 
 import structlog
 from sqlalchemy import select, text
@@ -79,9 +83,11 @@ from app.services.deployment_service import (
     _fetch_verified_qa_stats_sync,
     apply_signal_evidence_gate,
     derive_blast_radius_warnings,
+    eval_summary_did_not_finish,
     latest_eval_run_status_since,
     latest_red_team_run_status_since,
-    wait_for_terminal_runs,
+    poll_terminal_statuses,
+    red_team_summary_did_not_finish,
 )
 from app.worker.celery_app import celery_app
 
@@ -194,7 +200,7 @@ def _log_wait_outcome(agent_id: str, statuses: dict, waited_s: float) -> None:
     """Name which half ran out of ceiling, with the wait actually observed.
 
     The observed number rather than the configured one: a run that expired at
-    1500.4s and a run that expired because the poll returned None instantly are
+    2700.4s and a run that expired because the poll returned None instantly are
     different incidents, and only the measured wait tells them apart.
     """
     timed_out = sorted(name for name, status in statuses.items() if status is None)
@@ -217,22 +223,54 @@ def _log_wait_outcome(agent_id: str, statuses: dict, waited_s: float) -> None:
     )
 
 
-def _sequence_measurements(agent_id: str, conn_str: str) -> dict:
-    """Start both measurements, then wait for both to end. The checklist's step 3b.
+#: Every key one continuation of the checklist carries across the broker. They
+#: are all JSON, because a Celery kwarg is JSON, and the two moments travel as
+#: ISO strings rather than datetimes for the same reason.
+_WAIT_STATE_KEYS: tuple[str, ...] = (
+    "run_id",
+    "since",
+    "started_at",
+    "statuses",
+    "eval_dispatched",
+    "red_team_dispatched",
+)
 
-    Returns eval_dispatched, red_team_dispatched, statuses and waited_s.
-    `statuses` maps 'eval' and 'red_team' to a terminal status or to None, and
-    None is what the rest of the task reads as an absent record.
 
-    NO SECOND IDEMPOTENCY GUARD LIVES HERE, and that is deliberate (#85 family).
-    The task is acks_late=True, so a broker redelivery mid-wait re-runs the whole
-    body; what absorbs it is the 60-minute 'running' checklist_runs guard in step
-    2, which is still holding this run's own row while the wait sleeps. A guard
-    added here would be a second answer to a question step 2 has already
-    answered, and the two would drift the way the timeout in BACKLOG 1.33 did.
+def _require_wait_state(wait_state: object) -> dict:
+    """Refuse a continuation whose carried state is not the shape this build wrote.
+
+    A missing key is refused rather than defaulted. Defaulting `since` would
+    move the boundary the wait reads runs against, and defaulting `statuses`
+    would forget every terminal status already observed and start the wait
+    again, so both would resolve into a report about the wrong runs. The
+    checklist is a deploy gate, so an unreadable continuation stops.
+    """
+    if not isinstance(wait_state, dict):
+        raise TypeError(
+            f"run_deployment_checklist needs wait_state as a dict, got "
+            f"{type(wait_state).__name__}"
+        )
+    missing = sorted(set(_WAIT_STATE_KEYS) - set(wait_state))
+    if missing:
+        raise KeyError(
+            f"run_deployment_checklist was continued without {', '.join(missing)}. "
+            "A default in their place would grade runs this checklist did not start."
+        )
+    return dict(wait_state)
+
+
+def _open_wait(run_id: str, agent_id: str, conn_str: str) -> dict:
+    """Start both measurements and open the wait that grades them. Step 3b's first pass.
 
     The two dispatch calls are made before the first poll, so both jobs are in
     flight for the whole wait rather than one after the other.
+
+    NO SECOND IDEMPOTENCY GUARD LIVES HERE, and that is deliberate (#85 family).
+    What absorbs a broker redelivery is the 60-minute 'running' checklist_runs
+    guard in step 2, which is still holding this run's own row for as long as the
+    wait lasts. A guard added here would be a second answer to a question step 2
+    has already answered, and the two would drift the way the timeout in BACKLOG
+    1.33 did.
 
     A JOB ALREADY IN FLIGHT AT DISPATCH TIME IS THE ONE RESIDUAL. Its guard
     absorbs the dispatch, so no row exists at or after `since`, the wait expires
@@ -241,27 +279,167 @@ def _sequence_measurements(agent_id: str, conn_str: str) -> dict:
     is the price of the boundary that keeps last night's run out.
     """
     since = _dispatch_moment(conn_str)
-    eval_dispatched = _dispatch_eval_run(agent_id)
-    red_team_dispatched = _dispatch_red_team_run(agent_id)
-    statuses, waited_s = wait_for_terminal_runs(
+    return {
+        "run_id": run_id,
+        "since": since.isoformat(),
+        # The WORKER clock, and only for measuring how long the wait has run.
+        # `since` is the tenant DB's clock and answers a different question: which
+        # rows this checklist could have caused. Skew between the two would put
+        # the boundary in the wrong place, so they are never the same field.
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "statuses": {"eval": None, "red_team": None},
+        "eval_dispatched": _dispatch_eval_run(agent_id),
+        "red_team_dispatched": _dispatch_red_team_run(agent_id),
+    }
+
+
+def _poll_wait(agent_id: str, conn_str: str, state: dict) -> dict:
+    """One look at both runs, folded into the state the next continuation carries."""
+    since = datetime.fromisoformat(state["since"])
+    statuses = poll_terminal_statuses(
+        state["statuses"],
         {
             "eval": lambda: latest_eval_run_status_since(agent_id, conn_str, since),
             "red_team": lambda: latest_red_team_run_status_since(
                 agent_id, conn_str, since
             ),
         },
-        poll_s=settings.CHECKLIST_WAIT_POLL_S,
-        ceiling_s=settings.CHECKLIST_WAIT_CEILING_S,
-        sleep=time.sleep,
-        clock=time.monotonic,
     )
-    _log_wait_outcome(agent_id, statuses, waited_s)
+    return {**state, "statuses": statuses}
+
+
+def _waited_s(state: dict) -> float:
+    """How long this wait has actually run, across every continuation of it."""
+    started_at = datetime.fromisoformat(state["started_at"])
+    return (datetime.now(timezone.utc) - started_at).total_seconds()
+
+
+def _requeue_wait(agent_id: str, state: dict) -> None:
+    """Hand the wait to the next message and let this worker slot go.
+
+    THE CHECKLIST MUST NOT SLEEP INSIDE THE TASK (#54 review). It used to, on the
+    same `runtime` queue as the two jobs it had just dispatched. On the
+    documented local topology, one worker with `-Q pipeline,runtime` and a solo
+    pool, that is one execution slot: the checklist held it for the whole
+    ceiling, neither job could start, and the wait could never be satisfied. The
+    countdown is what the loop's `sleep` used to be, except the broker holds it
+    and the worker is free in the meantime.
+    """
+    run_deployment_checklist.apply_async(
+        kwargs={"agent_id": agent_id, "wait_state": state},
+        countdown=settings.CHECKLIST_WAIT_POLL_S,
+        queue="runtime",
+    )
+
+
+def _collected(agent_id: str, event: str, fetch, fallback):
+    """One collector, whose own failure is substituted rather than raised.
+
+    A collector that raises must not fail a checklist that has already read the
+    others and still owes the owner a report. WHAT IT SUBSTITUTES IS NEVER A
+    PLAUSIBLE NUMBER: the eval and red-team halves substitute an 'unavailable'
+    signal the evidence gate refuses to ship on, because the zeros nobody read
+    used to look exactly like the zeros of a clean run. That is audit D3, and it
+    is why the fallback is a callable rather than a shared dict: a caller that
+    handed the module constant itself would let a later mutation poison it.
+
+    `event` is spelled in full at the call site so every log name this task can
+    emit is greppable in the source.
+    """
+    try:
+        return fetch()
+    except Exception as exc:
+        log.warning(event, agent_id=agent_id, error=str(exc))
+        return fallback()
+
+
+# A HALF THE WAIT NEVER SAW FINISH IS NOT COLLECTED AT ALL (#54 review), and
+# that is the first thing `_collect_signals` decides. `_latest_run` filters
+# `status <> 'running'`, so asking the eval collector about a run that is still
+# going hands back LAST NIGHT'S run, graded 'measured', inside a report claiming
+# every number describes the run this checklist sequenced. The red-team collector
+# had no status filter at all, so a still-running row answered "a run exists" and
+# it reported zero open findings for an agent nothing had ever probed. One reads
+# a stale run and the other a phantom one, and the substitute for both says the
+# run did not finish and carries no number.
+#
+# `eval_dispatched` rides on the eval signal so the owner-facing warning can say
+# the platform started the measurement, rather than naming an Evaluation page the
+# onboarding flow never routes to. It softens nothing: the gate still blocks on a
+# signal that is not 'measured', because a measurement that was STARTED is not a
+# measurement.
+
+
+def _collect_signals(
+    agent_id: str, conn_str: str, state: dict, waited_s: float
+) -> dict:
+    """The five quality signals, read after both runs settled. Step 4.
+
+    Four collectors read the TENANT DB over psycopg2; blast_radius reads the
+    CONTROL DB and takes no conn_str (BLR-01), which is the one collector that
+    breaks the tenant-DB-only convention the others follow.
+    """
+    if state["statuses"]["eval"] is None:
+        eval_summary = eval_summary_did_not_finish(waited_s)
+    else:
+        eval_summary = _collected(
+            agent_id,
+            "run_deployment_checklist.eval_summary_fetch_failed",
+            lambda: _fetch_eval_summary_sync(agent_id, conn_str),
+            lambda: dict(EVAL_SUMMARY_UNAVAILABLE_SIGNAL),
+        )
+    eval_summary["eval_dispatched"] = state["eval_dispatched"]
+
+    if state["statuses"]["red_team"] is None:
+        red_team_summary = red_team_summary_did_not_finish(waited_s)
+    else:
+        red_team_summary = _collected(
+            agent_id,
+            "run_deployment_checklist.red_team_summary_fetch_failed",
+            lambda: _fetch_red_team_summary_sync(agent_id, conn_str),
+            lambda: dict(RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL),
+        )
+
     return {
-        "eval_dispatched": eval_dispatched,
-        "red_team_dispatched": red_team_dispatched,
-        "statuses": statuses,
-        "waited_s": waited_s,
+        "eval_summary": eval_summary,
+        "red_team_summary": red_team_summary,
+        "verified_qa_stats": _collected(
+            agent_id,
+            "run_deployment_checklist.verified_qa_stats_fetch_failed",
+            lambda: _fetch_verified_qa_stats_sync(agent_id, conn_str),
+            lambda: {"row_count": 0, "avg_faithfulness": 0.0, "avg_relevance": 0.0},
+        ),
+        "corpus_stats": _collected(
+            agent_id,
+            "run_deployment_checklist.corpus_stats_fetch_failed",
+            lambda: _fetch_corpus_stats_sync(agent_id, conn_str),
+            lambda: {"document_count": 0, "chunk_count": 0, "last_ingested_at": None},
+        ),
+        "blast_radius": _collected(
+            agent_id,
+            "run_deployment_checklist.blast_radius_fetch_failed",
+            lambda: _fetch_blast_radius_sync(agent_id),
+            lambda: dict(BLAST_RADIUS_DEFAULT_SIGNAL),
+        ),
     }
+
+
+def _envelope_hash(agent_id: str) -> str | None:
+    """The BLR-02 capability-envelope hash. Control DB, no conn_str.
+
+    Kept out of `signals` because it is not a narrative quality signal for the
+    orchestrator; it is persisted directly onto the checklist run in step 6. A
+    None here is NOT a neutral outcome: envelope_drift treats an absent recorded
+    hash as drift, so a run whose hash collector failed can never be approved.
+    That is the deliberate fail-closed direction, matching a NULL pre-0019
+    historical hash.
+    """
+    return _collected(
+        agent_id,
+        "run_deployment_checklist.envelope_hash_failed",
+        lambda: _compute_envelope_hash_sync(agent_id),
+        lambda: None,
+    )
 
 
 @celery_app.task(
@@ -272,7 +450,7 @@ def _sequence_measurements(agent_id: str, conn_str: str) -> dict:
     queue="runtime",
     name="app.worker.tasks.runtime.deployment.run_deployment_checklist",
 )
-def run_deployment_checklist(self, agent_id: str) -> dict:
+def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None) -> dict:
     """Per-agent deployment checklist run.
 
     Collects quality signals from the tenant DB, runs the orchestrator's turn on
@@ -280,26 +458,41 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
 
     Receives agent_id str — no conn_str in args (CTL-08 / CLAUDE.md non-negotiable).
 
+    THE WAIT SPANS SEVERAL MESSAGES, NOT ONE LONG TASK BODY (#54 review). The
+    first pass dispatches both jobs and opens a wait; every pass after it takes
+    ONE look at the tenant DB and either re-queues itself with a countdown or
+    goes on to collect. `wait_state` is how a continuation knows which runs it is
+    waiting on, so a worker slot is never held while nothing is happening.
+
     Sequence:
-        1. Fetch agent from control DB; decrypt conn_str at runtime.
+        1. Fetch agent from control DB; decrypt conn_str at runtime. Every pass.
         2. Idempotency guard — skip if a 'running' checklist_run for this agent
-           was created within the last 60 minutes.
+           was created within the last 60 minutes. FIRST PASS ONLY: on a
+           continuation the row it would find is this run's own.
         3. Insert checklist_runs row (status='running') in control DB via ORM.
-        3b. Dispatch the eval chain and the red-team run, then wait for both to
-           reach a terminal status (_sequence_measurements), bounded by
-           CHECKLIST_WAIT_CEILING_S.
+           First pass only, for the same reason.
+        3b. First pass: dispatch the eval chain and the red-team run and open the
+           wait. Every pass: poll once, and re-queue with CHECKLIST_WAIT_POLL_S
+           of countdown while either job is still in flight and
+           CHECKLIST_WAIT_CEILING_S has not expired.
         4. Collect all 5 signals synchronously (psycopg2 against tenant DB) plus
-           the BLR-02 envelope hash (control DB, own guarded block).
-        5. Call run_orchestrator via asyncio.run(asyncio.wait_for(..., timeout=120.0)) bridge.
+           the BLR-02 envelope hash (control DB, own guarded block). A half that
+           never reached terminal is NOT collected: its `did_not_finish` payload
+           is substituted, because the collector would answer about some other
+           run.
+        5. Call run_orchestrator via asyncio.run(asyncio.wait_for(...)) bridge.
         6. Parse result and UPDATE checklist_runs to status='complete', persisting
            the envelope hash alongside status/recommendation/report/warnings.
         7. On exception: UPDATE checklist_runs to status='failed'; retry if possible.
 
     Args:
         agent_id: UUID string of the agent to check.
+        wait_state: what the previous pass observed, or None on the first pass.
+            Never built by a caller outside this module.
 
     Returns:
         {"status": "complete", "run_id": str, "recommendation": str}  on success.
+        {"status": "waiting", "run_id": str, "pending": [str], ...}   while a job runs.
         {"status": "already_running"}                                  on idempotent skip.
         {}                                                             on retry exhaustion.
     """
@@ -319,158 +512,96 @@ def run_deployment_checklist(self, agent_id: str) -> dict:
         conn_str = fernet_decrypt(agent.neon_connection_string)
         tenant_id = str(agent.tenant_id)
 
-    # ------------------------------------------------------------------
-    # Step 2 — Idempotency guard: check checklist_runs for a recent running row
-    # Uses control DB (ORM) — NOT psycopg2 against tenant DB.
-    # 60-minute window because this checklist makes a model call with a 120s
-    # timeout. Independent of red_team.py's window, which is sized to ITS bound.
-    # ------------------------------------------------------------------
-    with get_sync_db() as db:
-        existing = db.execute(
-            select(ChecklistRun).where(
-                ChecklistRun.agent_id == agent_id,
-                ChecklistRun.status == "running",
-                ChecklistRun.created_at > text("now() - interval '60 minutes'"),
-            )
-        ).scalar_one_or_none()
-        if existing:
-            log.info("run_deployment_checklist.idempotency_skip", agent_id=agent_id)
-            return {"status": "already_running"}
+    if wait_state is None:
+        # ------------------------------------------------------------------
+        # Step 2 — Idempotency guard: check checklist_runs for a recent running row
+        # Uses control DB (ORM) — NOT psycopg2 against tenant DB.
+        # 60-minute window because this checklist waits on two jobs and then
+        # makes a model call. Independent of red_team.py's window, which is sized
+        # to ITS bound.
+        #
+        # FIRST PASS ONLY. A continuation would find the row this run inserted
+        # itself and skip, which would abandon its own wait.
+        # ------------------------------------------------------------------
+        with get_sync_db() as db:
+            existing = db.execute(
+                select(ChecklistRun).where(
+                    ChecklistRun.agent_id == agent_id,
+                    ChecklistRun.status == "running",
+                    ChecklistRun.created_at > text("now() - interval '60 minutes'"),
+                )
+            ).scalar_one_or_none()
+            if existing:
+                log.info(
+                    "run_deployment_checklist.idempotency_skip", agent_id=agent_id
+                )
+                return {"status": "already_running"}
 
-    # ------------------------------------------------------------------
-    # Step 3 — Insert checklist_runs row in control DB via ORM
-    # (NOT in tenant DB — checklist_runs is control DB only, T-08-03-04)
-    # ------------------------------------------------------------------
-    with get_sync_db() as db:
-        run = ChecklistRun(agent_id=agent_id, status="running")
-        db.add(run)
-        db.commit()
-        db.refresh(run)
-        run_id = str(run.id)
+        # ------------------------------------------------------------------
+        # Step 3 — Insert checklist_runs row in control DB via ORM
+        # (NOT in tenant DB — checklist_runs is control DB only, T-08-03-04)
+        # ------------------------------------------------------------------
+        with get_sync_db() as db:
+            run = ChecklistRun(agent_id=agent_id, status="running")
+            db.add(run)
+            db.commit()
+            db.refresh(run)
+            run_id = str(run.id)
 
-    log.info("run_deployment_checklist.started", agent_id=agent_id, run_id=run_id)
+        log.info("run_deployment_checklist.started", agent_id=agent_id, run_id=run_id)
 
-    # ------------------------------------------------------------------
-    # Step 3b. THE CHECKLIST SEQUENCES THE JOBS IT GRADES (#54, decision 19
-    # rule 5). Both are dispatched here, unconditionally, and this call does not
-    # return until each has a terminal row of its own or the ceiling expires.
-    # Step 4 used to run first, which is why the first checklist ever executed
-    # reported eval_signal=no_runs about the eval it had started seconds
-    # earlier. A job that never reaches terminal reads as an ABSENT record, so
-    # the gate blocks on it; the pre-dispatch summary is never read.
-    # ------------------------------------------------------------------
-    sequenced = _sequence_measurements(agent_id, conn_str)
+        # ------------------------------------------------------------------
+        # Step 3b. THE CHECKLIST SEQUENCES THE JOBS IT GRADES (#54, decision 19
+        # rule 5). Both are dispatched here, unconditionally. Step 4 used to run
+        # first, which is why the first checklist ever executed reported
+        # eval_signal=no_runs about the eval it had started seconds earlier.
+        # ------------------------------------------------------------------
+        state = _open_wait(run_id, agent_id, conn_str)
+    else:
+        state = _require_wait_state(wait_state)
+        run_id = state["run_id"]
 
-    # ------------------------------------------------------------------
-    # Step 4 — Collect signals from tenant DB (psycopg2 sync — fine in Celery)
-    # Each _fetch_*_sync function opens its own psycopg2 connection and closes it.
-    # Wrapped in try/except to handle missing tables or connection errors gracefully.
-    # ------------------------------------------------------------------
-    try:
-        eval_summary = _fetch_eval_summary_sync(agent_id, conn_str)
-    except Exception as exc:
-        log.warning(
-            "run_deployment_checklist.eval_summary_fetch_failed",
+    # One look, then either hand the wait to the next message or go on. A job
+    # that never reaches terminal inside the ceiling reads as an ABSENT record,
+    # so the gate blocks on it; the pre-dispatch summary is never read.
+    state = _poll_wait(agent_id, conn_str, state)
+    waited_s = _waited_s(state)
+    pending = sorted(name for name, status in state["statuses"].items() if status is None)
+    if pending and waited_s < settings.CHECKLIST_WAIT_CEILING_S:
+        _requeue_wait(agent_id, state)
+        log.info(
+            "run_deployment_checklist.still_waiting",
             agent_id=agent_id,
-            error=str(exc),
+            run_id=run_id,
+            pending=pending,
+            waited_s=round(waited_s, 1),
         )
-        # Copy so a later mutation cannot poison the module constant. The
-        # substitution used to be `{"pass_rates": {}, "failing_scenarios": 0}`,
-        # which asserted "no eval metric is failing" about a query that never
-        # ran — audit D3's fail-open, and the reason a column-name typo could
-        # disable half the deploy gate for the whole of M8's life. The
-        # replacement says 'unavailable' and apply_signal_evidence_gate below
-        # refuses to ship on it.
-        eval_summary = dict(EVAL_SUMMARY_UNAVAILABLE_SIGNAL)
+        return {
+            "status": "waiting",
+            "run_id": run_id,
+            "pending": pending,
+            "waited_s": round(waited_s, 1),
+        }
 
-    # The dispatch is recorded ON the signal so the owner-facing warning can say
-    # the platform started the measurement, rather than naming an Evaluation page
-    # the onboarding flow never routes to. It does not soften the verdict:
-    # apply_signal_evidence_gate still blocks on a signal that is not 'measured',
-    # because a measurement that was STARTED is not a measurement.
-    #
-    # IT IS UNCONDITIONAL NOW. Step 4b used to fire on EVAL_SIGNAL_NO_RUNS and on
-    # the absent half of EVAL_SIGNAL_AGENT_NOT_INVOKED, reading a signal that
-    # described the state before the dispatch to decide whether to dispatch. The
-    # sequencer above dispatches first and waits, so by the time this signal is
-    # collected it already describes the run the checklist started, and there is
-    # no earlier state left to branch on.
-    eval_summary["eval_dispatched"] = sequenced["eval_dispatched"]
+    _log_wait_outcome(agent_id, state["statuses"], waited_s)
 
-    try:
-        red_team_summary = _fetch_red_team_summary_sync(agent_id, conn_str)
-    except Exception as exc:
-        log.warning(
-            "run_deployment_checklist.red_team_summary_fetch_failed",
-            agent_id=agent_id,
-            error=str(exc),
-        )
-        # Same correction on the security half: zeros nobody read are not zeros.
-        red_team_summary = dict(RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL)
-
-    try:
-        verified_qa_stats = _fetch_verified_qa_stats_sync(agent_id, conn_str)
-    except Exception as exc:
-        log.warning(
-            "run_deployment_checklist.verified_qa_stats_fetch_failed",
-            agent_id=agent_id,
-            error=str(exc),
-        )
-        verified_qa_stats = {"row_count": 0, "avg_faithfulness": 0.0, "avg_relevance": 0.0}
-
-    try:
-        corpus_stats = _fetch_corpus_stats_sync(agent_id, conn_str)
-    except Exception as exc:
-        log.warning(
-            "run_deployment_checklist.corpus_stats_fetch_failed",
-            agent_id=agent_id,
-            error=str(exc),
-        )
-        corpus_stats = {"document_count": 0, "chunk_count": 0, "last_ingested_at": None}
-
-    try:
-        # Fifth collector — control DB, no conn_str (BLR-01). This is the one
-        # collector that reads capability_envelopes/tool_calls_audit/tenants
-        # directly rather than the tenant DB, so it takes agent_id only.
-        blast_radius = _fetch_blast_radius_sync(agent_id)
-    except Exception as exc:
-        log.warning(
-            "run_deployment_checklist.blast_radius_fetch_failed",
-            agent_id=agent_id,
-            error=str(exc),
-        )
-        # Copy so a later mutation cannot poison the module constant.
-        blast_radius = dict(BLAST_RADIUS_DEFAULT_SIGNAL)
-
-    try:
-        # Sixth collector — control DB, no conn_str (BLR-02). Computed
-        # separately from the `signals` dict below because it is not a
-        # narrative quality signal for the orchestrator; it is persisted
-        # directly onto the checklist run in Step 6. A None result here
-        # (collector failure) is not a neutral outcome: envelope_drift
-        # treats an absent recorded hash as drift, so a run whose hash
-        # collector failed can never be approved — the deliberate
-        # fail-closed direction, matching a NULL pre-0019 historical hash.
-        envelope_hash = _compute_envelope_hash_sync(agent_id)
-    except Exception as exc:
-        log.warning(
-            "run_deployment_checklist.envelope_hash_failed",
-            agent_id=agent_id,
-            error=str(exc),
-        )
-        envelope_hash = None
+    # ------------------------------------------------------------------
+    # Step 4 — Collect the five signals and the BLR-02 envelope hash. Always
+    # AFTER the wait, so every summary describes the runs this checklist
+    # sequenced rather than whatever the tables held when it started.
+    # ------------------------------------------------------------------
+    signals = _collect_signals(agent_id, conn_str, state, waited_s)
+    eval_summary = signals["eval_summary"]
+    red_team_summary = signals["red_team_summary"]
+    verified_qa_stats = signals["verified_qa_stats"]
+    corpus_stats = signals["corpus_stats"]
+    blast_radius = signals["blast_radius"]
+    envelope_hash = _envelope_hash(agent_id)
 
     # ------------------------------------------------------------------
     # Step 5 - the orchestrator's turn, under ORCHESTRATOR_TIMEOUT_S. The shim
     # awaits the service's loop; run_orchestrator would nest a second asyncio.run.
     # ------------------------------------------------------------------
-    signals = {
-        "eval_summary": eval_summary,
-        "red_team_summary": red_team_summary,
-        "verified_qa_stats": verified_qa_stats,
-        "corpus_stats": corpus_stats,
-        "blast_radius": blast_radius,
-    }
     signals_json = json.dumps(signals)
     result_container: dict = {}
     ledger = _orchestrator_ledger(tenant_id, agent_id, run_id, conn_str)
