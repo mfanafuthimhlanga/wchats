@@ -317,6 +317,23 @@ FAILED TestEveryScoringRunLeavesARecord::test_a_setup_error_writes_a_record_sayi
 
 Restored, `16 passed, 72 deselected in 16.56s`.
 
+### A defect this slice introduced and closed
+
+`5228d6d` put the writer on `CALIBRATION_ARTIFACT_JSON`, resolved from
+`CALIBRATION_DIR` at import. `calibration_tree` redirects the scenarios, the responses and
+both sheets, and not that constant, so the three tests in the file that drive `cc.main([])`
+each wrote a calibration record into the directory the owner labels. One was sitting
+untracked in the working tree after the push, which is what found it. The follow-up commit,
+`fix(calibration): the test fixture points the artifact at tmp, like the sheets`, moves the
+redirect into the fixture at fixture level, where it holds for a test that never calls
+`build`, and pins it: the artifact's directory is not `CALIBRATION_DIR`. Pinned that way
+rather than on the real file's absence, because slice 3 may ship an artifact there and a
+test that went red on that would be pinning the tree's contents instead of the fixture's job.
+
+The plan did not anticipate it, and the reason is worth naming: the writer's target was
+reviewed as "a parameter, so tests can redirect it", and it is. The three tests that broke
+do not call the writer. They call `main`, which supplies the parameter itself.
+
 ### Open, for slice 3 and the reviewer
 
 - **No artifact is committed, so `CALIBRATION_ARTIFACT_PATH` still resolves to a file that

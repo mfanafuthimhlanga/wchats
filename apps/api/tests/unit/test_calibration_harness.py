@@ -128,6 +128,12 @@ def calibration_tree(tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "SCENARIOS_DIR", scenarios)
     monkeypatch.setattr(cc, "RESPONSES_DIR", responses)
 
+    # Ticket #53, slice 2. Pointed at tmp at FIXTURE level rather than inside
+    # `build`, so it holds for a test that never calls `build`. Three tests here
+    # drive `cc.main([])`, and while this constant stayed real every one of them
+    # wrote a calibration record into the owner's own directory.
+    monkeypatch.setattr(cc, "CALIBRATION_ARTIFACT_JSON", tmp_path / "calibration.json")
+
     def build(rows, *, capture: set[str] | None = None, with_scores: bool = True,
               second_pass: str | None = "match"):
         for sid, _dim, _score in rows:
@@ -1785,39 +1791,42 @@ class TestTheRunsThatMeasureNothingWriteNothing:
     artifact from either would answer the deploy path for a measurement neither
     of them made."""
 
-    def test_check_writes_no_artifact(self, calibration_tree, tmp_path, monkeypatch, capsys):
+    def test_check_writes_no_artifact(self, calibration_tree, capsys):
         calibration_tree(_FOUR_ROWS)
-        target = tmp_path / "calibration.json"
-        monkeypatch.setattr(cc, "CALIBRATION_ARTIFACT_JSON", target)
+        target = cc.CALIBRATION_ARTIFACT_JSON
 
         cc.main(["--check"])
 
         capsys.readouterr()
         assert not target.exists()
 
-    def test_emit_second_pass_writes_no_artifact(
-        self, calibration_tree, tmp_path, monkeypatch, capsys
-    ):
+    def test_emit_second_pass_writes_no_artifact(self, calibration_tree, capsys):
         calibration_tree(_FOUR_ROWS, second_pass=None)
-        target = tmp_path / "calibration.json"
-        monkeypatch.setattr(cc, "CALIBRATION_ARTIFACT_JSON", target)
+        target = cc.CALIBRATION_ARTIFACT_JSON
 
         assert cc.main(["--emit-second-pass"]) == cc.EXIT_SECOND_PASS_EMITTED
 
         capsys.readouterr()
         assert not target.exists()
 
-    def test_a_run_writes_one_through_main(
-        self, calibration_tree, tmp_path, monkeypatch, capsys
+    def test_the_fixture_points_the_artifact_away_from_the_owners_directory(
+        self, calibration_tree
     ):
+        """Pinned because it was not true. Three tests here drive `cc.main([])`,
+        the writer landed on the module constant, and every one of them wrote a
+        calibration record into the directory the owner labels."""
+        calibration_tree(_FOUR_ROWS)
+
+        assert cc.CALIBRATION_ARTIFACT_JSON.parent != cc.CALIBRATION_DIR
+
+    def test_a_run_writes_one_through_main(self, calibration_tree, monkeypatch, capsys):
         """The wiring, driven end to end. The judge is injected at its module so no
         call leaves the machine."""
         monkeypatch.setattr(
             cc, "JUDGE_IDENTITY_BY_DIMENSION", {"grounding_fidelity": _artifact_identity()}
         )
         calibration_tree(_FOUR_ROWS)
-        target = tmp_path / "calibration.json"
-        monkeypatch.setattr(cc, "CALIBRATION_ARTIFACT_JSON", target)
+        target = cc.CALIBRATION_ARTIFACT_JSON
         monkeypatch.setattr(
             "tests.evals.judge.judge", _judge_returning(_PERFECT), raising=True
         )
