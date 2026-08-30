@@ -811,7 +811,7 @@ class TestALabelChangesWhatTheDeployGateReads:
         The `AVG(score) GROUP BY metric` this used to pin is gone (#51 slice 4).
         The gate now lifts the run's own per-dataset `Measurement`, which is
         computed once by `run_eval_suite` over every scored row of a dataset and
-        keys on the dataset alone — so a human-authored reference and a
+        keys on the dataset alone, so a human-authored reference and a
         Haiku-written one still contribute to the same mean, indistinguishably.
         The hop moved and the fact did not. `BACKLOG 4.12` is what would change
         it, and it is asserted rather than assumed so 4.12 cannot land while this
@@ -840,13 +840,13 @@ class TestALabelChangesWhatTheDeployGateReads:
         )
         for column in ("label_trust_tier", "labelled_by", "labelled_at"):
             assert column not in source, (
-                f"the deploy collector now mentions {column} — if it has learned "
+                f"the deploy collector now mentions {column}. If it has learned "
                 "to separate human-authored references from model ones, this "
                 "test and BACKLOG 4.12 both need rewriting"
             )
             assert column not in record_fields, (
                 f"the record now carries {column}, so the per-dataset mean is no "
-                "longer blind to provenance — BACKLOG 4.12 has landed and this "
+                "longer blind to provenance. BACKLOG 4.12 has landed and this "
                 "test needs rewriting"
             )
 

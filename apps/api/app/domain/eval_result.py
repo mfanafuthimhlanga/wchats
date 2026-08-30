@@ -260,7 +260,7 @@ class Measurement:
 
     @property
     def payload(self) -> dict:
-        """{"value", "measured", "observations"} — the shape every reader already parses.
+        """{"value", "measured", "observations"}, the shape every reader parses.
 
         Key for key what `summarise_run_validity` has emitted since the
         measurement-layer work, so a route reading a stored record and a route
@@ -500,7 +500,7 @@ class DatasetOutcome:
                               number.
         metrics:              metric name to Measurement, over a subset of
                               METRIC_KEYS. A metric absent from this mapping is
-                              absent from `payload` — it was not reported, which
+                              absent from `payload`. It was not reported, which
                               is a different claim from reported and unmeasured,
                               and a default would erase the difference.
         scenarios_passed:     scored scenarios whose every gated verdict is True.
@@ -1009,13 +1009,13 @@ class EvalResult:
         """Rebuild the record from a stored `eval_runs.result`.
 
         The round trip is the contract: `EvalResult.from_payload(r.payload) == r`.
-        A stored row is validated on the way out exactly as it was on the way in.
+        A stored row is validated on the way out as it was on the way in, because
+        already being written down is not evidence that a shape is honest.
 
         EVERY WAY A STORED SHAPE CAN BE WRONG LEAVES HERE AS InvalidEvalResult.
-        `JudgeIdentity(**identity)` over an identity carrying an extra key, a
-        missing key or a string raises TypeError, and the routes catch
-        InvalidEvalResult alone, so one malformed row returned 500 for the whole
-        of `GET /eval-runs`. A reader of one bad record loses that record only.
+        `JudgeIdentity(**identity)` over an extra key, a missing key or a string
+        raises TypeError, and the routes catch InvalidEvalResult alone, so one
+        malformed row returned 500 for the whole of `GET /eval-runs`.
 
         Raises:
             InvalidEvalResult: the stored shape is not a mapping, breaks a

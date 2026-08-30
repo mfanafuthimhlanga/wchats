@@ -496,7 +496,7 @@ def _measured_eval_signal():
     # Built through the collector's own constructor since #51 slice 4. The
     # hand-written dict this replaces had no `datasets` block at all, and the
     # gate now refuses a 'measured' signal whose gated metrics were measured on
-    # no dataset — so the fixture would have downgraded every wiring test to
+    # no dataset, so the fixture would have downgraded every wiring test to
     # 'block' while looking like a measurement, which is the same shape of
     # mistake audit D3's `pass_rates: {}` was.
     scored = DatasetOutcome(

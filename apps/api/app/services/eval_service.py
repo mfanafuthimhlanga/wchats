@@ -779,9 +779,9 @@ def summarise_agent_invocation(
 
     Args:
         records: one dict per scenario an agent turn was ATTEMPTED for, each
-            carrying `responded` (bool), `scorable` (bool — reached the scorer),
-            `error` (str|None — the exception's class name), `error_message`
-            (str|None — what the invoker says about it, never `str(exc)`),
+            carrying `responded` (bool), `scorable` (bool, reached the scorer),
+            `error` (str|None, the exception's class name), `error_message`
+            (str|None, what the invoker says about it, never `str(exc)`),
             `retrieve_calls` (int), `retrieve_at_cap` (bool),
             `retrieve_unparsed` (int), `retrieved_chunks` (int),
             `pii_detector` (str|None — what the output firewall found in this
@@ -1494,7 +1494,7 @@ def run_ragas_eval(scenarios: list[dict], ledger: LedgerContext) -> dict:
                 position; see attribute_returned_rows).
                 Each dict: {scenario_id, faithfulness, answer_relevancy,
                             context_precision, context_recall}
-            "judge_records": list[JudgeRecord] — the same observations at the
+            "judge_records": list[JudgeRecord], the same observations at the
                 grain `eval_results` stores, four per scored scenario, each
                 carrying its threshold, its verdict, its Judge and its ledger
                 bucket. What `write_eval_results` writes.
@@ -1734,7 +1734,7 @@ def update_eval_run_status(
         eval_run_id: UUID string of the eval_runs row.
         status: New status value (e.g. 'running', 'complete', 'failed').
         finished_at: When True, sets finished_at = NOW().
-        conn_str: PRODUCTION tenant connection string — never the eval branch.
+        conn_str: PRODUCTION tenant connection string, never the eval branch.
     """
     if finished_at:
         sql = """
@@ -2097,7 +2097,7 @@ def update_eval_run_config(run_id: str, patch: dict, conn_str: str) -> bool:
     Args:
         run_id: UUID string of the eval_runs row.
         patch: the config keys to merge. Serialised as jsonb by this function.
-        conn_str: PRODUCTION tenant connection string — never the eval branch.
+        conn_str: PRODUCTION tenant connection string, never the eval branch.
 
     Returns:
         True when the patch landed; False when the column is absent or the write
@@ -2166,7 +2166,7 @@ _READ_EVAL_RUN_RESULT_SQL = """
     SELECT result FROM eval_runs WHERE id = %(id)s::uuid
 """
 
-#: `model_calls WHERE job_id = <run_id>` is the run's own ledger — its judge
+#: `model_calls WHERE job_id = <run_id>` is the run's own ledger: its judge
 #: calls and, since the job_id fix in _run_one_eval_turn, its agent turns too.
 #: The column list is imported from the writer rather than typed again here:
 #: `usage.py` keeps its own copy under a test that pins the two together, and a
@@ -2196,8 +2196,8 @@ def read_run_ledger(run_id: str, conn_str: str) -> list[ModelCall]:
 
     An empty list comes back for a run with no rows AND for a ledger this
     function could not read. The two are told apart in the log rather than in the
-    return, because they mean the same thing to the record — the cost is unknown
-    — and a run that has already been scored must not fail because its bill could
+    return, because they mean the same thing to the record. The cost is unknown,
+    and a run that has already been scored must not fail because its bill could
     not be added up.
 
     A tenant DB that predates migration 0019 has no `model_calls` table at all.
@@ -2223,7 +2223,7 @@ def read_run_ledger(run_id: str, conn_str: str) -> list[ModelCall]:
         log.warning(
             "read_run_ledger.table_absent",
             run_id=run_id,
-            detail="tenant DB predates alembic_tenant 0019 — this run cannot say what it cost",
+            detail="tenant DB predates alembic_tenant 0019, so this run cannot say what it cost",
         )
         return []
     except Exception as exc:
@@ -2350,7 +2350,7 @@ def dataset_outcomes(
     """summarise_run_validity's per-dataset buckets as records. Pure.
 
     Every metric the summariser reported becomes a Measurement, including the
-    ones it reported over zero observations — those arrive `measured=False` and
+    ones it reported over zero observations. Those arrive `measured=False` and
     stay that way, which is the ticket's criterion 4. A metric it did not report
     at all is simply absent, and `DatasetOutcome` keeps it absent rather than
     filling in a default nobody measured.
@@ -2398,8 +2398,8 @@ def build_eval_result(
     The three per-dataset counts all come from `summarise_run_validity` and none
     from `dataset_composition`, even though composition reports `attempted` too.
     Both count the same fetched rows by the same rule, so taking one number from
-    each would be two derivations of one figure — the defect this record exists
-    to remove, reintroduced inside the thing removing it.
+    each would be two derivations of one figure, the defect this record exists to
+    remove, reintroduced inside the thing removing it.
 
     Args:
         run_id:            UUID string of the eval_runs row.
@@ -2461,7 +2461,7 @@ def write_eval_result(run_id: str, result: EvalResult, conn_str: str) -> bool:
     Args:
         run_id: UUID string of the eval_runs row.
         result: the record. Serialised as jsonb by this function.
-        conn_str: PRODUCTION tenant connection string — never the eval branch.
+        conn_str: PRODUCTION tenant connection string, never the eval branch.
 
     Returns:
         True when the record landed; False when the column is absent or the write
@@ -2485,8 +2485,8 @@ def write_eval_result(run_id: str, result: EvalResult, conn_str: str) -> bool:
                     "write_eval_result.column_absent",
                     run_id=run_id,
                     detail=(
-                        "tenant DB predates alembic_tenant 0022 — this run cannot "
-                        "record what it measured"
+                        "tenant DB predates alembic_tenant 0022, so this run "
+                        "cannot record what it measured"
                     ),
                 )
                 return False
@@ -2618,8 +2618,8 @@ def read_eval_result(run_id: str, conn_str: str) -> EvalResult | None:
     way out. All three mean the run recorded no measurement, which is unknown and
     never a pass. The log says which.
 
-    A stored payload is validated on the way out exactly as it was on the way in.
-    Already being written down is not evidence that a shape is honest.
+    The validation is `EvalResult.from_payload`'s, and the callers of this
+    function report the None rather than filling the numbers in themselves.
 
     Args:
         run_id: UUID string of the eval_runs row.
@@ -2637,7 +2637,7 @@ def read_eval_result(run_id: str, conn_str: str) -> EvalResult | None:
                 "read_eval_result.column_absent",
                 run_id=run_id,
                 detail=(
-                    "tenant DB predates alembic_tenant 0022 — no run on it "
+                    "tenant DB predates alembic_tenant 0022, so no run on it "
                     "records a result"
                 ),
             )

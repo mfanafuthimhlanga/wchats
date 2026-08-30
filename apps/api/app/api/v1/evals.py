@@ -306,10 +306,10 @@ def _run_level_metrics(record: EvalResult | None) -> tuple[dict, str | None]:
 def _record_of(run_id: str, payload) -> EvalResult | None:
     """One run's stored record, or None when it has none that can be read.
 
-    A payload written under different construction rules is refused here rather
-    than rendered as this build's shape, the same call `read_eval_result` makes
-    against the same column. Already being written down is not evidence that a
-    shape is honest.
+    `EvalResult.from_payload` decides whether the payload is readable and this
+    logs which run lost its numbers. The response then reports that ONE run as
+    recordless: an unreadable row costs its own run and no other, which is what
+    keeps a console listing fifty runs from going dark over one of them.
     """
     if payload is None:
         return None

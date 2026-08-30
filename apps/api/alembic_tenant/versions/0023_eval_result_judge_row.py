@@ -1,4 +1,4 @@
-"""Tenant DB v23 migration — a judge row says what it decided (ticket 14, #51).
+"""Tenant DB v23 migration. A judge row says what it decided (ticket 14, #51).
 
 Revision ID: 0023
 Revises: 0022
@@ -18,26 +18,26 @@ Context:
 
     Four columns, so the row carries its own decision:
 
-    binary_verdict BOOLEAN — did this score clear this row's threshold. NULL
+    binary_verdict BOOLEAN, did this score clear this row's threshold. NULL
         when the metric has no threshold, and NULL when the judge returned no
         score. Never False for either, because "nobody set a gate here" and
         "this failed the gate" are different claims, and a deploy gate cannot
         tell them apart once the second one is written down.
 
-    threshold NUMERIC — the number the score was compared against, as it stood
+    threshold NUMERIC, the number the score was compared against, as it stood
         when the run was scored. Two of the four metrics have one
         (`EVAL_FAITHFULNESS_THRESHOLD`, `EVAL_RELEVANCY_THRESHOLD`);
         `context_precision` and `context_recall` have none anywhere in the
         codebase, so their rows carry NULL and no verdict rather than a default.
         A default would be a gate nobody chose.
 
-    judge_identity JSONB — the model, the reasoning effort and the prompt
+    judge_identity JSONB, the model, the reasoning effort and the prompt
         version of the Judge that produced THIS dimension's score. It was inside
         `detail` and it moves to a column for the reason 0020 gave
         `retrieval_metrics` one: #53 groups verdicts by identity, and grouping
         is a column's job.
 
-    ledger_purpose TEXT — which ledger rows paid for this row's verdict, at the
+    ledger_purpose TEXT, which ledger rows paid for this row's verdict, at the
         finest grain the ledger can actually answer. See below.
 
 WHY THE LEDGER REFERENCE IS A PURPOSE AND NOT A CALL ID

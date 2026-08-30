@@ -949,7 +949,7 @@ class TestJudgeCallsReachTheLedger:
 
 
 # ---------------------------------------------------------------------------
-# #51 — the run's numbers are one record, and the return dict is that record
+# #51. The run's numbers are one record, and the return dict is that record
 # ---------------------------------------------------------------------------
 
 
@@ -1209,7 +1209,7 @@ class TestTheRunWritesItsRecord:
 
 
 # ---------------------------------------------------------------------------
-# #25 — a failed turn reaches the record with its class AND what happened
+# #25. A failed turn reaches the record with its class AND what happened
 # ---------------------------------------------------------------------------
 
 #: An exception whose own text is unmistakable, so an assertion can look for it

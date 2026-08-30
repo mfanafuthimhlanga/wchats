@@ -2724,7 +2724,7 @@ class TestWriteAndReadEvalResult:
         assert read_eval_result("run-1", "postgresql://production") is None
 
     def test_a_stored_payload_that_breaks_a_rule_reads_as_unmeasured(self, monkeypatch):
-        """Already being written down is not evidence that a shape is honest."""
+        """The reader returns None on it, so the caller reports no measurement."""
         from app.services.eval_service import read_eval_result
 
         payload = _built().payload

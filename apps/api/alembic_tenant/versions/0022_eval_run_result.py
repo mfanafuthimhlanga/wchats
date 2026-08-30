@@ -1,4 +1,4 @@
-"""Tenant DB v22 migration — an eval run stores what it measured (ticket 14, #51).
+"""Tenant DB v22 migration. An eval run stores what it measured (ticket 14, #51).
 
 Revision ID: 0022
 Revises: 0021
@@ -14,11 +14,11 @@ Context:
 
     This migration adds the column that holds the answer as one value:
 
-    result JSONB — nullable, no CHECK, no DEFAULT.
-        `app.domain.eval_result.EvalResult.payload` — {"run_id", "agent_id",
+    result JSONB, nullable, no CHECK, no DEFAULT.
+        `app.domain.eval_result.EvalResult.payload`: {"run_id", "agent_id",
         "prompt_version_id", "judge_identity", "requested_model",
         "served_model", "invocation", "datasets", "attempted", "valid",
-        "scored", "cost", "context_proxy_version", "rule_version"} — stamped at
+        "scored", "cost", "context_proxy_version", "rule_version"}, stamped at
         run completion, on the below-floor path as well as the scored one.
 
     NULL means "this run did not record its result", which is every row written
@@ -28,8 +28,8 @@ Context:
     reader reports the absence rather than substituting a number of its own.
 
     THE COLUMN IS BESIDE `config`, NOT INSIDE IT. `config` is the tuple a run is
-    an assertion ABOUT — the model, the prompt version, the envelope hash, the
-    corpus size — and it is written at INSERT, before the first turn. The result
+    an assertion ABOUT (the model, the prompt version, the envelope hash, the
+    corpus size) and it is written at INSERT, before the first turn. The result
     is what the run MEASURED and it is written at the end. Merging the two would
     put a measurement inside the record of the configuration it was measured
     under, and `update_eval_run_config`'s shallow `||` merge would then be one
@@ -72,7 +72,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # ------------------------------------------------------------------
-    # eval_runs.result — nullable JSONB. NULL means "this run did not record
+    # eval_runs.result, nullable JSONB. NULL means "this run did not record
     # what it measured", which readers report as such and never fill in from a
     # recomputation of their own.
     # ------------------------------------------------------------------

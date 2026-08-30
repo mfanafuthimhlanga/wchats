@@ -2,10 +2,10 @@
 digest_service — Weekly digest stats collection and email dispatch (M10 OPS-02).
 
 Collects four metrics per agent from the per-tenant Neon DB:
-  1. conversation_count   — conversations in the last 7 days (tenant DB)
-  2. faithfulness_score   — the latest complete run's own record (tenant DB)
-  3. critical_red_team_count — count of critical findings from latest red_team_run (tenant DB)
-  4. escalation_count     — conversations flagged for escalation in last 7 days (tenant DB)
+  1. conversation_count      conversations in the last 7 days (tenant DB)
+  2. faithfulness_score      the latest finished run's own record (tenant DB)
+  3. critical_red_team_count critical findings on the latest red_team_run (tenant DB)
+  4. escalation_count        conversations flagged for escalation, last 7 days (tenant DB)
 
 WHERE "LATEST FAITHFULNESS" COMES FROM (#51 slice 4). It used to be
 `AVG(er.score)` over the latest complete run's `eval_results` rows, in this

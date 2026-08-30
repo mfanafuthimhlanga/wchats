@@ -2090,7 +2090,7 @@ def test_a_deflection_is_still_a_response_and_still_reaches_the_scorer() -> None
 
 
 # ---------------------------------------------------------------------------
-# #25 — the invoker composes the failure message, it never copies one
+# #25. The invoker composes the failure message, it never copies one
 # ---------------------------------------------------------------------------
 
 #: An exception whose own text is unmistakable, so an assertion can look for it

@@ -12,14 +12,14 @@ derived them again and were free to disagree. `result` holds
 
 The constraints this file holds the migration to:
 
-  - additive column only   — no DROP or RENAME of anything pre-existing
-  - nullable only          — no NOT NULL, no DEFAULT, no backfill. NULL means the
-                             run did not record its result, which is every row
-                             written before this revision, and that is a
-                             different claim from "the run measured nothing"
-  - one table touched      — eval_runs, nothing else
-  - `config` is left alone — the configuration a run asserts and the measurement
-                             it produced stay two columns
+  - additive column only:  no DROP or RENAME of anything pre-existing
+  - nullable only:         no NOT NULL, no DEFAULT, no backfill. NULL means the
+                           run did not record its result, which is every row
+                           written before this revision, and that is a
+                           different claim from "the run measured nothing"
+  - one table touched:     eval_runs, nothing else
+  - `config` is left alone: the configuration a run asserts and the measurement
+                           it produced stay two columns
   - downgrade drops only what upgrade added, every statement IF EXISTS
 
 APPLIED AND VERIFIED 2026-08-30 against the local `wchats_tenant_probe` cluster

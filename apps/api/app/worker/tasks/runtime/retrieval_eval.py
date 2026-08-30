@@ -543,7 +543,7 @@ def _scored_report(
     identity_row = _identity_row(faithfulness)
     try:
         _update_retrieval_metrics(conn_str, job_id, citation_coverage, faithfulness, identity_row)
-    except Exception as exc:  # noqa: BLE001 — never fail/retry an already-served turn
+    except Exception as exc:  # noqa: BLE001, never fail/retry an already-served turn
         log.warning("run_retrieval_faithfulness.update_failed", job_id=job_id, error=str(exc))
         return {}
 

@@ -534,7 +534,7 @@ class TestThePayloadRoundTrips:
         assert ABSENT_METRIC not in rebuilt.datasets["golden"].metrics
 
     def test_a_stored_payload_that_breaks_a_rule_is_refused_on_the_way_out(self):
-        """Already being written down is not evidence that a shape is honest."""
+        """A metric claiming `measured` over zero observations, in the row."""
         payload = _result().payload
         payload["datasets"]["golden"]["metrics"][UNMEASURED_METRIC]["measured"] = True
         with pytest.raises(InvalidEvalResult):
@@ -779,7 +779,7 @@ class TestAFailureNamesItsTurn:
         assert rebuilt.invocation.failed == 1
 
     def test_a_stored_failure_with_a_blank_message_is_refused_on_the_way_out(self):
-        """Already being written down is not evidence that a shape is honest."""
+        """A failure that names a turn and says nothing about it is refused."""
         payload = _result(
             invocation=_invocation(responded=3, scorable=3, failed=1),
             failures=[_failure()],

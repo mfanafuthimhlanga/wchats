@@ -6,7 +6,7 @@ De-xfailed in Phase 10-05. Tests cover:
     test_digest_beat_skips_when_disabled — run_weekly_digest_beat returns {dispatched:0} when DIGEST_ENABLED=False
     test_digest_idempotency_within_7d   — run_weekly_digest skips if digest_runs row exists within 7 days
 
-TestDigestFaithfulnessReadsTheRecord    — #51 slice 4: the number is lifted off
+TestDigestFaithfulnessReadsTheRecord.   #51 slice 4: the number is lifted off
     `eval_runs.result` through `run_level_metrics`, the digest names the dataset
     it quotes, and a run without a record prints "not measured".
 """

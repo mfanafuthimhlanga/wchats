@@ -5,7 +5,7 @@ De-xfailed in Phase 10-05. Tests cover:
     test_red_team_critical_triggers_alert   — critical findings >= threshold writes red_team_critical alert
     test_no_alert_when_thresholds_met       — metrics above threshold -> no new alert written
 
-TestLatestFaithfulnessReadsTheRecord     — #51 slice 4: the number is lifted off
+TestLatestFaithfulnessReadsTheRecord.    #51 slice 4: the number is lifted off
     `eval_runs.result` through `run_level_metrics`, never averaged here, and a
     run without a record reads as unmeasured rather than falling back to an
     older run that has a number.

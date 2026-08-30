@@ -13,13 +13,13 @@ historical verdict. These four columns put the decision on the row that made it.
 
 The constraints this file holds the migration to:
 
-  - additive columns only  — no DROP or RENAME of anything pre-existing
-  - nullable only          — no NOT NULL, no DEFAULT, no backfill. NULL is what
-                             every pre-0023 row honestly says, and for
-                             `binary_verdict` NULL is specifically not False
-  - one table touched      — eval_results, nothing else
-  - `eval_runs` is left alone — 0022's run record is a different grain and a
-                             rollback of either must not take the other with it
+  - additive columns only: no DROP or RENAME of anything pre-existing
+  - nullable only:         no NOT NULL, no DEFAULT, no backfill. NULL is what
+                           every pre-0023 row honestly says, and for
+                           `binary_verdict` NULL is specifically not False
+  - one table touched:     eval_results, nothing else
+  - `eval_runs` is left alone: 0022's run record is a different grain and a
+                           rollback of either must not take the other with it
   - downgrade drops only what upgrade added, every statement IF EXISTS
 
 APPLIED AND VERIFIED 2026-08-30 against the local `wchats_tenant_probe` cluster

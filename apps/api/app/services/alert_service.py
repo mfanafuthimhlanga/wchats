@@ -10,8 +10,8 @@ Sends plain-text email notification after each new alert (fire-and-forget).
 
 WHERE "LATEST FAITHFULNESS" COMES FROM (#51 slice 4). It used to be
 `AVG(er.score)` over the latest complete run's `eval_results` rows, joined here
-in this module's own SQL — a fourth derivation of a number the run had already
-computed, and one that pooled the golden and exploratory halves into a single
+in this module's own SQL. That was a fourth derivation of a number the run had
+already computed, and it pooled the golden and exploratory halves into a single
 mean. It is now lifted off `eval_runs.result`, the record `run_eval_suite`
 writes once at the end of its own body, through the same
 `run_level_metrics` rule the console route and the deploy gate read. Nothing
@@ -45,8 +45,8 @@ def latest_faithfulness_reading(
     number to quote. This function only owns the connection.
 
     (None, None) on any failure, because an alert that cannot read a measurement
-    must not invent one. Must query the tenant DB (not control DB) — eval_runs
-    only exists in per-tenant Neon DBs. conn_str must NOT be logged (CTL-08).
+    must not invent one. Must query the tenant DB, not the control DB, because
+    `eval_runs` only exists in per-tenant Neon DBs. conn_str must NOT be logged (CTL-08).
     """
     try:
         conn = psycopg2.connect(conn_str, connect_timeout=10)

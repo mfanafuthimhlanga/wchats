@@ -1241,7 +1241,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # the SCORES that are withheld, not the record.
         # ------------------------------------------------------------------
         # Annotated, because the two branches assign different literal types and
-        # the join would otherwise be dict[str, object] — which makes both
+        # the join would otherwise be dict[str, object], which makes both
         # `results["scores"]` and `results["judge_records"]` an `object` that
         # summarise_run_validity and write_eval_results reject.
         results: dict
@@ -1291,7 +1291,7 @@ def run_eval_suite(self, agent_id: str) -> dict:
         # deployment_service._fetch_eval_summary_sync recomputes them again, and
         # nothing held the three to each other. The record is built from the two
         # summaries above and stored on the run, and `_run_report` returns its
-        # payload — so this task cannot report a number the row does not hold.
+        # payload, so this task cannot report a number the row does not hold.
         #
         # The ledger read is what lets a run say what it cost, and it fails soft:
         # no rows means the cost is unknown, never that the run was free.

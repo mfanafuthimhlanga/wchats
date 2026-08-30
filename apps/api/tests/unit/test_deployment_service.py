@@ -780,7 +780,7 @@ def _make_eval_conn(run_row, record=None, raise_on=None):
     The function issues ONE statement: the latest run, selecting `result` beside
     `config`. The AVG/COUNT pair over `eval_results` went in #51 slice 4 and the
     per-scenario `COUNT(*) FILTER` went in the review pass, so this double serves
-    no result rows at all — a test that wants numbers passes a `record`, which is
+    no result rows at all. A test that wants numbers passes a `record`, which is
     where the run's numbers actually live.
 
     `run_row` is the five-column shape the collector selects: (id, finished_at,
@@ -1017,7 +1017,7 @@ class TestSignalCollectionFunctions:
         The selector took the newest eval_runs row with NO status filter, so for
         the whole duration of a run the gate read a 'running' row that has no
         record yet, returned an absent signal, and refused the deploy with "this
-        agent's answer quality has not been measured" — while a perfectly good
+        agent's answer quality has not been measured", while a perfectly good
         completed run sat one row below it. That window was minutes before D1/P2
         and is up to ninety per agent per night after it: the nightly beat fires
         at 02:00 UTC and drives up to sixty live turns at 90 s each.
@@ -1072,7 +1072,7 @@ class TestSignalCollectionFunctions:
 
 
 # ---------------------------------------------------------------------------
-# TestEvalSummaryD3 — the removed query and its distinguishable absence
+# TestEvalSummaryD3. The removed query and its distinguishable absence
 # ---------------------------------------------------------------------------
 
 
@@ -1083,7 +1083,7 @@ class TestEvalSummaryD3:
     columns are `metric` and `eval_run_id` raised UndefinedColumn on every
     invocation. The Celery task caught it, substituted `pass_rates: {}`, and the
     blocking condition "any eval metric pass_rate < 0.70" then evaluated over an
-    empty dict — which cannot fire.
+    empty dict, which cannot fire.
 
     The query itself is gone since #51 slice 4, and with it the column names that
     could be wrong. The discipline it forced is what these tests hold: a read
@@ -1124,7 +1124,7 @@ class TestEvalSummaryD3:
         assert any(w.warning_id == "eval_signal_unavailable" for w in warnings)
 
     def test_a_run_whose_record_measured_nothing_is_unknown_not_passing(self):
-        """Every metric unmeasured — a judge outage — is 'no_valid_scores'.
+        """Every metric unmeasured, which is a judge outage, is 'no_valid_scores'.
 
         Zero valid observations is unknown quality. Reporting it as an empty
         pass_rates dict would make a run that measured nothing satisfy "all eval
@@ -1173,7 +1173,7 @@ class TestEvalSummaryD3:
         on production, so `last_run_at` alone can describe a run that produced
         nothing. The status travels with it.
 
-        The status is admissibility in its own right — see
+        The status is admissibility in its own right. See
         TestFailedRunIsNotEvidence for the case that could not otherwise reach it.
         """
         mock_conn = _make_eval_conn(
@@ -1194,13 +1194,13 @@ class TestEvalSummaryD3:
 class TestTheRecordIsTheOnlyDenominator:
     """The attempted count is the RUN's, and now there is only one of it (#51).
 
-    `scenario_count` was COUNT(DISTINCT scenario_id) over eval_results — the
+    `scenario_count` was COUNT(DISTINCT scenario_id) over eval_results, the
     scenarios the judge came BACK about. write_eval_results only ever writes a
     row per score the judge produced, so a scenario the judge dropped entirely
     left no trace there: attempted could not exceed scored except in the all-NULL
-    case, and the orchestrator's instruction — "a pass rate over a handful of
-    scored scenarios out of many attempted is a weak signal and you must say so"
-    — compared two numbers derived from the same five rows.
+    case, and the orchestrator's instruction, "a pass rate over a handful of
+    scored scenarios out of many attempted is a weak signal and you must say
+    so", compared two numbers derived from the same five rows.
 
     The P2 fix read `config["dataset"]` when it was there and fell back to the
     results-derived floor when it was not, with a label saying which. Slice 4
@@ -1213,7 +1213,7 @@ class TestTheRecordIsTheOnlyDenominator:
 
         A run fetches 40 valid scenarios; a judge partial outage returns 5, all
         scored 0.95. Under the old collector the gate saw scenario_count=5,
-        scored=5, faithfulness=0.95 — a clean measurement of an agent whose other
+        scored=5, faithfulness=0.95: a clean measurement of an agent whose other
         35 scenarios were never scored at all.
         """
         outage = _record(
@@ -1298,7 +1298,7 @@ class TestTheRecordIsTheOnlyDenominator:
         assert any(w.warning_id == "eval_signal_unavailable" for w in warnings)
 
     def test_a_stored_record_that_breaks_a_rule_reads_as_absent(self):
-        """Already being written down is not evidence that a shape is honest."""
+        """A measured=False metric carrying a 0.9. The gate gets no record."""
         broken = _record().payload
         broken["datasets"]["exploratory"]["metrics"]["faithfulness"] = {
             "value": 0.9,
@@ -1564,7 +1564,7 @@ def _measured_eval(record=None) -> dict:
 
     D1/P3: `agent_invoked` is True because these tests are about the OTHER
     refusals, and the gate blocks every one of them without it. Before P2 the key
-    did not exist and this fixture WAS the shape of a tautological run — measured,
+    did not exist and this fixture WAS the shape of a tautological run: measured,
     clean, 0.92 faithfulness, and no agent anywhere near it.
     """
     return _eval_summary(
@@ -2469,7 +2469,7 @@ class TestFailedRunIsNotEvidence:
         THERE IS ONE LAYER NOW AND IT IS `_readings` (#51 slice 4). The refusal
         used to omit the `pass_rates=` argument AND _eval_summary nulled the
         rates outside EVAL_SIGNAL_MEASURED, so either layer alone kept this test
-        green and only removing both turned it red — recorded as one mutation in
+        green and only removing both turned it red. Recorded as one mutation in
         `.dev/reference/p3-review-mutation-proofs.md` rather than dressed up as
         two defences. The record now travels on every state, because the COUNTS
         have to, so suppression is a single decision taken in one place against
