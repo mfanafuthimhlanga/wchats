@@ -58,6 +58,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.domain.calibration_status import CalibrationStatus
+
 # ---------------------------------------------------------------------------
 # Helper: build a mock get_sync_db context manager
 # ---------------------------------------------------------------------------
@@ -77,8 +79,35 @@ def _deployment_patch(name, **kwargs):
     return patch("app.worker.tasks.runtime.deployment." + name, **kwargs)
 
 
+def _ship_verdict():
+    """A Verdict with no reasons, which is what `decide()` returns for a clean run."""
+    from app.domain.verdict import Outcome, Verdict
+
+    return Verdict(outcome=Outcome.SHIP)
+
+
+def _blocking_verdict(rule="absent_eval_measurement"):
+    """One blocking reason, and the Verdict that has to agree with it."""
+    from app.domain.verdict import Outcome, Reason, Verdict
+
+    return Verdict(
+        outcome=Outcome.BLOCK,
+        reasons=[
+            Reason(
+                rule=rule,
+                signal="the evaluation run's result",
+                observed="no evaluation result was recorded for this agent",
+                threshold=(
+                    "an evaluation must have run and reported before a deploy ships"
+                ),
+                outcome=Outcome.BLOCK,
+            )
+        ],
+    )
+
+
 @contextmanager
-def _past_step_3b(eval_status="complete", red_team_status="complete"):
+def _past_step_3b(eval_status="complete", red_team_status="complete", verdict=None):
     """Get a test past the sequencer without a tenant DB (#54).
 
     Step 3b dispatches both jobs and then polls the tenant DB until each has a
@@ -112,6 +141,16 @@ def _past_step_3b(eval_status="complete", red_team_status="complete"):
             )
         )
         stack.enter_context(_deployment_patch("_requeue_wait"))
+        # The decision is stubbed for the same reason the dispatches are: it
+        # opens two psycopg2 connections against a fake DSN, and a test whose
+        # subject is the ledger or the warning merge is not also a test of
+        # decide(). TestTheVerdictDrivesTheRecommendation drives the real one.
+        stack.enter_context(
+            _deployment_patch(
+                "_compute_verdict",
+                return_value=verdict if verdict is not None else _ship_verdict(),
+            )
+        )
         yield
 
 
@@ -997,8 +1036,14 @@ class TestEvidenceGateWiring:
             w["warning_id"] for w in mock_run.warnings
         ]
 
-    def test_measured_signals_leave_the_orchestrator_verdict_intact(self):
-        """The gate is a floor, not a second opinion."""
+    def test_measured_signals_leave_the_computed_verdict_intact(self):
+        """The gate is a floor, not a second opinion.
+
+        Renamed at #54: the verdict it is a floor under is the platform's, not
+        the orchestrator's. The assertion is unchanged, because what it always
+        tested is that a measured pair of signals produces no downgrade and no
+        warning of its own.
+        """
         result, mock_run = self._drive(
             _measured_eval_signal(), _measured_red_team_signal()
         )
@@ -1423,7 +1468,7 @@ def _sequenced_world(eval_polls, red_team_polls):
 
 
 def _drive_sequenced(
-    fetchers, collectors, *, ceiling_s=2700, mock_log=None, dispatch=None
+    fetchers, collectors, *, ceiling_s=2700, mock_log=None, dispatch=None, verdict=None
 ):
     """Run the real task to settlement, driving every continuation by hand.
 
@@ -1481,6 +1526,10 @@ def _drive_sequenced(
         _target("_fetch_blast_radius_sync", return_value=dict(_BLAST_RADIUS_FIXTURE)),
         _target("_compute_envelope_hash_sync", return_value="test-envelope-hash"),
         _target("_call_orchestrator_async", side_effect=_report),
+        _target(
+            "_compute_verdict",
+            return_value=verdict if verdict is not None else _ship_verdict(),
+        ),
         patch.object(settings, "CHECKLIST_WAIT_POLL_S", 0),
         patch.object(settings, "CHECKLIST_WAIT_CEILING_S", ceiling_s),
     ]
@@ -1715,6 +1764,7 @@ class TestTheWaitIsAChainOfMessages:
                 "_compute_envelope_hash_sync", return_value="test-envelope-hash"
             ),
             _deployment_patch("_call_orchestrator_async", side_effect=_report),
+            _deployment_patch("_compute_verdict", return_value=_ship_verdict()),
             patch.object(settings, "CHECKLIST_WAIT_CEILING_S", 2700),
             patch.object(settings, "CHECKLIST_WAIT_POLL_S", 10),
         ]
@@ -1839,8 +1889,480 @@ class TestTheWaitIsAChainOfMessages:
         assert "conn_str" not in json.dumps(kwargs["kwargs"])
 
 
+def _drive_with_verdict(
+    verdict,
+    *,
+    eval_summary=None,
+    red_team_summary=None,
+    orchestrator=None,
+    mock_log=None,
+    verified_qa=None,
+):
+    """Run the whole task once with the decision already made, and return what
+    it persisted.
+
+    The verdict is injected rather than derived, because these tests are about
+    what the task DOES with a decision. TestTheVerdictIsComputedFromTheRecords
+    below drives `_compute_verdict` itself.
+    """
+    from app.worker.tasks.runtime import deployment as deployment_task
+    from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+    agent_id = str(uuid.uuid4())
+    mock_db, mock_run = _build_full_happy_path_mock_db(str(uuid.uuid4()))
+
+    async def _ship_report(signals_json, result_container, *, ledger=None):
+        result_container["report"] = {
+            "summary": "All good.",
+            "warnings": [],
+        }
+
+    patches = [
+        _deployment_patch("get_sync_db", new=_make_sync_db_ctx(mock_db)),
+        _deployment_patch("fernet_decrypt", return_value="postgresql://test/tenant"),
+        _deployment_patch(
+            "_fetch_eval_summary_sync",
+            return_value=eval_summary if eval_summary else _measured_eval_signal(),
+        ),
+        _deployment_patch(
+            "_fetch_red_team_summary_sync",
+            return_value=(
+                red_team_summary if red_team_summary else _measured_red_team_signal()
+            ),
+        ),
+        _deployment_patch(
+            "_fetch_verified_qa_stats_sync",
+            return_value=verified_qa
+            or {"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+        ),
+        _deployment_patch(
+            "_fetch_corpus_stats_sync",
+            return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+        ),
+        _deployment_patch(
+            "_fetch_blast_radius_sync", return_value=dict(_BLAST_RADIUS_FIXTURE)
+        ),
+        _deployment_patch("_compute_envelope_hash_sync", return_value="hash"),
+        _deployment_patch(
+            "_call_orchestrator_async",
+            side_effect=orchestrator if orchestrator else _ship_report,
+        ),
+    ]
+    if mock_log is not None:
+        patches.append(patch.object(deployment_task, "log", mock_log))
+
+    with _past_step_3b(verdict=verdict), ExitStack() as stack:
+        for one in patches:
+            stack.enter_context(one)
+        result = run_deployment_checklist.run(agent_id=agent_id)
+
+    return result, mock_run
+
+
+class TestTheVerdictDrivesTheRecommendation:
+    """#54 criterion 1 and issue #36, asserted through what was PERSISTED.
+
+    The approve route reads `checklist_runs.recommendation`, so a decision that
+    is right in a return value and wrong in the column is a decision that does
+    not exist.
+    """
+
+    def test_a_blocking_verdict_is_the_persisted_recommendation(self):
+        result, mock_run = _drive_with_verdict(_blocking_verdict())
+
+        assert result["recommendation"] == "block"
+        assert mock_run.recommendation == "block"
+        assert mock_run.report["recommendation"] == "block"
+
+    def test_the_model_cannot_talk_the_platform_out_of_the_verdict(self):
+        """The scripted narration submits a contradictory recommendation, the way
+        a confident model would. It is not read, because submit_report has no
+        such field and the task never looks for one.
+
+        This is issue #36 in one assertion: until this release the deploy label
+        WAS whatever came out of that completion.
+        """
+
+        async def _contradicts(signals_json, result_container, *, ledger=None):
+            result_container["report"] = {
+                "recommendation": "ship",
+                "summary": "Everything looks great, ship it.",
+                "warnings": [],
+            }
+
+        result, mock_run = _drive_with_verdict(
+            _blocking_verdict(), orchestrator=_contradicts
+        )
+
+        assert result["recommendation"] == "block", (
+            "the model said ship over a blocking verdict and was believed"
+        )
+        assert mock_run.recommendation == "block"
+        assert mock_run.report["summary"] == "Everything looks great, ship it.", (
+            "the prose it wrote is still the prose the owner reads; only the "
+            "decision is not its to make"
+        )
+
+    def test_every_reason_lands_as_a_warning_carrying_its_slug_and_its_numbers(self):
+        _, mock_run = _drive_with_verdict(_blocking_verdict())
+
+        matching = [
+            w for w in mock_run.warnings if w["warning_id"] == "absent_eval_measurement"
+        ]
+        assert len(matching) == 1, (
+            f"a block with no stated reason is unexplained: {mock_run.warnings}"
+        )
+        assert "the evaluation run's result" in matching[0]["message"]
+        assert "no evaluation result was recorded" in matching[0]["message"]
+        assert "must have run and reported" in matching[0]["message"]
+
+    def test_the_verdict_payload_is_stored_on_the_report(self):
+        """Stored whole, so a later reader rebuilds the decision rather than the
+        one word it came to."""
+        from app.domain.verdict import Verdict
+
+        verdict = _blocking_verdict()
+        _, mock_run = _drive_with_verdict(verdict)
+
+        stored = mock_run.report["verdict"]
+        assert Verdict.from_payload(stored) == verdict, (
+            "the round trip IS the contract on this record"
+        )
+
+    def test_the_two_quality_warnings_ride_along_and_change_nothing(self):
+        """Ported from prompt prose at #54. They warn; the outcome is the
+        verdict's."""
+        result, mock_run = _drive_with_verdict(
+            _ship_verdict(),
+            verified_qa={"row_count": 4, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+            red_team_summary=dict(_measured_red_team_signal(), medium_count=5),
+        )
+
+        ids = [w["warning_id"] for w in mock_run.warnings]
+        assert "verified_qa_low_count" in ids
+        assert "red_team_medium_findings" in ids
+        assert result["recommendation"] == "ship", (
+            f"a warning must never move the outcome: {ids}"
+        )
+
+
+class TestTheNarrationIsOptional:
+    """#54 criterion 5. The verdict exists without the model."""
+
+    def test_an_orchestrator_timeout_still_persists_complete_with_the_verdict(self):
+        from app.services.deployment_service import NARRATION_UNAVAILABLE_SUMMARY
+
+        async def _times_out(signals_json, result_container, *, ledger=None):
+            raise TimeoutError()
+
+        result, mock_run = _drive_with_verdict(
+            _blocking_verdict(), orchestrator=_times_out
+        )
+
+        assert result["status"] == "complete", (
+            "a decision the platform already reached must not be thrown away "
+            f"because the write-up did not arrive: {result}"
+        )
+        assert mock_run.status == "complete"
+        assert result["recommendation"] == "block"
+        assert mock_run.report["summary"] == NARRATION_UNAVAILABLE_SUMMARY
+
+    def test_a_narration_that_never_called_the_tool_completes_the_same_way(self):
+        from app.services.deployment_service import NARRATION_UNAVAILABLE_SUMMARY
+
+        async def _says_nothing(signals_json, result_container, *, ledger=None):
+            return None
+
+        result, mock_run = _drive_with_verdict(
+            _ship_verdict(), orchestrator=_says_nothing
+        )
+
+        assert result["status"] == "complete"
+        assert result["recommendation"] == "ship"
+        assert mock_run.report["summary"] == NARRATION_UNAVAILABLE_SUMMARY
+
+    def test_the_fallback_summary_says_the_write_up_is_what_is_missing(self):
+        from app.services.deployment_service import NARRATION_UNAVAILABLE_SUMMARY
+
+        assert "could not be produced" in NARRATION_UNAVAILABLE_SUMMARY
+        assert "warnings" in NARRATION_UNAVAILABLE_SUMMARY, (
+            "the fallback has to point the owner at where the reasons are"
+        )
+
+    def test_the_rendered_verdict_reaches_the_narration_turn(self):
+        """The turn narrates a decision it is handed. If the verdict never
+        reached the signals blob, the model would be writing prose about a
+        recommendation it cannot see."""
+        captured = {}
+
+        async def _capture(signals_json, result_container, *, ledger=None):
+            captured.update(json.loads(signals_json))
+            result_container["report"] = {"summary": "ok", "warnings": []}
+
+        _drive_with_verdict(_blocking_verdict(), orchestrator=_capture)
+
+        assert captured["verdict"]["outcome"] == "block"
+        assert captured["verdict"]["reasons"][0]["observed"] == (
+            "no evaluation result was recorded for this agent"
+        )
+
+
+class TestTheEvidenceGateStaysAsTheFloor:
+    """#54 criterion 4. One way, and a disagreement is a defect signal."""
+
+    def test_an_unmeasured_signal_still_blocks_a_shipping_verdict(self):
+        from app.services.deployment_service import EVAL_SUMMARY_UNAVAILABLE_SIGNAL
+
+        result, mock_run = _drive_with_verdict(
+            _ship_verdict(), eval_summary=dict(EVAL_SUMMARY_UNAVAILABLE_SIGNAL)
+        )
+
+        assert result["recommendation"] == "block"
+        assert "eval_signal_unavailable" in [
+            w["warning_id"] for w in mock_run.warnings
+        ]
+
+    def test_the_disagreement_is_logged_loudly_and_never_resolved_quietly(self):
+        """decide() and the gate read one checklist through different windows.
+        When they differ, one of them is wrong about the same run, and the log
+        line is the defect report."""
+        from app.services.deployment_service import EVAL_SUMMARY_UNAVAILABLE_SIGNAL
+
+        mock_log = MagicMock()
+        _drive_with_verdict(
+            _ship_verdict(),
+            eval_summary=dict(EVAL_SUMMARY_UNAVAILABLE_SIGNAL),
+            mock_log=mock_log,
+        )
+
+        disagreements = [
+            call
+            for call in mock_log.error.call_args_list
+            if call.args
+            and call.args[0] == "run_deployment_checklist.evidence_gate_disagrees"
+        ]
+        assert len(disagreements) == 1, (
+            f"expected one disagreement line: {mock_log.error.call_args_list}"
+        )
+        kwargs = disagreements[0].kwargs
+        assert kwargs["verdict_outcome"] == "ship"
+        assert kwargs["gated_recommendation"] == "block"
+        assert kwargs["eval_signal"] == "unavailable"
+
+    def test_agreement_is_not_logged_as_a_disagreement(self):
+        mock_log = MagicMock()
+        _drive_with_verdict(_blocking_verdict(), mock_log=mock_log)
+
+        assert not [
+            call
+            for call in mock_log.error.call_args_list
+            if call.args
+            and call.args[0] == "run_deployment_checklist.evidence_gate_disagrees"
+        ], "the gate agreeing with decide() is the ordinary case"
+
+    def test_the_gate_can_never_upgrade_what_decide_refused(self):
+        """A floor, not a second opinion. Measured signals plus a blocking
+        verdict is the case where an upgrading gate would ship a refused run."""
+        result, _ = _drive_with_verdict(_blocking_verdict())
+
+        assert result["recommendation"] == "block"
+
+
+class TestTheVerdictIsComputedFromTheRecords:
+    """_compute_verdict itself: three records in, and nothing else."""
+
+    def _compute(self, statuses, eval_record=None, red_team_record=None, calibration=None):
+        from app.worker.tasks.runtime.deployment import _compute_verdict
+
+        state = {
+            "run_id": "run-1",
+            "since": "2026-08-30T12:00:00+00:00",
+            "started_at": "2026-08-30T12:00:00+00:00",
+            "statuses": statuses,
+            "eval_dispatched": True,
+            "red_team_dispatched": True,
+        }
+        with ExitStack() as stack:
+            stack.enter_context(
+                _deployment_patch("latest_eval_run_id_since", return_value="eval-1")
+            )
+            stack.enter_context(
+                _deployment_patch(
+                    "latest_red_team_run_id_since", return_value="red-1"
+                )
+            )
+            read_eval = stack.enter_context(
+                _deployment_patch("read_eval_result", return_value=eval_record)
+            )
+            read_red = stack.enter_context(
+                _deployment_patch("read_red_team_result", return_value=red_team_record)
+            )
+            stack.enter_context(
+                _deployment_patch(
+                    "load_calibration_status",
+                    return_value=calibration
+                    if calibration is not None
+                    else CalibrationStatus.absent("no_artifact"),
+                )
+            )
+            verdict = _compute_verdict("agent-1", "postgresql://test/t", state)
+        return verdict, read_eval, read_red
+
+    def test_a_half_the_wait_never_saw_finish_is_read_as_absent(self):
+        """The typed absent input. Not a zero, and not the pre-dispatch row."""
+        from app.domain.verdict import Outcome
+
+        verdict, read_eval, read_red = self._compute(
+            {"eval": "complete", "red_team": None}
+        )
+
+        assert read_red.call_count == 0, (
+            "a run the wait never saw finish has no record to read, and reaching "
+            "for the newest row of any vintage is what the boundary prevents"
+        )
+        assert verdict.outcome is Outcome.BLOCK
+        assert "absent_red_team_measurement" in [r.rule for r in verdict.reasons]
+
+    def test_a_terminal_half_is_read_by_the_id_of_the_run_that_was_awaited(self):
+        self._compute({"eval": "complete", "red_team": "failed"})[1].assert_called_once_with(
+            "eval-1", "postgresql://test/t"
+        )
+
+    def test_a_run_that_wrote_no_readable_record_blocks_exactly_as_a_missing_one(self):
+        """read_eval_result returns None for a NULL column, a pre-0022 tenant and
+        a payload that broke a construction rule. All three are unmeasured."""
+        from app.domain.verdict import Outcome
+
+        verdict, _, _ = self._compute({"eval": "complete", "red_team": "complete"})
+
+        assert verdict.outcome is Outcome.BLOCK
+        assert {"absent_eval_measurement", "absent_red_team_measurement"} <= {
+            r.rule for r in verdict.reasons
+        }
+
+    def test_the_block_on_high_setting_crosses_the_seam_as_the_caller_reads_it(self):
+        """app.domain may not import app.core.config, so this caller reads the
+        setting. A wired-in True would make the setting dead config."""
+        from app.core.config import settings
+        from app.worker.tasks.runtime import deployment as deployment_task
+
+        state = {
+            "run_id": "run-1",
+            "since": "2026-08-30T12:00:00+00:00",
+            "started_at": "2026-08-30T12:00:00+00:00",
+            "statuses": {"eval": None, "red_team": None},
+            "eval_dispatched": True,
+            "red_team_dispatched": True,
+        }
+        with patch.object(
+            deployment_task, "decide", return_value=_ship_verdict()
+        ) as decide, patch.object(
+            settings, "DEP_BLOCK_ON_HIGH_RED_TEAM", False
+        ), _deployment_patch(
+            "load_calibration_status", return_value=CalibrationStatus.absent("no_artifact")
+        ):
+            deployment_task._compute_verdict("agent-1", "postgresql://test/t", state)
+
+        assert decide.call_args.kwargs["block_on_high"] is False
+
+    def test_the_calibration_identity_comes_off_the_run_s_own_record(self):
+        """Run-level, and already None when the four metric routes disagree. A
+        payload with no record has no identity to ask about at all."""
+        from app.core.config import settings
+        from app.worker.tasks.runtime import deployment as deployment_task
+
+        state = {
+            "run_id": "run-1",
+            "since": "2026-08-30T12:00:00+00:00",
+            "started_at": "2026-08-30T12:00:00+00:00",
+            "statuses": {"eval": None, "red_team": None},
+            "eval_dispatched": True,
+            "red_team_dispatched": True,
+        }
+        with _deployment_patch(
+            "load_calibration_status",
+            return_value=CalibrationStatus.absent("no_artifact"),
+        ) as loader:
+            deployment_task._compute_verdict("agent-1", "postgresql://test/t", state)
+
+        assert loader.call_args.args == (settings.CALIBRATION_ARTIFACT_PATH, None)
+
+
+class TestATaskFailureBeforeTheVerdictStillFails:
+    """status='failed' is reserved for this, and only this (#54 criterion 5)."""
+
+    def test_a_record_read_that_raises_marks_the_run_failed(self):
+        from celery.exceptions import Retry
+
+        from app.worker.tasks.runtime.deployment import run_deployment_checklist
+
+        agent_id = str(uuid.uuid4())
+        mock_db, mock_run = _build_full_happy_path_mock_db(str(uuid.uuid4()))
+
+        with ExitStack() as stack:
+            stack.enter_context(_past_step_3b())
+            stack.enter_context(
+                _deployment_patch("get_sync_db", new=_make_sync_db_ctx(mock_db))
+            )
+            stack.enter_context(
+                _deployment_patch(
+                    "fernet_decrypt", return_value="postgresql://test/tenant"
+                )
+            )
+            stack.enter_context(
+                _deployment_patch(
+                    "_fetch_eval_summary_sync", return_value=_measured_eval_signal()
+                )
+            )
+            stack.enter_context(
+                _deployment_patch(
+                    "_fetch_red_team_summary_sync",
+                    return_value=_measured_red_team_signal(),
+                )
+            )
+            stack.enter_context(
+                _deployment_patch(
+                    "_fetch_verified_qa_stats_sync",
+                    return_value={"row_count": 60, "avg_faithfulness": 0.9, "avg_relevance": 0.9},
+                )
+            )
+            stack.enter_context(
+                _deployment_patch(
+                    "_fetch_corpus_stats_sync",
+                    return_value={"document_count": 5, "chunk_count": 100, "last_ingested_at": None},
+                )
+            )
+            stack.enter_context(
+                _deployment_patch(
+                    "_fetch_blast_radius_sync", return_value=dict(_BLAST_RADIUS_FIXTURE)
+                )
+            )
+            stack.enter_context(
+                _deployment_patch("_compute_envelope_hash_sync", return_value="hash")
+            )
+            # Re-patched INSIDE _past_step_3b's stub, so the real one is what
+            # raises. The helper stubs it to keep every other test off a socket.
+            stack.enter_context(
+                _deployment_patch(
+                    "_compute_verdict", side_effect=RuntimeError("tenant DB unreachable")
+                )
+            )
+            try:
+                run_deployment_checklist.run(agent_id=agent_id)
+            except (Retry, RuntimeError):
+                pass
+
+        assert mock_run.status == "failed", (
+            "the decision was never reached, so there is nothing to complete on"
+        )
+
+
 class TestTheRunStatusReaders:
-    """The two queries the wait polls, against a cursor double."""
+    """The two queries the wait polls, against a cursor double.
+
+    One statement answers both questions the checklist asks of a run: `status`
+    for the poll, `id` for the record read once the wait settles.
+    """
 
     def _read(self, reader, row):
         mock_cursor = MagicMock()
@@ -1867,7 +2389,7 @@ class TestTheRunStatusReaders:
         from app.services.deployment_service import latest_eval_run_status_since
 
         since = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
-        status, call = self._read(latest_eval_run_status_since, ("complete",))
+        status, call = self._read(latest_eval_run_status_since, ("run-1", "complete"))
 
         assert status == "complete"
         sql, params = call.args
@@ -1885,7 +2407,7 @@ class TestTheRunStatusReaders:
         from app.services.deployment_service import latest_red_team_run_status_since
 
         since = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
-        status, call = self._read(latest_red_team_run_status_since, ("failed",))
+        status, call = self._read(latest_red_team_run_status_since, ("run-9", "failed"))
 
         assert status == "failed"
         sql, params = call.args
@@ -1906,6 +2428,38 @@ class TestTheRunStatusReaders:
         status, _ = self._read(latest_eval_run_status_since, None)
 
         assert status is None
+
+    def test_the_readers_answer_the_same_row_by_id_and_by_status(self):
+        """The record the checklist reads has to belong to the run it awaited.
+
+        Reading the newest eval run of ANY vintage is what the whole `since`
+        boundary exists to prevent, and the id reader has to carry the same
+        boundary or the record would come from a different run than the status
+        the wait observed.
+        """
+        from app.services.deployment_service import (
+            latest_eval_run_id_since,
+            latest_red_team_run_id_since,
+        )
+
+        since = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+        run_id, call = self._read(latest_eval_run_id_since, ("run-1", "complete"))
+        assert run_id == "run-1"
+        sql, params = call.args
+        assert "started_at >= %s" in sql
+        assert params == ("m6:agent-1", since)
+
+        run_id, call = self._read(latest_red_team_run_id_since, ("run-9", "failed"))
+        assert run_id == "run-9"
+        assert call.args[1] == ("m7:agent-1", since)
+
+    def test_no_row_reads_as_no_id_rather_than_an_empty_string(self):
+        """None is what the record readers are never called with."""
+        from app.services.deployment_service import latest_eval_run_id_since
+
+        run_id, _ = self._read(latest_eval_run_id_since, None)
+
+        assert run_id is None
 
     def test_an_unreachable_tenant_db_reads_as_none_rather_than_raising(self):
         """A read failure mid-wait must not fail a checklist that still owes the

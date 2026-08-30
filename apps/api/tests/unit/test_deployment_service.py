@@ -70,6 +70,8 @@ from app.domain.judge_identity import JudgeIdentity
 from app.services.calibration_service import SUMMARY_KEYS
 from app.services.deployment_service import (
     _DEPLOYMENT_SYSTEM_PROMPT,
+    _TOOL_SUBMIT_REPORT,
+    _VERDICT_WARNING_CATEGORIES,
     COVERAGE_SOURCE_CURRENT_BUILD,
     COVERAGE_SOURCE_RUN,
     DENOMINATOR_SOURCE_EVAL_RECORD,
@@ -90,6 +92,7 @@ from app.services.deployment_service import (
     RED_TEAM_SIGNAL_RUN_FAILED,
     RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL,
     SUBMIT_REPORT_TOOL_NAME,
+    VERDICT_WARNING_CATEGORY_UNMAPPED,
     DeploymentReport,
     DeploymentWarning,
     _compute_envelope_hash_sync,
@@ -100,11 +103,14 @@ from app.services.deployment_service import (
     _resolve_blast_radius_thresholds,
     apply_signal_evidence_gate,
     derive_blast_radius_warnings,
+    derive_quality_warnings,
     eval_summary_did_not_finish,
     poll_terminal_statuses,
     red_team_summary_did_not_finish,
+    render_verdict,
     run_orchestrator,
     stored_run_records_agent_invocation,
+    verdict_warnings,
 )
 
 # ---------------------------------------------------------------------------
@@ -695,23 +701,73 @@ class TestDeploymentReport:
 # ---------------------------------------------------------------------------
 
 
+def _absent_calibration():
+    """How an unread calibration artifact reaches decide(). Never None."""
+    from app.domain.calibration_status import CalibrationStatus
+
+    return CalibrationStatus.absent("no_artifact")
+
+
 class TestBlockingConditions:
-    """Tests for blocking condition logic documented in _DEPLOYMENT_SYSTEM_PROMPT (DEP-03)."""
+    """DEP-03's blocking conditions, asserted where they are now enforced (#54).
 
-    def test_block_when_deployment_blocked_true(self):
-        """_DEPLOYMENT_SYSTEM_PROMPT documents the deployment_blocked == True gate (DEP-03)."""
-        assert "deployment_blocked" in _DEPLOYMENT_SYSTEM_PROMPT, (
-            "_DEPLOYMENT_SYSTEM_PROMPT must reference 'deployment_blocked' blocking condition"
-        )
-        assert "high_count" in _DEPLOYMENT_SYSTEM_PROMPT, (
-            "_DEPLOYMENT_SYSTEM_PROMPT must reference DEP_BLOCK_ON_HIGH_RED_TEAM / high_count logic"
+    These three used to be pinned as substrings of _DEPLOYMENT_SYSTEM_PROMPT,
+    which is where they were also enforced: the model read the numbers and
+    returned a `recommendation`. That is issue #36, and criterion 2 of ticket 17
+    is that the prompt quotes no threshold at all. So the conditions are
+    unchanged and the observation moved to the Python that acts on them.
+    """
+
+    def test_the_prompt_quotes_no_threshold_at_all(self):
+        """Criterion 2. A threshold in a prompt is a second copy that drifts, and
+        the copy a deploy acts on would be whichever the model happened to
+        quote."""
+        for literal in ("0.85", "0.70", ">= 50", "0.90"):
+            assert literal not in _DEPLOYMENT_SYSTEM_PROMPT, (
+                f"{literal} is still in the orchestrator prompt. Every number the "
+                "decision turns on lives on a constant in app.domain.verdict."
+            )
+
+    def test_a_deployment_blocked_result_blocks_in_python(self):
+        summary = _measured_red_team(deployment_blocked=True)
+
+        recommendation, warnings = apply_signal_evidence_gate(
+            "ship", _measured_eval(), summary
         )
 
-    def test_block_on_low_eval_metric(self):
-        """_DEPLOYMENT_SYSTEM_PROMPT documents the 0.70 eval threshold (DEP-03)."""
-        assert "0.70" in _DEPLOYMENT_SYSTEM_PROMPT, (
-            "_DEPLOYMENT_SYSTEM_PROMPT must document the 0.70 eval pass_rate threshold"
+        assert recommendation == "block"
+        assert "red_team_critical_finding" in [w.warning_id for w in warnings]
+
+    def test_an_open_high_finding_blocks_in_python_while_the_setting_says_so(self):
+        summary = _measured_red_team(high_count=4)
+
+        with patch.object(settings, "DEP_BLOCK_ON_HIGH_RED_TEAM", True):
+            recommendation, warnings = apply_signal_evidence_gate(
+                "ship", _measured_eval(), summary
+            )
+
+        assert recommendation == "block"
+        assert "red_team_high_finding" in [w.warning_id for w in warnings]
+
+    def test_a_low_exploratory_pass_rate_blocks_in_the_rule_table(self):
+        """The 0.70 the prompt used to quote is EXPLORATORY_BLOCK_UPPER, and it
+        is a Wilson upper bound rather than a point estimate now."""
+        from app.domain.verdict import EXPLORATORY_BLOCK_UPPER, Outcome, decide
+
+        record = _record(
+            datasets={
+                "exploratory": _outcome(
+                    attempted=40, valid=40, scored=40, failed=20,
+                    faithfulness=0.5, answer_relevancy=0.5,
+                )
+            }
         )
+
+        verdict = decide(record, None, _absent_calibration(), block_on_high=True)
+
+        assert verdict.outcome is Outcome.BLOCK
+        assert "exploratory_ci_blocks" in [r.rule for r in verdict.reasons]
+        assert EXPLORATORY_BLOCK_UPPER == 0.70
 
 
 # ---------------------------------------------------------------------------
@@ -1593,15 +1649,21 @@ def _measured_eval(record=None) -> dict:
     )
 
 
-def _measured_red_team(coverage_complete=True) -> dict:
+def _measured_red_team(
+    coverage_complete=True,
+    *,
+    deployment_blocked=False,
+    high_count=0,
+    medium_count=0,
+) -> dict:
     return {
         "signal": RED_TEAM_SIGNAL_MEASURED,
         "signal_detail": None,
         "last_run_at": "2026-05-23T03:00:00",
-        "deployment_blocked": False,
+        "deployment_blocked": deployment_blocked,
         "critical_count": 0,
-        "high_count": 0,
-        "medium_count": 0,
+        "high_count": high_count,
+        "medium_count": medium_count,
         "low_count": 0,
         "vectors_attempted": 7,
         "vectors_valid": 7 if coverage_complete else 3,
@@ -3130,6 +3192,200 @@ class TestPollTerminalStatuses:
             "the returned mapping is keyed by the fetchers, never by whatever "
             "an older state happened to carry"
         )
+
+
+def _reason(rule="golden_failure", outcome=None, **over):
+    from app.domain.verdict import Outcome, Reason
+
+    fields = {
+        "rule": rule,
+        "signal": "the fixed golden scenario set",
+        "observed": "3 of 12 golden scenarios did not pass",
+        "threshold": "every golden scenario must pass before a deploy ships",
+        "outcome": outcome if outcome is not None else Outcome.BLOCK,
+    }
+    fields.update(over)
+    return Reason(**fields)
+
+
+class TestAVerdictReachesTheOwnerAsWarnings:
+    """Criterion 4: 'block' never arrives unexplained."""
+
+    def test_a_reason_renders_its_slug_its_observation_and_its_bar(self):
+        """All three, because a refusal missing any one of them is unactionable.
+        The slug is what a console groups and acknowledges on; the observation is
+        what happened; the bar is what would have to change."""
+        from app.domain.verdict import Outcome, Verdict
+
+        verdict = Verdict(outcome=Outcome.BLOCK, reasons=[_reason()])
+
+        warnings = verdict_warnings(verdict)
+
+        assert len(warnings) == 1
+        warning = warnings[0]
+        assert warning.warning_id == "golden_failure", (
+            "the warning_id IS the rule slug, so grouping on the rule and "
+            "acknowledging the warning are the same key"
+        )
+        assert "the fixed golden scenario set" in warning.message
+        assert "3 of 12 golden scenarios did not pass" in warning.message
+        assert "every golden scenario must pass before a deploy ships" in warning.message
+        assert warning.category == "eval_quality"
+        assert warning.severity_level == "warning"
+
+    def test_a_warning_reason_is_carried_too_not_only_a_blocking_one(self):
+        """A ship_with_warnings whose reasons were dropped is a launch approved
+        over concerns nobody was shown."""
+        from app.domain.verdict import Outcome, Verdict
+
+        verdict = Verdict(
+            outcome=Outcome.SHIP_WITH_WARNINGS,
+            reasons=[
+                _reason(
+                    rule="exploratory_ci_inconclusive",
+                    outcome=Outcome.SHIP_WITH_WARNINGS,
+                    provisional=True,
+                )
+            ],
+        )
+
+        assert [w.warning_id for w in verdict_warnings(verdict)] == [
+            "exploratory_ci_inconclusive"
+        ]
+
+    def test_every_rule_the_table_can_produce_has_a_category(self):
+        """A security rule filed under 'eval_quality' would read as a quality
+        finding whatever it was about, so the gap has to be visible instead."""
+        from app.domain import verdict as verdict_module
+
+        slugs = set()
+        for name in dir(verdict_module):
+            if name.startswith("_rule_"):
+                slugs.add(name[len("_rule_"):])
+        # The rule table's function names are not all one-to-one with slugs
+        # (`_rule_exploratory_ci` emits two), so the assertion is the other way
+        # round: every mapped slug is real, and nothing maps to the unmapped
+        # placeholder.
+        assert VERDICT_WARNING_CATEGORY_UNMAPPED not in set(
+            _VERDICT_WARNING_CATEGORIES.values()
+        )
+        assert len(_VERDICT_WARNING_CATEGORIES) == 12, (
+            "RULE_VERSION 2 has twelve slugs across eleven rule functions"
+        )
+        assert slugs, "the rule table stopped being discoverable by name"
+
+    def test_a_rule_this_build_does_not_know_lands_somewhere_visible(self):
+        from app.domain.verdict import Outcome, Verdict
+
+        verdict = Verdict(
+            outcome=Outcome.BLOCK, reasons=[_reason(rule="a_rule_from_the_future")]
+        )
+
+        assert verdict_warnings(verdict)[0].category == (
+            VERDICT_WARNING_CATEGORY_UNMAPPED
+        )
+
+
+class TestTheVerdictHandedToTheNarration:
+    """render_verdict: the outcome and the reason sentences, and no numbers to
+    re-derive."""
+
+    def test_it_carries_the_outcome_and_each_reason_in_words(self):
+        from app.domain.verdict import Outcome, Verdict
+
+        rendered = render_verdict(
+            Verdict(outcome=Outcome.BLOCK, reasons=[_reason()])
+        )
+
+        assert rendered["outcome"] == "block"
+        assert rendered["rule_version"] >= 1
+        assert rendered["reasons"] == [
+            {
+                "signal": "the fixed golden scenario set",
+                "observed": "3 of 12 golden scenarios did not pass",
+                "threshold": "every golden scenario must pass before a deploy ships",
+                "outcome": "block",
+                "provisional": False,
+            }
+        ]
+
+    def test_it_leaves_the_rule_slug_off(self):
+        """The slug is a machine key. In a model's context it is one more token
+        to quote at an owner."""
+        from app.domain.verdict import Outcome, Verdict
+
+        rendered = render_verdict(Verdict(outcome=Outcome.BLOCK, reasons=[_reason()]))
+
+        assert "rule" not in rendered["reasons"][0]
+
+    def test_it_is_json_the_signals_blob_can_carry(self):
+        from app.domain.verdict import Outcome, Verdict
+
+        rendered = render_verdict(Verdict(outcome=Outcome.SHIP))
+
+        assert json.loads(json.dumps(rendered))["outcome"] == "ship"
+
+
+class TestTheReportToolTakesNoDecision:
+    """#54 criterion 2, on the tool rather than the prose."""
+
+    def test_submit_report_has_no_recommendation_field(self):
+        """A field the model can fill is a field the model can fill wrongly, and
+        the checklist would then hold two answers to one question."""
+        schema = _TOOL_SUBMIT_REPORT["input_schema"]
+
+        assert "recommendation" not in schema["properties"], (
+            "the deploy decision is decide()'s, and the tool must not offer the "
+            "model a place to put a different one"
+        )
+        assert "recommendation" not in schema["required"]
+        assert sorted(schema["required"]) == ["summary", "warnings"]
+
+
+class TestTheTwoWarningsDecideCannotSee:
+    """derive_quality_warnings: ported from prompt prose, deterministic, never
+    blocking."""
+
+    def test_a_thin_verified_corpus_warns(self):
+        warnings = derive_quality_warnings({"row_count": 12}, _measured_red_team())
+
+        assert [w.warning_id for w in warnings] == ["verified_qa_low_count"]
+        assert "12" in warnings[0].message
+        assert warnings[0].category == "knowledge_depth"
+
+    def test_a_full_verified_corpus_does_not(self):
+        assert (
+            derive_quality_warnings({"row_count": 50}, _measured_red_team()) == []
+        ), "the floor is 'fewer than', so exactly the floor is enough"
+
+    def test_open_medium_findings_over_the_line_warn(self):
+        warnings = derive_quality_warnings(
+            {"row_count": 60}, _measured_red_team(medium_count=3)
+        )
+
+        assert [w.warning_id for w in warnings] == ["red_team_medium_findings"]
+        assert "3" in warnings[0].message
+
+    def test_exactly_the_line_does_not_warn(self):
+        assert (
+            derive_quality_warnings(
+                {"row_count": 60}, _measured_red_team(medium_count=2)
+            )
+            == []
+        )
+
+    def test_a_medium_count_from_an_unmeasured_run_is_not_read(self):
+        """The counts are null outside 'measured', and `None > 2` is not a
+        comparison anyone meant to make. A run nobody read has no findings to
+        be under a line."""
+        unmeasured = dict(RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL)
+        unmeasured["medium_count"] = 9
+
+        assert derive_quality_warnings({"row_count": 60}, unmeasured) == []
+
+    def test_a_row_count_that_is_not_a_number_is_not_read_as_a_small_one(self):
+        assert derive_quality_warnings({"row_count": None}, _measured_red_team()) == []
+        assert derive_quality_warnings({}, _measured_red_team()) == []
 
 
 # ---------------------------------------------------------------------------

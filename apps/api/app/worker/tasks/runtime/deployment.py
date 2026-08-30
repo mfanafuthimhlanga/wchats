@@ -67,11 +67,14 @@ from app.core.config import settings
 from app.core.database import get_sync_db
 from app.core.model_client import LedgerContext, ledger_recorder
 from app.core.security import fernet_decrypt
+from app.domain.verdict import Outcome, Verdict, decide
 from app.models.agent import Agent
 from app.models.checklist_run import ChecklistRun
+from app.services.calibration_service import load_calibration_status
 from app.services.deployment_service import (
     BLAST_RADIUS_DEFAULT_SIGNAL,
     EVAL_SUMMARY_UNAVAILABLE_SIGNAL,
+    NARRATION_UNAVAILABLE_SUMMARY,
     RED_TEAM_SUMMARY_UNAVAILABLE_SIGNAL,
     DeploymentReport,
     _compute_envelope_hash_sync,
@@ -83,12 +86,19 @@ from app.services.deployment_service import (
     _fetch_verified_qa_stats_sync,
     apply_signal_evidence_gate,
     derive_blast_radius_warnings,
+    derive_quality_warnings,
     eval_summary_did_not_finish,
+    latest_eval_run_id_since,
     latest_eval_run_status_since,
+    latest_red_team_run_id_since,
     latest_red_team_run_status_since,
     poll_terminal_statuses,
     red_team_summary_did_not_finish,
+    render_verdict,
+    verdict_warnings,
 )
+from app.services.eval_service import read_eval_result
+from app.services.red_team_service import read_red_team_result
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger(__name__)
@@ -442,6 +452,231 @@ def _envelope_hash(agent_id: str) -> str | None:
     )
 
 
+def _awaited_record(status, read_id, read_record, agent_id: str, conn_str: str, since):
+    """The record ONE awaited run left behind, or None. Never a substitute.
+
+    Three ways to reach None and all three read the same to `decide()`: the wait
+    never saw this half reach terminal, no row exists at or after the dispatch
+    boundary, or the run wrote no readable record. Every one of them is an
+    unmeasured run, which blocks under `absent_eval_measurement` or
+    `absent_red_team_measurement`. THE TYPED ABSENT INPUT IS THE WHOLE POINT: a
+    caller that filled the counts in itself would turn an unread run into a clean
+    one, and a caller that reached for the newest row of any vintage would grade
+    last night's.
+    """
+    if status is None:
+        return None
+    run_id = read_id(agent_id, conn_str, since)
+    return None if run_id is None else read_record(run_id, conn_str)
+
+
+def _awaited_records(agent_id: str, conn_str: str, state: dict) -> tuple:
+    """(eval record, red-team record) for the two runs this checklist sequenced."""
+    since = datetime.fromisoformat(state["since"])
+    return (
+        _awaited_record(
+            state["statuses"]["eval"],
+            latest_eval_run_id_since,
+            read_eval_result,
+            agent_id,
+            conn_str,
+            since,
+        ),
+        _awaited_record(
+            state["statuses"]["red_team"],
+            latest_red_team_run_id_since,
+            read_red_team_result,
+            agent_id,
+            conn_str,
+            since,
+        ),
+    )
+
+
+def _compute_verdict(agent_id: str, conn_str: str, state: dict) -> Verdict:
+    """THE deployment decision (#54, closes #36). Three records in, one Verdict out.
+
+    THIS IS WHERE THE RECOMMENDATION IS DECIDED, and it is decided before the
+    model is asked anything. `decide()` is pure and every threshold it turns on
+    lives on a constant in `app.domain.verdict`, so the outcome does not depend
+    on a completion, on a prompt revision or on which number a model happened to
+    quote. The Orchestrator's turn is handed the finished Verdict and writes
+    prose from it.
+
+    `block_on_high` is the one piece of configuration that crosses the seam.
+    `app.domain` may not import `app.core.config` (the import-linter layers
+    contract), so this caller reads the setting and passes the answer in, and the
+    Verdict records which way it was set in the `high_breach` reason's threshold
+    sentence.
+
+    The calibration identity comes off the eval record, exactly as
+    `_calibration_block` takes it: `judge_identity` is run-level and is already
+    None when the four metric routes disagree, and no record has no identity to
+    ask about at all. Both reach the loader as None and come back as
+    `not_calibrated_yet` with reason `no_single_judge_identity`, which blocks.
+    """
+    eval_record, red_team_record = _awaited_records(agent_id, conn_str, state)
+    calibration = load_calibration_status(
+        settings.CALIBRATION_ARTIFACT_PATH,
+        eval_record.judge_identity if eval_record is not None else None,
+    )
+    verdict = decide(
+        eval_record,
+        red_team_record,
+        calibration,
+        block_on_high=settings.DEP_BLOCK_ON_HIGH_RED_TEAM,
+    )
+    log.info(
+        "run_deployment_checklist.verdict",
+        agent_id=agent_id,
+        outcome=Outcome(verdict.outcome).value,
+        rules=[reason.rule for reason in verdict.reasons],
+        rule_version=verdict.rule_version,
+        eval_record=eval_record is not None,
+        red_team_record=red_team_record is not None,
+    )
+    return verdict
+
+
+def _floor_under_the_verdict(
+    agent_id: str, run_id: str, verdict: Verdict, eval_summary: dict, red_team_summary: dict
+) -> tuple[str, list]:
+    """apply_signal_evidence_gate, run on the computed outcome. One-way, always.
+
+    THE GATE STAYS, AND IT STAYS ONE-WAY (#54). It reads the collector payloads
+    where `decide()` reads the runs' own frozen records, so the two look at the
+    same checklist through different windows and either can see something the
+    other cannot. The gate can make the outcome more conservative and can never
+    make it less: `ship` over an absent signal becomes `block`, and a `block`
+    is never softened.
+
+    A DISAGREEMENT IS LOGGED LOUDLY AND IS NEVER RESOLVED QUIETLY. If the gate
+    downgrades what `decide()` reached, one of the two is wrong about the same
+    run: either the rule table missed an absence the collector caught, or the
+    collector is reading a state the record does not carry. The conservative
+    answer stands so the deploy fails closed, and the log line is the defect
+    report. It is `log.error` rather than `log.warning` because nothing about it
+    is routine.
+    """
+    outcome = Outcome(verdict.outcome).value
+    gated, warnings = apply_signal_evidence_gate(
+        outcome, eval_summary, red_team_summary
+    )
+    if gated != outcome:
+        log.error(
+            "run_deployment_checklist.evidence_gate_disagrees",
+            agent_id=agent_id,
+            run_id=run_id,
+            verdict_outcome=outcome,
+            gated_recommendation=gated,
+            verdict_rules=[reason.rule for reason in verdict.reasons],
+            eval_signal=eval_summary.get("eval_signal"),
+            red_team_signal=red_team_summary.get("signal"),
+            detail=(
+                "decide() and the evidence gate read one checklist and reached "
+                "different answers. The more conservative one is persisted; the "
+                "disagreement is a defect in one of them, not a resolution."
+            ),
+        )
+    return gated, warnings
+
+
+def _merge_warnings(narrated: list, derived: list) -> list:
+    """The model's warnings, plus every derived one it did not already raise.
+
+    De-duplicated by warning_id so a narration that happens to use a derived
+    slug cannot produce two rows the owner has to acknowledge twice. That keeps
+    POST /checklist-runs/{run_id}/acknowledge, which validates submitted ids
+    against run.warnings, working unchanged for every new id.
+
+    APPENDED, NEVER REPLACING. Whatever forced the outcome must be visible to the
+    owner as a warning with a stated reason, or 'block' arrives unexplained.
+    """
+    merged = list(narrated)
+    seen = {warning.warning_id for warning in merged}
+    for warning in derived:
+        if warning.warning_id not in seen:
+            merged.append(warning)
+            seen.add(warning.warning_id)
+    return merged
+
+
+def _narration(agent_id: str, run_id: str, result_container: dict) -> tuple[str, list]:
+    """The model's summary and warnings, or the fixed fallback. Step 5's output.
+
+    A FAILED OR TIMED-OUT NARRATION NO LONGER FAILS THE CHECKLIST (#54). The
+    verdict was computed before this turn ran and does not depend on it, so
+    persisting 'failed' here would throw away a decision the platform had already
+    reached and would leave the owner with nothing. What is missing is the prose,
+    and the fallback summary says so in as many words.
+    """
+    report_data = result_container.get("report")
+    if report_data:
+        return report_data.get("summary", ""), report_data.get("warnings", [])
+    log.error(
+        "run_deployment_checklist.narration_unavailable",
+        agent_id=agent_id,
+        run_id=run_id,
+        detail="the verdict stands; the owner-facing write-up is the fallback",
+    )
+    return NARRATION_UNAVAILABLE_SUMMARY, []
+
+
+def _persist_failed(agent_id: str, run_id: str, exc: Exception) -> None:
+    """Mark the run failed, and never let that write hide the original failure."""
+    log.error(
+        "run_deployment_checklist.failed",
+        agent_id=agent_id,
+        run_id=run_id,
+        error_type=type(exc).__name__,
+        error=str(exc) or repr(exc),
+    )
+    try:
+        with get_sync_db() as db:
+            run_obj = db.get(ChecklistRun, run_id)
+            if run_obj:
+                run_obj.status = "failed"
+                db.commit()
+    except Exception as update_exc:
+        log.warning(
+            "run_deployment_checklist.update_failed_status_error",
+            agent_id=agent_id,
+            run_id=run_id,
+            error=str(update_exc),
+        )
+
+
+def _persist_complete(
+    run_id: str, report, signals: dict, verdict: Verdict, envelope_hash, warnings: list
+) -> None:
+    """One transaction: status, recommendation, report, warnings and the hash.
+
+    BLR-02: the hash lands with the rest. Acknowledgement (the sibling timestamp
+    column) is never stamped here, because that is the owner's act at approve
+    time rather than the platform's at checklist time.
+
+    The Verdict's own payload rides on the report under 'verdict', so a console
+    or a later reader can rebuild the decision with `Verdict.from_payload` and
+    see every rule that produced it rather than the one word it came to.
+    """
+    with get_sync_db() as db:
+        run_obj = db.get(ChecklistRun, run_id)
+        if run_obj is None:
+            return
+        run_obj.status = "complete"
+        run_obj.recommendation = report.recommendation
+        run_obj.report = {
+            **signals,
+            "verdict": verdict.payload,
+            "summary": report.summary,
+            "recommendation": report.recommendation,
+        }
+        run_obj.warnings = [warning.model_dump() for warning in warnings]
+        run_obj.envelope_hash = envelope_hash
+        db.commit()
+        db.refresh(run_obj)
+
+
 @celery_app.task(
     bind=True,
     acks_late=True,
@@ -480,10 +715,17 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
            never reached terminal is NOT collected: its `did_not_finish` payload
            is substituted, because the collector would answer about some other
            run.
-        5. Call run_orchestrator via asyncio.run(asyncio.wait_for(...)) bridge.
-        6. Parse result and UPDATE checklist_runs to status='complete', persisting
-           the envelope hash alongside status/recommendation/report/warnings.
-        7. On exception: UPDATE checklist_runs to status='failed'; retry if possible.
+        4b. Read both runs' frozen records and the Judge's calibration status,
+           and call decide(). THE RECOMMENDATION IS DECIDED HERE, before any
+           model is asked anything.
+        5. Ask the Orchestrator to narrate the verdict, under
+           ORCHESTRATOR_TIMEOUT_S. A failure or timeout costs the prose and
+           nothing else.
+        6. UPDATE checklist_runs to status='complete', persisting the verdict's
+           outcome as the recommendation, the verdict payload on the report, and
+           every reason as a warning beside the envelope hash.
+        7. On the task's OWN exception: UPDATE to status='failed'; retry if
+           possible. Never for a narration that did not arrive.
 
     Args:
         agent_id: UUID string of the agent to check.
@@ -593,16 +835,34 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
     signals = _collect_signals(agent_id, conn_str, state, waited_s)
     eval_summary = signals["eval_summary"]
     red_team_summary = signals["red_team_summary"]
-    verified_qa_stats = signals["verified_qa_stats"]
-    corpus_stats = signals["corpus_stats"]
-    blast_radius = signals["blast_radius"]
     envelope_hash = _envelope_hash(agent_id)
 
     # ------------------------------------------------------------------
-    # Step 5 - the orchestrator's turn, under ORCHESTRATOR_TIMEOUT_S. The shim
-    # awaits the service's loop; run_orchestrator would nest a second asyncio.run.
+    # Step 4b — THE DECISION (#54 criterion 3, closes #36). Computed here, from
+    # the two runs' own frozen records and the Judge's calibration status, before
+    # anything is asked of a model. Everything after this narrates it.
     # ------------------------------------------------------------------
-    signals_json = json.dumps(signals)
+    # Inside the step 7 try because a record read that raises, or a decide()
+    # refusal, is a failure BEFORE the verdict exists. That is the one thing
+    # status='failed' is still for.
+    try:
+        verdict = _compute_verdict(agent_id, conn_str, state)
+    except Exception as exc:
+        _persist_failed(agent_id, run_id, exc)
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+        return {}
+
+    # ------------------------------------------------------------------
+    # Step 5 - the narration turn, under ORCHESTRATOR_TIMEOUT_S. The shim awaits
+    # the service's loop; run_orchestrator would nest a second asyncio.run.
+    #
+    # The rendered verdict travels WITH the signals, so the model reads the
+    # decision it is describing rather than deriving one. It is rendered rather
+    # than passed whole: the turn gets the outcome and the reason sentences,
+    # which already carry each threshold in words, and no rule slugs.
+    # ------------------------------------------------------------------
+    signals_json = json.dumps({**signals, "verdict": render_verdict(verdict)})
     result_container: dict = {}
     ledger = _orchestrator_ledger(tenant_id, agent_id, run_id, conn_str)
 
@@ -616,12 +876,10 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
     except Exception as exc:
         # BACKLOG 1.30. `error=str(exc)` alone logged an EMPTY STRING for the
         # failure that actually happens: `str(asyncio.TimeoutError())` is `""`,
-        # and the timeout is the orchestrator's most likely failure by far. The
-        # first real checklist run ever executed (E2E-4, 2026-08-13) therefore
-        # reported `orchestrator_failed error=` followed by "Orchestrator did
-        # not produce a report" — two lines that name no cause between them.
-        # Same shape as the `getattr(x, "name", "unknown")` family: a default
-        # that is silently plausible converts a diagnosis into a blank.
+        # and the timeout is this turn's most likely failure by far. The first
+        # real checklist run ever executed (E2E-4, 2026-08-13) reported
+        # `orchestrator_failed error=` followed by "Orchestrator did not produce
+        # a report" — two lines that name no cause between them.
         log.error(
             "run_deployment_checklist.orchestrator_failed",
             agent_id=agent_id,
@@ -629,138 +887,73 @@ def run_deployment_checklist(self, agent_id: str, wait_state: dict | None = None
             error_type=type(exc).__name__,
             error=str(exc) or repr(exc),
             timeout_s=ORCHESTRATOR_TIMEOUT_S,
+            detail="the verdict was computed before this turn and still stands",
         )
-        # Fall through to Step 7 (status='failed')
+        # NOT a fall-through to step 7 any more. The checklist completes on the
+        # verdict it already holds, with the fallback summary in place of prose.
 
     # ------------------------------------------------------------------
-    # Step 6 — Parse result and UPDATE control DB on success
+    # Step 6 — persist. The recommendation is the verdict's outcome, floored by
+    # the evidence gate, and every reason arrives with it as a warning.
     # ------------------------------------------------------------------
-    run_obj = None
     try:
-        report_data = result_container.get("report")
-        if report_data:
-            # P2 — the evidence gate runs BEFORE the report is constructed, so
-            # the recommendation the owner sees, the one persisted on the
-            # checklist run and the one the approve route reads are all the
-            # gated value. It can only make the verdict more conservative:
-            # `ship` over an eval or red-team signal that is not 'measured'
-            # becomes `block` with a stated reason. Deterministic Python, never
-            # the orchestrator's reading of a state field (CLAUDE.md:
-            # programmatic core, agentic edges) — the same division of labour as
-            # derive_blast_radius_warnings below.
-            gated_recommendation, evidence_warnings = apply_signal_evidence_gate(
-                report_data.get("recommendation", "block"),
-                eval_summary,
-                red_team_summary,
-            )
-            if gated_recommendation != report_data.get("recommendation", "block"):
-                log.warning(
-                    "run_deployment_checklist.evidence_gate_downgraded",
-                    agent_id=agent_id,
-                    run_id=run_id,
-                    orchestrator_recommendation=report_data.get("recommendation"),
-                    gated_recommendation=gated_recommendation,
-                    eval_signal=eval_summary.get("eval_signal"),
-                    red_team_signal=red_team_summary.get("signal"),
-                )
+        gated_recommendation, evidence_warnings = _floor_under_the_verdict(
+            agent_id, run_id, verdict, eval_summary, red_team_summary
+        )
+        summary, narrated_warnings = _narration(agent_id, run_id, result_container)
 
-            # Validate via Pydantic — ensures recommendation is a known value
-            report = DeploymentReport(
-                recommendation=gated_recommendation,  # type: ignore[arg-type]  # DeploymentReport validates the literal at construction
-                summary=report_data.get("summary", ""),
-                warnings=report_data.get("warnings", []),
-                eval_summary=eval_summary,
-                red_team_summary=red_team_summary,
-                verified_qa_stats=verified_qa_stats,
-                corpus_stats=corpus_stats,
-                blast_radius=blast_radius,
-            )
-            with get_sync_db() as db:
-                run_obj = db.get(ChecklistRun, run_id)
-                if run_obj:
-                    run_obj.status = "complete"
-                    run_obj.recommendation = report.recommendation
-                    run_obj.report = {
-                        **signals,
-                        "summary": report.summary,
-                        "recommendation": report.recommendation,
-                    }
-                    # BLR-01: the deterministic blast-radius warnings are derived
-                    # in Python (never by the orchestrator) and APPENDED to the
-                    # orchestrator's own warnings — never replacing them. The
-                    # merge de-duplicates by warning_id so a future prompt change
-                    # that starts emitting a blast-radius warning cannot produce
-                    # two rows the owner has to acknowledge twice. This keeps the
-                    # acknowledge flow (POST /checklist-runs/{run_id}/acknowledge,
-                    # which validates submitted ids against run.warnings) working
-                    # unchanged for the new ids.
-                    # The evidence-gate warnings merge on the same terms and
-                    # through the same de-duplication: whatever forced a
-                    # downgrade must be visible to the owner as a warning with a
-                    # stated reason, or 'block' arrives with no explanation.
-                    derived = evidence_warnings + derive_blast_radius_warnings(
-                        blast_radius
-                    )
-                    existing_ids = {w.warning_id for w in report.warnings}
-                    merged_warnings = list(report.warnings)
-                    for w in derived:
-                        if w.warning_id not in existing_ids:
-                            merged_warnings.append(w)
-                            existing_ids.add(w.warning_id)
-                    run_obj.warnings = [w.model_dump() for w in merged_warnings]
-                    # BLR-02: the hash lands in the same transaction as
-                    # status/report/warnings. Acknowledgement (the sibling
-                    # timestamp column) is never stamped here — that is the
-                    # owner's act at approve time, not the platform's at
-                    # checklist time.
-                    run_obj.envelope_hash = envelope_hash
-                    db.commit()
-                    db.refresh(run_obj)
+        # Pydantic validates the recommendation against its literal. The model
+        # has no say in it: submit_report has no such field, and this value came
+        # from decide() by way of the gate.
+        report = DeploymentReport(
+            recommendation=gated_recommendation,  # type: ignore[arg-type]  # DeploymentReport validates the literal at construction
+            summary=summary,
+            warnings=narrated_warnings,
+            eval_summary=eval_summary,
+            red_team_summary=red_team_summary,
+            verified_qa_stats=signals["verified_qa_stats"],
+            corpus_stats=signals["corpus_stats"],
+            blast_radius=signals["blast_radius"],
+        )
+        # Four deterministic sources, merged into the model's own by warning_id:
+        # every verdict reason, whatever the evidence gate refused on, the
+        # blast-radius comparison, and the two quality conditions decide() cannot
+        # see. All four are Python, never the model's arithmetic.
+        merged_warnings = _merge_warnings(
+            report.warnings,
+            verdict_warnings(verdict)
+            + evidence_warnings
+            + derive_blast_radius_warnings(signals["blast_radius"])
+            + derive_quality_warnings(signals["verified_qa_stats"], red_team_summary),
+        )
+        _persist_complete(
+            run_id, report, signals, verdict, envelope_hash, merged_warnings
+        )
 
-            log.info(
-                "run_deployment_checklist.complete",
-                agent_id=agent_id,
-                run_id=run_id,
-                recommendation=report.recommendation,
-            )
-            return {
-                "status": "complete",
-                "run_id": run_id,
-                "recommendation": report.recommendation,
-            }
-        else:
-            # Orchestrator did not call submit_report — treat as failure
-            log.error(
-                "run_deployment_checklist.no_report",
-                agent_id=agent_id,
-                run_id=run_id,
-            )
-            raise RuntimeError("Orchestrator did not produce a report")
+        log.info(
+            "run_deployment_checklist.complete",
+            agent_id=agent_id,
+            run_id=run_id,
+            recommendation=report.recommendation,
+            narrated=bool(result_container.get("report")),
+        )
+        return {
+            "status": "complete",
+            "run_id": run_id,
+            "recommendation": report.recommendation,
+        }
 
     except Exception as exc:
         # ------------------------------------------------------------------
-        # Step 7 — UPDATE status=failed on exception; retry if retries remain
+        # Step 7 — UPDATE status=failed on exception; retry if retries remain.
+        #
+        # RESERVED FOR THE TASK'S OWN FAILURES (#54). A narration that timed out
+        # or fell over does not land here any more: the verdict exists without
+        # the model, so the checklist completes on it. What reaches this block is
+        # a record read that raised, a decide() refusal, or a control-DB write
+        # that failed, and in each of those the decision was never reached.
         # ------------------------------------------------------------------
-        log.error(
-            "run_deployment_checklist.failed",
-            agent_id=agent_id,
-            run_id=run_id,
-            error=str(exc),
-        )
-        try:
-            with get_sync_db() as db:
-                run_obj = db.get(ChecklistRun, run_id)
-                if run_obj:
-                    run_obj.status = "failed"
-                    db.commit()
-        except Exception as update_exc:
-            log.warning(
-                "run_deployment_checklist.update_failed_status_error",
-                agent_id=agent_id,
-                run_id=run_id,
-                error=str(update_exc),
-            )
-
+        _persist_failed(agent_id, run_id, exc)
         if self.request.retries < self.max_retries:
             raise self.retry(exc=exc, countdown=2 ** self.request.retries)
         return {}

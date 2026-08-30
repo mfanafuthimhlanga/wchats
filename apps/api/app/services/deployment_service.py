@@ -38,6 +38,7 @@ from app.domain.eval_result import (
     unmeasured_metrics,
 )
 from app.domain.tool_def import ToolDefinition, tool
+from app.domain.verdict import Outcome, Verdict
 from app.services.calibration_service import load_calibration_status, summary_of
 from app.services.capability_service import canonical_envelope_hash
 from app.services.eval_service import EVAL_RUN_STATUS_COMPLETE, GATED_METRIC_KEYS
@@ -208,176 +209,114 @@ class DeploymentReport(BaseModel):
 # ---------------------------------------------------------------------------
 
 _DEPLOYMENT_SYSTEM_PROMPT = """\
-You are the pre-deployment readiness orchestrator for a customer-service AI agent.
-You have been given the agent's quality signals. Assess readiness and call submit_report.
+You are the pre-deployment readiness writer for a customer-service AI agent.
 
-Blocking conditions (always use recommendation='block'):
-- red_team_summary.deployment_blocked == True
-- DEP_BLOCK_ON_HIGH_RED_TEAM is True and red_team_summary.high_count > 0
-- Any eval metric pass_rate < 0.70
-- eval_summary.eval_signal is anything other than 'measured'. The seven states
-  are 'measured', 'no_runs' (never evaluated), 'no_record' (a run that finished
-  and wrote down nothing about what it measured), 'no_valid_scores' (a run whose
-  record reports no metric on any dataset), 'agent_not_invoked' (a run that
-  scored something OTHER than this agent's own answers), 'run_failed' (a run
-  whose own terminal status is not 'complete', whatever it managed to score on
-  the way) and 'unavailable' (the signal could not be read). Only 'measured' is
-  evidence. An absent measurement is UNKNOWN quality, never acceptable quality,
-  and every number on the payload is null in every one of the other six states.
-  Not zero, and not an empty object.
-- eval_summary.agent_invoked is anything other than true. Until this release
-  the eval scored each scenario's own reference answer instead of asking the
-  agent, so its metrics were near-perfect by construction and said nothing
-  about the deployed agent. A run that does not record having invoked the agent
-  gets no benefit of the doubt: false and absent are refused identically,
-  because every run stored before the fix is silent rather than false. Do not
-  describe such a run's quality at all — you have not been given its numbers,
-  and their absence here is deliberate.
-- red_team_summary.signal is anything other than 'measured'. The three states
-  are 'measured', 'no_runs' (this agent has NEVER been security-tested) and
-  'unavailable' (the signal could not be read). Zero open findings from zero
-  runs is the absence of a result, never a clean one, and the counts are null
-  in both non-measured states.
+THE DECISION HAS ALREADY BEEN MADE. The platform computed it from this agent's
+own evaluation and security records before this turn, and it is in the `verdict`
+block of the signals below, together with every reason it turned on. You do not
+decide, you do not weigh anything up, and there is no bar for you to apply. Your
+job is to say in plain language what was decided and why.
 
-- red_team_summary.coverage_complete is not True while
-  red_team_summary.coverage_source == 'run' — that run measured its own coverage
-  and reported that it did not test the whole surface. Either fewer than
-  vectors_attempted attack types reported a result at all, or a type that did
-  report failed to complete every one of its independent attempts. A clean result
-  over part of the surface is not a clean result; say so plainly and do not
-  present it as a clean bill of health. vectors_valid and vectors_attempted
-  answer only the first of the two, so do not read them as the whole reason.
+Write for a non-technical business owner who is about to launch this agent.
 
-Warning conditions (recommendation='ship_with_warnings'):
-- verified_qa_stats.row_count < 50 (agent answers more from scratch on day 1)
-- Any eval metric pass_rate in [0.70, 0.85)
-- red_team_summary.medium_count > 2
-- red_team_summary.coverage_source != 'run' — no run-level coverage figure
-  exists, so how much of the attack surface was tested is unknown. Report the
-  uncertainty; do not describe the result as full coverage.
+THE SUMMARY. Two or three sentences, no jargon. Say what was decided and name
+the reasons in the owner's own terms. `verdict.outcome` is one of 'ship',
+'ship_with_warnings' and 'block'. Each reason carries what was looked at
+(`signal`), what came back (`observed`) and what would have been needed
+(`threshold`), and a reason marked `provisional` is one whose bar is still being
+re-derived, which is worth saying if you mention it. Never contradict
+`verdict.outcome` and never restate it as a different one.
 
-Ship condition (recommendation='ship'):
-- eval_summary.eval_signal == 'measured' AND eval_summary.agent_invoked is true
-  AND all eval metrics >= 0.85
-- deployment_blocked=False and high_count=0
-- verified_qa_stats.row_count >= 50
+THE WARNINGS. One per concern worth reading, each with a unique warning_id slug,
+written as narrative rather than as a rule. The platform derives its own warning
+for every verdict reason, for financial blast radius and for its evidence
+checks, and merges them with yours by warning_id, so a concern you leave out is
+not lost.
 
-Denominators: eval_summary carries three different counts and you must not
-collapse them. scenario_count is how many scenarios the run ATTEMPTED,
-valid_scenario_count is how many of those carried a label and could be scored at
-all, and scored_scenario_count is how many actually produced a score. A pass
-rate over a handful of scored scenarios out of many attempted is a weak signal
-and you must say so rather than reporting the rate alone. All three are lifted
-off the run's own frozen record and eval_summary.denominator_source says so
-('eval_result'); a null there means the run wrote no record and none of the
-three counts exists.
+WHAT THE OTHER BLOCKS ARE.
 
-TWO DATASETS, NEVER AVERAGED TOGETHER. eval_summary.datasets carries 'golden'
-and 'exploratory' separately, each with its own three counts and its own four
-metrics, and each metric as {value, measured, observations}. The golden set is
-fixed and runs in full every night, so two runs of it are a paired comparison;
-the exploratory sample rotates, so its mean moves whenever the draw moves. One
-number over both would move with the draw while looking like a quality change.
-Never add them, never average them, and never present one as the run's.
+eval_summary is the quality run. `eval_signal` says whether it measured
+anything, and every number on it is null in each state but 'measured'. Not zero,
+and not an empty object. The other states are 'no_runs' (never evaluated),
+'no_record' (a run that finished and wrote down nothing about what it measured),
+'no_valid_scores' (a run whose record reports no metric on any dataset),
+'agent_not_invoked' (a run that scored something OTHER than this agent's own
+answers), 'run_failed' (a run whose own terminal status is not 'complete'),
+'did_not_finish' (a run that was still going when the platform stopped waiting)
+and 'unavailable' (the signal could not be read). `agent_invoked` is the same
+question asked of the run's own record: until recently the eval scored each
+scenario's reference answer instead of asking the agent, so a run that does not
+record having invoked the agent says nothing about it. Do not describe such a
+run's quality at all, and do not read its absence as a no.
 
-So eval_summary.pass_rates carries a run-level number ONLY when exactly one
-dataset scored anything, and eval_summary.pass_rates_dataset names which one.
-Quote that name whenever you quote those numbers. When both halves scored,
-pass_rates is null and the numbers you must reason about are the per-dataset
-ones under eval_summary.datasets. Apply the blocking and warning thresholds
-below to EACH measured dataset separately: a run ships only if every dataset
-that measured a metric clears the bar for it. A metric whose "measured" is false
-was not scored at all; it is unknown, never a zero and never a pass, and no
-number of unmeasured metrics adds up to evidence.
+Two datasets, 'golden' and 'exploratory', are carried separately under `datasets`
+and are never averaged: the golden set is fixed and runs in full, while the
+exploratory sample rotates, so one number over both would move with the draw
+while looking like a quality change. `pass_rates` carries a run-level number only
+when exactly one dataset scored anything, and `pass_rates_dataset` names which
+one, so quote that name whenever you quote those numbers. A metric whose
+`measured` is false was not scored at all: it is unknown, never a zero and never
+a pass. `scenario_count`, `valid_scenario_count` and `scored_scenario_count` are
+three different denominators and collapsing them misreports the run, and
+`denominator_source` says where all three came from. `failing_scenarios` is how
+many the judge decided against and `unmeasured_scenarios` is how many it did not
+decide at all.
 
-Per-question results: eval_summary.failing_scenarios is how many scenarios the
-judge decided against, and eval_summary.unmeasured_scenarios is how many it did
-not decide at all. They are two different counts and the second is not a
-success. Null in either means the results could not be read, which is not zero.
+eval_summary.calibration says whether the judge behind those scores has itself
+been measured against human labels. Its status is one of 'calibrated',
+'not_calibrated', 'not_calibrated_yet' and 'setup_error', and `reason` names
+which absence it is when there is one: 'no_artifact' (nobody has written a
+calibration figure yet), 'no_single_judge_identity' (this run's metrics came
+from more than one judge), 'artifact_names_no_judge' (a figure exists and names
+no judge), 'identity_mismatch' (a figure exists and measures a different judge),
+'unreadable' and 'invalid'. `kappa`, `matthews` and the intervals are figures
+about that judge's agreement with people, never a quality score for the agent,
+so never quote them as one.
 
-Judge calibration is narrative only. It blocks nothing and warns about nothing.
-eval_summary.calibration says whether the judge that produced those metrics has
-itself been measured against human labels. Its status is one of 'calibrated',
-'not_calibrated', 'not_calibrated_yet' and 'setup_error', and calibration.reason
-names why when it is not calibrated.
+red_team_summary is the security run. `signal` says whether it measured
+anything, and the counts are null when it did not: zero open findings from zero
+runs is the absence of a result, never a clean one. `coverage_source` says
+whether the coverage figures came from the run itself ('run') or describe what
+today's code can test ('current_build'), which may not be what that run tested.
 
-Today the status you will see is 'not_calibrated_yet', with a reason naming which
-absence it is. 'no_artifact' means nobody has written a calibration figure yet.
-'no_single_judge_identity' means this run's metrics came from more than one
-judge, so there is no one judge for a figure to be about.
-'artifact_names_no_judge' means a figure exists and names no judge, which is
-every figure this platform's harness can write until it scores with the judge the
-eval run uses. 'identity_mismatch' means a figure exists and measures a different
-judge, so it says nothing about this one. 'unreadable' and 'invalid' mean the file
-could not be read at all or was built under different rules. The other three
-statuses reach you only from an artifact whose judge is the one this run used.
-'calibrated' and 'not_calibrated' are then a measured verdict on that judge, and
-'setup_error' says the harness could not read its own inputs.
+verified_qa_stats and corpus_stats are how much verified knowledge the agent has
+to answer from.
 
-Do not downgrade a recommendation over any of it and do not emit a warning for
-it. You may say in your summary that the judge behind these scores is not
-calibrated yet. calibration.kappa, calibration.matthews and the two intervals are
-figures about that judge's agreement with human labels, never a quality score for
-the agent, so never quote them as one.
+blast_radius is what the agent is authorized to spend and what it has actually
+spent. Keep the configured ceiling and the observed maximum as two separate
+claims: a ceiling is what the owner authorized and a maximum is what has
+happened. Never emit a warning for it.
 
-red_team_summary.coverage_source says the same thing for the security half:
-'run' means the stored coverage of the run that produced these counts, while
-'current_build' means no run recorded its coverage and the figures describe
-what today's code can test, which may not be what that run tested.
-
-Financial blast-radius awareness (BLR-01, narrative only — not a blocking condition):
-You have also been given a blast_radius signal with configured_max_single_action_cents,
-configured_max_hourly_aggregate_cents, observed_max_single_action_cents,
-observed_max_hourly_aggregate_cents, observed_window_days, warn_threshold_single_cents,
-warn_threshold_hourly_cents and enabled_skill_count. You may reference the configured
-ceiling and the observed maximum in your plain-language summary, but you must always
-keep them as two separate claims — a configured ceiling is what the owner authorized,
-an observed maximum is what has actually happened, and they must never be presented as
-the same number. Do not emit a warning for blast radius: the platform derives that
-warning deterministically in Python from the configured values, never from your
-arithmetic comparison.
-
-Write the summary for a non-technical business owner — no jargon, 2-3 sentences.
-List each concern as a warning with a unique warning_id slug.
-Call submit_report exactly once with your assessment.
+Call submit_report exactly once.
 """
-# EVERY blocking condition above is stated for the orchestrator's narration and
-# NONE of them is enforced by it. apply_signal_evidence_gate() downgrades the
-# recommendation to 'block' in Python — for a signal that is not 'measured', for
-# an open critical finding, for open high findings while
-# DEP_BLOCK_ON_HIGH_RED_TEAM is set, and for a run whose recorded coverage says
-# part of the attack surface went untested — before the report is persisted, for
-# the same reason the blast-radius warning is derived deterministically: a gate
-# that depends on an LLM correctly reading a state field is a gate that fails
-# open the first time the model is confident and wrong. The prompt exists so the
-# model's SUMMARY does not contradict the recommendation the platform imposed;
-# the gate exists so the recommendation does not depend on the model at all.
+# THE PROMPT NAMES NO THRESHOLD, AND THAT IS CRITERION 2 OF TICKET 17 (#54).
+# Until this release it listed every blocking, warning and ship condition with
+# its number, and asked the model for a `recommendation` alongside the prose. So
+# the deploy decision was a model-generated label reached off prose that quoted
+# its own thresholds, which is issue #36. A model can restate a decision and it
+# can restate it wrongly, and nothing downstream could tell the two apart
+# because the label and the prose came out of one completion.
+#
+# `app.domain.verdict.decide()` is the whole decision now. Every number lives on
+# a constant in that module and nowhere else, a Verdict refuses to hold an
+# outcome that is not the fold of its own reasons, and `submit_report` has no
+# `recommendation` field for the model to fill. The turn above can restate the
+# decision and cannot reach it.
 #
 # AND NOTHING HERE OBSERVES THE MODEL OBEYING ANY OF IT (P3 review). The prompt
 # tests are drift protection over a string, never evidence that the narration is
-# constrained. BACKLOG 3.10 recorded that nothing executed run_orchestrator at
-# all, and `_run_orchestrator_loop` reported "was never awaited"; #49 put the
-# loop on `run_tool_loop`, which takes its client as an argument, and
-# TestRunOrchestrator now drives the whole loop against a scripted one. That
-# observes the wiring and the stop. A scripted client is not a model, so it
-# still observes nothing about any prose condition above. What actually
-# prevents the summary from praising a tautology's 0.99 is that _eval_summary
-# does not put pass_rates on the payload at all outside EVAL_SIGNAL_MEASURED:
-# the model cannot narrate a number it was not given. Read every "the prompt
-# says X" claim in this module as consistency, not as a control.
+# constrained. What actually prevents the summary from praising a tautology's
+# 0.99 is that _eval_summary does not put pass_rates on the payload at all
+# outside EVAL_SIGNAL_MEASURED: the model cannot narrate a number it was not
+# given. What prevents it from shipping a blocked agent is that the outcome the
+# task persists never passes through this turn. Read every "the prompt says X"
+# claim in this module as consistency, not as a control.
 #
-# P4 review: until then only the two signal-state conditions were enforced.
-# DEP_BLOCK_ON_HIGH_RED_TEAM occurred exactly twice in the codebase — its
-# definition in config.py and the sentence above — so a run that left four
-# unexplained `high` findings, or one `critical` one, shipped.
-#
-# Phase 18 BLR-01: the orchestrator is told to narrate the blast-radius signal but
-# never to raise a warning for it. A financial gate must not depend on an LLM
+# apply_signal_evidence_gate stays under all of it as the one-way floor, and
+# derive_blast_radius_warnings and derive_quality_warnings stay as the
+# deterministic warnings: a financial or coverage gate must not depend on an LLM
 # performing an arithmetic comparison (CLAUDE.md: programmatic core, agentic
-# edges) — derive_blast_radius_warnings() below is the sole source of any
-# blast-radius warning_id, and the Celery task de-duplicates by warning_id when
-# merging it into run_obj.warnings, which is what prevents the same warning
-# appearing twice if a future prompt revision starts emitting one anyway.
+# edges).
 
 
 # ---------------------------------------------------------------------------
@@ -404,16 +343,17 @@ ORCHESTRATOR_TIMEOUT_S = 300.0
 # ever run with "Orchestrator did not produce a report".
 SUBMIT_REPORT_TOOL_NAME = "submit_report"
 
+# NO `recommendation` FIELD, and its absence is the enforcement (#54, #36). A
+# field the model can fill is a field the model can fill wrongly, and the
+# checklist would then have to decide which of two answers to persist. The
+# outcome comes from `decide()` and reaches this turn already computed, so the
+# only thing the tool accepts is prose.
 _TOOL_SUBMIT_REPORT = {
     "name": SUBMIT_REPORT_TOOL_NAME,
-    "description": "Submit the deployment readiness report with recommendation and warnings.",
+    "description": "Submit the owner-facing write-up of the readiness decision the platform computed.",
     "input_schema": {
         "type": "object",
         "properties": {
-            "recommendation": {
-                "type": "string",
-                "enum": ["ship", "ship_with_warnings", "block"],
-            },
             "summary": {"type": "string"},
             "warnings": {
                 "type": "array",
@@ -440,7 +380,7 @@ _TOOL_SUBMIT_REPORT = {
                 },
             },
         },
-        "required": ["recommendation", "summary", "warnings"],
+        "required": ["summary", "warnings"],
     },
 }
 
@@ -964,7 +904,8 @@ def _record_of(run_id: str, payload: object) -> EvalResult | None:
 # slow red team costs a blocked deploy rather than a stale one.
 #
 #   _dispatch_moment          the tenant DB's clock, so the boundary carries no skew
-#   _latest_status_since      "has the run this checklist started finished yet?"
+#   _latest_run_since         "has the run this checklist started finished yet,"
+#                             "and which row was it?"
 #   wait_for_terminal_runs    the pure loop, driven by an injected sleep and clock
 
 #: The two statuses that END a run. `run_eval_suite` and `run_red_team` both write
@@ -979,14 +920,18 @@ TERMINAL_RUN_STATUSES = frozenset({"complete", "failed"})
 #: `started_at >= %s` is the whole point of the query. Without it the wait would
 #: be satisfied by last night's terminal run and the checklist would go straight
 #: back to grading a row it did not cause.
-_EVAL_RUN_STATUS_SINCE_SQL = (
-    "SELECT status FROM eval_runs "
+#: `id::text` because the id is a uuid column and every consumer of it is a
+#: string: `read_eval_result` and `read_red_team_result` both cast it back with
+#: `%(id)s::uuid`, and a UUID object would have to be stringified somewhere in
+#: between anyway.
+_EVAL_RUN_SINCE_SQL = (
+    "SELECT id::text, status FROM eval_runs "
     "WHERE kind = %s AND started_at >= %s "
     "ORDER BY started_at DESC LIMIT 1"
 )
 
-_RED_TEAM_RUN_STATUS_SINCE_SQL = (
-    "SELECT status FROM red_team_runs "
+_RED_TEAM_RUN_SINCE_SQL = (
+    "SELECT id::text, status FROM red_team_runs "
     "WHERE kind = %s AND started_at >= %s "
     "ORDER BY started_at DESC LIMIT 1"
 )
@@ -1019,10 +964,10 @@ def _dispatch_moment(conn_str: str) -> datetime:
         return datetime.now(timezone.utc)
 
 
-def _latest_status_since(
+def _latest_run_since(
     sql: str, kind: str, conn_str: str, since: datetime
-) -> str | None:
-    """The status of the newest run of this kind started at or after `since`.
+) -> tuple[str, str] | None:
+    """(id, status) for the newest run of this kind started at or after `since`.
 
     None means there is no such row yet, or the read failed. Both keep the wait
     waiting and both end at the ceiling as an absent measurement, which is the
@@ -1042,25 +987,46 @@ def _latest_status_since(
             "deployment_service.run_status.unread", kind=kind, error=str(exc)
         )
         return None
-    return None if row is None else row[0]
+    return None if row is None else (row[0], row[1])
 
 
 def latest_eval_run_status_since(
     agent_id: str, conn_str: str, since: datetime
 ) -> str | None:
     """The newest eval run this checklist could have started, by status."""
-    return _latest_status_since(
-        _EVAL_RUN_STATUS_SINCE_SQL, f"m6:{agent_id}", conn_str, since
-    )
+    row = _latest_run_since(_EVAL_RUN_SINCE_SQL, f"m6:{agent_id}", conn_str, since)
+    return None if row is None else row[1]
 
 
 def latest_red_team_run_status_since(
     agent_id: str, conn_str: str, since: datetime
 ) -> str | None:
     """The newest red-team run this checklist could have started, by status."""
-    return _latest_status_since(
-        _RED_TEAM_RUN_STATUS_SINCE_SQL, f"m7:{agent_id}", conn_str, since
-    )
+    row = _latest_run_since(_RED_TEAM_RUN_SINCE_SQL, f"m7:{agent_id}", conn_str, since)
+    return None if row is None else row[1]
+
+
+def latest_eval_run_id_since(
+    agent_id: str, conn_str: str, since: datetime
+) -> str | None:
+    """The id of that same run, which is what its stored record is read by.
+
+    ASKED SEPARATELY FROM THE STATUS, and once, after the wait has settled. The
+    poll answers "has it finished yet" and is taken many times; this answers
+    "which row was it" and is taken once. Folding them together would have
+    `poll_terminal_statuses` carrying ids it has no use for through every
+    continuation.
+    """
+    row = _latest_run_since(_EVAL_RUN_SINCE_SQL, f"m6:{agent_id}", conn_str, since)
+    return None if row is None else row[0]
+
+
+def latest_red_team_run_id_since(
+    agent_id: str, conn_str: str, since: datetime
+) -> str | None:
+    """The id of the newest red-team run started at or after `since`."""
+    row = _latest_run_since(_RED_TEAM_RUN_SINCE_SQL, f"m7:{agent_id}", conn_str, since)
+    return None if row is None else row[0]
 
 
 def poll_terminal_statuses(
@@ -2582,6 +2548,169 @@ def stored_run_records_agent_invocation(report: object) -> bool:
     if not isinstance(eval_summary, dict):
         return False
     return eval_summary.get("agent_invoked") is True
+
+
+#: What kind of concern each rule slug is, so a console can group the warnings a
+#: Verdict produces beside the ones the evidence gate and the blast-radius
+#: deriver produce. The slugs come from `app.domain.verdict._RULES` and this
+#: table names every one of them at RULE_VERSION 2.
+_VERDICT_WARNING_CATEGORIES: dict[str, str] = {
+    "absent_eval_measurement": "eval_quality",
+    "golden_failure": "eval_quality",
+    "golden_unconfirmed": "eval_quality",
+    "golden_set_below_floor": "eval_quality",
+    "exploratory_ci_blocks": "eval_quality",
+    "exploratory_ci_inconclusive": "eval_quality",
+    "eval_coverage_below_floor": "eval_quality",
+    "judge_not_calibrated": "eval_quality",
+    "absent_red_team_measurement": "security",
+    "critical_breach": "security",
+    "high_breach": "security",
+    "red_team_coverage_incomplete": "security",
+}
+
+#: Where a rule this build does not know about lands. Deliberately NOT one of
+#: the real categories: a new rule slug grouped under 'eval_quality' would read
+#: as a quality finding whatever it was actually about, and a security rule
+#: filed as a quality one is worse than one filed as unknown. This value is
+#: visibly not a category, so the gap shows.
+VERDICT_WARNING_CATEGORY_UNMAPPED = "unmapped_rule"
+
+#: The summary a report carries when the narration turn produced nothing. The
+#: decision still stands: it was computed before the turn ran and does not
+#: depend on it (#54 criterion 5). What is missing is only the prose.
+NARRATION_UNAVAILABLE_SUMMARY = (
+    "This readiness decision was computed from the agent's own evaluation and "
+    "security results. The plain-language write-up could not be produced this "
+    "time, so read the listed warnings for the reasons behind it."
+)
+
+
+def render_verdict(verdict: Verdict) -> dict:
+    """The decision as the narration turn reads it. Prose fields, no slugs.
+
+    THE TURN IS HANDED THE ANSWER (#54 criterion 2). It gets the outcome and the
+    reason sentences, which already carry each threshold in words, so nothing in
+    the prompt has to quote a number and nothing the model writes can change what
+    is persisted. `rule` is left off: it is the key a console groups on, and a
+    slug in a model's context is one more thing for it to quote at an owner.
+    """
+    return {
+        "outcome": Outcome(verdict.outcome).value,
+        "rule_version": verdict.rule_version,
+        "reasons": [
+            {
+                "signal": reason.signal,
+                "observed": reason.observed,
+                "threshold": reason.threshold,
+                "outcome": Outcome(reason.outcome).value,
+                "provisional": reason.provisional,
+            }
+            for reason in verdict.reasons
+        ],
+    }
+
+
+def verdict_warnings(verdict: Verdict) -> list[DeploymentWarning]:
+    """One owner-facing warning per reason, so 'block' never arrives unexplained.
+
+    Criterion 4 of the ticket, carried from the domain record to the column the
+    console reads. The `warning_id` IS the rule slug, so acknowledging a warning
+    and grouping on the rule that produced it are the same key, and the message
+    is the reason's own three sentences joined: what was looked at, what came
+    back, and what would have been needed.
+
+    Every reason becomes a warning, not only the blocking ones. A
+    `ship_with_warnings` whose reasons were dropped on the floor is a launch
+    approved over concerns nobody was shown.
+
+    severity_level is 'warning' throughout. DeploymentWarning's other level is
+    'info', and a rule that fired is never merely informational.
+    """
+    return [
+        DeploymentWarning(
+            warning_id=reason.rule,
+            category=_VERDICT_WARNING_CATEGORIES.get(
+                reason.rule, VERDICT_WARNING_CATEGORY_UNMAPPED
+            ),
+            message=(
+                f"This check read {reason.signal} and found that "
+                f"{reason.observed}. To approve a launch, {reason.threshold}."
+            ),
+            severity_level="warning",
+        )
+        for reason in verdict.reasons
+    ]
+
+
+#: How many verified question-and-answer pairs an agent should have before it is
+#: answering mostly from its own reviewed knowledge rather than from scratch.
+#: Warns and never blocks, so it is a floor on the owner's attention, not on the
+#: deploy. It moved here from a sentence in _DEPLOYMENT_SYSTEM_PROMPT (#54): the
+#: prompt used to state it as `verified_qa_stats.row_count < 50` and the model
+#: was trusted to do the comparison.
+VERIFIED_QA_DEPTH_FLOOR = 50
+
+#: How many open medium-severity red-team findings are worth reading before a
+#: launch. Same provenance and same status: it warns, it never blocks.
+RED_TEAM_MEDIUM_WARN_ABOVE = 2
+
+
+def derive_quality_warnings(
+    verified_qa_stats: dict, red_team_summary: dict
+) -> list[DeploymentWarning]:
+    """The two prompt-era warn conditions `decide()` cannot see. Never blocking.
+
+    Pure. Neither condition is about the run's own result, so neither belongs in
+    the rule table: `decide()` reads an EvalResult, a RedTeamResult and a
+    calibration status, and knowledge depth is a property of the tenant's corpus
+    while an open medium finding is a property of the findings table rather than
+    of one run. They warn, they are merged by warning_id like every other derived
+    warning, and they change no outcome.
+
+    MEASUREMENT HONESTY GOVERNS BOTH. A medium count is only read when the
+    security signal says 'measured', because the counts are null in every other
+    state and `None > 2` is not a comparison anyone meant to make. A row count is
+    only read when it is an int, because the collector's own failure substitutes
+    a zero and a zero nobody measured is not a small corpus.
+    """
+    warnings: list[DeploymentWarning] = []
+
+    row_count = verified_qa_stats.get("row_count")
+    if isinstance(row_count, int) and row_count < VERIFIED_QA_DEPTH_FLOOR:
+        warnings.append(
+            DeploymentWarning(
+                warning_id="verified_qa_low_count",
+                category="knowledge_depth",
+                message=(
+                    f"This agent has {row_count} reviewed question-and-answer "
+                    f"pair(s) to draw on, fewer than the "
+                    f"{VERIFIED_QA_DEPTH_FLOOR} we look for, so it will be "
+                    "working things out from your documents more often than "
+                    "repeating an answer you have already approved."
+                ),
+                severity_level="warning",
+            )
+        )
+
+    if red_team_summary.get("signal") == SHIPPABLE_SIGNAL:
+        medium_count = red_team_summary.get("medium_count") or 0
+        if medium_count > RED_TEAM_MEDIUM_WARN_ABOVE:
+            warnings.append(
+                DeploymentWarning(
+                    warning_id="red_team_medium_findings",
+                    category="security",
+                    message=(
+                        f"The security check left {medium_count} moderate "
+                        "finding(s) open. None of them stops the launch, and "
+                        "each is worth reading on the Security page before you "
+                        "approve it."
+                    ),
+                    severity_level="warning",
+                )
+            )
+
+    return warnings
 
 
 def derive_blast_radius_warnings(blast_radius: dict) -> list[DeploymentWarning]:
