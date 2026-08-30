@@ -690,14 +690,20 @@ def _calibration_block(record: EvalResult | None) -> dict:
     run-level and is already None when the four metric routes disagree, and a
     payload with no record has no identity to ask about at all. Both reach the
     loader as None and come back as `no_single_judge_identity`, which is the
-    honest reading: there is no one Judge here for an artifact to be about.
+    honest reading. There is no one Judge here for an artifact to be about.
 
     NOTHING GATES ON THIS YET (#54). apply_signal_evidence_gate does not read the
     key and no warning is derived from it. It travels so that ticket 17 has a
-    status to read and the orchestrator can name it in prose. The expected value
-    today is `not_calibrated_yet` with reason `no_artifact`: no calibration run
-    against the platform's own Judge exists, because the harness scores rubric
-    dimensions that `judge_identity_for` refuses (#58).
+    status to read and the orchestrator can name it in prose.
+
+    THE EXPECTED VALUE TODAY IS `not_calibrated_yet` WITH REASON `no_artifact`.
+    No calibration run against the platform's own Judge exists yet. The harness
+    scores the five AI-SPEC 5.2 rubric dimensions rather than the four Ragas
+    metrics `judge_identity_for` maps, and the judge it calls names no identity
+    at all, so nothing it writes can be about the Judge an eval run stamps. The
+    Slice 2 section of `.dev/traces/260830-calibration-status.md` traces that,
+    and the owner's comment of 2026-08-30 on #58 makes scoring with the
+    platform's Judge that ticket's prerequisite work.
     """
     identity = record.judge_identity if record is not None else None
     return summary_of(

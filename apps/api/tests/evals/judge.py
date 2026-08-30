@@ -54,7 +54,7 @@ Score 1 = clear failure, 3 = borderline, 5 = clear pass.
 #: The rubric text is transcribed from AI-SPEC.md 5.2 and nothing versions it, so
 #: this constant is the honest minimum rather than a version anybody chose. It is
 #: here so that an edit to the text above is an edit to a line an artifact
-#: carries: a rubric change makes a different Judge, and a calibration figure
+#: carries. A rubric change makes a different Judge, and a calibration figure
 #: measured under the old text does not cover the new one.
 JUDGE_RUBRIC_VERSION = "ai-spec-5.2"
 

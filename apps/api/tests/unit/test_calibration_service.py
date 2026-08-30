@@ -16,7 +16,7 @@ WHY "NEVER RAISES" IS ITS OWN TEST AND NOT A REMARK
 
 WHY THE CONFIG DEFAULT IS ASSERTED
     `CALIBRATION_ARTIFACT_PATH` defaults to a path under `tests/`, which
-    `apps/api/.dockerignore` excludes. That is deliberate: a container reads
+    `apps/api/.dockerignore` excludes. That is deliberate. A container reads
     `no_artifact` and no Judge is trusted there until an artifact ships. A test
     that the default is absolute keeps it from silently becoming
     working-directory dependent, which would make the answer vary by who started
@@ -79,7 +79,7 @@ def _calibrated(identity: JudgeIdentity) -> CalibrationStatus:
 
 
 def _nameless_run() -> CalibrationStatus:
-    """What the harness writes today: figures, and no Judge to attach them to.
+    """What the harness writes today. Figures, and no Judge to attach them to.
 
     Deliberately not an `absent()` record. `absent` carries no figures either,
     and this shape is the one that used to read as `identity_mismatch` while
@@ -190,7 +190,7 @@ class TestTheFailurePaths:
         assert load_calibration_status(artifact, _identity()).reason == "invalid"
 
     def test_a_run_with_no_single_judge_reads_no_single_judge_identity(self, tmp_path):
-        """Settled before any I/O: no artifact can match a run that used two Judges."""
+        """Settled before any I/O. No artifact can match a run that used two Judges."""
         artifact = _write(tmp_path / "calibration.json", _calibrated(_identity()))
 
         status = load_calibration_status(artifact, None)
@@ -357,7 +357,7 @@ class TestTheMismatchLog:
 
     def test_the_mismatch_log_carries_those_six_fields_and_no_others(self, tmp_path):
         """Pinned, because the line is written for an operator and every extra
-        field is one more thing to read past. Six is both identities whole: model,
+        field is one more thing to read past. Six is both identities whole. Model,
         effort and prompt version are the three the calibration key groups on, and
         a line short of one of them cannot say which Judge moved."""
         artifact = _write(tmp_path / "calibration.json", _calibrated(_identity()))

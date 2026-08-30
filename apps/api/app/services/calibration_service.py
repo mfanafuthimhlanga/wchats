@@ -6,7 +6,7 @@ WHY THIS FUNCTION NEVER RAISES
     missing artifact, a truncated write, a half-written JSON object and a shape
     this build refuses are four different accidents, and none of them is evidence
     about the Judge. Each returns `not_calibrated_yet` carrying the reason, which
-    is the honest reading: nobody measured this Judge here. An exception would
+    is the honest reading. Nobody measured this Judge here. An exception would
     take a deploy summary down over a file that was never written, and the
     fail-closed answer already covers the case an exception would be protecting.
 
@@ -25,7 +25,7 @@ WHY AN ARTIFACT THAT NAMES NO JUDGE IS NOT A MISMATCH
 WHY A MISMATCH IS AN ABSENCE AND NOT A FAILURE
     An artifact measured against a different model, effort or prompt says nothing
     about this run's Judge. `.dev/reference/260818-llm-eval-fundamentals.md`
-    section 9 (lines 119-148) is the reason the key is three fields wide: a judge
+    section 9 (lines 119-148) is the reason the key is three fields wide. A judge
     is built to agree with human labels, and alignment decays when the prompt, the
     data or the model moves. Reading yesterday's figure over today's Judge is the
     decay going unnoticed. So a mismatch reports `not_calibrated_yet`, never
@@ -41,7 +41,7 @@ WHAT THE INVALID LOG SAYS
 WHAT THE MISMATCH LOG SAYS
     All three fields of both identities, so the line shows WHICH ONE moved. It
     carried model and prompt version only until slice 2, and `reasoning_effort`
-    is the third field of the key: two identities differing on effort alone
+    is the third field of the key. Two identities differing on effort alone
     printed four identical values under a warning that said they differed, which
     reads as a bug in the loader rather than a change in the Judge. Decision #34
     prices the Judge floor at effort `none` and re-measures any increase, so
@@ -73,8 +73,8 @@ log = structlog.get_logger(__name__)
 #: The largest artifact this reads into memory. One record of nineteen keys is
 #: under two kilobytes, so a megabyte is five hundred times the honest size and
 #: still cheap to refuse. The ceiling exists because this runs inside the API
-#: process while it assembles a deploy summary: whatever else ends up at that
-#: path, reading all of it before anything can judge the size is the API's
+#: process while it assembles a deploy summary. Whatever else ends up at that
+#: path, reading all of it before anything can judge the size costs the API that
 #: memory, and `unreadable` is already the honest answer for a file that is not
 #: this artifact.
 MAX_ARTIFACT_BYTES = 1024 * 1024

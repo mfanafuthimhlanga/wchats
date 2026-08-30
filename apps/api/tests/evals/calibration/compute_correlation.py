@@ -84,7 +84,7 @@ WHAT A RUN LEAVES BEHIND (ticket #53)
     Nothing on the deploy path can import this script, so its answer travels as
     data. Every scoring run overwrites it, `setup_error` included, because the
     latest reading is the one a deploy should act on. `--check` and
-    `--emit-second-pass` write no artifact: neither scores anything.
+    `--emit-second-pass` write no artifact, because neither scores anything.
 
 Exit codes:
     0 (EXIT_CALIBRATED)         - both halves of the gate passed over
@@ -1352,13 +1352,13 @@ def emit_second_pass(path: pathlib.Path | None = None) -> tuple[int, list[str]]:
 
 
 # ---------------------------------------------------------------------------
-# The artifact — this run's answer, in the shape the app reads (ticket #53)
+# The artifact. This run's answer, in the shape the app reads (ticket #53)
 # ---------------------------------------------------------------------------
 
 #: Which build of this script produced an artifact. Bumped BY HAND when the
 #: mapping onto `CalibrationStatus` changes what a field means, so a reader
 #: holding an older artifact can tell it was built under different rules. Not a
-#: checksum of this file and it must not become one: editing a print statement
+#: checksum of this file and it must not become one. Editing a print statement
 #: is not a change to the mapping.
 HARNESS_VERSION = "compute_correlation.py@1"
 
@@ -1417,10 +1417,10 @@ def labelled_at() -> str | None:
 def calibration_record(result: dict) -> CalibrationStatus:
     """This run, as `app.domain.calibration_status` holds it.
 
-    ONE JUDGEMENT LIVES HERE AND IT IS NAMED. A run whose dimensions name no
-    single Judge leaves the absence and its reason rather than the figure, even
-    when the gate passed, because a kappa with no Judge attached is a number
-    about a judge nobody can name. A deploy reading it sees
+    ONE JUDGEMENT LIVES HERE AND IT IS NAMED. A run whose scored rows report no
+    single Judge leaves `not_calibrated_yet` rather than the harness's own
+    `calibrated`, even when the gate passed, because a kappa with no Judge
+    attached is a number about a judge nobody can name. A deploy reading it sees
     `no_single_judge_identity`, which says what to fix.
 
     Every other status is written as the harness reached it, `setup_error`
@@ -1431,7 +1431,7 @@ def calibration_record(result: dict) -> CalibrationStatus:
     THE FIGURES SURVIVE THE DOWNGRADE. The status becomes `not_calibrated_yet`
     and the kappa, the Matthews and all three intervals stay on the record, the
     same way they stay on a `not_calibrated` run that also names no Judge. They
-    were dropped, and there was no rule behind it: the numbers are true of the
+    were dropped, and there was no rule behind it. The numbers are true of the
     rows that were scored whatever the record concludes about the Judge, and an
     owner reading `no_single_judge_identity` beside a kappa of 0.83 learns that
     the labelling is worth attaching to a nameable Judge.
@@ -1467,8 +1467,8 @@ def written_at() -> str:
     On the record rather than derived from the file's mtime, because a file gets
     copied, restored and checked out and its mtime moves with all three, while
     the sentence "this reading was taken at" belongs to the run that took it.
-    Read it beside `labelled_at`: that one dates the labels, this one dates the
-    reading of them, and a gap between them is the alignment decay section 9 of
+    `labelled_at` dates the labels and this one dates the reading of them, and a
+    gap between the two is the alignment decay section 9 of
     `.dev/reference/260818-llm-eval-fundamentals.md` is about.
     """
     return datetime.datetime.now(datetime.UTC).isoformat()
@@ -1482,8 +1482,8 @@ def write_harness_raised(path: pathlib.Path, exc: BaseException) -> None:
     last week's kappa about a judge nobody scored anything with this week, which
     is the one failure this whole record exists to stop.
 
-    THE TYPE NAME ONLY, never the message. #96's class of defect: an exception
-    string carries whatever the raiser put in it, a DSN and a key included, and
+    THE TYPE NAME ONLY, never the message. That is #96's class of defect. An
+    exception string carries whatever the raiser put in it, a DSN and a key included, and
     this file is read by a deploy summary and committed by hand.
 
     Best effort by design. It is called from an `except` on the way to re-raising

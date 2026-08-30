@@ -2044,7 +2044,7 @@ class TestTheArtifactIsReadBackByTheApp:
     def test_a_run_with_one_judge_across_both_dimensions_can_be_calibrated(
         self, calibration_tree, tmp_path
     ):
-        """The control for the test below: nothing else about the run differs."""
+        """The control for the test below. Nothing else about the run differs."""
         identity = _artifact_identity()
         calibration_tree(_TWO_DIMENSIONS)
         result = cc.compute_correlation(_judge_returning(_PERFECT, identity=identity))
@@ -2118,7 +2118,7 @@ class TestTheArtifactIsReadBackByTheApp:
     ):
         """The status is about the Judge. The numbers are about the rows.
 
-        They were dropped with the status and there was no rule behind it: a
+        They were dropped with the status and there was no rule behind it. A
         `not_calibrated` run over the same rows keeps all of them. An owner
         reading `no_single_judge_identity` beside a kappa of 1.0 learns that
         these labels are worth attaching to a nameable Judge.

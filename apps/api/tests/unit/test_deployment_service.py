@@ -3098,7 +3098,7 @@ class TestTheCalibrationBlock:
     def test_a_run_with_no_record_has_no_identity_to_ask_about(self):
         """`no_single_judge_identity`, and the real loader reaches it.
 
-        Not doubled here: with an identity and no artifact the reason would be
+        Not doubled here. With an identity and no artifact the reason would be
         `no_artifact`, so the two answers are distinguishable and this one says
         the collector handed over None.
         """
@@ -3148,7 +3148,7 @@ class TestTheCalibrationBlock:
 
         Ticket 17 (#54) adds the refusal "ship without a calibrated Judge". Until
         it lands, an uncalibrated Judge is narrated and never enforced, and this
-        test says so out loud: the day the refusal arrives this goes red, and #54
+        test says so out loud. The day the refusal arrives this goes red, and #54
         rewrites it rather than discovering the change by accident.
         """
         summary = _measured_eval()

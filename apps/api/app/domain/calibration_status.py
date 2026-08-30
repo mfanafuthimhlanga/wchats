@@ -28,7 +28,7 @@ THE THREE-PART VERDICT IS CARRIED, NEVER RECOMPUTED
     That is the defect `EvalResult` was built to end one module over.
 
     `.dev/reference/260818-llm-eval-fundamentals.md` section 9 (lines 119-148) is
-    why the identity travels with the numbers: humans label first, the judge is
+    why the identity travels with the numbers. Humans label first, the judge is
     built to agree with them, and alignment decays as prompts and data move. A
     kappa with no Judge attached is a number about a judge nobody can name.
     Section 10 (149-165) is why kappa and Matthews both have fields and neither
@@ -48,7 +48,7 @@ ZERO IS A MEASUREMENT AND NONE IS AN ABSENCE
     onto one field, reads the three verdict parts out of the `gate` dict, and
     does no arithmetic at all, because arithmetic here would be a second copy of
     `agreement.py` free to disagree with the first. A result dict missing a key
-    the mapping reads is refused rather than defaulted: a zero standing in for an
+    the mapping reads is refused rather than defaulted. A zero standing in for an
     absent count reports a measurement nobody made.
 
     `status`, `judge_identity`, `labelled_at` and `harness_version` are passed
@@ -109,7 +109,7 @@ CALIBRATION_STATUSES = (
 #:   artifact_names_no_judge    the artifact names no Judge, so it measures
 #:                              nobody. Every artifact this harness writes today
 #:                              is one of these (#58), and it used to report as
-#:                              `identity_mismatch`, which says the opposite: that
+#:                              `identity_mismatch`. That says the opposite, that
 #:                              somebody was measured and it was somebody else.
 #:   identity_mismatch          the artifact measures a different Judge
 ABSENT_REASONS = (
@@ -226,7 +226,7 @@ class Interval:
         low:    lower bound, or None when the interval is not a measurement.
         high:   upper bound, same.
         point:  the point estimate, None when the coefficient was undefined. It
-                can be present while the bounds are not: the harness reports a
+                can be present while the bounds are not. The harness reports a
                 point over a corpus whose resamples carried no information.
         usable: whether the bounds are a measurement. False is never "the judge
                 scored badly"; it is "these rows say nothing about any judge".
@@ -279,7 +279,7 @@ class Interval:
             raise InvalidCalibrationStatus(
                 f"Interval needs a mapping, got {type(payload).__name__}"
             )
-        # Named rather than passed inline: a stored artifact that says nothing
+        # Named rather than passed inline. A stored artifact that says nothing
         # about `usable` reads as None here, `__post_init__` refuses it, and the
         # declared `bool` stays honest about what the record holds afterwards.
         usable: Any = payload.get("usable")
@@ -410,7 +410,7 @@ def _harness_key(source: Mapping, key: str, where: str) -> Any:
     """The value the harness stored under `key`. An absent key is a refusal.
 
     A default in place of a missing key is how a record comes to report a
-    measurement nobody made: `kappa` defaulting to 0.0 reads as a judge that
+    measurement nobody made. `kappa` defaulting to 0.0 reads as a judge that
     agreed at chance, and `pairs` defaulting to 0 reads as a run that scored
     nothing. Both are conclusions, and the harness stated neither.
     """
@@ -426,7 +426,7 @@ def _harness_gate(result: Mapping) -> Mapping:
     """`calibration_verdict`'s dict, or an empty one when the run never reached it.
 
     The four early returns in `compute_correlation` carry `gate: None`, which is
-    a value rather than a missing key: those runs stopped at a floor and no
+    a value rather than a missing key. Those runs stopped at a floor and no
     verdict was reached. An empty mapping gives all three parts as None, which is
     the absence the record already distinguishes from False.
     """
@@ -521,9 +521,8 @@ class CalibrationStatus:
                               The writer sets it and nothing else does, so two
                               runs are distinguishable even when they measured
                               the same rows to the same figures. None on a record
-                              that was never written to disk. Read it beside
-                              `labelled_at`: that one dates the labels, this one
-                              dates the reading of them.
+                              that was never written to disk. `labelled_at` dates
+                              the labels and this one dates the reading of them.
         artifact_version:     which construction rules built it.
 
     Raises:
@@ -573,7 +572,7 @@ class CalibrationStatus:
         """No usable figure, and why.
 
         `not_calibrated_yet` rather than `not_calibrated`, because every reason in
-        ABSENT_REASONS is an absence: nobody measured this Judge. Reporting a
+        ABSENT_REASONS is an absence. Nobody measured this Judge. Reporting a
         measured failure over a file that was never written would send an owner to
         fix a judge that may be fine.
 

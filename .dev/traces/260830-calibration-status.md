@@ -131,7 +131,7 @@ to three module-level checks (`_require_members`, `_require_counts`,
 Both mutations ran after `ce8d2f3`, restored with
 `git checkout HEAD -- apps/api/app/services/calibration_service.py`.
 
-**1. The `FileNotFoundError` clause deleted.** This does not raise: `FileNotFoundError` is an
+**1. The `FileNotFoundError` clause deleted.** This does not raise. `FileNotFoundError` is an
 `OSError`, so a missing file falls into the `unreadable` branch. Three tests still went red,
 which is the reason token being distinguished rather than the raise being caught.
 
@@ -209,7 +209,7 @@ five AI-SPEC 5.2 rubric names in `tests/evals/judge.py:JUDGE_RUBRICS`
 (`grounding_fidelity`, `escalation_accuracy`, `prompt_injection_resistance`,
 `session_continuity`, `knowledge_gap_honesty`). `judge_identity_for` raises `KeyError` on
 every one of them. Nothing in this repo joins the two vocabularies, and writing a table
-that joined them here would assert an equivalence nobody measured: `grounding_fidelity` is
+that joined them here would assert an equivalence nobody measured. `grounding_fidelity` is
 a rubric a different judge reads, not a spelling of `faithfulness`.
 
 The captured responses record nothing about a judge either. `tests/evals/responses/S-*.json`
@@ -231,7 +231,7 @@ changes.
 
 ### What the writer does with that
 
-`calibration_record` holds one judgement and it is named: a run whose dimensions name no
+`calibration_record` holds one judgement and it is named. A run whose dimensions name no
 single Judge leaves `CalibrationStatus.absent("no_single_judge_identity")`, stamped with
 `harness_version` and `labelled_at`, **even when the gate passed**. A kappa with no Judge
 attached is a number about a judge nobody can name, and a deploy acting on it would ship on
@@ -239,7 +239,7 @@ a Judge nobody measured. `no_single_judge_identity` is already in `ABSENT_REASON
 writer and the loader stamp one vocabulary.
 
 Every other status is written as the harness reached it, `setup_error` included.
-`judge_identity: null` on those is honest rather than disqualifying: a run that could not
+`judge_identity: null` on those is honest rather than disqualifying. A run that could not
 read its own inputs states a fact about the inputs, not about any Judge.
 
 ### Deviations from the plan, and what was added
@@ -287,7 +287,7 @@ static gates passed in 10.6s.
 The source-assertion count is unchanged. The writer is pinned by behaviour, and the tests
 read the artifact through `Path.open`, so `test_calibration_harness.py` still holds its
 three sites and the `csv.writer` / `csv.DictWriter` / `HUMAN_SCORES_CSV.write` pin stays
-green: the writer emits JSON and names none of them.
+green, because the writer emits JSON and names none of them.
 
 ### The guards observed red
 
@@ -326,11 +326,11 @@ each wrote a calibration record into the directory the owner labels. One was sit
 untracked in the working tree after the push, which is what found it. The follow-up commit,
 `fix(calibration): the test fixture points the artifact at tmp, like the sheets`, moves the
 redirect into the fixture at fixture level, where it holds for a test that never calls
-`build`, and pins it: the artifact's directory is not `CALIBRATION_DIR`. Pinned that way
+`build`, and pins it. The artifact's directory is not `CALIBRATION_DIR`. Pinned that way
 rather than on the real file's absence, because slice 3 may ship an artifact there and a
 test that went red on that would be pinning the tree's contents instead of the fixture's job.
 
-The plan did not anticipate it, and the reason is worth naming: the writer's target was
+The plan did not anticipate it, and the reason is worth naming. The writer's target was
 reviewed as "a parameter, so tests can redirect it", and it is. The three tests that broke
 do not call the writer. They call `main`, which supplies the parameter itself.
 
@@ -344,7 +344,7 @@ do not call the writer. They call `main`, which supplies the parameter itself.
   17's block message needs the sentence, `errors` is where it lives and carrying its first
   entry is the smallest change.
 - **`judge_identity_for_run` reads `result["table"]`, which lists every row the run touched
-  including the ones that errored.** That is deliberate: a dimension whose rows all failed
+  including the ones that errored.** That is deliberate. A dimension whose rows all failed
   still tells you which Judges the run was pointed at. It also means a run is refused a
   single identity by a dimension that contributed no pair.
 
@@ -367,7 +367,7 @@ reason.
 
 `_fetch_eval_summary_sync` returns through `_eval_summary` at eight sites. Attaching the
 key at each costs eight lines against a pin of 204 that may only go down. Wrapping the
-collector in a thinner function that attaches once is worse: a pin is keyed on
+collector in a thinner function that attaches once is worse. A pin is keyed on
 (file, function name), so renaming the implementation makes the pinned name stop being
 reported, which fails, and introduces an over-threshold function with no entry, which
 fails too. Entries may never be added.
@@ -375,7 +375,7 @@ fails too. Entries may never be added.
 `_eval_summary` already takes `record` and all eight paths run through it. Deriving the
 identity there also covers `no_runs` and `unavailable`, where no record is ever read.
 Those two report `no_single_judge_identity`, the same answer the plan specifies for a run
-with no record, and for the same reason: there is no Judge for an artifact to be about.
+with no record, and for the same reason. There is no Judge for an artifact to be about.
 
 ### The pin arithmetic, and the line the docstring gave back
 
@@ -425,7 +425,7 @@ way, through `run_deployment_checklist` into `DeploymentReport.eval_summary`, ty
 `dict` in pydantic, so a new key rides along unvalidated. `api/v1/evals.py` surfaces eval
 runs and never this summary.
 
-`apps/admin/app/agents/[id]/deploy/page.tsx` is the only reader: line 108 declares
+`apps/admin/app/agents/[id]/deploy/page.tsx` is the only reader. Line 108 declares
 `eval_summary?: {pass_rates?, failing_scenarios?}` and lines 2452-2453 read those two.
 The interface is an optional non-exact subset over parsed JSON, so an extra key is not a
 type error. No TypeScript changed, so `npx tsc --noEmit` was not run.
@@ -475,8 +475,12 @@ FAILED TestTheCalibrationBlock::test_a_run_with_no_record_has_no_identity_to_ask
 Restored, `10 passed, 119 deselected in 37.56s`.
 
 The four that stayed green are the ones a hard-coded absence satisfies: the missing
-artifact, the key set, the gate, the prompt. The three that went red are the three that
-say the answer came from the loader and was asked about this run's Judge.
+artifact, the key set, the gate, the prompt. All three that went red say the same thing,
+that the answer came from the loader. Only one of them,
+`test_the_loader_is_asked_about_the_judge_the_run_used`, says the identity handed to the
+loader was this run's. This mutation cut the loader call, so it could not distinguish the
+two; a mutation that kept the call and passed a different identity goes red on that one
+test alone.
 
 ### Deviations from the plan
 
@@ -520,3 +524,200 @@ Everything slices 1 and 2 left open, and where it belongs now.
   `pairs <= valid <= attempted` looks true of the harness and was not traced through
   every early return, so no rule asserts it. No issue holds this; open one before any
   reader starts relying on the ordering.
+
+## Review pass, 2026-08-30
+
+Tier-1 adversarial findings on the three slices above, fixed in four commits on the same
+branch. Every finding was in what the code ACCEPTED rather than in what it produced, which
+is why the round trips and the writer tests stayed green through all of them.
+
+```
+apps/api/app/domain/calibration_status.py        every stored key required, the version
+                                                 compared, `calibrated` costs more,
+                                                 `written_at`
+apps/api/app/services/calibration_service.py     artifact_names_no_judge, the size ceiling,
+                                                 the no_artifact line
+apps/api/app/services/deployment_service.py      the prompt paragraph, the block's docstring
+apps/api/tests/evals/judge.py                    judge() reports its own identity
+apps/api/tests/evals/calibration/compute_correlation.py
+                                                 the identity comes off the rows, the atomic
+                                                 write, main guards the run
+apps/api/tests/unit/test_calibration_status_type.py   +22 tests, 110 in the file
+apps/api/tests/unit/test_calibration_service.py       +12 tests, 41 in the file
+apps/api/tests/unit/test_calibration_harness.py       +11 tests, 99 in the file
+apps/api/tests/unit/test_deployment_service.py        +1 test
+```
+
+Four commits. `174384a` the stored shape, `1db1bd0` the loader and the prompt, `67f9913`
+the observed identity and the writer, and the prose pass.
+
+### The four-key artifact, and what a reader's defaults cost
+
+The finding the pass turns on. `from_payload` defaulted every count to 0 and every figure
+to None, and `_require_calibrated_is_earned` read two of the verdict's three parts. So a
+file holding four keys,
+
+```json
+{"status": "calibrated", "judge_identity": {"model": "...", "reasoning_effort": "...",
+ "prompt_version": "..."}, "beats_chance": true, "reaches_ceiling": true}
+```
+
+loaded as a calibrated Judge with `pairs` 0, `kappa` None and no intervals. Nothing in that
+file was a lie. The defaults were, and the round trip could not see them, because the
+writer never produces that file and the test drove the writer's output both ways.
+
+Three rules replace them.
+
+- **Every one of the nineteen keys is required** (`_required_key`). Null is read as the
+  absence it is, and only where the field is optional by design, which is every field
+  except `status`, the four counts and `artifact_version`.
+- **`calibrated` costs the harness's own rule whole.** All three parts of
+  `calibration_verdict` True, both intervals present and `usable`, both coefficients
+  present, and `scored_pairs >= 1`. `agreement.py:415-490` returns
+  `ceiling_beats_chance: False` with `reaches_ceiling: None` and stops there, so reading
+  two of three let a hand-written artifact claim a Judge that reached a ceiling nobody set.
+- **`artifact_version` is compared**, not stored. The constant is bumped when an older
+  artifact would be read WRONGLY rather than refused, so meeting one and reading it anyway
+  was the accident the field exists to stop. A bool is refused before the comparison,
+  because `True == 1` in Python.
+
+**`scored_pairs >= 1` is the one rule here that couples the record to how the sheet is
+filled, and it is worth naming.** `scored_pairs` counts rows carrying the OPTIONAL human
+1-5 score, and the harness's own printed guidance asks the owner to fill the binary column
+only. A calibrated run over a verdict-only sheet therefore has `scored_pairs` 0 and is now
+refused at construction, which surfaces as `harness_raised:InvalidCalibrationStatus` rather
+than as a record. The rule is still the right one for the reader, because
+`scored_pairs <= pairs` makes it the cheapest way to refuse a verdict over zero rows
+whichever count a hand-written file omits. If the first real labelling run fills verdicts
+only, this is the line that has to move, and the fix is a `pairs >= 1` rule beside it
+rather than dropping the count check.
+
+### The identity was asserted, and is now observed
+
+`JUDGE_IDENTITY_BY_DIMENSION` was a static table keyed on the dimension column. Nothing
+compared it with the Judge that ran, so a hand-filled row would have made an artifact say
+`calibrated` about a Judge that never saw the set. The table is gone.
+
+`tests/evals/judge.py:judge()` returns a fifth key, `judge_identity`, built by
+`judge_identity()` from the three constants the request itself is built out of.
+`JUDGE_MODEL`, which the `messages.create` call now reads too, `JUDGE_REASONING_EFFORT`,
+and a new `JUDGE_RUBRIC_VERSION`. `judge_identity_for_run` takes the identities off the
+SCORED rows, the ones carrying a `judge_verdict`, and returns the one they share. A row
+whose scenario would not load, whose judge errored, or that was excluded as a PII
+deflection contributed nothing to the kappa, so the Judge behind it does not describe the
+figure.
+
+`JUDGE_REASONING_EFFORT` is None, `JudgeIdentity` refuses it, and the identity is None.
+That is the true state and #58 is the ticket that changes it. What changed is that it is
+now the judge saying so rather than an empty table.
+
+### The loader
+
+- **A null stored identity is `artifact_names_no_judge`, answered before the comparison.**
+  It read as `identity_mismatch`, which says somebody was measured and it was somebody
+  else, over a file that measured nobody, and logged three None fields beside three real
+  ones. Every artifact this harness writes today is one of these.
+- **`os.stat` before the read.** Over a mebibyte is `unreadable` with the size on the line
+  and the read never happens. `MemoryError` joins the except tuple. This runs inside the
+  API process while it assembles a deploy summary.
+- **`no_artifact` logs where it looked and whether the parent exists.** It said the same
+  thing about a healthy container and a typo in the setting. Info, never a warning, so the
+  slice-1 reasoning about not training an operator to ignore the log still holds.
+
+### The writer
+
+- **`written_at`, stamped by the writer and by nothing else.** Two runs over the same rows
+  produced byte-identical records, so the older could not be told from the newer.
+- **One `os.replace` over a sibling `.partial`.** `Path.write_text` truncates and then
+  writes, so a process killed between the two left a file that was neither run's answer.
+- **`main` guards the run.** An exception writes a `setup_error` record carrying
+  `harness_raised:<TypeName>`, the type only and never the message (#96's class), before
+  re-raising. A run that died left the previous run's kappa at the path with nothing to say
+  it was last week's.
+- **A run the harness calls `calibrated` over a Judge it cannot name keeps every figure.**
+  Only the status and the reason change. They were dropped, and no rule was behind it.
+
+### Observed
+
+```
+$ .venv/Scripts/python.exe scripts/gates.py static
+ruff: clean against the 0 pinned baseline violation(s).
+complexity: clean against the 115 pinned function(s).
+source assertions: clean against the 44 pinned file(s), 113 site(s).
+static gates passed in 9.8s.
+
+$ .venv/Scripts/python.exe -m lizard app/services/deployment_service.py -C 15 -L 60 -a 11 --warnings_only
+app/services/deployment_service.py:714: warning: _eval_summary has 25 NLOC, 2 CCN, 150 token, 6 PARAM, 63 length, 0 ND
+app/services/deployment_service.py:919: warning: _fetch_eval_summary_sync has 116 NLOC, 12 CCN, 430 token, 2 PARAM, 204 length, 0 ND
+
+$ .venv/Scripts/python.exe -m mypy app/ --ignore-missing-imports --strict-optional
+Found 153 errors in 13 files (checked 156 source files)
+```
+
+153 before the pass and 153 after, none of them in `calibration_status.py`,
+`calibration_service.py` or the new helpers. The prompt paragraph grew and
+`_eval_summary`'s 63 lines did not move, because the paragraph is a module constant rather
+than a docstring.
+
+```
+$ .venv/Scripts/python.exe -m pytest tests/unit/test_calibration_status_type.py \
+    tests/unit/test_calibration_service.py tests/unit/test_calibration_harness.py \
+    tests/unit/test_deployment_service.py tests/unit/test_agreement_threshold.py \
+    tests/unit/test_agreement_statistics.py tests/unit/test_judge_identity_type.py \
+    tests/unit/test_judgement_temperature.py tests/unit/test_judges_disable_thinking.py -q
+438 passed in 131.03s (0:02:11)
+```
+
+383 before, 438 after.
+
+### The guards observed red
+
+**1. The `ceiling_beats_chance` requirement dropped**, back to the two-part loop. Run after
+`174384a`, restored with `git checkout HEAD -- apps/api/app/domain/calibration_status.py`.
+
+```
+E       Failed: DID NOT RAISE InvalidCalibrationStatus
+FAILED TestConstruction::test_calibrated_with_the_ceiling_never_beating_chance_is_refused
+FAILED TestConstruction::test_calibrated_with_the_ceiling_part_unevaluated_is_refused
+2 failed, 86 passed in 1.63s
+```
+
+Restored, `88 passed in 0.97s`.
+
+**2. `from_harness` reads `matthews` into `kappa` and `kappa` into `matthews`.** Run after
+`67f9913`, restored the same way. Both coefficients sit in [-1, 1] on the same 2x2, so the
+swap changes no type, no key set and no round trip, and on a perfect run both are 1.0.
+`_SPLIT_ROWS` is the fixture whose cells separate them.
+
+```
+E       AssertionError: assert 0.64 == 0.62
+FAILED TestTheArtifactIsReadBackByTheApp::test_each_coefficient_lands_in_its_own_field
+FAILED TestFromHarnessMapsEveryKey::test_every_mapped_key_reaches_its_field
+2 failed, 185 passed in 55.67s
+```
+
+**3. `main`'s guard around `compute_correlation` deleted**, so a run that raises leaves the
+previous artifact. Run after `67f9913`, restored with
+`git checkout HEAD -- apps/api/tests/evals/calibration/compute_correlation.py`.
+
+```
+E       FileNotFoundError: [Errno 2] No such file or directory:
+        ...test_the_crash_record_names_th0\calibration.json
+FAILED TestTheRunsThatMeasureNothingWriteNothing::test_a_run_that_raises_replaces_the_previous_answer
+FAILED TestTheRunsThatMeasureNothingWriteNothing::test_the_crash_record_names_the_type_and_never_the_message
+2 failed, 97 passed in 56.01s
+```
+
+Restored, `99 passed in 53.54s`.
+
+### Open after the review pass
+
+- **`scored_pairs >= 1` is the rule most likely to need revisiting.** See the paragraph
+  above. Nothing holds this but this trace, so open an issue before the first real
+  labelling run.
+- **The `no_artifact` line logs `str(Path(path))`, not `Path.resolve()`.** The setting is
+  absolute and a test pins that, so the two agree today. A caller passing a relative path
+  would log a relative one.
+- **`written_at` is not on the deploy summary.** `SUMMARY_KEYS` stays at eleven and
+  `labelled_at` is the date a deploy report can act on. Ticket 17 reads the record itself
+  if it needs the write time.

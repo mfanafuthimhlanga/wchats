@@ -28,8 +28,8 @@ def _find_env_file() -> str | None:
 #
 # The path is absolute and the file need not exist. `load_calibration_status`
 # returns `no_artifact` when it is missing, which is a real and correct answer
-# rather than a failure: `apps/api/.dockerignore` excludes `tests/`, so a
-# container has no calibration directory at all and no Judge has been shown
+# rather than a failure. `apps/api/.dockerignore` excludes `tests/`, so a
+# container has no calibration directory at all, and no Judge has been shown
 # calibrated there.
 def _calibration_artifact_file() -> str:
     return str(

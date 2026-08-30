@@ -8,10 +8,10 @@ WHAT THIS TYPE IS FOR
 
 WHY `calibrated` COSTS MORE THAN THE OTHER THREE STATUSES
     It is the one status a reader may act on. A record can only claim it while
-    naming the Judge it measured and carrying both measured halves of the verdict
-    as True. None is refused as hard as False here, because an unevaluated part is
-    an absence and a deploy shipping on an absence is shipping on a measurement
-    nobody made.
+    naming the Judge it measured, carrying all three parts of the verdict as True,
+    and carrying the intervals and coefficients the verdict was read off. None is
+    refused as hard as False here, because an unevaluated part is an absence and a
+    deploy shipping on an absence is shipping on a measurement nobody made.
 
 WHY THE PAYLOAD KEY SET IS PINNED TO A LITERAL
     Criterion 3, the reader half. Slice 2's writer and slice 3's consumer parse
@@ -427,12 +427,12 @@ def _record_for(status: str) -> CalibrationStatus:
 
 
 # ---------------------------------------------------------------------------
-# from_harness — the writer half of criterion 3 (ticket #53, slice 2)
+# from_harness, the writer half of criterion 3 (ticket #53, slice 2)
 # ---------------------------------------------------------------------------
 
 #: One `compute_correlation` result dict, with every key the mapping reads.
 #: Written out rather than imported from the harness, for the same reason
-#: PAYLOAD_KEYS is a literal: a fixture derived from the producer agrees with
+#: PAYLOAD_KEYS is a literal. A fixture derived from the producer agrees with
 #: whatever the producer currently emits.
 def _result(**overrides) -> dict:
     fields = {
