@@ -43,11 +43,17 @@ ZERO IS A MEASUREMENT AND NONE IS AN ABSENCE
     indistinguishable one reader later, which is the measurement-honesty rule this
     project runs on.
 
-WHAT IS NOT HERE
-    No `from_harness`. The mapping from the harness's result dict is slice 2's,
-    beside the writer that produces it, so this slice ships a shape the reader can
-    pin rather than a translation nobody has run yet. `payload` is laid out one
-    field per harness key so that mapping is a rename-free copy.
+`from_harness` MAPS AND NEVER COMPUTES
+    Slice 2 added it beside the writer that calls it. It copies one harness key
+    onto one field, reads the three verdict parts out of the `gate` dict, and
+    does no arithmetic at all, because arithmetic here would be a second copy of
+    `agreement.py` free to disagree with the first. A result dict missing a key
+    the mapping reads is refused rather than defaulted: a zero standing in for an
+    absent count reports a measurement nobody made.
+
+    `status`, `judge_identity`, `labelled_at` and `harness_version` are passed
+    in. None of the four is in the result dict, and the caller is the only thing
+    that knows them.
 
 Rung: `app.domain` imports the standard library, third-party packages and its
 domain siblings. This module imports the standard library and
@@ -322,6 +328,83 @@ def _require_calibrated_is_earned(record: CalibrationStatus) -> None:
             )
 
 
+def _harness_key(source: Mapping, key: str, where: str) -> Any:
+    """The value the harness stored under `key`. An absent key is a refusal.
+
+    A default in place of a missing key is how a record comes to report a
+    measurement nobody made: `kappa` defaulting to 0.0 reads as a judge that
+    agreed at chance, and `pairs` defaulting to 0 reads as a run that scored
+    nothing. Both are conclusions, and the harness stated neither.
+    """
+    if key not in source:
+        raise InvalidCalibrationStatus(
+            f"CalibrationStatus.from_harness needs {key!r} in the harness {where}. "
+            "A default in its place would report a figure the harness never stated."
+        )
+    return source[key]
+
+
+def _harness_gate(result: Mapping) -> Mapping:
+    """`calibration_verdict`'s dict, or an empty one when the run never reached it.
+
+    The four early returns in `compute_correlation` carry `gate: None`, which is
+    a value rather than a missing key: those runs stopped at a floor and no
+    verdict was reached. An empty mapping gives all three parts as None, which is
+    the absence the record already distinguishes from False.
+    """
+    gate = _harness_key(result, "gate", "result")
+    if gate is None:
+        return {}
+    if not isinstance(gate, Mapping):
+        raise InvalidCalibrationStatus(
+            f"CalibrationStatus needs the harness gate as a mapping or None, got "
+            f"{type(gate).__name__}"
+        )
+    return gate
+
+
+def _gate_part(gate: Mapping, key: str) -> bool | None:
+    """One of `calibration_verdict`'s three answers, as it stated it.
+
+    None for a part nobody could evaluate, and the distinction between that and
+    False is what separates "fix the judge" from "the measurement has not been
+    made". A gate that reached a verdict names all three, so a present gate
+    missing one is a refusal.
+    """
+    if not gate:
+        return None
+    return _harness_key(gate, key, "gate")
+
+
+def _harness_interval(result: Mapping, key: str) -> Interval | None:
+    """One of the harness's three interval dicts, or None where it left one undefined."""
+    stored = _harness_key(result, key, "result")
+    if stored is None:
+        return None
+    return Interval.from_payload(stored)
+
+
+def _harness_reason(gate: Mapping) -> str | None:
+    """The gate's own sentences, joined, or None when it wrote none.
+
+    `calibration_verdict` writes a sentence per part it could not pass, addressed
+    to the person who has to act on it. They are carried whole rather than
+    summarised into a token, because the token set a reader can switch on is
+    ABSENT_REASONS and the loader stamps those; these say which half moved.
+    """
+    if not gate:
+        return None
+    reasons = _harness_key(gate, "reasons", "gate")
+    if not reasons:
+        return None
+    if not isinstance(reasons, (list, tuple)):
+        raise InvalidCalibrationStatus(
+            f"CalibrationStatus needs the gate's reasons as a sequence, got "
+            f"{type(reasons).__name__}"
+        )
+    return " ".join(str(reason) for reason in reasons)
+
+
 @dataclass(frozen=True)
 class CalibrationStatus:
     """One calibration run's answer about one Judge, as the app reads it.
@@ -416,6 +499,66 @@ class CalibrationStatus:
                 f"got {reason!r}"
             )
         return cls(status=STATUS_NOT_CALIBRATED_YET, reason=reason)
+
+    @classmethod
+    def from_harness(
+        cls,
+        result: Mapping,
+        *,
+        status: str,
+        judge_identity: JudgeIdentity | None,
+        labelled_at: str | None,
+        harness_version: str | None,
+    ) -> CalibrationStatus:
+        """One harness result dict, mapped onto this record a key at a time.
+
+        NO ARITHMETIC HAPPENS HERE. Every number and every verdict part is copied
+        from where `compute_correlation` put it. The three parts come out of the
+        `gate` dict `agreement.calibration_verdict` built, so a `beats_chance` the
+        harness left as None arrives as None and never as False.
+
+        Args:
+            result:          `compute_correlation`'s result dict. Every key the
+                             mapping reads must be present; a missing one is
+                             refused rather than defaulted.
+            status:          the status to record. The caller's, not the result
+                             dict's, because a run the harness called `calibrated`
+                             over a Judge nobody can name is not a calibrated
+                             record and the writer is what knows which case it is.
+            judge_identity:  the one Judge the run scored with, or None.
+            labelled_at:     when the sheet the figure covers was last labelled.
+            harness_version: which build of the harness produced it.
+
+        Raises:
+            InvalidCalibrationStatus: `result` is not a mapping, it is missing a
+                key the mapping reads, or the record it builds breaks one of the
+                construction rules above.
+        """
+        if not isinstance(result, Mapping):
+            raise InvalidCalibrationStatus(
+                f"CalibrationStatus.from_harness needs a mapping, got "
+                f"{type(result).__name__}"
+            )
+        gate = _harness_gate(result)
+        return cls(
+            status=status,
+            reason=_harness_reason(gate),
+            judge_identity=judge_identity,
+            judge_interval=_harness_interval(result, "judge_interval"),
+            ceiling_interval=_harness_interval(result, "ceiling_interval"),
+            difference_interval=_harness_interval(result, "difference_interval"),
+            beats_chance=_gate_part(gate, "beats_chance"),
+            ceiling_beats_chance=_gate_part(gate, "ceiling_beats_chance"),
+            reaches_ceiling=_gate_part(gate, "reaches_ceiling"),
+            kappa=_harness_key(result, "kappa", "result"),
+            matthews=_harness_key(result, "matthews", "result"),
+            scored_pairs=_harness_key(result, "scored_pairs", "result"),
+            pairs=_harness_key(result, "pairs", "result"),
+            attempted=_harness_key(result, "attempted", "result"),
+            valid=_harness_key(result, "valid", "result"),
+            labelled_at=labelled_at,
+            harness_version=harness_version,
+        )
 
     @property
     def payload(self) -> dict:

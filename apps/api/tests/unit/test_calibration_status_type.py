@@ -285,3 +285,220 @@ def _record_for(status: str) -> CalibrationStatus:
     if status == STATUS_CALIBRATED:
         return _calibrated()
     return CalibrationStatus(status=status)
+
+
+# ---------------------------------------------------------------------------
+# from_harness — the writer half of criterion 3 (ticket #53, slice 2)
+# ---------------------------------------------------------------------------
+
+#: One `compute_correlation` result dict, with every key the mapping reads.
+#: Written out rather than imported from the harness, for the same reason
+#: PAYLOAD_KEYS is a literal: a fixture derived from the producer agrees with
+#: whatever the producer currently emits.
+def _result(**overrides) -> dict:
+    fields = {
+        "kappa": 0.62,
+        "matthews": 0.64,
+        "judge_interval": {"low": 0.41, "high": 0.83, "point": 0.62, "usable": True},
+        "ceiling_interval": {"low": 0.55, "high": 0.91, "point": 0.74, "usable": True},
+        "difference_interval": {
+            "low": -0.09, "high": 0.24, "point": 0.12, "usable": True,
+        },
+        "gate": {
+            "beats_chance": True,
+            "ceiling_beats_chance": True,
+            "reaches_ceiling": True,
+            "calibrated": True,
+            "reasons": [],
+        },
+        "scored_pairs": 24,
+        "pairs": 30,
+        "attempted": 34,
+        "valid": 32,
+        # Carried by the harness and deliberately not mapped: the report card a
+        # human reads at the terminal, and three numbers nothing gates on.
+        "cells": {"both_pass": 20, "both_fail": 8},
+        "rho": 0.91,
+        "pair_rate": 0.9375,
+        "errors": [],
+        "table": [],
+        "status": STATUS_CALIBRATED,
+    }
+    fields.update(overrides)
+    return fields
+
+
+#: Every key `from_harness` reads out of the result dict. A parametrised refusal
+#: over this list is what goes red when the mapping stops reading one of them.
+MAPPED_HARNESS_KEYS = [
+    "kappa",
+    "matthews",
+    "judge_interval",
+    "ceiling_interval",
+    "difference_interval",
+    "gate",
+    "scored_pairs",
+    "pairs",
+    "attempted",
+    "valid",
+]
+
+
+def _from_harness(result, **overrides) -> CalibrationStatus:
+    fields = {
+        "status": STATUS_CALIBRATED,
+        "judge_identity": _identity(),
+        "labelled_at": "2026-08-29T10:15:00+00:00",
+        "harness_version": "compute_correlation.py@1",
+    }
+    fields.update(overrides)
+    return CalibrationStatus.from_harness(result, **fields)
+
+
+class TestFromHarnessMapsEveryKey:
+    """The harness's dict is copied onto the record, one key at a time."""
+
+    def test_every_mapped_key_reaches_its_field(self):
+        record = _from_harness(_result())
+
+        assert record.kappa == 0.62
+        assert record.matthews == 0.64
+        assert record.judge_interval == Interval(
+            low=0.41, high=0.83, point=0.62, usable=True
+        )
+        assert record.ceiling_interval == Interval(
+            low=0.55, high=0.91, point=0.74, usable=True
+        )
+        assert record.difference_interval == Interval(
+            low=-0.09, high=0.24, point=0.12, usable=True
+        )
+        assert record.scored_pairs == 24
+        assert record.pairs == 30
+        assert record.attempted == 34
+        assert record.valid == 32
+
+    def test_the_four_fields_the_result_dict_does_not_hold_come_from_the_caller(self):
+        """None of these four is in the result dict, and only the writer knows them."""
+        record = _from_harness(_result(), status=STATUS_NOT_CALIBRATED_YET)
+
+        assert record.status == STATUS_NOT_CALIBRATED_YET
+        assert record.judge_identity == _identity()
+        assert record.labelled_at == "2026-08-29T10:15:00+00:00"
+        assert record.harness_version == "compute_correlation.py@1"
+
+    def test_the_status_is_the_callers_and_not_the_result_dicts(self):
+        """A run the harness called calibrated over a Judge nobody can name is not
+        a calibrated record, and the writer is what knows which case it is."""
+        record = _from_harness(
+            _result(status=STATUS_CALIBRATED),
+            status=STATUS_NOT_CALIBRATED_YET,
+            judge_identity=None,
+        )
+
+        assert record.status == STATUS_NOT_CALIBRATED_YET
+        assert record.calibrated is False
+
+    def test_the_record_it_builds_round_trips_through_its_own_payload(self):
+        record = _from_harness(_result())
+
+        assert CalibrationStatus.from_payload(record.payload) == record
+
+    def test_nothing_the_harness_reports_but_does_not_gate_on_reaches_the_record(self):
+        """`cells`, `rho` and `pair_rate` are the terminal's, not the gate's."""
+        payload = _from_harness(_result()).payload
+
+        assert set(payload).isdisjoint({"cells", "rho", "pair_rate", "errors", "table"})
+
+
+class TestFromHarnessCarriesTheVerdictAsStated:
+    """Three parts, copied. None is an absence and never becomes False."""
+
+    def test_the_three_parts_come_off_the_gate(self):
+        record = _from_harness(_result())
+
+        assert record.beats_chance is True
+        assert record.ceiling_beats_chance is True
+        assert record.reaches_ceiling is True
+
+    def test_a_part_the_gate_left_unevaluated_stays_none(self):
+        """`calibration_verdict` writes None for a part nobody could evaluate."""
+        gate = dict(_result()["gate"], beats_chance=None, calibrated=False)
+        record = _from_harness(_result(gate=gate), status=STATUS_NOT_CALIBRATED_YET)
+
+        assert record.beats_chance is None, "None, never False"
+        assert record.ceiling_beats_chance is True
+
+    def test_a_run_that_reached_no_gate_carries_three_absences(self):
+        """The four early returns in the harness carry `gate` as None."""
+        record = _from_harness(_result(gate=None), status=STATUS_NOT_CALIBRATED_YET)
+
+        assert record.beats_chance is None
+        assert record.ceiling_beats_chance is None
+        assert record.reaches_ceiling is None
+        assert record.reason is None
+
+    def test_the_gates_sentences_become_the_reason(self):
+        gate = dict(
+            _result()["gate"],
+            reaches_ceiling=None,
+            calibrated=False,
+            reasons=["(b) NOT MEASURED.", "Run --emit-second-pass."],
+        )
+        record = _from_harness(_result(gate=gate), status=STATUS_NOT_CALIBRATED_YET)
+
+        assert record.reason == "(b) NOT MEASURED. Run --emit-second-pass."
+
+    def test_a_gate_that_wrote_no_sentences_leaves_the_reason_absent(self):
+        assert _from_harness(_result()).reason is None
+
+    def test_a_gate_missing_one_of_its_three_parts_is_refused(self):
+        gate = {k: v for k, v in _result()["gate"].items() if k != "reaches_ceiling"}
+
+        with pytest.raises(InvalidCalibrationStatus):
+            _from_harness(_result(gate=gate))
+
+
+class TestFromHarnessRefusesWhatItCannotMap:
+    """A missing key is refused, never defaulted."""
+
+    def test_a_result_missing_the_judge_interval_is_refused(self):
+        result = {k: v for k, v in _result().items() if k != "judge_interval"}
+
+        with pytest.raises(InvalidCalibrationStatus) as exc:
+            _from_harness(result)
+
+        assert "judge_interval" in str(exc.value)
+
+    @pytest.mark.parametrize("key", MAPPED_HARNESS_KEYS)
+    def test_a_result_missing_any_mapped_key_is_refused(self, key):
+        """Parametrised over the whole mapping, so a key the mapping quietly stops
+        reading turns this red on the commit that drops it."""
+        result = {k: v for k, v in _result().items() if k != key}
+
+        with pytest.raises(InvalidCalibrationStatus) as exc:
+            _from_harness(result)
+
+        assert key in str(exc.value)
+
+    def test_a_result_that_is_not_a_mapping_is_refused(self):
+        with pytest.raises(InvalidCalibrationStatus):
+            _from_harness(["kappa", 0.62])
+
+    def test_a_gate_that_is_not_a_mapping_is_refused(self):
+        with pytest.raises(InvalidCalibrationStatus):
+            _from_harness(_result(gate="calibrated"))
+
+    def test_an_interval_the_harness_left_undefined_is_none_and_not_a_refusal(self):
+        record = _from_harness(
+            _result(ceiling_interval=None, difference_interval=None),
+            status=STATUS_NOT_CALIBRATED_YET,
+        )
+
+        assert record.ceiling_interval is None
+        assert record.difference_interval is None
+        assert record.judge_interval is not None
+
+    def test_a_calibrated_status_with_no_judge_identity_is_still_refused(self):
+        """The record's own rule, reached through the mapping."""
+        with pytest.raises(InvalidCalibrationStatus):
+            _from_harness(_result(), judge_identity=None)
