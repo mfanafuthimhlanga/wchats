@@ -509,6 +509,100 @@ class TestGoldenGate:
         assert verdict.outcome is Outcome.SHIP
         assert _rules(verdict) == []
 
+    def test_golden_scenarios_the_judge_never_decided_block(self):
+        """THE AMENDMENT. Nothing failed, and half the golden set was not confirmed.
+
+        This is the shape a Judge timeout produces: every row scored, six of them
+        carrying a NULL on a gated dimension, so `scenarios_failed` stays at 0 and
+        the failure rule sees a clean set. Six golden behaviours nobody decided
+        are six behaviours this agent has not been shown to have, and the module
+        writes "every golden scenario must pass" as its threshold.
+        """
+        verdict = _all_clear(
+            eval_result=_eval(
+                golden=_dataset(
+                    attempted=12, scored=12, passed=6, failed=0, unmeasured=6
+                ),
+                exploratory=_dataset(attempted=100, scored=100, passed=92),
+            )
+        )
+
+        assert verdict.outcome is Outcome.BLOCK
+        assert _rules(verdict) == ["golden_unconfirmed"]
+        assert _reason(verdict, "golden_unconfirmed").observed == (
+            "6 of the 12 attempted golden scenarios were never confirmed: "
+            "6 left at least one check undecided"
+        )
+        assert _reason(verdict, "golden_unconfirmed").threshold == (
+            "every golden scenario the run attempts must come back with a "
+            "decision, and that decision must be a pass"
+        )
+
+    def test_golden_scenarios_that_were_never_scored_block(self):
+        """The golden shortfall the pooled coverage denominator cannot see.
+
+        101 of 110 attempted scenarios scored is 91.8%, over the run-level floor,
+        because the 100 exploratory rows carry the ratio. Nine of the ten golden
+        scenarios were never scored, and the golden set is the half whose absence
+        matters most. The assertion below pins BOTH halves: the pooled floor
+        stays silent, and the run blocks anyway.
+        """
+        verdict = _all_clear(
+            eval_result=_eval(
+                golden=_dataset(attempted=10, scored=1, passed=1),
+                exploratory=_dataset(attempted=100, scored=100, passed=92),
+            )
+        )
+
+        assert verdict.outcome is Outcome.BLOCK
+        assert _rules(verdict) == ["golden_unconfirmed"]
+        assert _reason(verdict, "golden_unconfirmed").observed == (
+            "9 of the 10 attempted golden scenarios were never confirmed: "
+            "9 produced no score at all"
+        )
+
+    def test_a_golden_set_scored_and_passed_in_full_raises_no_rule(self):
+        """The other side of that boundary. One undecided row is the whole gap."""
+        clean = _all_clear(
+            eval_result=_eval(
+                golden=_dataset(attempted=12, scored=12, passed=12),
+                exploratory=_dataset(attempted=100, scored=100, passed=92),
+            )
+        )
+        one_short = _all_clear(
+            eval_result=_eval(
+                golden=_dataset(
+                    attempted=12, scored=12, passed=11, failed=0, unmeasured=1
+                ),
+                exploratory=_dataset(attempted=100, scored=100, passed=92),
+            )
+        )
+
+        assert (clean.outcome, _rules(clean)) == (Outcome.SHIP, [])
+        assert one_short.outcome is Outcome.BLOCK
+        assert _rules(one_short) == ["golden_unconfirmed"]
+
+    def test_a_failed_and_an_undecided_golden_scenario_report_both_rules(self):
+        """Two different things went wrong and an owner reads both of them.
+
+        A scenario that failed was measured and came back wrong. A scenario
+        nobody decided was not measured. Folding them into one count would tell
+        the owner to go and look at the wrong rows.
+        """
+        verdict = _all_clear(
+            eval_result=_eval(
+                golden=_dataset(
+                    attempted=12, scored=12, passed=10, failed=1, unmeasured=1
+                ),
+                exploratory=_dataset(attempted=100, scored=100, passed=92),
+            )
+        )
+
+        assert _rules(verdict) == ["golden_failure", "golden_unconfirmed"]
+        assert _reason(verdict, "golden_failure").observed == (
+            "1 of the 12 scored golden scenarios failed"
+        )
+
     def test_a_short_golden_set_that_also_failed_reports_both_rules(self):
         """Nothing short-circuits, so an owner sees the whole picture at once."""
         verdict = _all_clear(
@@ -785,6 +879,13 @@ class TestDecide:
         assert verdict.outcome is Outcome.SHIP
         assert verdict.reasons == ()
         assert verdict.rule_version == RULE_VERSION
+
+    def test_the_rule_version_names_the_amended_table(self):
+        """Two is the table that confirms the golden set rather than only its
+        failures. Version 1 gated golden on `scenarios_failed` alone, so the two
+        tables reach different outcomes over one run, and this field is how a
+        reader of a stored decision tells which one produced it."""
+        assert RULE_VERSION == 2
 
     def test_every_reason_names_a_signal_an_observed_value_and_a_threshold(self):
         """Criterion 4, over a verdict that fires most of the table at once."""
