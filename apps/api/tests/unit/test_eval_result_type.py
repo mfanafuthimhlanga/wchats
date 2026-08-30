@@ -540,6 +540,63 @@ class TestThePayloadRoundTrips:
         with pytest.raises(InvalidEvalResult):
             EvalResult.from_payload(payload)
 
+    def test_a_malformed_judge_identity_is_this_modules_refusal(self):
+        """A TypeError out of `JudgeIdentity(**identity)` escaped as a TypeError.
+
+        Every reader catches InvalidEvalResult, so a shape that raised anything
+        else took the caller down with it: one bad row 500'd `GET /eval-runs` for
+        every run on the agent.
+        """
+        payload = _result().payload
+        payload["judge_identity"] = {**payload["judge_identity"], "temperature": 0.7}
+        with pytest.raises(InvalidEvalResult):
+            EvalResult.from_payload(payload)
+
+    def test_an_identity_missing_a_field_is_refused_the_same_way(self):
+        payload = _result().payload
+        payload["judge_identity"] = {"model": "gpt-5.6-luna"}
+        with pytest.raises(InvalidEvalResult):
+            EvalResult.from_payload(payload)
+
+    def test_an_identity_that_is_a_string_is_refused_the_same_way(self):
+        payload = _result().payload
+        payload["judge_identity"] = "gpt-5.6-luna"
+        with pytest.raises(InvalidEvalResult):
+            EvalResult.from_payload(payload)
+
+    def test_a_count_stored_as_text_is_refused_the_same_way(self):
+        """`Invocation` compares an int; a string reaches the comparison operators."""
+        payload = _result().payload
+        payload["invocation"]["valid"] = "four"
+        with pytest.raises(InvalidEvalResult):
+            EvalResult.from_payload(payload)
+
+    def test_a_stored_total_that_disagrees_with_the_datasets_is_refused(self):
+        """The payload writes the totals AND the datasets they were summed from.
+
+        `from_payload` re-sums the datasets, so an `attempted: 999` read back as
+        four and the row held two answers with nothing choosing between them.
+        """
+        payload = _result().payload
+        payload["attempted"] = 999
+        with pytest.raises(InvalidEvalResult) as exc:
+            EvalResult.from_payload(payload)
+        assert "999" in str(exc.value)
+
+    def test_each_of_the_three_totals_is_checked(self):
+        for name in ("attempted", "valid", "scored"):
+            payload = _result().payload
+            payload[name] = payload[name] + 1
+            with pytest.raises(InvalidEvalResult):
+                EvalResult.from_payload(payload)
+
+    def test_a_payload_with_no_totals_at_all_still_reads(self):
+        """Absence is silence. The datasets are where the numbers were measured."""
+        payload = _result().payload
+        for name in ("attempted", "valid", "scored"):
+            payload.pop(name)
+        assert EvalResult.from_payload(payload) == _result()
+
     def test_the_payload_keys_are_the_ones_the_docstring_enumerates(self):
         assert set(_result().payload) == {
             "run_id",

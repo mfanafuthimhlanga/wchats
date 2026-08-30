@@ -2518,6 +2518,72 @@ class TestDatasetVerdictCounts:
         assert counts["exploratory"] == (0, 1, 0)
 
 
+class TestRunJudgeIdentity:
+    """The run-level Judge is the one its records name (#51 F9).
+
+    It used to ask `route_for` again at record-build time, minutes after scoring
+    and through a different door from the one the scores came out of. A routing
+    change between the two would have stamped the record with a Judge that scored
+    nothing on this run.
+    """
+
+    def _identity(self, model="gpt-5.6-luna", effort="none"):
+        from app.domain.judge_identity import JUDGE_PROMPT_VERSION, JudgeIdentity
+
+        return JudgeIdentity(
+            model=model, reasoning_effort=effort, prompt_version=JUDGE_PROMPT_VERSION
+        )
+
+    def _records(self, *identities):
+        """One record per identity, on the golden rows `_RECORD_SCENARIOS` names.
+
+        The ids match, so a record built from these agrees with the validity
+        report about which scenarios were scored. Only faithfulness is scored, so
+        both scenarios read unmeasured, which is what the counts say.
+        """
+        from app.domain.judge_record import JudgeRecord
+
+        return [
+            JudgeRecord.scored(
+                scenario_id=scenario_id,
+                metric="faithfulness",
+                score=0.95,
+                threshold=0.9,
+                judge_identity=identity,
+            )
+            for scenario_id, identity in zip(("g1", "g2"), identities)
+        ]
+
+    def test_one_judge_across_the_records_is_the_runs_judge(self):
+        from app.services.eval_service import run_judge_identity
+
+        identity = self._identity()
+        assert run_judge_identity(self._records(identity, identity)) == identity
+
+    def test_two_judges_across_the_records_is_no_run_level_judge(self):
+        """A field that picked one would name the Judge behind half the scores."""
+        from app.services.eval_service import run_judge_identity
+
+        records = self._records(self._identity(), self._identity(effort="high"))
+        assert run_judge_identity(records) is None
+
+    def test_a_record_carrying_no_identity_is_no_run_level_judge(self):
+        from app.services.eval_service import run_judge_identity
+
+        assert run_judge_identity(self._records(self._identity(), None)) is None
+
+    def test_no_records_at_all_is_no_run_level_judge(self):
+        from app.services.eval_service import run_judge_identity
+
+        assert run_judge_identity([]) is None
+
+    def test_the_record_is_stamped_with_the_identity_its_records_carry(self):
+        """And not with whatever the routing table says at build time."""
+        identity = self._identity(model="a-judge-that-did-not-run")
+        built = _built(judge_records=self._records(identity, identity))
+        assert built.judge_identity == identity
+
+
 class TestServedAgentModel:
     """What actually served the turns, when one thing did."""
 

@@ -2238,25 +2238,30 @@ def read_run_ledger(run_id: str, conn_str: str) -> list[ModelCall]:
         return []
 
 
-def run_judge_identity() -> JudgeIdentity | None:
-    """The one Judge behind all four dimensions, or None when there is not one.
+def run_judge_identity(judge_records: Sequence[JudgeRecord]) -> JudgeIdentity | None:
+    """The one Judge every record names, or None when they do not name one.
 
-    Every metric has its own route, so four Judges are possible and today they
-    are the same one. None when they differ, and None when any route named no
-    reasoning effort: a run-level field that picked the first of four would
-    report the Judge that produced one score as the Judge that produced all of
-    them. The per-call identity on the `eval_results` rows is finer grained than
-    this either way, and slice 2 is what puts it there.
+    READ OFF THE RECORDS THE RUN BUILT, not off `route_for` at record-build time.
+    It asked the routing table again, minutes after scoring and through a
+    different door from the one the scores came out of, so a config change
+    between the two would have stamped the record with a Judge that scored
+    nothing. The identities on the records are the ones that ran.
+
+    None when the records disagree, None when a record carries no identity, and
+    None when there are no records at all: a run-level field that picked the
+    first of four would report the Judge behind one score as the Judge behind all
+    of them. The per-call identity on the `eval_results` rows is finer grained
+    than this either way, and slice 2 is what puts it there.
     """
-    identities = [judge_identity_for(metric) for metric in METRIC_KEYS]
-    if len(set(identities)) == 1 and identities[0] is not None:
-        return identities[0]
+    identities = {record.judge_identity for record in judge_records}
+    if len(identities) == 1:
+        return identities.pop()
     log.warning(
         "run_judge_identity.not_one_judge",
-        identities=[
-            dataclasses.asdict(identity) if identity else None
+        identities=sorted(
+            str(dataclasses.asdict(identity)) if identity else "none"
             for identity in identities
-        ],
+        ),
         detail=(
             "the run records no single Judge; the per-metric identity is on the "
             "eval_results rows"
@@ -2419,7 +2424,7 @@ def build_eval_result(
         run_id=run_id,
         agent_id=agent_id,
         prompt_version_id=prompt_version_id,
-        judge_identity=run_judge_identity(),
+        judge_identity=run_judge_identity(judge_records),
         requested_model=AGENT_TURN_MODEL,
         served_model=served_agent_model(ledger),
         invocation=Invocation(

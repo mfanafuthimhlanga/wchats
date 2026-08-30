@@ -615,6 +615,60 @@ class TestListEvalRuns:
         assert run["scenario_count"] is None
         assert run["scored_scenario_count"] is None
 
+    async def test_one_malformed_identity_costs_that_run_and_no_other(self):
+        """A stored identity carrying a key `JudgeIdentity` does not take.
+
+        `JudgeIdentity(**identity)` raises TypeError on it, and `_record_of`
+        catches InvalidEvalResult alone, so this row used to take the whole
+        response down with a 500: every OTHER run on the agent disappeared from
+        the console because one row was written wrong. `from_payload` now refuses
+        the shape it cannot read, which loses that record and nothing else.
+        """
+        rows = _fake_eval_runs_rows()
+        payload = rows[0][4]
+        payload["judge_identity"] = {
+            "model": "gpt-5.6-luna",
+            "reasoning_effort": "none",
+            "prompt_version": "ragas-0.4.1",
+            # The key that was not there when this record was written.
+            "temperature": 0.7,
+        }
+
+        body = await self._get_runs([(*rows[0][:4], payload), rows[1]])
+
+        assert len(body["eval_runs"]) == 2
+        assert body["eval_runs"][0]["result"] == "absent"
+        assert body["eval_runs"][0]["scored_scenario_count"] is None
+        assert body["eval_runs"][1]["status"] == "failed", (
+            "the other runs are intact; one unreadable record is one run's loss"
+        )
+
+    async def test_a_stored_identity_that_is_not_a_mapping_is_refused_too(self):
+        """The same TypeError one shape over: `**` over a string."""
+        rows = _fake_eval_runs_rows()
+        payload = rows[0][4]
+        payload["judge_identity"] = "gpt-5.6-luna"
+
+        body = await self._get_runs([(*rows[0][:4], payload)])
+
+        assert body["eval_runs"][0]["result"] == "absent"
+
+    async def test_a_stored_total_that_disagrees_with_its_datasets_is_refused(self):
+        """`attempted: 999` over datasets attempting twenty read back as twenty.
+
+        The payload writes the run-level totals AND the datasets they came from.
+        A reader that re-sums and ignores what is written down leaves the row
+        holding two answers with nothing choosing between them.
+        """
+        rows = _fake_eval_runs_rows()
+        payload = rows[0][4]
+        payload["attempted"] = 999
+
+        body = await self._get_runs([(*rows[0][:4], payload)])
+
+        assert body["eval_runs"][0]["result"] == "absent"
+        assert body["eval_runs"][0]["scenario_count"] is None
+
     async def test_the_list_query_aggregates_nothing(self):
         """A source-level pin on the shape of the query itself.
 

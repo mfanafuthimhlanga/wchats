@@ -755,6 +755,37 @@ def cost_of_run(calls: Sequence[ModelCall]) -> Cost:
     )
 
 
+#: The three run-level counts `payload` writes beside the datasets they came from.
+_RUN_TOTALS = ("attempted", "valid", "scored")
+
+
+def _require_totals_agree(payload: Mapping, record: EvalResult) -> None:
+    """The stored run-level totals say what the stored datasets add up to.
+
+    `payload` writes attempted, valid and scored at the top level AND inside each
+    dataset. `from_payload` re-sums the datasets, so a payload claiming
+    `attempted: 999` over two datasets attempting thirty read back as thirty and
+    the row held two answers with nothing choosing between them. Writing a number
+    down and then ignoring it is how a reader comes to trust the one that is
+    wrong.
+
+    A payload missing a total is not refused. The datasets are the source and a
+    total is a convenience for a reader that has them; absence is silence, while
+    a different number is a contradiction.
+
+    Raises:
+        InvalidEvalResult: a stored total disagrees with the datasets under it.
+    """
+    for name in _RUN_TOTALS:
+        stored = payload.get(name)
+        if stored is not None and stored != getattr(record, name):
+            raise InvalidEvalResult(
+                f"EvalResult stores {name}={stored!r} over datasets that add up "
+                f"to {getattr(record, name)}. One run cannot have two answers to "
+                "one count, and the datasets are where the numbers were measured"
+            )
+
+
 def _require_failures(failures: Sequence[ScenarioFailure], failed: int) -> None:
     """Every entry is a ScenarioFailure, and there are no more of them than `failed`.
 
@@ -978,13 +1009,17 @@ class EvalResult:
         """Rebuild the record from a stored `eval_runs.result`.
 
         The round trip is the contract: `EvalResult.from_payload(r.payload) == r`.
-        A stored row is validated on the way out exactly as it was on the way in,
-        so a payload written by a build with different rules is refused here
-        rather than read as this build's shape.
+        A stored row is validated on the way out exactly as it was on the way in.
+
+        EVERY WAY A STORED SHAPE CAN BE WRONG LEAVES HERE AS InvalidEvalResult.
+        `JudgeIdentity(**identity)` over an identity carrying an extra key, a
+        missing key or a string raises TypeError, and the routes catch
+        InvalidEvalResult alone, so one malformed row returned 500 for the whole
+        of `GET /eval-runs`. A reader of one bad record loses that record only.
 
         Raises:
-            InvalidEvalResult: the stored shape is not a mapping, or it breaks a
-                construction rule.
+            InvalidEvalResult: the stored shape is not a mapping, breaks a
+                construction rule, or cannot be read as this record at all.
         """
         if not isinstance(payload, Mapping):
             raise InvalidEvalResult(
@@ -996,30 +1031,40 @@ class EvalResult:
             raise InvalidEvalResult(
                 f"EvalResult needs datasets as a mapping, got {type(datasets).__name__}"
             )
-        return cls(
-            run_id=payload.get("run_id"),
-            agent_id=payload.get("agent_id"),
-            invocation=Invocation.from_payload(payload.get("invocation") or {}),
-            datasets={
-                name: DatasetOutcome.from_payload(value)
-                for name, value in datasets.items()
-            },
-            requested_model=payload.get("requested_model"),
-            cost=Cost.from_payload(payload.get("cost") or {}),
-            served_model=payload.get("served_model"),
-            prompt_version_id=payload.get("prompt_version_id"),
-            judge_identity=JudgeIdentity(**identity) if identity else None,
-            # A payload written before #25 has no failures key. It reads as no
-            # failure detail, which is what it holds, never as no failures.
-            failures=[
-                ScenarioFailure.from_payload(failure)
-                for failure in payload.get("failures") or []
-            ],
-            context_proxy_version=payload.get(
-                "context_proxy_version", CONTEXT_PROXY_VERSION
-            ),
-            rule_version=payload.get("rule_version", RULE_VERSION),
-        )
+        try:
+            record = cls(
+                run_id=payload.get("run_id"),
+                agent_id=payload.get("agent_id"),
+                invocation=Invocation.from_payload(payload.get("invocation") or {}),
+                datasets={
+                    name: DatasetOutcome.from_payload(value)
+                    for name, value in datasets.items()
+                },
+                requested_model=payload.get("requested_model"),
+                cost=Cost.from_payload(payload.get("cost") or {}),
+                served_model=payload.get("served_model"),
+                prompt_version_id=payload.get("prompt_version_id"),
+                judge_identity=JudgeIdentity(**identity) if identity else None,
+                # No failures key reads as no failure DETAIL, never as none.
+                failures=[
+                    ScenarioFailure.from_payload(failure)
+                    for failure in payload.get("failures") or []
+                ],
+                context_proxy_version=payload.get(
+                    "context_proxy_version", CONTEXT_PROXY_VERSION
+                ),
+                rule_version=payload.get("rule_version", RULE_VERSION),
+            )
+        except InvalidEvalResult:
+            # Already this module's refusal, carrying which rule it broke.
+            raise
+        except (TypeError, KeyError, ValueError, AttributeError) as exc:
+            raise InvalidEvalResult(
+                "EvalResult cannot be rebuilt from this stored shape "
+                f"({type(exc).__name__}: {exc})"
+            ) from exc
+        _require_totals_agree(payload, record)
+        return record
 
 
 #: A metric nothing reported. One shared object, because Measurement is frozen
