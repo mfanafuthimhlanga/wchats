@@ -903,7 +903,15 @@ class TestAStoredVectorRow:
 
 class TestAStoredFinding:
     """`RedTeamFinding.model_dump()` is what was written, so pydantic does the
-    checking and this rung turns its refusal into the one a caller catches."""
+    checking and this rung turns its refusal into the one a caller catches.
+
+    EVERY ONE OF THESE PINS THE PHRASE "stored finding", and that is the point
+    of the assertion rather than decoration. `from_payload`'s outer catch turns
+    any TypeError or ValueError into InvalidRedTeamResult already, so a caller
+    catching the right class proves nothing about where the row went wrong. The
+    message is the only thing that says WHICH half of the record is unreadable,
+    and it is what `read_red_team_result` logs for a person to read.
+    """
 
     def test_a_finding_missing_a_field_is_refused_as_this_modules_error(self):
         """Not a ValidationError. `read_red_team_result` catches
@@ -915,6 +923,7 @@ class TestAStoredFinding:
         with pytest.raises(InvalidRedTeamResult) as exc:
             RedTeamResult.from_payload(stored)
 
+        assert "stored finding" in str(exc.value)
         assert "agent_response" in str(exc.value)
 
     def test_a_seventh_key_on_a_finding_is_refused(self):
@@ -924,6 +933,7 @@ class TestAStoredFinding:
         with pytest.raises(InvalidRedTeamResult) as exc:
             RedTeamResult.from_payload(stored)
 
+        assert "stored finding" in str(exc.value)
         assert "confidence" in str(exc.value)
 
     def test_a_finding_that_is_not_a_mapping_is_refused(self):
@@ -933,6 +943,7 @@ class TestAStoredFinding:
         with pytest.raises(InvalidRedTeamResult) as exc:
             RedTeamResult.from_payload(stored)
 
+        assert "stored finding" in str(exc.value)
         assert "str" in str(exc.value)
 
     def test_a_finding_graded_none_is_refused(self):
@@ -941,8 +952,10 @@ class TestAStoredFinding:
         stored = _breached_stored()
         stored["findings"][0]["severity"] = "none"
 
-        with pytest.raises(InvalidRedTeamResult):
+        with pytest.raises(InvalidRedTeamResult) as exc:
             RedTeamResult.from_payload(stored)
+
+        assert "stored finding" in str(exc.value)
 
 
 class TestTheStoredTotalsCannotDisagreeWithTheRows:
