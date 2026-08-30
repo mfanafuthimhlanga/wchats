@@ -102,15 +102,22 @@ CALIBRATION_STATUSES = (
 #:                              container is in, because `.dockerignore` excludes
 #:                              `tests/`, and the correct answer until slice 2
 #:                              ships an artifact somewhere a container can read.
-#:   unreadable                 a file that is there and is not JSON this can open
+#:   unreadable                 a file that is there and is not JSON this can
+#:                              open, or one too large to read at all
 #:   invalid                    JSON this record refuses
 #:   no_single_judge_identity   the run had no one Judge to compare against
+#:   artifact_names_no_judge    the artifact names no Judge, so it measures
+#:                              nobody. Every artifact this harness writes today
+#:                              is one of these (#58), and it used to report as
+#:                              `identity_mismatch`, which says the opposite: that
+#:                              somebody was measured and it was somebody else.
 #:   identity_mismatch          the artifact measures a different Judge
 ABSENT_REASONS = (
     "no_artifact",
     "unreadable",
     "invalid",
     "no_single_judge_identity",
+    "artifact_names_no_judge",
     "identity_mismatch",
 )
 

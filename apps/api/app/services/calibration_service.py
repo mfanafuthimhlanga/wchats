@@ -16,6 +16,12 @@ WHY THE IDENTITY IS CHECKED BEFORE THE FILE IS OPENED
     `no_artifact` there would send an owner to write an artifact that still would
     not match.
 
+WHY AN ARTIFACT THAT NAMES NO JUDGE IS NOT A MISMATCH
+    A mismatch says somebody was measured and it was somebody else. A null
+    identity says nobody was measured, which is what every artifact this harness
+    writes today reports (#58). They were one branch, so the honest answer came
+    out as the wrong one and the log line beside it carried three None fields.
+
 WHY A MISMATCH IS AN ABSENCE AND NOT A FAILURE
     An artifact measured against a different model, effort or prompt says nothing
     about this run's Judge. `.dev/reference/260818-llm-eval-fundamentals.md`
@@ -64,6 +70,15 @@ from app.domain.judge_identity import JudgeIdentity
 
 log = structlog.get_logger(__name__)
 
+#: The largest artifact this reads into memory. One record of nineteen keys is
+#: under two kilobytes, so a megabyte is five hundred times the honest size and
+#: still cheap to refuse. The ceiling exists because this runs inside the API
+#: process while it assembles a deploy summary: whatever else ends up at that
+#: path, reading all of it before anything can judge the size is the API's
+#: memory, and `unreadable` is already the honest answer for a file that is not
+#: this artifact.
+MAX_ARTIFACT_BYTES = 1024 * 1024
+
 
 def load_calibration_status(
     path: str | os.PathLike, identity: JudgeIdentity | None
@@ -82,13 +97,15 @@ def load_calibration_status(
         return CalibrationStatus.absent("no_single_judge_identity")
 
     artifact = Path(path)
+    refused = _refused_before_reading(artifact)
+    if refused is not None:
+        return CalibrationStatus.absent(refused)
+
     try:
         payload = json.loads(artifact.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        # The state a container is in: `.dockerignore` excludes `tests/`. Correct
-        # until an artifact ships somewhere a container can read.
-        return CalibrationStatus.absent("no_artifact")
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        return CalibrationStatus.absent(_absent_artifact(artifact))
+    except (MemoryError, OSError, UnicodeDecodeError, ValueError) as exc:
         log.warning(
             "calibration_artifact_unreadable",
             path=str(artifact),
@@ -110,20 +127,100 @@ def load_calibration_status(
         )
         return CalibrationStatus.absent("invalid")
 
-    stored = record.judge_identity
+    absence = _judge_absence(record.judge_identity, identity)
+    if absence is not None:
+        return CalibrationStatus.absent(absence)
+    return record
+
+
+def _absent_artifact(artifact: Path) -> str:
+    """Say where it looked and whether that directory exists. Stamp `no_artifact`.
+
+    INFO, NEVER A WARNING. A missing artifact is the normal state of a container,
+    because `apps/api/.dockerignore` excludes `tests/`, and one warning per deploy
+    summary trains an operator to ignore the log.
+
+    It logs at all because `no_artifact` said the same thing about two states that
+    need different people. A container with no calibration directory is healthy; a
+    path with a typo in it is a setting nobody has read since it was typed.
+    `parent_exists=False` is the second one, and the two were indistinguishable
+    from the outside.
+
+    The path is the one it opened. `CALIBRATION_ARTIFACT_PATH` resolves off
+    `config.py` and is absolute, pinned by `test_the_default_path_is_absolute`.
+    """
+    log.info(
+        "calibration_artifact_absent",
+        path=str(artifact),
+        parent_exists=artifact.parent.exists(),
+    )
+    return "no_artifact"
+
+
+def _refused_before_reading(artifact: Path) -> str | None:
+    """Which absence this path is before any of it is read, or None to go on.
+
+    `os.stat` answers the size question without opening anything.
+    `Path.read_text` commits the whole file to memory first, so a size check
+    after it has already paid the cost it was meant to avoid.
+    """
+    try:
+        size = artifact.stat().st_size
+    except FileNotFoundError:
+        return _absent_artifact(artifact)
+    except OSError as exc:
+        log.warning(
+            "calibration_artifact_unreadable",
+            path=str(artifact),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return "unreadable"
+
+    if size > MAX_ARTIFACT_BYTES:
+        log.warning(
+            "calibration_artifact_unreadable",
+            path=str(artifact),
+            error=f"{size} bytes, over the {MAX_ARTIFACT_BYTES} byte ceiling",
+            size_bytes=size,
+        )
+        return "unreadable"
+    return None
+
+
+def _judge_absence(
+    stored: JudgeIdentity | None, identity: JudgeIdentity
+) -> str | None:
+    """Why the artifact is not about this run's Judge, or None when it is.
+
+    A NULL STORED IDENTITY IS ITS OWN ANSWER, AND IT IS CHECKED FIRST. Every
+    artifact this harness writes today carries null there, because the judge it
+    calls cannot be named at the grain `JudgeIdentity` keys on (#58). Reading
+    that through the mismatch branch reported "measured on another Judge" over a
+    file that measured nobody, and logged three None fields beside three real
+    ones. The two send an owner to different work: one to run the harness against
+    a nameable Judge, the other to find out what moved.
+    """
+    if stored is None:
+        log.warning(
+            "calibration_artifact_names_no_judge",
+            run_model=identity.model,
+            run_reasoning_effort=identity.reasoning_effort,
+            run_prompt_version=identity.prompt_version,
+        )
+        return "artifact_names_no_judge"
+
     if stored != identity:
         log.warning(
             "calibration_identity_mismatch",
             run_model=identity.model,
             run_reasoning_effort=identity.reasoning_effort,
             run_prompt_version=identity.prompt_version,
-            artifact_model=stored.model if stored else None,
-            artifact_reasoning_effort=stored.reasoning_effort if stored else None,
-            artifact_prompt_version=stored.prompt_version if stored else None,
+            artifact_model=stored.model,
+            artifact_reasoning_effort=stored.reasoning_effort,
+            artifact_prompt_version=stored.prompt_version,
         )
-        return CalibrationStatus.absent("identity_mismatch")
-
-    return record
+        return "identity_mismatch"
+    return None
 
 
 #: What the deploy summary carries out of a record, and nothing else. The three

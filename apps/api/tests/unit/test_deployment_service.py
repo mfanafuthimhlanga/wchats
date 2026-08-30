@@ -51,6 +51,7 @@ from pydantic import ValidationError
 from app.core.config import settings
 from app.core.model_client import LedgerContext, route_for
 from app.domain.calibration_status import (
+    ABSENT_REASONS,
     STATUS_CALIBRATED,
     STATUS_NOT_CALIBRATED,
     STATUS_NOT_CALIBRATED_YET,
@@ -3170,3 +3171,10 @@ class TestTheCalibrationBlock:
         assert "eval_summary.calibration" in _DEPLOYMENT_SYSTEM_PROMPT
         assert "not_calibrated_yet" in _DEPLOYMENT_SYSTEM_PROMPT
         assert "no_single_judge_identity" in _DEPLOYMENT_SYSTEM_PROMPT
+
+    def test_the_prompt_names_every_reason_the_summary_can_carry(self):
+        """The paragraph says which statuses reach a deploy summary today, so a
+        reason added to the loader and not to the prose leaves the model reading
+        a token nothing explained."""
+        for reason in ABSENT_REASONS:
+            assert reason in _DEPLOYMENT_SYSTEM_PROMPT, reason

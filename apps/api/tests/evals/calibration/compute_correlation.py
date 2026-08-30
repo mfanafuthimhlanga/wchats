@@ -1425,21 +1425,33 @@ def calibration_record(result: dict) -> CalibrationStatus:
     `no_single_judge_identity`, which says what to fix.
 
     Every other status is written as the harness reached it, `setup_error`
-    included: a run that could not read its own inputs states a fact about the
+    included. A run that could not read its own inputs states a fact about the
     inputs, not about any Judge, and `judge_identity: null` on that record is
     honest rather than disqualifying.
+
+    THE FIGURES SURVIVE THE DOWNGRADE. The status becomes `not_calibrated_yet`
+    and the kappa, the Matthews and all three intervals stay on the record, the
+    same way they stay on a `not_calibrated` run that also names no Judge. They
+    were dropped, and there was no rule behind it: the numbers are true of the
+    rows that were scored whatever the record concludes about the Judge, and an
+    owner reading `no_single_judge_identity` beside a kappa of 0.83 learns that
+    the labelling is worth attaching to a nameable Judge.
     """
     from app.domain.calibration_status import CalibrationStatus  # noqa: PLC0415
 
     identity = judge_identity_for_run(result)
     if identity is None and result["status"] == STATUS_CALIBRATED:
-        # Built through `absent`, so the reason token is checked against the set
-        # the loader stamps rather than spelled here, and then stamped with which
-        # harness produced the absence and which sheet it read.
+        # The reason token is spelled by `ABSENT_REASONS`, which the loader
+        # stamps from too, so the writer and the reader share one vocabulary.
         return dataclasses.replace(
-            CalibrationStatus.absent("no_single_judge_identity"),
-            labelled_at=labelled_at(),
-            harness_version=HARNESS_VERSION,
+            CalibrationStatus.from_harness(
+                result,
+                status=STATUS_NOT_CALIBRATED_YET,
+                judge_identity=None,
+                labelled_at=labelled_at(),
+                harness_version=HARNESS_VERSION,
+            ),
+            reason="no_single_judge_identity",
         )
     return CalibrationStatus.from_harness(
         result,

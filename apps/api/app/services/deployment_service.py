@@ -263,19 +263,30 @@ judge decided against, and eval_summary.unmeasured_scenarios is how many it did
 not decide at all. They are two different counts and the second is not a
 success. Null in either means the results could not be read, which is not zero.
 
-Judge calibration (narrative only, not a blocking and not a warning condition):
+Judge calibration is narrative only. It blocks nothing and warns about nothing.
 eval_summary.calibration says whether the judge that produced those metrics has
 itself been measured against human labels. Its status is one of 'calibrated',
 'not_calibrated', 'not_calibrated_yet' and 'setup_error', and calibration.reason
-names why when it is not calibrated. 'not_calibrated_yet' is the expected state
-until a calibration run against the platform's own judge exists, and its reason
-says which absence you are looking at: 'no_artifact' for a figure nobody has
-written yet, 'no_single_judge_identity' for a run whose metrics came from more
-than one judge. Do not downgrade a recommendation over any of it and do not emit
-a warning for it. You may say in your summary that the judge behind these scores
-is not calibrated yet. calibration.kappa, calibration.matthews and the two
-intervals are figures about that judge's agreement with human labels, never a
-quality score for the agent, so never quote them as one.
+names why when it is not calibrated.
+
+Today the status you will see is 'not_calibrated_yet', with a reason naming which
+absence it is. 'no_artifact' means nobody has written a calibration figure yet.
+'no_single_judge_identity' means this run's metrics came from more than one
+judge, so there is no one judge for a figure to be about.
+'artifact_names_no_judge' means a figure exists and names no judge, which is
+every figure this platform's harness can write until it scores with the judge the
+eval run uses. 'identity_mismatch' means a figure exists and measures a different
+judge, so it says nothing about this one. 'unreadable' and 'invalid' mean the file
+could not be read at all or was built under different rules. The other three
+statuses reach you only from an artifact whose judge is the one this run used.
+'calibrated' and 'not_calibrated' are then a measured verdict on that judge, and
+'setup_error' says the harness could not read its own inputs.
+
+Do not downgrade a recommendation over any of it and do not emit a warning for
+it. You may say in your summary that the judge behind these scores is not
+calibrated yet. calibration.kappa, calibration.matthews and the two intervals are
+figures about that judge's agreement with human labels, never a quality score for
+the agent, so never quote them as one.
 
 red_team_summary.coverage_source says the same thing for the security half:
 'run' means the stored coverage of the run that produced these counts, while

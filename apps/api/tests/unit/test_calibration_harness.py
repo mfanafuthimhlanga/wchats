@@ -1904,6 +1904,38 @@ class TestTheArtifactIsReadBackByTheApp:
         assert stored["reason"] == "no_single_judge_identity"
         assert cc.calibration_record(result).calibrated is False
 
+    def test_the_downgrade_keeps_every_figure_the_run_measured(
+        self, calibration_tree, tmp_path, monkeypatch
+    ):
+        """The status is about the Judge. The numbers are about the rows.
+
+        They were dropped with the status and there was no rule behind it: a
+        `not_calibrated` run over the same rows keeps all of them. An owner
+        reading `no_single_judge_identity` beside a kappa of 1.0 learns that
+        these labels are worth attaching to a nameable Judge.
+        """
+        monkeypatch.setattr(
+            cc,
+            "JUDGE_IDENTITY_BY_DIMENSION",
+            {
+                "grounding_fidelity": _artifact_identity(),
+                "escalation_accuracy": _artifact_identity(reasoning_effort="low"),
+            },
+        )
+        calibration_tree(_TWO_DIMENSIONS)
+        result = cc.compute_correlation(_judge_returning(_PERFECT))
+        assert result["status"] == cc.STATUS_CALIBRATED
+
+        artifact = cc.write_calibration_artifact(result, tmp_path / "calibration.json")
+
+        stored = _stored_payload(artifact)
+        assert stored["kappa"] == pytest.approx(result["kappa"])
+        assert stored["matthews"] == pytest.approx(result["matthews"])
+        assert stored["judge_interval"]["usable"] is True
+        assert stored["ceiling_interval"] is not None
+        assert stored["pairs"] == result["pairs"]
+        assert stored["beats_chance"] is True, "the verdict parts are the gate's own"
+
     def test_a_dimension_with_no_named_judge_leaves_the_identity_absent(
         self, calibration_tree, tmp_path
     ):
