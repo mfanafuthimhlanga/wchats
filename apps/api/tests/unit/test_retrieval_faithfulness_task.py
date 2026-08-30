@@ -695,7 +695,7 @@ def test_a_turn_whose_retrieves_all_errored_reads_unknown_not_clean(monkeypatch)
 
     Three retrieve calls, none of them readable. Nothing is scored, nothing is
     written, and the count says three rather than the status saying nothing at
-    all — which would read as a turn with no faithfulness problem.
+    all, which would read as a turn with no faithfulness problem.
     """
     mock_db = _make_mock_db(_make_mock_agent())
     _patch_common(monkeypatch, mock_db)

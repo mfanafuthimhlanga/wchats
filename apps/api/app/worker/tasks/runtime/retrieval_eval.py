@@ -618,9 +618,9 @@ def run_retrieval_faithfulness(self, agent_id: str, job_id: str) -> dict:  # noq
     response_text, citations_list, conversation_id, message_id = turn_context
 
     # The chunks the retrieve tool handed the agent, not a summary of them
-    # (#81, #84 — module docstring). The two counts beside them say how many of
-    # this turn's retrieve calls could be read at all, and they travel with the
-    # verdict all the way out.
+    # (#81, #84, and the module docstring). The two counts beside them say how
+    # many of this turn's retrieve calls could be read at all, and they travel
+    # with the verdict all the way out.
     retrieval = _fetch_retrieved_contexts(conn_str, message_id)
     counts = {
         "retrieve_calls_measured": retrieval.measured,
