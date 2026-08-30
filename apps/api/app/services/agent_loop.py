@@ -643,9 +643,11 @@ def _log_entry(name: str, args: dict, tool_use_id: str, wire: dict, text: str) -
 async def _run_tool_call(call, *, messages, state, turn, job_id, db, redis) -> None:
     """One tool call: the two events, the tool message, and the audit entry.
 
-    The `agent.tool_result` payload shape is a contract.
-    `retrieval_eval.run_retrieval_faithfulness` selects job_events on
-    `payload["tool_name"] == "retrieve"` and reads `payload["summary"]`.
+    The `agent.tool_result` payload is the turn's event trail, and #104 strips
+    `summary` from what a public reader sees. NO SERVER-SIDE READER TAKES IT ANY
+    MORE: `retrieval_eval.run_retrieval_faithfulness` scored that 200-character
+    string as retrieved context until #81 and #84 pointed it at the chunks
+    `_persist_messages` stores.
     """
     name = call.function.name
     args, refusal = tool_arguments(name, call.function.arguments)

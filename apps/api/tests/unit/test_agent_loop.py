@@ -1535,15 +1535,17 @@ class TestTheRetrieveCapture:
         assert entry[RETRIEVE_CHUNKS_SOURCE_KEY] == RETRIEVE_CHUNKS_UNPARSED
 
     async def test_an_errored_retrieve_still_emits_its_event(self):
-        """The refusal reaches the sampler, because a silent turn reads as no retrieval.
+        """A refusal appears in the turn's event trail like any other result.
 
-        `retrieval_eval._fetch_turn_context` selects `agent.tool_result` rows and
-        joins them on `payload["tool_name"] == "retrieve"`. A turn whose retrieve
-        errored and emitted nothing looks identical there to a turn that never
-        retrieved, so the sampler would report a DoS-guard refusal as an absence.
         The old SDK reader had branches between the emit and the capture and this
         pin travelled with it; the loop emits before it captures, and this holds
         that line.
+
+        IT NO LONGER FEEDS THE FAITHFULNESS SAMPLER. That reader joined these rows
+        on `payload["tool_name"]` and scored `payload["summary"]`, which is how a
+        DoS-guard refusal was scored as retrieved context. #81 and #84 moved it
+        onto `tool_calls.retrieved_chunks`, where an errored retrieve is the NULL
+        the sampler counts as unmeasured.
         """
         async def _handler(args):
             return _text_wire("Retrieve quota exceeded for this turn", is_error=True)
@@ -1647,8 +1649,9 @@ class TestTheEvents:
             {"tool_name": "retrieve", "input": {"query": "returns"}},
         )
 
-    async def test_the_tool_result_event_is_the_shape_retrieval_eval_joins_on(self):
-        """retrieval_eval selects on payload["tool_name"] and reads payload["summary"]."""
+    async def test_the_tool_result_event_carries_the_tool_name_and_a_summary(self):
+        """The event trail's shape. #104 publishes `tool_name` and strips `summary`,
+        and since #81 and #84 no server-side reader takes the summary at all."""
         client = _Client(
             _completion(
                 tool_calls=[_tool_call("call-1", "retrieve", '{"query": "returns"}')],

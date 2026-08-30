@@ -469,7 +469,7 @@ class TestPublicPayload:
         assert visible == {"tool_name": "retrieve", "at": "2026-08-28T09:00:00Z"}
 
     def test_a_tool_result_publishes_the_tool_name_and_not_the_summary(self):
-        """The persisted half of this split is TestSummaryStaysOnThePersistedRow."""
+        """`summary` keeps being written to job_events and never leaves here."""
         from app.services.sse import public_payload
 
         visible = public_payload(
@@ -621,48 +621,57 @@ class TestTheStreamFiltersOnlyForPublicReaders:
         assert events[0].event == "job.failed", "the event type itself still reaches the client"
 
 
-class TestSummaryStaysOnThePersistedRow:
+class TestTheJoinKeyStaysOnThePersistedRow:
     """The regression that would otherwise be silent.
 
-    retrieval_eval._fetch_turn_context reads payload["summary"] off persisted
-    agent.tool_result rows as its retrieved-context proxy. #104 drops `summary` from
-    what is PUBLISHED and must not touch what is WRITTEN.
+    retrieval_eval._fetch_turn_context reads payload["message_id"] off the
+    persisted agent.response row and joins the turn's tool_calls on it. #104
+    governs what is PUBLISHED and must not touch what is WRITTEN.
+
+    THIS GUARD USED TO NAME `summary` ON agent.tool_result. That reader is gone:
+    #81 and #84 replaced the 200-character proxy with the chunks the tool
+    actually retrieved, so the guard travels with the id that finds them.
     """
 
     @staticmethod
-    def _db(response_payload, tool_result_payloads):
-        response_result = MagicMock()
-        response_result.fetchone.return_value = (response_payload,)
-        tool_result = MagicMock()
-        tool_result.fetchall.return_value = [(p,) for p in tool_result_payloads]
+    def _db(response_payload):
+        result = MagicMock()
+        result.fetchone.return_value = (response_payload,)
         db = MagicMock()
-        db.execute.side_effect = [response_result, tool_result]
+        db.execute.return_value = result
         return db
 
-    def test_fetch_turn_context_still_finds_the_summary(self):
+    def test_fetch_turn_context_finds_the_message_id(self):
         from app.worker.tasks.runtime.retrieval_eval import _fetch_turn_context
 
-        db = self._db(
-            {"text": "14 days.", "citations": [], "conversation_id": "c-1"},
-            [{"tool_name": "retrieve", "summary": "Returns accepted within 14 days."}],
-        )
+        db = self._db({
+            "text": "14 days.",
+            "citations": [],
+            "conversation_id": "c-1",
+            "message_id": "m-1",
+        })
 
-        _, _, _, contexts = _fetch_turn_context(db, "job-1")
+        _, _, _, message_id = _fetch_turn_context(db, "job-1")
 
-        assert contexts == ["Returns accepted within 14 days."]
+        assert message_id == "m-1"
 
-    def test_a_non_retrieve_tool_result_is_not_context(self):
-        """The control. The join is on tool_name, and it still excludes."""
-        from app.worker.tasks.runtime.retrieval_eval import _fetch_turn_context
+    def test_the_public_map_keeps_the_id_both_halves_need(self):
+        """The control, and it runs the other way from the summary above.
 
-        db = self._db(
-            {"text": "14 days.", "citations": [], "conversation_id": "c-1"},
-            [{"tool_name": "clarify", "summary": "Which order?"}],
-        )
+        WIRE-05 needs `message_id` published, because the widget's feedback route
+        takes it as a body field. The sampler needs the same id persisted. A map
+        entry that dropped it would break the widget loudly and the join quietly.
+        """
+        from app.services.sse import public_payload
 
-        _, _, _, contexts = _fetch_turn_context(db, "job-1")
+        visible = public_payload("agent.response", {
+            "text": "14 days.",
+            "citations": [],
+            "conversation_id": "c-1",
+            "message_id": "m-1",
+        })
 
-        assert contexts == []
+        assert visible["message_id"] == "m-1"
 
 
 class TestTheMapCoversWhatTheTurnEmits:
