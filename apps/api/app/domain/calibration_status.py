@@ -218,7 +218,7 @@ class Interval:
 
     @property
     def payload(self) -> dict:
-        """{"low", "high", "point", "usable"} — the harness's own key names."""
+        """{"low", "high", "point", "usable"}, the harness's own key names."""
         return {
             "low": self.low,
             "high": self.high,
