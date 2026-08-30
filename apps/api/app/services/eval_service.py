@@ -99,6 +99,7 @@ from app.domain.eval_result import (
     InvalidEvalResult,
     Invocation,
     Measurement,
+    ScenarioFailure,
     cost_of_run,
     run_level_metrics,
 )
@@ -718,6 +719,44 @@ def _side_effect_attempts(records: list[dict]) -> dict:
     }
 
 
+def _failure_report(records: list[dict]) -> tuple[dict[str, int], list[dict]]:
+    """One pass over the failed turns, counted and named. Pure.
+
+    THE HISTOGRAM AND THE LIST COME OFF ONE WALK, so a run can never report
+    three TimeoutErrors beside two failure entries. `EvalResult` refuses a record
+    holding more failures than `failed`, and that check is only worth anything
+    while both numbers have one origin.
+
+    A record with an error and no `error_message` names itself. That is the shape
+    every caller outside `_invoke_agent_for_scenarios` produces, and the type
+    alone is exactly what the message rule gives a non-timeout anyway.
+
+    Args:
+        records: one dict per attempted turn, each optionally carrying `error`
+            (the exception's class name) and `error_message` (what the invoker
+            says about it, never `str(exc)`).
+
+    Returns:
+        ({error_type: count}, [{"scenario_id", "error_type", "message"}, ...]),
+        the list in the order the run attempted the turns.
+    """
+    errors: dict[str, int] = {}
+    failures: list[dict] = []
+    for record in records:
+        error = record.get("error")
+        if not error:
+            continue
+        errors[str(error)] = errors.get(str(error), 0) + 1
+        failures.append(
+            {
+                "scenario_id": str(record.get("scenario_id") or ""),
+                "error_type": str(error),
+                "message": str(record.get("error_message") or error),
+            }
+        )
+    return errors, failures
+
+
 def summarise_agent_invocation(
     records: list[dict],
     *,
@@ -741,7 +780,9 @@ def summarise_agent_invocation(
     Args:
         records: one dict per scenario an agent turn was ATTEMPTED for, each
             carrying `responded` (bool), `scorable` (bool — reached the scorer),
-            `error` (str|None), `retrieve_calls` (int), `retrieve_at_cap` (bool),
+            `error` (str|None — the exception's class name), `error_message`
+            (str|None — what the invoker says about it, never `str(exc)`),
+            `retrieve_calls` (int), `retrieve_at_cap` (bool),
             `retrieve_unparsed` (int), `retrieved_chunks` (int),
             `pii_detector` (str|None — what the output firewall found in this
             turn's answer, so the run can say how many of its scored answers were
@@ -782,11 +823,7 @@ def summarise_agent_invocation(
     # different failure from an exception, so it is counted apart from one.
     empty = attempted - responded - failed
 
-    errors: dict[str, int] = {}
-    for record in records:
-        error = record.get("error")
-        if error:
-            errors[str(error)] = errors.get(str(error), 0) + 1
+    errors, failures = _failure_report(records)
 
     # WHAT THE FIREWALL SUBSTITUTED, EACH BESIDE THE DENOMINATOR IT IS OUT OF.
     # A bare count repeats the missing-denominator error one layer down: three
@@ -843,6 +880,8 @@ def summarise_agent_invocation(
         "failed": failed,
         "empty": empty,
         "errors": errors,
+        # `errors` counts the classes. This names the rows (#25).
+        "failures": failures,
         "ceiling_skipped": ceiling_skipped,
         "ceiling_skipped_golden": ceiling_skipped_golden,
         "response_rate": response_rate,
@@ -2318,6 +2357,13 @@ def build_eval_result(
         ),
         datasets=dataset_outcomes(validity),
         cost=cost_of_run(ledger),
+        # The summariser's own list, not a second walk over the records. It
+        # counted `failed` off the same pass, and the record refuses to hold
+        # more failures than that count.
+        failures=[
+            ScenarioFailure.from_payload(failure)
+            for failure in invocation.get("failures") or []
+        ],
     )
 
 

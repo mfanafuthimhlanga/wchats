@@ -38,6 +38,7 @@ from app.domain.eval_result import (
     Invocation,
     InvocationStatus,
     Measurement,
+    ScenarioFailure,
     cost_of_run,
 )
 from app.domain.judge_identity import JudgeIdentity
@@ -466,6 +467,7 @@ class TestThePayloadRoundTrips:
             "valid",
             "scored",
             "cost",
+            "failures",
             "context_proxy_version",
             "rule_version",
         }
@@ -514,3 +516,159 @@ class TestTheIdentity:
     def test_an_unknown_judge_is_none(self):
         """A verdict whose Judge cannot be named is filed under no Judge at all."""
         assert _result(judge_identity=None).payload["judge_identity"] is None
+
+
+# ---------------------------------------------------------------------------
+# #25: a failed turn carries its class AND what happened to it
+# ---------------------------------------------------------------------------
+
+#: An exception whose own text is unmistakable. Every assertion about the
+#: message rule looks for this string and expects not to find it.
+SENTINEL = "SENTINEL-customer-said-my-card-is-4111111111111111"
+
+
+class _LoudFailure(RuntimeError):
+    """`str()` returns something no owner-visible row may ever carry."""
+
+    def __str__(self) -> str:
+        return SENTINEL
+
+
+def _failure(**overrides) -> ScenarioFailure:
+    fields = {
+        "scenario_id": "11111111-1111-1111-1111-111111111111",
+        "error_type": "TimeoutError",
+        "message": "agent turn exceeded 90s",
+    }
+    fields.update(overrides)
+    return ScenarioFailure(**fields)
+
+
+class TestAFailureNamesItsTurn:
+    """#25. Eval run 29754ceb logged `error= error_type=TimeoutError` twice.
+
+    `str(TimeoutError())` is the empty string, so the type was the only thing
+    that survived the 90s per-turn bound and the record said nothing about what
+    ran out of what.
+    """
+
+    def test_the_record_carries_one_failure_per_failed_turn(self):
+        result = _result(
+            invocation=_invocation(responded=3, scorable=3, failed=1),
+            failures=[_failure()],
+        )
+        assert [f.error_type for f in result.failures] == ["TimeoutError"]
+        assert result.failures[0].message == "agent turn exceeded 90s"
+
+    def test_a_run_with_no_failures_carries_an_empty_tuple(self):
+        """Absent, not a placeholder entry saying nothing went wrong."""
+        assert _result().failures == ()
+        assert _result().payload["failures"] == []
+
+    def test_the_failures_are_frozen_with_the_record(self):
+        result = _result(
+            invocation=_invocation(responded=3, scorable=3, failed=1),
+            failures=[_failure()],
+        )
+        assert isinstance(result.failures, tuple)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            result.failures[0].message = "something else"
+
+    def test_more_failures_than_failed_turns_is_refused(self):
+        """The counters and the list come off one walk, so they cannot disagree.
+
+        A record holding two failures over one failed turn is describing a turn
+        that did not happen, and `failed` is the denominator every rate on this
+        record is built from.
+        """
+        with pytest.raises(InvalidEvalResult, match="failure"):
+            _result(
+                invocation=_invocation(responded=3, scorable=3, failed=1),
+                failures=[_failure(), _failure(scenario_id="s2")],
+            )
+
+    def test_a_failure_that_is_not_a_scenario_failure_is_refused(self):
+        with pytest.raises(InvalidEvalResult, match="ScenarioFailure"):
+            _result(
+                invocation=_invocation(responded=3, scorable=3, failed=1),
+                failures=[{"scenario_id": "s1", "error_type": "T", "message": "m"}],
+            )
+
+    def test_an_empty_error_type_or_message_is_refused(self):
+        """A blank message is a failure the record claims to describe and does not."""
+        with pytest.raises(InvalidEvalResult):
+            _failure(error_type="  ")
+        with pytest.raises(InvalidEvalResult):
+            _failure(message="")
+
+    def test_a_row_that_carried_no_id_keeps_the_empty_string(self):
+        """The invoker reads `scenario.get("id", "")`, so an idless row is a
+        real state. Carried through rather than replaced with an invented id."""
+        assert _failure(scenario_id="").scenario_id == ""
+
+    def test_the_failures_round_trip_through_json(self):
+        import json
+
+        result = _result(
+            invocation=_invocation(responded=2, scorable=2, failed=2),
+            failures=[_failure(), _failure(scenario_id="s2", error_type="ValueError",
+                                           message="ValueError")],
+        )
+        rebuilt = EvalResult.from_payload(json.loads(json.dumps(result.payload)))
+        assert rebuilt == result
+        assert [f.message for f in rebuilt.failures] == [
+            "agent turn exceeded 90s",
+            "ValueError",
+        ]
+
+    def test_a_payload_written_before_this_field_reads_as_no_detail(self):
+        """Slice 1 wrote records with no `failures` key. They still read, and
+        they read as "this build recorded no failure detail", never as a claim
+        that the run lost no turns: `invocation.failed` still says it did."""
+        payload = _result(
+            invocation=_invocation(responded=3, scorable=3, failed=1)
+        ).payload
+        del payload["failures"]
+
+        rebuilt = EvalResult.from_payload(payload)
+        assert rebuilt.failures == ()
+        assert rebuilt.invocation.failed == 1
+
+    def test_a_stored_failure_with_a_blank_message_is_refused_on_the_way_out(self):
+        """Already being written down is not evidence that a shape is honest."""
+        payload = _result(
+            invocation=_invocation(responded=3, scorable=3, failed=1),
+            failures=[_failure()],
+        ).payload
+        payload["failures"][0]["message"] = ""
+
+        with pytest.raises(InvalidEvalResult):
+            EvalResult.from_payload(payload)
+
+    def test_the_exceptions_own_text_never_reaches_the_payload(self):
+        """THE ANTI-TAUTOLOGY HALF, and the reason SENTINEL exists.
+
+        Asserting `message == "agent turn exceeded 90s"` passes just as well
+        when a build appends `str(exc)` to it. This looks for the exception's
+        own words anywhere in the serialised record, which is the shape
+        `eval_runs.result` is stored and read back in.
+        """
+        import json
+
+        result = _result(
+            invocation=_invocation(responded=3, scorable=3, failed=1),
+            failures=[
+                ScenarioFailure(
+                    scenario_id="s1",
+                    error_type=type(_LoudFailure()).__name__,
+                    message="_LoudFailure",
+                )
+            ],
+        )
+        stored = json.dumps(result.payload)
+
+        assert "_LoudFailure" in stored, "the failure's class never reached the row"
+        assert SENTINEL not in stored, (
+            "the exception's own text reached eval_runs.result, which is jsonb "
+            "the owner reads back (#96)"
+        )

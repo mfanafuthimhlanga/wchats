@@ -219,6 +219,36 @@ def _agent_turn_timeout_s() -> int:
     return AGENT_TURN_TIMEOUT_S
 
 
+def _failure_of(exc: BaseException) -> tuple[str, str]:
+    """One failed turn's class and what this build says about it (#25). Pure.
+
+    THE MESSAGE IS COMPOSED HERE, NEVER COPIED OFF THE EXCEPTION. Two things
+    forced that. `str(TimeoutError())` is the empty string, so eval run
+    29754ceb's two timeouts logged `error= error_type=TimeoutError` and said
+    nothing about what ran out of what; and `eval_runs.result` is jsonb the
+    owner reads back, which is the boundary #96 keeps raw provider text off.
+    A phrase this module chose cannot carry a customer's words, a connection
+    string or a stack frame across it.
+
+    A timeout gets the one fact its class cannot carry, the budget it exceeded.
+    Every other class gets its own name and nothing more, which says as much as
+    the exception's text was ever trusted to say in a stored row.
+
+    Args:
+        exc: whatever the agent turn raised.
+
+    Returns:
+        (error_type, message). The first counts into `Invocation.failed` and the
+        run's error histogram; the second reaches `eval_runs.result`.
+    """
+    name = type(exc).__name__
+    if isinstance(exc, TimeoutError):
+        # asyncio.TimeoutError IS TimeoutError from 3.11, so the wait_for in
+        # _drive_eval_turn and a provider's own timeout land on one branch.
+        return name, f"agent turn exceeded {_agent_turn_timeout_s()}s"
+    return name, name
+
+
 # ---------------------------------------------------------------------------
 # Invoking the agent, per scenario (audit D1 / plan P2)
 # ---------------------------------------------------------------------------
@@ -476,9 +506,7 @@ def _invoke_agent_for_scenarios(
 
     invocable = scenarios[:AGENT_INVOCATION_MAX_CALLS_PER_RUN]
     skipped = scenarios[AGENT_INVOCATION_MAX_CALLS_PER_RUN:]
-    skipped_golden = sum(
-        1 for s in skipped if dataset_of(s.get("dataset")) == DATASET_GOLDEN
-    )
+    skipped_golden = sum(1 for s in skipped if dataset_of(s.get("dataset")) == DATASET_GOLDEN)
     if skipped:
         log.warning(
             "run_eval_suite.invocation_ceiling_reached",
@@ -516,6 +544,7 @@ def _invoke_agent_for_scenarios(
                 "responded": False,
                 "scorable": False,
                 "error": None,
+                "error_message": None,
                 "retrieve_calls": 0,
                 "retrieve_at_cap": False,
                 "retrieve_unparsed": 0,
@@ -536,9 +565,9 @@ def _invoke_agent_for_scenarios(
                 # tests/evals/calibration/compute_correlation.py:485 learned
                 # about a judge that errors, applied one layer earlier. A zero
                 # here would move every metric with the turn's failure rate
-                # rather than with the agent's behaviour, and it would
-                # do it in the direction that looks like a quality regression.
-                record["error"] = type(exc).__name__
+                # rather than the agent's behaviour, in the direction that reads
+                # as a quality regression. The message is composed, not copied.
+                record["error"], record["error_message"] = _failure_of(exc)
                 log.warning(
                     "run_eval_suite.scenario_invocation_failed",
                     agent_id=agent_id,

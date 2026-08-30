@@ -395,6 +395,73 @@ class Invocation:
 
 
 @dataclass(frozen=True)
+class ScenarioFailure:
+    """One scenario whose agent turn raised, named by its class and a fixed phrase.
+
+    WHY THE MESSAGE IS NOT THE EXCEPTION'S OWN TEXT (#25, #96).
+        The run logged `error=str(exc)` and stored `type(exc).__name__`, and the
+        90s per-turn bound raises `TimeoutError`, whose `str()` is the empty
+        string. Eval run 29754ceb therefore recorded two failures that said
+        `error= error_type=TimeoutError` and nothing about what ran out of what.
+        The type alone cannot carry the budget, and the exception cannot either.
+
+        So the writer composes the message instead of copying one. A timeout says
+        the budget it exceeded; every other class says its own name and no more.
+        `eval_runs.result` is jsonb the owner reads back, and #96 is the class of
+        defect where a raw provider string reaches a row like that one. A phrase
+        THIS BUILD chose cannot carry a customer's data, a connection string or a
+        stack frame into an owner-visible column.
+
+    Args:
+        scenario_id: the `eval_scenarios` row the turn was for. The empty string
+                     is the invoker's own reading of a row that carried no id,
+                     carried through rather than replaced with an invented one.
+        error_type:  the exception's class name, the same value that counts one
+                     into `Invocation.failed` and into the run's error histogram.
+        message:     what this build says about the failure. Never `str(exc)`.
+
+    Raises:
+        InvalidEvalResult: a scenario_id that is not a string, or an empty
+            error_type or message.
+    """
+
+    scenario_id: str
+    error_type: str
+    message: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scenario_id, str):
+            raise InvalidEvalResult(
+                "ScenarioFailure needs scenario_id as a string, got "
+                f"{type(self.scenario_id).__name__}"
+            )
+        _require_text("error_type", self.error_type)
+        _require_text("message", self.message)
+
+    @property
+    def payload(self) -> dict:
+        """{"scenario_id", "error_type", "message"}."""
+        return {
+            "scenario_id": self.scenario_id,
+            "error_type": self.error_type,
+            "message": self.message,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Mapping) -> ScenarioFailure:
+        """Rebuild one failure from its stored form."""
+        if not isinstance(payload, Mapping):
+            raise InvalidEvalResult(
+                f"ScenarioFailure needs a mapping, got {type(payload).__name__}"
+            )
+        return cls(
+            scenario_id=payload.get("scenario_id", ""),
+            error_type=payload.get("error_type"),
+            message=payload.get("message"),
+        )
+
+
+@dataclass(frozen=True)
 class DatasetOutcome:
     """One dataset's three counts and whichever metrics were reported for it.
 
@@ -631,6 +698,36 @@ def cost_of_run(calls: Sequence[ModelCall]) -> Cost:
     )
 
 
+def _require_failures(failures: Sequence[ScenarioFailure], failed: int) -> None:
+    """Every entry is a ScenarioFailure, and there are no more of them than `failed`.
+
+    A record holding more failures than failed turns is describing turns that
+    did not happen. The two come off one walk in `_failure_report`, and `failed`
+    is the number every rate on this record is built from, so the pair
+    disagreeing means one of them is about a different set of records.
+
+    Raises:
+        InvalidEvalResult: an entry of the wrong type, or more entries than the
+            invocation counted failures.
+    """
+    wrong = sorted(
+        type(failure).__name__
+        for failure in failures
+        if not isinstance(failure, ScenarioFailure)
+    )
+    if wrong:
+        raise InvalidEvalResult(
+            "EvalResult needs every failure to be a ScenarioFailure, got "
+            + ", ".join(wrong)
+        )
+    if len(failures) > failed:
+        raise InvalidEvalResult(
+            f"EvalResult reports {len(failures)} failure(s) over {failed} failed "
+            "turn(s). A failure names a turn that raised, and every turn that "
+            "raised is counted."
+        )
+
+
 @dataclass(frozen=True)
 class EvalResult:
     """One eval run's measurement: who ran, what answered, what scored, what it cost.
@@ -658,6 +755,12 @@ class EvalResult:
                                route named no reasoning effort, and the per-call
                                identity on the `eval_results` rows is finer
                                grained than this either way (slice 2).
+        failures:              one ScenarioFailure per turn that raised, in the
+                               order the run attempted them. `invocation.failed`
+                               already counts them. This says WHICH rows and WHAT
+                               happened, which is what tells a run that lost two
+                               turns to a provider from one that lost two to its
+                               own 90s bound. Never longer than `failed`.
         context_proxy_version: which shape of retrieved context these scores were
                                computed over. Defaults to CONTEXT_PROXY_VERSION,
                                the shape this build produces (#84).
@@ -678,6 +781,8 @@ class EvalResult:
     served_model: str | None = None
     prompt_version_id: str | None = None
     judge_identity: JudgeIdentity | None = None
+    # The init input, not what the record holds. __post_init__ freezes it.
+    failures: Sequence[ScenarioFailure] = ()
     context_proxy_version: str = CONTEXT_PROXY_VERSION
     rule_version: int = RULE_VERSION
 
@@ -725,8 +830,10 @@ class EvalResult:
                 "EvalResult needs every dataset to be a DatasetOutcome, got "
                 + ", ".join(wrong)
             )
+        _require_failures(self.failures, self.invocation.failed)
         # object.__setattr__ is how a frozen dataclass normalises a field.
         object.__setattr__(self, "datasets", dict(self.datasets))
+        object.__setattr__(self, "failures", tuple(self.failures))
 
     @property
     def attempted(self) -> int:
@@ -756,10 +863,11 @@ class EvalResult:
         Returns:
             {"run_id", "agent_id", "prompt_version_id", "judge_identity",
              "requested_model", "served_model", "invocation", "datasets",
-             "attempted", "valid", "scored", "cost", "context_proxy_version",
-             "rule_version"} where `datasets` maps each reported dataset to
-            {"attempted", "valid", "scored", "metrics"} and each reported metric
-            to {"value", "measured", "observations"}.
+             "attempted", "valid", "scored", "cost", "failures",
+             "context_proxy_version", "rule_version"} where `datasets` maps each
+            reported dataset to {"attempted", "valid", "scored", "metrics"},
+            each reported metric to {"value", "measured", "observations"}, and
+            `failures` is a list of {"scenario_id", "error_type", "message"}.
         """
         return {
             "run_id": self.run_id,
@@ -780,6 +888,7 @@ class EvalResult:
             "valid": self.valid,
             "scored": self.scored,
             "cost": self.cost.payload,
+            "failures": [failure.payload for failure in self.failures],
             "context_proxy_version": self.context_proxy_version,
             "rule_version": self.rule_version,
         }
@@ -820,6 +929,12 @@ class EvalResult:
             served_model=payload.get("served_model"),
             prompt_version_id=payload.get("prompt_version_id"),
             judge_identity=JudgeIdentity(**identity) if identity else None,
+            # A payload written before #25 has no failures key. It reads as no
+            # failure detail, which is what it holds, never as no failures.
+            failures=[
+                ScenarioFailure.from_payload(failure)
+                for failure in payload.get("failures") or []
+            ],
             context_proxy_version=payload.get(
                 "context_proxy_version", CONTEXT_PROXY_VERSION
             ),

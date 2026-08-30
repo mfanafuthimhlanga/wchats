@@ -2286,6 +2286,63 @@ class TestBuildEvalResult:
             assert getattr(invocation, name) == observation[name], name
         assert invocation.status.value == observation["status"]
 
+    def test_a_failed_turn_reaches_the_record_with_its_message(self):
+        """#25. The builder carries the summariser's failure list, it does not
+        rebuild one: `failed` and `failures` come off the same walk, and the
+        record refuses to hold more of the second than the first."""
+        from app.services.eval_service import summarise_agent_invocation
+
+        records = [
+            {
+                "scenario_id": "s0",
+                "responded": False,
+                "scorable": False,
+                "error": "TimeoutError",
+                "error_message": "agent turn exceeded 90s",
+                "retrieve_calls": 0,
+                "retrieve_at_cap": False,
+                "retrieve_unparsed": 0,
+                "retrieved_chunks": 0,
+                "side_effects": [],
+                "pii_detector": None,
+            }
+        ]
+        observation = summarise_agent_invocation(
+            records,
+            valid=1,
+            ceiling_skipped=0,
+            ceiling_skipped_golden=0,
+            per_turn_timeout_s=90,
+            audit_capture_char_cap=1800,
+            retrieved_context_chunk_char_cap=2000,
+        )
+
+        result = _built(invocation=observation)
+
+        assert result.invocation.failed == 1
+        assert [(f.scenario_id, f.error_type, f.message) for f in result.failures] == [
+            ("s0", "TimeoutError", "agent turn exceeded 90s")
+        ]
+
+    def test_a_failed_turn_with_no_message_falls_back_to_its_class(self):
+        """Every caller outside `_invoke_agent_for_scenarios` produces this
+        shape, and the class name is exactly what the message rule gives a
+        non-timeout anyway. It is never a blank the record then refuses."""
+        from app.services.eval_service import _failure_report
+
+        errors, failures = _failure_report(
+            [{"scenario_id": "s0", "error": "ConnectionError"}]
+        )
+
+        assert errors == {"ConnectionError": 1}
+        assert failures == [
+            {
+                "scenario_id": "s0",
+                "error_type": "ConnectionError",
+                "message": "ConnectionError",
+            }
+        ]
+
     def test_the_deflection_fields_reach_the_record(self):
         """#103's three, which are how a fallen Faithfulness gets explained."""
         observation = _invocation_observation(

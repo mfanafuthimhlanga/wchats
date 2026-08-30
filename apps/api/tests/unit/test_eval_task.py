@@ -1195,3 +1195,150 @@ class TestTheRunWritesItsRecord:
         """A pre-0022 tenant still scores; the run says its record did not land."""
         monkeypatch.setattr(mod, "write_eval_result", lambda *a, **kw: False)
         assert _run()["result_recorded"] is False
+
+
+# ---------------------------------------------------------------------------
+# #25 — a failed turn reaches the record with its class AND what happened
+# ---------------------------------------------------------------------------
+
+#: An exception whose own text is unmistakable, so an assertion can look for it
+#: in the stored record and expect not to find it.
+SENTINEL = "SENTINEL-customer-said-my-card-is-4111111111111111"
+
+
+def _invocation_record(scenario_id: str, **overrides) -> dict:
+    record = {
+        "scenario_id": scenario_id,
+        "responded": True,
+        "scorable": True,
+        "error": None,
+        "error_message": None,
+        "retrieve_calls": 1,
+        "retrieve_at_cap": False,
+        "retrieve_unparsed": 0,
+        "retrieved_chunks": 1,
+        "side_effects": [],
+    }
+    record.update(overrides)
+    return record
+
+
+@pytest.fixture
+def one_turn_timed_out(scored, monkeypatch):
+    """`scored`, with the first scenario's turn raising at the per-turn bound.
+
+    The summary comes from the real `summarise_agent_invocation`, so the fixture
+    cannot hand the task a shape production does not produce.
+    """
+    timeout_message = f"agent turn exceeded {mod._agent_turn_timeout_s()}s"
+
+    def _fake_invoke(*, agent_id, conn_str, run_id, scenarios, prompt_version_id):
+        failed, answered = scenarios[0], scenarios[1:]
+        rows = [
+            {
+                **s,
+                "agent_response": f"AGENT SAID: {s['question']}",
+                "retrieved_contexts": [f"CTX for {s['id']}"],
+            }
+            for s in answered
+        ]
+        records = [
+            _invocation_record(
+                failed["id"],
+                responded=False,
+                scorable=False,
+                error="TimeoutError",
+                error_message=timeout_message,
+                retrieve_calls=0,
+                retrieved_chunks=0,
+            )
+        ] + [_invocation_record(s["id"]) for s in answered]
+        summary = mod.summarise_agent_invocation(
+            records,
+            valid=len(scenarios),
+            ceiling_skipped=0,
+            ceiling_skipped_golden=0,
+            per_turn_timeout_s=mod._agent_turn_timeout_s(),
+            audit_capture_char_cap=1800,
+            retrieved_context_chunk_char_cap=2000,
+        )
+        return rows, summary
+
+    monkeypatch.setattr(mod, "_invoke_agent_for_scenarios", _fake_invoke)
+    scored["timeout_message"] = timeout_message
+    return scored
+
+
+class TestATimeoutReachesTheRecordWithItsMessage:
+    """#25. `run_eval_suite.scenario_invocation_failed ... error= error_type=
+    TimeoutError`, twice, in eval run 29754ceb.
+
+    `str(TimeoutError())` is the empty string. The type survived and the budget
+    did not, so the row said a turn raised and nothing about what ran out.
+    """
+
+    def test_the_record_names_the_row_that_timed_out(self, one_turn_timed_out):
+        _run()
+        _, result, _ = one_turn_timed_out["record"][0]
+
+        assert result.invocation.failed == 1
+        assert len(result.failures) == 1
+        failure = result.failures[0]
+        assert failure.error_type == "TimeoutError"
+        assert failure.scenario_id == _GOLDEN_IDS[0], (
+            f"the failure names {failure.scenario_id!r}, not the row that failed"
+        )
+
+    def test_the_message_names_the_budget_the_turn_exceeded(self, one_turn_timed_out):
+        """The one fact the exception's class cannot carry."""
+        _run()
+        _, result, _ = one_turn_timed_out["record"][0]
+
+        assert result.failures[0].message == one_turn_timed_out["timeout_message"]
+        assert str(mod._agent_turn_timeout_s()) in result.failures[0].message, (
+            "the message carries no budget, so the record says a turn timed out "
+            "and not what it timed out against"
+        )
+
+    def test_the_failure_survives_into_what_the_task_returns(self, one_turn_timed_out):
+        returned = _run()
+        _, result, _ = one_turn_timed_out["record"][0]
+
+        assert returned["failures"] == result.payload["failures"]
+        assert returned["failures"][0]["error_type"] == "TimeoutError"
+
+    def test_the_exceptions_own_text_is_absent_from_the_stored_record(
+        self, one_turn_timed_out, monkeypatch
+    ):
+        """THE ANTI-TAUTOLOGY HALF.
+
+        Asserting the message equals a fixed phrase passes just as well when a
+        build appends `str(exc)` to it. This drives the whole task with an
+        invoker whose `error_message` IS the exception's text, and looks for
+        that text in the serialised record. `eval_runs.result` is jsonb the
+        owner reads back, so a raw exception string landing there is #96's
+        class one table over.
+        """
+        import json
+
+        _run()
+        _, honest, _ = one_turn_timed_out["record"][0]
+        assert SENTINEL not in json.dumps(honest.payload)
+
+        # And the pin is worth something only if the sentinel CAN reach the row.
+        one_turn_timed_out["record"].clear()
+        real_summarise = mod.summarise_agent_invocation
+
+        def _leaking_summarise(records, **kwargs):
+            for record in records:
+                if record.get("error"):
+                    record["error_message"] = SENTINEL
+            return real_summarise(records, **kwargs)
+
+        monkeypatch.setattr(mod, "summarise_agent_invocation", _leaking_summarise)
+        _run()
+        _, leaked, _ = one_turn_timed_out["record"][0]
+        assert SENTINEL in json.dumps(leaked.payload), (
+            "the record dropped the message entirely, so the assertion above "
+            "would pass for a build that stores no message at all"
+        )
