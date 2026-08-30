@@ -596,3 +596,287 @@ Restored with `git checkout HEAD -- app/api/v1/evals.py`:
   whoever touches the record next.
 - `deployment_service`, `alert_service` and `digest_service` still run their own
   `AVG`/`COUNT` over `eval_results`. Slice 4.
+
+## Slice 4, the deployment service and the two digests read the record
+
+Two commits: the deploy collector and its gate with tests (`d1f87c2`), the alert
+and digest readers with tests (`88030bb`).
+
+### Files
+
+- `apps/api/app/domain/eval_result.py`. `UNMEASURED`, `unmeasured_metrics`,
+  `metrics_of`, `scoring_datasets`, `run_level_metrics`. Slice 3's no-pooling
+  rule, moved down below both readers.
+- `apps/api/app/api/v1/evals.py`. `_unmeasured_metrics`, `_metrics_of` and
+  `_run_level_metrics` become renderers over the domain functions; `_rendered`
+  is new; `_UNMEASURED_METRIC` is gone; `GATED_METRIC_KEYS` is imported.
+- `apps/api/app/services/eval_service.py`. `GATED_METRIC_KEYS` beside
+  `threshold_for`; `latest_run_record` and `latest_faithfulness` beside
+  `read_eval_result`.
+- `apps/api/app/services/deployment_service.py`. `EVAL_SIGNAL_NO_RECORD`,
+  `DENOMINATOR_SOURCE_EVAL_RECORD`, `RESULT_PRESENT` / `RESULT_ABSENT`,
+  `UNMEASURED_READING`, `_readings`, `_dataset_block`, `_pass_rates`,
+  `_record_counts`, `_latest_run`, `_record_of`, `_scenario_verdicts`,
+  `_never_evaluated_warning`, `_signal_unavailable_warning`,
+  `_unmeasured_gated_metrics`, `_quality_evidence_warning`,
+  `_eval_evidence_warnings`. Gone: `DENOMINATOR_SOURCE_RUN_CONFIG`,
+  `DENOMINATOR_SOURCE_EVAL_RESULTS`, `_attempted_from_run_config`, both
+  `eval_results` aggregations. `EVAL_SUMMARY_UNAVAILABLE_SIGNAL` is now built
+  through `_eval_summary` rather than hand-written.
+- `apps/api/app/services/alert_service.py`. `latest_faithfulness_reading` owns
+  the connection; `_get_latest_faithfulness` is the number alone.
+- `apps/api/app/services/digest_service.py`. `_collect_digest_stats` calls
+  `latest_faithfulness` down its existing connection and carries
+  `faithfulness_dataset`; `send_digest_email` names the dataset and says "not
+  measured".
+- `apps/api/app/worker/tasks/runtime/eval.py`. Three stale comments describing
+  the deleted `AVG(score)` path.
+- `apps/api/scripts/gates.py`. Four pins lowered, none raised, none added.
+- Tests: `test_deployment_service.py` (105 to 118), `test_deployment_task.py`,
+  `test_alert_service.py` (3 to 7), `test_digest_service.py` (4 to 6),
+  `test_label_downstream.py`.
+
+### How the gate's inputs changed
+
+`_fetch_eval_summary_sync` issued three statements: the run row, `SELECT metric,
+AVG(score), COUNT(score) ... GROUP BY metric`, and a `COUNT(DISTINCT
+scenario_id)` pair. The two aggregations are gone. It issues the run row (now
+selecting `result` beside `config`) and one read of the stored gated verdicts.
+
+The payload keeps every key it had and gains `result`, `pass_rates_dataset`,
+`metrics`, `datasets`, `invocation`, `cost`, `context_proxy_version` and
+`unmeasured_scenarios`. `scenario_count` and `scored_scenario_count` became
+nullable, because a payload with no record knows neither and a zero asserts that
+the run covered nothing.
+
+**`denominator_source` has one value now.** It used to choose between
+`run_config` and `eval_results` and label which. Both parsers are deleted: the
+record carries all three counts, `eval_result` is the only source, and there is
+no floor to fall back to. A run without a record reports nulls.
+
+**A seventh signal state, `no_record`.** A run that completed, invoked the agent
+and wrote no `eval_runs.result`. It is asked AFTER the invocation claim, so the
+pre-D1 population, which predates migration 0022 as well, still gets the
+tautology warning that names what is actually wrong with it.
+
+**`failing_scenarios` stopped being `rate < 0.70`.** It was
+`sum(1 for v in rates.values() if v < 0.70)` over the metric averages, which
+counted failing METRICS under a scenario's name. It counts scenarios off the
+stored `binary_verdict` rows now, unmeasured-first (the ordering
+`get_eval_run_results` renders `passed` with), with `unmeasured_scenarios`
+counting the undecided ones separately. Both are null on a tenant DB that
+predates migration 0023.
+
+### What the gate does with the three cases
+
+| Input | Signal | Gate |
+|---|---|---|
+| absent record | `no_record` | `block`, `eval_signal_unavailable` |
+| NULL verdict on a gated metric | `measured` | counted as unmeasured, not as a failure; the run still ships if the metrics measured |
+| verdicts unreadable at all | `measured` | `block`, `eval_quality_unmeasured` |
+| both datasets scored | `measured`, `pass_rates` null | `ship` survives; evidence read per dataset |
+| gated metric measured on no dataset | `measured` | `block`, `eval_quality_unmeasured` |
+
+**The gate applies no quality threshold, and this slice did not give it one.**
+The brief anticipated that it might be passing on a pooled mean; it was not. The
+0.85 ship bar and the [0.70, 0.85) warning band are prose in
+`_DEPLOYMENT_SYSTEM_PROMPT` and always were, and
+`test_the_ship_bar_is_prose_in_the_prompt_not_code_in_the_gate` pins that both
+ways now, by source and by behaviour. What the gate gained is one refusal that is
+still about evidence rather than quality: a `measured` signal whose gated metrics
+were measured on NO dataset, which is reachable now that the collector no longer
+manufactures an average. The judge can return `context_precision` and nothing
+else; `scored` is then above zero and the gate's evidence is not.
+
+It reads that per DATASET and not from the run level, deliberately. A run whose
+two halves both scored has no run-level reading at all, so a gate reading
+`metrics` or `pass_rates` alone would refuse every tenant with a designated
+golden set while its numbers sat one key over. Null in `pass_rates` means both
+"we measured nothing" and "we measured both halves", and shipping over the second
+because it looks like the first is the fail-open the per-dataset read closes.
+
+### What the Orchestrator prompt now receives
+
+The whole `eval_summary` dict is `json.dumps`ed onto the orchestrator payload, so
+the new keys reach it without a wiring change. The prompt gained:
+
+- the seventh state, `no_record`, in the blocking-condition enumeration
+- `TWO DATASETS, NEVER AVERAGED TOGETHER`, naming `datasets.golden` and
+  `datasets.exploratory`, each with three counts and four
+  `{value, measured, observations}` readings
+- the instruction to apply the existing ship/warn/block thresholds to EACH
+  measured dataset, and that a run ships only if every dataset that measured a
+  metric clears the bar for it
+- `pass_rates_dataset`, to be quoted whenever the run-level numbers are quoted
+- `failing_scenarios` and `unmeasured_scenarios` as two counts, with null meaning
+  unreadable rather than zero
+
+The thresholds themselves are untouched (ticket 17, #54 and #36). What changed is
+which numbers they are applied to.
+
+### Decisions
+
+**The no-pooling rule moved into `app.domain`.** Slice 3 put it in
+`api/v1/evals.py` as three private helpers. The deploy gate asks the same
+question, and `app.services` may not import `app.api`, so the alternative was a
+second copy of a selection rule. Two copies is how a deploy gate and the screen
+the owner is looking at come to name different datasets, which is the defect one
+grain up that this whole ticket removes. The route keeps its renderers and its
+response shape is byte-identical; its 42 tests were untouched and stayed green.
+
+**`agent_invoked` still comes from `eval_runs.config`, and the record's
+invocation block travels beside it.** They are one observation:
+`invocation_provenance` derives `agent_invoked` from
+`agent_invocation["status"] == MEASURED`, which is the same field the record's
+`InvocationStatus` holds. The config copy is written at the invocation phase,
+before scoring, so it is the only invocation claim a run that died before
+`write_eval_result` has at all, and the gate's whole D1 refusal rests on it. Same
+reasoning slice 3 applied to `build_eval_run_config`'s judge pair. The comment on
+`_record_counts` says which is which so a reader does not treat them as two
+independent claims.
+
+**`GATED_METRIC_KEYS` moved to `eval_service`, beside `threshold_for`.** It lived
+in the route. The collector needs the same pair to count verdicts, and
+`app.services` cannot import from `app.api`. `test_the_route_reads_the_same_gate_the_writer_stored`
+still pins every entry to a non-None `threshold_for`.
+
+**The scenario verdict count is unmeasured-first.** A scenario with one NULL
+gated verdict and one False is counted once, as unmeasured. That matches
+`get_eval_run_results`'s `None if None in verdicts else all(verdicts)`, so the
+console and the deploy report describe the same scenario the same way. A scenario
+with fewer gated rows than there are gated metrics is unmeasured too: a missing
+row and a NULL verdict are the same absence.
+
+**Three run-row fallbacks, not two.** A tenant at 0013 through 0021 has `config`
+and no `result`. Degrading straight to the pre-0013 SELECT would have dropped its
+invocation claim and failed the whole population closed for a reason nothing on
+that tenant can fix. `_latest_run` walks the three widths and logs which one
+answered.
+
+**`EVAL_SUMMARY_UNAVAILABLE_SIGNAL` goes through `_eval_summary`.** It was
+hand-written and carried `scenario_count: 0` and `scored_scenario_count: 0` next
+to a comment explaining why `valid_scenario_count` was None. The collector raised;
+it counted nothing. Building it through the constructor makes the substitute and
+a real absent signal drift-proof and settles the inconsistency.
+
+**The alert and the digest have no number for a two-dataset tenant.** Same
+consequence slice 3 recorded for the console, one reader over: the regression
+alert cannot fire for a tenant with a designated golden set, because there is no
+run-level faithfulness and averaging the two halves would produce a figure that
+moves with the exploratory draw. An alert that fires on the draw is worse than
+one that does not fire. Open work beside #119.
+
+### The pre-existing breakage this slice found
+
+**`test_label_downstream.py` was red on this branch before slice 4 touched it.**
+Ten tests, `error="'judge_records'"`. Slice 2 made `run_ragas_eval` return
+`judge_records` and `write_eval_results` take them, and that file's double
+returned only `scores`, so `run_eval_suite` raised KeyError and every count in
+the file read as a missing key rather than as a wrong number. Observed on `HEAD`
+with the working tree stashed:
+
+```
+10 failed, 16 passed in 30.56s        (1d828fc, slice 4 not applied)
+11 failed, 15 passed                  (slice 4 applied)
+```
+
+The eleventh is slice 4's own:
+`test_the_pass_rate_query_cannot_exclude_a_labelled_row` asserted the deleted
+`AVG(score), COUNT(score) FROM eval_results` string was present in the collector.
+Rewritten as `test_the_deploy_gate_cannot_exclude_a_labelled_row`: the hop moved
+to the record and the fact did not, because the per-dataset `Measurement` is
+computed over every scored row of a dataset and none of `EvalResult`,
+`DatasetOutcome` or `Measurement` carries a provenance field. `BACKLOG 4.12` is
+still what would change it.
+
+Fixed here rather than filed, because the branch cannot merge red and this is the
+commit that touches the same seam. Two of the rewrites replaced
+`inspect.getsource` calls with reads of the dataclass fields and one behavioural
+assertion, because `SOURCE_ASSERTION_BASELINE` may not grow and a behaviour
+assertion is what the baseline's comment asks for anyway.
+
+### Observed
+
+Mutation 1, the gate accepting an absent record. `_eval_evidence_warnings` reads
+`if eval_signal not in (SHIPPABLE_SIGNAL, EVAL_SIGNAL_NO_RECORD)`:
+
+```
+MUTATION APPLIED: apply_signal_evidence_gate treats an absent record as passing
+FAILED test_deployment_service.py::TestTheRecordIsTheOnlyDenominator::test_a_recordless_run_makes_the_gate_refuse
+1 failed, 153 passed in 34.65s
+```
+
+**The recommendation still blocked.** Only the warning assertion failed. The
+signal arm and `_quality_evidence_warning` are two floors under the same hole: a
+run with no record also has no gated metric measured on any dataset, so the second
+refusal caught what the first stopped catching. Recorded as one mutation with two
+stages rather than dressed up as two independent defences, the same discipline
+`.dev/reference/p3-review-mutation-proofs.md` applied to the P3 pair.
+
+Mutation 2, both floors removed (`missing = []`, the `failing_scenarios is None`
+arm dead), which is what it takes to observe a shipped deploy:
+
+```
+MUTATION 2 APPLIED: both floors under an absent record removed
+FAILED ...TestTheRecordIsTheOnlyDenominator::test_a_recordless_run_makes_the_gate_refuse
+FAILED ...TestTheTwoDatasetsAreNeverPooled::test_a_gated_metric_measured_on_no_dataset_refuses
+FAILED ...TestScenarioVerdictCounts::test_a_pre_0023_tenant_reports_the_absence_rather_than_zero
+3 failed, 151 passed in 31.53s
+
+test_a_recordless_run_makes_the_gate_refuse:
+    E  AssertionError: a run that recorded no measurement is unknown quality,
+       and unknown quality may never approve a deploy
+    E  assert 'ship' == 'block'
+```
+
+Restored with `git checkout HEAD -- app/services/deployment_service.py`:
+
+```
+154 passed in 30.84s
+```
+
+Suites, foreground:
+
+```
+test_deployment_service test_deployment_task test_eval_service test_eval_routes
+test_alert_service test_digest_service test_label_downstream
+                                                356 passed in 100.24s
+tests/unit                                      3546 passed, 13 skipped
+```
+
+Gates, `scripts/gates.py static`, passed in 9.0s:
+
+```
+ruff: clean against the 0 pinned baseline violation(s)
+Contracts: 3 kept, 0 broken
+complexity: clean against the 115 pinned function(s)
+source assertions: clean against the 44 pinned file(s), 113 site(s)
+```
+
+Lizard, the four pinned functions this slice owns, all lowered:
+
+```
+      28      2    171      6      66 _eval_summary@649-714            (was 5, 69)
+     119     12    448      2     207 _fetch_eval_summary_sync@906     (was 18, 312)
+     111     15    370      3     251 apply_signal_evidence_gate@1921  (was 20, 292)
+     208     26  1066      2     372 run_deployment_checklist@162      (unchanged)
+```
+
+Plus `_collect_digest_stats` 12/81 to 10/71. `check_and_write_alerts` is
+unchanged at 17/50: `_get_latest_faithfulness` kept its signature, so the caller
+did not move. None of the seventeen new functions takes a baseline entry; all are
+under `-C 15 -L 60 -a 11`.
+
+### Open, carried forward
+
+- **A two-dataset tenant has no run-level faithfulness for the regression
+  alert**, so `eval_regression` cannot fire for it. Same root gap as #119, one
+  reader over. Either the alert learns to compare per dataset, or the golden set
+  gets its own threshold.
+- **The admin deploy page still averages `pass_rates` across METRICS**
+  (`avgPassRate`, `agents/[id]/deploy/page.tsx:468`) and reads
+  `failing_scenarios ?? 0`. A null now reads as zero failures on that screen.
+  Frontend work, beside #119.
+- **`EvalResult` still carries no `unattributed` count**, so nothing downstream
+  reports it. Slice 3 left the same note.
+- Slice 5 owns generation and timeouts; slice 6 owns the retrieval proxy.
