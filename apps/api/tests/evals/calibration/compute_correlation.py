@@ -983,6 +983,7 @@ def compute_correlation(judge_fn) -> dict:
             table.append({"scenario_id": sid, "dimension": dim,
                           "human_verdict": row["human_verdict"], "human": h_score,
                           "judge_verdict": None, "judge": None,
+                          "judge_identity": None,
                           "reason": f"ERROR: {exc}"})
             continue
 
@@ -998,6 +999,7 @@ def compute_correlation(judge_fn) -> dict:
             table.append({"scenario_id": sid, "dimension": dim,
                           "human_verdict": row["human_verdict"], "human": h_score,
                           "judge_verdict": None, "judge": None,
+                          "judge_identity": verdict.get("judge_identity"),
                           "reason": verdict["reason"]})
             continue
 
@@ -1015,6 +1017,7 @@ def compute_correlation(judge_fn) -> dict:
             table.append({"scenario_id": sid, "dimension": dim,
                           "human_verdict": row["human_verdict"], "human": h_score,
                           "judge_verdict": None, "judge": None,
+                          "judge_identity": verdict.get("judge_identity"),
                           "reason": "excluded: PII deflection"})
             continue
 
@@ -1033,6 +1036,10 @@ def compute_correlation(judge_fn) -> dict:
         table.append({"scenario_id": sid, "dimension": dim,
                       "human_verdict": row["human_verdict"], "human": h_score,
                       "judge_verdict": verdict["verdict"], "judge": j_score,
+                      # `.get`, because the identity travels on the row and a
+                      # judge_fn that reports none has none. An absent key is
+                      # the same fact as a null one here.
+                      "judge_identity": verdict.get("judge_identity"),
                       "reason": verdict["reason"]})
 
     pairs = len(binary_pairs)
@@ -1359,40 +1366,32 @@ HARNESS_VERSION = "compute_correlation.py@1"
 #: the one directory this harness owns.
 CALIBRATION_ARTIFACT_JSON = CALIBRATION_DIR / "calibration.json"
 
-#: Which Judge scores each dimension, at the grain `JudgeIdentity` keys on.
-#:
-#: EMPTY, AND THAT IS THE FINDING RATHER THAN AN OMISSION. The judge this harness
-#: calls is `tests/evals/judge.py`. It builds its own `anthropic.Anthropic()`
-#: client at a model literal, asks for no reasoning effort, and reads a rubric
-#: authored in this repo and versioned nowhere. Two of the identity's three
-#: fields would have to be invented to fill a row in here, and an invented field
-#: widens the key until two different Judges group under one figure.
-#:
-#: The five dimensions this harness scores are also not the four Ragas metrics
-#: `eval_service.judge_identity_for` maps. They are the AI-SPEC 5.2 rubric names
-#: in `tests/evals/judge.py:JUDGE_RUBRICS`; that function takes `METRIC_KEYS` and
-#: raises KeyError on every one of them. Nothing in this repo joins the two
-#: vocabularies, and a table that joined them here would assert an equivalence
-#: nobody measured.
-#:
-#: So every artifact this harness writes today carries `judge_identity: null`
-#: and, by the record's own rule, can never say `calibrated`. The day this judge
-#: moves onto `app.core.model_client`, this table is the one place that changes.
-JUDGE_IDENTITY_BY_DIMENSION: dict[str, JudgeIdentity] = {}
-
-
 def judge_identity_for_run(result: dict) -> JudgeIdentity | None:
-    """The one Judge every dimension in this run names, or None.
+    """The one Judge every scored row in this run reported, or None.
 
-    None when two dimensions name different Judges, None when any of them names
-    none, and None when the run reached no rows at all. Picking the first of
-    several would report the Judge behind one dimension as the Judge behind the
-    whole figure, which is the rule `eval_service.run_judge_identity` already
-    applies to an eval run's records.
+    THE ROWS ARE THE SOURCE, AND THERE IS NO TABLE. This read a static
+    `JUDGE_IDENTITY_BY_DIMENSION` keyed on the dimension column, so the identity
+    on an artifact was an assertion about which Judge ought to have scored those
+    rows. Nothing compared it with the Judge that did, and a hand-filled row
+    there would have made an artifact say `calibrated` about a Judge that never
+    saw the set. `judge_fn` now reports its own identity per verdict
+    (`tests/evals/judge.py:judge`), and that is what an artifact carries.
+
+    SCORED ROWS ONLY, which is the ones carrying a `judge_verdict`. A row whose
+    scenario would not load, whose judge errored, or that was excluded as a PII
+    deflection contributed nothing to the kappa, so the Judge behind it does not
+    describe the figure.
+
+    None when two rows report different Judges, None when they report none, and
+    None when the run scored no rows at all. Picking the first of several would
+    report one row's Judge as the Judge behind the whole figure, which is the
+    rule `eval_service.run_judge_identity` already applies to an eval run's
+    records.
     """
     identities = {
-        JUDGE_IDENTITY_BY_DIMENSION.get(entry["dimension"])
+        entry.get("judge_identity")
         for entry in result.get("table") or []
+        if entry.get("judge_verdict")
     }
     if len(identities) == 1:
         return identities.pop()
@@ -1462,6 +1461,57 @@ def calibration_record(result: dict) -> CalibrationStatus:
     )
 
 
+def written_at() -> str:
+    """Now, as ISO 8601 UTC. Stamped by the writer and by nothing else.
+
+    On the record rather than derived from the file's mtime, because a file gets
+    copied, restored and checked out and its mtime moves with all three, while
+    the sentence "this reading was taken at" belongs to the run that took it.
+    Read it beside `labelled_at`: that one dates the labels, this one dates the
+    reading of them, and a gap between them is the alignment decay section 9 of
+    `.dev/reference/260818-llm-eval-fundamentals.md` is about.
+    """
+    return datetime.datetime.now(datetime.UTC).isoformat()
+
+
+def write_harness_raised(path: pathlib.Path, exc: BaseException) -> None:
+    """Replace the artifact with a `setup_error` saying this run raised.
+
+    A run that dies leaves the PREVIOUS run's answer sitting at the path, and
+    the loader has no way to tell that from an answer about today. It reports
+    last week's kappa about a judge nobody scored anything with this week, which
+    is the one failure this whole record exists to stop.
+
+    THE TYPE NAME ONLY, never the message. #96's class of defect: an exception
+    string carries whatever the raiser put in it, a DSN and a key included, and
+    this file is read by a deploy summary and committed by hand.
+
+    Best effort by design. It is called from an `except` on the way to re-raising
+    the original, so a disk that will not take this write must not replace the
+    exception the operator needs to see with one about the artifact.
+    """
+    from app.domain.calibration_status import (  # noqa: PLC0415
+        STATUS_SETUP_ERROR,
+        CalibrationStatus,
+    )
+
+    try:
+        record = CalibrationStatus(
+            status=STATUS_SETUP_ERROR,
+            reason=f"harness_raised:{type(exc).__name__}",
+            labelled_at=labelled_at(),
+            harness_version=HARNESS_VERSION,
+            written_at=written_at(),
+        )
+        staged = path.with_name(path.name + ".partial")
+        staged.write_text(
+            json.dumps(record.payload, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        os.replace(staged, path)
+    except Exception as write_failure:  # noqa: BLE001
+        print(f"Could not write {path.name} after the run raised: {write_failure}\n")
+
+
 def write_calibration_artifact(result: dict, path: pathlib.Path) -> pathlib.Path:
     """Leave this run's record at `path`, overwriting whatever was there.
 
@@ -1470,14 +1520,22 @@ def write_calibration_artifact(result: dict, path: pathlib.Path) -> pathlib.Path
     and a run that kept the older file would let a judge that has since regressed
     go on reporting the figure it earned last week.
 
+    THE OVERWRITE IS ONE `os.replace`. `Path.write_text` truncates first and then
+    writes, so a process killed between the two leaves a file that is neither
+    run's answer, and the loader reads it as `unreadable` over a judge nobody
+    asked about. The record goes to a sibling temp file and replaces the target
+    in one operation, so a reader sees the old artifact or the new one.
+
     JSON, indented and key-sorted, so two runs produce a diff a person can read.
     The path is a parameter rather than the module constant so a test can send an
     artifact somewhere other than the tree the owner labelled.
     """
-    path.write_text(
-        json.dumps(calibration_record(result).payload, indent=2, sort_keys=True),
-        encoding="utf-8",
+    record = dataclasses.replace(calibration_record(result), written_at=written_at())
+    staged = path.with_name(path.name + ".partial")
+    staged.write_text(
+        json.dumps(record.payload, indent=2, sort_keys=True), encoding="utf-8"
     )
+    os.replace(staged, path)
     return path
 
 
@@ -1506,7 +1564,11 @@ def main(argv: list[str] | None = None) -> int:
 
     from tests.evals.judge import judge  # noqa: PLC0415
 
-    result = compute_correlation(judge)
+    try:
+        result = compute_correlation(judge)
+    except Exception as exc:
+        write_harness_raised(CALIBRATION_ARTIFACT_JSON, exc)
+        raise
 
     # Before the report, so a run that dies formatting its own output still
     # leaves the record. An OSError here is a disk problem rather than a judge
@@ -1515,6 +1577,9 @@ def main(argv: list[str] | None = None) -> int:
         write_calibration_artifact(result, CALIBRATION_ARTIFACT_JSON)
     except OSError as exc:
         print(f"Could not write {CALIBRATION_ARTIFACT_JSON.name}: {exc}\n")
+    except Exception as exc:
+        write_harness_raised(CALIBRATION_ARTIFACT_JSON, exc)
+        raise
 
     print(
         f"Calibration run - {result['valid']} scored / {result['attempted']} rows present\n"
