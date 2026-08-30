@@ -73,11 +73,12 @@ What the response says when a number does not exist:
         in full every night and is comparable across runs; the exploratory half
         rotates. Each carries its own three counts, its own four measurements,
         and how its scored scenarios ended: passed, failed, or undecided by a
-        gated verdict. Those three are the run's own count and add up to
-        `scored_scenario_count`; nothing here re-reaches a verdict. `datasets.available` is false exactly when the run has no
-        record. `datasets.unattributed` reports nulls, because the record does
-        not carry that count and inventing a zero for it would claim a run had
-        no unattributable rows when nobody asked.
+        gated verdict. Those last three are the run's own count and add up to
+        `scored_scenario_count`, and nothing here re-reaches a verdict.
+        `datasets.available` is false exactly when the run has no record.
+        `datasets.unattributed` reports nulls, because the record does not carry
+        that count and inventing a zero for it would claim a run had no
+        unattributable rows when nobody asked.
 """
 
 from __future__ import annotations
