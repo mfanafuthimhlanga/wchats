@@ -1,0 +1,25 @@
+# Railway config as code for the pipeline worker (ADR 0005, ticket 18).
+#
+# Consumes the `pipeline` queue only: ingestion and build. Built from
+# Dockerfile.pipeline, which adds torch (CPU) and docling, about 3 GB. On the
+# trial budget, add this service for the hour an upload is being tested and
+# remove it afterwards; it idles at far more RAM than the other three.
+#
+# UI fields, once per service:
+#   Settings > Source > Root Directory        apps/api
+#   Settings > Config-as-code > file path     railway.worker-pipeline.toml
+# Variables this service needs beyond the shared set (docker-compose.yml sets
+# the same two for the local pipeline worker):
+#   LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu
+#   HF_HUB_DISABLE_XET_ENDPOINT=1
+# No public networking; no health check.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.pipeline"
+watchPatterns = ["apps/api/**"]
+
+[deploy]
+startCommand = "celery -A app.worker.celery_app worker --queues=pipeline --hostname=pipeline@%h --loglevel=info --concurrency=1"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

@@ -1,0 +1,27 @@
+# Railway config as code for the API service (ADR 0005, ticket 18).
+#
+# One repo, four services, one file per service. The two fields that cannot
+# live in a file are set once per service in the Railway UI:
+#   Settings > Source > Root Directory        apps/api
+#   Settings > Config-as-code > file path     railway.api.toml
+# With the root set, Railway detects the Dockerfile in this directory and the
+# builder below stops it from ever falling back to Railpack, which is what
+# produced "could not determine how to build the app" on the first deploy.
+#
+# Build command: none. The Dockerfile is the build.
+# Watch paths are relative to the repo root: a push that touches only the
+# admin or the widget does not rebuild the API.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+watchPatterns = ["apps/api/**"]
+
+[deploy]
+# Railway injects PORT and routes public traffic to it. The Dockerfile's CMD
+# binds 8000; this overrides it so the bound port is whatever Railway chose.
+startCommand = "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
