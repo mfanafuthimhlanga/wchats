@@ -551,7 +551,7 @@ apps/api/tests/evals/calibration/compute_correlation.py
                                                  the identity comes off the rows, the atomic
                                                  write, main guards the run
 apps/api/tests/unit/test_calibration_status_type.py   89 collected, all of them new here
-apps/api/tests/unit/test_calibration_service.py       +12 tests, 41 in the file
+apps/api/tests/unit/test_calibration_service.py       40 collected at 25dfbb2 and at 07c7714 (the review pass moved tests, it did not add any)
 apps/api/tests/unit/test_calibration_harness.py       +11 tests, 99 in the file
 apps/api/tests/unit/test_deployment_service.py        +1 test
 ```
