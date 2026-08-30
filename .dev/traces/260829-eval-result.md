@@ -1020,6 +1020,7 @@ Suites:
 test_scenario_service test_eval_result_type test_eval_task test_eval_service
 test_eval_agent_invocation test_red_team_probe test_transactional_tools
 test_label_downstream                       481 passed in 45.12s
+tests/unit                          3582 passed, 13 skipped in 645.14s
 ```
 
 Gates, `scripts/gates.py static`, passed in 7.3s:
