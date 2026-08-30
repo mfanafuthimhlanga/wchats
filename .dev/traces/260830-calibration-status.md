@@ -347,3 +347,176 @@ do not call the writer. They call `main`, which supplies the parameter itself.
   including the ones that errored.** That is deliberate: a dimension whose rows all failed
   still tells you which Judges the run was pointed at. It also means a run is refused a
   single identity by a dimension that contributed no pair.
+
+## Slice 3
+
+```
+apps/api/app/services/calibration_service.py       SUMMARY_KEYS + summary_of
+apps/api/app/services/deployment_service.py        _calibration_block, the key, the prompt
+apps/api/tests/unit/test_deployment_service.py     +10 tests, one class
+apps/api/tests/unit/test_calibration_service.py    +4 tests, 29 in the file
+```
+
+One commit, `5635697`.
+
+### Where the key hangs, and why not in the collector
+
+The plan puts the loader call in `_fetch_eval_summary_sync`, or in a small function it
+calls. It is in `_eval_summary`, two calls further down, and the lizard pins are the
+reason.
+
+`_fetch_eval_summary_sync` returns through `_eval_summary` at eight sites. Attaching the
+key at each costs eight lines against a pin of 204 that may only go down. Wrapping the
+collector in a thinner function that attaches once is worse: a pin is keyed on
+(file, function name), so renaming the implementation makes the pinned name stop being
+reported, which fails, and introduces an over-threshold function with no entry, which
+fails too. Entries may never be added.
+
+`_eval_summary` already takes `record` and all eight paths run through it. Deriving the
+identity there also covers `no_runs` and `unavailable`, where no record is ever read.
+Those two report `no_single_judge_identity`, the same answer the plan specifies for a run
+with no record, and for the same reason: there is no Judge for an artifact to be about.
+
+### The pin arithmetic, and the line the docstring gave back
+
+Lizard's `length` is physical lines, so a pinned function cannot gain one. The
+`agent_invoked` paragraph in `_eval_summary`'s docstring gave up one wrapped line and
+both its em-dashes, and no content with them. Measured after:
+
+```
+app/services/deployment_service.py:697: warning: _eval_summary has 25 NLOC, 2 CCN, 150 token, 6 PARAM, 63 length, 0 ND
+app/services/deployment_service.py:902: warning: _fetch_eval_summary_sync has 116 NLOC, 12 CCN, 430 token, 2 PARAM, 204 length, 0 ND
+app/services/deployment_service.py:1915: warning: apply_signal_evidence_gate has 111 NLOC, 15 CCN, 370 token, 3 PARAM, 251 length, 0 ND
+```
+
+`_calibration_block` is 20 lines at CCN 2, under both thresholds, so it needs no entry.
+
+### What the summary carries
+
+Eleven keys, selected off `CalibrationStatus.payload` by `summary_of`: `status`,
+`reason`, `judge_identity`, `judge_interval`, `ceiling_interval`, `kappa`, `matthews`,
+`scored_pairs`, `pairs`, `labelled_at`, `harness_version`.
+
+Seven fields stay off. `difference_interval` and the three verdict parts are the harness's
+working, and `attempted`, `valid` and `artifact_version` answer nothing a deploy report
+asks. Ticket 17 reads the record itself, so nothing downstream needs them on the dict.
+
+`calibrated` is not a key. The record derives it from `status` and a consumer reads
+`status`, so the summary holds no second answer to one question.
+
+### The refusal is not in force, and one test says so by name
+
+`apply_signal_evidence_gate` is untouched.
+`test_the_calibration_refusal_is_not_in_force_yet_ticket_17` drives all four statuses
+through the gate over a fully measured, all-passed run and asserts `ship` with no
+warnings. It goes red the day #54 lands, so the refusal arrives as a rewrite of a named
+test rather than as a behaviour change nobody was watching for.
+
+The prompt paragraph is prose only. It names `eval_summary.calibration`, names
+`not_calibrated_yet` as the state the model will see and which reason distinguishes
+`no_artifact` from `no_single_judge_identity`, and says no recommendation moves over any
+of it. Three substrings are pinned, and that pin is drift protection over a string rather
+than evidence about the model.
+
+### The routes, and the admin
+
+Nothing changed and nothing needed to. `_fetch_eval_summary_sync` reaches the admin one
+way, through `run_deployment_checklist` into `DeploymentReport.eval_summary`, typed
+`dict` in pydantic, so a new key rides along unvalidated. `api/v1/evals.py` surfaces eval
+runs and never this summary.
+
+`apps/admin/app/agents/[id]/deploy/page.tsx` is the only reader: line 108 declares
+`eval_summary?: {pass_rates?, failing_scenarios?}` and lines 2452-2453 read those two.
+The interface is an optional non-exact subset over parsed JSON, so an extra key is not a
+type error. No TypeScript changed, so `npx tsc --noEmit` was not run.
+
+### Observed
+
+```
+$ .venv/Scripts/python.exe -m pytest tests/unit/test_deployment_service.py \
+    tests/unit/test_deployment_task.py tests/unit/test_calibration_service.py \
+    tests/unit/test_gates.py -q
+222 passed in 129.41s (0:02:09)
+
+$ .venv/Scripts/python.exe -m mypy app/services/deployment_service.py \
+    app/services/calibration_service.py --ignore-missing-imports --strict-optional
+Found 61 errors in 6 files (checked 2 source files)
+```
+
+61 before and 61 after, 3 of them in `deployment_service` and 0 in `calibration_service`
+both times. The three are the `tool()` argument types this branch inherited; they moved
+from lines 419-421 to 434-436 with the new import and helper above them.
+
+```
+$ .venv/Scripts/python.exe scripts/gates.py static
+ruff: clean against the 0 pinned baseline violation(s).
+complexity: clean against the 115 pinned function(s).
+source assertions: clean against the 44 pinned file(s), 113 site(s).
+static gates passed in 14.3s.
+```
+
+### The guard observed red
+
+`_calibration_block` made to ignore the loader and hard-code the absence, run after
+`5635697`, restored with `git checkout HEAD -- apps/api/app/services/deployment_service.py`.
+
+```python
+    return summary_of(CalibrationStatus.absent('no_artifact'))
+```
+
+```
+E       AssertionError: assert 'no_artifact' == 'no_single_judge_identity'
+FAILED TestTheCalibrationBlock::test_a_matching_calibrated_artifact_reaches_the_summary
+FAILED TestTheCalibrationBlock::test_the_loader_is_asked_about_the_judge_the_run_used
+FAILED TestTheCalibrationBlock::test_a_run_with_no_record_has_no_identity_to_ask_about
+3 failed, 7 passed, 119 deselected in 44.58s
+```
+
+Restored, `10 passed, 119 deselected in 37.56s`.
+
+The four that stayed green are the ones a hard-coded absence satisfies: the missing
+artifact, the key set, the gate, the prompt. The three that went red are the three that
+say the answer came from the loader and was asked about this run's Judge.
+
+### Deviations from the plan
+
+- **The loader is called from `_eval_summary`, not from the collector.** See above. The
+  plan's escape hatch was a selection living in `calibration_service`, which is where
+  `summary_of` is; the call site moved one level further for the pin.
+- **One docstring paragraph in `_eval_summary` was rewrapped** to pay for the key's line.
+  It is the only edit in this slice that exists because of a gate.
+
+## Open after three slices
+
+Everything slices 1 and 2 left open, and where it belongs now.
+
+**#58, the harness-judge prerequisite.**
+
+- No artifact is committed, so `CALIBRATION_ARTIFACT_PATH` resolves to a file that does
+  not exist and every deploy summary reads `not_calibrated_yet` / `no_artifact`. That is
+  the correct reading, and it stays until a calibration run against a nameable Judge
+  exists.
+- `JUDGE_IDENTITY_BY_DIMENSION` is empty, so every artifact this harness writes today
+  carries `judge_identity: null` and `no_single_judge_identity`. `tests/evals/judge.py`
+  builds its own client at a model literal, requests no reasoning effort and reads a
+  rubric versioned nowhere, so two of the identity's three fields would have to be
+  invented. The table is the one place that changes when the judge moves onto
+  `app.core.model_client`.
+- `judge_identity_for_run` reads `result["table"]`, which lists every row the run
+  touched, so a dimension whose rows all errored still refuses the run a single identity.
+  Deliberate, and it stops mattering once the table above is filled.
+
+**#54, the refusal.**
+
+- "ship refused without a calibrated Judge" is not implemented here.
+  `test_the_calibration_refusal_is_not_in_force_yet_ticket_17` is the test it rewrites.
+- A `setup_error` artifact carries `reason: null`, because the harness's `errors` list is
+  the terminal's report and the record's `status` already says the run was partial. If
+  the block message needs a sentence, carrying `errors[0]` is the smallest change.
+
+**Owned by neither.**
+
+- The record enforces `scored_pairs <= pairs` and nothing else about the counts.
+  `pairs <= valid <= attempted` looks true of the harness and was not traced through
+  every early return, so no rule asserts it. No issue holds this; open one before any
+  reader starts relying on the ordering.
